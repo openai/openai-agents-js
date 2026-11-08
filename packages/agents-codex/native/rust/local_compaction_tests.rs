@@ -65,7 +65,7 @@ async fn terminal(native: &NativeThread, turn_id: &str) {
 
 async fn start_seed(native: &NativeThread) -> String {
     native
-        ._configure_manual_tools("[{\"name\":\"lookup\"}]".into())
+        ._configure_manual_tools("[{\"name\":\"lookup\"}]".into(), None)
         .unwrap();
     let receipt: serde_json::Value = serde_json::from_str(&native._submit(serde_json::json!({"mode":"start_if_idle","input":[{"type":"text","text":"Seed real history"}]}).to_string()).await.unwrap()).unwrap();
     assert_eq!(receipt["status"], "started");

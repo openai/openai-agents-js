@@ -72,6 +72,7 @@ export type {
   Tool,
   ToolContext,
   ToolDecision,
+  ToolImageReference,
 } from './runtime/tools';
 export { manualTool } from './runtime/manual';
 export type {
@@ -146,6 +147,9 @@ export type {
   UserMessage,
   InputText,
   InputImage,
+  InputImageFile,
+  InputFile,
+  ImageDetail,
   FunctionCallOutput,
 } from './runtime/input';
 export type { ChecklistState, SessionState } from './runtime/state';
@@ -282,3 +286,8 @@ export {
   renderStorageLayout,
 } from './runtime/sandbox-environment';
 export type { SandboxEnvironmentOptions } from './runtime/sandbox-environment';
+
+export type {
+  InitialMessage,
+  AssistantMessage,
+} from './runtime/initial-messages';

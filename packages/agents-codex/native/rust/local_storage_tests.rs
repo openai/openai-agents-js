@@ -160,7 +160,7 @@ async fn native_local_json_create_tool_receipt_close_and_reopen() {
         let id = native.id();
         let created = engine.current().unwrap().read_stored_thread(codex_protocol::ThreadId::from_string(&id).unwrap()).await.unwrap().created_at;
         assert!(native.rollout_path().is_some());
-        native._configure_manual_tools("[{\"name\":\"lookup\"}]".into()).unwrap();
+        native._configure_manual_tools("[{\"name\":\"lookup\"}]".into(), None).unwrap();
         submit(&native, "first durable user message").await;
         let request = loop {
             let event: Value = serde_json::from_str(&native.next_session_event().await.unwrap()).unwrap();

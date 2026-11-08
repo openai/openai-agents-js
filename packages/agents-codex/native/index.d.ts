@@ -49,6 +49,11 @@ export class Engine {
     options_json: string,
     specs_json: string,
   ): Promise<NativeThread>;
+  _start_seeded_replaceable_thread(
+    options_json: string,
+    specs_json: string,
+    initial_messages_json: string,
+  ): Promise<NativeThread>;
   _start_local_resume(
     options_json: string,
     specs_json: string,
@@ -191,7 +196,12 @@ export class NativeThread {
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(response_json: string): Promise<boolean>;
-  _configure_manual_tools(slots_json: string): void;
+  _configure_manual_tools(
+    slots_json: string,
+    terminal_slots_json?: string,
+  ): void;
+  _check_tool_completion(response_json: string): boolean;
+  _reply_tool_completion(response_json: string): boolean;
   _manual_checkpoint_config_supported(): Promise<boolean>;
   _begin_manual_checkpoint_wait(validated_requests_json: string): string;
   _wait_manual_checkpoint_progress(token: string): Promise<void>;

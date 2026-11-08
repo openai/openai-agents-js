@@ -56,6 +56,7 @@ struct Outcome {
     terminal: bool,
     usage: Option<TokenUsageInfo>,
     error: Option<serde_json::Value>,
+    tool_completion: Option<codex_protocol::protocol::ToolTurnCompletion>,
 }
 
 impl Turn {
@@ -124,6 +125,17 @@ impl Turn {
         usage: Option<TokenUsageInfo>,
         error: Option<serde_json::Value>,
     ) {
+        self.finish_with_completion(result, terminal, usage, error, None);
+    }
+
+    fn finish_with_completion(
+        &self,
+        result: Result<String, String>,
+        terminal: bool,
+        usage: Option<TokenUsageInfo>,
+        error: Option<serde_json::Value>,
+        tool_completion: Option<codex_protocol::protocol::ToolTurnCompletion>,
+    ) {
         self.result.send_if_modified(|current| {
             if current.is_some() {
                 return false;
@@ -148,6 +160,7 @@ impl Turn {
                 terminal,
                 usage,
                 error,
+                tool_completion,
             });
             true
         });
@@ -180,6 +193,7 @@ impl Turn {
         serde_json::to_string(&serde_json::json!({
             "final_output": outcome.result.map_err(anyhow::Error::msg)?,
             "usage": usage,
+            "tool_completion": outcome.tool_completion,
         }))
         .context("Native child result could not be encoded")
     }
@@ -337,6 +351,46 @@ impl Instance {
         }
     }
 
+    pub(crate) fn fail_tool_completion(
+        &mut self,
+        owner: &Arc<ThreadState>,
+        id: ThreadId,
+        turn_id: &str,
+        incarnation: &str,
+    ) -> bool {
+        let turn = self
+            .turn
+            .as_ref()
+            .filter(|turn| turn.turn_id == turn_id)
+            .cloned()
+            .or_else(|| {
+                self.during_submission
+                    .as_ref()
+                    .and_then(|capture| capture.get(turn_id))
+                    .cloned()
+            })
+            .or_else(|| self.submitted.get(turn_id).cloned())
+            .unwrap_or_else(|| Arc::new(Turn::new(owner, id, self, turn_id.to_owned())));
+        if turn.incarnation != incarnation {
+            return false;
+        }
+        turn.finish(
+            Err("Native terminal tool completion failed".into()),
+            true,
+            self.usage.clone(),
+        );
+        // A failure notice can precede the queued TurnStarted event. Keep its
+        // watch on the existing submitted owner so that event reuses it.
+        if self
+            .turn
+            .as_ref()
+            .is_none_or(|current| current.turn_id != turn_id)
+        {
+            self.submitted.insert(turn_id.to_owned(), turn);
+        }
+        true
+    }
+
     pub fn observe(
         &mut self,
         owner: &Arc<ThreadState>,
@@ -428,9 +482,15 @@ impl Instance {
                         serde_json::to_value(error).expect("serializable native error")
                     })
                 });
-                turn.finish_with_error(
+                turn.finish_with_completion(
                     if end.error.is_some() {
                         Err("Native child turn failed".into())
+                    } else if let Some(completion) = &end.tool_completion {
+                        completion
+                            .final_output
+                            .as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| "Native child terminal tool output must be text".into())
                     } else if self.blank_final == Some(true) {
                         Ok(String::new())
                     } else {
@@ -446,6 +506,7 @@ impl Instance {
                     true,
                     self.usage.clone(),
                     error,
+                    end.tool_completion.clone(),
                 );
                 return turn
                     .result
@@ -706,9 +767,12 @@ pub async fn submit(
         !input.input.is_empty()
             && input.input.iter().all(|part| matches!(
                 part,
-                UserInput::Text { .. } | UserInput::Image { .. } | UserInput::LocalImage { .. }
+                UserInput::Text { .. }
+                    | UserInput::Image { .. }
+                    | UserInput::LocalImage { .. }
+                    | UserInput::File { .. }
             )),
-        "Child submission requires text or image user input"
+        "Child submission requires text, image or file user input"
     );
     // Serialize SDK admission and close operations; Core still owns admission
     // against concurrently submitted native followups and steers.

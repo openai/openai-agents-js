@@ -1069,6 +1069,20 @@ impl PythonTools {
         Ok(Value::Array(events))
     }
 
+    /// Model selected by the validated restored native frame, not response JSON.
+    pub(crate) fn restored_media_model(&self, owner: &str, key: &PendingKey) -> Result<String> {
+        self.check_restored_manual(owner, key)?;
+        let manual = self.manual.lock().expect("manual tools poisoned");
+        let (_, keys) = manual
+            .restored
+            .as_ref()
+            .context("manual continuation expired")?;
+        keys.get(key).context("manual continuation expired")?["msg"]["_sdk_model"]
+            .as_str()
+            .map(str::to_owned)
+            .context("restored file reply lacks its admitted original model")
+    }
+
     pub(crate) fn respond_manual(
         &self,
         owner: &str,

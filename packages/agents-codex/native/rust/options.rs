@@ -270,6 +270,17 @@ struct InstructionText {
 }
 
 impl ThreadOptions {
+    pub(crate) fn validate_initial_messages(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.managed_instructions
+                && self.sdk_resume_thread_id.is_none()
+                && self.initial_history.is_none()
+                && self.reserved_thread_id.is_none(),
+            "initial messages require a managed fresh root without history or reserved identity"
+        );
+        Ok(())
+    }
+
     pub(crate) fn validate_local_authority(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.client_mcp_extensions.is_empty(),

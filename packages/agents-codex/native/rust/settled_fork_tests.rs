@@ -521,7 +521,7 @@ async fn metadata_source(
         .await
         .unwrap();
     source
-        ._configure_manual_tools("[{\"name\":\"lookup\"}]".into())
+        ._configure_manual_tools("[{\"name\":\"lookup\"}]".into(), None)
         .unwrap();
     source._submit(json!({"mode":"start_if_idle","input":[{"type":"text","text":"Record metadata history."}]}).to_string()).await.unwrap();
     loop {

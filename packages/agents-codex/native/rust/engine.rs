@@ -568,10 +568,22 @@ impl EngineState {
 
     pub async fn start_with_tools(
         self: &Arc<Self>,
-        mut options: options::ThreadOptions,
+        options: options::ThreadOptions,
         specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     ) -> anyhow::Result<NativeThread> {
+        self.start_with_initial_messages(options, specs, None).await
+    }
+
+    pub(crate) async fn start_with_initial_messages(
+        self: &Arc<Self>,
+        mut options: options::ThreadOptions,
+        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        initial_messages: Option<crate::initial_messages::Batch>,
+    ) -> anyhow::Result<NativeThread> {
         let _guard = self.lifecycle.lock().await;
+        if initial_messages.is_some() {
+            options.validate_initial_messages()?;
+        }
         if self.local_checklist_store.is_some() || self.custom_store.is_some() {
             options.validate_local_authority()?;
         }
@@ -590,6 +602,11 @@ impl EngineState {
             "SDK resume must match the current runtime admission"
         );
         let (mut startup, instructions) = self.build_startup(options).await?;
+        if let Some(batch) = &initial_messages {
+            // B02 owns current route/model admission; this runs before thread writes.
+            self.validate_seed_files(&mut startup, batch.items())
+                .await?;
+        }
         let mut local_resume_admission = None;
         if let Some(id) = resume {
             ensure!(
@@ -733,8 +750,17 @@ impl EngineState {
                 allow_local_goals: local_goals,
             },
         )?;
-        self.start_prepared(startup, instructions, local_resume_admission.as_ref())
-            .await
+        let native = self
+            .start_prepared(startup, instructions, local_resume_admission.as_ref())
+            .await?;
+        if let Some(batch) = initial_messages {
+            let state = native
+                .current()
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let _mutation = state.mutations.lock().await;
+            batch.publish(&state.thread).await?;
+        }
+        Ok(native)
     }
 
     // The caller holds lifecycle through validation, native import and start.
@@ -1417,6 +1443,165 @@ impl EngineState {
         self.transport_binding_sealed.store(true, Ordering::Release);
     }
 
+    /// Validate seed file data against the resolved current startup, before seed writes.
+    pub(crate) async fn validate_seed_files(
+        &self,
+        startup: &mut StartThreadOptions,
+        items: &[codex_protocol::models::ResponseItem],
+    ) -> anyhow::Result<()> {
+        use codex_protocol::models::{ContentItem, ResponseItem};
+        use codex_protocol::provider_reference_profile::ProviderImageReferencePolicy;
+        let files: Vec<_> = items
+            .iter()
+            .flat_map(|item| match item {
+                ResponseItem::Message { content, .. } => content
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentItem::InputFile { file } => Some(file),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        if files.is_empty() {
+            return Ok(());
+        }
+        // Match Core Session::spawn's existing selector before any seed write.
+        let strategy = if startup
+            .session_source
+            .as_ref()
+            .is_some_and(|source| source.is_non_root_agent())
+        {
+            codex_models_manager::manager::RefreshStrategy::Offline
+        } else {
+            codex_models_manager::manager::RefreshStrategy::OnlineIfUncached
+        };
+        let models = self.manager.get_models_manager();
+        if startup.config.model.is_none()
+            || !matches!(
+                strategy,
+                codex_models_manager::manager::RefreshStrategy::Offline
+            )
+        {
+            let _ = models
+                .list_models(strategy, startup.config.http_client_factory())
+                .await;
+        }
+        let model = models
+            .get_default_model(
+                &startup.config.model,
+                startup.allow_provider_model_fallback,
+                strategy,
+                startup.config.http_client_factory(),
+            )
+            .await;
+        ensure!(
+            !model.trim().is_empty(),
+            "No models are available for file seed admission"
+        );
+        let profile = startup
+            .thread_extension_init
+            .get::<ProviderImageReferencePolicy>()
+            .map(|value| *value)
+            .unwrap_or_default();
+        let info = self
+            .manager
+            .get_models_manager()
+            .get_model_info(&model, &startup.config.to_models_manager_config())
+            .await;
+        for file in files {
+            file.validate_for_model(profile, &info)
+                .map_err(anyhow::Error::msg)?;
+        }
+        // Core startup receives the exact selection whose capabilities admitted the files.
+        startup.config.model = Some(model);
+        Ok(())
+    }
+
+    /// The live native owner selects metadata; saved media grants no profile.
+    pub(crate) async fn validate_tool_files(
+        &self,
+        thread_id: &str,
+        _turn_id: &str,
+        allow_idle_reentry: bool,
+        restored_model: Option<&str>,
+        native_media: Option<&crate::python_tools::NativeMediaContext>,
+        response: &codex_protocol::dynamic_tools::DynamicToolResponse,
+    ) -> anyhow::Result<()> {
+        use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+        use codex_protocol::protocol::AgentStatus;
+        use codex_protocol::provider_reference_profile::ProviderImageReferencePolicy;
+        let files: Vec<_> = response
+            .content_items
+            .iter()
+            .filter_map(|part| match part {
+                DynamicToolCallOutputContentItem::InputFile { file } => Some(file),
+                _ => None,
+            })
+            .collect();
+        if files.is_empty() {
+            return Ok(());
+        }
+        if let Some(media) = native_media {
+            // Representability belongs to this immutable native step/receipt.
+            // The caller separately owns and rechecks publication authority.
+            for file in files {
+                file.validate_for_model(media.profile, &media.model_info)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            return Ok(());
+        }
+        ensure!(
+            allow_idle_reentry,
+            "file reply lacks its native receipt metadata"
+        );
+        let id = codex_protocol::ThreadId::from_string(thread_id)?;
+        let thread = self.manager.get_thread(id).await?;
+        ensure!(
+            thread.active_turn_environment_selections().await.is_none()
+                && !matches!(
+                    thread.agent_status().await,
+                    AgentStatus::Running | AgentStatus::Shutdown | AgentStatus::NotFound
+                ),
+            "file reentry has no admitted idle native owner"
+        );
+        let model = match restored_model {
+            Some(model) => model.to_owned(),
+            None => thread.config_snapshot().await.model,
+        };
+        let config = thread.config().await;
+        let info = self
+            .manager
+            .get_models_manager()
+            .get_model_info(&model, &config.to_models_manager_config())
+            .await;
+        ensure!(
+            thread.active_turn_environment_selections().await.is_none()
+                && !matches!(
+                    thread.agent_status().await,
+                    AgentStatus::Running | AgentStatus::Shutdown | AgentStatus::NotFound
+                ),
+            "native file reentry owner changed"
+        );
+        if restored_model.is_none() {
+            ensure!(
+                thread.config_snapshot().await.model == model,
+                "native file reentry model changed"
+            );
+        }
+        let profile = thread
+            .thread_extension_data()
+            .get::<ProviderImageReferencePolicy>()
+            .map(|value| *value)
+            .unwrap_or_default();
+        for file in files {
+            file.validate_for_model(profile, &info)
+                .map_err(anyhow::Error::msg)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn build_startup(
         &self,
         options: options::ThreadOptions,
@@ -1492,6 +1677,18 @@ impl EngineState {
             config::code_mode_host_enabled(config) == config::code_mode_host_enabled(original),
             "Code Mode host selection belongs to the Codex client; create a separate client to change it"
         );
+        // Only the SDK-owned API-key Responses profile receives reference forwarding.
+        // Actual model metadata still decides Lite/modality admission. Apps cookies are separate.
+        if config.model_provider_id == "native_agent"
+            && config.model_provider.requires_openai_auth
+            && !config.model_provider.is_amazon_bedrock()
+            && self.manager.auth_manager().auth_mode()
+                == Some(codex_protocol::auth::AuthMode::ApiKey)
+        {
+            startup.thread_extension_init.insert(
+                codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses,
+            );
+        }
         if let Some((base, grant, excluded)) =
             self.sentinel.read().expect("sentinel poisoned").as_ref()
         {
@@ -3092,6 +3289,19 @@ impl ThreadState {
                         let count = snapshot_event_prefix(&self.thread, &mut events.native, Some(&dequeued)).await?;
                         events.root_step = Some((request, count));
                         continue;
+                    }
+                    if request["msg"]["type"] == "_sdk_tool_completion_failed" {
+                        if let Some(child) = request["subagent_id"].as_str() {
+                            self.discover_children(&mut events).await?;
+                            let id = ThreadId::from_string(child)?;
+                            let turn = request["msg"]["turn_id"].as_str().context("Terminal failure turn missing")?;
+                            let incarnation = request["subagent_incarnation"].as_str().context("Terminal failure incarnation missing")?;
+                            let mut instances = self.child_instances.write().map_err(|_| anyhow::anyhow!("Native child state unavailable"))?;
+                            if !instances.get_mut(&id).is_some_and(|instance| instance.fail_tool_completion(self, id, turn, incarnation)) {
+                                continue;
+                            }
+                        }
+                        return Ok(request);
                     }
                     match self.child_step_publication(
                         &request,

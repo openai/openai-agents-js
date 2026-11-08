@@ -31,6 +31,10 @@ import {
   type EnvironmentSource,
 } from './environment-source';
 import type { UserInput } from './input';
+import {
+  captureInitialMessages,
+  type InitialMessage,
+} from './initial-messages';
 import { nativeInput } from './input';
 import type { InteractionHandler } from './native-questions';
 import {
@@ -74,6 +78,14 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /**
+   * Seed settled user messages and assistant text without starting a model turn.
+   * Requires a fresh opening without state or resume, including for []. Core
+   * prepares media using the current route. Publication waits for native flush;
+   * memory storage adds no crash guarantee. Failed startup can leave accepted
+   * persistent history: recover it instead of automatically resubmitting seeds.
+   */
+  initialMessages?: readonly InitialMessage[];
   /**
    * Limit automatic managed functions, including borrowed MCP callbacks, per root
    * or child turn through cleanup and reply settlement. Omission leaves admission
@@ -323,6 +335,11 @@ export class Agent<Context = undefined, Output = string> {
       ...(args[0] ?? {}),
       parentTrace: captureTraceContext(args[0]?.parentTrace),
     };
+    options.initialMessages = captureInitialMessages(
+      options.initialMessages,
+      options.state,
+      options.resume,
+    );
     options.signal?.throwIfAborted();
     if (
       options.onInteraction !== undefined &&
@@ -399,6 +416,11 @@ export class Agent<Context = undefined, Output = string> {
     ...args: RunArguments<Context>
   ): Promise<Completed<Output>> {
     const options = { ...(args[0] ?? {}) };
+    const initialMessages = captureInitialMessages(
+      options.initialMessages,
+      options.state,
+    );
+
     if ('tools' in options)
       throw new TypeError(
         'Run tool selection is not supported; use Agent.session({ tools })',
@@ -420,6 +442,7 @@ export class Agent<Context = undefined, Output = string> {
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
+      ...(initialMessages === undefined ? {} : { initialMessages }),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
@@ -976,6 +999,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         parentTrace: captureTraceContext(options.parentTrace),
         state,

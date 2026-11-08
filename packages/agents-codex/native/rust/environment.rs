@@ -1518,7 +1518,9 @@ fn validate_sdk_receipt_identities(history: &[RolloutItem], thread_id: &str) -> 
 fn has_sampled_model(history: &[RolloutItem]) -> bool {
     history.iter().any(|item| match item {
         RolloutItem::EventMsg(EventMsg::TurnComplete(turn)) => {
-            turn.last_agent_message.is_some() || turn.time_to_first_token_ms.is_some()
+            turn.last_agent_message.is_some()
+                || turn.time_to_first_token_ms.is_some()
+                || turn.tool_completion.is_some()
         }
         RolloutItem::ResponseItem(response) => match &response.item {
             ResponseItem::Message { role, .. } => role == "assistant",
@@ -2466,5 +2468,29 @@ mod tests {
                 "location": { "type": "environment", "environmentId": "remote", "path": "file:///remote/catalog" }
             }])
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_tool_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_tool_fact_counts_as_sampled_without_assistant_or_first_token() {
+        let terminal = serde_json::from_value(serde_json::json!({
+            "turn_id":"turn", "last_agent_message":null,
+            "tool_completion":{"call_id":"call", "name":"finish", "final_output":{"answer":7}}
+        }))
+        .unwrap();
+        assert!(has_sampled_model(&[RolloutItem::EventMsg(
+            EventMsg::TurnComplete(terminal)
+        )]));
+        let empty = serde_json::from_value(serde_json::json!({
+            "turn_id":"turn", "last_agent_message":null
+        }))
+        .unwrap();
+        assert!(!has_sampled_model(&[RolloutItem::EventMsg(
+            EventMsg::TurnComplete(empty)
+        )]));
     }
 }

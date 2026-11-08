@@ -1,3 +1,5 @@
+import { captureToolPart, mediaRecord } from './media';
+import type { FileReference, ImageDetail } from './media';
 import { z } from 'zod';
 import {
   decode,
@@ -16,20 +18,29 @@ import type { ManualTool } from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
 
+const toolContentSchema = z.unknown().transform((value, context) => {
+  try {
+    return captureToolPart(value);
+  } catch (error) {
+    context.addIssue({
+      code: 'custom',
+      message: error instanceof Error ? error.message : 'Invalid tool content',
+    });
+    return z.NEVER;
+  }
+});
+
 export const toolOutputSchema = z.object({
   success: z.boolean(),
-  contentItems: z.array(
-    z.discriminatedUnion('type', [
-      z.object({ type: z.literal('inputText'), text: z.string() }),
-      z.object({ type: z.literal('inputImage'), imageUrl: z.string() }),
-      z.object({ type: z.literal('inputAudio'), audioUrl: z.string() }),
-    ]),
-  ),
+  contentItems: z.array(toolContentSchema),
 });
 
 export type ToolResponse = z.infer<typeof toolOutputSchema>;
+export type ToolImageReference = { detail?: ImageDetail | null } & (
+  { imageUrl: string; fileId?: never } | { fileId: string; imageUrl?: never }
+);
 
-/** Explicit native content, including images, audio, or a failed tool result. */
+/** Explicit native content. Current native owners retain all admission decisions. */
 export class ToolOutput {
   declare private readonly toolOutputBrand: void;
 
@@ -38,17 +49,20 @@ export class ToolOutput {
     readonly success = true,
   ) {}
 
-  /** Return an inline image after checking its data URL envelope. */
-  static image(imageUrl: string): ToolOutput {
-    if (
-      typeof imageUrl !== 'string' ||
-      !/^data:image\/[^,]*;base64,[\s\S]+$/.test(imageUrl)
-    ) {
-      throw new TypeError(
-        'ToolOutput.image requires a base64 image data URL with a nonempty payload.',
-      );
-    }
-    return new ToolOutput([{ type: 'inputImage', imageUrl }]);
+  /** Preserve legacy string construction and allow an explicit provider reference. */
+  static image(reference: string | ToolImageReference): ToolOutput {
+    const part =
+      typeof reference === 'string'
+        ? { imageUrl: reference }
+        : mediaRecord(reference);
+    return new ToolOutput([captureToolPart({ type: 'inputImage', ...part })]);
+  }
+
+  /** Exactly one opaque ID, inline data or HTTPS URL; never read a host path. */
+  static file(reference: FileReference): ToolOutput {
+    return new ToolOutput([
+      captureToolPart({ type: 'inputFile', ...mediaRecord(reference) }),
+    ]);
   }
 }
 
@@ -136,6 +150,8 @@ export type ToolDecision<Arguments = unknown> =
   | { readonly action: 'replaceArguments'; readonly arguments: Arguments };
 
 export interface FunctionTool<Context = unknown> extends ToolDeclaration {
+  /** Complete the turn from an accepted direct result; captured outside the schema. */
+  readonly finishTurn?: boolean;
   readonly namespace?: string;
   readonly namespaceDescription?: string;
   readonly callbackTimeout?: number;
@@ -230,6 +246,8 @@ export function tool<
     JsonValue | ToolOutput
   >,
 >(options: {
+  /** Complete from this direct function result after output validation and persistence. */
+  finishTurn?: boolean;
   /** Defer selected schema presentation; does not change execution admission. */
   deferLoading?: boolean;
   /**
@@ -264,6 +282,11 @@ export function tool<
   ) => z.input<Result> | Promise<z.input<Result>>;
 }): FunctionTool<Context> {
   if (
+    options.finishTurn !== undefined &&
+    typeof options.finishTurn !== 'boolean'
+  )
+    throw new TypeError('finishTurn must be a boolean');
+  if (
     options.deferLoading !== undefined &&
     typeof options.deferLoading !== 'boolean'
   )
@@ -292,6 +315,7 @@ export function tool<
     timeoutErrorFunction,
   } = options;
   return Object.freeze({
+    finishTurn: options.finishTurn ?? false,
     name: options.name,
     namespace: options.namespace,
     namespaceDescription: options.namespaceDescription,
@@ -445,8 +469,17 @@ export function captureTools(
   generation = 0n,
 ): ToolCatalog {
   const captured = tools.map((tool) => {
+    if (
+      tool.kind !== 'manual' &&
+      tool.finishTurn !== undefined &&
+      typeof tool.finishTurn !== 'boolean'
+    )
+      throw new TypeError('finishTurn must be a boolean');
     const binding = Object.freeze({
       ...tool,
+      ...(tool.kind === 'manual'
+        ? {}
+        : { finishTurn: tool.finishTurn ?? false }),
       parameters: jsonValue.parse(tool.parameters),
     });
     declarationOwners.set(binding, declarationOwners.get(tool) ?? tool);

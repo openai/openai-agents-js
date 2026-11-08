@@ -20,6 +20,7 @@ mod environment;
 mod extensions;
 mod goals;
 mod graph_stop;
+mod initial_messages;
 mod local_reconciliation;
 mod local_storage;
 mod mcp_result_control;
@@ -314,14 +315,28 @@ impl Engine {
         &self,
         options_json: &str,
         specs_json: &str,
+        initial_messages_json: Option<&str>,
     ) -> anyhow::Result<NativeThread> {
         let inner = self
             .current()
             .map_err(|error| anyhow::anyhow!(error.reason))?;
         let options = config::decode(serde_json::from_str(options_json)?)?;
+        let initial_messages = initial_messages_json
+            .map(initial_messages::Batch::capture)
+            .transpose()?;
+        if initial_messages.is_some() {
+            options.validate_initial_messages()?;
+        }
         let specs = serde_json::from_str(specs_json)?;
         let _context_operation = inner.operation(false)?;
-        inner.start_with_tools(options, specs).await
+        match initial_messages {
+            Some(batch) => {
+                inner
+                    .start_with_initial_messages(options, specs, Some(batch))
+                    .await
+            }
+            None => inner.start_with_tools(options, specs).await,
+        }
     }
 
     fn current_owner(
@@ -533,7 +548,20 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<NativeThread> {
-        self.start_native_thread(&options_json, &specs_json)
+        self.start_native_thread(&options_json, &specs_json, None)
+            .await
+            .map_err(native_error)
+    }
+
+    // A distinct private initializer fails closed against an older native addon.
+    #[napi(js_name = "_start_seeded_replaceable_thread")]
+    pub async fn start_seeded_replaceable_thread(
+        &self,
+        options_json: String,
+        specs_json: String,
+        initial_messages_json: String,
+    ) -> napi::Result<NativeThread> {
+        self.start_native_thread(&options_json, &specs_json, Some(&initial_messages_json))
             .await
             .map_err(native_error)
     }
@@ -544,7 +572,10 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<Either<NativeThread, String>> {
-        match self.start_native_thread(&options_json, &specs_json).await {
+        match self
+            .start_native_thread(&options_json, &specs_json, None)
+            .await
+        {
             Ok(thread) => Ok(Either::A(thread)),
             Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
                 Ok(hold) => {
@@ -2245,6 +2276,50 @@ impl NativeThread {
             .map_err(input_error)
     }
 
+    #[napi(js_name = "_check_tool_completion")]
+    pub fn _check_tool_completion(&self, response_json: String) -> napi::Result<bool> {
+        let response: python_tools::CompletionReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+        else {
+            return Ok(false);
+        };
+        let Some(owner) =
+            tools.exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+        else {
+            return Ok(false);
+        };
+        owner.check_tool_completion(&response).map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_tool_completion")]
+    pub fn _reply_tool_completion(&self, response_json: String) -> napi::Result<bool> {
+        let response: python_tools::CompletionReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+        else {
+            return Ok(false);
+        };
+        let Some(owner) =
+            tools.exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+        else {
+            return Ok(false);
+        };
+        owner.reply_tool_completion(response).map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_prepared_request")]
     pub fn _reply_prepared_request(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;
@@ -2585,12 +2660,25 @@ impl NativeThread {
                 let Some(tools) = tools.owner(&inner.id.to_string(), &request) else {
                     return Ok(false);
                 };
+                let native_media = tools.native_media(&request);
                 let Some(sender) = tools
                     .take_reply(&request.reply.thread, &request)
                     .map_err(native_error)?
                 else {
                     return Ok(false);
                 };
+                inner
+                    .engine
+                    .validate_tool_files(
+                        &request.reply.thread,
+                        &request.turn,
+                        false,
+                        None,
+                        native_media.as_ref(),
+                        &response,
+                    )
+                    .await
+                    .map_err(native_error)?;
                 if let Some(store) = &inner.engine.local_checklist_store {
                     let receipt_thread =
                         codex_protocol::ThreadId::from_string(&request.reply.thread)
@@ -2626,7 +2714,11 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_configure_manual_tools")]
-    pub fn _configure_manual_tools(&self, slots_json: String) -> napi::Result<()> {
+    pub fn _configure_manual_tools(
+        &self,
+        slots_json: String,
+        terminal_slots_json: Option<String>,
+    ) -> napi::Result<()> {
         let _admission_state = self.current()?;
         let _admission = _admission_state
             .engine
@@ -2641,7 +2733,19 @@ impl NativeThread {
             .get::<python_tools::PythonTools>()
             .ok_or_else(|| native_error("manual tools require a managed session"))?
             .configure_manual(slots)
-            .map_err(native_error)
+            .map_err(native_error)?;
+        if let Some(config) = terminal_slots_json {
+            let config: python_tools::TerminalSlots =
+                serde_json::from_str(&config).map_err(input_error)?;
+            inner
+                .thread
+                .thread_extension_data()
+                .get::<python_tools::PythonTools>()
+                .ok_or_else(|| input_error("terminal tools require a managed session"))?
+                .configure_terminal(config)
+                .map_err(input_error)?;
+        }
+        Ok(())
     }
 
     #[napi(js_name = "_manual_checkpoint_config_supported")]
@@ -3038,11 +3142,28 @@ impl NativeThread {
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let _mutation = inner.mutations.lock().await;
-        inner
+        let tools = inner
             .thread
             .thread_extension_data()
             .get::<python_tools::PythonTools>()
-            .ok_or_else(|| native_error("manual continuation requires managed tools"))?
+            .ok_or_else(|| native_error("manual continuation requires managed tools"))?;
+        let model = tools
+            .restored_media_model(&inner.id.to_string(), &request)
+            .map_err(native_error)?;
+        inner
+            .engine
+            .validate_tool_files(
+                &request.reply.thread,
+                &request.turn,
+                true,
+                Some(&model),
+                None,
+                &response,
+            )
+            .await
+            .map_err(native_error)?;
+        // respond_manual rechecks the same native restored frame before recording a result.
+        tools
             .respond_manual(&inner.id.to_string(), request, response)
             .map_err(native_error)
     }

@@ -1,3 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
+import {
+  managedCallInfo,
+  terminalCallInfo,
+  toolCompletionSchema,
+  type ToolCallInfo,
+} from './call-metadata';
 import {
   capturePreparedRequest,
   preparedRequestFromNative,
@@ -81,6 +88,7 @@ import { hostedToolSpecs, type HostedTool } from './hosted-tools';
 import {
   OutputValidationError,
   prepareOutput,
+  parseToolCompletion,
   type OutputSpec,
   type PreparedOutput,
 } from './output';
@@ -97,7 +105,6 @@ import {
   type ObservationPhase,
   type TurnObservationScope,
 } from './observation';
-import { managedCallInfo } from './call-metadata';
 import { FunctionAdmission } from './function-admission';
 import {
   nativeAgentsPolicyRules,
@@ -244,6 +251,8 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  /** @internal Detached fresh-opening data; removed before Session construction. */
+  initialMessages?: readonly import('./initial-messages').InitialMessage[];
   maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
   /** @internal Captured opening scope; never stored in SessionState. */
@@ -424,6 +433,8 @@ const sessionStopSchema = z
 export interface Completed<OutputT = string> {
   readonly turn: Turn<OutputT>;
   readonly finalOutput: OutputT;
+  /** Present when a validated direct function call supplied the final output. */
+  readonly toolCall?: ToolCallInfo;
   /** Cumulative native thread usage at completion, rather than a per-turn delta. */
   readonly threadUsage: TokenUsageInfo | null;
   readonly state?: SessionState;
@@ -952,6 +963,22 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private readonly pendingRoots: { run: NativeTurn; parts: JsonValue[] }[] = [];
   private readonly decodedOutputs = new WeakMap<NativeTurn, unknown>();
+  private readonly terminalProposals = new WeakMap<
+    NativeTurn | ChildCallbackOwner,
+    {
+      readonly requestId: string;
+      readonly nativeStep: string;
+      readonly accepted: boolean;
+      readonly generation: bigint;
+      readonly callId: string;
+      readonly name: string;
+      readonly namespace: string | null;
+      readonly value?: unknown;
+      readonly json?: JsonValue;
+    }
+  >();
+  private readonly terminalCalls = new WeakMap<NativeTurn, ToolCallInfo>();
+  private readonly childOutput = prepareOutput<string>(undefined);
   private readonly repairTurns: RepairTurnWire[];
   private readonly repairItems: RepairItemWire[];
   private repairReceiptsIncomplete = false;
@@ -1289,7 +1316,11 @@ export class Session<OutputT = string, Context = unknown> {
       }
       const executorPolicy =
         this.environment !== null && hasExecutorPolicy(this.environment);
-      if (this.catalog.tools.some((tool) => tool.kind === 'manual'))
+      if (
+        this.catalog.tools.some(
+          (tool) => tool.kind === 'manual' || tool.finishTurn,
+        )
+      )
         await this.configureManualTools();
       this.ownReader(withoutTracing(() => this.readEvents()));
       if (this.options.mcpTools) {
@@ -2439,6 +2470,9 @@ export class Session<OutputT = string, Context = unknown> {
       finalOutput: this.decodedOutputs.has(run)
         ? this.decodedOutputs.get(run)
         : result.finalOutput,
+      ...(this.terminalCalls.has(run)
+        ? { toolCall: this.terminalCalls.get(run)! }
+        : {}),
       threadUsage: tokenUsageInfo(result.usage),
       repairAttempts: Object.freeze(
         this.repairTurns
@@ -2964,6 +2998,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (receipt.status !== 'steered' || receipt.turn_id !== run.id)
         throw new TurnNotSubmitted('Unexpected steering receipt');
+      this.terminalProposals.delete(run);
       if (expectedTurnId === undefined) return;
       if (!receipt.input_id)
         throw new NativeError('Native steering input ID is unavailable');
@@ -3484,6 +3519,11 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
     const run = new NativeTurn(() => this.assertCanWait(run));
+    run.controller.signal.addEventListener(
+      'abort',
+      () => this.discardTerminalValue(run),
+      { once: true },
+    );
     submissions.set(run, { output, outputOverride, observation: 'open' });
     void run.completion.promise.then(
       () => run.tracing?.finish(),
@@ -3894,6 +3934,7 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     error = cleanupFailure(run, error);
+    if (error !== undefined) this.terminalProposals.delete(run);
     if (run.toolCleanupErrors.length) {
       this.retire(error);
       void this.close().catch(() => {});
@@ -4426,6 +4467,8 @@ export class Session<OutputT = string, Context = unknown> {
     ) {
       if (owner.observationPhase !== 'open') return;
       owner.observationPhase = 'finishing';
+      if (msg.type === 'turn_aborted' || msg.tool_completion === undefined)
+        this.terminalProposals.delete(owner);
       this.childCallbacks.end(id, incarnation, turnId);
       this.clearManualCalls();
       const continuation = (async () => {
@@ -4487,6 +4530,15 @@ export class Session<OutputT = string, Context = unknown> {
       )
     ) {
       this.childCallbacks.end(id, incarnation, turnId);
+      return;
+    }
+    if (msg.type === '_sdk_tool_completion_failed') {
+      this.failToolCompletion(owner, event);
+      return;
+    }
+    if (msg.type === '_sdk_tool_completion') {
+      if (this.current(owner))
+        void this.proposeToolCompletion(owner, event, native).catch(() => {});
       return;
     }
     if (msg.type === '_sdk_select_step') {
@@ -4797,6 +4849,15 @@ export class Session<OutputT = string, Context = unknown> {
       void this.trackNativeQuestion(run, event).catch(() => {});
       return;
     }
+    if (kind === '_sdk_tool_completion_failed') {
+      this.failToolCompletion(run, event);
+      return;
+    }
+    if (kind === '_sdk_tool_completion') {
+      if (msg.turn_id !== run.id) return;
+      void this.proposeToolCompletion(run, event, this.#native).catch(() => {});
+      return;
+    }
     if (kind === '_sdk_prepare_request') {
       if (msg.turn_id !== run.id) return;
       this.track(run, this.prepareRequest(run, event));
@@ -4984,6 +5045,42 @@ export class Session<OutputT = string, Context = unknown> {
           enrichNativeError(run.nativeFailure, msg.error);
         if (msg.error) error ??= nativeError(msg.error);
       }
+      if (error === undefined && msg.tool_completion !== undefined) {
+        try {
+          const fact = toolCompletionSchema.parse(msg.tool_completion);
+          const proposal = this.terminalProposals.get(run);
+          if (
+            !proposal ||
+            !proposal.accepted ||
+            proposal.generation !== this.catalog.generation ||
+            proposal.callId !== fact.call_id ||
+            proposal.name !== fact.name ||
+            (proposal.namespace ?? 'functions') !==
+              (fact.namespace ?? 'functions') ||
+            !isDeepStrictEqual(proposal.json, fact.final_output)
+          )
+            throw new NativeError(
+              'Terminal tool completion has no matching accepted proposal',
+            );
+          this.decodedOutputs.set(run, proposal.value);
+          this.terminalCalls.set(
+            run,
+            terminalCallInfo(
+              {
+                sessionId: this.id,
+                turnId: run.id!,
+                childId: null,
+                childIncarnation: null,
+              },
+              fact,
+              proposal.namespace,
+            ),
+          );
+        } catch (cause) {
+          error = cause;
+        }
+      }
+      this.terminalProposals.delete(run);
       this.finish(
         run,
         error,
@@ -5030,6 +5127,174 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
   }
+  private discardTerminalValue(owner: NativeTurn | ChildCallbackOwner): void {
+    const proposal = this.terminalProposals.get(owner);
+    if (!proposal) return;
+    const { value: _value, json: _json, ...attempt } = proposal;
+    this.terminalProposals.set(owner, { ...attempt, accepted: false });
+  }
+
+  /** Strict Core failure has no TurnComplete; this notice settles its exact waiter. */
+  private failToolCompletion(
+    owner: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+  ): boolean {
+    const msg = event.msg;
+    const child = !(owner instanceof NativeTurn);
+    const proposal = this.terminalProposals.get(owner);
+    if (
+      !proposal ||
+      msg.thread !== (child ? owner.childId : this.id) ||
+      (msg.instance ?? null) !== (child ? owner.incarnation : null) ||
+      msg.turn_id !== (child ? owner.turnId : owner.id) ||
+      msg.generation !== proposal.generation.toString() ||
+      proposal.generation !== this.catalog.generation ||
+      msg.request_id !== proposal.requestId ||
+      msg.native_step !== proposal.nativeStep
+    )
+      return false;
+    this.terminalProposals.delete(owner);
+    owner.failure ??= new NativeError(
+      'Terminal tool completion failed before durable publication',
+    );
+    if (owner instanceof NativeTurn) this.finish(owner, owner.failure);
+    else {
+      this.childCallbacks.end(owner.childId, owner.incarnation, owner.turnId);
+      if (owner.observationPhase === 'open') {
+        owner.observationPhase = 'finishing';
+        const settled = this.childCallbacks
+          .drain(owner.childId, owner.incarnation, owner.turnId)
+          .catch(() => {})
+          .then(() => {
+            this.observations.append({
+              type: 'turn_finished',
+              turnId: owner.turnId,
+              submissionId: `child:${owner.childId}:${owner.incarnation}:${owner.turnId}`,
+              status: 'failed',
+              errorType:
+                owner.failure instanceof Error
+                  ? owner.failure.name
+                  : 'NativeError',
+            });
+            owner.observationPhase = 'ended';
+            this.observations.notify();
+          });
+        this.childContinuations.add(settled);
+        void settled.finally(() => this.childContinuations.delete(settled));
+      }
+    }
+    return true;
+  }
+
+  /** Convert a provisional proposal on the existing root/child callback owner. */
+  private proposeToolCompletion(
+    owner: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+    native: NativeThread,
+  ): Promise<void> {
+    return this.trackOwnedCallback(owner, async () => {
+      const msg = event.msg;
+      const child = !(owner instanceof NativeTurn);
+      const turnId = child ? owner.turnId : owner.id;
+      const receipt = {
+        thread: child ? owner.childId : this.id,
+        instance: child ? owner.incarnation : null,
+        turn_id: turnId,
+        generation: msg.generation,
+        request_id: msg.request_id,
+        native_step: msg.native_step,
+      };
+      const signal = owner.controller.signal;
+      let replied = false;
+      const reject = () => {
+        if (replied) return;
+        replied = true;
+        try {
+          native._reply_tool_completion(
+            encode({ ...receipt, error: 'Terminal output conversion failed' }),
+          );
+        } catch {
+          /* This exact native waiter may already have retired. */
+        }
+      };
+      const check = () => {
+        signal.throwIfAborted();
+        if (
+          !this.current(owner) ||
+          native !== this.#native ||
+          msg.thread !== receipt.thread ||
+          msg.turn_id !== turnId ||
+          (child && msg.instance !== owner.incarnation) ||
+          msg.generation !== this.catalog.generation.toString() ||
+          !native._check_tool_completion(encode(receipt))
+        )
+          throw new NativeError('Expired terminal proposal owner');
+      };
+      const abort = () => {
+        this.discardTerminalValue(owner);
+        reject();
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        this.terminalProposals.delete(owner);
+        check();
+        const slot = z.number().int().nonnegative().safe().parse(msg.slot);
+        const declaration = this.catalog.tools[slot];
+        const identity = z
+          .object({ name: z.string(), namespace: z.string().nullable() })
+          .parse(msg.tool);
+        if (
+          !declaration ||
+          declaration.kind === 'manual' ||
+          !declaration.finishTurn ||
+          declaration.name !== identity.name ||
+          (toolNamespace(declaration) ?? 'functions') !==
+            (identity.namespace ?? 'functions')
+        )
+          throw new NativeError(
+            'Terminal proposal does not match its captured declaration',
+          );
+        const attempt = {
+          requestId: z.string().parse(msg.request_id),
+          nativeStep: z.string().parse(msg.native_step),
+          generation: this.catalog.generation,
+          callId: z.string().parse(msg.call_id),
+          name: declaration.name,
+          namespace: toolNamespace(declaration),
+        };
+        this.terminalProposals.set(owner, { ...attempt, accepted: false });
+        const converted = parseToolCompletion(
+          child ? this.childOutput : submissions.get(owner)!.output,
+          msg.output,
+        );
+        check();
+        this.terminalProposals.set(owner, {
+          ...attempt,
+          accepted: true,
+          value: converted.value,
+          json: converted.json,
+        });
+        check();
+        if (
+          !native._reply_tool_completion(
+            encode({ ...receipt, final_output: converted.json }),
+          )
+        )
+          throw new NativeError('Terminal proposal reply expired');
+        replied = true;
+      } catch (error) {
+        this.discardTerminalValue(owner);
+        reject();
+        // Preserve the owning OutputValidationError for result and stream settlement.
+        owner.failure ??= error;
+        throw error;
+      } finally {
+        signal.removeEventListener('abort', abort);
+        if (!replied) reject();
+      }
+    });
+  }
+
   private prepareRequest(run: NativeTurn, event: NativeEvent): Promise<void> {
     const msg = event.msg;
     const selection = run.selection;
@@ -7230,6 +7495,14 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
   }
+  private terminalSlots(): string {
+    return encode({
+      generation: this.catalog.generation.toString(),
+      slots: this.catalog.tools.flatMap((tool, slot) =>
+        tool.kind !== 'manual' && tool.finishTurn ? [slot] : [],
+      ),
+    });
+  }
   private async configureManualTools(): Promise<void> {
     this.#native._configure_manual_tools(
       encode(
@@ -7239,6 +7512,7 @@ export class Session<OutputT = string, Context = unknown> {
             name: tool.name,
           })),
       ),
+      this.terminalSlots(),
     );
     this.nativeManualCheckpoint = this.catalog.tools.some(
       (tool) => tool.kind === 'manual',
@@ -7568,6 +7842,35 @@ export class Session<OutputT = string, Context = unknown> {
               'submissionId' in event && event.submissionId === key,
             phase: () => owner.observationPhase,
           }),
+        toolCompletion: (raw) => {
+          const fact = toolCompletionSchema.parse(raw);
+          const proposal = this.terminalProposals.get(owner);
+          this.terminalProposals.delete(owner);
+          if (
+            !proposal ||
+            !proposal.accepted ||
+            proposal.generation !== this.catalog.generation ||
+            proposal.callId !== fact.call_id ||
+            proposal.name !== fact.name ||
+            (proposal.namespace ?? 'functions') !==
+              (fact.namespace ?? 'functions') ||
+            typeof fact.final_output !== 'string' ||
+            !isDeepStrictEqual(proposal.json, fact.final_output)
+          )
+            throw new NativeError(
+              'Child terminal tool completion has no matching accepted proposal',
+            );
+          return terminalCallInfo(
+            {
+              sessionId: this.id,
+              turnId: owner.turnId,
+              childId: owner.childId,
+              childIncarnation: owner.incarnation,
+            },
+            fact,
+            proposal.namespace,
+          );
+        },
         drain: () =>
           this.childCallbacks.drain(
             native.child_id,
@@ -8161,6 +8464,7 @@ export class Session<OutputT = string, Context = unknown> {
             .filter((tool) => tool.kind === 'manual')
             .map((tool) => ({ name: tool.name })),
         ),
+        this.terminalSlots(),
       );
       const manualCheckpoint = this.catalog.tools.some(
         (tool) => tool.kind === 'manual',

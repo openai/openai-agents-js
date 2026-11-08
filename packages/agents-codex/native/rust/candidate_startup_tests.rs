@@ -137,7 +137,7 @@ impl Fixture {
             .await
             .unwrap();
         source
-            ._configure_manual_tools("[{\"name\":\"lookup\"}]".into())
+            ._configure_manual_tools("[{\"name\":\"lookup\"}]".into(), None)
             .unwrap();
         turn(&source, "Record the original audit.").await.unwrap();
         assert_eq!(provider.request_count(), 2);
@@ -162,7 +162,7 @@ impl Fixture {
             .await
             .unwrap();
         candidate
-            ._configure_manual_tools("[{\"name\":\"lookup\"}]".into())
+            ._configure_manual_tools("[{\"name\":\"lookup\"}]".into(), None)
             .unwrap();
         Self {
             provider,

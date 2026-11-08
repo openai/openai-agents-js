@@ -1,4 +1,5 @@
 import { RunCleanupError } from './native-error';
+import { captureInitialMessages } from './initial-messages';
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
@@ -64,6 +65,13 @@ export async function openSession(
   oneShot?: OneShotOptions,
   catalog: ToolCatalog = captureTools(setup.tools),
 ): Promise<Session> {
+  const { initialMessages, ...liveOptions } = options;
+  const capturedInitialMessages = captureInitialMessages(
+    initialMessages,
+    options.state,
+    setup.threadOptions._sdk_resume_thread_id,
+  );
+  options = liveOptions;
   const { instructions, model, config, apiKey } = setup;
   // Keep the full declaration for profile checks, updates and checkpoints.
   // Only native construction defers MCP until the Session owns its reader.
@@ -311,10 +319,17 @@ export async function openSession(
       throw localRecoveryRequired(opened, threadOptions._sdk_resume_thread_id);
     thread = opened;
   } else {
-    thread = await engine.start_replaceable_thread(
-      encode({ ...threadOptions, config: initialConfig }),
-      catalog.specsJson,
-    );
+    thread =
+      capturedInitialMessages === undefined
+        ? await engine.start_replaceable_thread(
+            encode({ ...threadOptions, config: initialConfig }),
+            catalog.specsJson,
+          )
+        : await engine._start_seeded_replaceable_thread(
+            encode({ ...threadOptions, config: initialConfig }),
+            catalog.specsJson,
+            encode(capturedInitialMessages),
+          );
   }
   const session = new Session(
     engine,

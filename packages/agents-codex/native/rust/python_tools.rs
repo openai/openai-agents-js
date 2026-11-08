@@ -38,21 +38,28 @@ pub(crate) use manual::{Continuation, ManualLedger, ManualSlot};
 #[path = "schema_fidelity.rs"]
 mod schema_fidelity;
 
+#[path = "terminal_completion.rs"]
+mod terminal_completion;
+pub(crate) use terminal_completion::{CompletionReply, TerminalProposal, TerminalSlots};
+
 #[path = "prepared_requests.rs"]
 pub(crate) mod prepared_requests;
 
+#[derive(Clone)]
 struct Entry {
     name: ToolName,
     spec: ToolSpec,
     exposure: ToolExposure,
 }
 
+#[derive(Clone)]
 struct Generation {
     id: u64,
     schema_token: Option<String>,
     entries: Vec<Entry>,
     specs: Vec<DynamicToolSpec>,
     defaults: Vec<usize>,
+    terminal_slots: HashSet<usize>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Deserialize, Serialize)]
@@ -92,7 +99,14 @@ pub(crate) struct ManualOwner {
     pub(crate) turn: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct NativeMediaContext {
+    pub(crate) model_info: Arc<codex_protocol::openai_models::ModelInfo>,
+    pub(crate) profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy,
+}
+
 struct PendingCall {
+    media: Option<NativeMediaContext>,
     _tracing: Option<codex_otel::sdk_trace::ContextLease>,
     sender: oneshot::Sender<DynamicToolResponse>,
     manual_request: Option<Value>,
@@ -117,11 +131,14 @@ pub struct PythonTools {
     selection: Mutex<Option<ActiveSelection>>,
     step_replies: Mutex<HashMap<u64, PendingStep>>,
     prepared: Mutex<Option<Arc<prepared_requests::Owner>>>,
+    completion_replies: Mutex<HashMap<u64, terminal_completion::Pending>>,
 }
 
 // The family inbox transports requests; reply authority stays with each issuer.
 enum FamilyRequest {
     Step(Weak<PythonTools>, u64, Value),
+    Completion(Weak<PythonTools>, u64, Value),
+    CompletionFailed(Weak<PythonTools>, Weak<crate::turn_settlement::Turn>, Value),
     Prepared(Weak<prepared_requests::Owner>, u64, Value),
     Call(Weak<PythonTools>, PendingKey, Value),
     Retired { thread: String, instance: String },
@@ -457,6 +474,7 @@ impl PythonTools {
                 entries: Vec::new(),
                 specs: Vec::new(),
                 defaults: Vec::new(),
+                terminal_slots: HashSet::new(),
             })),
             fixed,
             policy,
@@ -479,6 +497,7 @@ impl PythonTools {
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
+            completion_replies: Mutex::default(),
         };
         let seed = Arc::new(tools.prepare(0, specs)?);
         tools.schema_receipts.register(&seed);
@@ -531,12 +550,14 @@ impl PythonTools {
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
+            completion_replies: Mutex::default(),
         };
         // Validate the inherited catalog against this child's current ceiling.
         let parent_generation = parent.snapshot();
         let mut generation =
             child.prepare(parent_generation.id, parent_generation.specs.clone())?;
         generation.defaults = parent_generation.defaults.clone();
+        generation.terminal_slots = parent_generation.terminal_slots.clone();
         let generation = Arc::new(generation);
         child.schema_receipts.register(&generation);
         *child.current.write().expect("JavaScript catalog poisoned") = generation;
@@ -595,6 +616,7 @@ impl PythonTools {
             defaults: (0..entries.len()).collect(),
             entries,
             specs,
+            terminal_slots: HashSet::new(),
         })
     }
 
@@ -629,6 +651,7 @@ impl PythonTools {
         );
         let mut seed = self.prepare(original.id, current.specs.clone())?;
         seed.defaults = original.defaults.clone();
+        seed.terminal_slots = current.terminal_slots.clone();
         let seed = Arc::new(seed);
         self.schema_receipts.register(&seed);
         *current = seed;
@@ -739,6 +762,22 @@ impl PythonTools {
         let mut receiver = self.family.receiver.lock().await;
         loop {
             match receiver.recv().await {
+                Some(FamilyRequest::CompletionFailed(owner, turn, request)) => {
+                    if let (Some(owner), Some(turn)) = (owner.upgrade(), turn.upgrade())
+                        && owner.failed_tool_notice_current(&turn, &request)
+                    {
+                        turn.deliver_tool_failure();
+                        return request;
+                    }
+                }
+                Some(FamilyRequest::Completion(owner, id, request)) => {
+                    if owner
+                        .upgrade()
+                        .is_some_and(|owner| owner.completion_queued(id))
+                    {
+                        return request;
+                    }
+                }
                 Some(FamilyRequest::Prepared(owner, id, request)) => {
                     if owner.upgrade().is_some_and(|owner| owner.queued(id)) {
                         return request;
@@ -805,6 +844,15 @@ impl PythonTools {
         }
     }
 
+    /// Data from the exact native pending receipt, never SDK-observed call metadata.
+    pub(crate) fn native_media(&self, key: &PendingKey) -> Option<NativeMediaContext> {
+        self.pending
+            .lock()
+            .expect("managed replies poisoned")
+            .get(key)
+            .and_then(|call| call.media.clone())
+    }
+
     // Take the live sender only once. The binding retains it while its writer
     // commits the real result; a failed commit cannot be mistaken for success.
     pub(crate) fn take_reply(
@@ -829,6 +877,7 @@ impl PythonTools {
         arguments: Value,
         source: &ToolCallSource,
         model: &str,
+        media: Option<NativeMediaContext>,
     ) -> Result<(PendingKey, oneshot::Receiver<DynamicToolResponse>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -883,6 +932,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    media,
                     _tracing: tracing,
                     sender,
                     manual_request: key.reply.manual_grant.as_ref().map(|_| request.clone()),
@@ -999,6 +1049,7 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
             }
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
                 tools.retire_preparation(None);
+                tools.retire_tool_completion(None);
                 tools.retire_manual_wait();
                 tools
                     .step_replies
@@ -1075,6 +1126,7 @@ pub(crate) struct StepReply {
     names: Option<Vec<ToolName>>,
 }
 struct StepCatalog {
+    receipts: Arc<Mutex<HashSet<PendingKey>>>,
     generation: Arc<Generation>,
     use_deferred_specs: bool,
     slots: Vec<usize>,
@@ -1156,6 +1208,7 @@ impl Drop for StepWait {
 impl PythonTools {
     fn retire_selection(&self, turn: &str) {
         self.retire_preparation(Some(turn));
+        self.retire_tool_completion(Some(turn));
         let mut active = self
             .selection
             .lock()
@@ -1357,6 +1410,7 @@ impl PythonContributor {
         generation: Arc<Generation>,
         use_deferred_specs: bool,
         slots: &[usize],
+        receipts: Option<Arc<Mutex<HashSet<PendingKey>>>>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         slots
             .iter()
@@ -1367,6 +1421,7 @@ impl PythonContributor {
                     tools: tools.clone(),
                     generation: generation.clone(),
                     slot,
+                    receipts: receipts.clone(),
                     use_deferred_specs,
                     code_mode_enabled: self.code_mode_enabled,
                 }) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>
@@ -1394,6 +1449,7 @@ impl ToolContributor for PythonContributor {
             generation.clone(),
             use_deferred_specs,
             &generation.defaults,
+            None,
         )
     }
 
@@ -1424,6 +1480,7 @@ impl ToolContributor for PythonContributor {
                 None => generation.defaults.clone(),
             };
             StepCatalog {
+                receipts: Arc::default(),
                 generation,
                 slots,
                 use_deferred_specs: thread
@@ -1437,6 +1494,7 @@ impl ToolContributor for PythonContributor {
             snapshot.generation.clone(),
             snapshot.use_deferred_specs,
             &snapshot.slots,
+            Some(snapshot.receipts.clone()),
         )
     }
 
@@ -1564,6 +1622,7 @@ struct PythonExecutor {
     slot: usize,
     use_deferred_specs: bool,
     code_mode_enabled: bool,
+    receipts: Option<Arc<Mutex<HashSet<PendingKey>>>>,
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
@@ -1646,6 +1705,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     arguments,
                     &call.source,
                     &call.model,
+                    Some(NativeMediaContext {
+                        model_info: Arc::clone(&call.model_info),
+                        profile: call.provider_reference_profile,
+                    }),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let _reply = PendingReply {
@@ -1666,6 +1729,17 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     ));
                 }
             };
+            if response.success
+                && call.source == ToolCallSource::Direct
+                && Arc::ptr_eq(&self.generation, &self.tools.snapshot())
+                && self.tools.current_completion_owner(&self.thread)
+                && let Some(receipts) = &self.receipts
+            {
+                receipts
+                    .lock()
+                    .expect("JavaScript completion receipts poisoned")
+                    .insert(key);
+            }
             Ok(Box::new(PythonOutput(response)) as Box<dyn ToolOutput>)
         })
     }
@@ -1689,6 +1763,15 @@ impl ToolLifecycleContributor for PythonContributor {
 }
 
 impl TurnLifecycleContributor for PythonContributor {
+    fn propose_tool_completion<'a>(
+        &'a self,
+        input: codex_extension_api::ToolCompletionInput<'a>,
+    ) -> ExtensionFuture<
+        'a,
+        std::result::Result<Option<codex_extension_api::ToolCompletionDecision>, String>,
+    > {
+        Box::pin(terminal_completion::propose(input))
+    }
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
@@ -1739,6 +1822,7 @@ impl TurnLifecycleContributor for PythonContributor {
                     .expect("JavaScript step replies poisoned")
                     .retain(|_, pending| pending.turn != input.turn_store.level_id());
                 tools.retire_preparation(Some(input.turn_store.level_id()));
+                tools.retire_tool_completion(Some(input.turn_store.level_id()));
                 tools.stop_native_manual_turn(input);
             }
         })
@@ -1831,6 +1915,7 @@ mod pending_tests {
                 entries: Vec::new(),
                 specs: Vec::new(),
                 defaults: Vec::new(),
+                terminal_slots: HashSet::new(),
             })),
             fixed: HashSet::new(),
             policy: Arc::default(),
@@ -1843,6 +1928,7 @@ mod pending_tests {
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
+            completion_replies: Mutex::default(),
         });
         let specs = vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
             name: "decision".into(),
@@ -1853,6 +1939,43 @@ mod pending_tests {
         *tools.current.write().unwrap() = Arc::new(tools.prepare(0, specs).unwrap());
         configure(&tools);
         tools
+    }
+
+    #[tokio::test]
+    async fn native_receipt_metadata_does_not_reopen_a_consumed_sender() {
+        let tools = tools();
+        let model = Arc::new(codex_models_manager::model_info::model_info_from_slug(
+            "gpt-5.5",
+        ));
+        let context = NativeMediaContext {
+            model_info: Arc::clone(&model),
+            profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses,
+        };
+        let source = ToolCallSource::CodeMode {
+            cell_id: "1".into(),
+            runtime_tool_call_id: "nested".into(),
+        };
+        let (key, _receive) = tools
+            .enqueue(
+                "root",
+                &tools.snapshot(),
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &source,
+                "gpt-5.5",
+                Some(context),
+            )
+            .unwrap();
+        // The existing pending owner retains data without a live root-turn query.
+        let captured = tools.native_media(&key).unwrap();
+        assert!(Arc::ptr_eq(&captured.model_info, &model));
+        let _sender = tools.take_reply("root", &key).unwrap().unwrap();
+        assert!(tools.native_media(&key).is_none());
+        assert!(tools.take_reply("root", &key).unwrap().is_none());
+        // A detached metadata clone still carries no publication capability.
+        assert_eq!(captured.model_info.slug, "gpt-5.5");
     }
 
     fn configure(tools: &PythonTools) {
@@ -1883,6 +2006,7 @@ mod pending_tests {
                 json!({"value":"a"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
             )
             .unwrap();
         let (b, _b_receiver) = tools
@@ -1895,6 +2019,7 @@ mod pending_tests {
                 json!({"value":"b"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
             )
             .unwrap();
         assert_eq!(a.call, b.call);
@@ -1933,6 +2058,7 @@ mod pending_tests {
                 json!({"value":"original"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
             )
             .unwrap();
         let guard = PendingReply {
@@ -1960,6 +2086,7 @@ mod pending_tests {
             json!({"value":"never published"}),
             &ToolCallSource::Direct,
             "fixture-model",
+            None,
         );
         assert!(result.is_err());
         assert!(tools.pending.lock().unwrap().is_empty());
@@ -1979,6 +2106,7 @@ mod pending_tests {
                 json!({"value":"old"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
             )
             .unwrap();
         drop(PendingReply {
@@ -2003,6 +2131,7 @@ mod pending_tests {
                 json!({"value":"new"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
             )
             .unwrap();
         assert!(!tools.manual_tool_current("root", &old));
@@ -2032,6 +2161,7 @@ mod pending_tests {
                 json!({"value":"old"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
             )
             .unwrap();
         assert!(root.owner("root", &old_key).is_some());
@@ -2051,6 +2181,7 @@ mod pending_tests {
                 json!({"value":"new"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
             )
             .unwrap();
         // Keep the old Arc and receiver alive: family selection, not memory

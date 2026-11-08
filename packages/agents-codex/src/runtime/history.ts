@@ -1,3 +1,4 @@
+import { responseContent } from './input';
 import { z } from 'zod';
 import type { HostedToolItem } from './hosted-tools';
 import {
@@ -378,7 +379,27 @@ const outputTextPartSchema = z.object({
 /** Provider annotations use offsets into this part's original text. */
 export type OutputTextPart = z.infer<typeof outputTextPartSchema>;
 type InputTextPart = { type: 'input_text'; text: string };
-type ImagePart = { type: 'input_image'; image_url: string; detail?: string };
+// History is passive canonical JSON, not a new user-input capability. Preserve
+// provider fields without requiring callers to construct these observed DTOs.
+const historyImagePartSchema = z
+  .object({
+    type: z.literal('input_image'),
+    image_url: z.string().optional(),
+    file_id: z.string().optional(),
+    detail: z.enum(['auto', 'low', 'high', 'original']).nullable().optional(),
+  })
+  .catchall(jsonValue);
+const historyFilePartSchema = z
+  .object({
+    type: z.literal('input_file'),
+    file_id: z.string().optional(),
+    file_data: z.string().optional(),
+    file_url: z.string().optional(),
+    filename: z.string().nullable().optional(),
+  })
+  .catchall(jsonValue);
+type ImagePart = z.infer<typeof historyImagePartSchema>;
+type FilePart = z.infer<typeof historyFilePartSchema>;
 const webSearchSourcesSchema = z.array(
   z.object({ type: z.literal('url'), url: z.string() }),
 );
@@ -403,7 +424,7 @@ export type SessionItem = ItemIdentity &
         role: 'user' | 'assistant';
         status: ItemStatus;
         phase: string | null;
-        content: (InputTextPart | OutputTextPart | ImagePart)[];
+        content: (InputTextPart | OutputTextPart | ImagePart | FilePart)[];
         /** Visible assistant text when Core removed markup from the original parts. */
         displayText?: string;
       }
@@ -562,11 +583,8 @@ const repairItemProjectionSchema = z.intersection(
             text: z.string(),
           }),
           outputTextPartSchema,
-          z.object({
-            type: z.literal('input_image'),
-            image_url: z.string(),
-            detail: z.string().optional(),
-          }),
+          historyImagePartSchema,
+          historyFilePartSchema,
         ]),
       ),
     }),
@@ -935,7 +953,9 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     (raw.role === 'user' || raw.role === 'assistant')
   ) {
     const accepted =
-      raw.role === 'user' ? ['input_text', 'input_image'] : ['output_text'];
+      raw.role === 'user'
+        ? ['input_text', 'input_image', 'input_file']
+        : ['output_text'];
     return {
       ...common,
       type: 'message',
@@ -944,7 +964,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       phase: raw.role === 'assistant' ? text(raw.phase) : null,
       content: objects(raw.content).filter((part) =>
         accepted.includes(String(part.type)),
-      ) as (InputTextPart | OutputTextPart | ImagePart)[],
+      ) as (InputTextPart | OutputTextPart | ImagePart | FilePart)[],
     };
   }
   if (raw.type === 'reasoning')
@@ -1076,12 +1096,12 @@ function nativeItems(
           status: 'completed',
           phase: null,
           content: objects(raw.content).flatMap(
-            (part): (InputTextPart | ImagePart)[] =>
-              part.type === 'text' && typeof part.text === 'string'
-                ? [{ type: 'input_text', text: part.text }]
-                : part.type === 'image' && typeof part.image_url === 'string'
-                  ? [{ type: 'input_image', image_url: part.image_url }]
-                  : [],
+            (part): (InputTextPart | ImagePart | FilePart)[] =>
+              ['text', 'image', 'file'].includes(String(part.type))
+                ? (responseContent([part]) as (
+                    InputTextPart | ImagePart | FilePart
+                  )[])
+                : [],
           ),
         },
       ];
@@ -1136,11 +1156,9 @@ function nativeItems(
       };
       if (!done || raw.content_items == null) return [call];
       const output = objects(raw.content_items).flatMap((part): JsonObject[] =>
-        part.type === 'inputText'
-          ? [{ type: 'input_text', text: part.text ?? '' }]
-          : part.type === 'inputImage'
-            ? [{ type: 'input_image', image_url: part.imageUrl ?? '' }]
-            : [],
+        ['inputText', 'inputImage', 'inputFile'].includes(String(part.type))
+          ? (responseContent([part]) as JsonObject[])
+          : [],
       );
       const error =
         text(raw.error) ??

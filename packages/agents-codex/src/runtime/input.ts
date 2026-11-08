@@ -1,74 +1,116 @@
-import type { JsonValue } from './binding';
+import { copyJsonValue, type JsonValue } from './binding';
+import { captureFile, captureImage, mediaRecord } from './media';
+import type { FileReference, ImageDetail, NativeToolContent } from './media';
 
 export interface InputText {
   type: 'input_text';
   text: string;
 }
-
-/** Inline base64 image; Core owns decoding and model-specific preparation. */
+/** URL/data URL image. Core owns current-model preparation. */
 export interface InputImage {
   type: 'input_image';
   image_url: string;
-  detail?: 'auto';
+  detail?: ImageDetail | null;
 }
-
+/** An opaque provider image ID, never a host path. */
+export interface InputImageFile {
+  type: 'input_image';
+  file_id: string;
+  detail?: ImageDetail | null;
+}
+export type InputFile = { type: 'input_file' } & FileReference;
 export interface UserMessage {
   role: 'user';
-  content: string | readonly (InputText | InputImage)[];
+  content:
+    string | readonly (InputText | InputImage | InputImageFile | InputFile)[];
   type?: 'message';
 }
-
 export interface FunctionCallOutput {
   type: 'function_call_output';
   call_id: string;
   output: string;
 }
-
 export type UserInput = string | UserMessage;
 
-function hasOnly(value: object, keys: readonly string[]): boolean {
-  return Object.keys(value).every((key) => keys.includes(key));
-}
-
-/** Capture and validate the complete input before native admission. */
+/** Capture complete ordered input before native admission. */
 export function nativeInput(input: UserInput): JsonValue[] {
   if (typeof input === 'string') return [{ type: 'text', text: input }];
-  if (!input || typeof input !== 'object' || Array.isArray(input))
-    throw new TypeError('Input must be text or a user message');
+  const captured = mediaRecord(input);
   if (
-    input.role !== 'user' ||
-    (input.type !== undefined && input.type !== 'message') ||
-    !hasOnly(input, ['role', 'content', 'type'])
+    captured.role !== 'user' ||
+    (captured.type !== undefined && captured.type !== 'message') ||
+    Object.keys(captured).some(
+      (key) => !['role', 'content', 'type'].includes(key),
+    )
   )
     throw new TypeError('Only user messages are supported');
-  if (typeof input.content === 'string')
-    return [{ type: 'text', text: input.content }];
-  if (!Array.isArray(input.content) || input.content.length === 0)
+  const content = captured.content;
+  if (typeof content === 'string') return [{ type: 'text', text: content }];
+  if (!Array.isArray(content) || !content.length)
     throw new TypeError(
       'User message content must be text or non-empty content parts',
     );
-  return input.content.map((part: InputText | InputImage): JsonValue => {
-    if (!part || typeof part !== 'object')
-      throw new TypeError(
-        'User message parts must be input_text or input_image',
-      );
-    if (part.type === 'input_text') {
-      if (typeof part.text !== 'string' || !hasOnly(part, ['type', 'text']))
+  return content.map((value): JsonValue => {
+    const part = mediaRecord(value);
+    const kind = part.type;
+    delete part.type;
+    if (kind === 'input_text') {
+      if (Object.keys(part).length !== 1 || typeof part.text !== 'string')
         throw new TypeError('input_text requires a text string');
       return { type: 'text', text: part.text };
     }
-    if (part.type === 'input_image') {
-      if (
-        !hasOnly(part, ['type', 'image_url', 'detail']) ||
-        (part.detail !== undefined && part.detail !== 'auto') ||
-        typeof part.image_url !== 'string' ||
-        !/^data:image\/[^,]+;base64,.+$/s.test(part.image_url)
-      )
-        throw new TypeError(
-          'input_image requires a base64 image data URL and default detail',
-        );
-      return { type: 'image', image_url: part.image_url };
-    }
-    throw new TypeError('User message parts must be input_text or input_image');
+    if (kind === 'input_image')
+      return copyJsonValue({ type: 'image', ...captureImage(part) });
+    if (kind === 'input_file')
+      return copyJsonValue({ type: 'file', ...captureFile(part) });
+    throw new TypeError('Unsupported user content type');
   });
 }
+
+/** Internal data projection after capture/native decoding; no validation, IDs, policy or I/O. */
+export function responseContent(
+  parts: readonly (JsonValue | NativeToolContent)[],
+): JsonValue[] {
+  const tags: Record<string, string> = {
+    text: 'input_text',
+    image: 'input_image',
+    file: 'input_file',
+    inputText: 'input_text',
+    inputImage: 'input_image',
+    inputFile: 'input_file',
+  };
+  return parts.map((value): JsonValue => {
+    const part = mediaRecord(value);
+    const kind = part.type;
+    delete part.type;
+    if (typeof kind !== 'string' || !Object.hasOwn(tags, kind))
+      throw new TypeError('Unsupported captured content');
+    const content =
+      kind === 'inputImage'
+        ? Object.fromEntries(
+            Object.entries(part).map(([key, item]) => [
+              key === 'imageUrl'
+                ? 'image_url'
+                : key === 'fileId'
+                  ? 'file_id'
+                  : key,
+              item,
+            ]),
+          )
+        : part;
+    const tag = tags[kind];
+    const fields: Record<string, readonly string[]> = {
+      input_text: ['text'],
+      input_image: ['image_url', 'file_id', 'detail'],
+      input_file: ['file_id', 'file_data', 'file_url', 'filename'],
+    };
+    return {
+      type: tag,
+      ...Object.fromEntries(
+        Object.entries(content).filter(([key]) => fields[tag].includes(key)),
+      ),
+    } as JsonValue;
+  });
+}
+
+export type { ImageDetail } from './media';
