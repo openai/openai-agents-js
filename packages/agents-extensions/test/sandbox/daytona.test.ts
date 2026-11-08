@@ -965,6 +965,7 @@ describe('DaytonaSandboxClient', () => {
       let completed = false;
       let closed = false;
       let armed = false;
+      const intendedResponseBytes = 64 * 1024 * 1024;
       const requests: Array<{
         command: string;
         cwd?: string;
@@ -1023,10 +1024,25 @@ describe('DaytonaSandboxClient', () => {
             return;
           }
           response.write('{"exitCode":0,"result":"');
-          for (let i = 0; i < 1024 && !response.destroyed; i++) {
-            response.write('A'.repeat(4096));
-            written += 4096;
-            await new Promise<void>((resolve) => setImmediate(resolve));
+          const chunk = 'A'.repeat(4096);
+          for (
+            let i = 0;
+            i < intendedResponseBytes / chunk.length && !response.destroyed;
+            i++
+          ) {
+            const canContinue = response.write(chunk);
+            written += chunk.length;
+            if (!canContinue) {
+              await new Promise<void>((resolve) => {
+                const finish = () => {
+                  response.off('drain', finish);
+                  response.off('close', finish);
+                  resolve();
+                };
+                response.once('drain', finish);
+                response.once('close', finish);
+              });
+            }
           }
           if (!response.destroyed) {
             completed = true;
@@ -1073,8 +1089,8 @@ describe('DaytonaSandboxClient', () => {
             runAs: mode === 'validation' ? 'alice' : undefined,
           })
           .catch((error: unknown) => error);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(written).toBeLessThan(4 * 1024 * 1024);
+        await expect.poll(() => closed, { timeout: 3000 }).toBe(true);
+        expect(written).toBeLessThan(intendedResponseBytes);
         expect(failure).toHaveProperty(
           'message',
           expect.stringMatching(
@@ -1086,7 +1102,6 @@ describe('DaytonaSandboxClient', () => {
           ),
         );
         expect(completed).toBe(false);
-        expect(closed).toBe(true);
         expect(requests).toHaveLength(1);
         expect(requests[0].cwd).toBe('/workspace');
         expect(requests[0].timeout).toBe(mode === 'validation' ? undefined : 7);
@@ -1183,6 +1198,7 @@ describe('DaytonaSandboxClient', () => {
       new Manifest(),
     );
     const cancel = vi.fn();
+    let pulls = 0;
     const framed = Buffer.concat([
       Buffer.from([0, 255, 128, 10]),
       Buffer.from('\n000\n'),
@@ -1213,6 +1229,7 @@ describe('DaytonaSandboxClient', () => {
           new Response(
             new ReadableStream({
               pull(controller) {
+                pulls += 1;
                 controller.enqueue(new Uint8Array(32768));
               },
               cancel,
@@ -1223,6 +1240,7 @@ describe('DaytonaSandboxClient', () => {
     await expect(
       session.readFile({ path: 'binary', maxBytes: 0 }),
     ).rejects.toThrow(/response byte limit/);
+    expect(pulls).toBeLessThanOrEqual(2);
     expect(cancel).toHaveBeenCalledOnce();
     expect(vi.mocked(fetch).mock.calls[0][1]?.signal?.aborted).toBe(true);
   });
