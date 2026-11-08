@@ -53,7 +53,7 @@ import {
   entryContainsLocalSource,
   manifestContainsLocalSource,
 } from '../shared/manifest';
-import { imageOutputFromBytes } from '../shared/media';
+import { imageOutputFromBytes, MAX_VIEW_IMAGE_BYTES } from '../shared/media';
 import {
   assertSandboxEntryMetadataSupported,
   assertSandboxManifestMetadataSupported,
@@ -363,16 +363,22 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    const absolutePath = await this.resolveRemotePath(args.path);
-    const bytes = args.runAs
-      ? await readRunAsRemoteFile({
-          providerName: 'CloudflareSandboxClient',
-          providerId: 'cloudflare',
-          path: absolutePath,
-          runAs: args.runAs,
-          runCommand: this.runAsCommandRunner.bind(this),
-        })
-      : await this.readFileBytes(absolutePath);
+    const bytes = await this.readFile({
+      ...args,
+      maxBytes: MAX_VIEW_IMAGE_BYTES + 1,
+    }).catch((error: unknown) => {
+      if (error instanceof SandboxWorkspaceReadNotFoundError) {
+        throw new SandboxWorkspaceReadNotFoundError(
+          `Cloudflare sandbox path not found: ${error.details?.path ?? args.path}.`,
+          {
+            ...error.details,
+            sandboxId: this.state.sandboxId,
+            status: 404,
+          },
+        );
+      }
+      throw error;
+    });
     return imageOutputFromBytes(args.path, bytes);
   }
 

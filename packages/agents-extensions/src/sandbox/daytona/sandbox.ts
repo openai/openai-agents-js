@@ -48,6 +48,7 @@ import {
   assertTarWorkspacePersistence,
   createPtyProcessEntry,
   imageOutputFromBytes,
+  MAX_VIEW_IMAGE_BYTES,
   RemoteSandboxEditor,
   assertSandboxEntryMetadataSupported,
   assertSandboxManifestMetadataSupported,
@@ -453,16 +454,10 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    this.assertSessionUsable();
-    const bytes = args.runAs
-      ? await readRunAsRemoteFile({
-          providerName: 'DaytonaSandboxClient',
-          providerId: 'daytona',
-          path: await this.resolveRemotePath(args.path),
-          runAs: args.runAs,
-          runCommand: this.runAsCommandRunner.bind(this),
-        })
-      : await this.readFileBytes(args.path);
+    const bytes = await this.readFile({
+      ...args,
+      maxBytes: MAX_VIEW_IMAGE_BYTES + 1,
+    });
     return imageOutputFromBytes(args.path, bytes);
   }
 

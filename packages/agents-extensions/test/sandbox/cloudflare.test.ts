@@ -4,8 +4,11 @@ import {
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm, truncate, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
 import {
@@ -81,6 +84,56 @@ test('Cloudflare workerd-facing source avoids static Node-only imports', async (
 });
 
 describe('CloudflareSandboxClient', () => {
+  test('bounds image transfer and preserves valid image bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cloudflare-image-limit-'));
+    try {
+      await writeFile(join(root, 'image.png'), ONE_BY_ONE_PNG);
+      const session = await new CloudflareSandboxClient({
+        workerUrl: 'https://worker.example.com',
+      }).resume({
+        manifest: new Manifest(),
+        workerUrl: 'https://worker.example.com',
+        sandboxId: 'cf_test',
+        environment: {},
+      });
+      let transferred = 0;
+      vi.mocked(global.fetch).mockImplementation(async (_input, init) => {
+        const { argv } = JSON.parse(String(init?.body)) as { argv: string[] };
+        // Map the provider's fixed workspace root into the local shell fixture.
+        const localArgs = argv
+          .slice(1)
+          .map((arg) => arg.replaceAll('/workspace', root));
+        const { stdout, stderr } = await promisify(execFile)(
+          argv[0],
+          localArgs,
+          {
+            maxBuffer: 64 * 1024 * 1024,
+          },
+        );
+        if (argv[2]?.includes('head -c')) {
+          transferred += Buffer.from(stdout, 'base64').byteLength;
+        }
+        return sseExecResponse([
+          { event: 'stdout', data: Buffer.from(stdout).toString('base64') },
+          { event: 'stderr', data: Buffer.from(stderr).toString('base64') },
+          { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+        ]);
+      });
+      const image = await session.viewImage({ path: 'image.png' });
+      expect((image.image as { data: Uint8Array }).data).toEqual(
+        ONE_BY_ONE_PNG,
+      );
+      await truncate(join(root, 'image.png'), 32 * 1024 * 1024);
+      transferred = 0;
+      await expect(session.viewImage({ path: 'image.png' })).rejects.toThrow(
+        'Image file exceeds the 10 MB limit: image.png',
+      );
+      // The wire payload includes five bytes of read status.
+      expect(transferred).toBe(10 * 1024 * 1024 + 6);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   beforeEach(() => {
     vi.doMock('ws', () => ({ WebSocket: TestWebSocket }));
     global.fetch = vi.fn(async (input, init) => {
@@ -894,7 +947,21 @@ describe('CloudflareSandboxClient', () => {
           { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
         ]),
       )
-      .mockResolvedValueOnce(new Response('missing', { status: 404 }));
+      .mockResolvedValueOnce(
+        sseExecResponse([
+          { event: 'exit', data: JSON.stringify({ exit_code: 1 }) },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseExecResponse([
+          { event: 'exit', data: JSON.stringify({ exit_code: 1 }) },
+        ]),
+      )
+      .mockResolvedValueOnce(
+        sseExecResponse([
+          { event: 'exit', data: JSON.stringify({ exit_code: 1 }) },
+        ]),
+      );
     await expect(
       session.viewImage({ path: 'missing.png' }),
     ).rejects.toMatchObject({
@@ -1188,11 +1255,9 @@ describe('CloudflareSandboxClient', () => {
       environment: {},
     });
 
-    const image = await session.viewImage({ path: 'pixel.png' });
-    const payload = image.image as { data: Uint8Array; mediaType?: string };
+    const bytes = await session.readFile({ path: 'pixel.png' });
 
-    expect(payload.mediaType).toBe('image/png');
-    expect([...payload.data.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect([...bytes.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
   test('decodes multiline base64 SSE binary payloads', async () => {
@@ -1235,11 +1300,9 @@ describe('CloudflareSandboxClient', () => {
         ),
       );
 
-    const image = await session.viewImage({ path: 'multiline.png' });
-    const payload = image.image as { data: Uint8Array; mediaType?: string };
+    const bytes = await session.readFile({ path: 'multiline.png' });
 
-    expect(payload.mediaType).toBe('image/png');
-    expect([...payload.data.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect([...bytes.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
   test('returns raw SSE-like file payloads without binary metadata', async () => {
@@ -1283,11 +1346,9 @@ describe('CloudflareSandboxClient', () => {
       environment: {},
     });
 
-    const image = await session.viewImage({ path: 'commented.png' });
-    const payload = image.image as { data: Uint8Array; mediaType?: string };
+    const bytes = await session.readFile({ path: 'commented.png' });
 
-    expect(payload.mediaType).toBe('image/png');
-    expect([...payload.data.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect([...bytes.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
   test('decodes CRLF-delimited binary file SSE', async () => {
@@ -1326,11 +1387,9 @@ describe('CloudflareSandboxClient', () => {
         ),
       );
 
-    const image = await session.viewImage({ path: 'crlf.png' });
-    const payload = image.image as { data: Uint8Array; mediaType?: string };
+    const bytes = await session.readFile({ path: 'crlf.png' });
 
-    expect(payload.mediaType).toBe('image/png');
-    expect([...payload.data.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect([...bytes.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
   test('rejects unsafe environment names before building shell commands', async () => {

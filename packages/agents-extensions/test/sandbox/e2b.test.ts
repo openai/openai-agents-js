@@ -189,6 +189,20 @@ describe('E2BSandboxClient', () => {
           exitCode: files.has(path) ? 0 : 1,
         };
       }
+      if (command.includes('head -c ')) {
+        const path = command.match(/exec 3< '([^']+)'/)?.[1] ?? '';
+        const value = files.get(path) ?? new Uint8Array();
+        const bytes = typeof value === 'string' ? Buffer.from(value) : value;
+        const limit = Number(command.match(/head -c (\d+)/)?.[1]);
+        return {
+          stdout: Buffer.concat([
+            Buffer.from(bytes.subarray(0, limit)),
+            Buffer.from('\n000\n'),
+          ]).toString('base64'),
+          stderr: '',
+          exitCode: 0,
+        };
+      }
       if (command.startsWith('base64 -- ')) {
         const path = command.match(/^base64 -- '(.+)'$/)?.[1] ?? '';
         const value = files.get(path) ?? new Uint8Array();
@@ -1899,16 +1913,19 @@ describe('E2BSandboxClient', () => {
     });
 
     expect((image.image as { data: Uint8Array }).data).toEqual(png);
-    expect(runMock).toHaveBeenCalledWith("base64 -- '/workspace/pixel.png'", {
-      cwd: '/',
-      envs: {},
-      timeoutMs: undefined,
-      user: 'sandbox-user',
-    });
+    expect(runMock).toHaveBeenCalledWith(
+      expect.stringContaining('head -c 10485761'),
+      {
+        cwd: '/',
+        envs: {},
+        timeoutMs: undefined,
+        user: 'sandbox-user',
+      },
+    );
     expect(readMock).not.toHaveBeenCalled();
   });
 
-  test('reads images through the E2B byte file format', async () => {
+  test('reads images through bounded E2B commands', async () => {
     const client = new E2BSandboxClient();
     const session = await client.create(new Manifest());
     files.set('/workspace/pixel.png', ONE_BY_ONE_PNG);
@@ -1917,9 +1934,11 @@ describe('E2BSandboxClient', () => {
     const image = await session.viewImage({ path: 'pixel.png' });
     const payload = image.image as { data: Uint8Array; mediaType?: string };
 
-    expect(readMock).toHaveBeenCalledWith('/workspace/pixel.png', {
-      format: 'bytes',
-    });
+    expect(readMock).not.toHaveBeenCalled();
+    expect(runMock).toHaveBeenCalledWith(
+      expect.stringContaining('head -c 10485761'),
+      expect.objectContaining({ user: undefined }),
+    );
     expect(payload.mediaType).toBe('image/png');
     expect([...payload.data]).toEqual([...ONE_BY_ONE_PNG]);
   });

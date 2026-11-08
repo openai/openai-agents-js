@@ -580,8 +580,11 @@ describe('BlaxelSandboxClient', () => {
       },
     });
     const session = await client.create(new Manifest());
-    readBinaryMock.mockImplementationOnce(
-      async () => await new Promise(() => {}),
+    const original = processExecMock.getMockImplementation()!;
+    processExecMock.mockImplementation(async (params) =>
+      String(params.command).includes('head -c')
+        ? await new Promise(() => {})
+        : await original(params),
     );
 
     await expect(

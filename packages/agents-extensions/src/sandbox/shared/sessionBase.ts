@@ -50,7 +50,7 @@ import {
   assertSandboxManifestMetadataSupported,
   sandboxEntryPermissionsMode,
 } from './metadata';
-import { imageOutputFromBytes } from './media';
+import { imageOutputFromBytes, MAX_VIEW_IMAGE_BYTES } from './media';
 import { elapsedSeconds, formatExecResponse, truncateOutput } from './output';
 import {
   resolveSandboxAbsolutePath,
@@ -201,12 +201,10 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    this.assertSessionUsable();
-    this.assertFilesystemRunAs(args.runAs);
-    const absolutePath = await this.resolveRemotePath(args.path);
-    const bytes = args.runAs
-      ? await this.readRemoteFileAs(absolutePath, args.runAs)
-      : await this.readRemoteFile(absolutePath);
+    const bytes = await this.readFile({
+      ...args,
+      maxBytes: MAX_VIEW_IMAGE_BYTES + 1,
+    });
     return imageOutputFromBytes(args.path, bytes);
   }
 

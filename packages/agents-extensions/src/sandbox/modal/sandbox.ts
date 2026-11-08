@@ -40,6 +40,7 @@ import {
   assertCoreSnapshotUnsupported,
   assertRemoteSandboxSessionStateCanResume,
   imageOutputFromBytes,
+  MAX_VIEW_IMAGE_BYTES,
   RemoteSandboxEditor,
   assertTarWorkspacePersistence,
   assertSandboxEntryMetadataSupported,
@@ -508,16 +509,10 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    const absolutePath = await this.resolveRemotePath(args.path);
-    const bytes = args.runAs
-      ? await readRunAsRemoteFile({
-          providerName: 'ModalSandboxClient',
-          providerId: 'modal',
-          path: absolutePath,
-          runAs: args.runAs,
-          runCommand: this.runAsCommandRunner.bind(this),
-        })
-      : await this.readSandboxFile(absolutePath);
+    const bytes = await this.readFile({
+      ...args,
+      maxBytes: MAX_VIEW_IMAGE_BYTES + 1,
+    });
     return imageOutputFromBytes(args.path, bytes);
   }
 

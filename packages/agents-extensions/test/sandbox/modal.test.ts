@@ -4,8 +4,11 @@ import {
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { captureLiveMountCredentialAuthorityIfAbsent } from '@openai/agents-core/sandbox/internal';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   ModalSandboxClient,
@@ -21,6 +24,7 @@ import {
 } from '../../src/sandbox/shared';
 import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 
 const processMocks = vi.hoisted(() => ({
   runSandboxProcess: vi.fn(),
@@ -132,6 +136,48 @@ function deferred<T>(): {
 
 describe('ModalSandboxClient', () => {
   const files = new Map<string, Uint8Array>();
+
+  test('bounds image transfer and preserves valid image bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'modal-image-limit-'));
+    try {
+      await writeFile(join(root, 'image.png'), ONE_BY_ONE_PNG);
+      const session = await new ModalSandboxClient({
+        appName: 'sandbox-tests',
+      }).create(new Manifest({ root }));
+      let transferred = 0;
+      sandboxExecMock.mockImplementation(async (argv: string[]) => {
+        const { stdout, stderr } = await promisify(execFile)(
+          argv[0],
+          argv.slice(1),
+          {
+            maxBuffer: 64 * 1024 * 1024,
+          },
+        );
+        if (argv[2]?.includes('head -c')) {
+          transferred += Buffer.from(stdout, 'base64').byteLength;
+        }
+        return {
+          stdout: textStream(stdout),
+          stderr: textStream(stderr),
+          wait: async () => 0,
+        };
+      });
+      const image = await session.viewImage({ path: 'image.png' });
+      expect((image.image as { data: Uint8Array }).data).toEqual(
+        ONE_BY_ONE_PNG,
+      );
+      await truncate(join(root, 'image.png'), 32 * 1024 * 1024);
+      transferred = 0;
+      await expect(session.viewImage({ path: 'image.png' })).rejects.toThrow(
+        'Image file exceeds the 10 MB limit: image.png',
+      );
+      // The wire payload includes five bytes of read status.
+      expect(transferred).toBe(10 * 1024 * 1024 + 6);
+      expect(sandboxFilesystemReadBytesMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   beforeEach(() => {
     files.clear();

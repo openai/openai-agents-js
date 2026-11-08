@@ -861,8 +861,11 @@ describe('DaytonaSandboxClient', () => {
     downloadFileMock.mockClear();
 
     executeCommandMock.mockImplementation(async (command: string) => {
-      if (command.includes('base64 <&3')) {
-        const stdout = pngBytes.toString('base64');
+      if (command.includes('exec 3<') && command.includes('base64')) {
+        const stdout = Buffer.concat([
+          pngBytes,
+          Buffer.from('\n000\n'),
+        ]).toString('base64');
         return {
           exitCode: 0,
           result: stdout,
@@ -881,10 +884,13 @@ describe('DaytonaSandboxClient', () => {
 
     const readCommand = executeCommandMock.mock.calls
       .map(([command]) => String(command))
-      .find((command) => command.includes('base64 <&3'));
+      .find(
+        (command) => command.includes('exec 3<') && command.includes('base64'),
+      );
     expect(readCommand).toContain('resolved=$(readlink -f -- "$path")');
     expect(readCommand).toContain('exec 3< "$resolved"');
     expect(readCommand).toContain('[ -f "$resolved" ]');
+    expect(readCommand).toContain('head -c 10485761 <&3');
     expect(
       readCommand?.indexOf('resolved=$(readlink -f -- "$path")'),
     ).toBeLessThan(readCommand?.indexOf('exec 3< "$resolved"') ?? -1);
