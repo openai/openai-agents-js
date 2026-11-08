@@ -81,6 +81,8 @@ export type GenerationSpanData = SpanDataBase & {
 export type ResponseSpanData = SpanDataBase & {
   type: 'response';
   response_id?: string;
+  /** Safe received token counts; omission differs from a received zero. */
+  usage?: Pick<GenerationUsageData, 'input_tokens' | 'output_tokens'>;
   /**
    * Not used by the OpenAI tracing provider but helpful for other tracing providers.
    */

@@ -1,5 +1,7 @@
 ---
+'@openai/agents-codex': patch
 '@openai/agents-core': patch
+'@openai/agents-openai': patch
 ---
 
-Preserve existing MCP timeout defaults, ordinary sandbox state compatibility, and tool-hook observation types.
+Preserve Classic state, tool-hook and MCP timeout contracts, retain response span options and safe usage, and fix the native question test peer's stream ordering.

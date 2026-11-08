@@ -20,6 +20,7 @@ import type {
   ModelSettingsToolChoice,
   ResponseStreamEvent,
   SerializedOutputType,
+  ResponseSpanData,
 } from '@openai/agents-core';
 import OpenAI from 'openai';
 import type { WebSearchTool as WebSearchToolProviderData } from './types/providerData';
@@ -77,6 +78,29 @@ import {
 import type { ResponseOutputItemWithFunctionResult } from './openaiResponsesConverter';
 
 type ModelTracingParent = Parameters<typeof createResponseSpan>[1];
+
+function recordResponseSpanUsage(
+  data: ResponseSpanData,
+  response: OpenAI.Responses.Response,
+): void {
+  const usage: NonNullable<ResponseSpanData['usage']> = {};
+  for (const key of ['input_tokens', 'output_tokens'] as const) {
+    const value = response.usage?.[key];
+    if (
+      typeof value === 'number' &&
+      Number.isSafeInteger(value) &&
+      value >= 0
+    ) {
+      usage[key] = value;
+    }
+  }
+  // Do not export raw provider fields or invent counts when usage is absent.
+  if (Object.keys(usage).length) {
+    data.usage = usage;
+  } else {
+    delete data.usage;
+  }
+}
 
 type ResponsesEndpointTransport = 'http' | 'websocket';
 
@@ -1904,6 +1928,7 @@ export class OpenAIResponsesModel implements Model {
           this._getUnsuccessfulResponseTerminalType(response);
 
         if (request.tracing) {
+          recordResponseSpanUsage(span.spanData, response);
           if (
             request.tracing === true ||
             (redactedResponseIdEndpointWasTrusted &&
@@ -1928,7 +1953,7 @@ export class OpenAIResponsesModel implements Model {
 
         return { response, rawUsage, preservedUsage };
       },
-      undefined,
+      { disabled: !request.tracing },
       getModelTracingParent(request),
     );
 
@@ -2013,6 +2038,9 @@ export class OpenAIResponsesModel implements Model {
               response?: OpenAI.Responses.Response;
             };
           const terminalResponse = terminalEvent.response;
+          if (span && terminalResponse) {
+            recordResponseSpanUsage(span.spanData, terminalResponse);
+          }
           const unsuccessfulTerminalType =
             this._getUnsuccessfulResponseTerminalType(
               terminalResponse,
