@@ -217,3 +217,71 @@ it('reports a malformed completed body safely with its request receipt', async (
     requestId: 'physical-request',
   });
 });
+
+const usageContainerCases: { label: string; raw: unknown; known: boolean }[] = [
+  ...['input_tokens_details', 'output_tokens_details'].flatMap((field) =>
+    ['', 'invalid', false, true, 0, 1, [], [{}]].map((details) => ({
+      label: `${field}=${JSON.stringify(details)}`,
+      raw: { ...usage, [field]: details },
+      known: false,
+    })),
+  ),
+  ...[
+    ['input_tokens_details', 'cached_tokens'],
+    ['input_tokens_details', 'cache_write_tokens'],
+    ['output_tokens_details', 'reasoning_tokens'],
+  ].map(([field, counter]) => ({
+    label: `${field}.${counter}=null`,
+    raw: { ...usage, [field]: { [counter]: null } },
+    known: false,
+  })),
+  { label: 'top-level usage array', raw: [], known: false },
+  ...[undefined, null].flatMap((input) =>
+    [undefined, null].map((output) => ({
+      label: `accepted input=${input}, output=${output}`,
+      raw: {
+        ...usage,
+        input_tokens_details: input,
+        output_tokens_details: output,
+      },
+      known: true,
+    })),
+  ),
+  {
+    label: 'empty detail objects',
+    raw: { ...usage, input_tokens_details: {}, output_tokens_details: {} },
+    known: true,
+  },
+];
+it.each(usageContainerCases)(
+  'preserves a valid decision while validating usage containers: $label',
+  async ({ raw, known }) => {
+    const provider = new OpenAIDecisions({
+      client: await endpoint({ answers: [], usage: raw, model: 'resolved' }),
+    });
+    const response = await provider.getDecision(
+      {
+        question: 'Ready?',
+        input: 'Explicit.',
+        outputSchema: { type: 'boolean' },
+      },
+      {},
+    );
+    expect(response).toMatchObject({
+      value: { response: true },
+      requestId: 'physical-request',
+      model: 'resolved',
+    });
+    if (known)
+      expect(response.usage).toEqual({
+        inputTokens: 7,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 3,
+        reasoningOutputTokens: 0,
+        totalTokens: 10,
+      });
+    else expect(response.usage).toBeUndefined();
+    expect(requests.map((request) => request.path)).toEqual(['/v1/decisions']);
+  },
+);

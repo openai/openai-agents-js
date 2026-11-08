@@ -142,8 +142,18 @@ const zeroUsage: TokenUsage = Object.freeze({
 });
 
 function providerUsage(raw: unknown): TokenUsage | undefined {
-  if (raw === null || typeof raw !== 'object') return;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return;
   const usage = raw as Record<string, unknown>;
+  for (const details of [
+    usage.input_tokens_details,
+    usage.output_tokens_details,
+  ])
+    if (
+      details !== undefined &&
+      details !== null &&
+      (typeof details !== 'object' || Array.isArray(details))
+    )
+      return;
   const input = usage.input_tokens_details as
     Record<string, unknown> | null | undefined;
   const output = usage.output_tokens_details as
@@ -152,10 +162,18 @@ function providerUsage(raw: unknown): TokenUsage | undefined {
     return captureDecisionMetadata({
       usage: {
         inputTokens: parseTokenCount(usage.input_tokens),
-        cachedInputTokens: parseTokenCount(input?.cached_tokens ?? 0),
-        cacheWriteInputTokens: parseTokenCount(input?.cache_write_tokens ?? 0),
+        cachedInputTokens: parseTokenCount(
+          input?.cached_tokens === undefined ? 0 : input.cached_tokens,
+        ),
+        cacheWriteInputTokens: parseTokenCount(
+          input?.cache_write_tokens === undefined
+            ? 0
+            : input.cache_write_tokens,
+        ),
         outputTokens: parseTokenCount(usage.output_tokens),
-        reasoningOutputTokens: parseTokenCount(output?.reasoning_tokens ?? 0),
+        reasoningOutputTokens: parseTokenCount(
+          output?.reasoning_tokens === undefined ? 0 : output.reasoning_tokens,
+        ),
         totalTokens: parseTokenCount(usage.total_tokens),
       },
     }).usage;
