@@ -68,10 +68,20 @@ async function* chunks() {
 describe.each([false, true])(
   'Chat model configuration tracing (stream=%s)',
   (stream) => {
-    it.each([{}, false, 0, ''])(
-      'omits implicit client URL configuration for settings %j',
-      async (settings) => {
-        // Falsy primitives are deliberate invalid-input probes, not new supported ModelSettings values.
+    it.each<{
+      name: string;
+      modelSettings: ModelRequest['modelSettings'];
+      expectedConfig: Record<string, number>;
+    }>([
+      { name: 'default', modelSettings: {}, expectedConfig: {} },
+      {
+        name: 'explicit temperature',
+        modelSettings: { temperature: 0.25 },
+        expectedConfig: { temperature: 0.25 },
+      },
+    ])(
+      'records supported $name settings without client URL defaults',
+      async ({ modelSettings, expectedConfig }) => {
         const client = new OpenAI({
           apiKey: 'synthetic-key',
           baseURL: privateBaseURL,
@@ -106,7 +116,7 @@ describe.each([false, true])(
         const model = new OpenAIChatCompletionsModel(client, 'fixture');
         const request: ModelRequest = {
           input: 'hello',
-          modelSettings: settings as unknown as ModelRequest['modelSettings'],
+          modelSettings,
           tools: [],
           handoffs: [],
           outputType: 'text',
@@ -126,7 +136,7 @@ describe.each([false, true])(
         expect(spans).toHaveLength(1);
         expect(
           JSON.parse(JSON.stringify(spans[0].spanData.model_config)),
-        ).toEqual({});
+        ).toEqual(expectedConfig);
         expect(JSON.stringify(spans[0].toJSON())).not.toContain(
           'fixture-password',
         );
@@ -143,6 +153,9 @@ describe.each([false, true])(
         }).export(spans);
         expect(fetch).toHaveBeenCalledTimes(1);
         const body = fetch.mock.calls[0][1]?.body as string;
+        expect(JSON.parse(body).data[0].span_data.model_config).toEqual(
+          expectedConfig,
+        );
         expect(body).not.toContain(privateBaseURL);
         expect(body).not.toContain('fixture-password');
         expect(body).not.toContain('fixture-token');
