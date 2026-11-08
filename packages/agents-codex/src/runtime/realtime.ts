@@ -1689,6 +1689,7 @@ class NativeRealtimeOwner {
     ]);
     let failure: { error: unknown } | undefined;
     let joinedRoots = new Set<string>();
+    let retired = new Set<string>();
     try {
       const raw = await this.call('interrupt', {
         response_id: responseId ?? null,
@@ -1714,7 +1715,7 @@ class NativeRealtimeOwner {
           'Native Realtime interruption lacks an authoritative effect receipt',
         );
       joinedRoots = new Set<string>(receipt.joined_root_turn_ids ?? []);
-      const retired = new Set<string>(receipt.retired_response_ids);
+      retired = new Set<string>(receipt.retired_response_ids);
       for (const id of retired) this.retireResponse(id);
       this.playback.retire(retired);
       for (const record of this.functions.values())
@@ -1787,6 +1788,19 @@ class NativeRealtimeOwner {
       await root.monitor;
       if (root.failure && !(root.failure.error instanceof TurnAborted))
         throw root.failure.error;
+    }
+    // Native retirement need not emit FunctionCallFinished. Its exact receipt
+    // plus joined batch cleanup is terminal evidence for these host records.
+    for (const [id, record] of this.functions) {
+      if (
+        record.responseId !== undefined &&
+        retired.has(record.responseId) &&
+        (!record.batch || record.batch.cleaned)
+      ) {
+        this.functionBytes -=
+          Buffer.byteLength(id) + Buffer.byteLength(record.name);
+        this.functions.delete(id);
+      }
     }
   }
   /** @internal Session fences results before its broader graph cleanup begins. */

@@ -2483,6 +2483,14 @@ it('bounds response retirement history without forgetting still-owned retired wo
   await peer.owner._start();
   const events = peer.owner.events();
   await events.next();
+  const root = {
+    turnId: 'held-root',
+    wait: vi.fn(async () => ({ finalOutput: '' })),
+    cancel: vi.fn(async () => {}),
+    events: vi.fn(),
+  };
+  const admission = deferred<typeof root>();
+  peer.session._submitRealtimeTools.mockReturnValueOnce(admission.promise);
   peer.payload({
     FunctionCallRequested: {
       call_id: 'held',
@@ -2490,7 +2498,18 @@ it('bounds response retirement history without forgetting still-owned retired wo
       response_id: 'held-response',
     },
   });
-  await peer.owner.interrupt('held-response');
+  peer.payload({
+    ResponseDone: { response_id: 'held-response', function_call_ids: ['held'] },
+  });
+  await events.next();
+  await events.next();
+  await vi.waitFor(() =>
+    expect(peer.session._submitRealtimeTools).toHaveBeenCalledOnce(),
+  );
+  let joined = false;
+  const interrupting = peer.owner.interrupt('held-response').then(() => {
+    joined = true;
+  });
   await events.next();
   try {
     for (let i = 0; i < 1030; i++) {
@@ -2520,6 +2539,46 @@ it('bounds response retirement history without forgetting still-owned retired wo
       responseId: 'next-live',
       status: 'created',
     });
+    expect(joined).toBe(false);
+    await peer.owner.sendText('still live');
+  } finally {
+    admission.resolve(root);
+    await interrupting;
+    await peer.owner.close();
+  }
+});
+
+it('reclaims native-interrupted function requests that never form a batch or emit a finish event', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  try {
+    for (let i = 0; i < 1030; i++) {
+      const responseId = `unbatched-response-${i}`;
+      const callId = `unbatched-call-${i}`;
+      peer.payload({
+        FunctionCallRequested: {
+          call_id: callId,
+          name: 'tool',
+          response_id: responseId,
+        },
+      });
+      await peer.owner.interrupt(responseId);
+      expect((await events.next()).value).toMatchObject({
+        type: 'playback_interrupted',
+        retiredResponseIds: [responseId],
+      });
+      // A duplicate native notification must remain inert in the recent window.
+      peer.payload({
+        FunctionCallRequested: {
+          call_id: callId,
+          name: 'duplicate',
+          response_id: responseId,
+        },
+      });
+    }
+    expect(peer.session._submitRealtimeTools).not.toHaveBeenCalled();
     await peer.owner.sendText('still live');
   } finally {
     await peer.owner.close();
