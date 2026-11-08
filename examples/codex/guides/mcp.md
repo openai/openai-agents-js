@@ -44,6 +44,8 @@ Use on-demand HTTP connections in a fresh plain Session with a direct root. The 
 
 Use `env` to supply string values directly, such as `env: { REGION: 'eu' }`. The declaration copies the map, and explicit values override names selected by `envVars`. Empty strings are preserved. These values configure only the selected server process and do not change the application's environment. Executor control credentials remain protected; `NODE_REPL_AUTH_TOKEN` cannot be supplied this way.
 
+Variable names follow the server's platform: they are case-insensitive on Windows and case-sensitive on Unix. On Windows, one `env` map cannot contain names that differ only by case.
+
 To run the server on a trusted executor:
 
 1. Set `location: 'environment'` and use the executor's command and script path, such as `args: ['/workspace/mcp-server.mjs']`.
