@@ -7,6 +7,7 @@ use napi::bindgen_prelude::Either;
 use napi_derive::napi;
 use opentelemetry::trace::TraceContextExt as _;
 
+mod agent_profiles;
 mod application_instructions;
 mod auth;
 mod canonical_rules;
@@ -100,6 +101,27 @@ pub fn _read_session_instructions(history_json: String) -> napi::Result<String> 
         .map_err(native_error)?
         .map(|accepted| accepted.text)
         .ok_or_else(|| input_error("Checkpoint has no accepted application instructions"))
+}
+
+#[napi(js_name = "_agent_profiles_fingerprint")]
+pub fn _agent_profiles_fingerprint(roster_json: String, root_id: String) -> napi::Result<String> {
+    agent_profiles::fingerprint(&roster_json, &root_id).map_err(input_error)
+}
+
+#[napi(js_name = "_agent_profiles_restore_source")]
+pub fn _agent_profiles_restore_source(
+    roster_json: String,
+    root_id: String,
+    history_json: String,
+) -> napi::Result<String> {
+    let opening = agent_profiles::OpeningProfiles {
+        fingerprint: agent_profiles::fingerprint(&roster_json, &root_id).map_err(input_error)?,
+        root_id,
+        roster: serde_json::from_str(&roster_json).map_err(input_error)?,
+    };
+    let source = agent_profiles::restore_source(&opening, &instruction_history(&history_json)?)
+        .map_err(input_error)?;
+    serde_json::to_string(&source).map_err(native_error)
 }
 
 /// Pinned command metadata only: this opens no engine or model service.
@@ -497,17 +519,18 @@ impl Engine {
 
         let inner = self.current()?;
         let raw = checkpoint_wire_value(payload_json).map_err(native_error)?;
-        let options: options::ThreadOptions =
+        let mut options: options::ThreadOptions =
             config::decode(serde_json::from_str(options_json).map_err(native_error)?)
                 .map_err(native_error)?;
         options
             .validate_instruction_json(&raw["history"])
             .map_err(native_error)?;
-        let payload = serde_json::from_value(raw).map_err(native_error)?;
         let specs = specs_json
             .map(serde_json::from_str)
             .transpose()
             .map_err(native_error)?;
+        let specs = checkpoint::restore_specs(&raw, &mut options, specs).map_err(input_error)?;
+        let payload = serde_json::from_value(raw).map_err(native_error)?;
         (async move {
             let _context_operation = inner.operation(false).map_err(native_error)?;
             checkpoint::restore(
@@ -1150,6 +1173,31 @@ impl ContextChange {
     }
 }
 
+#[napi(js_name = "_RealtimeCleanup")]
+pub struct RealtimeCleanup {
+    inner: RuntimeOwned<codex_core::RealtimeConversationCleanup>,
+    owner: std::sync::Weak<std::sync::Mutex<NativeThreadOwner>>,
+}
+
+#[napi]
+impl RealtimeCleanup {
+    #[napi]
+    pub async fn close(&self, generation: String) -> napi::Result<()> {
+        {
+            let owner = self
+                .owner
+                .upgrade()
+                .ok_or_else(|| native_error("Native thread shutdown cannot be verified"))?;
+            if owner.lock().map_err(native_error)?.live.is_some() {
+                return Err(native_error(
+                    "Realtime cleanup requires confirmed native thread shutdown",
+                ));
+            }
+        }
+        self.inner.close(&generation).await.map_err(native_error)
+    }
+}
+
 #[napi]
 impl NativeThread {
     #[napi(js_name = "_fork_settled")]
@@ -1784,12 +1832,41 @@ impl NativeThread {
         self.rollout_path.clone()
     }
 
+    // Capture only the media manager while the thread is live. The returned
+    // capability can join transport shutdown after the thread/Engine retire.
+    #[napi(js_name = "_realtime_cleanup")]
+    pub fn realtime_cleanup(&self) -> napi::Result<RealtimeCleanup> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        Ok(RealtimeCleanup {
+            inner: RuntimeOwned {
+                value: Some(Arc::new(inner.thread.realtime_cleanup())),
+                runtime: inner.runtime.clone(),
+            },
+            owner: Arc::downgrade(&self.inner),
+        })
+    }
+
     #[napi(js_name = "call")]
     pub async fn call(&self, operation: String, params_json: String) -> napi::Result<String> {
         let params: Value = serde_json::from_str(&params_json).map_err(native_error)?;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let value = match operation.as_str() {
+            "realtime_tool_selection_sdk"
+            | "realtime_conversation_start_sdk"
+            | "realtime_conversation_update_sdk"
+            | "realtime_conversation_audio_sdk"
+            | "realtime_conversation_text_sdk"
+            | "realtime_conversation_complete_sdk"
+            | "realtime_conversation_fail_sdk"
+            | "realtime_conversation_interrupt_sdk"
+            | "realtime_conversation_hosted_mcp_approval_sdk"
+            | "realtime_conversation_close_sdk" => {
+                ops::realtime_sdk(&inner.thread, &operation, params)
+                    .await
+                    .map_err(native_error)?
+            }
             "list_subagents" => {
                 if !params.as_object().is_some_and(|params| params.is_empty()) {
                     return Err(native_error(
@@ -2011,6 +2088,36 @@ impl NativeThread {
         .await
     }
 
+    #[napi(js_name = "_submit_realtime_tools")]
+    pub async fn _submit_realtime_tools(&self, params_json: String) -> napi::Result<String> {
+        let params: Value = serde_json::from_str(&params_json).map_err(input_error)?;
+        let context = params
+            .get("tracing_context")
+            .and_then(Value::as_str)
+            .map(codex_otel::sdk_trace::context)
+            .transpose()
+            .map_err(input_error)?
+            .unwrap_or_default();
+        let inner = self.current()?;
+        (async move {
+            let _context_operation = inner.engine.operation(false).map_err(native_error)?;
+            let result = match graph_stop::submit(&inner, &params).await {
+                Ok(()) => ops::submit_realtime_tools(&inner, params).await,
+                Err(error) => Err(error),
+            }
+            .map_err(|error| {
+                if error.is::<ops::PreAdmissionError>() {
+                    input_error(error)
+                } else {
+                    native_error(error)
+                }
+            })?;
+            serde_json::to_string(&result).map_err(native_error)
+        })
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
+        .await
+    }
+
     #[napi(js_name = "_validate_hosted_search_model")]
     pub async fn _validate_hosted_search_model(&self) -> napi::Result<()> {
         let inner = self.current()?;
@@ -2032,6 +2139,49 @@ impl NativeThread {
             .validate_hosted_search_model(current.collaboration_mode.model())
             .await
             .map_err(input_error)
+    }
+
+    #[napi(js_name = "_configure_agent_profiles")]
+    pub async fn _configure_agent_profiles(
+        &self,
+        roster_json: String,
+        root_id: String,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(input_error)?;
+        let receipt = agent_profiles::configure(&inner, &roster_json, &root_id)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&receipt).map_err(native_error)
+    }
+
+    #[napi(js_name = "_active_agent_profile")]
+    pub async fn _active_agent_profile(&self) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let receipt = agent_profiles::active(&inner.thread)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&receipt).map_err(native_error)
+    }
+
+    #[napi(js_name = "_activate_agent_profile")]
+    pub async fn _activate_agent_profile(
+        &self,
+        target: String,
+        expected_json: String,
+    ) -> napi::Result<String> {
+        let expected = serde_json::from_str(&expected_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(input_error)?;
+        let receipt = agent_profiles::activate(&inner, &target, expected)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&receipt).map_err(native_error)
     }
 
     #[napi(js_name = "_update_model_settings")]
@@ -2065,6 +2215,12 @@ impl NativeThread {
                 .validate_hosted_search_model(model)
                 .await
                 .map_err(input_error)?;
+        }
+        if agent_profiles::update_active(&inner.thread, Some(&settings), None, None)
+            .await
+            .map_err(native_error)?
+        {
+            return Ok(true);
         }
         inner
             .thread
@@ -2580,7 +2736,11 @@ impl NativeThread {
             else {
                 return Ok(false);
             };
-            let python_tools::Reply { request, response } = response;
+            let python_tools::Reply {
+                request,
+                response,
+                start_response,
+            } = response;
             {
                 let Some(tools) = tools.owner(&inner.id.to_string(), &request) else {
                     return Ok(false);
@@ -2615,7 +2775,12 @@ impl NativeThread {
                         .await
                         .map_err(native_error)?;
                 }
-                let sent = sender.send(response.clone()).is_ok();
+                let sent = sender
+                    .send(python_tools::ToolReply {
+                        response: response.clone(),
+                        start_response,
+                    })
+                    .is_ok();
                 if sent {
                     tools.record_manual_receipt(&request, response);
                 }
@@ -3019,7 +3184,8 @@ impl NativeThread {
                 .map_err(native_error)?;
             graph.check(&inner, &saved).await.map_err(native_error)?;
             let events = tools
-                .restore_manual(&inner.id.to_string(), frame, &saved["history"])
+                .restore_manual(&inner, frame, &saved["history"])
+                .await
                 .map_err(native_error)?;
             serde_json::to_string(&events).map_err(native_error)
         })
@@ -3034,7 +3200,9 @@ impl NativeThread {
     ) -> napi::Result<()> {
         let response: python_tools::Reply =
             serde_json::from_str(&request_and_output_json).map_err(native_error)?;
-        let python_tools::Reply { request, response } = response;
+        let python_tools::Reply {
+            request, response, ..
+        } = response;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let _mutation = inner.mutations.lock().await;
@@ -3111,7 +3279,7 @@ impl NativeThread {
                 // writer append alone would let prompt normalization invent "aborted".
                 inner
                     .thread
-                    .inject_response_items_for_turn(items)
+                    .inject_response_item_envelopes(items)
                     .await
                     .map_err(native_error)?;
             }

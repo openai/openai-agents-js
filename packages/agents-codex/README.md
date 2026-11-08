@@ -45,6 +45,7 @@ Try the [greeting](../../examples/codex/basic.ts) and [typed-context](../../exam
 - <a name="sessions"></a>[Sessions](../../examples/codex/guides/sessions.md). Open a conversation and run multiple turns. Use [session configuration](../../examples/codex/guides/session-configuration.md) to choose a provider, model, and tools.
 - [Session history and state](../../examples/codex/guides/state.md). Save a checkpoint, resume pending work, or choose a persistent store.
 - [Native telemetry](../../examples/codex/guides/telemetry.md). Trace one workflow or send native signals to a collector.
+- [Native voice with Twilio](../../examples/codex/guides/realtime-twilio.md). Connect an authenticated Media Stream to an Agent Session.
 - [Examples](../../examples/codex/README.md). Find runnable workflows and their setup requirements.
 - [Testing](TESTING.md). Run scripted responses without model credentials.
 - [Classic API](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md). Use the classic Agent and Runner APIs.

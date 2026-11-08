@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use codex_config::McpServerConfig;
 use codex_core_api::{Config, SessionSource, ThreadManager};
 use codex_extension_api::{
-    ExtensionFuture, McpToolResultInput, McpToolSource, ThreadLifecycleContributor,
+    ExtensionData, ExtensionFuture, McpToolResultInput, McpToolSource, ThreadLifecycleContributor,
     ThreadStartInput, ThreadStopInput, ToolLifecycleContributor, ToolLifecycleFuture,
     TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
 };
@@ -31,6 +31,10 @@ struct Notice<'a> {
     tracing_context: Option<&'a str>,
     nonce: u64,
     generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_epoch: Option<u64>,
     thread_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     incarnation: Option<&'a str>,
@@ -185,6 +189,55 @@ impl Selection {
     }
 }
 
+// A graph step owns its result policy even if another profile becomes active.
+// None preserves the legacy non-graph global editor and selected roster path.
+fn source_profile(
+    thread: &ExtensionData,
+    step: Option<&ExtensionData>,
+) -> Result<Option<codex_extension_api::AgentProfileReceipt>> {
+    if let Some(source) =
+        step.and_then(|step| step.get::<crate::native_interception::ProfileMcpSource>())
+    {
+        return Ok(source.receipt.clone());
+    }
+    match thread.get::<crate::python_tools::PythonTools>() {
+        Some(tools) => tools.source_profile(step),
+        None => Ok(step
+            .and_then(|step| step.get::<codex_extension_api::CapturedAgentProfile>())
+            .map(|profile| profile.receipt.clone())),
+    }
+}
+
+fn source_selection(
+    thread: &ExtensionData,
+    step: Option<&ExtensionData>,
+) -> Result<(bool, Option<Arc<Selection>>)> {
+    if let Some(source) =
+        step.and_then(|step| step.get::<crate::native_interception::ProfileMcpSource>())
+    {
+        ensure!(
+            source.policy.is_some(),
+            "Missing captured MCP callback policy"
+        );
+        let selection = step.and_then(|step| step.get::<Selection>());
+        ensure!(
+            source.receipt.is_none() || selection.is_some(),
+            "Missing captured Agent MCP result selection"
+        );
+        return Ok((true, selection));
+    }
+    if source_profile(thread, step)?.is_some() {
+        return Ok((
+            true,
+            Some(
+                step.and_then(|step| step.get::<Selection>())
+                    .context("Missing captured Agent MCP result selection")?,
+            ),
+        ));
+    }
+    Ok((false, None))
+}
+
 struct State {
     selection: Option<Selection>,
     timeout: Option<Duration>,
@@ -262,9 +315,32 @@ impl McpResultControl {
         Ok(())
     }
 
-    pub(crate) fn owns_result(&self, server: &str, tool: &str, configured: bool) -> bool {
+    pub(crate) fn capture_source_selection(&self) -> Option<Selection> {
+        self.state
+            .lock()
+            .expect("MCP result control poisoned")
+            .selection
+            .clone()
+    }
+
+    pub(crate) fn owns_result(
+        &self,
+        thread: &ExtensionData,
+        step: Option<&ExtensionData>,
+        server: &str,
+        tool: &str,
+        configured: bool,
+    ) -> bool {
+        let (source_bound, captured) = match source_selection(thread, step) {
+            Ok(value) => value,
+            Err(_) => return true,
+        };
         let state = self.state.lock().expect("MCP result control poisoned");
-        match &state.selection {
+        match captured.as_deref().or_else(|| {
+            (!source_bound)
+                .then_some(state.selection.as_ref())
+                .flatten()
+        }) {
             Some(selection) => {
                 configured
                     && selection
@@ -272,7 +348,7 @@ impl McpResultControl {
                         .get(server)
                         .is_some_and(|tools| tools.contains_key(tool))
             }
-            None => state.timeout.is_some(),
+            None => !source_bound && state.timeout.is_some(),
         }
     }
 
@@ -761,11 +837,32 @@ impl ToolLifecycleContributor for McpResultContributor {
             let Some(control) = input.thread_store.get::<McpResultControl>() else {
                 return;
             };
+            let (source_bound, captured) =
+                match source_selection(input.thread_store, input.step_store) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        *input.result = withheld();
+                        let mut state = control.state.lock().expect("MCP result control poisoned");
+                        let result = state
+                            .unresolved
+                            .entry(input.turn_id.to_owned())
+                            .or_default();
+                        result.count = result.count.saturating_add(1);
+                        return;
+                    }
+                };
+            let profile = source_profile(input.thread_store, input.step_store)
+                .ok()
+                .flatten();
             let peer_failed = input.result.is_error == Some(true);
             let (deadline, nonce, rx) = {
                 let mut state = control.state.lock().expect("MCP result control poisoned");
                 let tool = input.mcp_tool.tool_info();
-                let (generation, timeout) = match &state.selection {
+                let (generation, timeout) = match captured.as_deref().or_else(|| {
+                    (!source_bound)
+                        .then_some(state.selection.as_ref())
+                        .flatten()
+                }) {
                     Some(selection) => (
                         selection.generation,
                         matches!(input.mcp_tool.source(), McpToolSource::Config)
@@ -775,7 +872,7 @@ impl ToolLifecycleContributor for McpResultContributor {
                             .copied()
                             .map(Duration::from_secs_f64),
                     ),
-                    None => (0, state.timeout),
+                    None => (0, if source_bound { None } else { state.timeout }),
                 };
                 let Some(timeout) = timeout else {
                     return; // Unselected calls have no queue or editor.
@@ -813,6 +910,8 @@ impl ToolLifecycleContributor for McpResultContributor {
                     tracing_context: tracing_token.as_deref(),
                     nonce,
                     generation,
+                    profile_id: profile.as_ref().map(|source| source.profile_id.as_str()),
+                    profile_epoch: profile.as_ref().map(|source| source.epoch),
                     thread_id: &control.id,
                     incarnation: control.instance.as_deref(),
                     turn_id: input.turn_id,
@@ -847,6 +946,77 @@ impl ToolLifecycleContributor for McpResultContributor {
 mod tests {
     use super::*;
 
+    #[test]
+    fn captured_unselected_mono_source_cannot_inherit_newer_result_policy() {
+        let control = McpResultControl::new("root".into(), true);
+        let thread = ExtensionData::new("root");
+        let step = ExtensionData::new("captured-A");
+        assert!(control.capture_source_selection().is_none());
+        step.insert(crate::native_interception::ProfileMcpSource {
+            receipt: None,
+            policy: Some(Arc::new(
+                crate::native_interception::ProfileMcpPolicy::default(),
+            )),
+        });
+        control.publish_selection(
+            serde_json::from_value(json!({
+                "generation": 7, "servers": {"vault": {"record": 0.25}}
+            }))
+            .unwrap(),
+        );
+
+        assert!(!control.owns_result(&thread, Some(&step), "vault", "record", true));
+        assert!(control.owns_result(&thread, None, "vault", "record", true));
+    }
+
+    #[test]
+    fn captured_child_result_policy_keeps_exact_receipt_without_python_tools() {
+        let control = McpResultControl::new("child".into(), false);
+        let thread = ExtensionData::new("child");
+        let step = ExtensionData::new("actual-parent-source");
+        let receipt = codex_extension_api::AgentProfileReceipt {
+            profile_id: "agent_B".into(),
+            epoch: 3,
+        };
+        step.insert(crate::native_interception::ProfileMcpSource {
+            receipt: Some(receipt.clone()),
+            policy: Some(Arc::new(
+                crate::native_interception::ProfileMcpPolicy::default(),
+            )),
+        });
+        step.insert(
+            serde_json::from_value::<Selection>(json!({
+                "generation": 5, "servers": {"vault": {"record": 0.25}}
+            }))
+            .unwrap(),
+        );
+        control.publish_selection(
+            serde_json::from_value(json!({
+                "generation": 8, "servers": {}
+            }))
+            .unwrap(),
+        );
+
+        assert!(control.owns_result(&thread, Some(&step), "vault", "record", true));
+        assert_eq!(source_profile(&thread, Some(&step)).unwrap(), Some(receipt));
+        assert_eq!(
+            source_selection(&thread, Some(&step))
+                .unwrap()
+                .1
+                .unwrap()
+                .generation,
+            5
+        );
+        let missing_selection = ExtensionData::new("missing-source");
+        missing_selection.insert(
+            (*step
+                .get::<crate::native_interception::ProfileMcpSource>()
+                .unwrap())
+            .clone(),
+        );
+        assert!(source_selection(&thread, Some(&missing_selection)).is_err());
+    }
+
     fn notice<'a>(
         nonce: u64,
         turn: &'a str,
@@ -857,6 +1027,8 @@ mod tests {
             tracing_context: None,
             nonce,
             generation: 0,
+            profile_id: None,
+            profile_epoch: None,
             thread_id: "root",
             incarnation: None,
             turn_id: turn,

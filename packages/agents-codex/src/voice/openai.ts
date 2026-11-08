@@ -4,6 +4,7 @@ import {
   assertAudioFrame,
   pcmBytes,
   type AudioFrame,
+  type AudioSamples,
   type AudioInput,
   type SpeechProvider,
 } from './pipeline';
@@ -19,7 +20,16 @@ export interface OpenAISpeechProviderOptions {
   transcriptionModel?: string;
   streamingTranscriptionModel?: string;
   synthesisModel?: string;
-  voice?: string;
+  voice?: OpenAI.Audio.SpeechCreateParams['voice'];
+  /** Static/file transcription settings; streaming input uses its separate model and explicit commits. */
+  transcriptionSettings?: Pick<
+    OpenAI.Audio.TranscriptionCreateParamsNonStreaming,
+    'language' | 'prompt' | 'temperature'
+  >;
+  synthesisSettings?: Pick<
+    OpenAI.Audio.SpeechCreateParams,
+    'speed' | 'instructions'
+  >;
   /** Maximum wait for a transcription protocol acknowledgement, in milliseconds. */
   timeoutMs?: number;
 }
@@ -34,7 +44,22 @@ export class OpenAISpeechProvider implements SpeechProvider {
       (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
     )
       throw new TypeError('timeoutMs must be positive');
-    this.options = { ...options };
+    if (
+      options.client &&
+      (options.apiKey !== undefined || options.baseURL !== undefined)
+    )
+      throw new TypeError(
+        'An explicit speech client cannot be combined with apiKey or baseURL',
+      );
+    this.options = {
+      ...options,
+      transcriptionSettings: options.transcriptionSettings && {
+        ...options.transcriptionSettings,
+      },
+      synthesisSettings: options.synthesisSettings && {
+        ...options.synthesisSettings,
+      },
+    };
     this.client =
       options.client ??
       new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
@@ -66,6 +91,7 @@ export class OpenAISpeechProvider implements SpeechProvider {
     header.writeUInt32LE(pcm.length, 40);
     const result = await this.client.audio.transcriptions.create(
       {
+        ...this.options.transcriptionSettings,
         file: await toFile(Buffer.concat([header, pcm]), 'audio.wav'),
         model: this.options.transcriptionModel ?? 'gpt-transcribe',
       },
@@ -82,6 +108,7 @@ export class OpenAISpeechProvider implements SpeechProvider {
     signal.throwIfAborted();
     const response = await this.client.audio.speech.create(
       {
+        ...this.options.synthesisSettings,
         model: this.options.synthesisModel ?? 'gpt-4o-mini-tts',
         voice: this.options.voice ?? 'alloy',
         input: text,
@@ -120,7 +147,7 @@ export class OpenAISpeechProvider implements SpeechProvider {
   }
 
   private async *streamTranscription(
-    input: Exclude<AudioInput, AudioFrame>,
+    input: Exclude<AudioInput, AudioFrame<AudioSamples>>,
     signal: AbortSignal,
   ): AsyncGenerator<string> {
     const url = new URL('realtime', this.client.baseURL.replace(/\/?$/, '/'));

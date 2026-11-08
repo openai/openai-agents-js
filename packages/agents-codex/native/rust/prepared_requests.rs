@@ -14,7 +14,11 @@ pub(super) struct Owner {
     thread: String,
     store: usize,
     live: AtomicBool,
-    replies: Mutex<HashMap<u64, oneshot::Sender<Option<PreparedRequestData>>>>,
+    replies: Mutex<HashMap<u64, PendingReply>>,
+}
+struct PendingReply {
+    generation: Arc<Generation>,
+    sender: oneshot::Sender<Option<PreparedRequestData>>,
 }
 impl Owner {
     fn check(&self) -> std::result::Result<Arc<PythonTools>, String> {
@@ -23,7 +27,7 @@ impl Owner {
             .upgrade()
             .ok_or("Prepared request owner closed")?;
         if !self.live.load(Ordering::Acquire)
-            || !Arc::ptr_eq(&tools.snapshot(), &self.generation)
+            || !tools.admits_generation(&self.generation)
             || !tools
                 .prepared
                 .lock()
@@ -42,7 +46,7 @@ impl Owner {
                 .lock()
                 .expect("prepared replies poisoned")
                 .get(&id)
-                .is_some_and(|reply| !reply.is_closed())
+                .is_some_and(|reply| !reply.sender.is_closed())
     }
     pub(super) fn retire(&self) {
         self.live.store(false, Ordering::Release);
@@ -79,6 +83,12 @@ impl ModelRequestContributor for Contributor {
             {
                 return Err("Expired prepared request store".into());
             }
+            let generation = tools
+                .generation_for_step(input.admission.step_store())
+                .map_err(|error| error.to_string())?;
+            let source = tools
+                .source_profile(input.admission.step_store())
+                .map_err(|error| error.to_string())?;
             let presentation = tools
                 .schema_receipts
                 .prepared(input.data)
@@ -88,17 +98,32 @@ impl ModelRequestContributor for Contributor {
             {
                 let mut pending = owner.replies.lock().expect("prepared replies poisoned");
                 owner.check()?;
-                pending.insert(id, send);
+                pending.insert(
+                    id,
+                    PendingReply {
+                        generation: generation.clone(),
+                        sender: send,
+                    },
+                );
             }
             let wait = Wait {
                 owner: owner.clone(),
                 id,
             };
-            tools.family.requests.send(FamilyRequest::Prepared(Arc::downgrade(&owner), id, json!({
+            let mut request = json!({
                 "id": owner.turn, "msg": {"type":"_sdk_prepare_request", "turn_id":owner.turn,
-                "thread":input.admission.thread_id(), "generation":owner.generation.id.to_string(),
+                "thread":input.admission.thread_id(), "generation":generation.id.to_string(),
                 "request_id":id.to_string(), "recovery_attempt":input.recovery_attempt,"data":presentation.data}
-            }))).map_err(|_| "Prepared request reader closed")?;
+            });
+            if let Some(source) = source {
+                request["msg"]["profile_id"] = json!(source.profile_id);
+                request["msg"]["profile_epoch"] = json!(source.epoch);
+            }
+            tools
+                .family
+                .requests
+                .send(FamilyRequest::Prepared(Arc::downgrade(&owner), id, request))
+                .map_err(|_| "Prepared request reader closed")?;
             let mut data = receive
                 .await
                 .map_err(|_| "Prepared request callback failed or cancelled")?;
@@ -117,6 +142,7 @@ impl ModelRequestContributor for Contributor {
             Ok(PreparedRequestOutput {
                 data,
                 admission: Arc::new(Admission {
+                    generation,
                     owner,
                     original: input.admission,
                     _sampling_schemas: sampling_schemas,
@@ -139,6 +165,7 @@ impl Drop for Wait {
     }
 }
 struct Admission {
+    generation: Arc<Generation>,
     owner: Arc<Owner>,
     original: Arc<dyn ModelToolAdmission>,
     // A sampling copy keeps only its own immutable presentation receipts alive.
@@ -151,8 +178,9 @@ impl std::fmt::Debug for Admission {
 }
 impl PreparedRequestAdmission for Admission {
     fn admit_request(&self) -> std::result::Result<(), String> {
-        self.owner.check()?;
-        if self.owner.store != self.original.turn_store() as *const ExtensionData as usize
+        let tools = self.owner.check()?;
+        if !tools.admits_generation(&self.generation)
+            || self.owner.store != self.original.turn_store() as *const ExtensionData as usize
             || !self
                 .original
                 .turn_store()
@@ -192,7 +220,19 @@ impl PythonTools {
         }
         let owner = input.turn_store.get_or_init(|| Owner {
             tools: Arc::downgrade(self),
-            generation: self.snapshot(),
+            generation: input
+                .turn_store
+                .get::<Option<OperationSelection>>()
+                .and_then(|operation| {
+                    operation.as_ref().as_ref().and_then(|operation| {
+                        operation
+                            .generation
+                            .parse()
+                            .ok()
+                            .and_then(|id| self.resolve_generation(id))
+                    })
+                })
+                .unwrap_or_else(|| self.snapshot()),
             turn: input.turn_id.to_owned(),
             thread: input.thread_store.level_id().to_owned(),
             store: input.turn_store as *const ExtensionData as usize,
@@ -217,22 +257,23 @@ impl PythonTools {
             .context("Expired prepared request")?;
         owner.check().map_err(anyhow::Error::msg)?;
         ensure!(
-            response.thread == thread
-                && response.turn_id == owner.turn
-                && response.generation == owner.generation.id.to_string(),
+            response.thread == thread && response.turn_id == owner.turn,
             "Expired prepared request owner"
         );
-        let sender = owner
-            .replies
-            .lock()
-            .expect("prepared replies poisoned")
-            .remove(&response.request_id.parse()?)
-            .context("Expired prepared request reply")?;
+        let mut replies = owner.replies.lock().expect("prepared replies poisoned");
+        let id = response.request_id.parse()?;
+        let pending = replies.get(&id).context("Expired prepared request reply")?;
+        ensure!(
+            response.generation == pending.generation.id.to_string()
+                && self.admits_generation(&pending.generation),
+            "Expired prepared source generation"
+        );
+        let pending = replies.remove(&id).expect("checked prepared request reply");
         if response.failed {
-            drop(sender);
             return Ok(());
         }
-        sender
+        pending
+            .sender
             .send(response.data)
             .map_err(|_| anyhow::anyhow!("Expired prepared request reply"))
     }

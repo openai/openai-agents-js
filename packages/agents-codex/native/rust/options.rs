@@ -123,7 +123,7 @@ impl ThreadInstructions {
                 files.clone()
             }
             InstructionState::Accepted(prior) if prior.id == accepted.id => prior.files.clone(),
-            _ => Vec::new(),
+            _ => accepted.files.clone(),
         };
         *state = InstructionState::Accepted(accepted);
         Ok(())
@@ -206,6 +206,8 @@ impl ThreadInstructionsProvider for ThreadInstructions {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThreadOptions {
+    #[serde(rename = "_agent_profiles")]
+    pub(crate) agent_profiles: Option<crate::agent_profiles::OpeningProfiles>,
     #[serde(rename = "_sdk_resume_thread_id")]
     pub(crate) sdk_resume_thread_id: Option<ThreadId>,
     #[serde(rename = "_sdk_reconciled_calls")]
@@ -290,6 +292,9 @@ impl ThreadOptions {
         history: &[codex_history::RolloutItem],
     ) -> anyhow::Result<Option<crate::application_instructions::Accepted>> {
         if self.managed_instructions {
+            if let Some(opening) = &self.agent_profiles {
+                return crate::agent_profiles::validate_restored(opening, history).map(Some);
+            }
             crate::application_instructions::validate(
                 history,
                 self.instructions.as_deref().unwrap_or(""),
@@ -380,6 +385,7 @@ impl ThreadOptions {
                 });
         }
 
+        let profile_files = self.agent_profiles.as_ref().map(|_| self.instruction_files.clone());
         options
             .thread_extension_init
             .insert(ThreadInstructions::new(
@@ -394,6 +400,9 @@ impl ThreadOptions {
             .expect("inserted thread instructions");
 
         options.thread_instructions_provider = Some(instructions.clone());
+        if let Some(profiles) = self.agent_profiles {
+            crate::agent_profiles::install_opening(&mut options, profiles, profile_files.unwrap_or_default())?;
+        }
         options.allow_provider_model_fallback = self.allow_provider_model_fallback;
         options.initial_history = self.initial_history.unwrap_or(InitialHistory::New);
         options.history_mode = self.history_mode;

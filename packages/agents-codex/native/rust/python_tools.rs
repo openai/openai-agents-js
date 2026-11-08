@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use anyhow::{Context, Result, ensure};
@@ -47,12 +47,39 @@ struct Entry {
     exposure: ToolExposure,
 }
 
-struct Generation {
-    id: u64,
+pub(crate) struct Generation {
+    pub(crate) id: u64,
+    manual_slots: Option<HashSet<usize>>,
     schema_token: Option<String>,
     entries: Vec<Entry>,
     specs: Vec<DynamicToolSpec>,
     defaults: Vec<usize>,
+}
+
+/// Exact immutable declarations belonging to one captured native Agent step.
+#[derive(Clone)]
+pub(crate) struct ProfileCatalog {
+    pub(crate) generation: Arc<Generation>,
+    pub(crate) defaults: Option<Vec<ToolName>>,
+    pub(crate) selecting_steps: bool,
+    pub(crate) transform_context: bool,
+    pub(crate) before_compact: bool,
+    pub(crate) before_complete: bool,
+}
+impl ProfileCatalog {
+    pub(crate) fn slot_specs(&self) -> Result<Value> {
+        checkpoint_specs(&self.generation.specs)
+    }
+    pub(crate) fn checkpoint_specs(&self) -> Result<Value> {
+        checkpoint_specs(
+            &self
+                .generation
+                .defaults
+                .iter()
+                .map(|&slot| self.generation.specs[slot].clone())
+                .collect::<Vec<_>>(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, Deserialize, Serialize)]
@@ -94,11 +121,19 @@ pub(crate) struct ManualOwner {
 
 struct PendingCall {
     _tracing: Option<codex_otel::sdk_trace::ContextLease>,
-    sender: oneshot::Sender<DynamicToolResponse>,
+    sender: oneshot::Sender<ToolReply>,
     manual_request: Option<Value>,
 }
 
 pub(crate) struct ChildStepSelection;
+
+#[derive(Clone)]
+struct InheritedProfileSource {
+    receipt: codex_extension_api::AgentProfileReceipt,
+    catalog: ProfileCatalog,
+    mcp_selection: Option<crate::mcp_result_control::Selection>,
+    mcp_policy: Option<Arc<crate::native_interception::ProfileMcpPolicy>>,
+}
 
 pub struct PythonTools {
     local_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
@@ -106,6 +141,10 @@ pub struct PythonTools {
     preserve_schemas: bool,
     schema_receipts: schema_fidelity::Receipts,
     current: RwLock<Arc<Generation>>,
+    generation_high_water: AtomicU64,
+    profile_catalogs: RwLock<HashMap<u64, Weak<Generation>>>,
+    managed_profiles: AtomicBool,
+    inherited_source: Option<InheritedProfileSource>,
     fixed: HashSet<ToolName>,
     policy: Arc<ToolPolicy>,
     pending: Mutex<HashMap<PendingKey, PendingCall>>,
@@ -150,6 +189,26 @@ impl Default for Family {
 pub(crate) struct Reply {
     pub(crate) request: PendingKey,
     pub(crate) response: DynamicToolResponse,
+    #[serde(default = "request_response_by_default")]
+    pub(crate) start_response: bool,
+}
+
+fn request_response_by_default() -> bool {
+    true
+}
+
+#[derive(Debug)]
+pub(crate) struct ToolReply {
+    pub(crate) response: DynamicToolResponse,
+    pub(crate) start_response: bool,
+}
+impl From<DynamicToolResponse> for ToolReply {
+    fn from(response: DynamicToolResponse) -> Self {
+        Self {
+            response,
+            start_response: true,
+        }
+    }
 }
 
 fn functions(
@@ -275,6 +334,271 @@ pub fn checkpoint_specs(specs: &[DynamicToolSpec]) -> Result<Value> {
 }
 
 impl PythonTools {
+    pub(crate) fn generation_high_water(&self) -> u64 {
+        self.generation_high_water
+            .load(Ordering::Acquire)
+            .max(self.snapshot().id)
+    }
+
+    fn allocate_generation(&self) -> Result<u64> {
+        let current = self.snapshot().id;
+        let previous = self
+            .generation_high_water
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.max(current).checked_add(1)
+            })
+            .map_err(|_| anyhow::anyhow!("Python tool generation counter exhausted"))?;
+        Ok(previous.max(current) + 1)
+    }
+
+    pub(crate) fn resolve_generation(&self, id: u64) -> Option<Arc<Generation>> {
+        let captured = self
+            .profile_catalogs
+            .read()
+            .expect("Profile catalogs poisoned")
+            .get(&id)
+            .and_then(Weak::upgrade);
+        captured.or_else(|| {
+            let current = self.snapshot();
+            (current.id == id).then_some(current)
+        })
+    }
+
+    fn admits_generation(&self, generation: &Arc<Generation>) -> bool {
+        self.resolve_generation(generation.id)
+            .is_some_and(|admitted| Arc::ptr_eq(&admitted, generation))
+    }
+
+    fn register_generation(&self, generation: &Arc<Generation>) -> Result<()> {
+        let mut catalogs = self
+            .profile_catalogs
+            .write()
+            .expect("Profile catalogs poisoned");
+        catalogs.retain(|_, generation| generation.strong_count() != 0);
+        ensure!(
+            catalogs
+                .get(&generation.id)
+                .and_then(Weak::upgrade)
+                .is_none_or(|existing| Arc::ptr_eq(&existing, generation)),
+            "Conflicting source catalog generation"
+        );
+        catalogs.insert(generation.id, Arc::downgrade(generation));
+        Ok(())
+    }
+
+    pub(crate) fn profile_catalog(
+        &self,
+        specs: Vec<DynamicToolSpec>,
+        manual_slots: &[usize],
+        defaults: Option<&[usize]>,
+        flags: [bool; 4],
+        _reuse_initial: bool,
+    ) -> Result<ProfileCatalog> {
+        let id = self.allocate_generation()?;
+        let mut generation = self.prepare(id, specs)?;
+        let mut manual = HashSet::new();
+        for &slot in manual_slots {
+            ensure!(
+                slot < generation.entries.len() && manual.insert(slot),
+                "Invalid or duplicate manual tool slot"
+            );
+        }
+        generation.manual_slots = Some(manual);
+        generation.defaults = defaults
+            .map(Vec::from)
+            .unwrap_or_else(|| (0..generation.entries.len()).collect());
+        let defaults = defaults
+            .map(|slots| {
+                let mut seen = HashSet::new();
+                slots
+                    .iter()
+                    .map(|slot| {
+                        ensure!(seen.insert(*slot), "Duplicate profile default tool slot");
+                        generation
+                            .entries
+                            .get(*slot)
+                            .map(|entry| entry.name.clone())
+                            .context("Invalid profile default tool slot")
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
+        let generation = Arc::new(generation);
+        self.schema_receipts.register(&generation);
+        self.register_generation(&generation)?;
+        Ok(ProfileCatalog {
+            generation,
+            defaults,
+            selecting_steps: flags[0],
+            transform_context: flags[1],
+            before_compact: flags[2],
+            before_complete: flags[3],
+        })
+    }
+
+    pub(crate) fn startup_profile_catalog(
+        &self,
+        flags: [bool; 4],
+        source: &ProfileCatalog,
+    ) -> Result<ProfileCatalog> {
+        let generation = self.snapshot();
+        let names = source
+            .generation
+            .manual_slots
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .map(|&slot| {
+                source.generation.entries[slot]
+                    .name
+                    .clone()
+                    .with_default_namespace()
+            })
+            .collect::<HashSet<_>>();
+        let manual = generation
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, entry)| {
+                names
+                    .contains(&entry.name.clone().with_default_namespace())
+                    .then_some(slot)
+            })
+            .collect::<Vec<_>>();
+        self.profile_catalog(
+            generation.specs.clone(),
+            &manual,
+            Some(&generation.defaults),
+            flags,
+            false,
+        )
+    }
+
+    fn realtime_catalog(
+        &self,
+        profile: Option<&codex_extension_api::CapturedAgentProfile>,
+    ) -> Result<ProfileCatalog> {
+        if let Some(profile) = profile {
+            let catalog = profile
+                .profile
+                .data
+                .get::<ProfileCatalog>()
+                .context("Captured Agent has no admitted JavaScript tool catalog")?;
+            return Ok((*catalog).clone());
+        }
+        if let Some(source) = &self.inherited_source {
+            return Ok(source.catalog.clone());
+        }
+        ensure!(
+            !self.managed_profiles.load(Ordering::Acquire),
+            "Managed Realtime source has no captured Agent profile"
+        );
+        let generation = self.snapshot();
+        Ok(ProfileCatalog {
+            defaults: Some(
+                generation
+                    .defaults
+                    .iter()
+                    .map(|&slot| generation.entries[slot].name.clone())
+                    .collect(),
+            ),
+            generation,
+            selecting_steps: false,
+            transform_context: false,
+            before_compact: false,
+            before_complete: false,
+        })
+    }
+
+    pub(crate) async fn realtime_tool_selection(&self, thread: &CodexThread) -> Result<Value> {
+        let captured = thread.captured_agent_profile().await?;
+        let catalog = self.realtime_catalog(captured.as_deref())?;
+        let profile = captured
+            .as_ref()
+            .map(|source| source.receipt.clone())
+            .or_else(|| {
+                self.inherited_source
+                    .as_ref()
+                    .map(|source| source.receipt.clone())
+            });
+        Ok(json!({
+            "selection_id": codex_extension_api::realtime_tool_selection_id(
+                thread.thread_extension_data().level_id(), catalog.generation.id, profile.as_ref()),
+            "profile_receipt":profile,
+            "catalog_generation":catalog.generation.id.to_string(),
+        }))
+    }
+
+    pub(crate) fn source_catalog(
+        &self,
+        step: Option<&ExtensionData>,
+    ) -> Result<Option<ProfileCatalog>> {
+        self.generation_for_step(step)?;
+        Ok(step
+            .and_then(|step| step.get::<ProfileCatalog>())
+            .map(|catalog| (*catalog).clone())
+            .or_else(|| {
+                self.inherited_source
+                    .as_ref()
+                    .map(|source| source.catalog.clone())
+            }))
+    }
+
+    pub(crate) fn source_profile(
+        &self,
+        step: Option<&ExtensionData>,
+    ) -> Result<Option<codex_extension_api::AgentProfileReceipt>> {
+        self.generation_for_step(step)?;
+        let profile = step
+            .and_then(|step| step.get::<codex_extension_api::CapturedAgentProfile>())
+            .map(|profile| profile.receipt.clone())
+            .or_else(|| {
+                self.inherited_source
+                    .as_ref()
+                    .map(|source| source.receipt.clone())
+            });
+        if self.managed_profiles.load(Ordering::Acquire) {
+            ensure!(profile.is_some(), "Missing captured Agent profile source");
+        }
+        Ok(profile)
+    }
+
+    pub(crate) fn generation_for_step(
+        &self,
+        step: Option<&ExtensionData>,
+    ) -> Result<Arc<Generation>> {
+        if let Some(catalog) = step.and_then(|step| step.get::<ProfileCatalog>()) {
+            ensure!(
+                self.admits_generation(&catalog.generation),
+                "Expired captured profile catalog"
+            );
+            return Ok(catalog.generation.clone());
+        }
+        if let Some(source) = &self.inherited_source {
+            let generation = step
+                .and_then(|step| step.get::<StepCatalog>())
+                .map(|catalog| catalog.generation.clone())
+                .unwrap_or_else(|| source.catalog.generation.clone());
+            ensure!(
+                self.admits_generation(&generation),
+                "Expired captured child source catalog"
+            );
+            return Ok(generation);
+        }
+        if let Some(catalog) = step.and_then(|step| step.get::<StepCatalog>()) {
+            ensure!(
+                self.admits_generation(&catalog.generation),
+                "Expired captured native step catalog"
+            );
+            return Ok(catalog.generation.clone());
+        }
+        ensure!(
+            !self.managed_profiles.load(Ordering::Acquire),
+            "Managed Agent callback requires its captured native step profile"
+        );
+        Ok(self.snapshot())
+    }
+
     pub(crate) fn inherits_children(&self) -> bool {
         self.inherit_children
     }
@@ -454,10 +778,15 @@ impl PythonTools {
             current: RwLock::new(Arc::new(Generation {
                 id: 0,
                 schema_token: None,
+                manual_slots: None,
                 entries: Vec::new(),
                 specs: Vec::new(),
                 defaults: Vec::new(),
             })),
+            generation_high_water: AtomicU64::new(0),
+            profile_catalogs: RwLock::new(HashMap::new()),
+            managed_profiles: AtomicBool::new(false),
+            inherited_source: None,
             fixed,
             policy,
             pending: Mutex::new(HashMap::new()),
@@ -486,6 +815,13 @@ impl PythonTools {
         startup
             .thread_extension_init
             .insert(tools.family.manual_progress.clone());
+        tools.managed_profiles.store(
+            startup
+                .thread_extension_init
+                .get::<crate::agent_profiles::OpeningProfiles>()
+                .is_some(),
+            Ordering::Release,
+        );
         startup.thread_extension_init.insert(tools);
         Ok(())
     }
@@ -512,14 +848,36 @@ impl PythonTools {
             .filter(|owner| &owner.instance == instance && Arc::ptr_eq(&owner.family, &self.family))
     }
 
-    fn descendant(parent: &Self, instance: String, policy: Arc<ToolPolicy>) -> Result<Self> {
-        let child = Self {
+    fn descendant(
+        parent: &Self,
+        instance: String,
+        policy: Arc<ToolPolicy>,
+        spawning_step: Option<&ExtensionData>,
+    ) -> Result<Self> {
+        let managed = parent.managed_profiles.load(Ordering::Acquire);
+        ensure!(
+            !managed || spawning_step.is_some(),
+            "Managed child requires its actual spawning step source"
+        );
+        let source_catalog = spawning_step
+            .map(|step| parent.source_catalog(Some(step)))
+            .transpose()?
+            .flatten();
+        let source_receipt = spawning_step
+            .map(|step| parent.source_profile(Some(step)))
+            .transpose()?
+            .flatten();
+        let mut child = Self {
             // Receipt ownership stays with each child writer/turn/call, not the root.
             local_store: parent.local_store.clone(),
             custom_store: parent.custom_store.clone(),
             preserve_schemas: parent.preserve_schemas,
             schema_receipts: Default::default(),
             current: RwLock::new(parent.snapshot()),
+            generation_high_water: AtomicU64::new(parent.generation_high_water()),
+            profile_catalogs: RwLock::new(HashMap::new()),
+            managed_profiles: AtomicBool::new(managed),
+            inherited_source: None,
             fixed: parent.fixed.clone(),
             policy,
             pending: Mutex::default(),
@@ -533,13 +891,32 @@ impl PythonTools {
             prepared: Mutex::new(None),
         };
         // Validate the inherited catalog against this child's current ceiling.
-        let parent_generation = parent.snapshot();
+        let parent_generation = spawning_step
+            .map(|step| parent.generation_for_step(Some(step)))
+            .transpose()?
+            .unwrap_or_else(|| parent.snapshot());
         let mut generation =
             child.prepare(parent_generation.id, parent_generation.specs.clone())?;
         generation.defaults = parent_generation.defaults.clone();
+        generation.manual_slots = parent_generation.manual_slots.clone();
         let generation = Arc::new(generation);
         child.schema_receipts.register(&generation);
-        *child.current.write().expect("JavaScript catalog poisoned") = generation;
+        *child.current.write().expect("JavaScript catalog poisoned") = generation.clone();
+        if let Some(receipt) = source_receipt {
+            let mut catalog = source_catalog.context("Managed child source catalog is absent")?;
+            catalog.generation = generation.clone();
+            child.register_generation(&generation)?;
+            child.child_before_step = true;
+            child.inherited_source = Some(InheritedProfileSource {
+                receipt,
+                catalog,
+                mcp_policy: spawning_step
+                    .and_then(|step| step.get::<crate::native_interception::ProfileMcpPolicy>()),
+                mcp_selection: spawning_step
+                    .and_then(|step| step.get::<crate::mcp_result_control::Selection>())
+                    .map(|selection| (*selection).clone()),
+            });
+        }
         Ok(child)
     }
 
@@ -592,6 +969,7 @@ impl PythonTools {
         Ok(Generation {
             id,
             schema_token,
+            manual_slots: None,
             defaults: (0..entries.len()).collect(),
             entries,
             specs,
@@ -661,6 +1039,12 @@ impl PythonTools {
         specs: Vec<DynamicToolSpec>,
         defaults: Option<Vec<usize>>,
     ) -> Result<u64> {
+        if let Some(id) =
+            crate::agent_profiles::replace_tools(thread, id, specs.clone(), defaults.clone())
+                .await?
+        {
+            return Ok(id);
+        }
         let mut candidate = self.prepare(id, specs)?;
         if let Some(defaults) = defaults {
             validate_selection(&defaults, &(0..candidate.entries.len()).collect::<Vec<_>>())?;
@@ -668,18 +1052,24 @@ impl PythonTools {
         }
         self.check_idle(thread).await?;
         self.check_family_idle()?;
+        ensure!(
+            id == self.allocate_generation()?,
+            "JavaScript tool generation is out of sequence"
+        );
         self.publish(candidate)
     }
 
     fn publish(&self, candidate: Generation) -> Result<u64> {
         let id = candidate.id;
+        let high_water = self.generation_high_water.load(Ordering::Acquire);
         let mut current = self.current.write().expect("JavaScript catalog poisoned");
         ensure!(
-            id == current.id + 1,
+            id > current.id && id <= high_water,
             "JavaScript tool generation is out of sequence"
         );
         let candidate = Arc::new(candidate);
         self.schema_receipts.register(&candidate);
+        self.register_generation(&candidate)?;
         *current = candidate;
         *self.manual.lock().expect("manual tools poisoned") = ManualLedger::default();
         Ok(id)
@@ -701,6 +1091,14 @@ impl PythonTools {
                 .is_empty(),
             "JavaScript tool replies are pending"
         );
+        ensure!(
+            self.manual
+                .lock()
+                .expect("manual tools poisoned")
+                .restored
+                .is_none(),
+            "Manual continuation still owns the native batch"
+        );
         Ok(())
     }
 
@@ -710,7 +1108,7 @@ impl PythonTools {
         ensure!(
             key.reply.thread == owner
                 && key.reply.instance == self.instance
-                && key.reply.generation == self.snapshot().id
+                && self.resolve_generation(key.reply.generation).is_some()
                 && self
                     .pending
                     .lock()
@@ -811,7 +1209,7 @@ impl PythonTools {
         &self,
         owner: &str,
         key: &PendingKey,
-    ) -> Result<Option<oneshot::Sender<DynamicToolResponse>>> {
+    ) -> Result<Option<oneshot::Sender<ToolReply>>> {
         if key.reply.thread != owner {
             return Ok(None);
         }
@@ -829,7 +1227,24 @@ impl PythonTools {
         arguments: Value,
         source: &ToolCallSource,
         model: &str,
-    ) -> Result<(PendingKey, oneshot::Receiver<DynamicToolResponse>)> {
+    ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
+        self.enqueue_profile(
+            thread, generation, slot, turn, call, arguments, source, model, None,
+        )
+    }
+
+    fn enqueue_profile(
+        self: &Arc<Self>,
+        thread: &str,
+        generation: &Generation,
+        slot: usize,
+        turn: &str,
+        call: &str,
+        arguments: Value,
+        source: &ToolCallSource,
+        model: &str,
+        profile: Option<&codex_extension_api::AgentProfileReceipt>,
+    ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
             reply: ReplyKey {
@@ -840,8 +1255,11 @@ impl PythonTools {
                 // Live manual requests bind capability identity, including
                 // equal wire IDs in one native turn. Automatic calls keep
                 // their original duplicate-call rejection.
-                manual_grant: self
-                    .is_manual(&entry.name)
+                manual_grant: generation
+                    .manual_slots
+                    .as_ref()
+                    .map(|slots| slots.contains(&slot))
+                    .unwrap_or_else(|| self.is_manual(&entry.name))
                     .then(|| codex_core_api::ThreadId::new().to_string()),
             },
             turn: turn.to_owned(),
@@ -866,6 +1284,10 @@ impl PythonTools {
                 "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
+        if let Some(profile) = profile {
+            request["msg"]["profile_id"] = json!(profile.profile_id);
+            request["msg"]["profile_epoch"] = json!(profile.epoch);
+        }
         if let Some(context) = &tracing {
             request["msg"]["tracing_context"] = json!(context.token());
         }
@@ -967,9 +1389,12 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
                         .thread_store
                         .get::<ToolPolicy>()
                         .unwrap_or_else(|| parent_tools.policy.clone());
-                    if let Ok(child) =
-                        PythonTools::descendant(&parent_tools, control.incarnation.clone(), policy)
-                    {
+                    if let Ok(child) = PythonTools::descendant(
+                        &parent_tools,
+                        control.incarnation.clone(),
+                        policy,
+                        input.spawning_step_store,
+                    ) {
                         let tools = input.thread_store.get_or_init(|| child);
                         parent_tools
                             .family
@@ -980,6 +1405,8 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
                                 input.thread_store.level_id().to_owned(),
                                 Arc::downgrade(&tools),
                             );
+                    } else {
+                        control.revoke();
                     }
                 }
             }
@@ -1058,6 +1485,7 @@ struct ActiveSelection {
     prepare_request: bool,
 }
 struct PendingStep {
+    operation_generation: u64,
     turn: String,
     generation: u64,
     allowed: Vec<ToolName>,
@@ -1189,10 +1617,12 @@ impl PythonTools {
 
     pub(crate) fn validate_operation(&self, selection: &OperationSelection) -> Result<()> {
         ensure!(self.instance.is_none(), "Selection requires a root Session");
-        let generation = self.snapshot();
+        let generation = self
+            .resolve_generation(selection.generation.parse()?)
+            .context("Expired selection generation")?;
         ensure!(
-            selection.generation == generation.id.to_string(),
-            "Expired selection generation"
+            !self.managed_profiles.load(Ordering::Acquire) || selection.before_step,
+            "Managed Agent selection requires the source-aware SDK callback"
         );
         ensure!(
             selection.names.is_none() || selection.slots.as_ref().is_none_or(Vec::is_empty),
@@ -1219,10 +1649,10 @@ impl PythonTools {
             && response.instance == self.instance
             && response.turn_id == pending.turn
             && response.generation == pending.generation.to_string()
-            && self.snapshot().id == pending.generation
+            && self.resolve_generation(pending.generation).is_some()
             && !pending.reply.is_closed()
             && active.is_some_and(|active| {
-                active.turn == pending.turn && active.generation.id == pending.generation
+                active.turn == pending.turn && active.generation.id == pending.operation_generation
             })
     }
 
@@ -1281,13 +1711,19 @@ impl PythonTools {
                 prepare_request: false,
             });
         }
-        operation.map(|selection| ActiveSelection {
-            turn: turn.to_owned(),
-            generation: self.snapshot(),
-            slots: selection.slots.clone(),
-            names: selection.names.clone(),
-            before_step: selection.before_step,
-            prepare_request: selection.prepare_request,
+        operation.and_then(|selection| {
+            Some(ActiveSelection {
+                turn: turn.to_owned(),
+                generation: selection
+                    .generation
+                    .parse()
+                    .ok()
+                    .and_then(|id| self.resolve_generation(id))?,
+                slots: selection.slots.clone(),
+                names: selection.names.clone(),
+                before_step: selection.before_step,
+                prepare_request: selection.prepare_request,
+            })
         })
     }
 
@@ -1305,7 +1741,7 @@ impl PythonTools {
                 && response.instance == self.instance
                 && response.turn_id == pending.turn
                 && response.generation == pending.generation.to_string()
-                && self.snapshot().id == pending.generation,
+                && self.resolve_generation(pending.generation).is_some(),
             "Expired step selection owner or generation"
         );
         ensure!(
@@ -1321,7 +1757,9 @@ impl PythonTools {
             "Step reply cannot combine slots and names"
         );
         let names = if let Some(slots) = response.slots {
-            let generation = self.snapshot();
+            let generation = self
+                .resolve_generation(pending.generation)
+                .context("Expired step source catalog")?;
             validate_selection(&slots, &(0..generation.entries.len()).collect::<Vec<_>>())?;
             Some(
                 slots
@@ -1357,12 +1795,14 @@ impl PythonContributor {
         generation: Arc<Generation>,
         use_deferred_specs: bool,
         slots: &[usize],
+        profile: Option<codex_extension_api::AgentProfileReceipt>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         slots
             .iter()
             .copied()
             .map(|slot| {
                 Arc::new(PythonExecutor {
+                    profile: profile.clone(),
                     thread: thread.level_id().to_string(),
                     tools: tools.clone(),
                     generation: generation.clone(),
@@ -1376,6 +1816,157 @@ impl PythonContributor {
 }
 
 impl ToolContributor for PythonContributor {
+    fn capture_realtime_tools(
+        &self,
+        input: codex_extension_api::RealtimeToolCaptureInput<'_>,
+    ) -> std::result::Result<Option<codex_extension_api::RealtimeToolDeclarations>, String> {
+        let Some(tools) = input.thread_store.get::<PythonTools>() else {
+            return Ok(None);
+        };
+        if let Some(instructions) = input
+            .thread_store
+            .get::<crate::options::ThreadInstructions>()
+        {
+            instructions
+                .check_usable()
+                .map_err(|error| error.to_string())?;
+        }
+        let catalog = tools
+            .realtime_catalog(input.profile)
+            .map_err(|error| error.to_string())?;
+        tools
+            .register_generation(&catalog.generation)
+            .map_err(|error| error.to_string())?;
+        let profile = input
+            .profile
+            .map(|source| source.receipt.clone())
+            .or_else(|| {
+                tools
+                    .inherited_source
+                    .as_ref()
+                    .map(|source| source.receipt.clone())
+            });
+        let mut declarations = Vec::new();
+        for (slot, (namespace, raw)) in functions(&catalog.generation.specs).into_iter().enumerate()
+        {
+            let entry = &catalog.generation.entries[slot];
+            if !catalog.generation.defaults.contains(&slot)
+                || catalog
+                    .defaults
+                    .as_ref()
+                    .is_some_and(|names| !names.contains(&entry.name))
+                || !tools.policy.allows(&entry.name)
+                || entry.exposure == ToolExposure::Deferred
+            {
+                continue;
+            }
+            declarations.push(codex_extension_api::RealtimeToolDeclaration {
+                native_name: entry.name.clone(),
+                spec: codex_extension_api::PreparedToolPresentation {
+                    namespace: namespace.map(|namespace| namespace.name.clone()),
+                    name: raw.name.clone(),
+                    kind: "function".into(),
+                    strict: tools.strict_functions,
+                    defer_loading: Some(raw.defer_loading),
+                    description: raw.description.clone(),
+                    parameters: raw.input_schema.clone(),
+                },
+            });
+        }
+        let selection_id = codex_extension_api::realtime_tool_selection_id(
+            input.thread_store.level_id(),
+            catalog.generation.id,
+            profile.as_ref(),
+        );
+        let mut execution_data = codex_extension_api::ExtensionDataInit::new();
+        execution_data.insert(catalog);
+        if let Some(source) = input.profile {
+            let policy = source
+                .profile
+                .data
+                .get::<crate::native_interception::ProfileMcpPolicy>()
+                .ok_or("Managed Realtime source has no captured MCP policy")?;
+            execution_data.insert((*policy).clone());
+            execution_data.insert(crate::native_interception::ProfileMcpSource {
+                receipt: Some(source.receipt.clone()),
+                policy: Some(policy),
+            });
+            let selection = source
+                .profile
+                .data
+                .get::<crate::mcp_result_control::Selection>()
+                .ok_or("Managed Realtime source has no captured MCP result selection")?;
+            execution_data.insert((*selection).clone());
+        } else if let Some(source) = &tools.inherited_source {
+            let policy = source
+                .mcp_policy
+                .clone()
+                .ok_or("Managed child Realtime source has no captured MCP policy")?;
+            execution_data.insert((*policy).clone());
+            execution_data.insert(crate::native_interception::ProfileMcpSource {
+                receipt: Some(source.receipt.clone()),
+                policy: Some(policy),
+            });
+            let selection = source
+                .mcp_selection
+                .clone()
+                .ok_or("Managed child Realtime source has no captured MCP result selection")?;
+            execution_data.insert(selection);
+        } else {
+            let inherited_mcp_source = input
+                .thread_store
+                .get::<crate::native_interception::ProfileMcpSource>();
+            let source_bound = inherited_mcp_source.is_some();
+            if let Some(source) = inherited_mcp_source {
+                execution_data.insert((*source).clone());
+            } else if let Some(control) = input
+                .thread_store
+                .get::<crate::native_interception::Control>()
+            {
+                execution_data.insert(control.capture_mcp_source());
+            } else if input.mcp.is_some_and(|binding| !binding.tools().is_empty()) {
+                return Err("Realtime MCP source has no admitted SDK policy owner".into());
+            }
+            if let Some(selection) = input
+                .thread_store
+                .get::<crate::mcp_result_control::Selection>()
+            {
+                execution_data.insert((*selection).clone());
+            } else if !source_bound {
+                if let Some(control) = input
+                    .thread_store
+                    .get::<crate::mcp_result_control::McpResultControl>()
+                {
+                    if let Some(selection) = control.capture_source_selection() {
+                        execution_data.insert(selection);
+                    }
+                }
+            }
+        }
+        let application_instructions = if let Some(profile) = input.profile {
+            Some(
+                profile
+                    .profile
+                    .data
+                    .get::<crate::application_instructions::Accepted>()
+                    .ok_or("Managed Realtime source has no captured application instructions")?
+                    .text
+                    .clone(),
+            )
+        } else {
+            input
+                .thread_store
+                .get::<crate::options::ThreadInstructions>()
+                .and_then(|instructions| instructions.realtime_snapshot())
+        };
+        Ok(Some(codex_extension_api::RealtimeToolDeclarations {
+            selection_id,
+            tools: declarations,
+            execution_data,
+            application_instructions,
+        }))
+    }
+
     fn tools(
         &self,
         _: &ExtensionData,
@@ -1384,6 +1975,9 @@ impl ToolContributor for PythonContributor {
         let Some(tools) = thread.get::<PythonTools>() else {
             return Vec::new();
         };
+        if tools.managed_profiles.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         let generation = tools.snapshot();
         let use_deferred_specs = thread
             .get::<ModelPresentation>()
@@ -1394,6 +1988,7 @@ impl ToolContributor for PythonContributor {
             generation.clone(),
             use_deferred_specs,
             &generation.defaults,
+            None,
         )
     }
 
@@ -1406,22 +2001,55 @@ impl ToolContributor for PythonContributor {
         let Some(tools) = thread.get::<PythonTools>() else {
             return Vec::new();
         };
+        if let Some(source) = &tools.inherited_source {
+            if let Some(selection) = &source.mcp_selection {
+                step.insert(selection.clone());
+            }
+            if let Some(policy) = &source.mcp_policy {
+                step.insert((**policy).clone());
+            }
+        }
+        let Ok(generation) = tools.generation_for_step(Some(step)) else {
+            return Vec::new();
+        };
+        let Ok(profile) = tools.source_profile(Some(step)) else {
+            return Vec::new();
+        };
+        if let Some(receipt) = &profile {
+            step.insert(crate::native_interception::ProfileMcpSource {
+                receipt: Some(receipt.clone()),
+                policy: step.get::<crate::native_interception::ProfileMcpPolicy>(),
+            });
+        }
+        if profile.is_none()
+            && step
+                .get::<crate::native_interception::ProfileMcpSource>()
+                .is_none()
+        {
+            if let Some(source) = thread.get::<crate::native_interception::ProfileMcpSource>() {
+                step.insert((*source).clone());
+            } else if let Some(control) = thread.get::<crate::native_interception::Control>() {
+                step.insert(control.capture_mcp_source());
+            }
+        }
         let snapshot = step.get_or_init(|| {
             let active = tools
                 .selection
                 .lock()
                 .expect("JavaScript selection poisoned")
                 .clone();
-            let generation = active
-                .as_ref()
-                .map(|active| active.generation.clone())
-                .unwrap_or_else(|| tools.snapshot());
-            let slots = match active {
-                // Register the stable executors before Core assembles candidates.
-                // Core's selected plan narrows every family after the async hook.
-                Some(active) if active.names.is_some() => (0..generation.entries.len()).collect(),
-                Some(active) => active.slots.unwrap_or_else(|| generation.defaults.clone()),
-                None => generation.defaults.clone(),
+            let slots = if profile.is_some() {
+                (0..generation.entries.len()).collect()
+            } else {
+                match active {
+                    // Register the stable executors before Core assembles candidates.
+                    // Core's selected plan narrows every family after the async hook.
+                    Some(active) if active.names.is_some() => {
+                        (0..generation.entries.len()).collect()
+                    }
+                    Some(active) => active.slots.unwrap_or_else(|| generation.defaults.clone()),
+                    None => generation.defaults.clone(),
+                }
             };
             StepCatalog {
                 generation,
@@ -1431,12 +2059,16 @@ impl ToolContributor for PythonContributor {
                     .is_some_and(|presentation| presentation.use_deferred_specs),
             }
         });
+        if tools.register_generation(&snapshot.generation).is_err() {
+            return Vec::new();
+        }
         self.executors(
             thread,
             tools,
             snapshot.generation.clone(),
             snapshot.use_deferred_specs,
             &snapshot.slots,
+            profile,
         )
     }
 
@@ -1452,6 +2084,12 @@ impl ToolContributor for PythonContributor {
             let Some(tools) = thread.get::<PythonTools>() else {
                 return Ok(None);
             };
+            let profile = tools
+                .source_profile(Some(step))
+                .map_err(|error| error.to_string())?;
+            let generation = tools
+                .generation_for_step(Some(step))
+                .map_err(|error| error.to_string())?;
             let active = tools
                 .selection
                 .lock()
@@ -1460,14 +2098,16 @@ impl ToolContributor for PythonContributor {
             let Some(active) = active else {
                 return Ok(None);
             };
-            if active.turn != turn.level_id() || tools.snapshot().id != active.generation.id {
+            if active.turn != turn.level_id() || !tools.admits_generation(&active.generation) {
                 return Err("Expired step selection owner or generation".into());
             }
             let catalog = step.get::<StepCatalog>().ok_or("Missing step catalog")?;
-            if !Arc::ptr_eq(&catalog.generation, &active.generation) {
+            if !Arc::ptr_eq(&catalog.generation, &generation) {
                 return Err("Expired step catalog generation".into());
             }
-            let allowed = if let Some(names) = &active.names {
+            let allowed = if profile.is_some() {
+                candidates.to_vec()
+            } else if let Some(names) = &active.names {
                 validate_names(names, candidates).map_err(|error| error.to_string())?;
                 expand_step_helpers(names.clone(), candidates)
             } else {
@@ -1501,7 +2141,8 @@ impl ToolContributor for PythonContributor {
                         id,
                         PendingStep {
                             turn: active.turn.clone(),
-                            generation: active.generation.id,
+                            operation_generation: active.generation.id,
+                            generation: generation.id,
                             allowed: allowed.clone(),
                             reply,
                         },
@@ -1520,9 +2161,13 @@ impl ToolContributor for PythonContributor {
             let mut request = json!({"id": active.turn, "msg": {
                 "type": "_sdk_select_step", "turn_id": turn.level_id(),
                 "thread": thread.level_id(), "native_step": step.level_id(),
-                "request_id": id.to_string(), "generation": active.generation.id.to_string(),
+                "request_id": id.to_string(), "generation": generation.id.to_string(),
                 "candidates": allowed
             }});
+            if let Some(profile) = profile {
+                request["msg"]["profile_id"] = json!(profile.profile_id);
+                request["msg"]["profile_epoch"] = json!(profile.epoch);
+            }
             if let Some(context) = &tracing {
                 request["msg"]["tracing_context"] = json!(context.token());
             }
@@ -1544,7 +2189,7 @@ impl ToolContributor for PythonContributor {
                 .selection
                 .lock()
                 .expect("JavaScript selection poisoned");
-            if tools.snapshot().id != active.generation.id
+            if !tools.admits_generation(&active.generation)
                 || !current.as_ref().is_some_and(|current| {
                     current.turn == active.turn
                         && Arc::ptr_eq(&current.generation, &active.generation)
@@ -1558,6 +2203,7 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    profile: Option<codex_extension_api::AgentProfileReceipt>,
     thread: String,
     tools: Arc<PythonTools>,
     generation: Arc<Generation>,
@@ -1589,7 +2235,11 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
-        self.tools.has_manual_tools()
+        self.generation
+            .manual_slots
+            .as_ref()
+            .map(|slots| !slots.is_empty())
+            .unwrap_or_else(|| self.tools.has_manual_tools())
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
@@ -1608,6 +2258,18 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                 .retain_search_schema(&self.generation);
         }
         info
+    }
+
+    fn on_result_accepted(
+        &self,
+        _: &str,
+        _: &str,
+        result: &dyn ToolOutput,
+    ) -> codex_tools::AcceptedToolOutcome {
+        codex_tools::AcceptedToolOutcome {
+            start_response: result.realtime_response_requested(),
+            ..Default::default()
+        }
     }
 
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> ToolExecutorFuture<'a>
@@ -1635,7 +2297,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
             }
             let (key, receiver) = self
                 .tools
-                .enqueue(
+                .enqueue_profile(
                     &self.thread,
                     &self.generation,
                     self.slot,
@@ -1644,6 +2306,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     arguments,
                     &call.source,
                     &call.model,
+                    self.profile.as_ref(),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let _reply = PendingReply {
@@ -1664,12 +2327,34 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     ));
                 }
             };
-            Ok(Box::new(PythonOutput(response)) as Box<dyn ToolOutput>)
+            Ok(Box::new(RealtimeToolOutput {
+                output: PythonOutput(response.response),
+                start_response: response.start_response,
+            }) as Box<dyn ToolOutput>)
         })
     }
 }
 
 pub(crate) struct PythonOutput(pub(crate) DynamicToolResponse);
+
+struct RealtimeToolOutput {
+    output: PythonOutput,
+    start_response: bool,
+}
+impl ToolOutput for RealtimeToolOutput {
+    fn log_output(&self) -> String {
+        self.output.log_output()
+    }
+    fn success_for_logging(&self) -> bool {
+        self.output.success_for_logging()
+    }
+    fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        self.output.to_response_item(call_id, payload)
+    }
+    fn realtime_response_requested(&self) -> bool {
+        self.start_response
+    }
+}
 
 impl ToolLifecycleContributor for PythonContributor {
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
@@ -1815,8 +2500,123 @@ impl ToolOutput for PythonOutput {
 mod pending_tests {
     use super::*;
 
+    #[test]
+    fn response_scheduling_flag_stays_out_of_user_content() {
+        let request = json!({"_sdk_python_tool":{"thread":"root","generation":0,"slot":0},"turnId":"turn","callId":"call"});
+        let response = json!({"contentItems":[{"type":"inputText","text":"{\"start_response\":false}"}],"success":true});
+        let default_reply: Reply =
+            serde_json::from_value(json!({"request":request,"response":response})).unwrap();
+        assert!(default_reply.start_response);
+        let background: Reply = serde_json::from_value(
+            json!({"request":request,"response":response,"start_response":false}),
+        )
+        .unwrap();
+        let output = RealtimeToolOutput {
+            output: PythonOutput(background.response),
+            start_response: background.start_response,
+        };
+        assert!(!output.realtime_response_requested());
+        assert_eq!(output.log_output(), "{\"start_response\":false}");
+        let foreground: ToolReply = default_reply.response.into();
+        assert!(foreground.start_response);
+    }
+
     // Exercise the actual registry and its lifetime owners without starting Core,
     // a runtime, a network service, or a native thread.
+    #[test]
+    fn realtime_capture_keeps_raw_default_declaration_and_original_generation_after_replace() {
+        let mut owned = Arc::try_unwrap(tools()).ok().expect("exclusive fixture");
+        owned.preserve_schemas = true;
+        let raw_schema = json!({"type":"object","properties":{"email":{"type":"string","format":"email","examples":["a@example.com"]}},"required":["email"],"additionalProperties":false});
+        let declaration = |name: &str, deferred: bool| {
+            DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                name: name.into(),
+                description: "Original clean description".into(),
+                input_schema: raw_schema.clone(),
+                defer_loading: deferred,
+            })
+        };
+        let mut initial = owned
+            .prepare(
+                0,
+                vec![
+                    declaration("decision", false),
+                    declaration("hidden", false),
+                    declaration("deferred", true),
+                ],
+            )
+            .unwrap();
+        initial.defaults = vec![0, 2];
+        assert!(initial.schema_token.is_some());
+        *owned.current.write().unwrap() = Arc::new(initial);
+        let thread = ExtensionData::new("root");
+        thread.insert(owned);
+        let instructions =
+            crate::options::ThreadInstructions::for_test(Some("Accepted text".into()), true);
+        instructions
+            .confirm(crate::application_instructions::Accepted {
+                id: codex_protocol::ResponseItemId::new("msg_sdk_application_capture"),
+                text: "Accepted text".into(),
+                files: Vec::new(),
+            })
+            .unwrap();
+        thread.insert(instructions);
+        let session = ExtensionData::new("session");
+        let contributor = PythonContributor {
+            manager: Weak::new(),
+            models_config: Default::default(),
+            code_mode_enabled: false,
+        };
+        let captured = contributor
+            .capture_realtime_tools(codex_extension_api::RealtimeToolCaptureInput {
+                session_store: &session,
+                thread_store: &thread,
+                profile: None,
+                mcp: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            captured.application_instructions.as_deref(),
+            Some("Accepted text")
+        );
+        assert_eq!(captured.tools.len(), 1);
+        assert_eq!(captured.tools[0].spec.name, "decision");
+        assert_eq!(
+            captured.tools[0].spec.description,
+            "Original clean description"
+        );
+        assert_eq!(captured.tools[0].spec.parameters, raw_schema);
+        let tools = thread.get::<PythonTools>().unwrap();
+        assert!(tools.pending.lock().unwrap().is_empty());
+        assert!(tools.step_replies.lock().unwrap().is_empty());
+        let original = tools.snapshot();
+        let next = tools.allocate_generation().unwrap();
+        tools
+            .publish(
+                tools
+                    .prepare(next, vec![declaration("replacement", false)])
+                    .unwrap(),
+            )
+            .unwrap();
+        let step = ExtensionData::new_with_init("original-source", captured.execution_data);
+        let executors = contributor.tools_for_step(&session, &thread, &step);
+        assert_eq!(
+            executors
+                .iter()
+                .map(|executor| executor.tool_name().name)
+                .collect::<Vec<_>>(),
+            vec!["decision", "deferred"]
+        );
+        assert!(Arc::ptr_eq(
+            &tools.generation_for_step(Some(&step)).unwrap(),
+            &original
+        ));
+        assert_eq!(tools.source_profile(Some(&step)).unwrap(), None);
+        assert!(!tools.managed_profiles.load(Ordering::Acquire));
+        assert_eq!(tools.snapshot().entries[0].name.name, "replacement");
+    }
+
     pub(super) fn tools() -> Arc<PythonTools> {
         let tools = Arc::new(PythonTools {
             local_store: None,
@@ -1826,10 +2626,15 @@ mod pending_tests {
             current: RwLock::new(Arc::new(Generation {
                 id: 0,
                 schema_token: None,
+                manual_slots: None,
                 entries: Vec::new(),
                 specs: Vec::new(),
                 defaults: Vec::new(),
             })),
+            generation_high_water: AtomicU64::new(0),
+            profile_catalogs: RwLock::new(HashMap::new()),
+            managed_profiles: AtomicBool::new(false),
+            inherited_source: None,
             fixed: HashSet::new(),
             policy: Arc::default(),
             pending: Mutex::default(),
@@ -1989,6 +2794,7 @@ mod pending_tests {
         ));
         assert!(tools.pending.lock().unwrap().is_empty());
         let specs = tools.snapshot().specs.clone();
+        assert_eq!(tools.allocate_generation().unwrap(), 1);
         tools.publish(tools.prepare(1, specs).unwrap()).unwrap();
         configure(&tools);
         let (new, _receiver) = tools
@@ -2014,7 +2820,8 @@ mod pending_tests {
     #[test]
     fn replacement_child_owner_rejects_the_previous_incarnation_and_grant() {
         let root = tools();
-        let old = Arc::new(PythonTools::descendant(&root, "old".into(), Arc::default()).unwrap());
+        let old =
+            Arc::new(PythonTools::descendant(&root, "old".into(), Arc::default(), None).unwrap());
         root.family
             .members
             .write()
@@ -2033,7 +2840,8 @@ mod pending_tests {
             )
             .unwrap();
         assert!(root.owner("root", &old_key).is_some());
-        let new = Arc::new(PythonTools::descendant(&root, "new".into(), Arc::default()).unwrap());
+        let new =
+            Arc::new(PythonTools::descendant(&root, "new".into(), Arc::default(), None).unwrap());
         root.family
             .members
             .write()
@@ -2090,6 +2898,7 @@ mod pending_tests {
         tools.step_replies.lock().unwrap().insert(
             7,
             PendingStep {
+                operation_generation: 0,
                 turn: "turn".into(),
                 generation: 0,
                 allowed: vec![tools.snapshot().entries[0].name.clone()],
@@ -2121,7 +2930,7 @@ mod pending_tests {
         Arc::get_mut(&mut root).unwrap().child_before_step = true;
         let thread = ExtensionData::new("child");
         let child = thread.get_or_init(|| {
-            PythonTools::descendant(&root, "incarnation".into(), Arc::default()).unwrap()
+            PythonTools::descendant(&root, "incarnation".into(), Arc::default(), None).unwrap()
         });
         root.family
             .members
@@ -2158,7 +2967,7 @@ mod pending_tests {
         assert_eq!(executors.len(), 1);
         assert_eq!(executors[0].tool_name(), ToolName::plain("decision"));
         let disabled =
-            PythonTools::descendant(&tools(), "disabled".into(), Arc::default()).unwrap();
+            PythonTools::descendant(&tools(), "disabled".into(), Arc::default(), None).unwrap();
         assert!(disabled.turn_selection("turn", None).is_none());
         assert!(root.selection.lock().unwrap().is_none());
     }
@@ -2217,6 +3026,7 @@ mod pending_tests {
         child.step_replies.lock().unwrap().insert(
             7,
             PendingStep {
+                operation_generation: 0,
                 turn: "child-turn".into(),
                 generation: 0,
                 allowed: vec![ToolName::plain("decision")],
@@ -2260,8 +3070,9 @@ mod pending_tests {
         let mut selecting =
             contributor.select_tools_for_step(&session, &thread, &turn, &step, &candidates);
         assert!(futures_util::poll!(&mut selecting).is_pending());
-        let successor =
-            Arc::new(PythonTools::descendant(&root, "successor".into(), Arc::default()).unwrap());
+        let successor = Arc::new(
+            PythonTools::descendant(&root, "successor".into(), Arc::default(), None).unwrap(),
+        );
         root.family
             .members
             .write()
@@ -2869,6 +3680,7 @@ mod pending_tests {
         let tools = tools();
         let mut generation = tools.prepare(1, tools.snapshot().specs.clone()).unwrap();
         generation.defaults.clear();
+        assert_eq!(tools.allocate_generation().unwrap(), generation.id);
         tools.publish(generation).unwrap();
         assert_eq!(tools.current_specs().unwrap(), json!([]));
         assert_eq!(tools.snapshot().entries.len(), 1);
@@ -2908,6 +3720,7 @@ mod pending_tests {
             tools.step_replies.lock().unwrap().insert(
                 8,
                 PendingStep {
+                    operation_generation: 0,
                     turn: "next".into(),
                     generation: 0,
                     allowed: vec![tools.snapshot().entries[0].name.clone()],

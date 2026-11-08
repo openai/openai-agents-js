@@ -1,3 +1,19 @@
+import { isBackgroundToolResponse } from './background-result';
+import {
+  allocatedProfileCatalogs,
+  checkProfileReceipt,
+  parseProfileReceipt,
+  profileInteger,
+  encodeProfileReceipt,
+  type AgentProfileReceipt,
+  type AgentProfileRuntime,
+  type CapturedAgentGraph,
+} from './agent-profiles';
+import {
+  createNativeRealtimeOwner,
+  type NativeRealtimeSession,
+  type NativeRealtimeOptions,
+} from './realtime';
 import {
   capturePreparedRequest,
   preparedRequestFromNative,
@@ -217,6 +233,7 @@ import {
   type SessionTool,
   type Tool,
   type ToolCatalog,
+  type FunctionTool,
 } from './tools';
 import type { NativeProviderRoutes } from './http-model';
 
@@ -256,6 +273,8 @@ export interface SessionOptions {
     parentTrace?: TraceContext,
   ) => Promise<Session<string>>;
   applicationAgent?: import('./public-agent').Agent<any, any>;
+  /** @internal Sealed live declarations; excluded from persisted options. */
+  agentGraph?: CapturedAgentGraph & { readonly fingerprint: string };
   context?: unknown;
   initialModelSettings?: ModelSettings;
   webSearch?: WebSearch;
@@ -379,6 +398,9 @@ export function validateMaxModelSteps(
 }
 
 interface OperationSelection {
+  readonly originCatalog?: ToolCatalog;
+  readonly originMcp?: readonly McpTool[];
+  readonly originProfileId?: string;
   readonly names: readonly ReturnType<typeof toolIdentity>[] | undefined;
   readonly maxModelSteps?: number;
   readonly budget?: RunBudgetTracker;
@@ -713,18 +735,28 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
 
 export type SessionUpdate<Context> =
   | {
+      agent: import('./public-agent').Agent<Context, any>;
+      model?: never;
+      modelSettings?: never;
+      instructions?: never;
+      tools?: never;
+    }
+  | {
+      agent?: never;
       model?: string;
       modelSettings?: ModelSettings;
       instructions?: never;
       tools?: never;
     }
   | {
+      agent?: never;
       instructions: string;
       model?: never;
       modelSettings?: never;
       tools?: never;
     }
   | {
+      agent?: never;
       tools: readonly Tool<Context>[];
       model?: never;
       modelSettings?: never;
@@ -761,7 +793,7 @@ export class InteractionRequired extends NativeError {
 }
 
 const toolInvocation = new AsyncLocalStorage<{
-  session: Session<unknown>;
+  session: Session<any, any>;
   run?: NativeTurn;
   child?: ChildCallbackOwner;
   active: boolean;
@@ -791,8 +823,9 @@ interface OutputRepair {
 const submissions = new WeakMap<
   NativeTurn,
   {
-    readonly output: PreparedOutput;
+    output: PreparedOutput;
     readonly outputOverride: boolean;
+    profileSettlement?: Promise<void>;
     callerSignal?: AbortSignal;
     observation: ObservationPhase;
     next?: NativeTurn;
@@ -921,6 +954,408 @@ type ContextReplacement = {
 };
 
 export class Session<OutputT = string, Context = unknown> {
+  private profileRuntimes: ReadonlyMap<string, AgentProfileRuntime> = new Map();
+  private readonly profileCatalogs = new Map<string, ToolCatalog>();
+  private readonly profileMcp = new Map<string, readonly McpTool[]>();
+  private readonly profileStepMcp = new Map<string, readonly McpTool[]>();
+  private profileCurrent?: AgentProfileReceipt;
+  private profileHighWater = 0n;
+  private profileKey(id: string, generation: bigint | string): string {
+    return `${id}\0${generation}`;
+  }
+  private get hasMcpPolicyReaders(): boolean {
+    return (
+      this.options.mcpTools !== undefined ||
+      [...this.profileRuntimes.values()].some(
+        (profile) => profile.mcp.length > 0,
+      )
+    );
+  }
+
+  private realtimeOwner?: ReturnType<typeof createNativeRealtimeOwner>;
+
+  /** Open native media; closing the returned owner leaves this Session open. */
+  async realtime(
+    options: NativeRealtimeOptions = {},
+  ): Promise<NativeRealtimeSession> {
+    this.checkCallbackOperation('open Realtime on');
+    if (
+      !this.isOpen ||
+      this.lifecycle.kind === 'mutation' ||
+      this.manualSeal ||
+      this.manualSealed ||
+      this.graphStops.size
+    )
+      throw new NativeError(
+        'Realtime requires an open Session without checkpoint or mutation work',
+      );
+    if (this.realtimeOwner)
+      throw new NativeError('Session already has a native Realtime owner');
+    options.signal?.throwIfAborted();
+    for (const [name, value] of Object.entries(options)) {
+      if (
+        ![
+          'model',
+          'voice',
+          'instructions',
+          'signal',
+          'settings',
+          'transport',
+          'tools',
+          'outputGuardrails',
+          'guardrailTextThreshold',
+        ].includes(name)
+      )
+        throw new TypeError(`Unsupported Realtime option: ${name}`);
+      if (
+        name !== 'signal' &&
+        name !== 'settings' &&
+        name !== 'transport' &&
+        name !== 'tools' &&
+        name !== 'outputGuardrails' &&
+        name !== 'guardrailTextThreshold' &&
+        value !== undefined &&
+        typeof value !== 'string'
+      )
+        throw new TypeError(`Realtime ${name} must be a string`);
+    }
+    const native = this.#native;
+    const mediaCleanup = native._realtime_cleanup();
+    const owner = createNativeRealtimeOwner(
+      this,
+      (operation, params) => {
+        // Only this private profile DTO carries a native u64 epoch. Settings
+        // metadata and application JSON retain their ordinary JSON semantics.
+        const profile = params.profile;
+        if (
+          operation === 'realtime_conversation_update_sdk' &&
+          profile &&
+          typeof profile === 'object' &&
+          !Array.isArray(profile)
+        ) {
+          const target = profile.target;
+          if (target && typeof target === 'object' && !Array.isArray(target))
+            return native.call(
+              operation,
+              JSON.stringify({
+                ...params,
+                profile: {
+                  ...profile,
+                  target: {
+                    ...target,
+                    epoch: JSON.rawJSON(profileInteger(target.epoch)),
+                  },
+                },
+              }),
+            );
+        }
+        return native.call(operation, encode(params));
+      },
+      () => {
+        if (this.realtimeOwner === owner) this.realtimeOwner = undefined;
+      },
+      { ...options },
+      (generation) => mediaCleanup.close(generation),
+    );
+    this.realtimeOwner = owner;
+    return owner._start();
+  }
+
+  /** @internal Select only sealed captured functions; Core rechecks its atomic source catalog. */
+  async _realtimeFunctionTools(
+    tools: readonly FunctionTool<any>[],
+    { allowMissing = false }: { allowMissing?: boolean } = {},
+  ): Promise<{ tools: JsonObject[]; selectionId: string | null }> {
+    this.checkCallbackOperation('configure Realtime tools in');
+    if (!tools.length) return { tools: [], selectionId: null };
+    const raw = parseProfileReceipt(
+      await this.#native.call('realtime_tool_selection_sdk', '{}'),
+    );
+    if (
+      !raw ||
+      typeof raw !== 'object' ||
+      !('selection_id' in raw) ||
+      typeof raw.selection_id !== 'string' ||
+      !raw.selection_id ||
+      !('catalog_generation' in raw)
+    )
+      throw new NativeError(
+        'Native Realtime tool selection has no captured owner',
+      );
+    const generation = profileInteger(raw.catalog_generation);
+    let catalog: ToolCatalog | undefined;
+    if (this.options.agentGraph) {
+      const receipt = checkProfileReceipt(
+        'profile_receipt' in raw ? raw.profile_receipt : undefined,
+        this.options.agentGraph,
+      );
+      catalog = this.profileCatalogs.get(
+        this.profileKey(receipt.profile_id, generation),
+      );
+    } else if (
+      ('profile_receipt' in raw && raw.profile_receipt != null) ||
+      generation !== this.catalog.generation.toString()
+    )
+      throw new NativeError(
+        'Native Realtime tool selection is no longer current',
+      );
+    else catalog = this.catalog;
+    if (!catalog)
+      throw new NativeError(
+        'Native Realtime tool selection has no captured catalog',
+      );
+    const selected: JsonObject[] = [];
+    const seen = new Set<SessionTool>();
+    for (const tool of tools) {
+      if (!tool || tool.kind !== 'function')
+        throw new TypeError(
+          'Realtime tools must be captured function declarations',
+        );
+      const captured = catalog.tools.find(
+        (candidate) =>
+          toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
+      );
+      if (!captured || captured.kind !== 'function') {
+        if (allowMissing) continue;
+        throw new TypeError(
+          'Realtime tool was not admitted in the current Agent catalog',
+        );
+      }
+      if (seen.has(captured))
+        throw new TypeError(`Duplicate Realtime tool: ${captured.name}`);
+      seen.add(captured);
+      const [spec] = JSON.parse(captureTools([captured]).specsJson);
+      if (spec.type !== 'function')
+        throw new TypeError(
+          'Realtime tools require bare function declarations',
+        );
+      const { type: _type, ...definition } = spec;
+      selected.push(definition);
+    }
+    return { tools: selected, selectionId: raw.selection_id };
+  }
+
+  /** @internal A provider refresh carries the native receipt, never an inferred Agent. */
+  _realtimeProfileTarget(value: unknown): JsonObject | null {
+    if (!this.options.agentGraph) {
+      if (value != null)
+        throw new NativeError('Unexpected Realtime Agent profile');
+      return null;
+    }
+    const receipt = checkProfileReceipt(value, this.options.agentGraph);
+    return { profile_id: receipt.profile_id, epoch: receipt.epoch };
+  }
+  async _realtimeCurrentProfile(): Promise<JsonObject | null> {
+    if (!this.options.agentGraph) return null;
+    return this._realtimeProfileTarget(
+      parseProfileReceipt(await this.#native._active_agent_profile()),
+    );
+  }
+
+  private messageProfile(
+    message: Record<string, unknown>,
+  ): AgentProfileReceipt | undefined {
+    const marker =
+      message.profile_id == null &&
+      message.profile_epoch == null &&
+      message._sdk_python_tool &&
+      typeof message._sdk_python_tool === 'object'
+        ? (message._sdk_python_tool as Record<string, unknown>)
+        : message;
+    if (marker.profile_id == null && marker.profile_epoch == null) {
+      if (this.options.agentGraph)
+        throw new NativeError(
+          'Native callback is missing its source Agent profile',
+        );
+      return;
+    }
+    if (!this.options.agentGraph)
+      throw new NativeError('Native callback has an unexpected Agent profile');
+    return checkProfileReceipt(
+      { profile_id: marker.profile_id, epoch: marker.profile_epoch },
+      this.options.agentGraph,
+    );
+  }
+  private sourceCatalog(
+    message: Record<string, unknown>,
+    generation: string,
+  ): ToolCatalog {
+    const source = this.messageProfile(message);
+    const catalog = source
+      ? this.profileCatalogs.get(
+          this.profileKey(source.profile_id, profileInteger(generation)),
+        )
+      : this.catalog;
+    if (!catalog || catalog.generation.toString() !== generation)
+      throw new NativeError('Native callback has no captured source catalog');
+    return catalog;
+  }
+  private sourceMcp(
+    message: Record<string, unknown>,
+    generation: string,
+  ): readonly McpTool[] {
+    const source = this.messageProfile(message);
+    if (!source) {
+      if (this.mcpGeneration.toString() !== generation)
+        throw new NativeError('Expired native MCP source');
+      return this.mcpTools;
+    }
+    const servers = this.profileMcp.get(
+      this.profileKey(source.profile_id, profileInteger(generation)),
+    );
+    if (!servers)
+      throw new NativeError(
+        'Native MCP callback has no captured source selection',
+      );
+    return servers;
+  }
+  private sourceApplicationAgent(
+    message: Record<string, unknown>,
+  ): import('./public-agent').Agent<any, any> | undefined {
+    const receipt = this.messageProfile(message);
+    return receipt
+      ? this.profileRuntimes.get(receipt.profile_id)!.profile.agent
+      : this.options.applicationAgent;
+  }
+  /** @internal Resolve a source snapshot without consulting the currently active Agent. */
+  _realtimeGuardrailSource(receipt: unknown): {
+    agent: import('./public-agent').Agent<any, any>;
+    context: unknown;
+  } {
+    const agent = this.options.agentGraph
+      ? this.profileRuntimes.get(
+          checkProfileReceipt(receipt, this.options.agentGraph).profile_id,
+        )!.profile.agent
+      : this.options.applicationAgent;
+    if (!agent || (!this.options.agentGraph && receipt != null))
+      throw new NativeError(
+        'Native voice source has no admitted Agent profile',
+      );
+    return { agent, context: this.options.context };
+  }
+  /** Return the original admitted Agent identified by Core's committed receipt. */
+  async getActiveAgent(): Promise<
+    import('./public-agent').Agent<Context, OutputT>
+  > {
+    this.checkCallbackOperation('inspect the active Agent of');
+    if (!this.isOpen) throw new NativeError('Session is closed');
+    if (!this.options.agentGraph) {
+      if (!this.options.applicationAgent)
+        throw new NativeError('Session has no application Agent');
+      return this.options.applicationAgent;
+    }
+    const receipt = checkProfileReceipt(
+      parseProfileReceipt(await this.#native._active_agent_profile()),
+      this.options.agentGraph,
+    );
+    if (!this.isOpen) throw new NativeError('Session is closed');
+    return this.profileRuntimes.get(receipt.profile_id)!.profile.agent;
+  }
+  private rememberProfileBindings(): void {
+    if (!this.profileCurrent) return;
+    this.profileHighWater =
+      this.catalog.generation > this.profileHighWater
+        ? this.catalog.generation
+        : this.profileHighWater;
+    this.profileCatalogs.set(
+      this.profileKey(this.profileCurrent.profile_id, this.catalog.generation),
+      this.catalog,
+    );
+    this.profileStepMcp.set(
+      this.profileKey(this.profileCurrent.profile_id, this.catalog.generation),
+      Object.freeze([...this.mcpBindings]),
+    );
+    this.profileMcp.set(
+      this.profileKey(this.profileCurrent.profile_id, this.mcpGeneration),
+      Object.freeze([...this.mcpBindings]),
+    );
+  }
+  private adoptProfile(
+    receipt: AgentProfileReceipt,
+    preserveCurrent = false,
+  ): void {
+    const graph = this.options.agentGraph;
+    if (!graph) return;
+    const same =
+      this.profileCurrent?.profile_id === receipt.profile_id &&
+      this.profileCurrent.epoch === receipt.epoch;
+    if (preserveCurrent && same) {
+      this.rememberProfileBindings();
+      return;
+    }
+    const profile = this.profileRuntimes.get(receipt.profile_id)!;
+    this.catalog = profile.catalog;
+    this.openingCatalog = profile.catalog;
+    this.defaultTools = [...profile.catalog.tools];
+    this.defaultOutput = profile.output;
+    this.openingMcpTools = profile.mcp;
+    this.mcpBindings = profile.mcp;
+    this.defaultMcpTools = profile.mcp;
+    this.mcpTools = profile.mcp.filter(
+      (server) =>
+        (server.tools.length > 0 ||
+          (server instanceof StdioMCP && server.lifetime === 'turn')) &&
+        (!(server instanceof HttpMCP) || server.activation !== 'operation'),
+    );
+    this.mcpGeneration = profile.catalog.generation;
+    this.allowedTools.clear();
+    this.allowedMcpTools.clear();
+    this.admittedDeclarations.clear();
+    for (const tool of profile.catalog.tools) {
+      const identity = toolIdentity(tool);
+      const key = JSON.stringify([identity.namespace, identity.name]);
+      this.allowedTools.add(key);
+      this.admittedDeclarations.set(
+        key,
+        new WeakSet([toolDeclarationIdentity(tool)]),
+      );
+    }
+    for (const identity of mcpToolNames(profile.mcp))
+      this.allowedMcpTools.add(
+        JSON.stringify([identity.namespace, identity.name]),
+      );
+    this.threadOptions.instructions = profile.instructions;
+    this.profileCurrent = receipt;
+    this.rememberProfileBindings();
+  }
+  private async commitProfile(
+    receipt: AgentProfileReceipt,
+    preserveCurrent = true,
+    owner?: NativeTurn,
+  ): Promise<void> {
+    const lifecycle = this.lifecycle;
+    const same =
+      this.profileCurrent?.profile_id === receipt.profile_id &&
+      this.profileCurrent.epoch === receipt.epoch;
+    const catalog =
+      preserveCurrent && same
+        ? this.catalog
+        : this.profileRuntimes.get(receipt.profile_id)!.catalog;
+    const manual = catalog.tools.some((tool) => tool.kind === 'manual')
+      ? await this.#native._manual_checkpoint_config_supported()
+      : false;
+    if (owner && !this.owns(owner)) return;
+    if (this.lifecycle !== lifecycle)
+      throw new NativeError('Session changed while capturing its active Agent');
+    this.adoptProfile(receipt, preserveCurrent);
+    this.nativeManualCheckpoint = manual;
+  }
+  private async refreshProfileBindings(
+    preserveCurrent = true,
+    owner?: NativeTurn,
+  ): Promise<void> {
+    if (!this.options.agentGraph) return;
+    const lifecycle = this.lifecycle;
+    const receipt = checkProfileReceipt(
+      parseProfileReceipt(await this.#native._active_agent_profile()),
+      this.options.agentGraph,
+    );
+    if (owner && !this.owns(owner)) return;
+    if (this.lifecycle !== lifecycle)
+      throw new NativeError('Session changed while capturing its active Agent');
+    await this.commitProfile(receipt, preserveCurrent, owner);
+  }
+
   private sessionInteractionFailure?: { error: unknown };
   private restoredRoot?: { turn: Turn<unknown>; output: PreparedOutput };
 
@@ -1022,12 +1457,12 @@ export class Session<OutputT = string, Context = unknown> {
     Map<string, { server: string; tool: string }>
   >();
   private starting?: SessionStartup;
-  private readonly defaultOutput: PreparedOutput;
-  private readonly openingCatalog: ToolCatalog;
+  private defaultOutput: PreparedOutput;
+  private openingCatalog: ToolCatalog;
   private readonly capabilityView: Capabilities;
   private sealedStateJson?: string;
   private mcpTools: readonly McpTool[];
-  private readonly openingMcpTools: readonly McpTool[];
+  private openingMcpTools: readonly McpTool[];
   private mcpBindings: readonly McpTool[];
   private defaultMcpTools: readonly McpTool[];
   private readonly allowedMcpTools: Set<string>;
@@ -1117,6 +1552,7 @@ export class Session<OutputT = string, Context = unknown> {
     private readonly oneShot?: OneShotOptions,
     modelApiKey?: string,
   ) {
+    this.profileRuntimes = options.agentGraph?.profiles ?? new Map();
     this.defaultOutput = options.output ?? prepareOutput(undefined);
     this.openingCatalog = catalog;
     const receipts = isOutputAwareState(restored) ? restored : undefined;
@@ -1136,7 +1572,14 @@ export class Session<OutputT = string, Context = unknown> {
         JSON.stringify([toolIdentity(tool).namespace, tool.name]),
         new WeakSet([toolDeclarationIdentity(tool)]),
       );
-    this.openingMcpTools = Object.freeze([...(options.mcpTools ?? [])]);
+    const restoredProfile = options.agentGraph?.restoredSource
+      ? options.agentGraph.profiles.get(
+          options.agentGraph.restoredSource.profile_id,
+        )
+      : undefined;
+    this.openingMcpTools = Object.freeze([
+      ...(restoredProfile?.mcp ?? options.mcpTools ?? []),
+    ]);
     this.mcpBindings = this.openingMcpTools;
     this.defaultMcpTools = checkpointResourceServers(
       readCheckpointSelections(restored).default_resource_servers,
@@ -1275,7 +1718,12 @@ export class Session<OutputT = string, Context = unknown> {
         const defaults = this.defaultTools;
         await this.publishCatalog(
           async () =>
-            captureTools(this.catalog.tools, this.catalog.generation + 1n),
+            captureTools(
+              this.catalog.tools,
+              (this.options.agentGraph
+                ? this.profileHighWater
+                : this.catalog.generation) + 1n,
+            ),
           defaults,
         );
       }
@@ -1284,7 +1732,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.catalog.tools.some((tool) => tool.kind === 'manual'))
         await this.configureManualTools();
       this.ownReader(withoutTracing(() => this.readEvents()));
-      if (this.options.mcpTools) {
+      if (this.options.mcpTools && !this.options.agentGraph) {
         const boundary = {
           id: randomUUID(),
           observed: Promise.withResolvers<void>(),
@@ -1322,12 +1770,65 @@ export class Session<OutputT = string, Context = unknown> {
           startup.failure.promise,
         ]);
       }
-      if (this.options.mcpTools) {
+      if (this.hasMcpPolicyReaders) {
         this.mcpReaderStarted = true;
         this.ownReader(withoutTracing(() => this.readMcpResults()));
       }
-      if (executorPolicy || this.options.nativeAgents || this.options.mcpTools)
+      if (
+        executorPolicy ||
+        this.options.nativeAgents ||
+        this.hasMcpPolicyReaders
+      )
         this.ownReader(withoutTracing(() => this.readInterceptions()));
+      if (this.options.agentGraph) {
+        const graph = this.options.agentGraph;
+        const allocated = allocatedProfileCatalogs(
+          graph,
+          parseProfileReceipt(
+            await this.#native._configure_agent_profiles(
+              JSON.stringify(graph.roster),
+              graph.rootId,
+            ),
+          ),
+          this.profileHighWater,
+        );
+        this.profileRuntimes = allocated.profiles;
+        this.profileHighWater = allocated.highWater;
+        for (const [id, profile] of this.profileRuntimes) {
+          this.profileCatalogs.set(
+            this.profileKey(id, profile.catalog.generation),
+            profile.catalog,
+          );
+          this.profileStepMcp.set(
+            this.profileKey(id, profile.catalog.generation),
+            profile.mcp,
+          );
+          this.profileMcp.set(
+            this.profileKey(id, profile.catalog.generation),
+            profile.mcp,
+          );
+        }
+        // Immutable templates remain separate from an accepted restored subset.
+        this.profileCatalogs.set(
+          this.profileKey(
+            allocated.active.profile_id,
+            allocated.activeCatalog.generation,
+          ),
+          allocated.activeCatalog,
+        );
+        if (this.options.agentGraph?.restoredSource) {
+          this.catalog = allocated.activeCatalog;
+          this.profileCurrent = allocated.active;
+          this.mcpGeneration = this.profileRuntimes.get(
+            allocated.active.profile_id,
+          )!.catalog.generation;
+          this.defaultOutput = this.profileRuntimes.get(
+            allocated.active.profile_id,
+          )!.output;
+          this.rememberProfileBindings();
+          await this.commitProfile(allocated.active, true);
+        } else await this.commitProfile(allocated.active, false);
+      }
       if (startup.cause) throw startup.cause.value;
       this.starting = undefined;
     } catch (error) {
@@ -1356,13 +1857,17 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private configureNative(native: NativeThread): void {
-    if (this.options.mcpTools) native._enable_native_mcp_results(30);
+    if (this.hasMcpPolicyReaders) native._enable_native_mcp_results(30);
     const executorPolicy =
       this.environment !== null && hasExecutorPolicy(this.environment);
-    if (executorPolicy || this.options.nativeAgents || this.options.mcpTools) {
+    if (
+      executorPolicy ||
+      this.options.nativeAgents ||
+      this.hasMcpPolicyReaders
+    ) {
       native._enable_native_interception(
         30,
-        this.options.nativeAgents || this.options.mcpTools
+        this.options.nativeAgents || this.hasMcpPolicyReaders
           ? 'thread_tree'
           : 'root',
       );
@@ -1383,10 +1888,10 @@ export class Session<OutputT = string, Context = unknown> {
     this.readers = [];
     this.childObservationProducer = { ended: false, eventReaderEnded: false };
     this.ownReader(withoutTracing(() => this.readEvents()));
-    this.mcpReaderStarted = !!this.options.mcpTools;
+    this.mcpReaderStarted = this.hasMcpPolicyReaders;
     if (this.mcpReaderStarted)
       this.ownReader(withoutTracing(() => this.readMcpResults()));
-    if (executorPolicy || this.options.nativeAgents || this.options.mcpTools)
+    if (executorPolicy || this.options.nativeAgents || this.hasMcpPolicyReaders)
       this.ownReader(withoutTracing(() => this.readInterceptions()));
     this.watchChildObservationProducer();
   }
@@ -2680,7 +3185,14 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     const entry = this.pendingRoots.shift();
-    if (entry) this.dispatchStart(entry.run, entry.parts);
+    if (entry) {
+      if (
+        this.options.agentGraph &&
+        !submissions.get(entry.run)!.outputOverride
+      )
+        submissions.get(entry.run)!.output = this.defaultOutput;
+      this.dispatchStart(entry.run, entry.parts);
+    }
   }
 
   submit(
@@ -2737,8 +3249,80 @@ export class Session<OutputT = string, Context = unknown> {
     return this.#turnFor(run);
   }
 
+  /** @internal Reuse the existing Session callback scope for owned voice policies. */
+  async _runVoiceCallback<T>(callback: () => T | Promise<T>): Promise<T> {
+    const scope = { session: this, active: true };
+    try {
+      return await toolInvocation.run(scope, callback);
+    } finally {
+      scope.active = false;
+    }
+  }
+
+  /** @internal Public voice lifecycle operations cannot join their own callbacks. */
+  _checkVoiceOperation(operation: string): void {
+    this.checkCallbackOperation(operation);
+  }
+
+  /** @internal One response's admitted native tools, without a fabricated model request. */
+  async _submitRealtimeTools(
+    generation: string,
+    responseId: string,
+    callIds: readonly string[],
+  ): Promise<Turn<unknown>> {
+    this.checkCallbackOperation('start Realtime tools in');
+    this.idle('start Realtime tools');
+    if (
+      !generation ||
+      !responseId ||
+      !callIds.length ||
+      callIds.some((id) => typeof id !== 'string' || !id) ||
+      new Set(callIds).size !== callIds.length
+    )
+      throw new TypeError(
+        'Realtime tool batches require a response and distinct nonempty call IDs',
+      );
+    const selected = [...callIds];
+    const output = prepareOutput(undefined);
+    const selection = this.captureSelection(undefined, output);
+    const parentTrace = captureTraceContext() ?? this.options.parentTrace;
+    const run = this.allocateRun(output, true);
+    run.parentTrace = parentTrace;
+    run.selection = selection;
+    run.tracing = this.captureRootTracing(undefined);
+    const send = (tracingContext?: string) =>
+      this.#native._submit_realtime_tools(
+        JSON.stringify({
+          generation,
+          response_id: responseId,
+          call_ids: selected,
+          observation_submission_id: this.submissionIds.get(run)!,
+          ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
+          ...(tracingContext ? { tracing_context: tracingContext } : {}),
+        }),
+      );
+    this.dispatchRun(run, () =>
+      run.tracing
+        ? this.tracingContext(run).then((context) => {
+            if (
+              !this.owns(run) ||
+              !this.isOpen ||
+              run.controller.signal.aborted
+            )
+              throw new TurnAborted(
+                'Realtime tools stopped before native admission',
+              );
+            return send(context);
+          })
+        : send(),
+    );
+    await afterSubmissionRetirement(run, run.accepted.promise);
+    return this.#turnFor(run);
+  }
+
   private selectionNames(
     selectors: readonly ToolSelector[],
+    sourceCatalog?: ToolCatalog,
   ): readonly ReturnType<typeof toolIdentity>[] {
     const seen = new Set<string>();
     const policy = this.threadOptions.tool_policy;
@@ -2778,9 +3362,15 @@ export class Session<OutputT = string, Context = unknown> {
         }
         if (
           selector.kind !== 'tool_ref' &&
-          !this.admittedDeclarations
-            .get(key)
-            ?.has(toolDeclarationIdentity(selector))
+          !(sourceCatalog
+            ? sourceCatalog.tools.some(
+                (tool) =>
+                  toolDeclarationIdentity(tool) ===
+                  toolDeclarationIdentity(selector),
+              )
+            : this.admittedDeclarations
+                .get(key)
+                ?.has(toolDeclarationIdentity(selector)))
         )
           throw new TypeError(
             `Tool ${selector.name} was not admitted by this Session`,
@@ -2832,6 +3422,9 @@ export class Session<OutputT = string, Context = unknown> {
         );
     }
     return {
+      originCatalog: this.catalog,
+      originMcp: this.mcpBindings,
+      originProfileId: this.profileCurrent?.profile_id,
       prepareRequest: options?.prepareRequest,
       names:
         options?.tools === undefined
@@ -3337,6 +3930,7 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TurnAborted('HTTP activation no longer owns this root');
     this.mcpTools = next;
     this.mcpGeneration = generation;
+    this.rememberProfileBindings();
   }
 
   private captureExecutorRoots(roots: readonly string[]): string[] {
@@ -3411,6 +4005,8 @@ export class Session<OutputT = string, Context = unknown> {
               generation: this.catalog.generation.toString(),
               names: selection.names ?? null,
               before_step:
+                (this.options.agentGraph !== undefined &&
+                  selection.names !== undefined) ||
                 selection.beforeStep !== undefined ||
                 selection.maxModelSteps !== undefined ||
                 selection.budget !== undefined,
@@ -3867,6 +4463,33 @@ export class Session<OutputT = string, Context = unknown> {
       ]).then(() => this.finish(run, error, output, unsampledSteering));
       return;
     }
+    const profileSubmission = submissions.get(run)!;
+    if (
+      error === undefined &&
+      this.options.agentGraph &&
+      !profileSubmission.outputOverride &&
+      !profileSubmission.compaction &&
+      !profileSubmission.profileSettlement
+    ) {
+      profileSubmission.profileSettlement = this.refreshProfileBindings(
+        true,
+        run,
+      ).then(() => {
+        if (this.owns(run)) profileSubmission.output = this.defaultOutput;
+      });
+      this.track(run, profileSubmission.profileSettlement, run.callbacks, () =>
+        this.finish(
+          run,
+          run.failure ??
+            (run.controller.signal.aborted
+              ? new TurnAborted('Turn cancelled during profile settlement')
+              : undefined),
+          output,
+          unsampledSteering,
+        ),
+      );
+      return;
+    }
     error = cleanupFailure(run, error);
     if (run.toolCleanupErrors.length) {
       this.retire(error);
@@ -4038,6 +4661,7 @@ export class Session<OutputT = string, Context = unknown> {
           throw error;
         }
         if (!this.isOpen || this.#native !== native) return;
+        if (this.realtimeOwner?._ingest(event)) continue;
         const msg = event.msg;
         if (msg.type === 'token_count') {
           const snapshot = apiRateLimits(msg.api_rate_limits);
@@ -4172,6 +4796,7 @@ export class Session<OutputT = string, Context = unknown> {
         else this.process(run, event);
       }
     } finally {
+      this.realtimeOwner?._readerClosed();
       // Release callbacks waiting for this reader before auxiliary readers
       // join their callback work during replacement, suspension, or close.
       producer.eventReaderEnded = true;
@@ -5025,12 +5650,16 @@ export class Session<OutputT = string, Context = unknown> {
         const abort = () => reply(undefined, true);
         signal.addEventListener('abort', abort, { once: true });
         try {
+          const sourceCatalog = this.sourceCatalog(
+            msg,
+            msg.generation as string,
+          );
           if (
             !selection?.prepareRequest ||
             !this.current(run) ||
             msg.turn_id !== run.id ||
-            msg.generation !== this.catalog.generation.toString() ||
-            selection.generation !== this.catalog.generation
+            (!this.options.agentGraph &&
+              selection.generation !== sourceCatalog.generation)
           )
             throw new NativeError('Expired prepared request owner');
           signal.throwIfAborted();
@@ -5058,7 +5687,7 @@ export class Session<OutputT = string, Context = unknown> {
           signal.throwIfAborted();
           if (
             !this.current(run) ||
-            selection.generation !== this.catalog.generation
+            this.sourceCatalog(msg, msg.generation as string) !== sourceCatalog
           )
             throw new NativeError('Prepared request is no longer active');
           reply(captured, false);
@@ -5109,12 +5738,16 @@ export class Session<OutputT = string, Context = unknown> {
         const abort = () => reply(null);
         signal.addEventListener('abort', abort, { once: true });
         try {
+          const sourceCatalog = this.sourceCatalog(
+            msg,
+            msg.generation as string,
+          );
           if (
             !selection ||
             !this.current(run) ||
             msg.turn_id !== run.id ||
-            msg.generation !== this.catalog.generation.toString() ||
-            selection.generation !== this.catalog.generation
+            (!this.options.agentGraph &&
+              selection.generation !== sourceCatalog.generation)
           )
             throw new NativeError('Expired step selection');
           signal.throwIfAborted();
@@ -5133,7 +5766,8 @@ export class Session<OutputT = string, Context = unknown> {
             signal.throwIfAborted();
             if (
               !this.current(run) ||
-              selection.generation !== this.catalog.generation ||
+              this.sourceCatalog(msg, msg.generation as string) !==
+                sourceCatalog ||
               !this.#native._check_step(nonce)
             )
               throw new NativeError('Step selection is no longer active');
@@ -5151,7 +5785,8 @@ export class Session<OutputT = string, Context = unknown> {
           const names = this.selectedStepNames(
             event,
             selected,
-            selection.names,
+            this.profileOperationNames(selection, event, sourceCatalog),
+            sourceCatalog,
           );
           signal.throwIfAborted();
           reply(names);
@@ -5286,12 +5921,50 @@ export class Session<OutputT = string, Context = unknown> {
     });
   }
 
+  private profileOperationNames(
+    selection: OperationSelection,
+    event: NativeEvent,
+    sourceCatalog: ToolCatalog,
+  ): OperationSelection['names'] {
+    if (!this.options.agentGraph || selection.names === undefined)
+      return selection.names;
+    const source = this.messageProfile(event.msg)!;
+    const sourceMcp = this.profileStepMcp.get(
+      this.profileKey(source.profile_id, sourceCatalog.generation),
+    );
+    if (!sourceMcp)
+      throw new NativeError('Native step has no captured source MCP bindings');
+    const key = (tool: ReturnType<typeof toolIdentity>) =>
+      JSON.stringify([tool.namespace, tool.name]);
+    return selection.names.filter((identity) => {
+      const original = selection.originCatalog?.tools.find(
+        (tool) => key(toolIdentity(tool)) === key(identity),
+      );
+      if (original)
+        return sourceCatalog.tools.some(
+          (tool) =>
+            toolDeclarationIdentity(tool) === toolDeclarationIdentity(original),
+        );
+      const originalServer = selection.originMcp?.find((server) =>
+        mcpToolNames([server]).some((tool) => key(tool) === key(identity)),
+      );
+      if (originalServer) return sourceMcp.includes(originalServer);
+      const handoff = [...this.profileRuntimes.values()].some((profile) =>
+        Object.hasOwn(profile.profile.handoffs, identity.name),
+      );
+      if (handoff) return source.profile_id === selection.originProfileId;
+      // Fixed native runtime grants are required to match across the captured graph.
+      return true;
+    });
+  }
+
   private selectedStepNames(
     event: NativeEvent,
     selected: Awaited<
       ReturnType<NonNullable<OperationOptions<Context>['beforeStep']>>
     >,
     defaults?: readonly ReturnType<typeof toolIdentity>[],
+    sourceCatalog?: ToolCatalog,
   ): readonly ReturnType<typeof toolIdentity>[] {
     const candidates = z
       .array(z.object({ name: z.string(), namespace: z.string().nullish() }))
@@ -5303,9 +5976,21 @@ export class Session<OutputT = string, Context = unknown> {
     const names =
       selected === undefined
         ? (defaults ?? candidates)
-        : this.selectionNames([...selected]);
+        : this.selectionNames([...selected], sourceCatalog);
+    const ceiling =
+      defaults && this.options.agentGraph
+        ? new Set(
+            defaults.map((tool) => JSON.stringify([tool.namespace, tool.name])),
+          )
+        : undefined;
     const allowed = new Set(
-      candidates.map((tool) => JSON.stringify([tool.namespace, tool.name])),
+      candidates
+        .filter(
+          (tool) =>
+            !ceiling ||
+            ceiling.has(JSON.stringify([tool.namespace, tool.name])),
+        )
+        .map((tool) => JSON.stringify([tool.namespace, tool.name])),
     );
     if (
       names.some(
@@ -5473,12 +6158,9 @@ export class Session<OutputT = string, Context = unknown> {
   private manualCallKey(event: NativeEvent): string | undefined {
     const msg = event.msg;
     const marker = msg._sdk_python_tool;
-    if (
-      msg.type !== 'dynamic_tool_call_request' ||
-      !marker ||
-      this.catalog.tools[marker.slot]?.kind !== 'manual'
-    )
-      return undefined;
+    if (msg.type !== 'dynamic_tool_call_request' || !marker) return;
+    const catalog = this.sourceCatalog(msg, marker.generation);
+    if (catalog.tools[marker.slot]?.kind !== 'manual') return;
     // Only admission's native check grants authority. This key keeps distinct
     // private requests from colliding on their public wire call ID.
     return JSON.stringify([
@@ -5526,13 +6208,14 @@ export class Session<OutputT = string, Context = unknown> {
         return;
       const marker = msg._sdk_python_tool!;
       const root = run instanceof NativeTurn;
+      const catalog = this.sourceCatalog(msg, marker.generation);
       if (
         marker.thread !== (root ? this.id : run.childId) ||
         (!root && marker.instance !== run.incarnation) ||
-        BigInt(marker.generation) !== this.catalog.generation
+        BigInt(marker.generation) !== catalog.generation
       )
         throw new NativeError('Expired managed tool generation');
-      const tool = this.catalog.tools[marker.slot];
+      const tool = catalog.tools[marker.slot];
       if (
         !tool ||
         tool.kind !== 'manual' ||
@@ -6255,13 +6938,14 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     const root = owner instanceof NativeTurn;
+    const catalog = this.sourceCatalog(msg, marker.generation);
     if (
       marker.thread !== (root ? this.id : owner.childId) ||
       (!root && marker.instance !== owner.incarnation) ||
-      BigInt(marker.generation) !== this.catalog.generation
+      BigInt(marker.generation) !== catalog.generation
     )
       throw new NativeError('Expired managed tool generation');
-    const tool = this.catalog.tools[marker.slot];
+    const tool = catalog.tools[marker.slot];
     if (
       !tool ||
       msg.tool !== tool.name ||
@@ -6348,6 +7032,9 @@ export class Session<OutputT = string, Context = unknown> {
           encodeReceipt({
             request: msg,
             response,
+            ...(isBackgroundToolResponse(response)
+              ? { start_response: false }
+              : {}),
           }),
         );
         status = accepted
@@ -6873,6 +7560,49 @@ export class Session<OutputT = string, Context = unknown> {
   async update(options: SessionUpdate<Context> = {}): Promise<void> {
     this.checkCallbackOperation('update');
     this.idle('update');
+    if (options.agent !== undefined) {
+      if (
+        options.model !== undefined ||
+        options.modelSettings !== undefined ||
+        options.instructions !== undefined ||
+        options.tools !== undefined
+      )
+        throw new TypeError('Update the Agent separately from other settings');
+      if (!this.options.agentGraph) {
+        if (options.agent === this.options.applicationAgent) return;
+        throw new TypeError(
+          'Target Agent was not admitted in this Session handoff graph',
+        );
+      }
+      const target = [...this.profileRuntimes].find(
+        ([, profile]) => profile.profile.agent === options.agent,
+      )?.[0];
+      if (!target)
+        throw new TypeError(
+          'Target Agent was not admitted in this Session handoff graph',
+        );
+      return this.mutate(async () => {
+        await this.refreshProfileBindings();
+        const receipt = checkProfileReceipt(
+          parseProfileReceipt(
+            await this.#native._activate_agent_profile(
+              target,
+              encodeProfileReceipt(this.profileCurrent!),
+            ),
+          ),
+          this.options.agentGraph!,
+        );
+        if (receipt.profile_id !== target) {
+          const error = new NativeError(
+            'Native Agent activation acknowledgement did not match',
+          );
+          this.retire(error);
+          throw error;
+        }
+        await this.commitProfile(receipt, true);
+        await this.realtimeOwner?._syncProfile(true);
+      });
+    }
     const settings = modelOverrides(options.model, options.modelSettings);
     if (
       this.options.nativeAgents &&
@@ -6995,7 +7725,12 @@ export class Session<OutputT = string, Context = unknown> {
           (!(server instanceof HttpMCP) || server.activation !== 'operation'),
       );
       const guarded = hasMcpPrePolicy(this.mcpTools) || hasMcpPrePolicy(active);
-      const candidate = captureTools(next.tools, this.catalog.generation + 1n);
+      const candidate = captureTools(
+        next.tools,
+        (this.options.agentGraph
+          ? this.profileHighWater
+          : this.catalog.generation) + 1n,
+      );
       const generation = this.mcpGeneration + 1n;
       await this.mutate(async () => {
         let published = false;
@@ -7056,11 +7791,13 @@ export class Session<OutputT = string, Context = unknown> {
           }
           checkMcpPublication(receipt, active, generation, bindings);
           this.catalog = candidate;
+          this.rememberProfileBindings();
           this.defaultTools = candidate.tools;
           this.mcpTools = active;
           this.defaultMcpTools = Object.freeze([...next.mcp]);
           this.mcpBindings = Object.freeze(bindings);
           this.mcpGeneration = generation;
+          this.rememberProfileBindings();
           await this.configureManualTools();
         } catch (error) {
           if (
@@ -7096,6 +7833,7 @@ export class Session<OutputT = string, Context = unknown> {
         }
       });
     }
+    if (categories) await this.realtimeOwner?._syncProfile(true);
   }
 
   async #replaceTools(tools: readonly SessionTool[]): Promise<void> {
@@ -7110,7 +7848,9 @@ export class Session<OutputT = string, Context = unknown> {
       this.catalog.tools.map(
         (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
       ),
-      this.catalog.generation + 1n,
+      (this.options.agentGraph
+        ? this.profileHighWater
+        : this.catalog.generation) + 1n,
     );
     await this.publishCatalog(async () => candidate, replacements.tools);
   }
@@ -7139,6 +7879,7 @@ export class Session<OutputT = string, Context = unknown> {
       confirmed = accepted === candidate.generation.toString();
       if (confirmed) {
         this.catalog = candidate;
+        this.rememberProfileBindings();
         this.defaultTools = Object.freeze(
           slots.map((slot) => candidate.tools[slot]),
         );
@@ -7332,6 +8073,7 @@ export class Session<OutputT = string, Context = unknown> {
             checkMcpPublication(receipt, next, generation, this.mcpBindings);
             this.mcpTools = next;
             this.mcpGeneration = generation;
+            this.rememberProfileBindings();
           } catch (error) {
             this.retire(error);
             throw error;
@@ -7964,6 +8706,8 @@ export class Session<OutputT = string, Context = unknown> {
 
   /** Copy settled root history into an independently owned portable state. */
   async fork(): Promise<SessionState> {
+    if (this.realtimeOwner)
+      throw new NativeError('Close native Realtime before fork');
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
       throw new TypeError('Local storage does not support fork');
@@ -8268,6 +9012,8 @@ export class Session<OutputT = string, Context = unknown> {
     return pending;
   }
   async saveState(): Promise<SessionState> {
+    if (this.realtimeOwner)
+      throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
       throw new TypeError(
@@ -8294,6 +9040,8 @@ export class Session<OutputT = string, Context = unknown> {
     return snapshot;
   }
   async suspend(): Promise<SessionState> {
+    if (this.realtimeOwner)
+      throw new NativeError('Close native Realtime before suspend');
     if (this.nativeQuestions.size)
       throw new TypeError('Native questions cannot be suspended or serialized');
     if (this.options.localStorage)
@@ -8303,6 +9051,12 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.sealedStateJson !== undefined)
       return parseSessionState(this.sealedStateJson);
     this.checkCallbackOperation('suspend');
+    if (this.options.agentGraph && this.lifecycle.kind === 'turn') {
+      const run = this.lifecycle.run;
+      await this.refreshProfileBindings(true, run);
+      if (!submissions.get(run)!.outputOverride)
+        submissions.get(run)!.output = this.defaultOutput;
+    }
     if (this.pendingRoots.length)
       throw new NativeError('Cannot suspend while roots are queued');
     if (
@@ -8615,6 +9369,11 @@ export class Session<OutputT = string, Context = unknown> {
             tracing_context: z.string().optional(),
           })
           .parse(raw);
+      const sourceServers = this.sourceMcp(
+        raw as Record<string, unknown>,
+        notice.generation ?? '',
+      );
+      const sourceGeneration = BigInt(notice.generation ?? '0');
       const owner = this.callbackOwner(
         notice.thread_id,
         incarnation,
@@ -8663,8 +9422,8 @@ export class Session<OutputT = string, Context = unknown> {
               return;
             }
             return transformMcpResult(
-              this.mcpTools,
-              this.mcpGeneration,
+              sourceServers,
+              sourceGeneration,
               this.options.context,
               submission,
               { ...notice, generation: notice.generation ?? '' },
@@ -9008,6 +9767,14 @@ export class Session<OutputT = string, Context = unknown> {
         }
         const binding = 'cell_owner' in notice;
         const request = binding ? undefined : notice.request;
+        const sourceServers =
+          !binding && notice.generation !== undefined
+            ? this.sourceMcp(raw as Record<string, unknown>, notice.generation)
+            : undefined;
+        const sourceGeneration =
+          !binding && notice.generation !== undefined
+            ? BigInt(notice.generation)
+            : undefined;
         let lease: CellLease | undefined;
         let needsLease = binding;
         if (binding) {
@@ -9219,8 +9986,8 @@ export class Session<OutputT = string, Context = unknown> {
               const response =
                 notice.generation !== undefined
                   ? await applyMcpPrePolicy(
-                      this.mcpTools,
-                      this.mcpGeneration,
+                      sourceServers!,
+                      sourceGeneration!,
                       this.options.context,
                       submission,
                       { ...request!, _mcp_generation: notice.generation },
@@ -9229,7 +9996,6 @@ export class Session<OutputT = string, Context = unknown> {
                         if (
                           !this.current(owner) ||
                           reservation.cancelled ||
-                          notice.generation !== this.mcpGeneration.toString() ||
                           !native._check_native_interception(notice.nonce)
                         )
                           throw new NativeError(
@@ -9254,7 +10020,9 @@ export class Session<OutputT = string, Context = unknown> {
                       ? await applyExecutorPolicy(
                           this.environment,
                           this,
-                          this.options.applicationAgent!,
+                          this.sourceApplicationAgent(
+                            raw as Record<string, unknown>,
+                          )!,
                           this.options.context,
                           submission,
                           request!,
@@ -9381,6 +10149,12 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('close');
     const state = this.lifecycle;
     if (state.kind === 'closed') {
+      // A failed media cleanup retains its owner after other resources retire.
+      // Retry only that manager, without rerunning provider/onClose effects.
+      if (this.realtimeOwner)
+        return this.realtimeOwner
+          ._nativeShutdown()
+          .then(() => this.closeOwned());
       if (this.sessionInteractionFailure)
         return Promise.reject(this.sessionInteractionFailure.error);
       if (this.environmentCloseFailure) return this.environmentCloseFailure;
@@ -9393,6 +10167,9 @@ export class Session<OutputT = string, Context = unknown> {
         : Promise.resolve();
     }
     if (state.kind === 'closing') return state.completion;
+    const realtime = this.realtimeOwner;
+    realtime?._retireFromSession();
+    let realtimeShutdown: Promise<void> | undefined;
     const interceptionFailures: unknown[] = [];
     // Resolving or declining a callback can wake the model loop. Fence new
     // requests before revoking callbacks, and let native close own teardown.
@@ -9490,6 +10267,14 @@ export class Session<OutputT = string, Context = unknown> {
     );
     this.childCallbacks.stop();
     this.clearManualCalls();
+    const joinRealtimeShutdown = async () => {
+      const task = realtimeShutdown;
+      realtimeShutdown = undefined;
+      if (!task) return;
+      const [result] = await Promise.allSettled([task]);
+      if (result.status === 'rejected')
+        interceptionFailures.push(result.reason);
+    };
     done.promise.catch(() => {});
     void (async () => {
       if (repair) {
@@ -9615,6 +10400,13 @@ export class Session<OutputT = string, Context = unknown> {
         if (message) acknowledgmentFailure ??= new NativeError(message);
         phase = 'carrier';
       }
+      // A fulfilled native/engine close proves graph retirement even when its
+      // report retains an external command-termination diagnostic. Release only
+      // this voice owner's public-wrapper waits; never bypass public Turn waits.
+      if (phase === 'carrier' || phase === 'provider') {
+        realtimeShutdown = realtime?._nativeShutdown();
+        void realtimeShutdown?.catch(() => {});
+      }
       if (phase === 'carrier') {
         await this.carrier?.close();
         phase = 'provider';
@@ -9666,12 +10458,14 @@ export class Session<OutputT = string, Context = unknown> {
           }
         }
       }
+      await joinRealtimeShutdown();
       this.observations.finish('closed');
       if (run) this.finishObservation(run);
       this.lifecycle = { kind: 'closed', completion: done.promise };
 
       settleClose(run ? cleanupFailure(run) : undefined);
     })().catch(async (error) => {
+      await joinRealtimeShutdown();
       await interceptionCleanup;
       // Entered SDK child handlers must finish even when native teardown fails.
       // Keep concurrent close calls on this promise until their cleanup joins.

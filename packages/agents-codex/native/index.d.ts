@@ -80,7 +80,23 @@ export class _ContextChange {
   stopCandidateEvents(): Promise<void>;
   cleanupCandidate(): Promise<string | null>;
 }
+/** Private exact-generation media cleanup; retains no native Thread or Engine. */
+export class _RealtimeCleanup {
+  close(generation: string): Promise<void>;
+}
+
 export class NativeThread {
+  _realtime_cleanup(): _RealtimeCleanup;
+  _submit_realtime_tools(paramsJson: string): Promise<string>;
+  _configure_agent_profiles(
+    rosterJson: string,
+    rootId: string,
+  ): Promise<string>;
+  _active_agent_profile(): Promise<string>;
+  _activate_agent_profile(
+    target: string,
+    expectedJson: string,
+  ): Promise<string>;
   _native_question_pending(question_id: string): Promise<boolean>;
   /** Whether this captured URL still has its original unanswered consent RPC. */
   _native_url_pending(question_id: string): Promise<boolean>;
@@ -150,6 +166,16 @@ export class NativeThread {
   call(
     operation:
       | 'set_instructions'
+      | 'realtime_tool_selection_sdk'
+      | 'realtime_conversation_hosted_mcp_approval_sdk'
+      | 'realtime_conversation_start_sdk'
+      | 'realtime_conversation_update_sdk'
+      | 'realtime_conversation_audio_sdk'
+      | 'realtime_conversation_text_sdk'
+      | 'realtime_conversation_complete_sdk'
+      | 'realtime_conversation_fail_sdk'
+      | 'realtime_conversation_interrupt_sdk'
+      | 'realtime_conversation_close_sdk'
       | 'list_subagents'
       | 'list_mcp_resources'
       | 'list_mcp_prompts'
@@ -349,6 +375,8 @@ export function _embedded_commands(): string;
 export const CODEX_REVISION: string;
 
 declare const binding: {
+  _agent_profiles_fingerprint: typeof _agent_profiles_fingerprint;
+  _agent_profiles_restore_source: typeof _agent_profiles_restore_source;
   _packaged_runtime(): {
     codex_self_exe: string;
     codex_linux_sandbox_exe?: string;
@@ -396,3 +424,14 @@ export class _NativePolicyStop {
   private constructor();
   finish(): Promise<void>;
 }
+
+export function _agent_profiles_fingerprint(
+  rosterJson: string,
+  rootId: string,
+): string;
+
+export function _agent_profiles_restore_source(
+  rosterJson: string,
+  rootId: string,
+  historyJson: string,
+): string;

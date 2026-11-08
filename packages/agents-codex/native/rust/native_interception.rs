@@ -120,6 +120,9 @@ struct OwnedRequest<'a, T> {
     cell_owner_id: Option<String>,
 }
 impl<T: DecisionRequest> DecisionRequest for OwnedRequest<'_, T> {
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        self.request.profile_source()
+    }
     fn tool_identity(&self) -> Option<(Option<&str>, &str)> {
         self.request.tool_identity()
     }
@@ -214,6 +217,9 @@ impl Drop for CellPolicyOwner {
 }
 
 trait DecisionRequest: Serialize {
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        None
+    }
     fn owner(&self) -> Option<&Arc<DirectTurn>> {
         None
     }
@@ -245,6 +251,9 @@ impl<I: Serialize, R: Serialize, K: Serialize> DecisionRequest for Request<'_, I
 }
 
 impl<T: DecisionRequest> DecisionRequest for &T {
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        (*self).profile_source()
+    }
     fn owner(&self) -> Option<&Arc<DirectTurn>> {
         (*self).owner()
     }
@@ -292,6 +301,10 @@ struct Identified<'a, T> {
 }
 #[derive(Serialize)]
 struct Notice<'a, T> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_epoch: Option<u64>,
     nonce: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation: Option<u64>,
@@ -301,6 +314,7 @@ struct Notice<'a, T> {
 type CancellationProbe = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
 
 struct Pending {
+    profile_source: Option<Arc<ProfileMcpSource>>,
     owner: Option<Arc<DirectTurn>>,
     retained: bool,
     generation: Option<u64>,
@@ -363,6 +377,120 @@ pub(crate) struct ToolRule {
 }
 
 type Rules = HashMap<ToolName, (Option<Duration>, Scope, Option<u64>, bool, bool)>;
+
+/// Immutable MCP callback policy from the same native Agent profile as its tool router.
+#[derive(Clone, Default)]
+pub(crate) struct ProfileMcpPolicy {
+    names: HashSet<ToolName>,
+    rules: Rules,
+}
+impl ProfileMcpPolicy {
+    pub(crate) fn with_generation(&self, generation: u64) -> Self {
+        let mut next = self.clone();
+        for rule in next.rules.values_mut() {
+            rule.2 = Some(generation);
+        }
+        next
+    }
+    pub(crate) fn prepare(
+        binding: &codex_mcp::McpBinding,
+        declarations: &std::collections::BTreeMap<
+            String,
+            crate::agent_profiles::McpToolDeclaration,
+        >,
+        generation: u64,
+    ) -> Result<Self> {
+        let mut names = HashSet::new();
+        let mut rules = Vec::new();
+        for tool in binding.tools() {
+            let name = ToolName::new(
+                Some(tool.callable_namespace.clone()),
+                tool.callable_name.clone(),
+            )
+            .with_default_namespace();
+            names.insert(name.clone());
+            let Some(declaration) = declarations.get(&tool.server_name) else {
+                continue;
+            };
+            if !(declaration.before || declaration.approval)
+                || !declaration
+                    .tools
+                    .iter()
+                    .any(|name| name.as_str() == tool.tool.name.as_ref())
+            {
+                continue;
+            }
+            rules.push(ToolRule {
+                name: name.name,
+                namespace: name.namespace,
+                timeout: (!declaration.approval).then_some(30.0),
+                scope: Scope::ThreadTree,
+                generation: Some(generation.to_string()),
+                result: false,
+                executor_before: false,
+            });
+        }
+        Ok(Self {
+            names,
+            rules: Control::compile_rules(rules)?,
+        })
+    }
+}
+
+/// Callback attribution only; it carries no Session, environment, or callable executor.
+#[derive(Clone)]
+pub(crate) struct ProfileMcpSource {
+    pub(crate) receipt: Option<codex_extension_api::AgentProfileReceipt>,
+    pub(crate) policy: Option<Arc<ProfileMcpPolicy>>,
+}
+fn capture_mcp_source(
+    step: Option<&ExtensionData>,
+) -> Result<Option<Arc<ProfileMcpSource>>, String> {
+    let source = step.and_then(|step| step.get::<ProfileMcpSource>());
+    if source
+        .as_ref()
+        .is_some_and(|source| source.policy.is_none())
+        || (source.is_none()
+            && step.is_some_and(|step| {
+                step.get::<codex_extension_api::CapturedAgentProfile>()
+                    .is_some()
+            }))
+    {
+        return Err(FAILURE.into());
+    }
+    Ok(source)
+}
+
+#[derive(Serialize)]
+struct ProfiledRequest<T> {
+    #[serde(flatten)]
+    request: T,
+    #[serde(skip)]
+    source: Option<Arc<ProfileMcpSource>>,
+}
+impl<T: DecisionRequest> DecisionRequest for ProfiledRequest<T> {
+    fn owner(&self) -> Option<&Arc<DirectTurn>> {
+        self.request.owner()
+    }
+    fn retained(&self) -> bool {
+        self.request.retained()
+    }
+    fn binding(&self) -> Option<&CellOwnerMetadata> {
+        self.request.binding()
+    }
+    fn tool_identity(&self) -> Option<(Option<&str>, &str)> {
+        self.request.tool_identity()
+    }
+    fn phase(&self) -> Option<&str> {
+        self.request.phase()
+    }
+    fn boundary(&self) -> Option<&str> {
+        self.request.boundary()
+    }
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        self.source.as_ref()
+    }
+}
 
 struct State {
     tools: Option<Rules>,
@@ -564,6 +692,7 @@ impl HeldPolicyStop {
 }
 
 pub struct Control {
+    profile_policies: AtomicU8,
     id: String,
     pub(crate) incarnation: String,
     root: bool,
@@ -731,6 +860,7 @@ impl Control {
         Self {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
+            profile_policies: AtomicU8::new(0),
             root,
             native_depth: if root { 0 } else { usize::MAX },
             native_agents: std::sync::OnceLock::new(),
@@ -775,6 +905,7 @@ impl Control {
         Self {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
+            profile_policies: AtomicU8::new(parent.profile_policies.load(Ordering::Acquire)),
             root: false,
             native_depth: parent.native_depth.saturating_add(1),
             native_agents: parent.native_agents.clone(),
@@ -1085,6 +1216,21 @@ impl Control {
                     .any(|rule| rule.2.is_none() && (self.root || rule.1 == Scope::ThreadTree))
             })
     }
+    fn mcp_selected_for(
+        &self,
+        name: &ToolName,
+        source: Option<&Arc<ProfileMcpSource>>,
+    ) -> Result<bool, String> {
+        let global = self.mcp_selected(name)?;
+        let Some(source) = source else {
+            return Ok(global);
+        };
+        let policy = source.policy.as_ref().ok_or(FAILURE)?;
+        Ok(policy
+            .rules
+            .contains_key(&name.clone().with_default_namespace()))
+    }
+
     fn mcp_selected(&self, name: &ToolName) -> Result<bool, String> {
         let state = self
             .channel
@@ -1144,7 +1290,41 @@ impl Control {
         state.timeout.is_some() && (self.root || state.scope == Scope::ThreadTree)
     }
 
+    pub(crate) fn capture_mcp_source(&self) -> ProfileMcpSource {
+        self.profile_policies.fetch_max(1, Ordering::AcqRel);
+        let state = self
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        let rules = state
+            .tools
+            .as_ref()
+            .map(|rules| {
+                rules
+                    .iter()
+                    .filter(|(_, rule)| rule.2.is_some())
+                    .map(|(name, rule)| (name.clone(), *rule))
+                    .collect::<Rules>()
+            })
+            .unwrap_or_default();
+        ProfileMcpSource {
+            receipt: None,
+            policy: Some(Arc::new(ProfileMcpPolicy {
+                names: rules.keys().cloned().collect(),
+                rules,
+            })),
+        }
+    }
+
+    pub(crate) fn enable_profile_policies(&self) {
+        self.profile_policies.store(2, Ordering::Release);
+    }
+
     fn configured(&self) -> bool {
+        if self.profile_policies.load(Ordering::Acquire) != 0 {
+            return true;
+        }
         // Revocation must fail closed for an opted-in owner, never convert it
         // to a new opted-out owner while native work is being cancelled.
         self.configured_in(
@@ -1286,9 +1466,15 @@ impl Control {
             && state.pending.get(&nonce).is_some_and(|pending| {
                 pending.reply.is_some()
                     && pending.generation.is_none_or(|generation| {
-                        state.tools.as_ref().is_some_and(|rules| {
-                            rules.values().any(|rule| rule.2 == Some(generation))
-                        })
+                        if let Some(source) = &pending.profile_source {
+                            source.policy.as_ref().is_some_and(|policy| {
+                                policy.rules.values().any(|rule| rule.2 == Some(generation))
+                            })
+                        } else {
+                            state.tools.as_ref().is_some_and(|rules| {
+                                rules.values().any(|rule| rule.2 == Some(generation))
+                            })
+                        }
                     })
                     && pending
                         .owner
@@ -1485,6 +1671,17 @@ impl Control {
         previous: Option<OwnedSemaphorePermit>,
         is_cancelled: Option<CancellationProbe>,
     ) -> Result<Decision, String> {
+        let profile_source = request.profile_source().cloned();
+        let source_policy = profile_source
+            .as_ref()
+            .map(|source| source.policy.as_ref().ok_or(FAILURE))
+            .transpose()?;
+        let identity = request.tool_identity().map(|(namespace, name)| {
+            ToolName::new(namespace.map(str::to_owned), name).with_default_namespace()
+        });
+        let source_rule = source_policy
+            .and_then(|policy| identity.as_ref().and_then(|key| policy.rules.get(key)))
+            .copied();
         let owner = request.owner().cloned();
         let retained = request.retained();
         let binding = request.binding().is_some();
@@ -1500,21 +1697,28 @@ impl Control {
             {
                 return Err(FAILURE.into());
             }
-            if !self.configured_in(&state) {
+            if !self.configured_in(&state) && source_rule.is_none() {
                 return Ok(Decision::Continue);
             }
             let (timeout, generation, stop_allowed) = if binding {
                 (state.timeout, None, false)
-            } else if let Some(tools) = &state.tools {
-                let Some((namespace, name)) = request.tool_identity() else {
+            } else if state.tools.is_some() || source_policy.is_some() {
+                let Some(key) = identity.as_ref() else {
                     return Ok(Decision::Continue);
                 };
-                // Match the identity Core will route, while preserving the
-                // original namespace in the callback's request.
-                let key =
-                    ToolName::new(namespace.map(str::to_owned), name).with_default_namespace();
-                let Some(&(timeout, scope, generation, _, executor_before)) = tools.get(&key)
-                else {
+                let global = state
+                    .tools
+                    .as_ref()
+                    .and_then(|tools| tools.get(key))
+                    .copied();
+                let rule = if source_policy.is_some_and(|policy| policy.names.contains(key))
+                    || (source_policy.is_some() && global.is_some_and(|rule| rule.2.is_some()))
+                {
+                    source_rule
+                } else {
+                    global
+                };
+                let Some((timeout, scope, generation, _, executor_before)) = rule else {
                     return Ok(Decision::Continue);
                 };
                 if !self.root && scope != Scope::ThreadTree {
@@ -1553,6 +1757,14 @@ impl Control {
             let nonce = state.nonce;
             let deadline = timeout.map(|timeout| Instant::now() + timeout);
             let notice = Notice {
+                profile_id: profile_source
+                    .as_ref()
+                    .and_then(|source| source.receipt.as_ref())
+                    .map(|receipt| receipt.profile_id.as_str()),
+                profile_epoch: profile_source
+                    .as_ref()
+                    .and_then(|source| source.receipt.as_ref())
+                    .map(|receipt| receipt.epoch),
                 nonce,
                 generation,
                 request: Identified {
@@ -1579,6 +1791,7 @@ impl Control {
             state.pending.insert(
                 nonce,
                 Pending {
+                    profile_source: profile_source.clone(),
                     owner: owner.clone(),
                     retained,
                     generation,
@@ -1796,6 +2009,7 @@ impl Drop for Reservation {
 // separately, never in this index. Register opt-out starts too so even
 // reuse of a completed native task id cannot adopt a stale opted-in owner.
 struct StartedExec {
+    profile_source: Result<Option<Arc<ProfileMcpSource>>, String>,
     rules: Option<crate::canonical_rules::CellImageOrigin>,
     turn: Option<Arc<DirectTurn>>,
     control: Arc<Control>,
@@ -2190,6 +2404,16 @@ impl Boundary {
     }
 
     fn start_exec(&self, control: Arc<Control>, turn_id: &str, call_id: &str, name: &'static str) {
+        self.start_exec_source(control, turn_id, call_id, name, None)
+    }
+    fn start_exec_source(
+        &self,
+        control: Arc<Control>,
+        turn_id: &str,
+        call_id: &str,
+        name: &'static str,
+        step: Option<&ExtensionData>,
+    ) {
         // A retained cell keeps its issuing model across later generations.
         let turn = control
             .direct_turn
@@ -2210,6 +2434,7 @@ impl Boundary {
             .insert(
                 tokio::task::id(),
                 StartedExec {
+                    profile_source: capture_mcp_source(step),
                     rules: None,
                     turn,
                     control,
@@ -2356,6 +2581,12 @@ impl std::fmt::Debug for Boundary {
 }
 
 impl ThreadLifecycleContributor<Config> for Boundary {
+    fn on_thread_execution_revoked(&self, thread_store: &ExtensionData) {
+        if let Some(control) = thread_store.get::<Control>() {
+            control.revoke();
+        }
+    }
+
     fn on_thread_start<'a>(
         &'a self,
         input: ThreadStartInput<'a, Config>,
@@ -2398,6 +2629,32 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     None => Control::new(id, root),
                 }
             });
+            if input
+                .thread_store
+                .get::<crate::agent_profiles::OpeningProfiles>()
+                .is_some()
+            {
+                control.enable_profile_policies();
+            }
+            if let Some(step) = input.spawning_step_store {
+                match capture_mcp_source(Some(step)) {
+                    Ok(Some(source)) => {
+                        input.thread_store.insert((*source).clone());
+                        if let Some(selection) = step.get::<crate::mcp_result_control::Selection>()
+                        {
+                            input.thread_store.insert((*selection).clone());
+                        }
+                    }
+                    Ok(None) if control.profile_policies.load(Ordering::Acquire) == 2 => {
+                        control.revoke()
+                    }
+                    Err(_) => control.revoke(),
+                    _ => {}
+                }
+            } else if !root && control.profile_policies.load(Ordering::Acquire) == 2 {
+                // Runtime-only spawn authority is absent on an unvalidated managed restart.
+                control.revoke();
+            }
             let _ = control.creation_tracing.set(creation_tracing);
             let _ = control.creation_trace.set(creation_trace);
             if strict_executor_writes {
@@ -2565,6 +2822,18 @@ impl ContextContributor for Boundary {
         input: WorldStateContributionInput<'a>,
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
+            if input.step_store.get::<ProfileMcpSource>().is_none() {
+                if let Some(source) = input.thread_store.get::<ProfileMcpSource>() {
+                    input.step_store.insert((*source).clone());
+                    if let Some(selection) = input
+                        .thread_store
+                        .get::<crate::mcp_result_control::Selection>()
+                    {
+                        input.step_store.insert((*selection).clone());
+                    }
+                }
+            }
+
             if let Some(turn) = input.turn_store.get::<DirectTurn>() {
                 let selected = match (
                     input.thread_store.get::<Control>(),
@@ -2706,6 +2975,7 @@ impl ModelRequestContributor for Boundary {
                 .lock()
                 .expect("interception control poisoned");
             if !control.configured_in(&state)
+                && control.profile_policies.load(Ordering::Acquire) == 0
                 && control.stdin_admission.get().is_none()
                 && command_admission.is_none()
                 && !control.has_native_agents()
@@ -3396,14 +3666,23 @@ impl DirectRequest {
             input,
             result: (),
         };
+        let source = capture_mcp_source(
+            self.tool_admission
+                .as_ref()
+                .and_then(|admission| admission.step_store()),
+        )
+        .map_err(|_| rejected())?;
         let decision = self
             .control
             .decide_retained(
-                OwnedRequest {
-                    request,
-                    owner: &self.owner,
-                    retained: false,
-                    cell_owner_id: None,
+                ProfiledRequest {
+                    source,
+                    request: OwnedRequest {
+                        request,
+                        owner: &self.owner,
+                        retained: false,
+                        cell_owner_id: None,
+                    },
                 },
                 &self.owner.cancelled,
                 previous,
@@ -3868,7 +4147,13 @@ impl ToolLifecycleContributor for Boundary {
                     } else {
                         codex_code_mode::WAIT_TOOL_NAME
                     };
-                    self.start_exec(control, input.turn_id, input.call_id, name);
+                    self.start_exec_source(
+                        control,
+                        input.turn_id,
+                        input.call_id,
+                        name,
+                        input.step_store,
+                    );
                     if name == codex_code_mode::PUBLIC_TOOL_NAME {
                         let origin = input
                             .thread_store
@@ -3948,6 +4233,8 @@ impl ToolLifecycleContributor for Boundary {
                 .is_some_and(|control| {
                     let tool = input.mcp_tool.tool_info();
                     control.owns_result(
+                        input.thread_store,
+                        input.step_store,
                         &tool.server_name,
                         &tool.tool.name,
                         matches!(
@@ -3984,7 +4271,14 @@ impl ToolLifecycleContributor for Boundary {
                 input: Input::JsonText(input.arguments),
                 result: &original,
             };
-            let edited = match control.decide(request, &owner.cancelled).await {
+            let source = match capture_mcp_source(input.step_store) {
+                Ok(source) => source,
+                Err(_) => return,
+            };
+            let edited = match control
+                .decide(ProfiledRequest { request, source }, &owner.cancelled)
+                .await
+            {
                 Ok(Decision::Continue) => Some(original),
                 Ok(Decision::Replace { value }) => {
                     crate::mcp_result_control::validated(&value.to_string())
@@ -4228,6 +4522,7 @@ impl Session {
             let Some(owner) = owner? else {
                 return self.inner.execute(request, delegate, preempt).await;
             };
+            let profile_source = owner.profile_source.clone()?;
             let configured = owner.control.configured();
             let accounted = if configured && owner.control.has_legacy_policy() {
                 let bytes = owner.control.account(&request.source, None)?;
@@ -4241,6 +4536,7 @@ impl Session {
                 .control
                 .cell_policy_owner(owner.turn.as_ref(), &request.tool_call_id)?;
             let delegate = Arc::new(Delegate {
+                profile_source,
                 rules: owner.rules.clone(),
                 cell_owner: Mutex::new(cell_owner.clone()),
                 turn: owner.turn.clone(),
@@ -4704,6 +5000,7 @@ impl CodeModeSession for Session {
     }
 }
 struct Delegate {
+    profile_source: Option<Arc<ProfileMcpSource>>,
     rules: Option<crate::canonical_rules::CellImageOrigin>,
     cell_owner: Mutex<Option<Arc<CellPolicyOwner>>>,
     turn: Option<Arc<DirectTurn>>,
@@ -4744,7 +5041,8 @@ impl CodeModeSessionDelegate for Delegate {
             let Some(control) = &self.control else {
                 return self.inner.invoke_tool(invocation, cancellation_token).await;
             };
-            let mcp = control.mcp_selected(&invocation.tool_name)?;
+            let mcp =
+                control.mcp_selected_for(&invocation.tool_name, self.profile_source.as_ref())?;
             if !mcp && !control.has_legacy_policy() {
                 // Empty MCP enrollment must not add post-effect byte failures
                 // to ordinary, unselected native calls.
@@ -4781,6 +5079,10 @@ impl CodeModeSessionDelegate for Delegate {
                 // An originally opted-out cell cannot acquire callback authority.
                 return Err(FAILURE.into());
             }
+            let request = ProfiledRequest {
+                request,
+                source: self.profile_source.clone(),
+            };
             let decision = if builtin || executor_before {
                 if let Some(lease) = &lease {
                     lease.identify(&invocation.cell_id)?;
@@ -7072,6 +7374,48 @@ mod tests {
     }
 
     #[test]
+    fn captured_mono_mcp_hook_selection_survives_later_policy_replacement() {
+        let control = Control::new("root".into(), true);
+        control.enable(3.0, Scope::Root).unwrap();
+        let rules = Control::compile_rules(result_rules()).unwrap();
+        control.channel.state.lock().unwrap().tools = Some(rules.clone());
+        let original = Arc::new(control.capture_mcp_source());
+        assert!(original.receipt.is_none());
+        let lookup = ToolName::new(Some("mcp__fixture".into()), "lookup");
+        assert_eq!(original.policy.as_ref().unwrap().rules[&lookup].2, Some(7));
+        assert!(
+            !original
+                .policy
+                .as_ref()
+                .unwrap()
+                .rules
+                .contains_key(&ToolName::plain("exec_command").with_default_namespace())
+        );
+        control.channel.state.lock().unwrap().tools = Some(HashMap::new());
+        assert!(control.mcp_selected_for(&lookup, Some(&original)).unwrap());
+        let unselected = Arc::new(control.capture_mcp_source());
+        control.channel.state.lock().unwrap().tools = Some(rules);
+        assert!(control.mcp_selected(&lookup).unwrap());
+        assert!(
+            !control
+                .mcp_selected_for(&lookup, Some(&unselected))
+                .unwrap()
+        );
+        control.revoke();
+        assert!(control.mcp_selected_for(&lookup, Some(&original)).is_err());
+    }
+
+    #[test]
+    fn missing_captured_mcp_policy_fails_closed() {
+        let step = ExtensionData::new("invalid-source");
+        step.insert(ProfileMcpSource {
+            receipt: None,
+            policy: None,
+        });
+        assert!(capture_mcp_source(Some(&step)).is_err());
+    }
+
+    #[test]
     fn builtin_result_enrollment_preserves_mcp_generation_and_namespace() {
         let compiled = Control::compile_rules(result_rules()).unwrap();
         let builtin = compiled
@@ -7429,6 +7773,30 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn native_execution_revoke_rejects_an_entered_callback_before_publication() {
+        let boundary = import_cleanup_boundary();
+        let thread_store = ExtensionData::new("root");
+        let control = thread_store.get_or_init(|| Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        boundary.register_control(&control);
+        let request = direct_request(control.clone(), "entered");
+        *control.direct_turn.lock().unwrap() = Some(request.owner.clone());
+        let mut before = Box::pin(request.before(response(json!({
+            "type":"function_call", "call_id":"call", "name":"echo", "arguments":"{}",
+        }))));
+        assert!(futures_util::poll!(&mut before).is_pending());
+        let notice = control.next().await.unwrap();
+        let nonce = notice["nonce"].as_u64().unwrap();
+        assert!(control.handoff(nonce));
+        boundary.on_thread_execution_revoked(&thread_store);
+        assert!(!control.can_enter(nonce));
+        assert!(!control.resolve(nonce, r#"{"action":"continue"}"#));
+        assert!(before.await.is_err());
+        assert!(request.owner.cancelled.is_cancelled());
+        assert!(control.release(nonce));
     }
 
     #[tokio::test]
@@ -7802,6 +8170,7 @@ mod tests {
         control.configure_tools(Vec::new()).unwrap();
         let actual = Arc::new(Actual(AtomicUsize::new(0)));
         let delegate = Delegate {
+            profile_source: None,
             rules: None,
             cell_owner: Mutex::new(None),
             turn: None,
@@ -7839,6 +8208,7 @@ mod tests {
         let actual = Arc::new(Actual(AtomicUsize::new(0)));
         control.agent_role.set(Some("researcher".into())).unwrap();
         let delegate = Delegate {
+            profile_source: None,
             rules: None,
             cell_owner: Mutex::new(None),
             turn: None,

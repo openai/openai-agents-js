@@ -1,3 +1,9 @@
+import {
+  captureProfileRuntimes,
+  profileRoster,
+  parseProfileReceipt,
+  checkProfileReceipt,
+} from './agent-profiles';
 import type { SessionPersistenceOptions } from './persistence-options';
 import { captureTracing } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -11,6 +17,7 @@ import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
+import { isDeepStrictEqual } from 'node:util';
 import { binding, type JsonObject } from './binding';
 import { prepareOutput, type OutputSpec, type PreparedOutput } from './output';
 import { webSearchName } from './web-search';
@@ -51,7 +58,12 @@ import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
 import { captureReconciledCalls } from './local-recovery';
-import { captureTools, toolIdentity, type Tool } from './tools';
+import {
+  captureTools,
+  toolIdentity,
+  type Tool,
+  type SessionTool,
+} from './tools';
 import { validateMaxModelSteps, type OperationOptions } from './session';
 import type {
   Session as CoreSession,
@@ -68,6 +80,10 @@ export interface AgentOptions<Context = undefined, Output = string> {
   provider?: NativeProvider;
   outputType?: OutputSpec<Output>;
   tools?: readonly Tool<Context>[];
+  /** Named native targets; synchronous resolvers allow immutable cyclic graphs. */
+  handoffs?: readonly (
+    Agent<Context, Output> | (() => Agent<Context, Output>)
+  )[];
   programmaticToolCalling?: boolean;
 }
 
@@ -125,6 +141,8 @@ export interface RunOptions<Context = undefined> extends Omit<
   returnState?: boolean;
 }
 
+// Track inheritance without retaining a replaced mutable Agent.provider.
+const implicitProviders = new WeakMap<NativeProvider, WeakSet<object>>();
 const ownedRun = Symbol('ownedRun');
 const correctionOpening = Symbol('correctionOpening');
 const deferredOpening = Symbol('deferredOpening');
@@ -145,6 +163,7 @@ interface CapturedOpening {
   readonly apiKey: string | undefined;
   readonly context: unknown;
   readonly onInteraction?: InteractionHandler;
+  readonly profiles?: readonly CapturedAgentProfile<any, any>[];
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
@@ -201,6 +220,8 @@ export type Session<Output = string, Context = any> = Pick<
   | 'items'
   | 'turns'
   | 'rateLimits'
+  | 'realtime'
+  | 'getActiveAgent'
   | 'goal'
   | 'setPausedGoal'
   | 'listMcpResources'
@@ -231,6 +252,9 @@ export class Agent<Context = undefined, Output = string> {
   provider: NativeProvider;
   outputType?: OutputSpec<Output>;
   tools: readonly Tool<Context>[];
+  handoffs: readonly (
+    Agent<Context, Output> | (() => Agent<Context, Output>)
+  )[];
   programmaticToolCalling: boolean;
 
   constructor(options: AgentOptions<Context, Output>) {
@@ -241,8 +265,19 @@ export class Agent<Context = undefined, Output = string> {
     this.model = options.model;
     this.modelSettings = options.modelSettings && { ...options.modelSettings };
     this.provider = options.provider ?? new NativeProvider();
+    if (options.provider === undefined)
+      implicitProviders.set(this.provider, new WeakSet([this]));
     this.outputType = options.outputType;
     this.tools = [...(options.tools ?? [])];
+    this.handoffs = Object.freeze([...(options.handoffs ?? [])]);
+    if (
+      this.handoffs.some(
+        (target) => !(target instanceof Agent) && typeof target !== 'function',
+      )
+    )
+      throw new TypeError(
+        'handoffs must contain native Agents or synchronous target resolvers',
+      );
     this.programmaticToolCalling = options.programmaticToolCalling ?? false;
   }
 
@@ -253,6 +288,10 @@ export class Agent<Context = undefined, Output = string> {
   withOutputType<Next>(
     outputType: OutputSpec<Next>,
   ): AgentOutput<Context, Next> {
+    if (this.handoffs.length)
+      throw new TypeError(
+        'withOutputType requires an Agent without outgoing handoffs; create a graph with compatible output types',
+      );
     const selected =
       'mode' in outputType ? Object.freeze({ ...outputType }) : outputType;
     const optionsFor = (options: SessionOptions<Context> | undefined) => {
@@ -297,11 +336,12 @@ export class Agent<Context = undefined, Output = string> {
 
   /** Check default tool and output declarations without opening a Session. */
   async validate(): Promise<void> {
-    const declarations = splitToolDeclarations(this.tools);
-    const catalog = captureTools(declarations.tools);
-    prepareOutput(this.outputType);
+    const catalogs = captureAgentProfiles(this).map((profile) =>
+      captureTools(splitToolDeclarations(profile.declaration.tools).tools),
+    );
     const native = await binding();
-    native._validate_python_tool_declarations(catalog.specsJson);
+    for (const catalog of catalogs)
+      native._validate_python_tool_declarations(catalog.specsJson);
   }
 
   async session(
@@ -590,6 +630,25 @@ export class Agent<Context = undefined, Output = string> {
         ? Object.freeze({ ...declaredOutput })
         : declaredOutput;
     const output = opening ? opening.output : prepareOutput(outputType);
+    const profiles = opening
+      ? opening.profiles
+      : this.handoffs.length
+        ? captureAgentProfiles(
+            this,
+            new Agent({
+              instructions: baseInstructions,
+              name,
+              model,
+              modelSettings: settings,
+              provider,
+              outputType: outputType as OutputSpec<Output> | undefined,
+              tools: options.tools ?? this.tools,
+              handoffs: this.handoffs,
+              programmaticToolCalling,
+            }),
+          )
+        : undefined;
+
     if (
       (options as OwnedSessionOptions<Context>)[ownedRun]?.prepareRequest !==
       undefined
@@ -697,7 +756,28 @@ export class Agent<Context = undefined, Output = string> {
       })
     )
       throw new TypeError('programmaticToolCalling reserves exec and wait');
-    const activeOutput = selection?.restoredOutput.output ?? output;
+    const graph = profiles
+      ? captureProfileRuntimes(profiles, catalog, instructions)
+      : undefined;
+    const graphNative = graph ? await binding() : undefined;
+    const restoredSource =
+      graph && state
+        ? checkProfileReceipt(
+            parseProfileReceipt(
+              graphNative!._agent_profiles_restore_source(
+                JSON.stringify(graph.roster),
+                graph.rootId,
+                JSON.stringify(state.history),
+              ),
+            ),
+            graph,
+          )
+        : undefined;
+    const activeOutput =
+      selection?.restoredOutput.output ??
+      (restoredSource
+        ? graph!.profiles.get(restoredSource.profile_id)!.output
+        : output);
     if (persistent && output.repair)
       throw new TypeError('Local storage does not support output repair');
     assertOutputState(state, activeOutput.identity);
@@ -748,6 +828,25 @@ export class Agent<Context = undefined, Output = string> {
         ? ['exec', 'wait'].map((name) => ({ name, namespace: 'functions' }))
         : []),
     ];
+    if (graph)
+      for (const profile of graph.profiles.values()) {
+        for (const identity of [
+          ...profile.catalog.tools.map(toolIdentity),
+          ...mcpToolNames(profile.mcp),
+          ...Object.keys(profile.profile.handoffs).map((name) => ({
+            namespace: 'functions',
+            name,
+          })),
+        ])
+          if (
+            !selected.some(
+              (current) =>
+                current.name === identity.name &&
+                current.namespace === identity.namespace,
+            )
+          )
+            selected.push(identity);
+      }
     const selectedPairs = new Set<string>();
     for (const identity of selected) {
       const key = JSON.stringify([identity.namespace, identity.name]);
@@ -833,7 +932,20 @@ export class Agent<Context = undefined, Output = string> {
       correctionOpening
     ];
 
-    const native = await binding();
+    const native = graphNative ?? (await binding());
+    const completedGraph = graph
+      ? Object.freeze({
+          ...graph,
+          ...(restoredSource ? { restoredSource } : {}),
+          roster: profileRoster(graph, environment),
+          fingerprint: native._agent_profiles_fingerprint(
+            JSON.stringify(graph.roster),
+            graph.rootId,
+          ),
+        })
+      : undefined;
+    for (const profile of graph?.profiles.values() ?? [])
+      native._validate_python_tool_declarations(profile.catalog.specsJson);
     native._validate_python_tool_declarations(catalog.specsJson);
     environmentOwner.signal.throwIfAborted();
     const lease = provider._acquire(correction ?? opening);
@@ -928,6 +1040,15 @@ export class Agent<Context = undefined, Output = string> {
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
         },
         threadOptions: {
+          ...(completedGraph
+            ? {
+                _agent_profiles: {
+                  root_id: completedGraph.rootId,
+                  roster: [...completedGraph.roster],
+                  fingerprint: completedGraph.fingerprint,
+                },
+              }
+            : {}),
           _hosted_tools: hostedToolSpecs(declarations.hostedTools),
           ...(projectGuidance ? { _canonical_rules: true } : {}),
           ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
@@ -967,6 +1088,7 @@ export class Agent<Context = undefined, Output = string> {
         context,
         onInteraction: options.onInteraction,
         applicationAgent: this,
+        agentGraph: completedGraph,
         output,
         restoredOutput: selection?.restoredOutput,
         nativeAgents,
@@ -1009,6 +1131,7 @@ export class Agent<Context = undefined, Output = string> {
         opening ??
         Object.freeze({
           agent: this,
+          profiles,
           factory,
           instructions,
           instructionFiles: files,
@@ -1080,6 +1203,151 @@ export class Agent<Context = undefined, Output = string> {
       return lease.failOpening(error);
     }
   }
+}
+
+/** @internal Immutable declarations and original identities for one native roster. */
+export interface CapturedAgentProfile<Context, Output> {
+  readonly id: string;
+  readonly agent: Agent<Context, Output>;
+  readonly declaration: Agent<Context, Output>;
+  readonly handoffs: Readonly<Record<string, string>>;
+}
+
+/** @internal Resolve a graph synchronously, before any provider/native acquisition. */
+export function captureAgentProfiles<Context, Output>(
+  root: Agent<Context, Output>,
+  rootDeclaration: Agent<Context, Output> = root,
+): readonly CapturedAgentProfile<Context, Output>[] {
+  const wireIdentity = (agent: Agent<Context, Output>) => {
+    const spec = agent.outputType;
+    // Validate actual retries, then compare only the shared wire encoding.
+    const prepared = prepareOutput(spec);
+    return spec && 'mode' in spec && spec.mode === 'prompted'
+      ? prepareOutput({ ...spec, maxRetries: 0 }).identity.fingerprint
+      : prepared.identity.fingerprint;
+  };
+  const output = wireIdentity(rootDeclaration);
+  const runtimeGrants = (agent: Agent<Context, Output>) => {
+    const {
+      tools: _tools,
+      mcp: _mcp,
+      ...grants
+    } = splitToolDeclarations(agent.tools);
+    return {
+      ...grants,
+      programmaticToolCalling: agent.programmaticToolCalling,
+    };
+  };
+  const grants = runtimeGrants(rootDeclaration);
+  const agents = [root];
+  const indices = new Map<Agent<Context, Output>, number>([[root, 0]]);
+  const resolved = new Map<
+    () => Agent<Context, Output>,
+    Agent<Context, Output>
+  >();
+  const profiles: CapturedAgentProfile<Context, Output>[] = [];
+  for (const agent of agents) {
+    const source = agent === root ? rootDeclaration : agent;
+    const plain = splitToolDeclarations(source.tools).tools;
+    const capturedTools = captureTools(plain).tools;
+    const replacements = new Map(
+      plain.map((tool, index) => [tool, capturedTools[index]]),
+    );
+    const outputType =
+      source.outputType && 'mode' in source.outputType
+        ? Object.freeze({ ...source.outputType })
+        : source.outputType;
+    const declaration = new Agent<Context, Output>({
+      instructions: source.instructions,
+      name: source.name,
+      model: source.model,
+      modelSettings: source.modelSettings,
+      provider: rootDeclaration.provider,
+      outputType,
+      tools: source.tools.map(
+        (tool) => replacements.get(tool as SessionTool) ?? tool,
+      ),
+      handoffs: source.handoffs,
+      programmaticToolCalling: source.programmaticToolCalling,
+    });
+    if (wireIdentity(declaration) !== output)
+      throw new TypeError(
+        'Handoff profiles must share output mode, schema and wrapping',
+      );
+    if (
+      agent !== root &&
+      !implicitProviders.get(agent.provider)?.has(agent) &&
+      agent.provider !== rootDeclaration.provider
+    )
+      throw new TypeError(
+        'Handoff targets must inherit or share the Session provider',
+      );
+    if (!isDeepStrictEqual(runtimeGrants(declaration), grants))
+      throw new TypeError(
+        'Handoff profiles must share native child-role configuration and non-function runtime grants',
+      );
+    const targets: Record<string, string> = Object.create(null);
+    for (const reference of declaration.handoffs) {
+      let target: Agent<Context, Output>;
+      if (reference instanceof Agent) target = reference;
+      else {
+        if (typeof reference !== 'function')
+          throw new TypeError(
+            'handoffs must contain native Agents or synchronous target resolvers',
+          );
+        const cached = resolved.get(reference);
+        if (cached) target = cached;
+        else {
+          const value: unknown = reference();
+          if (!(value instanceof Agent)) {
+            // Reject async declarations without leaving an unobserved rejection.
+            if (value instanceof Promise) void value.catch(() => {});
+            throw new TypeError(
+              'A synchronous handoff target resolver must return a native Agent',
+            );
+          }
+          target = value;
+          resolved.set(reference, target);
+        }
+      }
+      if (!target.name?.trim())
+        throw new TypeError('A handoff target requires a nonempty Agent.name');
+      const name = `transfer_to_${target.name}`
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .toLowerCase()
+        .slice(0, 64);
+      let index = indices.get(target);
+      if (index === undefined) {
+        index = agents.length;
+        indices.set(target, index);
+        agents.push(target);
+      }
+      const id = `agent_${index}`;
+      if (targets[name] !== undefined && targets[name] !== id)
+        throw new TypeError(
+          `Duplicate handoff name in Agent ${agent.name ?? 'root'}: ${name}`,
+        );
+      if (
+        declaration.tools.some((tool) => 'name' in tool && tool.name === name)
+      )
+        throw new TypeError(
+          `Handoff name conflicts with declared tool: ${name}`,
+        );
+      targets[name] = id;
+    }
+    Object.freeze(declaration.modelSettings);
+    Object.freeze(declaration.tools);
+    Object.freeze(declaration);
+    profiles.push(
+      Object.freeze({
+        id: `agent_${indices.get(agent)!}`,
+        agent,
+        declaration,
+        handoffs: Object.freeze(targets),
+      }),
+    );
+  }
+  return Object.freeze(profiles);
 }
 
 export class Runner {

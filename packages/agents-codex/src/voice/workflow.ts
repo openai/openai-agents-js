@@ -15,6 +15,27 @@ interface ActiveVoiceTurn {
   settled: boolean;
   cleaned: boolean;
   finished: boolean;
+  graphClosed: ReturnType<typeof Promise.withResolvers<void>>;
+}
+
+const graphShutdown = new WeakMap<NativeSessionVoiceWorkflow, () => void>();
+/** Internal receipt after Session has confirmed native graph teardown, never a public cancellation shortcut. */
+export function voiceWorkflowGraphClosed(
+  workflow: NativeSessionVoiceWorkflow,
+): void {
+  graphShutdown.get(workflow)?.();
+}
+
+function beforeGraphClose<T>(
+  active: ActiveVoiceTurn,
+  pending: Promise<T>,
+): Promise<T> {
+  return Promise.race([
+    pending,
+    active.graphClosed.promise.then(() => {
+      throw active.controller.signal.reason;
+    }),
+  ]);
 }
 
 /** Speaks only a caller-owned Session's validated final string, after settlement.
@@ -23,15 +44,27 @@ interface ActiveVoiceTurn {
 export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
   private active?: ActiveVoiceTurn;
 
-  constructor(private readonly session: Session<string, any>) {}
+  constructor(private readonly session: Session<string, any>) {
+    graphShutdown.set(this, () => {
+      const active = this.active;
+      if (!active) return;
+      active.cleaned = true;
+      active.controller.abort(new Error('Native Session graph closed'));
+      active.graphClosed.resolve();
+    });
+  }
 
   async cancel(): Promise<void> {
     const active = this.active;
     if (!active) return;
     active.controller.abort();
     active.cancellation ??= (async () => {
-      const turn = await active.submission?.catch(() => undefined);
-      if (turn && !active.settled) await turn.cancel();
+      const turn = await Promise.race([
+        active.submission?.catch(() => undefined),
+        active.graphClosed.promise.then(() => undefined),
+      ]);
+      if (turn && !active.settled)
+        await Promise.race([turn.cancel(), active.graphClosed.promise]);
       active.cleaned = true;
       if (active.finished && this.active === active) this.active = undefined;
     })().catch((error: unknown) => {
@@ -54,6 +87,7 @@ export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
       settled: false,
       cleaned: false,
       finished: false,
+      graphClosed: Promise.withResolvers<void>(),
     } as ActiveVoiceTurn;
     this.active = active;
     const abort = () => {
@@ -66,9 +100,9 @@ export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
         active.controller.signal.throwIfAborted();
         return this.session.submit(transcription);
       });
-      const turn = await active.submission;
+      const turn = await beforeGraphClose(active, active.submission);
       active.controller.signal.throwIfAborted();
-      const completed = await turn.wait();
+      const completed = await beforeGraphClose(active, turn.wait());
       active.controller.signal.throwIfAborted();
       active.settled = true;
       if (typeof completed.finalOutput !== 'string')

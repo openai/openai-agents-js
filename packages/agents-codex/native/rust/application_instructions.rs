@@ -7,7 +7,7 @@ use codex_extension_api::{
     SdkApplicationInstructions, SdkTurnReceiptSeed, WorldStateContributionInput,
     WorldStateSectionContribution,
 };
-use codex_history::RolloutItem;
+use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::models::{
     ContentItem, ContentItemKind, InternalChatMessageMetadataPassthrough, ResponseItem,
 };
@@ -33,6 +33,12 @@ pub struct Accepted {
     pub(crate) id: ResponseItemId,
     pub(crate) text: String,
     pub(crate) files: Vec<Value>,
+}
+
+impl ThreadInstructions {
+    pub(crate) fn realtime_snapshot(&self) -> Option<String> {
+        self.accepted().map(|accepted| accepted.text)
+    }
 }
 
 fn body(accepted: &Accepted) -> String {
@@ -173,6 +179,22 @@ pub(crate) fn decode(history: Value) -> Result<Vec<RolloutItem>> {
 /// Receipt-free Node formats 1/2 and the old manual format 3 remain readable.
 /// Any reserved evidence must validate; an orphan projection is never legacy.
 pub fn validate(history: &[RolloutItem], expected: &str) -> Result<Option<Accepted>> {
+    let marked = |item: &ResponseItemEnvelope| {
+        item.metadata.as_ref().is_some_and(|metadata| {
+            metadata.sdk_agent_profile.is_some() || metadata.sdk_agent_graph.is_some()
+        })
+    };
+    ensure!(
+        !history.iter().any(|row| match row {
+            RolloutItem::ResponseItem(item) => marked(item),
+            RolloutItem::Compacted(compacted) => compacted
+                .replacement_history
+                .as_ref()
+                .is_some_and(|items| items.iter().any(marked)),
+            _ => false,
+        }),
+        "Restoring Agent profile history requires its fresh captured graph"
+    );
     let latest = latest(history)?;
     if let Some(latest) = &latest {
         ensure!(
@@ -188,7 +210,15 @@ pub(crate) fn latest(history: &[RolloutItem]) -> Result<Option<Accepted>> {
     let mut originals: Vec<(&ResponseItem, Accepted)> = Vec::new();
     for row in history {
         if let RolloutItem::ResponseItem(item) = row {
-            if let Some(accepted) = accepted(&item.item)? {
+            if let Some(mut accepted) = accepted(&item.item)? {
+                if let Some(files) = item
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.sdk_instruction_files.clone())
+                {
+                    accepted.files = serde_json::from_value(files)
+                        .context("Invalid native instruction file receipt")?;
+                }
                 ensure!(
                     !originals
                         .iter()
@@ -376,8 +406,29 @@ fn receipt<'a>(
     Ok(())
 }
 
+/// Prepare one immutable instruction envelope for an atomic Core profile activation.
+pub(crate) fn prepare(
+    thread: &CodexThread,
+    text: &str,
+    files: Vec<Value>,
+) -> Result<(ResponseItemEnvelope, Accepted)> {
+    let mut envelope = thread.annotate_client_response_item(publication(text));
+    if !files.is_empty() {
+        envelope
+            .metadata
+            .get_or_insert_with(Default::default)
+            .sdk_instruction_files = Some(serde_json::to_value(&files)?);
+    }
+    let mut accepted = accepted(&envelope.item)?.context("Missing prepared Agent instructions")?;
+    accepted.files = files;
+    Ok((envelope, accepted))
+}
+
 /// The caller holds the existing native operation and idle mutation gates.
 pub async fn publish(thread: &CodexThread, text: String) -> Result<()> {
+    if crate::agent_profiles::update_instructions(thread, &text).await? {
+        return Ok(());
+    }
     publish_item(thread, publication(&text)).await
 }
 
@@ -451,10 +502,20 @@ impl ContextContributor for Contributor {
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
             // Initial publication must be durable before this cache contributes.
-            let accepted = input
-                .thread_store
-                .get::<ThreadInstructions>()
-                .and_then(|owner| owner.accepted());
+            let accepted = input.step_store.get::<Accepted>().or_else(|| {
+                if input
+                    .step_store
+                    .get::<codex_extension_api::CapturedAgentProfile>()
+                    .is_some()
+                {
+                    None
+                } else {
+                    input
+                        .thread_store
+                        .get::<ThreadInstructions>()
+                        .and_then(|owner| owner.accepted())
+                }
+            });
             let control = input
                 .thread_store
                 .get::<crate::native_interception::Control>();
