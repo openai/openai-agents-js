@@ -750,21 +750,17 @@ for (const location of ['host', 'environment'] as const) {
         const model = new ModelServer(
           rejectsDuplicates ? [] : [[message('done')]],
         );
-        session = await (
-          await agent(model, selected.declaration)
-        ).session({
-          environment,
-        });
-        sessions.push(session);
+        const configured = await agent(model, selected.declaration);
         if (rejectsDuplicates) {
-          const run = async () => (await session!.submit('read')).wait();
-          await expect(run()).rejects.toThrow(
-            /duplicate explicit environment/i,
+          await expect(configured.session({ environment })).rejects.toThrow(
+            'Native MCP publication was not confirmed',
           );
           expect(await records(selected.starts)).toHaveLength(0);
           expect(model.requests).toHaveLength(0);
           return;
         }
+        session = await configured.session({ environment });
+        sessions.push(session);
         expect((await (await session.submit('read')).wait()).finalOutput).toBe(
           'done',
         );
