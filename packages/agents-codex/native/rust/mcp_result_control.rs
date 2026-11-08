@@ -238,6 +238,13 @@ fn source_selection(
     Ok((false, None))
 }
 
+fn inherits_result_source(inherits_tools: bool, spawning_step: Option<&ExtensionData>) -> bool {
+    inherits_tools
+        || spawning_step
+            .and_then(|step| step.get::<crate::native_interception::ProfileMcpSource>())
+            .is_some_and(|source| source.policy.is_some())
+}
+
 struct State {
     selection: Option<Selection>,
     timeout: Option<Duration>,
@@ -764,10 +771,13 @@ impl ThreadLifecycleContributor<Config> for McpResultContributor {
                 .thread_store
                 .get::<crate::native_interception::Control>()
                 && let Some(parent) = control.inherited_parent(&self.0).await
-                && let Some(tools) = parent
-                    .thread_extension_data()
-                    .get::<crate::python_tools::PythonTools>()
-                && tools.inherits_children()
+                && inherits_result_source(
+                    parent
+                        .thread_extension_data()
+                        .get::<crate::python_tools::PythonTools>()
+                        .is_some_and(|tools| tools.inherits_children()),
+                    input.spawning_step_store,
+                )
                 && let Some(parent_control) =
                     parent.thread_extension_data().get::<McpResultControl>()
             {
@@ -945,6 +955,29 @@ impl ToolLifecycleContributor for McpResultContributor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_spawning_source_routes_results_without_sdk_tool_inheritance() {
+        assert!(!inherits_result_source(false, None));
+        assert!(inherits_result_source(true, None));
+        let source = ExtensionData::new("actual-spawning-step");
+        source.insert(crate::native_interception::ProfileMcpSource {
+            receipt: Some(codex_extension_api::AgentProfileReceipt {
+                profile_id: "b".into(),
+                epoch: 1,
+            }),
+            policy: Some(Arc::new(
+                crate::native_interception::ProfileMcpPolicy::default(),
+            )),
+        });
+        assert!(inherits_result_source(false, Some(&source)));
+        let invalid = ExtensionData::new("missing-policy");
+        invalid.insert(crate::native_interception::ProfileMcpSource {
+            receipt: None,
+            policy: None,
+        });
+        assert!(!inherits_result_source(false, Some(&invalid)));
+    }
 
     #[test]
     fn captured_unselected_mono_source_cannot_inherit_newer_result_policy() {

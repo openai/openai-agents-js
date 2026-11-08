@@ -251,6 +251,20 @@ export function parseNative(source: string): unknown {
   return parsed;
 }
 
+/** Private operation selections use string catalog IDs and a numeric source epoch. */
+export function encodeOperationSelection(value: unknown): string {
+  const dto = jsonObject.parse(value);
+  const source = dto.operation_declaration_source;
+  return JSON.stringify(dto, function (key, item: unknown) {
+    if (this === source && key === 'epoch' && typeof item === 'string') {
+      if (!/^(0|[1-9][0-9]*)$/.test(item))
+        throw new TypeError('Invalid native source epoch');
+      return JSON.rawJSON(item);
+    }
+    return item;
+  });
+}
+
 export function encodeReceipt(value: unknown): string {
   const originals = checkpointCodeStates(value);
   for (const state of originals)
@@ -276,6 +290,11 @@ export function encodeReceipt(value: unknown): string {
     'root_turn_budget' in checkpoint
       ? checkpoint.root_turn_budget
       : undefined;
+  const selection = validated.selection;
+  const declarationSource =
+    selection && typeof selection === 'object' && !Array.isArray(selection)
+      ? selection.operation_declaration_source
+      : undefined;
   const request = validated.request;
   const marker =
     typeof request === 'object' && request !== null && !Array.isArray(request)
@@ -292,6 +311,7 @@ export function encodeReceipt(value: unknown): string {
             key === 'delivery' ||
             key === 'subagent_instance_id' ||
             key === 'profile_epoch')) ||
+          (this === declarationSource && key === 'epoch') ||
           (this === budget && (key === 'admitted' || key === 'limit')) ||
           (codeStates.has(this) && key === 'next_cell_id')) &&
         typeof item === 'string'

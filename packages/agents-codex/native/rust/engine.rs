@@ -796,7 +796,8 @@ impl EngineState {
             };
             if let Some(accepted) = accepted {
                 if opening.is_none()
-                    && let InitialHistory::Forked(history) = &mut startup.initial_history {
+                    && let InitialHistory::Forked(history) = &mut startup.initial_history
+                {
                     let root = history.iter().find_map(|row| match row {
                         RolloutItem::SessionMeta(header) => Some(header.meta.id),
                         _ => None,
@@ -867,7 +868,12 @@ impl EngineState {
             let _mutation = state.mutations.lock().await;
             if let Some(item) = initial_receipt {
                 crate::application_instructions::publish_item(&state.thread, item).await?;
-            } else if state.thread.thread_extension_data().get::<crate::agent_profiles::OpeningProfiles>().is_none() {
+            } else if state
+                .thread
+                .thread_extension_data()
+                .get::<crate::agent_profiles::OpeningProfiles>()
+                .is_none()
+            {
                 crate::application_instructions::publish_if_ready(&state.thread, false).await?;
             }
         }

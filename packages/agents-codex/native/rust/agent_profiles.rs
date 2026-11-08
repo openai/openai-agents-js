@@ -322,6 +322,73 @@ fn restored_envelope<'a>(
     Ok(Some((envelope, receipt)))
 }
 
+/// Recover the declaration owner frozen before queue admission, never the sampled actor.
+pub(crate) fn operation_source(
+    opening: &OpeningProfiles,
+    history: &[RolloutItem],
+    turn_id: &str,
+) -> Result<AgentProfileReceipt> {
+    validate_restored(opening, history)?;
+    ensure!(!turn_id.is_empty(), "Missing operation turn identity");
+    let mut original = None;
+    let mut first = None;
+    for (index, item) in history.iter().enumerate() {
+        let RolloutItem::TurnContext(context) = item else {
+            continue;
+        };
+        if context.turn_id.as_deref() != Some(turn_id) {
+            continue;
+        }
+        let Some(receipt) = &context.sdk_receipt else {
+            continue;
+        };
+        let value = receipt
+            .get("operation_declaration_source")
+            .context("Missing original operation declaration provenance")?;
+        let source: AgentProfileReceipt = serde_json::from_value(value.clone())
+            .context("Invalid original operation declaration provenance")?;
+        ensure!(
+            original.as_ref().is_none_or(|previous| previous == &source),
+            "Operation declaration provenance changed within its owning turn"
+        );
+        first.get_or_insert(index);
+        original = Some(source);
+    }
+    let source = original.context("Missing original operation declaration provenance")?;
+    let first = first.expect("an original source has an owning receipt");
+    let mut matching = 0;
+    for item in &history[..first] {
+        let RolloutItem::ResponseItem(envelope) = item else {
+            continue;
+        };
+        let Some(metadata) = &envelope.metadata else {
+            continue;
+        };
+        let Some(value) = &metadata.sdk_agent_profile else {
+            continue;
+        };
+        if profile_receipt(value)? == source {
+            ensure!(
+                metadata.sdk_agent_graph.as_deref() == Some(opening.fingerprint.as_str()),
+                "Original operation belongs to a different Agent graph"
+            );
+            ensure!(
+                opening
+                    .roster
+                    .iter()
+                    .any(|profile| profile.id == source.profile_id),
+                "Original operation is outside the fresh Agent declaration graph"
+            );
+            matching += 1;
+        }
+    }
+    ensure!(
+        matching == 1,
+        "Original operation has no unique canonical accepted Agent envelope"
+    );
+    Ok(source)
+}
+
 pub(crate) fn restore_source(
     opening: &OpeningProfiles,
     history: &[RolloutItem],
@@ -403,6 +470,9 @@ impl AgentProfiles {
             .get_or_insert_with(Default::default)
             .sdk_agent_graph = Some(self.opening.fingerprint.clone());
         let mut data = ExtensionDataInit::new();
+        data.insert(codex_extension_api::AgentProfileInstructions {
+            text: Some(accepted.text.clone()),
+        });
         data.insert(accepted);
         data.insert(prepared.catalog.clone());
         data.insert(prepared.plugins.clone());
@@ -604,13 +674,13 @@ pub(crate) async fn configure(
             ],
             &prepared.catalog,
         )?;
+        let generation = catalog.generation.id;
         let mut data = ExtensionDataInit::new();
-        let mut selection = prepared.result_selection.clone();
-        selection.generation = catalog.generation.id;
-        data.insert(prepared.mcp_policy.with_generation(catalog.generation.id));
+        data.insert(codex_extension_api::AgentProfileInstructions {
+            text: Some(accepted.text.clone()),
+        });
         data.insert(accepted);
         data.insert(catalog);
-        data.insert(prepared.plugins.clone());
         data.insert(codex_extension_api::AgentProfileHandoffTools {
             targets: prepared
                 .declaration
@@ -624,14 +694,15 @@ pub(crate) async fn configure(
                 })
                 .collect(),
         });
-        data.insert(selection);
-        Arc::new(AgentProfile {
+        let mut target = AgentProfile {
             profile_id: receipt.profile_id,
             model: receipt.model,
             application_instructions: envelope.clone(),
             data,
             mcp: prepared.mcp.clone(),
-        })
+        };
+        bind_accepted_mcp(thread, &mut target, &prepared.declaration, generation).await?;
+        Arc::new(target)
     } else {
         profiles.candidate(thread, &profiles.opening.root_id)?
     };
@@ -714,42 +785,62 @@ pub(crate) async fn update_active(
         .get_or_insert_with(Default::default)
         .sdk_agent_graph = Some(profiles.opening.fingerprint.clone());
     target.application_instructions = envelope;
+    target
+        .data
+        .insert(codex_extension_api::AgentProfileInstructions {
+            text: Some(accepted.text.clone()),
+        });
     target.data.insert(accepted);
     if let Some(catalog) = catalog {
-        // The SDK has already accepted its replacement roster under this idle
-        // mutation. Prepare a retained binding for the new immutable profile;
-        // existing steps keep their previous binding and policy snapshots.
-        let current = thread.config().await;
-        let (mcp, plugins) = thread
-            .prepare_agent_profile_mcp(current.mcp_servers.get().clone())
-            .await?;
         let declaration = profiles
             .profiles
             .get(&captured.receipt.profile_id)
             .context("Active Agent is outside the captured declaration graph")?;
-        let policy = crate::native_interception::ProfileMcpPolicy::prepare(
-            &mcp,
-            &declaration.declaration.mcp_tools,
+        bind_accepted_mcp(
+            thread,
+            &mut target,
+            &declaration.declaration,
             catalog.generation.id,
-        )?;
-        let mut selection = thread
-            .thread_extension_data()
-            .get::<crate::mcp_result_control::McpResultControl>()
-            .and_then(|control| control.capture_source_selection())
-            .unwrap_or(serde_json::from_value(
-                json!({"generation":catalog.generation.id,"servers":{}}),
-            )?);
-        selection.generation = catalog.generation.id;
-        target.mcp = mcp;
-        target.data.insert(plugins);
-        target.data.insert(policy);
-        target.data.insert(selection);
+        )
+        .await?;
         target.data.insert(catalog);
     }
     thread
         .activate_agent_profile(Some(captured.receipt.clone()), Arc::new(target))
         .await?;
     Ok(true)
+}
+
+/// Bind an unpublished active candidate to the exact roster already accepted by
+/// the SDK mutation. Declaration templates and existing captured sources stay owned.
+async fn bind_accepted_mcp(
+    thread: &CodexThread,
+    target: &mut AgentProfile,
+    declaration: &ProfileSpec,
+    generation: u64,
+) -> Result<()> {
+    let current = thread.config().await;
+    let (mcp, plugins) = thread
+        .prepare_agent_profile_mcp(current.mcp_servers.get().clone())
+        .await?;
+    let policy = crate::native_interception::ProfileMcpPolicy::prepare(
+        &mcp,
+        &declaration.mcp_tools,
+        generation,
+    )?;
+    let mut selection = thread
+        .thread_extension_data()
+        .get::<crate::mcp_result_control::McpResultControl>()
+        .and_then(|control| control.capture_source_selection())
+        .unwrap_or(serde_json::from_value(
+            json!({"generation":generation,"servers":{}}),
+        )?);
+    selection.generation = generation;
+    target.mcp = mcp;
+    target.data.insert(plugins);
+    target.data.insert(policy);
+    target.data.insert(selection);
+    Ok(())
 }
 
 pub(crate) async fn replace_tools(
@@ -1089,6 +1180,88 @@ mod tests {
         ])
     }
 
+    #[test]
+    fn queued_operation_origin_is_distinct_from_admitted_and_restored_actor() {
+        let raw = roster().to_string();
+        let opening = OpeningProfiles {
+            root_id: "a".into(),
+            roster: serde_json::from_str(&raw).unwrap(),
+            fingerprint: fingerprint(&raw, "a").unwrap(),
+        };
+        let envelope = |profile: &str, epoch: u64, text: &str| {
+            let mut model = opening
+                .roster
+                .iter()
+                .find(|item| item.id == profile)
+                .unwrap()
+                .model
+                .clone();
+            if model.model.is_empty() {
+                model.model = "opening-model".into();
+            }
+            ResponseItemEnvelope {
+                item: crate::application_instructions::publication(text),
+                metadata: Some(codex_history::CodexHarnessMetadata {
+                    sdk_agent_graph: Some(opening.fingerprint.clone()),
+                    sdk_agent_profile: Some(
+                        json!({"profile_id":profile,"epoch":epoch,"model":model}),
+                    ),
+                    client_authored: true,
+                    ..Default::default()
+                }),
+            }
+        };
+        let a = envelope("a", 0, "Root");
+        let b = envelope("b", 1, "Destination");
+        let context = |source: Value| -> RolloutItem {
+            serde_json::from_value(json!({"type":"turn_context","payload":{
+                "turn_id":"queued-turn","sdk_receipt":{
+                    "instruction_revision":b.item.id(),"operation_declaration_source":source
+                },
+                "cwd":std::env::current_dir().unwrap(),"approval_policy":"never",
+                "sandbox_policy":codex_protocol::protocol::SandboxPolicy::new_read_only_policy(),
+                "model":"destination","summary":"auto"
+            }}))
+            .unwrap()
+        };
+        let original = json!({"profile_id":"a","epoch":0});
+        let mut history = vec![
+            RolloutItem::ResponseItem(a),
+            RolloutItem::ResponseItem(b.clone()),
+            context(original.clone()),
+        ];
+        assert_eq!(restore_source(&opening, &history).unwrap().profile_id, "b");
+        assert_eq!(
+            operation_source(&opening, &history, "queued-turn")
+                .unwrap()
+                .profile_id,
+            "a"
+        );
+        history.push(
+            serde_json::from_value(json!({"type":"compacted","payload":{
+                "message":"summary","replacement_history":[b]
+            }}))
+            .unwrap(),
+        );
+        history.push(context(original));
+        assert_eq!(
+            operation_source(&opening, &history, "queued-turn")
+                .unwrap()
+                .profile_id,
+            "a"
+        );
+        history.push(context(json!({"profile_id":"b","epoch":1})));
+        assert!(operation_source(&opening, &history, "queued-turn").is_err());
+        history.pop();
+        history.push(context(json!({"profile_id":"a","epoch":0,"unknown":true})));
+        assert!(operation_source(&opening, &history, "queued-turn").is_err());
+        history.pop();
+        assert!(operation_source(&opening, &history, "different-turn").is_err());
+        if let RolloutItem::ResponseItem(source) = &mut history[0] {
+            source.metadata.as_mut().unwrap().sdk_agent_graph = Some("different graph".into());
+        }
+        assert!(operation_source(&opening, &history, "queued-turn").is_err());
+    }
     #[test]
     fn declaration_fingerprint_excludes_connection_credentials_but_keeps_server_identity() {
         let mut declaration = roster();

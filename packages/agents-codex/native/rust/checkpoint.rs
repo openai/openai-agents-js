@@ -1685,6 +1685,7 @@ async fn import(
     engine
         .store
         .create_thread(CreateThreadParams {
+            sdk_mcp_source_required: meta.sdk_mcp_source_required,
             creator_user_id: meta.creator_user_id,
             creator_account_id: meta.creator_account_id,
             session_id: meta.session_id,

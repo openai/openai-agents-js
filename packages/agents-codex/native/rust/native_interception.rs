@@ -385,13 +385,6 @@ pub(crate) struct ProfileMcpPolicy {
     rules: Rules,
 }
 impl ProfileMcpPolicy {
-    pub(crate) fn with_generation(&self, generation: u64) -> Self {
-        let mut next = self.clone();
-        for rule in next.rules.values_mut() {
-            rule.2 = Some(generation);
-        }
-        next
-    }
     pub(crate) fn prepare(
         binding: &codex_mcp::McpBinding,
         declarations: &std::collections::BTreeMap<

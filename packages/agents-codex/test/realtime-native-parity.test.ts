@@ -1,15 +1,28 @@
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
-import { Agent, NativeProvider, tool } from '../src';
-import { ModelServer } from './native/fixtures/model-server';
-import type { NativeRealtimeHostedMcpApprovalRequest } from '../src/runtime/realtime';
+import {
+  Agent,
+  HttpMCP,
+  NativeProvider,
+  Turn,
+  tool,
+  type MCPResultContext,
+} from '../src';
+import { ModelServer, message } from './native/fixtures/model-server';
+import type {
+  NativeRealtimeEvent,
+  NativeRealtimeHostedMcpApprovalRequest,
+} from '../src/runtime/realtime';
 
 type Frame = Record<string, any>;
 
 // Only provider protocols are scripted. The public SDK and native binding run.
 class RealtimePeer {
   readonly frames: Frame[] = [];
+  readonly authorization: (string | undefined)[] = [];
   readonly pendingUpdates: Frame[] = [];
   autoAck = true;
   private socket?: WebSocket;
@@ -17,6 +30,7 @@ class RealtimePeer {
 
   constructor(model: ModelServer) {
     model.onUpgrade((request, transport, head) => {
+      this.authorization.push(request.headers.authorization);
       this.server.handleUpgrade(request, transport, head, (connection) =>
         this.server.emit('connection', connection, request),
       );
@@ -123,6 +137,368 @@ async function providerFor(model: ModelServer) {
 }
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
+
+nativeIt.each(['static', 'sync', 'async'] as const)(
+  'resolves %s voice credentials per connection without replacing Session auth',
+  async (kind) => {
+    const model = new ModelServer([[message('still usable')]]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      let calls = 0;
+      const nextKey = () => `synthetic-voice-${++calls}`;
+      const apiKey =
+        kind === 'static'
+          ? 'synthetic-voice-static'
+          : kind === 'sync'
+            ? nextKey
+            : async () => nextKey();
+      for (let index = 0; index < 2; index++) {
+        const voice = await session.realtime({
+          model: 'fixture-realtime',
+          apiKey,
+        });
+        await voice.close();
+      }
+      expect(peer.authorization).toEqual(
+        kind === 'static'
+          ? ['Bearer synthetic-voice-static', 'Bearer synthetic-voice-static']
+          : ['Bearer synthetic-voice-1', 'Bearer synthetic-voice-2'],
+      );
+      expect(calls).toBe(kind === 'static' ? 0 : 2);
+      await (await session.submit('continue')).wait();
+      expect(model.requestHeaders[0].authorization).toBe(
+        'Bearer synthetic-native-parity',
+      );
+      model.assertExhausted();
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'cancels native setup waiting for its initial provider acknowledgement and permits reopening',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    peer.autoAck = false;
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      const controller = new AbortController();
+      const opening = session.realtime({
+        model: 'fixture-realtime',
+        signal: controller.signal,
+      });
+      const rejected = expect(opening).rejects.toThrow(
+        'cancel initial voice setup',
+      );
+      await peer.frame((frame) => frame.type === 'session.update');
+      controller.abort(new Error('cancel initial voice setup'));
+      await rejected;
+      peer.autoAck = true;
+      const reopened = await session.realtime({ model: 'fixture-realtime' });
+      await reopened.close();
+      expect(peer.authorization).toHaveLength(2);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+async function mcpPeer() {
+  const calls: Frame[] = [];
+  const failures: unknown[] = [];
+  const server = createServer(async (request, response) => {
+    try {
+      if (request.method !== 'POST') {
+        response.writeHead(405).end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const rpc = JSON.parse(Buffer.concat(chunks).toString());
+      if (rpc.id === undefined) {
+        response.writeHead(202).end();
+        return;
+      }
+      let result: Frame = {};
+      if (rpc.method === 'initialize')
+        result = {
+          protocolVersion: rpc.params.protocolVersion,
+          capabilities: { tools: {} },
+          serverInfo: { name: 'voice-source-fixture', version: '1' },
+        };
+      else if (rpc.method === 'tools/list')
+        result = {
+          tools: [
+            {
+              name: 'lookup',
+              description: 'Read a record.',
+              inputSchema: {
+                type: 'object',
+                properties: { key: { type: 'string' } },
+                required: ['key'],
+                additionalProperties: false,
+              },
+            },
+          ],
+        };
+      else if (rpc.method === 'tools/call') {
+        calls.push(rpc.params);
+        result = { content: [{ type: 'text', text: 'raw MCP result' }] };
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }));
+    } catch (error) {
+      failures.push(error);
+      response.writeHead(500).end();
+    }
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string')
+    throw new Error('Expected TCP peer');
+  return {
+    calls,
+    failures,
+    url: `http://127.0.0.1:${address.port}/mcp`,
+    async close() {
+      const closed = new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      server.closeAllConnections();
+      await closed;
+    },
+  };
+}
+
+nativeIt.each([false, true])(
+  'clears and restores live native MCP selection and its result policy (graph=%s)',
+  async (withGraph) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const mcp = await mcpPeer();
+    const accepted: MCPResultContext[] = [];
+    try {
+      await using provider = await providerFor(model);
+      const descriptor = new HttpMCP({
+        name: 'records',
+        url: mcp.url,
+        tools: ['lookup'],
+        approvalMode: 'preapproved',
+        transformResult(context) {
+          accepted.push(context);
+          return { content: [{ type: 'text', text: 'accepted MCP result' }] };
+        },
+      });
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Read selected records.',
+        tools: [descriptor],
+        handoffs: withGraph
+          ? [new Agent({ name: 'B', instructions: 'Help the caller.' })]
+          : [],
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const initial = await peer.frame(
+        (frame) => frame.type === 'session.update',
+      );
+      const declaration = initial.session.tools.find((item: Frame) =>
+        item.name?.includes('lookup'),
+      );
+      expect(declaration).toBeDefined();
+      const settle = async () => {
+        const submission = accepted.at(-1)?.submission;
+        expect(submission).toBeInstanceOf(Turn);
+        if (!(submission instanceof Turn))
+          throw new Error('Expected native Turn');
+        await submission.wait();
+      };
+      peer.call(declaration.name, { key: 'before' }, 'mcp-before');
+      const before = await peer.frame(
+        (frame) => frame.item?.call_id === 'mcp-before',
+      );
+      expect(before.item.output).toContain('accepted MCP result');
+      expect(before.item.output).not.toContain('raw MCP result');
+      await settle();
+
+      let start = peer.frames.length;
+      await session.update({ tools: [] });
+      const cleared = await peer.frame(
+        (frame) => frame.type === 'session.update',
+        start,
+      );
+      expect(
+        cleared.session.tools.some(
+          (item: Frame) => item.name === declaration.name,
+        ),
+      ).toBe(false);
+      start = peer.frames.length;
+      await session.update({ tools: [descriptor] });
+      const restored = await peer.frame(
+        (frame) => frame.type === 'session.update',
+        start,
+      );
+      expect(
+        restored.session.tools.some(
+          (item: Frame) => item.name === declaration.name,
+        ),
+      ).toBe(true);
+      peer.call(declaration.name, { key: 'after' }, 'mcp-after');
+      const after = await peer.frame(
+        (frame) => frame.item?.call_id === 'mcp-after',
+      );
+      expect(after.item.output).toContain('accepted MCP result');
+      await settle();
+      expect(accepted).toHaveLength(2);
+      expect(mcp.calls.map((call) => call.arguments.key)).toEqual([
+        'before',
+        'after',
+      ]);
+      expect(mcp.failures).toEqual([]);
+      expect(model.requests).toHaveLength(0);
+      await voice.update({ instructions: 'Keep listening.' });
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+      await mcp.close();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([true, false])(
+  'waits for all hosted calls and honors automatic continuation (automatic=%s)',
+  async (automatic) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        automaticallyTriggerResponseForMcpToolCalls: automatic,
+        settings: {
+          hostedMcpTools: [
+            {
+              serverLabel: 'docs',
+              serverUrl: 'https://mcp.example.test/server',
+              requireApproval: 'never',
+            },
+          ],
+        },
+      });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      void reading.catch(() => {});
+      const completed = () =>
+        seen.filter((event) => event.type === 'hosted_mcp_call_completed');
+      const continuations = () =>
+        peer.frames.filter((frame) => frame.type === 'response.create');
+      try {
+        const responseId = 'hosted-siblings';
+        peer.send({ type: 'response.created', response: { id: responseId } });
+        const items = ['mcp_call', 'mcp_tool_call'].map((type, index) => ({
+          type,
+          id: `hosted-${index}`,
+          server_label: 'docs',
+          name: 'search',
+          arguments: '',
+          status: 'in_progress',
+        }));
+        items.forEach((item, output_index) =>
+          peer.send({
+            type: 'response.output_item.added',
+            response_id: responseId,
+            output_index,
+            item,
+          }),
+        );
+        peer.send({
+          type: 'response.done',
+          response: { id: responseId, output: items },
+        });
+        for (const [index, item] of items.entries()) {
+          peer.send({
+            type: 'conversation.item.done',
+            item: {
+              ...item,
+              arguments: JSON.stringify({ query: `query-${index}` }),
+              output: `result-${index}`,
+              status: 'completed',
+            },
+          });
+          await vi.waitFor(() => expect(completed()).toHaveLength(index + 1), {
+            timeout: 10000,
+          });
+          expect(completed()[index]).toMatchObject({
+            itemId: item.id,
+            responseId,
+            output: `result-${index}`,
+          });
+          if (index === 0) {
+            const after = peer.frames.length;
+            await voice.sendAudio(new Int16Array([0]));
+            await peer.frame(
+              (frame) => frame.type === 'input_audio_buffer.append',
+              after,
+            );
+            expect(continuations()).toHaveLength(0);
+          }
+        }
+        if (automatic) {
+          await peer.frame((frame) => frame.type === 'response.create');
+          await vi.waitFor(
+            () =>
+              expect(
+                seen.some(
+                  (event) =>
+                    event.type === 'response' &&
+                    event.status === 'done' &&
+                    event.responseId?.startsWith('continuation-'),
+                ),
+              ).toBe(true),
+            { timeout: 10000 },
+          );
+        } else {
+          // Both siblings have settled, so this barrier cannot hide a pending call.
+          await voice.update({
+            instructions: 'Both hosted calls have settled.',
+          });
+        }
+        expect(continuations()).toHaveLength(Number(automatic));
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
 
 nativeIt.each([true, false])(
   "answers only this owner's issued hosted MCP approval after response.done (approve=%s)",
@@ -268,7 +644,7 @@ nativeIt.each([true, false])(
       }
     } finally {
       await peer.close();
-      await model.close();
+      await ModelServer.closeAll();
     }
   },
   30000,
@@ -353,7 +729,7 @@ nativeIt(
       expect(calls).toEqual(['B']);
     } finally {
       await peer.close();
-      await model.close();
+      await ModelServer.closeAll();
     }
   },
   30000,
@@ -438,7 +814,7 @@ nativeIt.each([false, true])(
       }
     } finally {
       await peer.close();
-      await model.close();
+      await ModelServer.closeAll();
     }
   },
   30000,

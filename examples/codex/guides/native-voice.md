@@ -1,0 +1,57 @@
+# Native voice
+
+This guide describes the current source branch. Build the SDK and native runtime from the same checkout, or use examples from the exact release you installed. These examples make live API requests.
+
+## Start with a recording
+
+Set `OPENAI_API_KEY`, then run from the repository root:
+
+```sh
+pnpm exec tsx examples/codex/native-realtime-voice.ts 'Explain a rainbow briefly' 30 > answer.pcm
+```
+
+The example opens `Session.realtime()`, sends one text prompt, and records mono PCM16 audio at 24 kHz. The recording lasts at most 30 seconds, including any delegated work. This deadline can cut off a long answer. It is an application recording limit, not a signal that the model finished. Disconnects and failures also end the recording.
+
+The native Session owns Realtime control, tools, history, and cancellation. Closing its Realtime owner joins that owner's delegated work and releases media. It leaves the caller's Session available for text turns. Closing the Session also closes its Realtime owner. Use `await using`, or await `close()` in `finally`. A failed cleanup remains retryable; do not discard the owner after a failed close.
+
+## Choose the audio path
+
+| Path | API and ownership |
+| --- | --- |
+| Server WebSocket | Omit `transport`. Use `sendText()`, `sendAudio()`, and `events()` on the returned native owner. The application owns recording and playback. |
+| Browser WebRTC | The server passes `transport: {type: 'webrtc', offerSdp}` to `Session.realtime()`. Return `answerSdp` only after that call resolves. Keep the Session and its native sideband control open for the call. |
+| SIP | Pass `transport: {type: 'sip', callId}` for an already accepted provider call. Native control owns its sideband and call cleanup. |
+| Twilio Media Streams | Use the [Twilio bridge](realtime-twilio.md). The application authenticates the incoming socket; the bridge owns media delivery and playback marks. |
+| Application transport or model | Set `adapter` to a `NativeRealtimeAdapter`. Do not combine it with a built-in call transport. |
+
+Native execution runs on the server. Browser code can import `NativeVoiceWebRTC` from `@openai/agents/voice/browser`. Its `connect({exchangeSdp})` callback sends the offer to your authenticated server and returns the server's answer. The helper owns browser media only; its data-channel observations cannot execute native tools or approve work. Keep server credentials out of the browser. Close the server owner when the application call ends; closing browser media alone does not replace server cleanup.
+
+`@openai/agents/voice/workerd` supplies a socket relay helper for an application server. It does not load or run the native runtime in the Worker. The retained `@openai/agents/realtime` entrypoint continues to expose the Classic runtime.
+
+## Credentials and custom adapters
+
+`Session.realtime({apiKey})` accepts a string or a synchronous or asynchronous callback. The callback receives an optional `AbortSignal` and resolves once per connection. Omit it to use the Session provider's credentials. This override does not change credentials for the Session's text turns. Honor cancellation during credential lookup and release any resources your callback opens.
+
+Import `NativeRealtimeAdapter`, `NativeRealtimeAdapterContext`, and `NativeRealtimeConnection` as types from `@openai/agents`. An adapter implements `connect(context)`. The context contains the native-selected URL, private headers, model, and setup signal. Your adapter can choose another endpoint or translate another model's protocol to canonical Realtime V2 frames.
+
+Return a connection with `incoming: AsyncIterable<string>`, `send(frame: string): Promise<void>`, and `close(): Promise<void>`. Incoming and outgoing I/O must work independently. Honor the setup signal and clean partial resources before rejecting. `close()` must release resources and wake pending sends and incoming iteration. Cleanup must support retries. Do not await the owning Session's close from an adapter callback; the application controls that outer lifetime. Never log connection headers or credential values.
+
+The native runtime still checks configuration acknowledgements, tool authority, response ordering, and history. A custom adapter must supply the expected protocol; it does not bypass those checks.
+
+## Settings, tools, and live Agents
+
+Use `settings` for typed audio formats, transcription, VAD, voice, speed, prompt references, and provider tracing. `update()` accepts sparse settings: omitted fields keep their values. A declared codec does not convert your audio. PCM16 uses mono 24 kHz samples; G.711 uses mono 8 kHz bytes. Use the event's format and identity when playing audio.
+
+Omit Realtime `tools` to inherit the captured active Agent's function tools and handoffs. An explicit list must contain the original admitted function objects; `[]` disables native function tools. Native tool policies and application approvals still apply. `background_agent` delegates work to the same native Session. It returns only accepted final text, including any output validation or repair. A non-string final output fails instead of being serialized for speech.
+
+Declare reachable `Agent.handoffs` before opening the Session. The graph keeps original Agent identities. `await session.getActiveAgent()` reads the native active Agent, and idle `Session.update({agent})` activates a captured Agent. Activation applies that Agent's declaration defaults. An idle tool update changes the active defaults; an explicit per-operation tool selection remains a ceiling across later handoffs. Compatible output formats and shared Session runtime grants are required across the graph. Restore binds fresh caller-supplied Agent and tool objects, not saved callback implementations.
+
+A function can return `backgroundResult(value)` to publish its accepted result without requesting a model follow-up. Output policies can replace that decision. Hosted MCP tools are configured separately in `settings.hostedMcpTools`, with a URL or connector ID. Handle `hosted_mcp_approval_requested` by passing that exact issued event to `approveHostedMcp(event, {approve, reason})`. Clones and cross-session requests are invalid. Issued approval requests are not auto-approved. `automaticallyTriggerResponseForMcpToolCalls` defaults to true and controls hosted MCP follow-ups.
+
+Realtime speech itself streams before completion. Optional `outputGuardrails` check text and can interrupt the exact response, but some audio may already have played. Report actual playback with `reportPlayback()`. On `playback_interrupted`, discard queued audio for `retiredResponseIds`. This differs from the accepted-final-text rule for native backend delegation.
+
+## Separate transcription and synthesis
+
+Run [voice.ts](../voice.ts) for a PCM file → native Session → PCM file pipeline. `VoicePipeline` takes one workflow and one speech provider. `NativeSessionVoiceWorkflow` waits for accepted final string output before synthesis, retaining the caller's history, tools, and approval policy.
+
+The OpenAI speech provider accepts mono 24 kHz PCM16 or normalized float32 input. Streaming input uses explicit `{type: 'commit'}` boundaries; EOF commits remaining audio. It does not add VAD. `transcriptionSettings` applies to static/file transcription only. Configure synthesis, voice IDs, ordered text splitting, output dtype, synchronous transforms, and sample buffering through the provider and pipeline options. Synthesis stays serial, and each synthesis boundary flushes its buffered tail. The caller owns its input source, playback, and Session lifetime.

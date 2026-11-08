@@ -152,3 +152,23 @@ it('keeps an accepted reordered subset separate from the immutable destination t
     }),
   ).toThrow('fresh declarations');
 });
+
+it('encodes operation source epochs exactly without changing string catalog IDs or schema data', async () => {
+  const { encodeReceipt, encodeOperationSelection } =
+    await import('../src/runtime/binding');
+  const source = { profile_id: 'agent_0', epoch: '9007199254740993' };
+  const selection = {
+    generation: '9007199254740994',
+    operation_declaration_source: source,
+    names: [],
+  };
+  const wire = encodeOperationSelection(selection);
+  expect(wire).toContain('"generation":"9007199254740994"');
+  expect(wire).toContain('"epoch":9007199254740993');
+  expect(
+    encodeReceipt({ selection, input: [{ epoch: 'application data' }] }),
+  ).toContain('"epoch":9007199254740993');
+  expect(
+    encodeReceipt({ selection, input: [{ epoch: 'application data' }] }),
+  ).toContain('"epoch":"application data"');
+});

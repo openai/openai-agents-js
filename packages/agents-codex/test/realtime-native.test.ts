@@ -21,11 +21,34 @@ function peer(model: ModelServer) {
   });
   server.on('connection', (connection) => {
     socket = connection;
+    const accepted: Record<string, any> = {};
+    const merge = (
+      current: Record<string, any>,
+      update: Record<string, any>,
+    ) => {
+      for (const [key, value] of Object.entries(update)) {
+        if (
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          current[key] &&
+          typeof current[key] === 'object' &&
+          !Array.isArray(current[key])
+        )
+          merge(current[key], value);
+        else current[key] = structuredClone(value);
+      }
+    };
     connection.on('message', (raw) => {
       const frame = JSON.parse(raw.toString());
       frames.push(frame);
-      if (frame.type === 'session.update')
-        send({ type: 'session.updated', session: { id: 'fixture-session' } });
+      if (frame.type === 'session.update') {
+        merge(accepted, frame.session);
+        send({
+          type: 'session.updated',
+          session: { ...structuredClone(accepted), id: 'fixture-session' },
+        });
+      }
       if (frame.type === 'response.create') {
         const id = `response-${frames.length}`;
         send({ type: 'response.created', response: { id } });
@@ -71,15 +94,19 @@ function peer(model: ModelServer) {
       );
     },
     handoff(text: string, id = 'handoff-1') {
+      const responseId = `frontend-${id}`;
+      const item = {
+        id: `item-${id}`,
+        type: 'function_call',
+        name: 'background_agent',
+        call_id: id,
+        arguments: JSON.stringify({ input_transcript: text }),
+      };
+      send({ type: 'response.created', response: { id: responseId } });
+      send({ type: 'conversation.item.done', item });
       send({
-        type: 'conversation.item.done',
-        item: {
-          id: `item-${id}`,
-          type: 'function_call',
-          name: 'background_agent',
-          call_id: id,
-          arguments: JSON.stringify({ input_transcript: text }),
-        },
+        type: 'response.done',
+        response: { id: responseId, output: [item] },
       });
     },
     async output(id = 'handoff-1') {

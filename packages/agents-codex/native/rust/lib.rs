@@ -35,6 +35,7 @@ mod project_search;
 mod provider_error;
 mod provider_transports;
 mod python_tools;
+mod realtime_adapter;
 mod recovery_guard;
 mod response_control;
 mod response_integrity;
@@ -121,6 +122,24 @@ pub fn _agent_profiles_restore_source(
     };
     let source = agent_profiles::restore_source(&opening, &instruction_history(&history_json)?)
         .map_err(input_error)?;
+    serde_json::to_string(&source).map_err(native_error)
+}
+
+#[napi(js_name = "_agent_profiles_operation_source")]
+pub fn _agent_profiles_operation_source(
+    roster_json: String,
+    root_id: String,
+    history_json: String,
+    turn_id: String,
+) -> napi::Result<String> {
+    let opening = agent_profiles::OpeningProfiles {
+        fingerprint: agent_profiles::fingerprint(&roster_json, &root_id).map_err(input_error)?,
+        root_id,
+        roster: serde_json::from_str(&roster_json).map_err(input_error)?,
+    };
+    let source =
+        agent_profiles::operation_source(&opening, &instruction_history(&history_json)?, &turn_id)
+            .map_err(input_error)?;
     serde_json::to_string(&source).map_err(native_error)
 }
 
@@ -1847,14 +1866,66 @@ impl NativeThread {
         })
     }
 
+    #[napi(js_name = "_realtime_adapter")]
+    pub fn _realtime_adapter(
+        &self,
+        generation: String,
+    ) -> napi::Result<realtime_adapter::NativeRealtimeAdapter> {
+        if generation.is_empty() {
+            return Err(input_error("Realtime generation must not be empty"));
+        }
+        Ok(realtime_adapter::NativeRealtimeAdapter::new(
+            &self.current()?,
+            generation,
+        ))
+    }
+
+    #[napi(js_name = "_prepare_realtime")]
+    pub async fn _prepare_realtime(
+        &self,
+        params_json: String,
+        adapter: Option<&realtime_adapter::NativeRealtimeAdapter>,
+    ) -> napi::Result<String> {
+        let params: Value = serde_json::from_str(&params_json).map_err(input_error)?;
+        let generation = params
+            .get("generation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| input_error("Missing Realtime generation"))?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        let adapter = adapter
+            .map(|adapter| adapter.attach(&inner, generation))
+            .transpose()
+            .map_err(input_error)?;
+        let result = ops::prepare_realtime(&inner.thread, params, adapter)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&result).map_err(native_error)
+    }
+
     #[napi(js_name = "call")]
     pub async fn call(&self, operation: String, params_json: String) -> napi::Result<String> {
         let params: Value = serde_json::from_str(&params_json).map_err(native_error)?;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
+        // Preparation reserves the immutable config/declaration source while
+        // every SDK publication uses this same native mutation lane.
+        let _source_mutation = if operation == "realtime_conversation_prepare_sdk"
+            || (operation == "realtime_conversation_update_sdk"
+                && params
+                    .get("profile")
+                    .is_some_and(|profile| !profile.is_null()))
+        {
+            Some(inner.mutations.lock().await)
+        } else {
+            None
+        };
         let value = match operation.as_str() {
             "realtime_tool_selection_sdk"
             | "realtime_conversation_start_sdk"
+            | "realtime_conversation_prepare_sdk"
+            | "realtime_conversation_activate_sdk"
             | "realtime_conversation_update_sdk"
             | "realtime_conversation_audio_sdk"
             | "realtime_conversation_text_sdk"

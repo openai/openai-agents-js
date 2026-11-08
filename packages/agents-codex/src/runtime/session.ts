@@ -164,6 +164,7 @@ import {
   decode,
   encode,
   encodeReceipt,
+  encodeOperationSelection,
   jsonObject,
   jsonValue,
   losslessJsonObjectSchema,
@@ -401,6 +402,7 @@ interface OperationSelection {
   readonly originCatalog?: ToolCatalog;
   readonly originMcp?: readonly McpTool[];
   readonly originProfileId?: string;
+  readonly operationDeclarationSource?: AgentProfileReceipt;
   readonly names: readonly ReturnType<typeof toolIdentity>[] | undefined;
   readonly maxModelSteps?: number;
   readonly budget?: RunBudgetTracker;
@@ -735,7 +737,7 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
 
 export type SessionUpdate<Context> =
   | {
-      agent: import('./public-agent').Agent<Context, any>;
+      agent: import('./public-agent').Agent<any, any>;
       model?: never;
       modelSettings?: never;
       instructions?: never;
@@ -833,6 +835,7 @@ const submissions = new WeakMap<
     cancelled?: boolean;
     blankFinal?: boolean;
     compaction?: boolean;
+    realtimeTools?: boolean;
     review?: boolean;
     retirement?: Promise<never>;
     tracingAdmissionFailed?: boolean;
@@ -1004,6 +1007,9 @@ export class Session<OutputT = string, Context = unknown> {
           'tools',
           'outputGuardrails',
           'guardrailTextThreshold',
+          'automaticallyTriggerResponseForMcpToolCalls',
+          'apiKey',
+          'adapter',
         ].includes(name)
       )
         throw new TypeError(`Unsupported Realtime option: ${name}`);
@@ -1014,6 +1020,9 @@ export class Session<OutputT = string, Context = unknown> {
         name !== 'tools' &&
         name !== 'outputGuardrails' &&
         name !== 'guardrailTextThreshold' &&
+        name !== 'automaticallyTriggerResponseForMcpToolCalls' &&
+        name !== 'apiKey' &&
+        name !== 'adapter' &&
         value !== undefined &&
         typeof value !== 'string'
       )
@@ -1056,6 +1065,11 @@ export class Session<OutputT = string, Context = unknown> {
       },
       { ...options },
       (generation) => mediaCleanup.close(generation),
+      {
+        create: (generation) => native._realtime_adapter(generation),
+        prepare: (params, handle) =>
+          native._prepare_realtime(encode(params), handle),
+      },
     );
     this.realtimeOwner = owner;
     return owner._start();
@@ -1107,7 +1121,11 @@ export class Session<OutputT = string, Context = unknown> {
     const selected: JsonObject[] = [];
     const seen = new Set<SessionTool>();
     for (const tool of tools) {
-      if (!tool || tool.kind !== 'function')
+      if (
+        !tool ||
+        typeof tool !== 'object' ||
+        (tool.kind !== undefined && tool.kind !== 'function')
+      )
         throw new TypeError(
           'Realtime tools must be captured function declarations',
         );
@@ -1115,7 +1133,7 @@ export class Session<OutputT = string, Context = unknown> {
         (candidate) =>
           toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
       );
-      if (!captured || captured.kind !== 'function') {
+      if (!captured || captured.kind === 'manual') {
         if (allowMissing) continue;
         throw new TypeError(
           'Realtime tool was not admitted in the current Agent catalog',
@@ -1233,9 +1251,11 @@ export class Session<OutputT = string, Context = unknown> {
       );
     return { agent, context: this.options.context };
   }
-  /** Return the original admitted Agent identified by Core's committed receipt. */
+  /** Return the original admitted Agent identified by Core's committed receipt.
+   * This dynamic observation erases context while preserving the Session output type.
+   */
   async getActiveAgent(): Promise<
-    import('./public-agent').Agent<Context, OutputT>
+    import('./public-agent').Agent<any, OutputT>
   > {
     this.checkCallbackOperation('inspect the active Agent of');
     if (!this.isOpen) throw new NativeError('Session is closed');
@@ -1253,10 +1273,13 @@ export class Session<OutputT = string, Context = unknown> {
   }
   private rememberProfileBindings(): void {
     if (!this.profileCurrent) return;
-    this.profileHighWater =
-      this.catalog.generation > this.profileHighWater
-        ? this.catalog.generation
-        : this.profileHighWater;
+    this.profileHighWater = [
+      this.catalog.generation,
+      this.mcpGeneration,
+      this.profileHighWater,
+    ].reduce((highest, generation) =>
+      generation > highest ? generation : highest,
+    );
     this.profileCatalogs.set(
       this.profileKey(this.profileCurrent.profile_id, this.catalog.generation),
       this.catalog,
@@ -1270,6 +1293,36 @@ export class Session<OutputT = string, Context = unknown> {
       Object.freeze([...this.mcpBindings]),
     );
   }
+  private async acknowledgeProfilePublication(): Promise<void> {
+    const graph = this.options.agentGraph;
+    // Restore publishes saved defaults before configure establishes this binding.
+    if (!graph || !this.profileCurrent) return;
+    const previous = this.profileCurrent;
+    const lifecycle = this.lifecycle;
+    try {
+      const receipt = checkProfileReceipt(
+        parseProfileReceipt(await this.#native._active_agent_profile()),
+        graph,
+      );
+      if (
+        !previous ||
+        receipt.profile_id !== previous.profile_id ||
+        this.lifecycle !== lifecycle ||
+        this.profileCurrent !== previous
+      )
+        throw new NativeError(
+          'Native Agent changed during an owned publication',
+        );
+      // This acknowledgement belongs to our own config update. Keep its new
+      // bindings; real activation/handoff continues to install declaration defaults.
+      this.profileCurrent = receipt;
+      this.rememberProfileBindings();
+    } catch (error) {
+      this.retire(error);
+      throw error;
+    }
+  }
+
   private adoptProfile(
     receipt: AgentProfileReceipt,
     preserveCurrent = false,
@@ -1732,7 +1785,10 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.catalog.tools.some((tool) => tool.kind === 'manual'))
         await this.configureManualTools();
       this.ownReader(withoutTracing(() => this.readEvents()));
-      if (this.options.mcpTools && !this.options.agentGraph) {
+      if (
+        (!this.options.agentGraph && this.options.mcpTools) ||
+        (this.options.agentGraph && this.restored)
+      ) {
         const boundary = {
           id: randomUUID(),
           observed: Promise.withResolvers<void>(),
@@ -1819,9 +1875,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (this.options.agentGraph?.restoredSource) {
           this.catalog = allocated.activeCatalog;
           this.profileCurrent = allocated.active;
-          this.mcpGeneration = this.profileRuntimes.get(
-            allocated.active.profile_id,
-          )!.catalog.generation;
+          this.mcpGeneration = allocated.activeCatalog.generation;
           this.defaultOutput = this.profileRuntimes.get(
             allocated.active.profile_id,
           )!.output;
@@ -3287,6 +3341,7 @@ export class Session<OutputT = string, Context = unknown> {
     const selection = this.captureSelection(undefined, output);
     const parentTrace = captureTraceContext() ?? this.options.parentTrace;
     const run = this.allocateRun(output, true);
+    submissions.get(run)!.realtimeTools = true;
     run.parentTrace = parentTrace;
     run.selection = selection;
     run.tracing = this.captureRootTracing(undefined);
@@ -3322,8 +3377,12 @@ export class Session<OutputT = string, Context = unknown> {
 
   private selectionNames(
     selectors: readonly ToolSelector[],
-    sourceCatalog?: ToolCatalog,
+    sourceCatalog: ToolCatalog | undefined = this.options.agentGraph
+      ? this.catalog
+      : undefined,
   ): readonly ReturnType<typeof toolIdentity>[] {
+    // A graph operation captures object authority, not a historical name alias.
+    // Keep ordinary mono Session selector compatibility unchanged.
     const seen = new Set<string>();
     const policy = this.threadOptions.tool_policy;
     const opening =
@@ -3425,6 +3484,10 @@ export class Session<OutputT = string, Context = unknown> {
       originCatalog: this.catalog,
       originMcp: this.mcpBindings,
       originProfileId: this.profileCurrent?.profile_id,
+      operationDeclarationSource:
+        options?.tools !== undefined && options.tools.length
+          ? this.profileCurrent
+          : undefined,
       prepareRequest: options?.prepareRequest,
       names:
         options?.tools === undefined
@@ -3916,7 +3979,9 @@ export class Session<OutputT = string, Context = unknown> {
       )
     )
       return;
-    const generation = this.mcpGeneration + 1n;
+    const generation =
+      (this.options.agentGraph ? this.profileHighWater : this.mcpGeneration) +
+      1n;
     const guarded = hasMcpPrePolicy(this.mcpTools) || hasMcpPrePolicy(next);
     const receipt = parseNative(
       await this.#native._replace_mcp_servers(
@@ -3930,7 +3995,7 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TurnAborted('HTTP activation no longer owns this root');
     this.mcpTools = next;
     this.mcpGeneration = generation;
-    this.rememberProfileBindings();
+    await this.acknowledgeProfilePublication();
   }
 
   private captureExecutorRoots(roots: readonly string[]): string[] {
@@ -3998,11 +4063,17 @@ export class Session<OutputT = string, Context = unknown> {
         'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
       );
     if (selection) selection.generation = this.catalog.generation;
-    const wire = encode({
+    const wire = encodeReceipt({
       ...(selection
         ? {
             selection: {
               generation: this.catalog.generation.toString(),
+              ...(selection.operationDeclarationSource
+                ? {
+                    operation_declaration_source:
+                      selection.operationDeclarationSource,
+                  }
+                : {}),
               names: selection.names ?? null,
               before_step:
                 (this.options.agentGraph !== undefined &&
@@ -4467,7 +4538,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       error === undefined &&
       this.options.agentGraph &&
-      !profileSubmission.outputOverride &&
+      (!profileSubmission.outputOverride || profileSubmission.realtimeTools) &&
       !profileSubmission.compaction &&
       !profileSubmission.profileSettlement
     ) {
@@ -4475,7 +4546,8 @@ export class Session<OutputT = string, Context = unknown> {
         true,
         run,
       ).then(() => {
-        if (this.owns(run)) profileSubmission.output = this.defaultOutput;
+        if (this.owns(run) && !profileSubmission.realtimeTools)
+          profileSubmission.output = this.defaultOutput;
       });
       this.track(run, profileSubmission.profileSettlement, run.callbacks, () =>
         this.finish(
@@ -6484,10 +6556,19 @@ export class Session<OutputT = string, Context = unknown> {
           const wire = await this.#native._complete_manual_continuation(
             schema == null ? undefined : encodeReceipt(schema),
             run.selection
-              ? encode({
+              ? encodeOperationSelection({
                   generation: this.catalog.generation.toString(),
+                  ...(run.selection.operationDeclarationSource
+                    ? {
+                        operation_declaration_source:
+                          run.selection.operationDeclarationSource,
+                      }
+                    : {}),
                   names: run.selection.names ?? null,
-                  before_step: run.selection.maxModelSteps !== undefined,
+                  before_step:
+                    run.selection.maxModelSteps !== undefined ||
+                    (this.options.agentGraph !== undefined &&
+                      run.selection.names !== undefined),
                 })
               : undefined,
             this.options.parentTrace
@@ -6877,9 +6958,21 @@ export class Session<OutputT = string, Context = unknown> {
     run.parentTrace = this.options.parentTrace;
     run.id = state.manual_continuation.turn_id;
     const operation = readCheckpointSelections(state).operation_tools;
+    const origin = this.options.agentGraph?.operationSource;
+    if (this.options.agentGraph && operation?.length && !origin)
+      throw new NativeError(
+        'Suspended operation is missing its proved declaration source',
+      );
+    const originalProfile = origin
+      ? this.profileRuntimes.get(origin.profile_id)!
+      : undefined;
     const remaining = state.manual_context.remaining_model_steps;
     if (operation !== undefined || remaining !== undefined)
       run.selection = {
+        originCatalog: originalProfile?.catalog ?? this.catalog,
+        originMcp: originalProfile?.mcp ?? this.mcpBindings,
+        originProfileId: origin?.profile_id,
+        operationDeclarationSource: origin,
         names:
           operation === undefined
             ? undefined
@@ -7654,13 +7747,13 @@ export class Session<OutputT = string, Context = unknown> {
         );
       const discoveryGranted =
         this.openingCatalog.tools.some((tool) => tool.deferLoading) ||
-        this.options.mcpTools?.some((server) => server.deferLoading);
+        this.openingMcpTools.some((server) => server.deferLoading);
       if (!discoveryGranted && next.tools.some((tool) => tool.deferLoading))
         throw new TypeError(
           'Schema discovery must have been granted when the Session opened',
         );
       for (const server of next.mcp) {
-        const opening = this.options.mcpTools?.find(
+        const opening = this.openingMcpTools.find(
           (declared) => declared.name === server.name,
         );
         if (!opening || server.deferLoading !== opening.deferLoading)
@@ -7684,8 +7777,9 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TypeError(
             'Updated MCP tools must have been declared when the Session opened',
           );
-      if (!this.options.mcpTools) {
+      if (!this.openingMcpTools.length) {
         await this.#replaceTools(next.tools);
+        await this.realtimeOwner?._syncProfile(true);
         return;
       }
       for (const server of next.mcp) {
@@ -7731,7 +7825,9 @@ export class Session<OutputT = string, Context = unknown> {
           ? this.profileHighWater
           : this.catalog.generation) + 1n,
       );
-      const generation = this.mcpGeneration + 1n;
+      const generation =
+        (this.options.agentGraph ? this.profileHighWater : this.mcpGeneration) +
+        1n;
       await this.mutate(async () => {
         let published = false;
         try {
@@ -7799,6 +7895,7 @@ export class Session<OutputT = string, Context = unknown> {
           this.mcpGeneration = generation;
           this.rememberProfileBindings();
           await this.configureManualTools();
+          await this.acknowledgeProfilePublication();
         } catch (error) {
           if (
             published ||
@@ -7822,6 +7919,7 @@ export class Session<OutputT = string, Context = unknown> {
             true
           )
             throw new NativeError('Native model update was not acknowledged');
+          await this.acknowledgeProfilePublication();
         } catch (error) {
           if (!(
             error instanceof Error &&
@@ -7892,6 +7990,7 @@ export class Session<OutputT = string, Context = unknown> {
           admitted.add(toolDeclarationIdentity(tool));
         }
         await this.configureManualTools();
+        await this.acknowledgeProfilePublication();
       }
     });
     if (!confirmed) {
@@ -7921,6 +8020,9 @@ export class Session<OutputT = string, Context = unknown> {
     await this.mutate(async () => {
       try {
         await this.#native.call('set_instructions', encode({ instructions }));
+        if (this.options.agentGraph)
+          this.threadOptions.instructions = instructions;
+        await this.acknowledgeProfilePublication();
       } catch (error) {
         try {
           this.#native._application_instructions();
@@ -8048,7 +8150,10 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         if (!this.mcpTools.some((active) => active.name === server)) {
           const next = [...this.mcpTools, resourceMcpBinding(selected)];
-          const generation = this.mcpGeneration + 1n;
+          const generation =
+            (this.options.agentGraph
+              ? this.profileHighWater
+              : this.mcpGeneration) + 1n;
           try {
             const receipt = parseNative(
               await this.#native._replace_mcp_servers(
@@ -8073,7 +8178,7 @@ export class Session<OutputT = string, Context = unknown> {
             checkMcpPublication(receipt, next, generation, this.mcpBindings);
             this.mcpTools = next;
             this.mcpGeneration = generation;
-            this.rememberProfileBindings();
+            await this.acknowledgeProfilePublication();
           } catch (error) {
             this.retire(error);
             throw error;

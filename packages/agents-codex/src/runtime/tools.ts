@@ -361,7 +361,7 @@ export function tool<
         callbackTimeout === undefined
           ? undefined
           : new ToolTimeoutError(name, callbackTimeout);
-      let value: z.input<Result>;
+      let value: z.input<Result> | BackgroundResult<z.input<Result>>;
       try {
         value = await invokeWithTimeout(
           (signal) => execute(parsed, { ...callContext, signal }),

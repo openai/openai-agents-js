@@ -307,6 +307,12 @@ export type {
 } from './runtime/realtime-settings';
 
 export type {
+  NativeRealtimeAdapter,
+  NativeRealtimeAdapterContext,
+  NativeRealtimeConnection,
+} from './runtime/realtime-adapter';
+
+export type {
   NativeRealtimeOutputGuardrail,
   NativeRealtimeGuardrailInput,
   NativeRealtimeGuardrailResult,

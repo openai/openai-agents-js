@@ -502,11 +502,16 @@ impl ContextContributor for Contributor {
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
             // Initial publication must be durable before this cache contributes.
+            let captured = input
+                .step_store
+                .get::<codex_extension_api::AgentProfileInstructions>()
+                .is_some();
             let accepted = input.step_store.get::<Accepted>().or_else(|| {
-                if input
-                    .step_store
-                    .get::<codex_extension_api::CapturedAgentProfile>()
-                    .is_some()
+                if captured
+                    || input
+                        .step_store
+                        .get::<codex_extension_api::CapturedAgentProfile>()
+                        .is_some()
                 {
                     None
                 } else {
@@ -520,13 +525,22 @@ impl ContextContributor for Contributor {
                 .thread_store
                 .get::<crate::native_interception::Control>();
             input.step_store.insert(SdkTurnReceiptSeed {
+                operation_declaration_source: input
+                    .turn_store
+                    .get::<Option<crate::python_tools::OperationSelection>>()
+                    .and_then(|selection| {
+                        selection
+                            .as_ref()
+                            .as_ref()
+                            .and_then(|selection| selection.operation_declaration_source.clone())
+                    }),
                 codex_revision: include_str!("../CODEX_REVISION").trim(),
                 codex_source_tree: CODEX_SOURCE_TREE.as_str(),
                 sha256,
                 strict_executor_writes: control
                     .as_ref()
                     .is_some_and(|control| control.strict_executor_writes()),
-                inherited_application: if accepted.is_none() {
+                inherited_application: if accepted.is_none() && !captured {
                     control.and_then(|control| control.inherited_instruction_files())
                 } else {
                     None

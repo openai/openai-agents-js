@@ -86,6 +86,11 @@ export class _RealtimeCleanup {
 }
 
 export class NativeThread {
+  _realtime_adapter(generation: string): _NativeRealtimeAdapter;
+  _prepare_realtime(
+    paramsJson: string,
+    adapter?: _NativeRealtimeAdapter | null,
+  ): Promise<string>;
   _realtime_cleanup(): _RealtimeCleanup;
   _submit_realtime_tools(paramsJson: string): Promise<string>;
   _configure_agent_profiles(
@@ -168,6 +173,8 @@ export class NativeThread {
       | 'set_instructions'
       | 'realtime_tool_selection_sdk'
       | 'realtime_conversation_hosted_mcp_approval_sdk'
+      | 'realtime_conversation_prepare_sdk'
+      | 'realtime_conversation_activate_sdk'
       | 'realtime_conversation_start_sdk'
       | 'realtime_conversation_update_sdk'
       | 'realtime_conversation_audio_sdk'
@@ -377,6 +384,8 @@ export const CODEX_REVISION: string;
 declare const binding: {
   _agent_profiles_fingerprint: typeof _agent_profiles_fingerprint;
   _agent_profiles_restore_source: typeof _agent_profiles_restore_source;
+  _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
+  _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
   _packaged_runtime(): {
     codex_self_exe: string;
     codex_linux_sandbox_exe?: string;
@@ -435,3 +444,31 @@ export function _agent_profiles_restore_source(
   rootId: string,
   historyJson: string,
 ): string;
+
+export function _agent_profiles_operation_source(
+  rosterJson: string,
+  rootId: string,
+  historyJson: string,
+  turnId: string,
+): string;
+
+/** Resolve the proved declaration origin of an explicitly selected suspended operation. */
+export function _agent_profiles_operation_source(
+  roster_json: string,
+  root_id: string,
+  history_json: string,
+  turn_id: string,
+): string;
+
+export class _NativeRealtimeAdapter {
+  private constructor();
+  next(): Promise<_NativeRealtimeAdapterRequest | null>;
+  receive(frame: string): Promise<void>;
+  end(success: boolean): void;
+  finish(): void;
+}
+export class _NativeRealtimeAdapterRequest {
+  private constructor();
+  readonly event_json: string;
+  complete(success: boolean): boolean;
+}

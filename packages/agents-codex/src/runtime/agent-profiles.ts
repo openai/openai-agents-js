@@ -24,6 +24,8 @@ export interface CapturedAgentGraph {
   readonly rootId: string;
   /** Pure native preflight of this exact supplied history, before resource acquisition. */
   readonly restoredSource?: AgentProfileReceipt;
+  /** Owning-turn declaration supplying an explicit suspended operation ceiling. */
+  readonly operationSource?: AgentProfileReceipt;
   readonly profiles: ReadonlyMap<string, AgentProfileRuntime>;
   readonly roster: readonly JsonObject[];
 }

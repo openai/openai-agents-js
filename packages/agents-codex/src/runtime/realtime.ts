@@ -6,6 +6,11 @@ import {
 } from './realtime-guardrails';
 import type { FunctionTool } from './tools';
 import {
+  NativeRealtimeAdapterDriver,
+  type NativeRealtimeAdapter,
+  type NativeRealtimeAdapterBridge,
+} from './realtime-adapter';
+import {
   NativeRealtimePlayback,
   playbackPayload,
   type NativeRealtimeAudioInput,
@@ -44,10 +49,14 @@ export interface NativeRealtimeOptions {
   model?: string;
   voice?: string;
   instructions?: string;
+  /** Resolve once per connection without changing the Session provider's auth. */
+  apiKey?: string | ((signal?: AbortSignal) => string | Promise<string>);
   signal?: AbortSignal;
   settings?: NativeRealtimeSettings;
   /** Omit for server WebSocket media; calls keep their native sideband owner. */
   transport?: NativeRealtimeTransport;
+  /** Supply application I/O instead of a built-in transport. */
+  adapter?: NativeRealtimeAdapter;
   /** Omit to inherit the captured active Agent catalog, including its handoffs. */
   tools?: readonly FunctionTool<any>[];
   outputGuardrails?: readonly NativeRealtimeOutputGuardrail[];
@@ -166,6 +175,8 @@ export type NativeRealtimeEvent =
 
 type Command =
   | 'start'
+  | 'prepare'
+  | 'activate'
   | 'hosted_mcp_approval'
   | 'update'
   | 'audio'
@@ -194,6 +205,47 @@ const EVENT_LIMIT = 128;
 const AUDIO_LIMIT = 2 * 1024 * 1024;
 const HANDOFF_LIMIT = 1024;
 const PENDING_LIMIT = 16;
+
+function resolveRealtimeApiKey(
+  source: NativeRealtimeOptions['apiKey'],
+  signal: AbortSignal,
+): Promise<string | null> {
+  signal.throwIfAborted();
+  if (source === undefined) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    let pending: Promise<string>;
+    try {
+      pending = Promise.resolve(
+        typeof source === 'function' ? source(signal) : source,
+      );
+    } catch (error) {
+      signal.removeEventListener('abort', abort);
+      reject(error);
+      return;
+    }
+    // These observers retain no media owner or native preparation receipt.
+    // Late application results remain observed after cancellation wins.
+    pending.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        if (signal.aborted) return;
+        if (typeof value !== 'string' || !value.trim())
+          reject(
+            new TypeError(
+              'Realtime credential source must return a nonempty string',
+            ),
+          );
+        else resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort);
+        if (!signal.aborted) reject(error);
+      },
+    );
+  });
+}
 
 /** Native media owned by Session.realtime; closing it leaves the caller's Session open. */
 class NativeRealtimeOwner {
@@ -224,11 +276,16 @@ class NativeRealtimeOwner {
   private readonly profileUpdates = new Set<Promise<void>>();
   private readonly retiredResponses = new Set<string>();
   private changed = Promise.withResolvers<void>();
+  private preparation?: Promise<unknown>;
   private admission?: Promise<unknown>;
+  private readonly startupAbort = new AbortController();
+  private readonly credentialSource: NativeRealtimeOptions['apiKey'];
+  private readonly adapterSource: NativeRealtimeOptions['adapter'];
+  private adapterDriver?: NativeRealtimeAdapterDriver;
   private closing?: Promise<void>;
   private live = true;
   private ended = false;
-  private failure?: unknown;
+  private failure?: { error: unknown };
   private nativeClosed = false;
   private sessionClosing = false;
   private consuming = false;
@@ -257,7 +314,27 @@ class NativeRealtimeOwner {
     private readonly release: () => void,
     private readonly options: NativeRealtimeOptions,
     private readonly closeAfterGraph: (generation: string) => Promise<void>,
+    private readonly adapterBridge?: NativeRealtimeAdapterBridge,
   ) {
+    this.credentialSource = options.apiKey;
+    this.adapterSource = options.adapter;
+    if (options.adapter !== undefined) {
+      if (!options.adapter || typeof options.adapter.connect !== 'function')
+        throw new TypeError('adapter must provide an async connect method');
+      if (options.transport !== undefined)
+        throw new TypeError(
+          'adapter cannot be combined with a built-in call transport',
+        );
+    }
+    if (options.apiKey !== undefined) {
+      if (
+        typeof options.apiKey !== 'string' &&
+        typeof options.apiKey !== 'function'
+      )
+        throw new TypeError('apiKey must be a string or credential callback');
+      if (typeof options.apiKey === 'string' && !options.apiKey.trim())
+        throw new TypeError('apiKey must be nonempty');
+    }
     if (options.tools !== undefined && !Array.isArray(options.tools))
       throw new TypeError(
         'Realtime tools must be an array of captured function declarations',
@@ -335,17 +412,22 @@ class NativeRealtimeOwner {
   }
   /** @internal Admission remains retained if cancellation wins publication. */
   async _start(): Promise<this> {
+    this.checkLive();
     const signal = this.options.signal;
     signal?.throwIfAborted();
     const aborted = Promise.withResolvers<never>();
-    const abort = () => aborted.reject(signal?.reason);
+    const abort = () => {
+      this.startupAbort.abort(signal?.reason);
+      aborted.reject(signal?.reason);
+    };
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      const start = (
+      const start = async (
         functionTools: JsonObject[] | null,
         expectedSelectionId: string | null = null,
-      ) =>
-        this.call('start', {
+      ) => {
+        this.checkLive();
+        const prepareParams: JsonObject = {
           function_tools: functionTools,
           hosted_mcp_auto_response:
             this.options.automaticallyTriggerResponseForMcpToolCalls ?? true,
@@ -372,8 +454,55 @@ class NativeRealtimeOwner {
             version: 'v2',
             voice: this.options.voice ?? null,
           },
+        };
+        if (this.adapterSource) {
+          if (!this.adapterBridge)
+            throw new Error('Native adapter binding is unavailable');
+          const handle = this.adapterBridge.create(this.#generation);
+          this.adapterDriver = new NativeRealtimeAdapterDriver(
+            this.adapterSource,
+            handle,
+            (callback) =>
+              this.#context(() => this.session._runVoiceCallback(callback)),
+          );
+          this.preparation = this.adapterBridge.prepare(
+            { generation: this.#generation, ...prepareParams },
+            handle,
+          );
+        } else this.preparation = this.call('prepare', prepareParams);
+        const prepared = await this.preparation;
+        const receipt =
+          typeof prepared === 'string' ? JSON.parse(prepared) : prepared;
+        if (
+          !receipt ||
+          typeof receipt !== 'object' ||
+          receipt.generation !== this.#generation
+        )
+          throw new Error(
+            'Native Realtime preparation returned a different generation',
+          );
+        this.checkLive();
+        const apiKey = await resolveRealtimeApiKey(
+          this.credentialSource,
+          this.startupAbort.signal,
+        );
+        this.checkLive();
+        const admission = this.call('activate', { api_key: apiKey });
+        this.admission = admission;
+        return admission.then((raw) => {
+          const receipt = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (receipt && typeof receipt === 'object') {
+            if (typeof receipt.call_id === 'string')
+              this.admittedCallId = receipt.call_id;
+            if (typeof receipt.sdp === 'string')
+              this.admittedAnswerSdp = receipt.sdp;
+          }
+          if (this.transport.type === 'webrtc' && !this.admittedAnswerSdp)
+            throw new Error('Native WebRTC admission returned no SDP answer');
+          return raw;
         });
-      this.admission =
+      };
+      const preparation =
         this.selectedTools === undefined
           ? start(null)
           : this.session
@@ -384,23 +513,7 @@ class NativeRealtimeOwner {
                   throw new Error('Native Realtime admission stopped');
                 return start(tools.tools, tools.selectionId);
               });
-      this.admission = this.admission.then((raw) => {
-        const receipt = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (receipt && typeof receipt === 'object') {
-          if (typeof receipt.call_id === 'string')
-            this.admittedCallId = receipt.call_id;
-          if (typeof receipt.sdp === 'string')
-            this.admittedAnswerSdp = receipt.sdp;
-        }
-        if (this.transport.type === 'webrtc' && !this.admittedAnswerSdp)
-          throw new Error('Native WebRTC admission returned no SDP answer');
-        return raw;
-      });
-      await Promise.race([
-        this.admission,
-        aborted.promise,
-        this.terminal.promise,
-      ]);
+      await Promise.race([preparation, aborted.promise, this.terminal.promise]);
       await Promise.race([
         this.ready.promise,
         aborted.promise,
@@ -409,24 +522,29 @@ class NativeRealtimeOwner {
       this.checkLive();
       return this;
     } catch (error) {
-      this.finish(error);
+      const primary = this.adapterDriver?.failure
+        ? this.adapterDriver.failure.error
+        : error;
+      this.finish(primary);
       try {
         await this.close();
       } catch (cleanupError) {
         throw new AggregateError(
-          [error, cleanupError],
+          [primary, cleanupError],
           'Native Realtime admission and cleanup failed',
-          { cause: error },
+          { cause: primary },
         );
       }
-      throw error;
+      throw primary;
     } finally {
       signal?.removeEventListener('abort', abort);
     }
   }
   private checkLive(): void {
     if (!this.live || this.ended)
-      throw this.failure ?? new Error('Native Realtime session is not open');
+      throw this.failure
+        ? this.failure.error
+        : new Error('Native Realtime session is not open');
   }
   /** Change supplied provider settings only; omitted fields retain their current values. */
   async update(update: NativeRealtimeSessionUpdate): Promise<void> {
@@ -568,7 +686,7 @@ class NativeRealtimeOwner {
           this.queuedBytes -= this.eventBytes(event);
           yield event;
         } else if (this.ended) {
-          if (this.failure !== undefined) throw this.failure;
+          if (this.failure) throw this.failure.error;
           yield { type: 'lifecycle', status: 'closed' };
           return;
         } else await this.changed.promise;
@@ -615,14 +733,18 @@ class NativeRealtimeOwner {
     this.queue.push(event);
     this.wake();
   }
-  private finish(error?: unknown): void {
+  private finish(...errors: [] | [unknown]): void {
+    const failure =
+      this.adapterDriver?.failure ??
+      (errors.length ? { error: errors[0] } : undefined);
     this.live = false;
+    this.startupAbort.abort(failure?.error);
     this.guardrails.stop();
     for (const owned of this.delegations.values()) owned.retired = true;
     for (const batch of this.toolBatches) batch.retired = true;
     if (!this.ended) {
       this.ended = true;
-      this.failure = error;
+      this.failure = failure;
       this.queue.length = 0;
       this.queuedBytes = 0;
       this.terminal.resolve();
@@ -636,7 +758,6 @@ class NativeRealtimeOwner {
     if (!KINDS.has(msg.type)) return false;
     if (event.id !== this.#generation) return true;
     if (msg.type === 'realtime_conversation_closed') {
-      this.nativeClosed = true;
       this.nativeEnded.resolve();
       if (!this.ended)
         this.finish(
@@ -766,12 +887,18 @@ class NativeRealtimeOwner {
       if (this.retiredResponses.has(value.response_id)) return;
       if (this.profileUpdates.size >= PENDING_LIMIT)
         throw new Error('Native Realtime profile update capacity exceeded');
-      const task = this.#context(() =>
-        this._syncProfile(false, {
-          responseId: value.response_id,
-          target: value.target,
-        }),
-      );
+      const task = this.#context(async () => {
+        try {
+          await this._syncProfile(false, {
+            responseId: value.response_id,
+            target: value.target,
+          });
+        } catch (error) {
+          // The owner records live failures. Retirement can reject an in-flight
+          // ACK; joining that task is cleanup, not a new media failure.
+          if (this.live) this.finish(error);
+        }
+      });
       this.profileUpdates.add(task);
       void task.then(
         () => this.profileUpdates.delete(task),
@@ -1286,6 +1413,7 @@ class NativeRealtimeOwner {
   close(): Promise<void> {
     this.session._checkVoiceOperation('close Realtime in');
     this.live = false;
+    this.startupAbort.abort();
     const guardWork = this.guardrails.stop();
     for (const item of this.delegations.values()) item.retired = true;
     for (const batch of this.toolBatches) batch.retired = true;
@@ -1297,10 +1425,6 @@ class NativeRealtimeOwner {
       this.wake();
     }
     return (this.closing ??= (async () => {
-      const admitted = await this.admission?.then(
-        () => true,
-        () => false,
-      );
       const owned = [...this.delegations.values()];
       const batches = [...this.toolBatches];
       const joining = Promise.allSettled([
@@ -1308,17 +1432,22 @@ class NativeRealtimeOwner {
         ...owned.map((item) => item.workflow.cancel()),
         ...batches.map((batch) => batch.cancel()),
       ]);
-      let mediaFailure: unknown;
-      if (!this.nativeClosed) {
-        try {
-          await this.closeNative();
-          // A failed start can be confirmed idle without publishing Closed.
-          // Successful admission still joins the authoritative history tail.
-          if (admitted) await this.nativeEnded.promise;
-          this.nativeClosed = true;
-        } catch (error) {
-          mediaFailure = error;
-        }
+      let mediaFailure: { error: unknown } | undefined;
+      try {
+        // Core cancellation must run while allocation/readiness is pending.
+        if (!this.nativeClosed) await this.closeNative();
+        await this.preparation?.catch(() => {});
+        const admitted = await this.admission?.then(
+          () => true,
+          () => false,
+        );
+        // A failed start can be confirmed idle without publishing Closed.
+        // Successful admission still joins the authoritative history tail.
+        if (admitted && !this.nativeClosed) await this.nativeEnded.promise;
+        this.nativeClosed = true;
+        await this.adapterDriver?.finish();
+      } catch (error) {
+        mediaFailure = this.adapterDriver?.cleanupFailure ?? { error };
       }
       const results = await joining;
       const tasks = await Promise.allSettled([
@@ -1329,7 +1458,7 @@ class NativeRealtimeOwner {
       const failure = [...results, ...tasks].find(
         (result) => result.status === 'rejected',
       );
-      if (mediaFailure !== undefined) throw mediaFailure;
+      if (mediaFailure) throw mediaFailure.error;
       if (failure?.status === 'rejected') throw failure.reason;
       this.release();
     })().catch((error) => {

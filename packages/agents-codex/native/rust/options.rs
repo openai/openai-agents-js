@@ -385,7 +385,10 @@ impl ThreadOptions {
                 });
         }
 
-        let profile_files = self.agent_profiles.as_ref().map(|_| self.instruction_files.clone());
+        let profile_files = self
+            .agent_profiles
+            .as_ref()
+            .map(|_| self.instruction_files.clone());
         options
             .thread_extension_init
             .insert(ThreadInstructions::new(
@@ -401,7 +404,11 @@ impl ThreadOptions {
 
         options.thread_instructions_provider = Some(instructions.clone());
         if let Some(profiles) = self.agent_profiles {
-            crate::agent_profiles::install_opening(&mut options, profiles, profile_files.unwrap_or_default())?;
+            crate::agent_profiles::install_opening(
+                &mut options,
+                profiles,
+                profile_files.unwrap_or_default(),
+            )?;
         }
         options.allow_provider_model_fallback = self.allow_provider_model_fallback;
         options.initial_history = self.initial_history.unwrap_or(InitialHistory::New);

@@ -1149,3 +1149,71 @@ it('interrupts and joins lazy resource activation when close starts', async () =
   await closing;
   held.resolve();
 });
+
+it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1').each([true, false])(
+  'restores active graph MCP selection without widening native tools (empty=%s)',
+  async (empty) => {
+    const peer = await httpPeer({ name: 'destination', tools: ['lookup'] });
+    const model = new ModelServer([
+      [message('restored')],
+      [message('regranted')],
+    ]);
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-graph-restore',
+      supportsWebsockets: false,
+    });
+    cleanup.push(() => provider.close());
+    const target = new Agent({
+      name: 'B',
+      instructions: 'Use B tools.',
+      tools: [peer.declaration],
+    });
+    const root = new Agent({
+      name: 'A',
+      instructions: 'Source A.',
+      provider,
+      handoffs: [target],
+    });
+    const session = await root.session();
+    cleanup.push(() => session.close());
+    await session.update({ agent: target });
+    await session.update({
+      tools: empty
+        ? []
+        : [
+            new HttpMCP({
+              name: 'destination',
+              url: peer.declaration.url,
+              tools: [],
+            }),
+          ],
+    });
+    const saved = await session.saveState();
+    await session.close();
+    const restored = await root.session({ state: saved });
+    cleanup.push(() => restored.close());
+    expect(await restored.getActiveAgent()).toBe(target);
+    if (empty)
+      await expect(restored.listMcpResources('destination')).rejects.toThrow(
+        'currently selected',
+      );
+    else
+      expect(await restored.listMcpResources('destination')).toEqual(
+        resourcePages.first,
+      );
+    expect((await (await restored.submit('Continue')).wait()).finalOutput).toBe(
+      'restored',
+    );
+    expect(JSON.stringify(model.requests[0])).not.toContain('lookup');
+    await restored.update({ agent: target });
+    expect(
+      (await (await restored.submit('Use B defaults')).wait()).finalOutput,
+    ).toBe('regranted');
+    expect(JSON.stringify(model.requests[1])).toContain('lookup');
+    model.assertExhausted();
+  },
+  30000,
+);

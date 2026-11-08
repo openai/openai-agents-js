@@ -12,7 +12,12 @@ import {
   type TraceContext,
   type TraceContextHeaders,
 } from './trace-context';
-import { assertOutputState, sessionStateSchema } from './state';
+import {
+  assertOutputState,
+  sessionStateSchema,
+  isManualSessionState,
+  readCheckpointSelections,
+} from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
@@ -80,7 +85,11 @@ export interface AgentOptions<Context = undefined, Output = string> {
   provider?: NativeProvider;
   outputType?: OutputSpec<Output>;
   tools?: readonly Tool<Context>[];
-  /** Named native targets; synchronous resolvers allow immutable cyclic graphs. */
+  /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
+   * Restore verifies graph/schema provenance and binds fresh caller-supplied tools.
+   * An operation ceiling retains its original source Agent; cross-Agent object
+   * identity is evaluated against those fresh declarations, not saved runtime grants.
+   */
   handoffs?: readonly (
     Agent<Context, Output> | (() => Agent<Context, Output>)
   )[];
@@ -773,6 +782,22 @@ export class Agent<Context = undefined, Output = string> {
             graph,
           )
         : undefined;
+    const operationSource =
+      graph &&
+      isManualSessionState(state) &&
+      readCheckpointSelections(state).operation_tools?.length
+        ? checkProfileReceipt(
+            parseProfileReceipt(
+              graphNative!._agent_profiles_operation_source(
+                JSON.stringify(graph.roster),
+                graph.rootId,
+                JSON.stringify(state.history),
+                state.manual_continuation.turn_id,
+              ),
+            ),
+            graph,
+          )
+        : undefined;
     const activeOutput =
       selection?.restoredOutput.output ??
       (restoredSource
@@ -937,6 +962,7 @@ export class Agent<Context = undefined, Output = string> {
       ? Object.freeze({
           ...graph,
           ...(restoredSource ? { restoredSource } : {}),
+          ...(operationSource ? { operationSource } : {}),
           roster: profileRoster(graph, environment),
           fingerprint: native._agent_profiles_fingerprint(
             JSON.stringify(graph.roster),

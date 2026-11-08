@@ -1212,6 +1212,37 @@ params!(RealtimeSdkStart {
     #[serde(default = "realtime_auto_response_default")]
     hosted_mcp_auto_response: bool
 });
+pub(crate) async fn prepare_realtime(
+    thread: &CodexThread,
+    params: Value,
+    adapter: Option<std::sync::Arc<dyn codex_api::RealtimeAdapter>>,
+) -> Result<Value> {
+    let p: RealtimeSdkStart = decode(params)?;
+    let mut init = ExtensionDataInit::new();
+    if let Some(adapter) = adapter {
+        init.insert(adapter);
+    }
+    let (reply, result) = oneshot::channel();
+    thread
+        .submit(WithTurnExtensionData::new(
+            Op::RealtimeConversationPrepareSdk {
+                generation: p.generation,
+                params: p.params.into(),
+                settings: p.settings,
+                function_tools: realtime_function_tools(p.function_tools),
+                expected_selection_id: p.expected_selection_id,
+                hosted_mcp_auto_response: p.hosted_mcp_auto_response,
+                reply,
+            },
+            init,
+        ))
+        .await?;
+    Ok(serde_json::to_value(result.await??)?)
+}
+params!(RealtimeSdkActivate {
+    generation: String,
+    api_key: Option<String>
+});
 params!(RealtimeSdkUpdate {
     generation: String,
     update: codex_protocol::realtime_settings::RealtimeSessionUpdate,
@@ -1390,6 +1421,35 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
                 function_tools,
                 expected_selection_id: p.expected_selection_id,
                 hosted_mcp_auto_response: p.hosted_mcp_auto_response,
+                reply,
+            })
+            .await?;
+        return Ok(serde_json::to_value(result.await??)?);
+    }
+    if operation == "realtime_conversation_prepare_sdk" {
+        let p: RealtimeSdkStart = decode(params)?;
+        let function_tools = realtime_function_tools(p.function_tools);
+        let (reply, result) = oneshot::channel();
+        thread
+            .submit(Op::RealtimeConversationPrepareSdk {
+                generation: p.generation,
+                params: p.params.into(),
+                settings: p.settings,
+                function_tools,
+                expected_selection_id: p.expected_selection_id,
+                hosted_mcp_auto_response: p.hosted_mcp_auto_response,
+                reply,
+            })
+            .await?;
+        return Ok(serde_json::to_value(result.await??)?);
+    }
+    if operation == "realtime_conversation_activate_sdk" {
+        let p: RealtimeSdkActivate = decode(params)?;
+        let (reply, result) = oneshot::channel();
+        thread
+            .submit(Op::RealtimeConversationActivateSdk {
+                generation: p.generation,
+                api_key: p.api_key.map(RealtimeConversationApiKey::new),
                 reply,
             })
             .await?;

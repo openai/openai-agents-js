@@ -1,6 +1,6 @@
 import { Agent, NativeProvider } from '@openai/agents';
 
-// Set OPENAI_API_KEY and use the matching preview SDK.
+// Set OPENAI_API_KEY and build this branch, or use the matching release example.
 // pnpm exec tsx examples/codex/native-realtime-voice.ts 'Your question' 30 > answer.pcm
 // Output is mono PCM16 at 24 kHz. The fixed window includes delegated work.
 async function main(): Promise<void> {

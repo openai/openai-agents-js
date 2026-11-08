@@ -7,11 +7,18 @@ import {
 } from '../src/runtime/realtime';
 import type { NativeEvent } from '../src/runtime/events';
 import type { Session } from '../src/runtime/session';
+import type {
+  NativeRealtimeAdapterBridge,
+  NativeRealtimeAdapterHandle,
+} from '../src/runtime/realtime-adapter';
 
 function deferred<T>() {
   return Promise.withResolvers<T>();
 }
-function fixture(options: NativeRealtimeOptions = {}) {
+function fixture(
+  options: NativeRealtimeOptions = {},
+  adapterBridge?: NativeRealtimeAdapterBridge,
+) {
   const waits: Array<ReturnType<typeof deferred<{ finalOutput: unknown }>>> =
     [];
   const cancellations: ReturnType<typeof vi.fn>[] = [];
@@ -49,7 +56,7 @@ function fixture(options: NativeRealtimeOptions = {}) {
     _realtimeProfileTarget: vi.fn((target: unknown) => target ?? null),
     _realtimeGuardrailSource: vi.fn((_receipt: unknown) => ({
       agent: { name: 'captured Agent' } as never,
-      context: undefined,
+      context: undefined as unknown,
     })),
   };
   let generation = '';
@@ -77,8 +84,11 @@ function fixture(options: NativeRealtimeOptions = {}) {
     );
   };
   const call = vi.fn<NativeRealtimeCall>(async (operation, params) => {
-    if (operation === 'realtime_conversation_start_sdk') {
+    if (operation === 'realtime_conversation_prepare_sdk') {
       generation = params.generation as string;
+      return { generation };
+    }
+    if (operation === 'realtime_conversation_activate_sdk') {
       event('realtime_conversation_started');
     }
     if (operation === 'realtime_conversation_interrupt_sdk')
@@ -98,6 +108,13 @@ function fixture(options: NativeRealtimeOptions = {}) {
     release,
     options,
     graphClose,
+    adapterBridge && {
+      create: adapterBridge.create,
+      prepare: (params, handle) => {
+        generation = params.generation as string;
+        return adapterBridge.prepare(params, handle);
+      },
+    },
   );
   return {
     owner,
@@ -259,10 +276,18 @@ it('retains cancelled admission and closes its generation before rejecting publi
   const admitted = deferred<void>();
   const original = peer.call.getMockImplementation()!;
   peer.call.mockImplementation(async (op, params) => {
-    await original(op, params);
-    if (op === 'realtime_conversation_start_sdk') await admitted.promise;
+    const result = await original(op, params);
+    if (op === 'realtime_conversation_activate_sdk') await admitted.promise;
+    return result;
   });
   const pending = peer.owner._start();
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([op]) => op === 'realtime_conversation_activate_sdk',
+      ),
+    ).toBe(true),
+  );
   controller.abort(new Error('cancel admission'));
   let settled = false;
   void pending.catch(() => {
@@ -347,7 +372,7 @@ it('joins canonical history tail before normal close and drops queued audio', as
   });
 });
 
-it('still cancels exact work when media close fails and retains cleanup for retry', async () => {
+it('retries failed native cleanup even when the transport has already reported Closed', async () => {
   const peer = fixture();
   await peer.owner._start();
   peer.payload({ HandoffRequested: { handoff_id: 'owned' } }, 'question');
@@ -357,6 +382,9 @@ it('still cancels exact work when media close fails and retains cleanup for retr
   peer.call.mockImplementation(async (op, params) => {
     if (op === 'realtime_conversation_close_sdk' && first) {
       first = false;
+      peer.event('realtime_conversation_closed', {
+        reason: 'transport_closed',
+      });
       throw new Error('media cleanup failed');
     }
     return original(op, params);
@@ -365,6 +393,11 @@ it('still cancels exact work when media close fails and retains cleanup for retr
   expect(peer.cancellations[0]).toHaveBeenCalledOnce();
   expect(peer.release).not.toHaveBeenCalled();
   await peer.owner.close();
+  expect(
+    peer.call.mock.calls.filter(
+      ([op]) => op === 'realtime_conversation_close_sdk',
+    ),
+  ).toHaveLength(2);
   expect(peer.release).toHaveBeenCalledOnce();
 });
 
@@ -379,7 +412,7 @@ it('forwards captured typed initial settings and sparse updates through the same
   settings.transcription.language = 'changed after capture';
   await peer.owner._start();
   const start = peer.call.mock.calls.find(
-    ([op]) => op === 'realtime_conversation_start_sdk',
+    ([op]) => op === 'realtime_conversation_prepare_sdk',
   )![1];
   expect(start.settings).toEqual({
     transcription: { model: 'gpt-transcribe', language: 'fr' },
@@ -492,12 +525,15 @@ it('scopes a late interruption to the actual producing backend response rather t
 it('releases failed admission after confirmed idle close without requiring an invented Closed event', async () => {
   const peer = fixture();
   const original = new Error('connection setup failed');
-  peer.call.mockImplementation(async (operation) => {
-    if (operation === 'realtime_conversation_start_sdk') throw original;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (operation === 'realtime_conversation_prepare_sdk')
+      return { generation: params.generation };
+    if (operation === 'realtime_conversation_activate_sdk') throw original;
   });
   await expect(peer.owner._start()).rejects.toBe(original);
   expect(peer.call.mock.calls.map(([operation]) => operation)).toEqual([
-    'realtime_conversation_start_sdk',
+    'realtime_conversation_prepare_sdk',
+    'realtime_conversation_activate_sdk',
     'realtime_conversation_close_sdk',
   ]);
   expect(peer.release).toHaveBeenCalledOnce();
@@ -728,10 +764,10 @@ it('returns the native WebRTC call receipt and rejects SIP audio before transpor
   const peer = fixture({ transport: { type: 'webrtc', offerSdp: 'offer' } });
   const original = peer.call.getMockImplementation()!;
   peer.call.mockImplementation(async (op, params) => {
-    await original(op, params);
-    return op === 'realtime_conversation_start_sdk'
+    const result = await original(op, params);
+    return op === 'realtime_conversation_activate_sdk'
       ? JSON.stringify({ call_id: 'native-call', sdp: 'answer' })
-      : undefined;
+      : result;
   });
   await peer.owner._start();
   expect(peer.owner.callId).toBe('native-call');
@@ -813,7 +849,7 @@ it('surfaces failed startup cleanup distinctly from the exact caller abort and r
   const original = peer.call.getMockImplementation()!;
   let rejectClose = true;
   peer.call.mockImplementation(async (op, params) => {
-    if (op === 'realtime_conversation_start_sdk') await admitted.promise;
+    if (op === 'realtime_conversation_activate_sdk') await admitted.promise;
     if (op === 'realtime_conversation_close_sdk' && rejectClose) throw cleanup;
     return original(op, params);
   });
@@ -921,3 +957,480 @@ it('runs source-stamped frontend guardrails in the voice entry context and scope
   await peer.owner.close();
   await consuming;
 });
+
+it('issues one-shot hosted MCP approvals and restores a live locally rejected attempt', async () => {
+  const peer = fixture({ automaticallyTriggerResponseForMcpToolCalls: false });
+  const other = fixture();
+  await peer.owner._start();
+  await other.owner._start();
+  expect(peer.call.mock.calls[0][1]).toHaveProperty(
+    'hosted_mcp_auto_response',
+    false,
+  );
+  const events = peer.owner.events();
+  await events.next();
+  peer.payload({
+    HostedMcpApprovalRequested: {
+      approval_id: 'private-token',
+      request_id: 'request-1',
+      server_label: 'docs',
+      tool_name: 'search',
+      arguments: '{"query":"hello"}',
+      response_id: 'response-1',
+    },
+  });
+  const event = (await events.next()).value;
+  if (!event || event.type !== 'hosted_mcp_approval_requested')
+    throw new Error('Missing approval event');
+  expect(Object.isFrozen(event)).toBe(true);
+  expect(event).not.toHaveProperty('approval_id');
+  expect(
+    peer.call.mock.calls.filter(
+      ([operation]) =>
+        operation === 'realtime_conversation_hosted_mcp_approval_sdk',
+    ),
+  ).toHaveLength(0);
+  await expect(
+    peer.owner.approveHostedMcp({ ...event }, { approve: true }),
+  ).rejects.toThrow('issued');
+  await expect(
+    other.owner.approveHostedMcp(event, { approve: true }),
+  ).rejects.toThrow('issued');
+  await expect(
+    peer.owner.approveHostedMcp(event, { approve: 'yes' } as never),
+  ).rejects.toThrow('boolean');
+  const original = peer.call.getMockImplementation()!;
+  let rejected = false;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (
+      operation === 'realtime_conversation_hosted_mcp_approval_sdk' &&
+      !rejected
+    ) {
+      rejected = true;
+      throw new Error('local rejected admission');
+    }
+    return original(operation, params);
+  });
+  await expect(
+    peer.owner.approveHostedMcp(event, { approve: true }),
+  ).rejects.toThrow('local rejected');
+  await peer.owner.approveHostedMcp(event, {
+    approve: false,
+    reason: 'Application decision',
+  });
+  expect(peer.call.mock.calls.at(-1)).toEqual([
+    'realtime_conversation_hosted_mcp_approval_sdk',
+    {
+      generation: peer.generation,
+      approval_id: 'private-token',
+      approve: false,
+      reason: 'Application decision',
+    },
+  ]);
+  await expect(
+    peer.owner.approveHostedMcp(event, { approve: true }),
+  ).rejects.toThrow('submitted');
+  await events.return(undefined);
+  await peer.owner.close();
+  await other.owner.close();
+});
+
+it('fences concurrent hosted approval attempts before the first native reply', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  peer.payload({
+    HostedMcpApprovalRequested: {
+      approval_id: 'token',
+      request_id: 'request',
+      server_label: 'docs',
+      tool_name: 'lookup',
+      arguments: '{}',
+    },
+  });
+  const request = (await events.next()).value;
+  if (!request || request.type !== 'hosted_mcp_approval_requested')
+    throw new Error('Missing request');
+  const held = deferred<void>();
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) =>
+    operation === 'realtime_conversation_hosted_mcp_approval_sdk'
+      ? held.promise
+      : original(operation, params),
+  );
+  const first = peer.owner.approveHostedMcp(request, { approve: true });
+  await expect(
+    peer.owner.approveHostedMcp(request, { approve: false }),
+  ).rejects.toThrow('submitted');
+  held.resolve();
+  await first;
+  await events.return(undefined);
+  await peer.owner.close();
+});
+
+it('waits for accepted source refresh before forwarding delegated native text', async () => {
+  const peer = fixture();
+  const target = { profile_id: 'B', epoch: '2' };
+  peer.session._realtimeCurrentProfile.mockResolvedValue(target as never);
+  const held = deferred<void>();
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) =>
+    operation === 'realtime_conversation_update_sdk'
+      ? held.promise
+      : original(operation, params),
+  );
+  await peer.owner._start();
+  peer.payload(
+    { HandoffRequested: { handoff_id: 'delegate', response_id: 'response-A' } },
+    'native input',
+  );
+  await vi.waitFor(() => expect(peer.waits).toHaveLength(1));
+  peer.waits[0].resolve({ finalOutput: 'accepted B text' });
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.find(
+        ([operation]) => operation === 'realtime_conversation_update_sdk',
+      )?.[1],
+    ).toMatchObject({
+      update: {},
+      profile: { response_id: null, target, function_tools: null },
+    }),
+  );
+  expect(
+    peer.call.mock.calls.some(
+      ([operation]) => operation === 'realtime_conversation_complete_sdk',
+    ),
+  ).toBe(false);
+  held.resolve();
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.find(
+        ([operation]) => operation === 'realtime_conversation_complete_sdk',
+      )?.[1],
+    ).toMatchObject({ text: 'accepted B text' }),
+  );
+  await peer.owner.close();
+});
+
+it('keeps the reader moving during a bound ACK and joins its rejection on close', async () => {
+  const context = new AsyncLocalStorage<string>();
+  const peer = context.run('voice entry', () => fixture());
+  const held = deferred<void>();
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) => {
+    if (operation === 'realtime_conversation_update_sdk') {
+      expect(context.getStore()).toBe('voice entry');
+      return held.promise;
+    }
+    return original(operation, params);
+  });
+  await peer.owner._start();
+  expect(
+    peer.payload({
+      FunctionBatchFinished: {
+        response_id: 'response-A',
+        target: { profile_id: 'B', epoch: '2' },
+      },
+    }),
+  ).toBe(true);
+  peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } });
+  let closed = false;
+  const closing = peer.owner.close().then(() => {
+    closed = true;
+  });
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([operation]) => operation === 'realtime_conversation_close_sdk',
+      ),
+    ).toBe(true),
+  );
+  expect(closed).toBe(false);
+  held.reject(new Error('ACK retired by close'));
+  await closing;
+  expect(peer.release).toHaveBeenCalledOnce();
+});
+
+it('cancels a slow native setup before joining its admission', async () => {
+  const peer = fixture();
+  const admission = deferred<never>();
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (operation === 'realtime_conversation_activate_sdk')
+      return admission.promise;
+    if (operation === 'realtime_conversation_close_sdk')
+      admission.reject(new Error('startup cancelled by Core close'));
+    return original(operation, params);
+  });
+  const pending = peer.owner._start();
+  const rejected = expect(pending).rejects.toThrow();
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([op]) => op === 'realtime_conversation_activate_sdk',
+      ),
+    ).toBe(true),
+  );
+  await peer.owner.close();
+  await rejected;
+  expect(peer.call.mock.calls.map(([operation]) => operation)).toEqual([
+    'realtime_conversation_prepare_sdk',
+    'realtime_conversation_activate_sdk',
+    'realtime_conversation_close_sdk',
+  ]);
+  expect(peer.release).toHaveBeenCalledOnce();
+}, 1000);
+
+it('closes before delayed tool preparation without allowing a later native start', async () => {
+  const peer = fixture({ tools: [] });
+  const selection = deferred<{ tools: []; selectionId: null }>();
+  peer.session._realtimeFunctionTools.mockReturnValueOnce(selection.promise);
+  const pending = peer.owner._start();
+  const rejected = expect(pending).rejects.toThrow();
+  await peer.owner.close();
+  await rejected;
+  expect(peer.release).toHaveBeenCalledOnce();
+  selection.resolve({ tools: [], selectionId: null });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(
+    peer.call.mock.calls.some(
+      ([operation]) => operation === 'realtime_conversation_activate_sdk',
+    ),
+  ).toBe(false);
+}, 1000);
+
+it('joins and retains a late successful call receipt after native close', async () => {
+  const peer = fixture({ transport: { type: 'webrtc', offerSdp: 'offer' } });
+  const admission = deferred<unknown>();
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) => {
+    if (operation === 'realtime_conversation_activate_sdk') {
+      void original(operation, params);
+      return admission.promise;
+    }
+    return original(operation, params);
+  });
+  const pending = peer.owner._start();
+  const rejected = expect(pending).rejects.toThrow();
+  let closed = false;
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([op]) => op === 'realtime_conversation_activate_sdk',
+      ),
+    ).toBe(true),
+  );
+  const closing = peer.owner.close().then(() => {
+    closed = true;
+  });
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([operation]) => operation === 'realtime_conversation_close_sdk',
+      ),
+    ).toBe(true),
+  );
+  expect(closed).toBe(false);
+  admission.resolve({ call_id: 'late-call', sdp: 'late-answer' });
+  await closing;
+  await rejected;
+  expect(peer.owner.callId).toBe('late-call');
+  expect(peer.owner.answerSdp).toBe('late-answer');
+  expect(peer.release).toHaveBeenCalledOnce();
+}, 1000);
+
+it('captures the credential source and resolves it only after native preparation', async () => {
+  const source = vi.fn(async () => {
+    expect(peer.call.mock.calls.map(([operation]) => operation)).toEqual([
+      'realtime_conversation_prepare_sdk',
+    ]);
+    return 'connection-only-key';
+  });
+  const options: NativeRealtimeOptions = { apiKey: source };
+  const peer = fixture(options);
+  options.apiKey = () => 'changed-after-capture';
+  await peer.owner._start();
+  expect(source).toHaveBeenCalledOnce();
+  expect(
+    peer.call.mock.calls.find(
+      ([op]) => op === 'realtime_conversation_activate_sdk',
+    )?.[1],
+  ).toEqual({ generation: peer.generation, api_key: 'connection-only-key' });
+  expect(peer.call.mock.calls[0][1]).not.toHaveProperty('api_key');
+  await peer.owner.close();
+});
+
+it.each(['resolve', 'reject'] as const)(
+  'closes without awaiting a noncooperative credential source and observes late %s',
+  async (outcome) => {
+    const key = deferred<string>();
+    let suppliedSignal: AbortSignal | undefined;
+    const source = vi.fn((signal?: AbortSignal) => {
+      suppliedSignal = signal;
+      return key.promise;
+    });
+    const peer = fixture({ apiKey: source });
+    const opening = peer.owner._start();
+    const rejected = expect(opening).rejects.toThrow();
+    await vi.waitFor(() => expect(source).toHaveBeenCalledOnce());
+    await peer.owner.close();
+    await rejected;
+    expect(suppliedSignal?.aborted).toBe(true);
+    expect(peer.release).toHaveBeenCalledOnce();
+    if (outcome === 'resolve') key.resolve('late-private-key');
+    else key.reject(new Error('late-private-error'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(peer.call.mock.calls.map(([op]) => op)).toEqual([
+      'realtime_conversation_prepare_sdk',
+      'realtime_conversation_close_sdk',
+    ]);
+  },
+  1000,
+);
+
+it('aborts credential resolution with the caller signal', async () => {
+  const controller = new AbortController();
+  const key = deferred<string>();
+  const source = vi.fn(() => key.promise);
+  const peer = fixture({ apiKey: source, signal: controller.signal });
+  const opening = peer.owner._start();
+  const reason = new Error('caller cancelled credential resolution');
+  const rejected = expect(opening).rejects.toBe(reason);
+  await vi.waitFor(() => expect(source).toHaveBeenCalledOnce());
+  controller.abort(reason);
+  await rejected;
+  expect(peer.release).toHaveBeenCalledOnce();
+  key.resolve('late-key');
+  await Promise.resolve();
+  expect(
+    peer.call.mock.calls.some(
+      ([op]) => op === 'realtime_conversation_activate_sdk',
+    ),
+  ).toBe(false);
+});
+
+it.each(['', null])(
+  'rejects invalid resolved credentials %s before activation',
+  async (value) => {
+    const peer = fixture({ apiKey: () => value as string });
+    await expect(peer.owner._start()).rejects.toThrow(
+      'credential source must return a nonempty string',
+    );
+    expect(
+      peer.call.mock.calls.some(
+        ([op]) => op === 'realtime_conversation_activate_sdk',
+      ),
+    ).toBe(false);
+    expect(peer.release).toHaveBeenCalledOnce();
+  },
+);
+
+it('preserves a credential callback failure without sending it to Core', async () => {
+  const problem = new Error('private credential failure');
+  const peer = fixture({
+    apiKey: async () => {
+      throw problem;
+    },
+  });
+  await expect(peer.owner._start()).rejects.toBe(problem);
+  expect(JSON.stringify(peer.call.mock.calls)).not.toContain(problem.message);
+  expect(
+    peer.call.mock.calls.some(
+      ([op]) => op === 'realtime_conversation_activate_sdk',
+    ),
+  ).toBe(false);
+  expect(peer.release).toHaveBeenCalledOnce();
+});
+
+it('joins dispatched preparation on close without invoking credentials afterward', async () => {
+  const source = vi.fn(() => 'must-not-resolve');
+  const peer = fixture({ apiKey: source });
+  const prepared = deferred<unknown>();
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) => {
+    if (operation === 'realtime_conversation_prepare_sdk') {
+      void original(operation, params);
+      return prepared.promise;
+    }
+    return original(operation, params);
+  });
+  const opening = peer.owner._start();
+  const rejected = expect(opening).rejects.toThrow();
+  let closed = false;
+  const closing = peer.owner.close().then(() => {
+    closed = true;
+  });
+  await Promise.resolve();
+  expect(closed).toBe(false);
+  prepared.resolve({ generation: peer.generation });
+  await closing;
+  await rejected;
+  expect(source).not.toHaveBeenCalled();
+  expect(
+    peer.call.mock.calls.some(
+      ([op]) => op === 'realtime_conversation_activate_sdk',
+    ),
+  ).toBe(false);
+  expect(peer.release).toHaveBeenCalledOnce();
+});
+
+it.each([null, undefined])(
+  'preserves a custom adapter rejection of %s through the owner',
+  async (reason) => {
+    type Request = Awaited<ReturnType<NativeRealtimeAdapterHandle['next']>>;
+    let deliver: (request: Request) => void = () => {
+      throw new Error('Driver is not waiting');
+    };
+    const handle: NativeRealtimeAdapterHandle = {
+      next: () =>
+        new Promise((resolve) => {
+          deliver = resolve;
+        }),
+      receive: async () => {},
+      end: vi.fn(),
+      finish: () => deliver(null),
+    };
+    const peer = fixture(
+      {
+        adapter: {
+          connect: async () => {
+            throw reason;
+          },
+        },
+      },
+      {
+        create: () => handle,
+        prepare: async (params) => ({ generation: params.generation }),
+      },
+    );
+    const original = peer.call.getMockImplementation()!;
+    peer.call.mockImplementation(async (operation, params) => {
+      if (operation !== 'realtime_conversation_activate_sdk')
+        return original(operation, params);
+      const connected = await new Promise<boolean>((resolve) =>
+        deliver({
+          event_json: JSON.stringify({
+            type: 'connect',
+            url: 'wss://example.invalid/realtime',
+            headers: {},
+          }),
+          complete: (success) => {
+            resolve(success);
+            return true;
+          },
+        }),
+      );
+      expect(connected).toBe(false);
+      throw new Error('Native adapter connection failed');
+    });
+    const outcome = await peer.owner._start().then(
+      () => ({ status: 'fulfilled' as const }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+    expect(outcome).toEqual({ status: 'rejected', error: reason });
+    expect(peer.release).toHaveBeenCalledOnce();
+  },
+);

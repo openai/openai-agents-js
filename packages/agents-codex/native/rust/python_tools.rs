@@ -56,6 +56,12 @@ pub(crate) struct Generation {
     defaults: Vec<usize>,
 }
 
+/// Exact manual classification from the same retained declaration capture.
+struct CapturedManualTools {
+    generation: Arc<Generation>,
+    slots: HashSet<usize>,
+}
+
 /// Exact immutable declarations belonging to one captured native Agent step.
 #[derive(Clone)]
 pub(crate) struct ProfileCatalog {
@@ -1229,7 +1235,7 @@ impl PythonTools {
         model: &str,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
-            thread, generation, slot, turn, call, arguments, source, model, None,
+            thread, generation, slot, turn, call, arguments, source, model, None, None,
         )
     }
 
@@ -1244,6 +1250,7 @@ impl PythonTools {
         source: &ToolCallSource,
         model: &str,
         profile: Option<&codex_extension_api::AgentProfileReceipt>,
+        manual: Option<bool>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -1255,10 +1262,13 @@ impl PythonTools {
                 // Live manual requests bind capability identity, including
                 // equal wire IDs in one native turn. Automatic calls keep
                 // their original duplicate-call rejection.
-                manual_grant: generation
-                    .manual_slots
-                    .as_ref()
-                    .map(|slots| slots.contains(&slot))
+                manual_grant: manual
+                    .or_else(|| {
+                        generation
+                            .manual_slots
+                            .as_ref()
+                            .map(|slots| slots.contains(&slot))
+                    })
                     .unwrap_or_else(|| self.is_manual(&entry.name))
                     .then(|| codex_core_api::ThreadId::new().to_string()),
             },
@@ -1474,6 +1484,8 @@ pub(crate) struct OperationSelection {
     pub before_step: bool,
     #[serde(default)]
     pub prepare_request: bool,
+    #[serde(default)]
+    pub operation_declaration_source: Option<codex_extension_api::AgentProfileReceipt>,
 }
 #[derive(Clone)]
 struct ActiveSelection {
@@ -1483,6 +1495,7 @@ struct ActiveSelection {
     names: Option<Vec<ToolName>>,
     before_step: bool,
     prepare_request: bool,
+    operation_declaration_source: Option<codex_extension_api::AgentProfileReceipt>,
 }
 struct PendingStep {
     operation_generation: u64,
@@ -1612,6 +1625,7 @@ impl PythonTools {
                 names: selection.names.clone(),
                 before_step: selection.before_step,
                 prepare_request: selection.prepare_request,
+                operation_declaration_source: selection.operation_declaration_source.clone(),
             })
     }
 
@@ -1709,6 +1723,7 @@ impl PythonTools {
                 names: None,
                 before_step: true,
                 prepare_request: false,
+                operation_declaration_source: None,
             });
         }
         operation.and_then(|selection| {
@@ -1723,6 +1738,7 @@ impl PythonTools {
                 names: selection.names.clone(),
                 before_step: selection.before_step,
                 prepare_request: selection.prepare_request,
+                operation_declaration_source: selection.operation_declaration_source.clone(),
             })
         })
     }
@@ -1796,6 +1812,7 @@ impl PythonContributor {
         use_deferred_specs: bool,
         slots: &[usize],
         profile: Option<codex_extension_api::AgentProfileReceipt>,
+        manual: Option<Arc<CapturedManualTools>>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         slots
             .iter()
@@ -1803,6 +1820,7 @@ impl PythonContributor {
             .map(|slot| {
                 Arc::new(PythonExecutor {
                     profile: profile.clone(),
+                    manual: manual.clone(),
                     thread: thread.level_id().to_string(),
                     tools: tools.clone(),
                     generation: generation.clone(),
@@ -1823,29 +1841,43 @@ impl ToolContributor for PythonContributor {
         let Some(tools) = input.thread_store.get::<PythonTools>() else {
             return Ok(None);
         };
-        if let Some(instructions) = input
-            .thread_store
-            .get::<crate::options::ThreadInstructions>()
-        {
-            instructions
-                .check_usable()
-                .map_err(|error| error.to_string())?;
-        }
-        let catalog = tools
-            .realtime_catalog(input.profile)
-            .map_err(|error| error.to_string())?;
+        let catalog = if let Some(retained) = input.retained_execution_data {
+            retained
+                .get::<ProfileCatalog>()
+                .ok_or("Missing retained Realtime source catalog")?
+                .as_ref()
+                .clone()
+        } else {
+            if let Some(instructions) = input
+                .thread_store
+                .get::<crate::options::ThreadInstructions>()
+            {
+                instructions
+                    .check_usable()
+                    .map_err(|error| error.to_string())?;
+            }
+            tools
+                .realtime_catalog(input.profile)
+                .map_err(|error| error.to_string())?
+        };
         tools
             .register_generation(&catalog.generation)
             .map_err(|error| error.to_string())?;
-        let profile = input
-            .profile
-            .map(|source| source.receipt.clone())
-            .or_else(|| {
-                tools
-                    .inherited_source
-                    .as_ref()
-                    .map(|source| source.receipt.clone())
-            });
+        let profile = if let Some(retained) = input.retained_execution_data {
+            retained
+                .get::<crate::native_interception::ProfileMcpSource>()
+                .and_then(|source| source.receipt.clone())
+        } else {
+            input
+                .profile
+                .map(|source| source.receipt.clone())
+                .or_else(|| {
+                    tools
+                        .inherited_source
+                        .as_ref()
+                        .map(|source| source.receipt.clone())
+                })
+        };
         let mut declarations = Vec::new();
         for (slot, (namespace, raw)) in functions(&catalog.generation.specs).into_iter().enumerate()
         {
@@ -1866,7 +1898,14 @@ impl ToolContributor for PythonContributor {
                     namespace: namespace.map(|namespace| namespace.name.clone()),
                     name: raw.name.clone(),
                     kind: "function".into(),
-                    strict: tools.strict_functions,
+                    strict: match &entry.spec {
+                        ToolSpec::Function(function) => function.strict,
+                        ToolSpec::Namespace(namespace) => match namespace.tools.as_slice() {
+                            [ResponsesApiNamespaceTool::Function(function)] => function.strict,
+                            _ => return Err("Unsupported Realtime namespace declaration".into()),
+                        },
+                        _ => return Err("Unsupported Realtime function declaration".into()),
+                    },
                     defer_loading: Some(raw.defer_loading),
                     description: raw.description.clone(),
                     parameters: raw.input_schema.clone(),
@@ -1878,7 +1917,33 @@ impl ToolContributor for PythonContributor {
             catalog.generation.id,
             profile.as_ref(),
         );
+        if let Some(retained) = input.retained_execution_data {
+            let application_instructions = retained
+                .get::<codex_extension_api::AgentProfileInstructions>()
+                .ok_or("Missing retained Realtime instruction projection")?
+                .text
+                .clone();
+            return Ok(Some(codex_extension_api::RealtimeToolDeclarations {
+                selection_id,
+                tools: declarations,
+                execution_data: retained.clone(),
+                application_instructions,
+            }));
+        }
         let mut execution_data = codex_extension_api::ExtensionDataInit::new();
+        let manual_slots = catalog.generation.manual_slots.clone().unwrap_or_else(|| {
+            catalog
+                .generation
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, entry)| tools.is_manual(&entry.name).then_some(slot))
+                .collect()
+        });
+        execution_data.insert(CapturedManualTools {
+            generation: catalog.generation.clone(),
+            slots: manual_slots,
+        });
         execution_data.insert(catalog);
         if let Some(source) = input.profile {
             let policy = source
@@ -1943,22 +2008,29 @@ impl ToolContributor for PythonContributor {
                 }
             }
         }
-        let application_instructions = if let Some(profile) = input.profile {
+        let accepted = if let Some(profile) = input.profile {
             Some(
                 profile
                     .profile
                     .data
                     .get::<crate::application_instructions::Accepted>()
                     .ok_or("Managed Realtime source has no captured application instructions")?
-                    .text
+                    .as_ref()
                     .clone(),
             )
         } else {
             input
                 .thread_store
                 .get::<crate::options::ThreadInstructions>()
-                .and_then(|instructions| instructions.realtime_snapshot())
+                .and_then(|instructions| instructions.accepted())
         };
+        let application_instructions = accepted.as_ref().map(|accepted| accepted.text.clone());
+        if let Some(accepted) = accepted {
+            execution_data.insert(accepted);
+        }
+        execution_data.insert(codex_extension_api::AgentProfileInstructions {
+            text: application_instructions.clone(),
+        });
         Ok(Some(codex_extension_api::RealtimeToolDeclarations {
             selection_id,
             tools: declarations,
@@ -1988,6 +2060,7 @@ impl ToolContributor for PythonContributor {
             generation.clone(),
             use_deferred_specs,
             &generation.defaults,
+            None,
             None,
         )
     }
@@ -2062,6 +2135,13 @@ impl ToolContributor for PythonContributor {
         if tools.register_generation(&snapshot.generation).is_err() {
             return Vec::new();
         }
+        let manual = step.get::<CapturedManualTools>();
+        if manual
+            .as_ref()
+            .is_some_and(|manual| !Arc::ptr_eq(&manual.generation, &snapshot.generation))
+        {
+            return Vec::new();
+        }
         self.executors(
             thread,
             tools,
@@ -2069,6 +2149,7 @@ impl ToolContributor for PythonContributor {
             snapshot.use_deferred_specs,
             &snapshot.slots,
             profile,
+            manual,
         )
     }
 
@@ -2203,6 +2284,7 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    manual: Option<Arc<CapturedManualTools>>,
     profile: Option<codex_extension_api::AgentProfileReceipt>,
     thread: String,
     tools: Arc<PythonTools>,
@@ -2235,6 +2317,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
+        if let Some(manual) = &self.manual {
+            return !manual.slots.is_empty();
+        }
         self.generation
             .manual_slots
             .as_ref()
@@ -2307,6 +2392,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     &call.source,
                     &call.model,
                     self.profile.as_ref(),
+                    self.manual
+                        .as_ref()
+                        .map(|manual| manual.slots.contains(&self.slot)),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let _reply = PendingReply {
@@ -2573,6 +2661,7 @@ mod pending_tests {
                 thread_store: &thread,
                 profile: None,
                 mcp: None,
+                retained_execution_data: None,
             })
             .unwrap()
             .unwrap();
@@ -2599,7 +2688,40 @@ mod pending_tests {
                     .unwrap(),
             )
             .unwrap();
+        thread
+            .get::<crate::options::ThreadInstructions>()
+            .unwrap()
+            .confirm(crate::application_instructions::Accepted {
+                id: codex_protocol::ResponseItemId::new("msg_sdk_application_replacement"),
+                text: "Replacement text".into(),
+                files: Vec::new(),
+            })
+            .unwrap();
+        tools.configure_manual(Vec::new()).unwrap();
+        assert!(!tools.is_manual(&original.entries[0].name));
+        let projected = contributor
+            .capture_realtime_tools(codex_extension_api::RealtimeToolCaptureInput {
+                session_store: &session,
+                thread_store: &thread,
+                profile: None,
+                mcp: None,
+                retained_execution_data: Some(&captured.execution_data),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(projected.selection_id, captured.selection_id);
+        assert_eq!(
+            projected.application_instructions.as_deref(),
+            Some("Accepted text")
+        );
+        assert_eq!(projected.tools[0].spec.name, "decision");
         let step = ExtensionData::new_with_init("original-source", captured.execution_data);
+        assert_eq!(
+            step.get::<crate::application_instructions::Accepted>()
+                .unwrap()
+                .text,
+            "Accepted text"
+        );
         let executors = contributor.tools_for_step(&session, &thread, &step);
         assert_eq!(
             executors
@@ -2615,6 +2737,41 @@ mod pending_tests {
         assert_eq!(tools.source_profile(Some(&step)).unwrap(), None);
         assert!(!tools.managed_profiles.load(Ordering::Acquire));
         assert_eq!(tools.snapshot().entries[0].name.name, "replacement");
+        let manual = step.get::<CapturedManualTools>().unwrap();
+        let (key, mut waiting) = tools
+            .enqueue_profile(
+                "root",
+                &original,
+                0,
+                "turn",
+                "captured-manual",
+                json!({}),
+                &ToolCallSource::Direct,
+                "fixture-model",
+                None,
+                Some(manual.slots.contains(&0)),
+            )
+            .unwrap();
+        assert!(key.reply.manual_grant.is_some());
+        assert!(tools.manual_tool_current("root", &key));
+        assert_eq!(tools.pending_manual_tools(&owner()).len(), 1);
+        assert!(matches!(
+            waiting.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        tools
+            .take_reply("root", &key)
+            .unwrap()
+            .unwrap()
+            .send(
+                DynamicToolResponse {
+                    content_items: Vec::new(),
+                    success: true,
+                }
+                .into(),
+            )
+            .unwrap();
+        assert!(waiting.try_recv().unwrap().response.success);
     }
 
     pub(super) fn tools() -> Arc<PythonTools> {
@@ -2921,6 +3078,7 @@ mod pending_tests {
             names,
             before_step: true,
             prepare_request: false,
+            operation_declaration_source: None,
         });
         (thread, tools)
     }
@@ -2943,6 +3101,7 @@ mod pending_tests {
             names: None,
             before_step: false,
             prepare_request: false,
+            operation_declaration_source: None,
         };
         *child.selection.lock().unwrap() =
             child.turn_selection("child-turn", Some(&root_operation));
@@ -3241,6 +3400,7 @@ mod pending_tests {
             names: None,
             before_step: false,
             prepare_request: false,
+            operation_declaration_source: None,
         });
         let successor = ExtensionData::new("successor-step");
         assert!(
@@ -3370,6 +3530,7 @@ mod pending_tests {
                 names: operation.names,
                 before_step: operation.before_step,
                 prepare_request: operation.prepare_request,
+                operation_declaration_source: operation.operation_declaration_source.clone(),
             });
             let continued = tools.continuation_selection("turn").unwrap();
             assert_eq!(continued.slots, expected_slots);
