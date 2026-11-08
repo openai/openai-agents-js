@@ -414,7 +414,7 @@ it('uses full results once, preserves ordered blocks and keeps private metadata 
   expect(JSON.stringify(result)).not.toContain('synthetic-private');
   expect(observed).toHaveBeenCalledOnce();
   expect(observed.mock.calls[0][0].result).toEqual(
-    await server.callToolResult.mock.results[0].value,
+    await vi.mocked(server.callToolResult).mock.results[0].value,
   );
   expect(server.callToolResult).toHaveBeenCalledTimes(1);
   expect(server.callTool).not.toHaveBeenCalled();
