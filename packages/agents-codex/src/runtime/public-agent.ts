@@ -17,6 +17,7 @@ import { webSearchName } from './web-search';
 import { hostedToolSpecs } from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
+import { validateMaxFunctionConcurrency } from './function-admission';
 
 import { Environment } from './environment';
 import {
@@ -73,6 +74,12 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /**
+   * Limit automatic managed functions, including borrowed MCP callbacks, per root
+   * or child turn through cleanup and reply settlement. Omission leaves admission
+   * unbounded. Native MCP, manual tools and builtins do not consume these slots.
+   */
+  maxFunctionConcurrency?: number;
   /** Answer live requests for this Session lifetime. Omission leaves replies to application readers. */
   onInteraction?: InteractionHandler;
   tracing?: TraceOptions;
@@ -146,6 +153,7 @@ interface CapturedOpening {
   readonly apiKey: string | undefined;
   readonly context: unknown;
   readonly onInteraction?: InteractionHandler;
+  readonly maxFunctionConcurrency?: number;
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
@@ -412,6 +420,9 @@ export class Agent<Context = undefined, Output = string> {
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
+      maxFunctionConcurrency: validateMaxFunctionConcurrency(
+        options.maxFunctionConcurrency,
+      ),
       context: options.context,
       onInteraction: options.onInteraction,
       tracing: options.tracing,
@@ -455,6 +466,9 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const maxFunctionConcurrency = opening
+      ? opening.maxFunctionConcurrency
+      : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
     if (opening && opening.agent !== this)
       throw new TypeError('Deferred opening belongs to a different Agent');
     if (
@@ -962,6 +976,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        maxFunctionConcurrency,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
         localStorage: persistent,
@@ -1027,6 +1042,7 @@ export class Agent<Context = undefined, Output = string> {
           apiKey: lease.apiKey,
           context,
           onInteraction: options.onInteraction,
+          maxFunctionConcurrency,
         });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
