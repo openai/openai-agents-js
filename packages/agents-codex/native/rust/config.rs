@@ -35,8 +35,6 @@ pub fn decode<T: DeserializeOwned>(value: Value) -> Result<T> {
 struct RuntimeOptions {
     #[serde(rename = "_native_agents")]
     native_agents: bool,
-    #[serde(rename = "_sdk_selected_model")]
-    sdk_selected_model: bool,
     // Set by Agent.session before creating the runtime, never by a turn.
     // Interceptor-enabled Agent.session selects transport before constructing
     // the model provider. Keep this on the live runtime, never in saved TOML.
@@ -104,7 +102,6 @@ pub fn prepare_runtime(runtime_json: &str) -> Result<String> {
     {
         runtime.insert("cwd".into(), serde_json::to_value(home.join("workspace"))?);
     }
-    let selected_model = runtime.get("_sdk_selected_model").and_then(Value::as_bool) == Some(true);
     let loader = runtime.entry("loader").or_insert(serde_json::json!({}));
     let loader = loader
         .as_object_mut()
@@ -116,40 +113,24 @@ pub fn prepare_runtime(runtime_json: &str) -> Result<String> {
         "ignore_managed_requirements",
         "ignore_login_requirements",
     ] {
-        if selected_model && key == "ignore_managed_requirements" {
-            anyhow::ensure!(
-                loader
-                    .get(key)
-                    .is_none_or(|value| value == &Value::Bool(false)),
-                "Selected Model cannot bypass managed requirements"
-            );
-            loader.insert(key.into(), Value::Bool(false));
-        } else {
-            loader.entry(key).or_insert(Value::Bool(true));
-        }
+        loader.entry(key).or_insert(Value::Bool(true));
     }
     for key in [
         "managed_config_path",
         "system_config_path",
         "system_requirements_path",
     ] {
-        if !selected_model {
-            loader
-                .entry(key)
-                .or_insert(serde_json::to_value(home.as_path().join(key))?);
-        }
-    }
-    if !selected_model {
         loader
-            .entry("macos_managed_config_requirements_base64")
-            .or_insert(Value::String(String::new()));
+            .entry(key)
+            .or_insert(serde_json::to_value(home.as_path().join(key))?);
     }
+    loader
+        .entry("macos_managed_config_requirements_base64")
+        .or_insert(Value::String(String::new()));
     #[cfg(target_os = "macos")]
-    if !selected_model {
-        loader
-            .entry("managed_preferences_base64")
-            .or_insert(Value::String(String::new()));
-    }
+    loader
+        .entry("managed_preferences_base64")
+        .or_insert(Value::String(String::new()));
     Ok(serde_json::to_string(&runtime)?)
 }
 
@@ -556,164 +537,7 @@ pub async fn load(
             }
         }
     }
-    if options.sdk_selected_model {
-        use codex_core_api::Feature;
-        config
-            .features
-            .disable(Feature::UnboundedConnectionRetries)?;
-        config.features.disable(Feature::ApiKeyModelDiscovery)?;
-        anyhow::ensure!(
-            !config.features.enabled(Feature::UnboundedConnectionRetries)
-                && !config.features.enabled(Feature::ApiKeyModelDiscovery)
-                && config.model_provider.request_max_retries() == 0
-                && config.model_provider.stream_max_retries() == 0
-                && !config.model_provider.supports_websockets,
-            "Selected Model requires managed discovery/connection retries disabled and HTTP with zero retries"
-        );
-    }
     Ok((config, cloud))
-}
-
-pub(crate) fn sdk_selected_model(runtime_json: &str) -> Result<bool> {
-    let options: RuntimeOptions = serde_json::from_str(runtime_json)?;
-    Ok(options.sdk_selected_model)
-}
-
-#[cfg(test)]
-mod selected_model_tests {
-    use super::*;
-
-    #[test]
-    fn selected_mode_keeps_managed_requirements_and_ordinary_mode_keeps_isolation() {
-        let selected: Value =
-            serde_json::from_str(&prepare_runtime(r#"{"_sdk_selected_model":true}"#).unwrap())
-                .unwrap();
-        assert_eq!(selected["loader"]["ignore_managed_requirements"], false);
-        for field in [
-            "managed_config_path",
-            "system_requirements_path",
-            "macos_managed_config_requirements_base64",
-        ] {
-            assert!(selected["loader"].get(field).is_none());
-        }
-        let ordinary: Value = serde_json::from_str(&prepare_runtime("{}").unwrap()).unwrap();
-        assert_eq!(ordinary["loader"]["ignore_managed_requirements"], true);
-        assert!(ordinary["loader"]["system_requirements_path"].is_string());
-    }
-
-    #[test]
-    fn selected_mode_refuses_a_managed_requirements_bypass() {
-        assert!(
-            prepare_runtime(
-                r#"{"_sdk_selected_model":true,
-            "loader":{"ignore_managed_requirements":true}}"#
-            )
-            .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn selected_load_honors_managed_discovery_and_connection_retry_pins() {
-        use codex_core_api::Feature;
-
-        for (key, feature) in [
-            (
-                "unbounded_connection_retries",
-                Feature::UnboundedConnectionRetries,
-            ),
-            ("api_key_model_discovery", Feature::ApiKeyModelDiscovery),
-        ] {
-            for pin in [None, Some(false), Some(true)] {
-                let home = tempfile::tempdir().unwrap();
-                let requirements = home.path().join("requirements.toml");
-                let contents = pin
-                    .map(|enabled| format!("[features]\n{key} = {enabled}\n"))
-                    .unwrap_or_default();
-                std::fs::write(&requirements, contents).unwrap();
-                let mut runtime = serde_json::json!({
-                    "_sdk_selected_model": true,
-                    "codex_home": home.path(),
-                    "cwd": home.path(),
-                    "loader": {
-                        "ignore_managed_requirements": false,
-                        "managed_config_path": home.path().join("managed_config.toml"),
-                        "system_config_path": home.path().join("system_config.toml"),
-                        "system_requirements_path": requirements,
-                        "macos_managed_config_requirements_base64": "",
-                    },
-                });
-                if cfg!(target_os = "macos") {
-                    runtime["loader"]["managed_preferences_base64"] = Value::String(String::new());
-                }
-                let mut config = serde_json::json!({
-                    "model": "gpt-5.1-codex",
-                    "model_provider": "selected_model_test",
-                    "model_providers.selected_model_test": {
-                        "name": "Selected Model configuration test",
-                        "base_url": "http://127.0.0.1:1/v1",
-                        "wire_api": "responses",
-                        "requires_openai_auth": false,
-                        "supports_websockets": false,
-                        "request_max_retries": 0,
-                        "stream_max_retries": 0,
-                    },
-                    "features.unbounded_connection_retries": false,
-                    "features.api_key_model_discovery": false,
-                });
-                // No pin starts enabled, proving selected mode disables the feature.
-                // Explicit settings agree with pins so Core can load the fixture.
-                config[format!("features.{key}")] = Value::Bool(pin.unwrap_or(true));
-                let config = serde_json::to_string(&config).unwrap();
-
-                if pin == Some(true) {
-                    let mut ordinary = runtime.clone();
-                    ordinary["_sdk_selected_model"] = Value::Bool(false);
-                    let ordinary = prepare_runtime(&ordinary.to_string()).unwrap();
-                    let loaded = load(&config, &ordinary, None).await;
-                    if key == "unbounded_connection_retries" {
-                        let error = loaded
-                            .err()
-                            .expect("ordinary SDK must reject a managed true pin");
-                        assert!(
-                            error
-                                .to_string()
-                                .contains("requires finite connection retries")
-                        );
-                    } else {
-                        assert!(
-                            loaded.unwrap().0.features.enabled(feature),
-                            "{key}: fixture must load its true pin"
-                        );
-                    }
-                }
-
-                let runtime = prepare_runtime(&runtime.to_string()).unwrap();
-                let result = load(&config, &runtime, None).await;
-                if pin == Some(true) {
-                    let error = match result {
-                        Err(error) => error,
-                        Ok(_) => panic!("{key}: selected mode accepted a managed true pin"),
-                    };
-                    let expected = if key == "unbounded_connection_retries" {
-                        "requires finite connection retries"
-                    } else {
-                        "Selected Model requires"
-                    };
-                    assert!(
-                        error.to_string().contains(expected),
-                        "{key}: expected policy refusal, got {error:#}"
-                    );
-                } else {
-                    let (loaded, _) = result.unwrap();
-                    assert!(!loaded.features.enabled(Feature::UnboundedConnectionRetries));
-                    assert!(!loaded.features.enabled(Feature::ApiKeyModelDiscovery));
-                    assert_eq!(loaded.model_provider.request_max_retries(), 0);
-                    assert_eq!(loaded.model_provider.stream_max_retries(), 0);
-                    assert!(!loaded.model_provider.supports_websockets);
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

@@ -60,7 +60,7 @@ it.skipIf(process.platform !== 'linux')(
     const environment = Environment.local({
       cwd,
       tools: ['exec_command', 'write_stdin', 'apply_patch'],
-      mounts: [{ source, destination: source, strategy: 'local_bind' }],
+      mounts: [{ source }],
     });
     const command = [
       `test "$(cat ${quote(marker)})" = caller-owned || exit 10`,

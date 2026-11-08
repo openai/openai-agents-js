@@ -1500,7 +1500,6 @@ pub async fn restore(
             specs,
             crate::python_tools::ToolInstallOptions {
                 preserve_schemas: engine.sentinel.read().expect("sentinel poisoned").is_some(),
-                strict_functions: false,
                 allow_local_goals: false,
             },
         )?;

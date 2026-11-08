@@ -18,7 +18,6 @@ import {
   modelResponse,
   ScriptedModel,
 } from '@openai/agents/classic/testing';
-import { SDKRunner } from '../../src/migration';
 import { modelStoreHttp } from './fixtures/model-store-http';
 
 describe('public classic Model and persistent Session workflow', () => {
@@ -210,7 +209,6 @@ describe('public classic Model and persistent Session workflow', () => {
       });
       firstModel.assertComplete();
       nextModel.assertComplete();
-      expect(SDKRunner.run).not.toBe(firstRunner.run);
     } finally {
       await fixture.close();
     }

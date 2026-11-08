@@ -104,6 +104,32 @@ Leave unknown outcomes unresolved. This procedure never calls the tool again. Th
 
 Reconciliation acquires the writer, verifies that the original call remains unresolved, and records its result without executing the tool. It rejects a second result for the same call. Do not invent a result or remove the pending intent to bypass this check.
 
+If reconciliation throws a `NativeError`, retain its optional `cleanup` owner. After the backend recovers, `await error.cleanup.close()` retries release of that exact writer. Concurrent calls join the same release attempt; call it again after a transient failure. Successful cleanup never repeats reconciliation or confirms that its receipt was committed. Preserve the original error and inspect the backend before deciding whether another reconciliation is needed.
+
+```ts
+try {
+  await reconcileSessionStore(store, confirmedResult);
+} catch (error) {
+  if (error instanceof NativeError && error.cleanup) {
+    // Restore backend access before retrying cleanup.
+    try {
+      await error.cleanup.close();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Reconciliation and writer cleanup failed.',
+        { cause: error },
+      );
+    }
+  }
+  throw error;
+}
+```
+
+If cleanup fails again, `AggregateError.errors` preserves both failures. Its `cause` retains the original `NativeError` and its `cleanup` owner for a later retry.
+
+Import `NativeError` from `@openai/agents` with the storage helpers. Cleanup requires no Session or provider and never acquires a replacement writer.
+
 ## Qualify versions and production storage
 
 Snapshot format version 1 is native SDK data, not a cross-language checkpoint. Keep backups and qualify a new SDK/runtime revision before upgrading stored conversations. The SDK rejects unknown format versions.

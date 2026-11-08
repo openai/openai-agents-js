@@ -2,7 +2,7 @@
 
 Build agents in TypeScript with an embedded Codex runtime. Give an Agent instructions and tools, run a model turn, and read its result. Open a Session when your application needs a conversation, streamed events, or saved state.
 
-<a name="build-agents-in-typescript"></a>Use `@openai/agents` for the native SDK. Existing Agent and Runner applications can use the [classic API](packages/agents/CLASSIC.md). For OpenAI-managed sessions and recovery, see the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview).
+<a name="build-agents-in-typescript"></a>Use `@openai/agents` for the native SDK. Existing v0 applications should follow the [direct migration to native v1](examples/codex/guides/migration.md). Use the [classic API](packages/agents/CLASSIC.md) when you need a staged migration. For OpenAI-managed sessions and recovery, see the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview).
 
 ## Install
 

@@ -90,51 +90,6 @@ beforeAll(() => {
 });
 
 describe('retry policies', () => {
-  it.each(['response', 'stream'] as const)(
-    'refuses a revoked %s attempt without another Model call or policy evaluation',
-    async (invocation) => {
-      const failure = new Error('Retryable Model failure');
-      const refused = new Error('Captured request was revoked');
-      attachModelFailureUsage(failure, responseUsage(2, 3));
-      const model = new ScriptedModel([
-        modelError(failure, { replaySafety: 'safe' }),
-        textResponse('Must not dispatch'),
-      ]);
-      const policy = vi.fn(() => ({ retry: true, delayMs: 0 }));
-      const request = {
-        modelSettings: { retry: { maxRetries: 2, policy } },
-      } as unknown as ModelRequest;
-      let attempts = 0;
-      const handlers = {
-        beforeAttempt() {
-          if (++attempts === 2) throw refused;
-        },
-      };
-      const run = async () => {
-        if (invocation === 'response') {
-          await getResponseWithRetry(model, request, handlers);
-        } else {
-          for await (const _event of getStreamedResponseWithRetry(
-            model,
-            request,
-            handlers,
-          )) {
-            // The admission failure occurs before another Model event.
-          }
-        }
-      };
-      await expect(run()).rejects.toBe(refused);
-      expect(model.calls).toHaveLength(1);
-      expect(policy).toHaveBeenCalledTimes(1);
-      expect(attempts).toBe(2);
-      expect(consumeModelFailureUsage(refused)).toMatchObject({
-        requests: 1,
-        inputTokens: 2,
-        outputTokens: 3,
-      });
-    },
-  );
-
   it('retries non-streaming requests only when the user policy opts in', async () => {
     const model = new ScriptedModel([
       modelError(errorWith('Rate limited', { statusCode: 429 })),

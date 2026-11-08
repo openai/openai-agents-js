@@ -69,10 +69,12 @@ const capabilityDirectory = z
 /** A caller-owned directory exposed through a command-private read-only bind. */
 export interface LocalStorageMount {
   readonly source: string;
-  readonly destination: string;
-  readonly strategy: 'local_bind';
+  /** Defaults to source. Must use the same canonical path. */
+  readonly destination?: string;
+  /** Defaults to local_bind. */
+  readonly strategy?: 'local_bind';
   /** Defaults to true. Writable mounts are unsupported; use writableRoots. */
-  readonly readOnly?: boolean;
+  readonly readOnly?: true;
 }
 
 const storageMountSchema = z
@@ -83,6 +85,15 @@ const storageMountSchema = z
     readOnly: z.literal(true).default(true),
   })
   .strict();
+const storageMountInputSchema = storageMountSchema
+  .extend({
+    destination: z.string().optional(),
+    strategy: z.literal('local_bind').default('local_bind'),
+  })
+  .transform((mount) => ({
+    ...mount,
+    destination: mount.destination ?? mount.source,
+  }));
 const storageMountWireSchema = storageMountSchema
   .omit({ readOnly: true })
   .extend({
@@ -97,7 +108,7 @@ function captureStorageMounts(
   // Do not reflect unknown fields, credentials, or input values in errors.
   try {
     if (process.platform !== 'linux') throw new Error();
-    const mounts = z.array(storageMountSchema).parse(value);
+    const mounts = z.array(storageMountInputSchema).parse(value);
     const roots = [cwd, ...writableRoots].map((path) =>
       realpathSync(path.startsWith('file:') ? fileURLToPath(path) : path),
     );

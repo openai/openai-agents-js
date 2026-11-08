@@ -1,4 +1,8 @@
-import { suppressTracing, withoutTracing } from './tracing-context';
+import {
+  inTraceProcessor,
+  suppressTracing,
+  withoutTracing,
+} from './tracing-context';
 /** Optional native telemetry. Configure before scopes or Sessions; close Sessions before shutdown. */
 import { isAbsolute, resolve } from 'node:path';
 import { binding } from './binding';
@@ -175,10 +179,14 @@ function validateTimeout(value: unknown): number | undefined {
   return value;
 }
 
-/** Request a native exporter flush after all sessions close, then retire this process owner. */
+/** Request a native exporter flush outside processor async contexts after all sessions close, then retire this process owner. */
 export async function shutdown(
   options: { timeoutMs?: number } = {},
 ): Promise<void> {
+  if (inTraceProcessor())
+    throw new Error(
+      'Telemetry shutdown cannot run in a trace processor async context',
+    );
   const timeout = validateTimeout(options.timeoutMs);
   try {
     await (await binding()).shutdown_telemetry(timeout);
@@ -386,10 +394,14 @@ export async function setTraceProcessors(
 ): Promise<void> {
   await route(values, true);
 }
-/** Flush completed records through one native barrier without closing Sessions. */
+/** Flush completed records through one native barrier outside processor async contexts, without closing Sessions. */
 export async function forceFlush(
   options: { timeoutMs?: number } = {},
 ): Promise<FlushResult> {
+  if (inTraceProcessor())
+    throw new Error(
+      'Telemetry forceFlush cannot run in a trace processor async context',
+    );
   const timeout = validateTimeout(options.timeoutMs) ?? 10_000;
   const retired = [...retiredProcessorIds.keys()];
   wakePump?.();

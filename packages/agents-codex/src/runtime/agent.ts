@@ -1,3 +1,4 @@
+import { RunCleanupError } from './native-error';
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
@@ -36,7 +37,7 @@ import {
   nativeCheckpoint,
 } from './state';
 import { environmentConfig, projectSearchRuntime } from './environment';
-import { NativeProviderRoutes, type SelectedModelRoute } from './http-model';
+import { NativeProviderRoutes } from './http-model';
 import type { ProviderLease } from './provider';
 import { AsyncResource } from 'node:async_hooks';
 import { releaseEnvironmentBeforeProvider } from './environment-source';
@@ -53,7 +54,6 @@ export interface SessionSetup {
   apiKey?: string;
   /** Live application capability, excluded from persisted config/runtime. */
   applicationAppsJson?: string;
-  selectedModel?: SelectedModelRoute;
 }
 
 /** @internal Open one native Session from the public Agent's captured declaration. */
@@ -231,7 +231,7 @@ export async function openSession(
     ? encodeReceipt(nativeCheckpoint(saved))
     : undefined;
   const freshManual = isManualSessionState(saved);
-  const carrier = new NativeProviderRoutes(setup.selectedModel);
+  const carrier = new NativeProviderRoutes();
   let engine: import('./binding').Engine | undefined = undefined;
   let thread: import('./binding').NativeThread | undefined;
   let phase: 'native' | 'engine' | 'carrier' | 'provider' = 'native';
@@ -286,9 +286,7 @@ export async function openSession(
   options.environmentOwner?.signal.throwIfAborted();
   await carrier.bindEngine(
     engine,
-    setup.selectedModel
-      ? undefined
-      : lease.httpTransports(native._create_provider_http_transports, engine),
+    lease.httpTransports(native._create_provider_http_transports, engine),
   );
   options.environmentOwner?.signal.throwIfAborted();
   if (saved) {
@@ -318,8 +316,6 @@ export async function openSession(
       catalog.specsJson,
     );
   }
-  if (setup.selectedModel)
-    setup.selectedModel.bindRoot(thread._selected_model_root());
   const session = new Session(
     engine,
     thread,
@@ -387,9 +383,10 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
-      throw new AggregateError(
+      throw new RunCleanupError(
         [options.signal.reason, cleanupError],
         'Native run cancelled and cleanup failed',
+        () => session.close(),
         { cause: options.signal.reason },
       );
     }
@@ -406,10 +403,10 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
-      if (cleanupError === primary) throw primary;
-      throw new AggregateError(
+      throw new RunCleanupError(
         [primary, cleanupError],
         'Native run failed and its owned cleanup is incomplete',
+        () => session.close(),
         { cause: primary },
       );
     }
@@ -428,10 +425,10 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
-      if (cleanupError === primary) throw primary;
-      throw new AggregateError(
+      throw new RunCleanupError(
         [primary, cleanupError],
         'Run completion and cleanup failed',
+        () => session.close(),
         { cause: primary },
       );
     }

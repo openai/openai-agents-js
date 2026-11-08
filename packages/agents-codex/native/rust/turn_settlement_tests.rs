@@ -1365,7 +1365,6 @@ async fn deferred_diagnostic_root(engine: &Arc<EngineState>, text: &str) -> Nati
         Vec::new(),
         crate::python_tools::ToolInstallOptions {
             preserve_schemas: false,
-            strict_functions: false,
             allow_local_goals: false,
         },
     )
@@ -1787,7 +1786,6 @@ async fn checkpoint_probe_cannot_hide_invalid_actual_instructions_with_a_prospec
         drop(_mutation);state.close().await.unwrap();engine.close().await.unwrap();
     }).await.expect("invalid source instruction evidence escaped passive validation");
 }
-
 
 #[test]
 fn raw_child_steering_and_retained_continuation_preserve_carrier() {

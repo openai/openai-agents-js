@@ -41,7 +41,6 @@ struct ProcessCleanupHold {
 
 pub struct EngineState {
     pub manager: Arc<ThreadManager>,
-    pub(crate) sdk_selected_model: bool,
     pub store: Arc<dyn ThreadStore>,
     pub(crate) custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     pub(crate) local_checklist_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
@@ -262,7 +261,6 @@ impl EngineState {
             environment.restrict_network_approval(&mut config)?;
             environment.check_config(&config)?;
         }
-        let sdk_selected_model = config::sdk_selected_model(&runtime_json)?;
         if let Some(settings) = &telemetry {
             settings.apply(&mut config);
         } else if crate::telemetry::export_requested(&config) {
@@ -533,7 +531,6 @@ impl EngineState {
             }
         });
         Ok(Self {
-            sdk_selected_model,
             manager,
             store,
             local_checklist_store,
@@ -733,7 +730,6 @@ impl EngineState {
             specs,
             crate::python_tools::ToolInstallOptions {
                 preserve_schemas: self.sentinel.read().expect("sentinel poisoned").is_some(),
-                strict_functions: self.sdk_selected_model,
                 allow_local_goals: local_goals,
             },
         )?;
@@ -1005,7 +1001,6 @@ impl EngineState {
             serde_json::from_value(specs)?,
             crate::python_tools::ToolInstallOptions {
                 preserve_schemas: self.sentinel.read().expect("sentinel poisoned").is_some(),
-                strict_functions: self.sdk_selected_model,
                 allow_local_goals: false,
             },
         )?;
@@ -1640,9 +1635,8 @@ impl EngineState {
             cached.clone()
         } else {
             let shared = self.provider_http_transports.get().filter(|_| {
-                !self.sdk_selected_model
-                    && self.manager.auth_manager().auth_mode()
-                        == Some(codex_protocol::auth::AuthMode::ApiKey)
+                self.manager.auth_manager().auth_mode()
+                    == Some(codex_protocol::auth::AuthMode::ApiKey)
                     && !factory.has_chatgpt_cookies()
             });
             let transport = if let Some(shared) = shared {

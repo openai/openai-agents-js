@@ -1,3 +1,4 @@
+import { RunCleanupError } from '../../src';
 import { Manifest } from '@openai/agents-core/sandbox';
 import { sandboxEnvironment } from '../../src/runtime/sandbox-environment';
 import { nativeEventBatch } from '../fixtures/native-event-batches';
@@ -57,6 +58,10 @@ function scriptedEvents() {
     if (reader) reader(wire);
     else queued.push(wire);
   };
+  const submit = vi.fn(async () => {
+    queueMicrotask(() => submitted.resolve());
+    return JSON.stringify({ status: 'started', turn_id: 'run-one' });
+  });
   const close = async () => {
     push({ id: 'shutdown', msg: { type: 'shutdown_complete' } });
     return fixture.retire();
@@ -64,10 +69,7 @@ function scriptedEvents() {
   fixture.createEngine.mockResolvedValue({
     start_replaceable_thread: async () => ({
       id: 'source-test',
-      _submit: async () => {
-        queueMicrotask(() => submitted.resolve());
-        return JSON.stringify({ status: 'started', turn_id: 'run-one' });
-      },
+      _submit: submit,
       _next_session_events: async () =>
         nativeEventBatch([
           await (queued.length
@@ -89,7 +91,12 @@ function scriptedEvents() {
     _close_report: fixture.engineClose,
   });
   vi.mocked(Session.prototype._start).mockRestore();
-  return { push, submitted: submitted.promise, responded: responded.promise };
+  return {
+    push,
+    submit,
+    submitted: submitted.promise,
+    responded: responded.promise,
+  };
 }
 
 beforeEach(() => {
@@ -703,6 +710,85 @@ describe('Environment source public opening and actual Session cleanup', () => {
       await observed;
     }
   });
+
+  it.each([false, true])(
+    'retains cleanup after one-shot work (failed: %s) without replaying it',
+    async (workFails) => {
+      const provider = new NativeProvider({ apiKey: 'synthetic-key' });
+      const events = scriptedEvents();
+      const cleanupFailure = new Error('native retirement temporarily failed');
+      fixture.retire.mockRejectedValue(cleanupFailure);
+      const dispose = vi.fn();
+      const effect = vi.fn(async () => 'effect recorded');
+      const record = tool({
+        name: 'record',
+        parameters: z.object({}),
+        execute: effect,
+      });
+      const observed = new Agent({
+        instructions: 'Test',
+        provider,
+        tools: [record],
+      })
+        .run('Go', {
+          environment: async () => Environment.lease(environment(), dispose),
+        })
+        .catch((error) => error);
+      await events.submitted;
+      events.push({
+        id: 'tool',
+        msg: {
+          type: 'dynamic_tool_call_request',
+          turnId: 'run-one',
+          callId: 'record-one',
+          tool: 'record',
+          arguments: {},
+          _sdk_python_tool: { thread: 'source-test', generation: '0', slot: 0 },
+          _sdk_code_origin: null,
+        },
+      });
+      await events.responded;
+      if (workFails)
+        events.push({
+          id: 'run-one',
+          msg: { type: 'error', message: 'original model failure' },
+        });
+      events.push({
+        id: 'run-one',
+        msg: { type: 'task_complete', last_agent_message: 'completed once' },
+      });
+      const failure = await observed;
+      expect(failure).toBeInstanceOf(RunCleanupError);
+      expect(failure.cause).toBe(failure.errors[0]);
+      if (workFails)
+        expect(failure.cause).toMatchObject({
+          message: 'original model failure',
+        });
+      else expect(failure.cause).toBe(cleanupFailure);
+      expect(failure.errors[1]).toBe(cleanupFailure);
+      expect(dispose).not.toHaveBeenCalled();
+      await expect(provider.close()).rejects.toThrow('open or opening');
+      expect(failure.cleanup).toBeDefined();
+      await expect(failure.cleanup.close()).rejects.toBe(cleanupFailure);
+
+      const retirement = Promise.withResolvers<string>();
+      fixture.retire.mockReturnValue(retirement.promise);
+      const beforeRetry = fixture.retire.mock.calls.length;
+      const first = failure.cleanup.close();
+      const concurrent = failure.cleanup.close();
+      expect(first).toBe(concurrent);
+      expect(dispose).not.toHaveBeenCalled();
+      retirement.resolve('');
+      await first;
+      expect(fixture.retire).toHaveBeenCalledTimes(beforeRetry + 1);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      await failure.cleanup.close();
+      expect(fixture.retire).toHaveBeenCalledTimes(beforeRetry + 1);
+      expect(events.submit).toHaveBeenCalledTimes(1);
+      expect(effect).toHaveBeenCalledTimes(1);
+      await provider.close();
+    },
+  );
 
   it('retains a source after incomplete native cleanup until close can retry', async () => {
     await using provider = new NativeProvider({ apiKey: 'synthetic-key' });

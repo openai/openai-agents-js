@@ -64,6 +64,23 @@ describe.skipIf(process.platform !== 'linux')(
       );
     });
 
+    it('defaults source-only mounts to same-path read-only local binds', () => {
+      const environment = Environment.local({ cwd, mounts: [{ source }] });
+      expect(environment.mounts).toEqual([
+        { source, destination: source, strategy: 'local_bind', readOnly: true },
+      ]);
+      expect(environmentConfig(environment)).toMatchObject({
+        mounts: [
+          {
+            source,
+            destination: source,
+            strategy: 'local_bind',
+            read_only: true,
+          },
+        ],
+      });
+    });
+
     it.each([
       { readOnly: false },
       { provider: 's3' },

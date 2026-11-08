@@ -6,21 +6,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { Agent as ClassicAgent, setTracingDisabled } from '@openai/agents-core';
-import {
-  ScriptedModel,
-  assistantMessage,
-  modelResponder,
-} from '@openai/agents-core/testing';
 import {
   Agent,
   Environment,
-  LocalRecoveryRequired,
   NativeProvider,
   localStorage,
   manualTool,
 } from '../../src';
-import { SDKRunner } from '../../src/migration';
 import {
   binding,
   type Engine,
@@ -34,7 +26,6 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 const homes: string[] = [];
 const workers: ChildProcess[] = [];
-setTracingDisabled(true);
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(
@@ -287,75 +278,6 @@ describe('public native local profiles', () => {
     await provider.close();
     expect(server.requests).toHaveLength(0);
   }, 45000);
-
-  it('reopens a verified local effect with a selected Model and no replay', async () => {
-    const p = await profile();
-    const callId = 'interrupted-effect';
-    const server = new ModelServer([[call('record', {}, { callId })]]);
-    const original = await worker(server, {
-      profile: p.storage.path,
-      effects: p.effects,
-      label: 'source',
-      mode: 'hold-effect',
-    });
-    const { id } = await original.wait('opened');
-    await original.wait('effect');
-    original.child.kill('SIGKILL');
-    await original.exited;
-    expect(await readFile(p.effects, 'utf8')).toBe('source\n');
-
-    const model = new ScriptedModel([
-      modelResponder(({ request }) => {
-        expect(request.tools).toEqual([]);
-        expect(request.input).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ type: 'function_call', callId }),
-            expect.objectContaining({
-              type: 'function_call_result',
-              callId,
-              output: 'Verified in the application journal',
-            }),
-          ]),
-        );
-        return [assistantMessage('Recovered without replay')];
-      }),
-    ]);
-    const agent = new ClassicAgent({
-      name: 'selected recovery',
-      instructions:
-        'Use the current managed record tool. Preserve conversation history.',
-      model,
-    });
-    const options = { context: undefined, storage: p.storage, resume: id };
-    const refusal = await SDKRunner.run(agent, 'Continue.', options).catch(
-      (error: unknown) => error,
-    );
-    expect(refusal).toBeInstanceOf(LocalRecoveryRequired);
-    if (!(refusal instanceof LocalRecoveryRequired)) throw refusal;
-    expect(model.calls).toHaveLength(0);
-    expect(refusal.calls).toEqual([
-      expect.objectContaining({ threadId: id, callId, name: 'record' }),
-    ]);
-
-    const { threadId, turnId } = refusal.calls[0]!;
-    const result = await SDKRunner.run(agent, 'Continue.', {
-      ...options,
-      reconciledCalls: [
-        {
-          threadId,
-          turnId,
-          callId,
-          outcome: 'applied' as const,
-          result: 'Verified in the application journal',
-        },
-      ],
-    });
-    expect(result.native.sessionId).toBe(id);
-    expect(result.finalOutput).toBe('Recovered without replay');
-    expect(await readFile(p.effects, 'utf8')).toBe('source\n');
-    model.assertComplete();
-    server.assertExhausted();
-  }, 45_000);
 
   it('preserves a model-consumed receipt across kill without replaying the tool', async () => {
     const p = await profile();

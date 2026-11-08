@@ -5,7 +5,7 @@ Use this reference for package export maps, convenience-package re-exports, ESM/
 ## Package Ownership
 
 - `@openai/agents-core` owns provider-neutral runtime APIs. `@openai/agents-openai` owns OpenAI-specific models, sessions, tools, and tracing export. `@openai/agents-realtime` owns Realtime sessions and transports. `@openai/agents-extensions` owns optional integrations. `@openai/agents` is a convenience bundle, not a second implementation.
-- `@openai/agents-codex` owns the native TypeScript runtime, native addon and helper assets, migration adapters, native scripted tests, and experimental native integrations. `@openai/agents` re-exports those implementations through its existing public native entry points. Keep application examples on `@openai/agents` and supported subpaths.
+- `@openai/agents-codex` owns the native TypeScript runtime, native addon and helper assets, native scripted tests, and experimental native integrations. `@openai/agents` re-exports those implementations through its existing public native entry points. Keep application examples on `@openai/agents` and supported subpaths.
 - Add a public symbol to its owning package first. Re-export it from `@openai/agents` or a subpath only when that route is intentionally supported, then cover both the owning and convenience imports.
 - Treat package `exports`, root/subpath `src/index.ts` files, and emitted declarations as one compatibility surface. A source export that is missing from `package.json` or `dist` is not a working public API.
 - Keep optional integrations behind `@openai/agents-extensions` subpaths. Importing a package root must not eagerly require unrelated optional provider SDKs.

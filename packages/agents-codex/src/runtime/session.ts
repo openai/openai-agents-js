@@ -216,7 +216,7 @@ import {
   type Tool,
   type ToolCatalog,
 } from './tools';
-import type { NativeProviderRoutes, SelectedModelTerminal } from './http-model';
+import type { NativeProviderRoutes } from './http-model';
 
 type ToolStatus = 'completed' | 'failed' | 'cancelled';
 type ToolIdentity = {
@@ -253,12 +253,6 @@ export interface SessionOptions {
     }) => void,
     parentTrace?: TraceContext,
   ) => Promise<Session<string>>;
-  selectedModel?: {
-    readonly callerSignal?: AbortSignal;
-    accepted(receipt: Promise<AcceptedSubmission>): void;
-    toolResult?(callId: string, name: string, response: ToolResponse): void;
-    terminal?(event: SelectedModelTerminal): void;
-  };
   applicationAgent?: import('./public-agent').Agent<any, any>;
   context?: unknown;
   initialModelSettings?: ModelSettings;
@@ -3377,8 +3371,7 @@ export class Session<OutputT = string, Context = unknown> {
     const run = this.allocateRun(output, outputOverride);
     run.parentTrace = parentTrace;
     run.writableRoots = roots;
-    submissions.get(run)!.callerSignal =
-      callerSignal ?? this.options.selectedModel?.callerSignal;
+    submissions.get(run)!.callerSignal = callerSignal;
     run.selection = selection;
     run.tracing = this.captureRootTracing(tracing);
     this.dispatchStart(
@@ -3526,7 +3519,6 @@ export class Session<OutputT = string, Context = unknown> {
   ): void {
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
-    this.options.selectedModel?.accepted(run.accepted.promise);
     // Own synchronous bridge errors through the same admission failure path.
     let submission: Promise<string>;
     try {
@@ -4959,16 +4951,6 @@ export class Session<OutputT = string, Context = unknown> {
           enrichNativeError(run.nativeFailure, msg.error);
         if (msg.error) error ??= nativeError(msg.error);
       }
-      this.options.selectedModel?.terminal?.({
-        turnId: run.id!,
-        kind,
-        reason: msg.reason,
-        nativeError: msg.error,
-        priorFailure: run.failure,
-        nativeFailure: run.nativeFailure,
-        error,
-        usage: tokenUsageInfo(run.usage),
-      });
       this.finish(
         run,
         error,
@@ -6366,12 +6348,6 @@ export class Session<OutputT = string, Context = unknown> {
             response,
           }),
         );
-        if (accepted && root)
-          this.options.selectedModel?.toolResult?.(
-            context.callId,
-            tool.name,
-            response,
-          );
         status = accepted
           ? response.success
             ? 'completed'
@@ -7718,10 +7694,6 @@ export class Session<OutputT = string, Context = unknown> {
     const native = this.#native;
     if (command.name === 'review') {
       this.idle('review');
-      if (this.options.selectedModel)
-        throw new TypeError(
-          'Native review is unavailable for a selected Model; use a NativeProvider-backed Session',
-        );
       const parentTrace = this.options.parentTrace;
       const run = this.begin(
         (_run, context) =>

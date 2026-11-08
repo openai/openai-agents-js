@@ -124,7 +124,15 @@ function outputOfMcp(
           imageUrl: `data:${block.mimeType};base64,${block.data}`,
         };
       }
-      // Preserve audio/resource/unknown blocks as JSON; never fetch their URIs.
+      // Preserve content as JSON without protocol metadata; never fetch URIs.
+      delete block._meta;
+      if (
+        block.type === 'resource' &&
+        block.resource !== null &&
+        typeof block.resource === 'object' &&
+        !Array.isArray(block.resource)
+      )
+        delete block.resource._meta;
       return { type: 'inputText' as const, text: JSON.stringify(block) };
     }),
     isError !== true,

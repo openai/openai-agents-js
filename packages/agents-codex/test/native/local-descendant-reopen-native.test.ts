@@ -4,14 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
-import { Agent, setTracingDisabled } from '@openai/agents-core';
-import {
-  ScriptedModel,
-  assistantMessage,
-  modelResponder,
-} from '@openai/agents-core/testing';
-import { localStorage } from '../../src';
-import { SDKRunner } from '../../src/migration';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
@@ -42,7 +34,6 @@ function wireTools(request: JsonObject) {
 }
 
 const workers: ChildProcess[] = [];
-setTracingDisabled(true);
 afterEach(async () => {
   for (const child of workers.splice(0)) {
     if (child.exitCode !== null || child.signalCode !== null) continue;
@@ -110,7 +101,6 @@ for (const depth of [1, 2]) {
     for (const mode of ['settled', 'unknown', 'active'] as const) {
       it(`cold ${depth}-level ${mode} history with destination children ${!noChildren}`, async () => {
         const home = await mkdtemp(join(tmpdir(), 'native-local-descendants-'));
-        const selectedReopen = mode === 'settled' && depth === 1 && noChildren;
         const executor = await startPublicExecutor();
         const depths = new Map<string, number>();
         const counts = new Map<string, number>();
@@ -279,41 +269,6 @@ for (const depth of [1, 2]) {
           const expectedEffect =
             mode === 'active' ? '' : `source:level-${depth}\n`;
           expect(effects).toBe(expectedEffect);
-          if (selectedReopen) {
-            const model = new ScriptedModel([
-              modelResponder(({ request }) => {
-                expect(request.tools).toEqual([]);
-                expect(JSON.stringify(request.input)).toContain(
-                  'source parent finished',
-                );
-                expect(JSON.stringify(request.input)).not.toContain(
-                  'leaf finished',
-                );
-                return [assistantMessage('Selected Model continued the root')];
-              }),
-            ]);
-            const continued = await SDKRunner.run(
-              new Agent({
-                name: 'selected root',
-                instructions:
-                  'Record the requested work using current declarations.',
-                model,
-              }),
-              'Continue the root only.',
-              {
-                context: undefined,
-                storage: localStorage(common.profile),
-                resume: opened.id,
-              },
-            );
-            expect(continued.native.sessionId).toBe(opened.id);
-            expect(continued.finalOutput).toBe(
-              'Selected Model continued the root',
-            );
-            expect(server.requests).toHaveLength(before);
-            expect(await readFile(common.effects, 'utf8')).toBe(expectedEffect);
-            model.assertComplete();
-          }
           for (
             let attempt = 0;
             attempt < (mode === 'settled' ? 1 : 2);
@@ -338,7 +293,7 @@ for (const depth of [1, 2]) {
                 destination.rows.find((row) => row.type === 'history')
                   ?.children,
               ).toHaveLength(depth);
-              if (selectedReopen) {
+              if (depth === 1 && noChildren) {
                 expect(
                   destination.rows.find((row) => row.type === 'history')
                     ?.children,

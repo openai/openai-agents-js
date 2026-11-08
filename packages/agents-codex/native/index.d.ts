@@ -18,21 +18,6 @@ export class Engine {
     shared_transports?: _ProviderHttpTransports | null,
   ): void;
   _sentinel_admit(provider_id: string, metadata: string): Promise<string>;
-  _sentinel_claim(
-    provider_id: string,
-    metadata: string,
-    expected: string,
-  ): Promise<string>;
-  _sentinel_current(
-    provider_id: string,
-    metadata: string,
-    expected: string,
-  ): Promise<string>;
-  _sentinel_finish(
-    provider_id: string,
-    metadata: string,
-    expected: string,
-  ): Promise<string>;
   _sentinel_restore_schemas(
     provider_id: string,
     ticket: string,
@@ -108,7 +93,6 @@ export class NativeThread {
   ): Promise<boolean>;
   /** Negative retirement only. Positive replies require a captured question. */
   _respond_native_question(response_json: string): Promise<void>;
-  _selected_model_root(): string;
   _read_model_context(): Promise<string>;
   _begin_context_change(): Promise<_ContextChange>;
   _application_instructions(): string | null;
@@ -312,10 +296,14 @@ export function _validate_application_instructions(
   history_json: string,
   instructions: string | null,
 ): boolean;
+export class _SessionStoreReconciliation {
+  run(): Promise<void>;
+  close(): Promise<void>;
+}
 export function reconcile_thread_store(
   callback: (request: string) => Promise<string>,
   result_json: string,
-): Promise<void>;
+): _SessionStoreReconciliation;
 export function create_store_engine(
   config_json: string,
   runtime_json: string,
@@ -379,6 +367,7 @@ declare const binding: {
   _validate_application_instructions: typeof _validate_application_instructions;
   create_engine: typeof create_engine;
   create_store_engine: typeof create_store_engine;
+  _SessionStoreReconciliation: typeof _SessionStoreReconciliation;
   reconcile_thread_store: typeof reconcile_thread_store;
   create_checkpoint_engine: typeof create_checkpoint_engine;
   configure_telemetry: typeof configure_telemetry;
