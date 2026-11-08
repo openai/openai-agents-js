@@ -235,6 +235,37 @@ describe('fileSessionStore', () => {
     await successor.release('thread', nextFence);
   });
 
+  it('retries a failed close after unlock without touching a successor', async () => {
+    const store = fileSessionStore(directory);
+    const fence = await store.acquire('thread');
+    const failure = Object.assign(new Error('directory close failed'), {
+      code: 'EINTR',
+    });
+    const actual =
+      await vi.importActual<typeof import('node:fs/promises')>(
+        'node:fs/promises',
+      );
+    vi.mocked(fs.open).mockImplementation(async (...args) => {
+      const handle = await actual.open(...args);
+      if (args[0] === join(directory, 'thread.lock')) {
+        const close = handle.close.bind(handle);
+        vi.spyOn(handle, 'close').mockImplementationOnce(async () => {
+          await close();
+          throw failure;
+        });
+        vi.mocked(fs.open).mockImplementation(actual.open);
+      }
+      return handle;
+    });
+    await expect(store.release('thread', fence)).rejects.toBe(failure);
+    const successor = fileSessionStore(directory);
+    const nextFence = await successor.acquire('thread');
+    await expect(store.release('thread', fence)).resolves.toBeUndefined();
+    await successor.commit('thread', nextFence, 'successor', 0, 'still owned');
+    expect(await successor.read('thread', nextFence)).toBe('still owned');
+    await successor.release('thread', nextFence);
+  });
+
   it('retries a lost release acknowledgement without deleting a successor lock', async () => {
     const store = fileSessionStore(directory);
     const fence = await store.acquire('thread');

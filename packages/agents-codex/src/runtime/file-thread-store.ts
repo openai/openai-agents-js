@@ -246,8 +246,9 @@ export function fileSessionStore(directory: string): SessionStore {
         throw new Error('Thread writer fence is no longer valid');
       }
       if (current) await rmdir(lock);
-      await ownedDirectory.close();
+      // A rejected close still invalidates its fd, so retire ownership first.
       releases.delete(lease);
+      await ownedDirectory.close();
       await syncDirectory(root);
     },
   };
