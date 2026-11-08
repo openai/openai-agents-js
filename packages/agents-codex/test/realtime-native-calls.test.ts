@@ -193,3 +193,63 @@ nativeIt.each(['webrtc', 'sip'] as const)(
   },
   30000,
 );
+
+nativeIt.each(['model', 'voice', 'instructions'] as const)(
+  'rejects a SIP %s override before credentials and preserves Session reuse',
+  async (field) => {
+    const peer = await callPeer();
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: peer.baseUrl,
+        apiKey: 'synthetic-native-call-key',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        instructions: 'Preserve the caller profile.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using session = await agent.session();
+      let credentialCalls = 0;
+      await expect(
+        session.realtime({
+          transport: { type: 'sip', callId: 'rtc_external_sip' },
+          [field]: field === 'voice' ? 'marin' : 'initial-call-override',
+          apiKey: () => {
+            credentialCalls++;
+            return 'synthetic-native-call-key';
+          },
+        }),
+      ).rejects.toThrow();
+      expect(credentialCalls).toBe(0);
+      expect(peer.headers).toEqual([]);
+      expect(peer.offers).toEqual([]);
+      expect(peer.sidebands).toEqual([]);
+      expect(await session.getActiveAgent()).toBe(agent);
+
+      const settings = { audio: { output: { voice: 'marin' } } };
+      const warmup = await session.realtime({
+        transport: { type: 'webrtc', offerSdp: OFFER },
+        settings,
+      });
+      await warmup.close();
+      peer.sessions.set(
+        'rtc_external_sip',
+        structuredClone(peer.sessions.get('rtc_native_1')!),
+      );
+      const voice = await session.realtime({
+        transport: { type: 'sip', callId: 'rtc_external_sip' },
+        settings,
+      });
+      expect(voice.callId).toBe('rtc_external_sip');
+      await voice.close();
+      await Promise.all(peer.closed);
+      expect(peer.sidebands).toEqual(['rtc_native_1', 'rtc_external_sip']);
+      expect(peer.hangups).toEqual(['rtc_native_1']);
+      expect(peer.failures).toEqual([]);
+    } finally {
+      await peer.close();
+    }
+  },
+  30000,
+);

@@ -368,12 +368,20 @@ class NativeRealtimeOwner {
       options.transport.type === 'sip' &&
       typeof options.transport.callId === 'string' &&
       options.transport.callId.trim()
-    )
+    ) {
+      if (
+        options.model !== undefined ||
+        options.voice !== undefined ||
+        options.instructions !== undefined
+      )
+        throw new TypeError(
+          'SIP call configuration must be supplied before accepting the call',
+        );
       this.transport = {
         type: 'existing_call',
         call_id: options.transport.callId,
       };
-    else
+    } else
       throw new TypeError(
         'Realtime transport requires a WebRTC offerSdp or SIP callId',
       );
