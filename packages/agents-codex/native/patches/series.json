@@ -323,7 +323,11 @@
     {
       "path": "0087-caller-controlled-mcp-resources.patch",
       "sha256": "6a36e7a5778bd0253cd286ccef32afad19813c913f4310dee576e9cb37e87cac"
+    },
+    {
+      "path": "0088-recognize-proc-mount-diagnostics.patch",
+      "sha256": "23c937dfd49b125b3cf5cce8cddb784c7219321e52d36a7d75bb3ec506710e64"
     }
   ],
-  "result_tree": "723ada7866fab472f360c10b5fb15b399ae146c0"
+  "result_tree": "4b1920dc4ae03599a7e73d07a8db9294d31d9026"
 }
