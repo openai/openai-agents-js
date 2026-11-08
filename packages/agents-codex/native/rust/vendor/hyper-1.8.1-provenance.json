@@ -1,0 +1,389 @@
+{
+  "format": "hyper-1.8.1-backport-v1",
+  "upstream": {
+    "name": "hyper",
+    "version": "1.8.1",
+    "license": "MIT",
+    "archive": "https://static.crates.io/crates/hyper/hyper-1.8.1.crate",
+    "sha256": "2ab2d4f250c3d7b1c9fcdff1cece94ea4e2dfbec68614f7b87cb205f24ca9d11"
+  },
+  "original_files": {
+    ".cargo_vcs_info.json": [
+      "100644",
+      "5d4639616535f6dd51f5a8650747c87a3abe4889"
+    ],
+    "Cargo.lock": ["100644", "53c8a6516f78004246a8c559e34ab5ea551bafeb"],
+    "Cargo.toml": ["100644", "8ab18ec5c65645572dfad14f986a959d1bb62ace"],
+    "Cargo.toml.orig": ["100644", "4441bdcdea100bbeece34c19fc54f73228b83b99"],
+    "LICENSE": ["100644", "da8b6ec1b50778306d7d2517b978e1c66077e9a7"],
+    "README.md": ["100644", "38b2df1701a00f4e2c8c858d18ec407869fb4ad9"],
+    "src/body/incoming.rs": [
+      "100644",
+      "64ee5001a940848beade7744ac1edc7dccb02814"
+    ],
+    "src/body/length.rs": [
+      "100644",
+      "e5eab7449f8a03365190b9fef1213e5ebba94f01"
+    ],
+    "src/body/mod.rs": ["100644", "7b71d98be4aa9ef972f69c0d569efe0a3fead22e"],
+    "src/cfg.rs": ["100644", "71a5351d213fdc1e12c009ac9726c22cb026d7fa"],
+    "src/client/conn/http1.rs": [
+      "100644",
+      "85c1fdc66592bda87a7b80aa10c8dc27ce089daa"
+    ],
+    "src/client/conn/http2.rs": [
+      "100644",
+      "0efaabe41e1edd25a36bd0b3a75cb69ee83fbd46"
+    ],
+    "src/client/conn/mod.rs": [
+      "100644",
+      "f982ae6ddbf67aa53c23a689025a21a298337a0b"
+    ],
+    "src/client/dispatch.rs": [
+      "100644",
+      "2cbc1b9225ab6cebc8baea4bd47d88395a2a240f"
+    ],
+    "src/client/mod.rs": ["100644", "86e3897388299f62e9ec881720ad6bcbbbb4ea91"],
+    "src/client/tests.rs": [
+      "100644",
+      "144349e5d7c193dd97da10060c0820c594e01588"
+    ],
+    "src/common/buf.rs": ["100644", "d00071551b8550a1095686cdf973afe624b05cb2"],
+    "src/common/date.rs": [
+      "100644",
+      "59837cd60ec721824d39c0df03b78ab8ec9fe652"
+    ],
+    "src/common/either.rs": [
+      "100644",
+      "0412aa775c23593664bc3c4575cf84dd3604f13d"
+    ],
+    "src/common/future.rs": [
+      "100644",
+      "c2e921cb7ab2016322753a8ce0d19499bb8e73b5"
+    ],
+    "src/common/io/compat.rs": [
+      "100644",
+      "d026b6d38b8ff6554f87496073cc1fd53ceab062"
+    ],
+    "src/common/io/mod.rs": [
+      "100644",
+      "98c297ca1485a3f24a0466aa3c9f9bcedf2aa4fb"
+    ],
+    "src/common/io/rewind.rs": [
+      "100644",
+      "c1f7a4f1b9763ce20d4319f80aa5a3766630e9af"
+    ],
+    "src/common/mod.rs": ["100644", "4b73437203a9904e0c99f174c514e9ffcc90e509"],
+    "src/common/task.rs": [
+      "100644",
+      "90a0883465cb33f959a1db69c0086b4fbbc762fd"
+    ],
+    "src/common/time.rs": [
+      "100644",
+      "ad88cb3cdea51808a1b889f6c45f66c65328e279"
+    ],
+    "src/common/watch.rs": [
+      "100644",
+      "81acd5df70463218c9c634c503fedfc0135879e8"
+    ],
+    "src/error.rs": ["100644", "9015eeee9da2315681d10da39c6107b691aa0651"],
+    "src/ext/h1_reason_phrase.rs": [
+      "100644",
+      "adb4363689d2b90280f8155e53709fa761c311e7"
+    ],
+    "src/ext/informational.rs": [
+      "100644",
+      "e728580fa5febeb1d6471052640629acf78db4cc"
+    ],
+    "src/ext/mod.rs": ["100644", "b59d809deab8b09fb441d0a97c3a7ce5125a9d3d"],
+    "src/ffi/body.rs": ["100644", "e5a09e577b0a212399c065085d8813f494c27b1f"],
+    "src/ffi/client.rs": ["100644", "63b03d874ad75eeab5fd897531e6ff154c478d4a"],
+    "src/ffi/error.rs": ["100644", "cc289ed7b772f0c3c74737ec48af9ee20020aef8"],
+    "src/ffi/http_types.rs": [
+      "100644",
+      "3dc4a2549d261b185fe1bc1083b2487569b0f654"
+    ],
+    "src/ffi/io.rs": ["100644", "89978b9e57309e0ac4a23a6f765d3426d40bb47d"],
+    "src/ffi/macros.rs": ["100644", "af810e8d82b1c2ffbcbe710a351550a2b7d050ba"],
+    "src/ffi/mod.rs": ["100644", "cdcbc4822d70f24b14fed7b24522c1f790c5d568"],
+    "src/ffi/task.rs": ["100644", "0c49936c6ecc79e2db17e07414ab14b67ad24030"],
+    "src/headers.rs": ["100644", "8bebdb9bfa80eb69bc75d04e1a0eda3b37ba87a6"],
+    "src/lib.rs": ["100644", "4683fd65977a4bf228ee847f1d062875a738d076"],
+    "src/mock.rs": ["100644", "1dd57de319ebb0e51e1b560536bc413f390c72f5"],
+    "src/proto/h1/conn.rs": [
+      "100644",
+      "3d71ed5bc551b1b0e5a39e503354d28983f41160"
+    ],
+    "src/proto/h1/decode.rs": [
+      "100644",
+      "bcc43313d108a7d41a316dc5663b97a9614cd12a"
+    ],
+    "src/proto/h1/dispatch.rs": [
+      "100644",
+      "5daeb5ebf691d5537ec51ec29de13fc5ae531924"
+    ],
+    "src/proto/h1/encode.rs": [
+      "100644",
+      "2df0c396b75286ef2acba0969c57c4bd20ca0c28"
+    ],
+    "src/proto/h1/io.rs": [
+      "100644",
+      "6a30d73c84bf0265cf51e4b98f01d3b4f869992d"
+    ],
+    "src/proto/h1/mod.rs": [
+      "100644",
+      "a8f36f5fd97c98b40ad1523f9b6c7be71670d748"
+    ],
+    "src/proto/h1/role.rs": [
+      "100644",
+      "1674e26bc6bc3081d49e70c7da9478738a4b0e64"
+    ],
+    "src/proto/h2/client.rs": [
+      "100644",
+      "455c70980cfb9547f24cdaa1639e6dc9c5a7b0b2"
+    ],
+    "src/proto/h2/mod.rs": [
+      "100644",
+      "e6f40f3467e489bcdbea687d33ca055e85142a7f"
+    ],
+    "src/proto/h2/ping.rs": [
+      "100644",
+      "4952e3851898038ee168563bc9eb213580384800"
+    ],
+    "src/proto/h2/server.rs": [
+      "100644",
+      "483ed96dd9eb051759763dd05e61297a9469cb60"
+    ],
+    "src/proto/h2/upgrade.rs": [
+      "100644",
+      "40a98de08a402fd4c60363867340545c89934024"
+    ],
+    "src/proto/mod.rs": ["100644", "fcdf2b97c0ed1a1a459500312fa37a4e07b9b2ee"],
+    "src/rt/bounds.rs": ["100644", "0af623b1bf915b5f87f3ae56d2747eeb0146d4d5"],
+    "src/rt/io.rs": ["100644", "ed4af0929f8f539b753efdd50a54697429c45eb4"],
+    "src/rt/mod.rs": ["100644", "0eb266974f7b3324a02317676f633eeeed07e091"],
+    "src/rt/timer.rs": ["100644", "a9633ca8e876a299280fde5e7bdcc9ad0b9d9e04"],
+    "src/server/conn/http1.rs": [
+      "100644",
+      "36dda98069e72e8faa6eb695f42d8727a116c26a"
+    ],
+    "src/server/conn/http2.rs": [
+      "100644",
+      "0452109c3c7a2932a278e43711d7a4f6e4678b2d"
+    ],
+    "src/server/conn/mod.rs": [
+      "100644",
+      "54b309e88e97fd4dc2be852fb2f745061a69abd5"
+    ],
+    "src/server/mod.rs": ["100644", "980553e5e9679d5d468da371b2d0caeed4c27020"],
+    "src/service/http.rs": [
+      "100644",
+      "77907e671662795ddf628644917e8fe8f128fa7a"
+    ],
+    "src/service/mod.rs": [
+      "100644",
+      "28ffaddbabb27ac14aaef7dc0cf8a7a998f7ada1"
+    ],
+    "src/service/service.rs": [
+      "100644",
+      "caded3f752232b24f65a39572c6fb8f3ff7e1df3"
+    ],
+    "src/service/util.rs": [
+      "100644",
+      "3e017a782cf87feae0cb3ffd8f78d78500b04f0d"
+    ],
+    "src/trace.rs": ["100644", "88f9a243a0736e632bbb496d84bd554cad3bc79e"],
+    "src/upgrade.rs": ["100644", "9d23a29081fc7d12fa7a8082fd80ccb45f3053f0"]
+  },
+  "files": {
+    ".cargo_vcs_info.json": [
+      "100644",
+      "5d4639616535f6dd51f5a8650747c87a3abe4889"
+    ],
+    "Cargo.lock": ["100644", "53c8a6516f78004246a8c559e34ab5ea551bafeb"],
+    "Cargo.toml": ["100644", "8ab18ec5c65645572dfad14f986a959d1bb62ace"],
+    "Cargo.toml.orig": ["100644", "4441bdcdea100bbeece34c19fc54f73228b83b99"],
+    "LICENSE": ["100644", "da8b6ec1b50778306d7d2517b978e1c66077e9a7"],
+    "README.md": ["100644", "38b2df1701a00f4e2c8c858d18ec407869fb4ad9"],
+    "src/body/incoming.rs": [
+      "100644",
+      "64ee5001a940848beade7744ac1edc7dccb02814"
+    ],
+    "src/body/length.rs": [
+      "100644",
+      "e5eab7449f8a03365190b9fef1213e5ebba94f01"
+    ],
+    "src/body/mod.rs": ["100644", "7b71d98be4aa9ef972f69c0d569efe0a3fead22e"],
+    "src/cfg.rs": ["100644", "71a5351d213fdc1e12c009ac9726c22cb026d7fa"],
+    "src/client/conn/http1.rs": [
+      "100644",
+      "85c1fdc66592bda87a7b80aa10c8dc27ce089daa"
+    ],
+    "src/client/conn/http2.rs": [
+      "100644",
+      "0efaabe41e1edd25a36bd0b3a75cb69ee83fbd46"
+    ],
+    "src/client/conn/mod.rs": [
+      "100644",
+      "f982ae6ddbf67aa53c23a689025a21a298337a0b"
+    ],
+    "src/client/dispatch.rs": [
+      "100644",
+      "1f4d5e6e600b16b4106994343bd3fa3317573687"
+    ],
+    "src/client/mod.rs": ["100644", "86e3897388299f62e9ec881720ad6bcbbbb4ea91"],
+    "src/client/tests.rs": [
+      "100644",
+      "144349e5d7c193dd97da10060c0820c594e01588"
+    ],
+    "src/common/buf.rs": ["100644", "d00071551b8550a1095686cdf973afe624b05cb2"],
+    "src/common/date.rs": [
+      "100644",
+      "59837cd60ec721824d39c0df03b78ab8ec9fe652"
+    ],
+    "src/common/either.rs": [
+      "100644",
+      "0412aa775c23593664bc3c4575cf84dd3604f13d"
+    ],
+    "src/common/future.rs": [
+      "100644",
+      "c2e921cb7ab2016322753a8ce0d19499bb8e73b5"
+    ],
+    "src/common/io/compat.rs": [
+      "100644",
+      "d026b6d38b8ff6554f87496073cc1fd53ceab062"
+    ],
+    "src/common/io/mod.rs": [
+      "100644",
+      "98c297ca1485a3f24a0466aa3c9f9bcedf2aa4fb"
+    ],
+    "src/common/io/rewind.rs": [
+      "100644",
+      "c1f7a4f1b9763ce20d4319f80aa5a3766630e9af"
+    ],
+    "src/common/mod.rs": ["100644", "4b73437203a9904e0c99f174c514e9ffcc90e509"],
+    "src/common/task.rs": [
+      "100644",
+      "90a0883465cb33f959a1db69c0086b4fbbc762fd"
+    ],
+    "src/common/time.rs": [
+      "100644",
+      "ad88cb3cdea51808a1b889f6c45f66c65328e279"
+    ],
+    "src/common/watch.rs": [
+      "100644",
+      "81acd5df70463218c9c634c503fedfc0135879e8"
+    ],
+    "src/error.rs": ["100644", "9015eeee9da2315681d10da39c6107b691aa0651"],
+    "src/ext/h1_reason_phrase.rs": [
+      "100644",
+      "adb4363689d2b90280f8155e53709fa761c311e7"
+    ],
+    "src/ext/informational.rs": [
+      "100644",
+      "e728580fa5febeb1d6471052640629acf78db4cc"
+    ],
+    "src/ext/mod.rs": ["100644", "b59d809deab8b09fb441d0a97c3a7ce5125a9d3d"],
+    "src/ffi/body.rs": ["100644", "e5a09e577b0a212399c065085d8813f494c27b1f"],
+    "src/ffi/client.rs": ["100644", "63b03d874ad75eeab5fd897531e6ff154c478d4a"],
+    "src/ffi/error.rs": ["100644", "cc289ed7b772f0c3c74737ec48af9ee20020aef8"],
+    "src/ffi/http_types.rs": [
+      "100644",
+      "3dc4a2549d261b185fe1bc1083b2487569b0f654"
+    ],
+    "src/ffi/io.rs": ["100644", "89978b9e57309e0ac4a23a6f765d3426d40bb47d"],
+    "src/ffi/macros.rs": ["100644", "af810e8d82b1c2ffbcbe710a351550a2b7d050ba"],
+    "src/ffi/mod.rs": ["100644", "cdcbc4822d70f24b14fed7b24522c1f790c5d568"],
+    "src/ffi/task.rs": ["100644", "0c49936c6ecc79e2db17e07414ab14b67ad24030"],
+    "src/headers.rs": ["100644", "8bebdb9bfa80eb69bc75d04e1a0eda3b37ba87a6"],
+    "src/lib.rs": ["100644", "4683fd65977a4bf228ee847f1d062875a738d076"],
+    "src/mock.rs": ["100644", "1dd57de319ebb0e51e1b560536bc413f390c72f5"],
+    "src/proto/h1/conn.rs": [
+      "100644",
+      "3d71ed5bc551b1b0e5a39e503354d28983f41160"
+    ],
+    "src/proto/h1/decode.rs": [
+      "100644",
+      "bcc43313d108a7d41a316dc5663b97a9614cd12a"
+    ],
+    "src/proto/h1/dispatch.rs": [
+      "100644",
+      "5daeb5ebf691d5537ec51ec29de13fc5ae531924"
+    ],
+    "src/proto/h1/encode.rs": [
+      "100644",
+      "2df0c396b75286ef2acba0969c57c4bd20ca0c28"
+    ],
+    "src/proto/h1/io.rs": [
+      "100644",
+      "6a30d73c84bf0265cf51e4b98f01d3b4f869992d"
+    ],
+    "src/proto/h1/mod.rs": [
+      "100644",
+      "a8f36f5fd97c98b40ad1523f9b6c7be71670d748"
+    ],
+    "src/proto/h1/role.rs": [
+      "100644",
+      "1674e26bc6bc3081d49e70c7da9478738a4b0e64"
+    ],
+    "src/proto/h2/client.rs": [
+      "100644",
+      "455c70980cfb9547f24cdaa1639e6dc9c5a7b0b2"
+    ],
+    "src/proto/h2/mod.rs": [
+      "100644",
+      "e6f40f3467e489bcdbea687d33ca055e85142a7f"
+    ],
+    "src/proto/h2/ping.rs": [
+      "100644",
+      "4952e3851898038ee168563bc9eb213580384800"
+    ],
+    "src/proto/h2/server.rs": [
+      "100644",
+      "483ed96dd9eb051759763dd05e61297a9469cb60"
+    ],
+    "src/proto/h2/upgrade.rs": [
+      "100644",
+      "40a98de08a402fd4c60363867340545c89934024"
+    ],
+    "src/proto/mod.rs": ["100644", "fcdf2b97c0ed1a1a459500312fa37a4e07b9b2ee"],
+    "src/rt/bounds.rs": ["100644", "0af623b1bf915b5f87f3ae56d2747eeb0146d4d5"],
+    "src/rt/io.rs": ["100644", "ed4af0929f8f539b753efdd50a54697429c45eb4"],
+    "src/rt/mod.rs": ["100644", "0eb266974f7b3324a02317676f633eeeed07e091"],
+    "src/rt/timer.rs": ["100644", "a9633ca8e876a299280fde5e7bdcc9ad0b9d9e04"],
+    "src/server/conn/http1.rs": [
+      "100644",
+      "36dda98069e72e8faa6eb695f42d8727a116c26a"
+    ],
+    "src/server/conn/http2.rs": [
+      "100644",
+      "0452109c3c7a2932a278e43711d7a4f6e4678b2d"
+    ],
+    "src/server/conn/mod.rs": [
+      "100644",
+      "54b309e88e97fd4dc2be852fb2f745061a69abd5"
+    ],
+    "src/server/mod.rs": ["100644", "980553e5e9679d5d468da371b2d0caeed4c27020"],
+    "src/service/http.rs": [
+      "100644",
+      "77907e671662795ddf628644917e8fe8f128fa7a"
+    ],
+    "src/service/mod.rs": [
+      "100644",
+      "28ffaddbabb27ac14aaef7dc0cf8a7a998f7ada1"
+    ],
+    "src/service/service.rs": [
+      "100644",
+      "caded3f752232b24f65a39572c6fb8f3ff7e1df3"
+    ],
+    "src/service/util.rs": [
+      "100644",
+      "3e017a782cf87feae0cb3ffd8f78d78500b04f0d"
+    ],
+    "src/trace.rs": ["100644", "88f9a243a0736e632bbb496d84bd554cad3bc79e"],
+    "src/upgrade.rs": ["100644", "9d23a29081fc7d12fa7a8082fd80ccb45f3053f0"]
+  },
+  "changed_files": ["src/client/dispatch.rs"],
+  "patch": "hyper-1.8.1-readiness.patch",
+  "patch_sha256": "f273142389a7036fcaff8fa3e2cfa26d093d3bccc75d227afaf314956a1198c1"
+}

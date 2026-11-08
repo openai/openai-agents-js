@@ -1,0 +1,99 @@
+--- a/src/client/dispatch.rs
++++ b/src/client/dispatch.rs
+@@ -30,14 +30,10 @@
+ 
+ pub(crate) fn channel<T, U>() -> (Sender<T, U>, Receiver<T, U>) {
+     let (tx, rx) = mpsc::unbounded_channel();
+-    let (giver, taker) = want::new();
+-    let tx = Sender {
+-        #[cfg(feature = "http1")]
+-        buffered_once: false,
+-        giver,
+-        inner: tx,
+-    };
+-    let rx = Receiver { inner: rx, taker };
++    let (giver, mut taker) = want::new();
++    taker.want();
++    let tx = Sender { giver, inner: tx };
++    let rx = Receiver { inner: rx, taker, wanting: true };
+     (tx, rx)
+ }
+ 
+@@ -46,17 +42,12 @@
+ /// While the inner sender is unbounded, the Giver is used to determine
+ /// if the Receiver is ready for another request.
+ pub(crate) struct Sender<T, U> {
+-    /// One message is always allowed, even if the Receiver hasn't asked
+-    /// for it yet. This boolean keeps track of whether we've sent one
+-    /// without notice.
+-    #[cfg(feature = "http1")]
+-    buffered_once: bool,
+     /// The Giver helps watch that the Receiver side has been polled
+     /// when the queue is empty. This helps us know when a request and
+     /// response have been fully processed, and a connection is ready
+     /// for more.
+     giver: want::Giver,
+-    /// Actually bounded by the Giver, plus `buffered_once`.
++    /// Each bounded send consumes one readiness grant.
+     inner: mpsc::UnboundedSender<Envelope<T, U>>,
+ }
+ 
+@@ -90,22 +81,8 @@
+     }
+ 
+     #[cfg(feature = "http1")]
+-    fn can_send(&mut self) -> bool {
+-        if self.giver.give() || !self.buffered_once {
+-            // If the receiver is ready *now*, then of course we can send.
+-            //
+-            // If the receiver isn't ready yet, but we don't have anything
+-            // in the channel yet, then allow one message.
+-            self.buffered_once = true;
+-            true
+-        } else {
+-            false
+-        }
+-    }
+-
+-    #[cfg(feature = "http1")]
+     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
+-        if !self.can_send() {
++        if !self.giver.give() {
+             return Err(val);
+         }
+         let (tx, rx) = oneshot::channel();
+@@ -117,7 +94,7 @@
+ 
+     #[cfg(feature = "http1")]
+     pub(crate) fn send(&mut self, val: T) -> Result<Promise<U>, T> {
+-        if !self.can_send() {
++        if !self.giver.give() {
+             return Err(val);
+         }
+         let (tx, rx) = oneshot::channel();
+@@ -176,18 +153,21 @@
+ pub(crate) struct Receiver<T, U> {
+     inner: mpsc::UnboundedReceiver<Envelope<T, U>>,
+     taker: want::Taker,
++    wanting: bool,
+ }
+ 
+ impl<T, U> Receiver<T, U> {
+     pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<(T, Callback<T, U>)>> {
++        if !self.wanting {
++            self.taker.want();
++            self.wanting = true;
++        }
+         match self.inner.poll_recv(cx) {
+             Poll::Ready(item) => {
++                self.wanting = false;
+                 Poll::Ready(item.map(|mut env| env.0.take().expect("envelope not dropped")))
+             }
+-            Poll::Pending => {
+-                self.taker.want();
+-                Poll::Pending
+-            }
++            Poll::Pending => Poll::Pending,
+         }
+     }
+ 
