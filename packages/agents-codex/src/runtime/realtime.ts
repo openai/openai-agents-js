@@ -977,6 +977,7 @@ class NativeRealtimeOwner {
       const owned: Delegation = {
         workflow: new NativeSessionVoiceWorkflow(
           this.session as PublicSession<string>,
+          this.selectedTools,
         ),
         retired: false,
         responseId:

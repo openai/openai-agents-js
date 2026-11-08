@@ -11,7 +11,7 @@ import {
   tool,
   type MCPResultContext,
 } from '../src';
-import { ModelServer, message } from './native/fixtures/model-server';
+import { ModelServer, call, message } from './native/fixtures/model-server';
 import type {
   NativeRealtimeEvent,
   NativeRealtimeHostedMcpApprovalRequest,
@@ -1061,4 +1061,439 @@ nativeIt(
     }
   },
   30000,
+);
+
+nativeIt.each(['omitted', 'empty', 'subset'] as const)(
+  'keeps the captured %s voice ceiling on real background MCP calls after defaults change',
+  async (mode) => {
+    let selectedEffects = 0;
+    let approvals = 0;
+    const selected = tool({
+      name: 'selected',
+      parameters: z.object({}),
+      execute: () => {
+        selectedEffects++;
+        return 'selected result';
+      },
+    });
+    const model = new ModelServer([
+      [
+        ...(mode === 'subset'
+          ? [call('selected', {}, { callId: 'selected-background' })]
+          : []),
+        call(
+          'lookup',
+          { key: 'background' },
+          {
+            callId: 'excluded-background',
+            namespace: 'mcp__records',
+          },
+        ),
+      ],
+      [message('Background complete.')],
+    ]);
+    const peer = new RealtimePeer(model);
+    const mcp = await mcpPeer();
+    try {
+      await using provider = await providerFor(model);
+      const descriptor = new HttpMCP({
+        name: 'records',
+        url: mcp.url,
+        tools: ['lookup'],
+        approvalMode: 'preapproved',
+        before: () => {
+          approvals++;
+          return { action: 'allow' as const };
+        },
+      });
+      await using session = await new Agent({
+        instructions: 'Use the available tools and finish.',
+        model: 'gpt-5.5',
+        tools: [selected, descriptor],
+        provider,
+      }).session();
+      await session.update({ tools: [selected] });
+      const ceiling = [selected];
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        ...(mode === 'omitted'
+          ? {}
+          : { tools: mode === 'empty' ? [] : ceiling }),
+      });
+      // Mutating the caller's list or broadening Session defaults cannot change
+      // the explicit roster accepted when this voice owner opened.
+      ceiling.length = 0;
+      await session.update({ tools: [selected, descriptor] });
+      await voice.sendText('Read the record.');
+      await peer.frame((frame) => frame.type === 'response.create');
+      peer.call(
+        'background_agent',
+        { input_transcript: 'Read the record.' },
+        'background-ceiling',
+      );
+      const result = await peer.frame(
+        (frame) => frame.item?.call_id === 'background-ceiling',
+      );
+      expect(result.item.output).toContain('Background complete.');
+      expect(approvals).toBe(mode === 'omitted' ? 1 : 0);
+      expect(mcp.calls).toHaveLength(mode === 'omitted' ? 1 : 0);
+      expect(selectedEffects).toBe(mode === 'subset' ? 1 : 0);
+      expect(mcp.failures).toEqual([]);
+    } finally {
+      await peer.close();
+      await mcp.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([false, true])(
+  'retains background voice declaration identity after active-profile replacement (restricted=%s)',
+  async (restricted) => {
+    let leftEffects = 0;
+    let rightEffects = 0;
+    const left = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        leftEffects++;
+        return 'A';
+      },
+    });
+    const right = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        rightEffects++;
+        return 'B';
+      },
+    });
+    const target = new Agent({
+      name: 'B',
+      instructions: 'Use B lookup.',
+      tools: [right],
+    });
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'background-replaced' })],
+      [message('B complete.')],
+    ]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Use A lookup.',
+        tools: [left],
+        handoffs: [target],
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        ...(restricted ? { tools: [left] } : {}),
+      });
+      await session.update({ agent: target });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      void reading.catch(() => {});
+      try {
+        peer.call(
+          'background_agent',
+          { input_transcript: 'Use lookup.' },
+          'background-replaced',
+        );
+        await vi.waitFor(
+          () =>
+            expect(
+              seen.some(
+                (event) =>
+                  event.type === 'delegation' &&
+                  event.handoffId === 'background-replaced' &&
+                  (event.status === 'failed' || event.status === 'completed'),
+              ),
+            ).toBe(true),
+          { timeout: 10000 },
+        );
+        expect(
+          seen.find(
+            (event) =>
+              event.type === 'delegation' &&
+              event.handoffId === 'background-replaced' &&
+              event.status !== 'started',
+          ),
+        ).toMatchObject({
+          status: restricted ? 'failed' : 'completed',
+        });
+        expect(leftEffects).toBe(0);
+        expect(rightEffects).toBe(restricted ? 0 : 1);
+        expect(model.requests).toHaveLength(restricted ? 0 : 2);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([
+  'default',
+  'true',
+  'false',
+  'null',
+  'ack-false',
+  'ack-null',
+  'pending-true',
+] as const)(
+  'uses accepted VAD interruption policy for a live native function (%s)',
+  async (policy) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        signal = context.signal;
+        signal.addEventListener('abort', () => cancelled.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await release.promise;
+        return 'joined native callback';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Read records.',
+        tools: [lookup],
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [lookup],
+        ...(policy === 'default'
+          ? {}
+          : {
+              settings: {
+                turnDetection:
+                  policy === 'null'
+                    ? null
+                    : {
+                        type: 'server_vad' as const,
+                        interruptResponse: [
+                          'true',
+                          'ack-false',
+                          'ack-null',
+                        ].includes(policy),
+                      },
+              },
+            }),
+      });
+      if (policy === 'ack-false' || policy === 'ack-null')
+        await voice.update({
+          turnDetection:
+            policy === 'ack-null'
+              ? null
+              : { type: 'semantic_vad', interruptResponse: false },
+        });
+      let speechObserved = Promise.withResolvers<void>();
+      const reading = (async () => {
+        for await (const event of voice.events())
+          if (event.type === 'lifecycle' && event.status === 'speech_started')
+            speechObserved.resolve();
+      })();
+      void reading.catch(() => {});
+      let updating: Promise<void> | undefined;
+      try {
+        peer.call('lookup', {}, 'speech-policy-tool');
+        await entered.promise;
+        let updated = false;
+        if (policy === 'pending-true') {
+          peer.autoAck = false;
+          updating = voice
+            .update({
+              turnDetection: { type: 'server_vad', interruptResponse: true },
+            })
+            .then(() => {
+              updated = true;
+            });
+          void updating.catch(() => {});
+          await vi.waitFor(() => expect(peer.pendingUpdates).toHaveLength(1));
+        }
+        peer.send({
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'speech-1',
+          audio_start_ms: 0,
+        });
+        if (policy === 'pending-true') {
+          expect(updated).toBe(false);
+          // The native actor queues speech while waiting for ACK. Send ACK
+          // after that frame, then observe its previously accepted policy.
+          peer.autoAck = true;
+          peer.acknowledge();
+          await updating;
+        }
+        if (policy !== 'default' && policy !== 'true') {
+          expect(
+            await Promise.race([
+              speechObserved.promise.then(() => 'speech'),
+              cancelled.promise.then(() => 'cancelled'),
+            ]),
+          ).toBe('speech');
+          expect(signal?.aborted).toBe(false);
+          if (policy === 'pending-true') {
+            speechObserved = Promise.withResolvers<void>();
+            peer.send({
+              type: 'input_audio_buffer.speech_started',
+              item_id: 'speech-2',
+              audio_start_ms: 100,
+            });
+            await cancelled.promise;
+          }
+        } else await cancelled.promise;
+        let joined = false;
+        const interrupting = voice.interrupt().then(() => {
+          joined = true;
+        });
+        void interrupting.catch(() => {});
+        await cancelled.promise;
+        expect(joined).toBe(false);
+        release.resolve();
+        await interrupting;
+        expect(joined).toBe(true);
+        expect(model.requests).toEqual([]);
+      } finally {
+        release.resolve();
+        peer.autoAck = true;
+        while (peer.pendingUpdates.length) peer.acknowledge();
+        await updating?.catch(() => {});
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each([
+  [false, false],
+  [false, true],
+  [null, false],
+  [null, true],
+] as const)(
+  'preserves native completion authority after speech (interruptResponse=%s, committed=%s)',
+  async (interruptResponse, committed) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    let submission: Turn<unknown> | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        signal = context.signal;
+        signal.addEventListener('abort', () => cancelled.resolve(), {
+          once: true,
+        });
+        if (!(context.submission instanceof Turn))
+          throw new Error('Expected direct native Turn');
+        submission = context.submission;
+        entered.resolve();
+        await release.promise;
+        return 'surviving native result';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Read records.',
+        tools: [lookup],
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [lookup],
+        settings: {
+          turnDetection:
+            interruptResponse === null
+              ? null
+              : { type: 'server_vad', interruptResponse },
+        },
+      });
+      const speech = Promise.withResolvers<void>();
+      const reading = (async () => {
+        for await (const event of voice.events())
+          if (event.type === 'lifecycle' && event.status === 'speech_started')
+            speech.resolve();
+      })();
+      void reading.catch(() => {});
+      try {
+        peer.call('lookup', {}, 'surviving-native-tool');
+        await entered.promise;
+        peer.send({
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'surviving-speech',
+          audio_start_ms: 0,
+        });
+        expect(
+          await Promise.race([
+            speech.promise.then(() => 'speech'),
+            cancelled.promise.then(() => 'cancelled'),
+          ]),
+        ).toBe('speech');
+        expect(signal?.aborted).toBe(false);
+        if (committed) {
+          peer.send({
+            type: 'input_audio_buffer.committed',
+            item_id: 'new-input',
+          });
+          await voice.update({
+            instructions: 'Acknowledge the new committed input.',
+          });
+        }
+        release.resolve();
+        const output = await peer.frame(
+          (frame) => frame.item?.call_id === 'surviving-native-tool',
+        );
+        expect(output.item.output).toContain('surviving native result');
+        await submission!.wait();
+        if (committed) {
+          // Fence completion commands before asserting no stale continuation.
+          await voice.update({ instructions: 'Completion has settled.' });
+          expect(
+            peer.frames.filter((frame) => frame.type === 'response.create'),
+          ).toEqual([]);
+        } else {
+          await peer.frame((frame) => frame.type === 'response.create');
+        }
+        expect(model.requests).toEqual([]);
+      } finally {
+        release.resolve();
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
 );

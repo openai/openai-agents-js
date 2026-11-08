@@ -1,5 +1,5 @@
 import type { Session } from '../runtime/public-agent';
-import type { Turn } from '../runtime/session';
+import type { OperationOptions, Turn } from '../runtime/session';
 
 export interface VoiceWorkflow {
   run(
@@ -43,8 +43,14 @@ function beforeGraphClose<T>(
  */
 export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
   private active?: ActiveVoiceTurn;
+  private readonly tools: OperationOptions<any>['tools'];
 
-  constructor(private readonly session: Session<string, any>) {
+  /** Capture a tool ceiling; omission uses Session defaults and [] selects no tools. */
+  constructor(
+    private readonly session: Session<string, any>,
+    tools?: OperationOptions<any>['tools'],
+  ) {
+    this.tools = tools === undefined ? undefined : Object.freeze([...tools]);
     graphShutdown.set(this, () => {
       const active = this.active;
       if (!active) return;
@@ -98,7 +104,9 @@ export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
     try {
       active.submission = Promise.resolve().then(() => {
         active.controller.signal.throwIfAborted();
-        return this.session.submit(transcription);
+        return this.tools === undefined
+          ? this.session.submit(transcription)
+          : this.session.submit(transcription, { tools: this.tools });
       });
       const turn = await beforeGraphClose(active, active.submission);
       active.controller.signal.throwIfAborted();

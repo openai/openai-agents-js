@@ -4456,10 +4456,10 @@ index ee0bba99461438b5ae24a1f3d283ab043546e1a3..4de65a8b08e08c4586a533319850e774
 +}
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..b493f8a52a1d12d1ebcf9576ffcbe31e3b02223c
+index 0000000000000000000000000000000000000000..4681bf4a08c777df521f2e2e943acb4150ace840
 --- /dev/null
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-@@ -0,0 +1,3013 @@
+@@ -0,0 +1,3036 @@
 +//! Connection-owned accepted configuration and its single pending revision.
 +use crate::ApiError;
 +use codex_protocol::agent_profile::AgentProfileReceipt;
@@ -4498,6 +4498,16 @@ index 0000000000000000000000000000000000000000..b493f8a52a1d12d1ebcf9576ffcbe31e
 +}
 +
 +impl RealtimeAcceptedConfiguration {
++    pub fn interrupts_on_speech_started(&self) -> bool {
++        match self.contract.pointer("/audio/input/turn_detection") {
++            Some(Value::Null) => false,
++            Some(detection) => {
++                detection.get("interrupt_response").and_then(Value::as_bool) != Some(false)
++            }
++            None => true,
++        }
++    }
++
 +    pub(super) fn hosted_declaration(&self, label: &str) -> Option<&Value> {
 +        self.contract
 +            .get("tools")?
@@ -5614,9 +5624,22 @@ index 0000000000000000000000000000000000000000..b493f8a52a1d12d1ebcf9576ffcbe31e
 +            .and_then(Value::as_str)
 +            .or_else(|| event["response"]["id"].as_str());
 +        match kind {
-+            // Server VAD is a real new user request. Provider echoes of our owned
-+            // outgoing user items are observations, not another ownership change.
++            // Interrupting speech and committed audio start a new user request.
++            // Provider echoes of our owned outgoing items do not change ownership.
 +            Some("input_audio_buffer.speech_started") => {
++                let accepted = state.accepted.clone();
++                if accepted
++                    .as_ref()
++                    .is_some_and(|configuration| configuration.interrupts_on_speech_started())
++                {
++                    state.request_owner = Arc::new(());
++                }
++                return FrameObservation {
++                    configuration: accepted,
++                    ..FrameObservation::default()
++                };
++            }
++            Some("input_audio_buffer.committed") => {
 +                state.request_owner = Arc::new(());
 +                return FrameObservation::default();
 +            }
@@ -10520,7 +10543,7 @@ index 5b33e6d6da66fdddd578ae9e138537cbfc3d45f7..7f1ef246363a7935b90b51f5a718ecbc
 +    assert!(normal.step_store().is_none());
 +}
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6d85d3d91 100644
+index b292dcca5baca22880610f8af463dd5e9451c389..2106929d2f312db295009102c9c612f305661743 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -1,5 +1,14 @@
@@ -12641,7 +12664,8 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
      sess: &Arc<Session>,
      params: ConversationStartParams,
 +    sdk_owned: bool,
-+) -> CodexResult<PreparedRealtimeConversationStart> {
+ ) -> CodexResult<PreparedRealtimeConversationStart> {
+-    let provider = sess.provider().await;
 +    prepare_realtime_start_with_source(sess, params, sdk_owned, None, None).await
 +}
 +
@@ -12651,8 +12675,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
 +    sdk_owned: bool,
 +    frozen: Option<(Arc<Config>, ModelProviderInfo)>,
 +    api_key: Option<String>,
- ) -> CodexResult<PreparedRealtimeConversationStart> {
--    let provider = sess.provider().await;
++) -> CodexResult<PreparedRealtimeConversationStart> {
 +    let frozen_provider = frozen.is_some();
 +    let (config, current_provider) = match frozen {
 +        Some(frozen) => frozen,
@@ -12687,7 +12710,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
 +        (projection.project)(&current).model_provider
 +    } else {
 +        current_provider.clone()
-     };
++    };
 +    let provider_projected = frozen_provider || provider != current_provider;
 +    let explicit_authorization = api_key.as_ref().map(|key| {
 +        let mut value = HeaderValue::from_str(&format!("Bearer {key}"))
@@ -12711,7 +12734,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
 +            Some((auth, _)) => (Some(auth), config.http_client_factory()),
 +            None => (None, config.http_client_factory()),
 +        }
-+    };
+     };
 +    let connection_auth = explicit_authorization.clone().map(|header| {
 +        crate::client::RealtimeConnectionAuth::from_bearer(header, http_client_factory.clone())
 +    });
@@ -12985,7 +13008,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
              match &event {
                  RealtimeEvent::AudioOut(_) => {}
                  _ => {
-@@ -1981,6 +3533,23 @@ async fn handle_start_inner(
+@@ -1981,6 +3533,20 @@ async fn handle_start_inner(
              if let RealtimeEvent::Error(_) = &event {
                  end = RealtimeConversationEnd::Error;
              }
@@ -13000,16 +13023,13 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
 +                        )
 +                        .await
 +                    }
-+                    RealtimeEvent::InputAudioSpeechStarted(_) => {
-+                        cancel_sdk_tool_work(&sess_clone, &sub_id, false, None).await
-+                    }
 +                    _ => {}
 +                }
 +            }
              let maybe_routed_text = match &event {
                  RealtimeEvent::HandoffRequested(handoff) => {
                      realtime_delegation_from_handoff(handoff)
-@@ -2026,6 +3595,9 @@ async fn handle_start_inner(
+@@ -2026,6 +3592,9 @@ async fn handle_start_inner(
                  )))
                  .await;
          }
@@ -13019,7 +13039,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
          if fanout_realtime_active.swap(false, Ordering::Relaxed) {
              match end {
                  RealtimeConversationEnd::TransportClosed => {
-@@ -2033,18 +3605,30 @@ async fn handle_start_inner(
+@@ -2033,18 +3602,30 @@ async fn handle_start_inner(
                  }
                  RealtimeConversationEnd::Requested | RealtimeConversationEnd::Error => {}
              }
@@ -13054,7 +13074,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
  }
  
  pub(crate) async fn handle_audio(
-@@ -2200,10 +3784,54 @@ pub(crate) async fn handle_close(sess: &Arc<Session>, sub_id: String) {
+@@ -2200,10 +3781,54 @@ pub(crate) async fn handle_close(sess: &Arc<Session>, sub_id: String) {
      end_realtime_conversation(sess, sub_id, RealtimeConversationEnd::Requested).await;
  }
  
@@ -13109,7 +13129,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
      tokio::spawn(async move {
          let events_tx = input.events_tx.clone();
          let transcript_state = input.events.transcript_state();
-@@ -2240,7 +3868,7 @@ enum RealtimePendingOutbound {
+@@ -2240,7 +3865,7 @@ enum RealtimePendingOutbound {
  }
  
  struct RealtimeWebrtcSidebandInputTask {
@@ -13118,7 +13138,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
      session_config: RealtimeSessionConfig,
      call_id: String,
      sideband_headers: HeaderMap,
-@@ -2298,10 +3926,10 @@ async fn run_realtime_input_task(
+@@ -2298,10 +3923,10 @@ async fn run_realtime_input_task(
      loop {
          let result = tokio::select! {
              _ = stop_token.cancelled() => Err(RealtimeInputTaskExit::Terminal),
@@ -13132,7 +13152,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
                              event,
                              &writer,
                              &events_tx,
-@@ -2309,6 +3937,7 @@ async fn run_realtime_input_task(
+@@ -2309,6 +3934,7 @@ async fn run_realtime_input_task(
                              session_kind,
                              &mut output_audio_state,
                              &mut response_create_queue,
@@ -13140,7 +13160,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
                          );
                          tokio::select! {
                              biased;
-@@ -2329,12 +3958,10 @@ async fn run_realtime_input_task(
+@@ -2329,12 +3955,10 @@ async fn run_realtime_input_task(
                      None => std::future::pending().await,
                  }
              } => {
@@ -13157,7 +13177,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
              }
              // Text input that should be sent into realtime.
              text = text_rx.recv() => {
-@@ -2375,9 +4002,13 @@ async fn run_realtime_input_task(
+@@ -2375,9 +3999,13 @@ async fn run_realtime_input_task(
              }
              // Audio frames captured from the user microphone.
              user_audio_frame = audio_rx.recv() => {
@@ -13174,7 +13194,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
              }
          };
          if let Err(exit) = result {
-@@ -2386,6 +4017,56 @@ async fn run_realtime_input_task(
+@@ -2386,6 +4014,56 @@ async fn run_realtime_input_task(
      }
  }
  
@@ -13231,7 +13251,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
  fn classify_realtime_input_error(err: anyhow::Error) -> RealtimeInputTaskExit {
      classify_realtime_input_error_with_pending(err, /*pending_outbound*/ None)
  }
-@@ -2750,11 +4431,128 @@ async fn handle_handoff_output(
+@@ -2750,11 +4428,128 @@ async fn handle_handoff_output(
      Ok(())
  }
  
@@ -13360,7 +13380,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
  ) -> anyhow::Result<()> {
      let sdk = handoff
          .sdk
-@@ -2764,67 +4562,445 @@ async fn handle_sdk_realtime_command(
+@@ -2764,67 +4559,445 @@ async fn handle_sdk_realtime_command(
          return Ok(());
      }
      match command.context("SDK Realtime command channel closed")? {
@@ -13655,11 +13675,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
 +                .await?;
 +            if sdk.pending.lock().await.remove(&handoff_id) != Some(true) {
 +                return Ok(());
-             }
--            let target = response_id.or_else(|| responses.sdk_response_id.clone());
--            if let Some(target) = target
--                && responses.sdk_response_id.as_deref() == Some(&target)
--                && responses.sdk_cancelled_response.as_deref() != Some(&target)
++            }
 +            if function_failure {
 +                events_tx
 +                    .send(RealtimeEvent::FunctionCallFinished {
@@ -13668,7 +13684,11 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
 +                    })
 +                    .await
 +                    .context("SDK function status route closed")?;
-+            }
+             }
+-            let target = response_id.or_else(|| responses.sdk_response_id.clone());
+-            if let Some(target) = target
+-                && responses.sdk_response_id.as_deref() == Some(&target)
+-                && responses.sdk_cancelled_response.as_deref() != Some(&target)
 +            if let Some(response_id) = writer
 +                .configuration()
 +                .and_then(|configuration| configuration.tool_response_id(&handoff_id))
@@ -13836,7 +13856,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
  async fn handle_realtime_server_event(
      event: RealtimeEvent,
      writer: &RealtimeWebsocketWriter,
-@@ -2833,6 +5009,97 @@ async fn handle_realtime_server_event(
+@@ -2833,6 +5006,97 @@ async fn handle_realtime_server_event(
      session_kind: RealtimeSessionKind,
      output_audio_state: &mut Option<OutputAudioState>,
      response_create_queue: &mut RealtimeResponseCreateQueue,
@@ -13934,7 +13954,33 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
  ) -> anyhow::Result<()> {
      let should_stop = match &event {
          RealtimeEvent::AudioOut(frame) => {
-@@ -2848,7 +5115,8 @@ async fn handle_realtime_server_event(
+@@ -2845,10 +5109,34 @@ async fn handle_realtime_server_event(
+             false
+         }
+         RealtimeEvent::InputAudioSpeechStarted(event) => {
++            if let Some(sdk) = &handoff_state.sdk
++                && configuration
++                    .as_ref()
++                    .context("SDK speech event has no accepted configuration")?
++                    .interrupts_on_speech_started()
++            {
++                let work = sdk.retire_tool_work(false, None).await;
++                if !work.has_joined_work() {
++                    let completion = SdkInterruptCompletion {
++                        work,
++                        receipt: codex_protocol::protocol::RealtimeInterruptReceipt {
++                            joined_root_turn_ids: Vec::new(),
++                            cancelled_response_id: None,
++                            retired_response_ids: Vec::new(),
++                        },
++                        reply: None,
++                    };
++                    if sdk.interrupt_completions_tx.try_send(completion).is_err() {
++                        sdk.retire_input_admission();
++                        anyhow::bail!("Realtime interruption cleanup queue is full or closed");
++                    }
++                }
++            }
              match session_kind {
                  RealtimeSessionKind::V1 => {}
                  RealtimeSessionKind::V2 => {
@@ -13944,7 +13990,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
                          && event
                              .item_id
                              .as_deref()
-@@ -2872,6 +5140,23 @@ async fn handle_realtime_server_event(
+@@ -2872,6 +5160,23 @@ async fn handle_realtime_server_event(
              false
          }
          RealtimeEvent::ResponseCreated(response) => {
@@ -13968,7 +14014,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
              response_create_queue.sdk_response_id = response.response_id.clone();
              response_create_queue.sdk_cancelled_response = None;
              match session_kind {
-@@ -2881,6 +5166,13 @@ async fn handle_realtime_server_event(
+@@ -2881,6 +5186,13 @@ async fn handle_realtime_server_event(
              false
          }
          RealtimeEvent::ResponseCancelled(response) => {
@@ -13982,7 +14028,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
              if response.response_id == response_create_queue.sdk_response_id {
                  response_create_queue.sdk_response_id = None;
              }
-@@ -2896,6 +5188,97 @@ async fn handle_realtime_server_event(
+@@ -2896,6 +5208,97 @@ async fn handle_realtime_server_event(
              false
          }
          RealtimeEvent::ResponseDone(response) => {
@@ -14080,7 +14126,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
              if response.response_id == response_create_queue.sdk_response_id {
                  response_create_queue.sdk_response_id = None;
              }
-@@ -2908,11 +5291,84 @@ async fn handle_realtime_server_event(
+@@ -2908,11 +5311,84 @@ async fn handle_realtime_server_event(
                          .await?;
                  }
              }
@@ -14166,7 +14212,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
                      return Ok(());
                  }
                  events_tx
-@@ -2981,10 +5437,14 @@ async fn handle_realtime_server_event(
+@@ -2981,10 +5457,14 @@ async fn handle_realtime_server_event(
              info!(realtime_session_id = %realtime_session_id, "realtime session updated");
              false
          }
@@ -14182,7 +14228,7 @@ index b292dcca5baca22880610f8af463dd5e9451c389..1f5f53f0bdd90f2eeebecf8f662295d6
          | RealtimeEvent::ConversationItemAdded(_)
          | RealtimeEvent::ConversationItemDone { .. }
          | RealtimeEvent::HistoryItemStarted(_)
-@@ -3053,7 +5513,18 @@ fn audio_duration_ms(frame: &RealtimeAudioFrame) -> u32 {
+@@ -3053,7 +5533,18 @@ fn audio_duration_ms(frame: &RealtimeAudioFrame) -> u32 {
  fn decoded_samples_per_channel(frame: &RealtimeAudioFrame) -> Option<u32> {
      let bytes = BASE64_STANDARD.decode(&frame.data).ok()?;
      let channels = usize::from(frame.num_channels.max(1));
