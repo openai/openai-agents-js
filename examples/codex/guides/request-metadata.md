@@ -1,6 +1,6 @@
 # Inspect passive model request metadata
 
-With the current [source build](building.md), read `model_request_dispatching` and `model_response_linked` from `turn.events()` or `session.events()`. These passive observations describe root sampling calls and link them to retained response occurrences without exposing request headers or prompt payloads.
+In `0.22.0-alpha.2`, read `model_request_dispatching` and `model_response_linked` from `turn.events()` or `session.events()`. These passive observations describe root sampling calls and link them to retained response occurrences without exposing request headers or prompt payloads.
 
 Run the [request metadata example](../request-metadata.ts) from the repository root with matching built packages and native runtime. It uses scripted responses and needs no model credential or telemetry collector:
 

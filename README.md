@@ -6,7 +6,7 @@ Build agents in TypeScript with an embedded Codex runtime. Give an Agent instruc
 
 ## Install
 
-Use Node.js 24. Follow the [installation guide](examples/codex/guides/installation.md) to run the `0.22.0-alpha.1` starter for your platform or [add its packages to an existing application](examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application). The starter includes the compiled runtime and a JavaScript example.
+Use Node.js 24. Follow the [installation guide](examples/codex/guides/installation.md) to run the `0.22.0-alpha.2` starter for your platform or [add its packages to an existing application](examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application). The starter includes the compiled runtime and a JavaScript example.
 
 ## Example
 
@@ -47,7 +47,7 @@ Run `npx tsx greeting.ts` from your application directory. The model requests th
 
 ## SDK guides
 
-These guides follow the current source checkout. Features marked as requiring a source build are newer than the `0.22.0-alpha.1` starter. For that starter, use the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md).
+These guides describe the native SDK in `0.22.0-alpha.2`. See the [alpha.2 release notes](CHANGELOG-alpha.md#0220-alpha2) for changes and upgrade actions. For the earlier alpha.1 starter, use the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md).
 
 | Task | Guide |
 | --- | --- |
@@ -58,7 +58,7 @@ These guides follow the current source checkout. Features marked as requiring a 
 | Prepare model requests or inspect traces | [Request preparation](examples/codex/guides/request-preparation.md), [request metadata](examples/codex/guides/request-metadata.md), and [telemetry](examples/codex/guides/telemetry.md) |
 | Connect an MCP server or a remote workspace | [MCP tools](examples/codex/guides/mcp.md) and [remote executors](examples/codex/guides/executors.md) |
 | Restore a conversation or handle a pending request | [Session history and state](examples/codex/guides/state.md) and [native interactions](examples/codex/guides/interactions.md) |
-| Supervise a worker or connect a remote Agent | [Supervised workers](examples/codex/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md) use the current [source build](examples/codex/guides/building.md). |
+| Supervise a worker or connect a remote Agent | [Supervised workers](examples/codex/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md). Run repository examples from a matching [source checkout](examples/codex/guides/building.md). |
 
 The [native SDK overview](packages/agents-codex/README.md) shows a minimal run. The [native guide index](packages/agents-codex/NATIVE.md) links to individual API topics.
 

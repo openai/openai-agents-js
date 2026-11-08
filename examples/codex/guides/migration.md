@@ -2,7 +2,7 @@
 
 You can stay on v0; upgrading is optional. When you upgrade, prefer a direct native port of one complete workflow. Use classic temporarily when a concrete dependency blocks that port.
 
-This guide targets the current source checkout. Native v1 is under development. The downloadable `0.22.0-alpha.1` starter contains an earlier API; use its included example with that release. The v0 example targets stable `@openai/agents@0.21.0`.
+This guide describes the native v1 API in `0.22.0-alpha.2`. Follow the [installation guide](installation.md) for a matching build, or [build the current source](building.md). The v0 example targets stable `@openai/agents@0.21.0`.
 
 ## Install a matching build
 

@@ -4,7 +4,7 @@
 
 ## Build and run the example
 
-The [custom-storage example](../custom-storage.ts) requires a current source checkout and its matching SDK/native build. Follow [Build the native SDK from source](building.md#build-from-source); the published alpha.1 starter predates this procedure.
+The [custom-storage example](../custom-storage.ts) requires a current source checkout and its matching SDK/native build. Follow [Build the native SDK from source](building.md#build-from-source). Applications can also use custom storage with the [alpha.2 prebuilt packages](installation.md).
 
 Run these commands from the repository root with model credentials. Retain both the directory and the returned conversation ID. The CLI accepts an optional `OPENAI_BASE_URL` for a Responses endpoint:
 

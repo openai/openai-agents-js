@@ -1,6 +1,6 @@
 # Run commands in a local workspace
 
-Use `Environment.local` with the current [source build](building.md) to run selected command tools on your application host. Use a [remote Environment](executors.md#remote-executor-tools) when the workspace belongs to a separate WSS executor. Application function tools run through their Node callbacks and need no Environment.
+Use `Environment.local` in `0.22.0-alpha.2` to run selected command tools on your application host. Use a [remote Environment](executors.md#remote-executor-tools) when the workspace belongs to a separate WSS executor. Application function tools run through their Node callbacks and need no Environment.
 
 ## Prepare the host and workspace
 

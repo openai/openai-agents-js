@@ -1,6 +1,6 @@
 # Send native traces to application callbacks
 
-With the current [source build](building.md), configure native `traceProcessors` to consume trace lifecycle records on the JavaScript event loop. Use an `onEvent` callback to send these records to an application-owned destination. This route is separate from classic trace processors and from [passive model request observations](request-metadata.md).
+In `0.22.0-alpha.2`, configure native `traceProcessors` to consume trace lifecycle records on the JavaScript event loop. Use an `onEvent` callback to send these records to an application-owned destination. This route is separate from classic trace processors and from [passive model request observations](request-metadata.md).
 
 Run the [trace processor example](../trace-processors.ts) in a fresh process from the repository root with matching built packages and native runtime:
 
