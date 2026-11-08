@@ -517,6 +517,9 @@ describe('accepted user input history', () => {
       nativeUser('n2', 't1', 'second'),
     ];
     expect(
+      projectHistory(records.slice(0, -1), 'root').items.map((item) => item.id),
+    ).toEqual(['n1', 'r2']);
+    expect(
       projectHistory(records, 'root').items.map((item) => item.id),
     ).toEqual(['n1', 'n2']);
   });

@@ -1549,7 +1549,7 @@ export function projectHistory(
           text(payload.thread_id) ?? subagentId ?? sessionId,
         )) {
           const seenNative = identities.get(
-            JSON.stringify([item.turnId, false, true, item.id]),
+            JSON.stringify([item.turnId, item.type, true, item.id]),
           )?.native;
           const occurrence = remember(item, true);
           if (native.type === 'UserMessage' && !seenNative) {
