@@ -112,11 +112,21 @@ try {
 } catch (error) {
   if (error instanceof NativeError && error.cleanup) {
     // Restore backend access before retrying cleanup.
-    await error.cleanup.close();
+    try {
+      await error.cleanup.close();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Reconciliation and writer cleanup failed.',
+        { cause: error },
+      );
+    }
   }
   throw error;
 }
 ```
+
+If cleanup fails again, `AggregateError.errors` preserves both failures. Its `cause` retains the original `NativeError` and its `cleanup` owner for a later retry.
 
 Import `NativeError` from `@openai/agents` with the storage helpers. Cleanup requires no Session or provider and never acquires a replacement writer.
 
