@@ -1,4 +1,5 @@
 import { UserError } from '@openai/agents-core';
+import { BOUNDED_FILE_READ_STATUS_BYTES } from '@openai/agents-core/sandbox/internal';
 import {
   Manifest,
   SandboxProviderError,
@@ -12,6 +13,7 @@ import {
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type Mount,
+  type ReadFileArgs,
   type SandboxSessionLifecycleOptions,
   type SandboxSessionState,
   type TypedMount,
@@ -73,6 +75,8 @@ import {
   type RcloneMountHandle,
 } from '../shared/inContainerMounts';
 import { isE2BCloudBucketMountEntry } from './mounts';
+import { validateRemoteSandboxPathForManifest } from '../shared/paths';
+import { readRunAsRemoteFile } from '../shared/runAs';
 
 type E2BSandboxClass = {
   create(
@@ -109,6 +113,10 @@ type E2BFilesystemApi = {
     path: string,
     opts?: { format?: 'text' | 'bytes' },
   ): Promise<string | Uint8Array>;
+  read?(
+    path: string,
+    opts: { format: 'stream'; signal?: AbortSignal },
+  ): Promise<ReadableStream<Uint8Array> | ''>;
   remove?(path: string): Promise<unknown>;
   makeDir?(path: string): Promise<unknown>;
 };
@@ -635,6 +643,158 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
       this.state.pauseOnExit = false;
       this.state.pauseOnExitSupported = false;
       return false;
+    }
+  }
+
+  override async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    if (args.maxBytes === undefined) {
+      return await super.readFile(args);
+    }
+    this.assertSessionUsable();
+    this.assertFilesystemRunAs(args.runAs);
+    const maxBytes = args.maxBytes;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    }
+    // E2B always starts commands in a login shell. Bound every command on this
+    // path, including validation and missing-file probes, before SDK buffering
+    // can grow with startup output. Keep the existing path and user authority.
+    const absolutePath = await validateRemoteSandboxPathForManifest({
+      manifest: this.state.manifest,
+      path: args.path,
+      runCommand: async (command) =>
+        await this.runBoundedReadCommand(command, {
+          cwd: this.state.manifest.root,
+          envs: {},
+        }),
+    });
+    if (!args.runAs && this.sandbox.files.read) {
+      // Keep the native daemon's file access permissions for default reads.
+      // Newer SDK streams use an idle timeout after the response starts.
+      // Preserve the overall request deadline, including its 60-second default.
+      const requestTimeoutMs = this.state.requestTimeoutMs ?? 60_000;
+      const stream = await this.sandbox.files.read(absolutePath, {
+        format: 'stream',
+        signal: requestTimeoutMs
+          ? AbortSignal.timeout(requestTimeoutMs)
+          : undefined,
+      });
+      // The minimum SDK returns an empty string for Content-Length: 0,
+      // including when the requested format is a stream.
+      if (stream === '') {
+        return new Uint8Array();
+      }
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (size < maxBytes) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          if (value.byteLength > 0) {
+            // Copy only the prefix so a larger transport chunk is not retained.
+            const chunk = new Uint8Array(value.subarray(0, maxBytes - size));
+            chunks.push(chunk);
+            size += chunk.byteLength;
+          }
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes;
+    }
+    return await readRunAsRemoteFile({
+      providerName: this.providerName,
+      providerId: this.providerId,
+      path: absolutePath,
+      runAs: args.runAs,
+      maxBytes,
+      runCommand: async (command, options) =>
+        await this.runBoundedReadCommand(
+          command,
+          { cwd: '/', envs: this.state.environment, user: options?.runAs },
+          // Account for base64 wrapping and the five-byte read-status trailer.
+          Math.ceil((maxBytes + BOUNDED_FILE_READ_STATUS_BYTES) / 3) * 4 * 2 +
+            65536,
+        ),
+    });
+  }
+
+  private async runBoundedReadCommand(
+    command: string,
+    options: E2BCommandRunOptions,
+    stdoutLimit = 65536,
+  ): Promise<RemoteSandboxCommandResult> {
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let exceeded = false;
+    const outputError = new SandboxProviderError(
+      'E2BSandboxClient file read command exceeded its output limit.',
+      { provider: 'e2b' },
+    );
+    let handle: E2BCommandHandle | undefined;
+    try {
+      const result = await this.sandbox.commands.run(command, {
+        ...options,
+        background: true,
+        onStdout: (chunk) => {
+          stdoutBytes += Buffer.byteLength(chunk);
+          if (stdoutBytes > stdoutLimit) {
+            exceeded = true;
+            // This must throw synchronously: the minimum E2B SDK does not
+            // await callbacks, but stops its event iterator on a sync throw.
+            throw outputError;
+          }
+        },
+        onStderr: (chunk) => {
+          stderrBytes += Buffer.byteLength(chunk);
+          if (stderrBytes > 65536) {
+            exceeded = true;
+            throw outputError;
+          }
+        },
+      });
+      handle = 'pid' in result ? result : undefined;
+      const completed = handle?.wait ? await handle.wait() : result;
+      if (exceeded) {
+        throw outputError;
+      }
+      return {
+        status: completed.exitCode ?? 1,
+        stdout: completed.stdout ?? '',
+        stderr: [completed.stderr ?? '', completed.error ?? '']
+          .filter((value) => value.trim().length > 0)
+          .join('\n'),
+      };
+    } catch (error) {
+      if (exceeded) {
+        throw outputError;
+      }
+      const result = commandResultFromE2BError(error);
+      if (!result) {
+        throw error;
+      }
+      return {
+        status: result.exitCode ?? 1,
+        stdout: result.stdout ?? '',
+        stderr: [result.stderr ?? '', result.error ?? '']
+          .filter((value) => value.trim().length > 0)
+          .join('\n'),
+      };
+    } finally {
+      if (exceeded && handle) {
+        await handle.disconnect?.().catch(() => {});
+        await handle.kill?.().catch(() => {});
+      }
     }
   }
 
