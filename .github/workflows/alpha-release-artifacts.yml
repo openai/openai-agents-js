@@ -132,7 +132,7 @@ jobs:
       run:
         shell: bash
     env:
-      ALPHA_VERSION: 0.22.0-alpha.1
+      ALPHA_VERSION: 0.22.0-alpha.2
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}

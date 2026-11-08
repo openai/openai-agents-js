@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node test.mts"
+  },
+  "dependencies": {
+    "@openai/agents": "0.21.0",
+    "zod": "^4.3.5"
+  }
+}
