@@ -10,6 +10,7 @@ const triage = z.strictObject({
  * Set OPENAI_API_KEY and OPENAI_SPECIALIST_MODEL.
  * Optionally set OPENAI_DECISION_MODEL; Decisions defaults to gpt-6-luna.
  * Optionally set OPENAI_DECISION_FALLBACK_MODEL to permit semantic fallback.
+ * Model-based context compaction, explicit or automatic, requires that fallback.
  */
 export async function runDecisionExample(
   request = 'Our production checkout stopped working. Please help now.',

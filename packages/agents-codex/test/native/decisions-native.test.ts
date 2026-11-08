@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { createServer } from 'node:http';
 import {
   Agent,
   NativeProvider,
@@ -487,6 +488,79 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(paths).toEqual(['/v1/decisions', '/v1/decisions']);
         server.assertExhausted();
       },
+    );
+
+    it.each([200, 500])(
+      'rejects oversized advertised physical Decisions bodies before reading (HTTP %s)',
+      async (status) => {
+        const paths: string[] = [];
+        const execute = vi.fn(() => 'not executed');
+        const server = createServer((request, response) => {
+          paths.push(request.url ?? '');
+          request.resume();
+          if (request.url !== '/v1/decisions') {
+            response.writeHead(404).end();
+            return;
+          }
+          response.writeHead(status, {
+            'content-type': 'application/json',
+            'content-length': '67108865',
+          });
+          response.flushHeaders();
+          // Withhold the body: Content-Length alone must reject the response.
+        });
+        await new Promise<void>((resolve) =>
+          server.listen(0, '127.0.0.1', resolve),
+        );
+        try {
+          const address = server.address();
+          if (!address || typeof address === 'string')
+            throw new Error('Missing HTTP peer address');
+          await using provider = new NativeProvider({
+            baseUrl: `http://127.0.0.1:${address.port}/v1`,
+            apiKey: 'synthetic-decisions-key',
+            supportsWebsockets: false,
+          });
+          await using session = await new Agent({
+            instructions: 'Use lookup.',
+            provider,
+            api: 'decisions',
+            fallbackModel: 'ordinary-fallback',
+            tools: [lookup(execute)],
+          }).session();
+          const turn = await session.submit('Choose lookup.');
+          let watchdogCancellation: Promise<void> | undefined;
+          // This watchdog only bounds cleanup of the known hanging old implementation.
+          const watchdog = setTimeout(() => {
+            watchdogCancellation = turn.cancel();
+            void watchdogCancellation.catch(() => undefined);
+            server.closeAllConnections();
+          }, 20000);
+          try {
+            const failure = await turn.wait().then(
+              () => undefined,
+              (error) => error,
+            );
+            expect(paths).toEqual(['/v1/decisions']);
+            expect(execute).not.toHaveBeenCalled();
+            expect(failure).toBeInstanceOf(Error);
+            expect((failure as Error).message).toContain(
+              'response body exceeds the 67108864 byte limit',
+            );
+          } finally {
+            clearTimeout(watchdog);
+            server.closeAllConnections();
+            await watchdogCancellation;
+            await turn.cancel();
+          }
+        } finally {
+          server.closeAllConnections();
+          await new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve())),
+          );
+        }
+      },
+      40000,
     );
 
     it('composes native request preparation with the captured application context', async () => {

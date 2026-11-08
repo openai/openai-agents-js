@@ -75,8 +75,10 @@ export type AgentOptions<Context = undefined, Output = string> = {
   /** Default inference API; each run or Session can override it. */
   api?: InferenceApi;
   /**
-   * Explicit generative model for unfillable or uncertain Decisions routes and
-   * internal generation. Provider failures and refusals do not trigger fallback.
+   * Explicit generative model for unfillable or uncertain Decisions routes.
+   * Model-based context compaction, explicit or automatic, also requires this
+   * fallback. Without it, a Decisions session fails when model-based compaction
+   * is needed. Provider failures and refusals do not trigger fallback.
    * Responses ignores this policy.
    */
   fallbackModel?: string;
