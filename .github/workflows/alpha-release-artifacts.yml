@@ -195,6 +195,15 @@ jobs:
           packages/agents-codex/test/custom-thread-store.test.ts
           packages/agents-codex/test/file-thread-store.test.ts
           --maxWorkers=4 --reporter=verbose
+      - name: Qualify MCP environment names on Windows
+        if: runner.os == 'Windows'
+        env:
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture.exe
+        run: >-
+          pnpm exec vitest run --pool=forks --project @openai/agents-codex
+          packages/agents-codex/test/native/mcp-owned-stdio-native.test.ts
+          -t 'environment name rules' --maxWorkers=1 --reporter=verbose
       - name: Qualify the Linux worker
         if: runner.os == 'Linux'
         env:

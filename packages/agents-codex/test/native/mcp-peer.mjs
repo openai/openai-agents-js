@@ -2,8 +2,26 @@ import { appendFile, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 
 const [rosterPath, callsPath, startsPath] = process.argv.slice(2);
-if (startsPath)
-  await appendFile(startsPath, JSON.stringify({ pid: process.pid }) + '\n');
+if (startsPath) {
+  const initial = JSON.parse(await readFile(rosterPath, 'utf8'));
+  await appendFile(
+    startsPath,
+    JSON.stringify({
+      pid: process.pid,
+      ...(initial.observeEnv
+        ? {
+            cwd: process.cwd(),
+            observedEnv: Object.fromEntries(
+              initial.observeEnv.map((name) => [
+                name,
+                process.env[name] ?? null,
+              ]),
+            ),
+          }
+        : {}),
+    }) + '\n',
+  );
+}
 const lines = createInterface({ input: process.stdin });
 let urlTool;
 for await (const line of lines) {

@@ -13,6 +13,8 @@ export async function startPublicExecutor(
   options: {
     captureFileSystemDiagnostics?: boolean;
     captureProcessDiagnostics?: boolean;
+    /** Observe actual incoming handshake fields only for explicit isolation tests. */
+    captureHandshakeHeaders?: boolean;
     /** Gate or replace only a real upstream termination response. */
     transformTerminateResponse?: (response: JsonObject) => Promise<JsonObject>;
     certificateNames?: string;
@@ -33,6 +35,7 @@ export async function startPublicExecutor(
   const key = join(directory, 'server.key');
   const cert = join(directory, 'server.pem');
   const requests: JsonObject[] = [];
+  const handshakeHeaders: JsonObject[] = [];
   const processDiagnostics: JsonObject[] = [];
   let connectionCount = 0;
   const retainProcess = (value: JsonObject) => {
@@ -212,6 +215,16 @@ export async function startPublicExecutor(
     server.on('tlsClientError', (error) => tlsFailures.push(error.message));
     const websocket = new WebSocketServer({ noServer: true });
     server.on('upgrade', (request, socket, head) => {
+      if (options.captureHandshakeHeaders && handshakeHeaders.length < 32) {
+        handshakeHeaders.push(
+          Object.fromEntries(
+            Object.entries(request.headers).map(([name, value]) => [
+              name,
+              value ?? null,
+            ]),
+          ),
+        );
+      }
       if (
         options.rejectAuthorization ||
         request.url !== '/executor' ||
@@ -443,6 +456,7 @@ export async function startPublicExecutor(
       },
       headers,
       requests,
+      handshakeHeaders,
       processDiagnostics,
       fileSystemDiagnostics,
       rejectedUpgrades,
