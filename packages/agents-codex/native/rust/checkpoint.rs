@@ -422,7 +422,33 @@ pub(crate) async fn capture_code_states(state: &ThreadState) -> anyhow::Result<C
 }
 
 pub async fn export(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<Value> {
+    check_export_owner(state, pending).await?;
     export_inner(state, pending, false).await
+}
+
+async fn check_export_owner(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<()> {
+    if let Some(key) = pending {
+        check_capture(state, key)?;
+    } else if let Some(tools) = state
+        .thread
+        .thread_extension_data()
+        .get::<crate::python_tools::PythonTools>()
+    {
+        tools.check_idle(&state.thread).await?;
+    }
+    Ok(())
+}
+
+// Only the restored batch owner may snapshot while retaining its manual ledger.
+// The caller holds ThreadState.mutations through validation and completion/reseal.
+pub(crate) async fn export_restored_manual(state: &ThreadState) -> anyhow::Result<Value> {
+    let tools = state
+        .thread
+        .thread_extension_data()
+        .get::<crate::python_tools::PythonTools>()
+        .context("restored manual snapshot requires managed tools")?;
+    tools.check_restored_manual_idle(&state.thread).await?;
+    export_inner(state, None, false).await
 }
 
 pub(crate) fn redact_executor_observations(history: &mut [codex_history::RolloutItem]) {
@@ -522,11 +548,6 @@ async fn export_inner(
         tools.check_prepared_checkpoint()?;
     }
     let managed_tool_specs = if let Some(tools) = &tools {
-        if let Some(key) = pending {
-            check_capture(state, key)?;
-        } else {
-            tools.check_idle(&state.thread).await?;
-        }
         Some(
             match crate::agent_profiles::active_specs(&state.thread).await? {
                 Some(specs) => specs,
@@ -534,9 +555,6 @@ async fn export_inner(
             },
         )
     } else {
-        if let Some(key) = pending {
-            check_capture(state, key)?;
-        }
         None
     };
     let graph = state
@@ -853,6 +871,7 @@ pub(crate) async fn probe(state: &ThreadState) -> anyhow::Result<Probe<Value>> {
     let result: anyhow::Result<Value> = async {
         let before = ProbeGraph::observe(state, false)?;
         before.check(state, false).await?;
+        check_export_owner(state, None).await?;
         let captured = export_inner(state, None, true).await;
         before.check(state, false).await?;
         captured

@@ -3142,9 +3142,12 @@ impl NativeThread {
             else {
                 return Ok(serde_json::json!({"status":"not_ready"}).to_string());
             };
-            let mut saved = checkpoint::export(&inner, (!restored).then_some(&first))
-                .await
-                .map_err(native_error)?;
+            let mut saved = if restored {
+                checkpoint::export_restored_manual(&inner).await
+            } else {
+                checkpoint::export(&inner, Some(&first)).await
+            }
+            .map_err(native_error)?;
             let Some(mut frame) = tools
                 .seal_manual(&inner.id.to_string(), &keys, &saved["history"])
                 .map_err(native_error)?
@@ -3403,7 +3406,7 @@ impl NativeThread {
             if let Some(selection) = &selection {
                 tools.validate_operation(selection).map_err(native_error)?;
             }
-            let saved = checkpoint::export(&inner, None)
+            let saved = checkpoint::export_restored_manual(&inner)
                 .await
                 .map_err(native_error)?;
             let (frame, items, settings) = tools

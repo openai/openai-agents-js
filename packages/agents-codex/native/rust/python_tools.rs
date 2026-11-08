@@ -1380,6 +1380,24 @@ impl PythonTools {
     }
 
     pub async fn check_idle(&self, thread: &CodexThread) -> Result<()> {
+        self.check_native_idle(thread).await?;
+        ensure!(
+            !self.has_restored_manual(),
+            "Manual continuation still owns the native batch"
+        );
+        Ok(())
+    }
+
+    pub(crate) async fn check_restored_manual_idle(&self, thread: &CodexThread) -> Result<()> {
+        self.check_native_idle(thread).await?;
+        ensure!(
+            self.has_restored_manual(),
+            "No restored manual continuation owns the snapshot"
+        );
+        Ok(())
+    }
+
+    async fn check_native_idle(&self, thread: &CodexThread) -> Result<()> {
         ensure!(
             thread.active_turn_environment_selections().await.is_none()
                 && !matches!(
@@ -1394,10 +1412,6 @@ impl PythonTools {
                 .expect("JavaScript replies poisoned")
                 .is_empty(),
             "JavaScript tool replies are pending"
-        );
-        ensure!(
-            !self.has_restored_manual(),
-            "Manual continuation still owns the native batch"
         );
         Ok(())
     }

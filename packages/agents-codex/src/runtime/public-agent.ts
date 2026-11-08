@@ -350,7 +350,7 @@ export class Agent<Context = undefined, Output = string> {
 
   /** Check default tool and output declarations without opening a Session. */
   async validate(): Promise<void> {
-    const catalogs = captureAgentProfiles(this).map((profile) =>
+    const catalogs = captureAgentProfiles(this, this, false).map((profile) =>
       captureTools(splitToolDeclarations(profile.declaration.tools).tools),
     );
     const native = await binding();
@@ -820,7 +820,12 @@ export class Agent<Context = undefined, Output = string> {
       );
     const deferredSchemas =
       declarations.tools.some((tool) => tool.deferLoading) ||
-      declarations.mcp.some((server) => server.deferLoading);
+      declarations.mcp.some((server) => server.deferLoading) ||
+      [...(graph?.profiles.values() ?? [])].some(
+        (profile) =>
+          profile.catalog.tools.some((tool) => tool.deferLoading) ||
+          profile.mcp.some((server) => server.deferLoading),
+      );
     const selected = [
       ...(projectGuidance
         ? ['read_text_file', 'view_image'].map((name) => ({
@@ -917,9 +922,6 @@ export class Agent<Context = undefined, Output = string> {
                 ...declarations.tools.map(
                   (tool) => toolIdentity(tool).namespace,
                 ),
-                ...mcpToolNames(
-                  declarations.mcp.filter((server) => !server.deferLoading),
-                ).map((tool) => tool.namespace),
               ]),
             ],
       },
@@ -1240,6 +1242,7 @@ export class Agent<Context = undefined, Output = string> {
 export function captureAgentProfiles<Context, Output>(
   root: Agent<Context, Output>,
   rootDeclaration: Agent<Context, Output> = root,
+  captureProvider = true,
 ): readonly CapturedAgentProfile<Context, Output>[] {
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
@@ -1285,7 +1288,7 @@ export function captureAgentProfiles<Context, Output>(
       name: source.name,
       model: source.model,
       modelSettings: source.modelSettings,
-      provider: rootDeclaration.provider,
+      provider: captureProvider ? rootDeclaration.provider : undefined,
       outputType,
       tools: source.tools.map(
         (tool) => replacements.get(tool as SessionTool) ?? tool,
@@ -1298,6 +1301,7 @@ export function captureAgentProfiles<Context, Output>(
         'Handoff profiles must share output mode, schema and wrapping',
       );
     if (
+      captureProvider &&
       agent !== root &&
       !implicitProviders.get(agent.provider)?.has(agent) &&
       agent.provider !== rootDeclaration.provider
