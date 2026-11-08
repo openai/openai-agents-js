@@ -379,14 +379,42 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
     const absolutePath = await this.resolveRemotePath(args.path);
     if (args.maxBytes !== undefined) {
-      return await readRunAsRemoteFile({
-        providerName: 'CloudflareSandboxClient',
-        providerId: 'cloudflare',
-        path: absolutePath,
-        runAs: args.runAs,
-        maxBytes: args.maxBytes,
-        runCommand: this.runAsCommandRunner.bind(this),
-      });
+      try {
+        return await readRunAsRemoteFile({
+          providerName: 'CloudflareSandboxClient',
+          providerId: 'cloudflare',
+          path: absolutePath,
+          runAs: args.runAs,
+          maxBytes: args.maxBytes,
+          runCommand: args.runAs
+            ? this.runAsCommandRunner.bind(this)
+            : async (command) => {
+                const result = await this.execShell(command, {
+                  timeoutMs:
+                    this.state.timeouts?.requestTimeoutMs ??
+                    this.state.requestTimeoutMs,
+                });
+                return {
+                  status: result.exitCode,
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                };
+              },
+        });
+      } catch (error) {
+        if (!args.runAs && error instanceof SandboxWorkspaceReadNotFoundError) {
+          throw new SandboxWorkspaceReadNotFoundError(
+            `Cloudflare sandbox path not found: ${absolutePath}.`,
+            {
+              provider: 'cloudflare',
+              sandboxId: this.state.sandboxId,
+              path: absolutePath,
+              status: 404,
+            },
+          );
+        }
+        throw error;
+      }
     }
     const bytes = args.runAs
       ? await readRunAsRemoteFile({
@@ -805,12 +833,18 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     });
   }
 
-  private async execShell(shellCommand: string): Promise<{
+  private async execShell(
+    shellCommand: string,
+    options?: { timeoutMs?: number },
+  ): Promise<{
     exitCode: number;
     output: string;
     stdout: string;
     stderr: string;
   }> {
+    const timeoutMs = options
+      ? options.timeoutMs
+      : (this.state.timeouts?.execTimeoutMs ?? this.state.timeoutMs);
     const response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/exec`,
       {
@@ -820,11 +854,9 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         },
         body: JSON.stringify({
           argv: ['/bin/sh', '-lc', shellCommand],
-          ...(typeof this.state.timeouts?.execTimeoutMs === 'number' ||
-          typeof this.state.timeoutMs === 'number'
+          ...(typeof timeoutMs === 'number'
             ? {
-                timeout_ms:
-                  this.state.timeouts?.execTimeoutMs ?? this.state.timeoutMs,
+                timeout_ms: timeoutMs,
               }
             : {}),
         }),

@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DockerSandboxSession,
   Manifest,
+  SandboxWorkspaceReadNotFoundError,
   dockerVolumeMountStrategy,
 } from '../../src/sandbox/local';
 
@@ -262,6 +263,16 @@ describe.skipIf(process.platform === 'win32')(
           await expect(
             session.viewImage({ path: 'private/image.png', runAs: 'reader' }),
           ).rejects.toThrow(/permission denied/iu);
+          // Restore resolver access before the file transfer applies the denial.
+          await chmod(directory, 0o700);
+          const failure = await session
+            .readFile({ path: 'private/image.png', maxBytes: 0 })
+            .catch((error: unknown) => error);
+          expect(failure).not.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
+          expect(failure).toHaveProperty(
+            'message',
+            expect.stringMatching(/permission denied/iu),
+          );
         } finally {
           fixture.beforeCommand = undefined;
           await chmod(directory, 0o700);
@@ -361,7 +372,7 @@ describe.skipIf(process.platform === 'win32')(
       expect(transferred).toBeLessThan(32);
       await expect(
         session.readFile({ path: 'missing.bin', maxBytes: 0 }),
-      ).rejects.toThrow();
+      ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
     });
 
     it('creates, patches, moves and unlinks container files without touching host files', async () => {

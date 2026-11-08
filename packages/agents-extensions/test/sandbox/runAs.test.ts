@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -119,6 +119,39 @@ class ShellSession extends RemoteSandboxSessionBase<
 }
 
 describe.skipIf(process.platform === 'win32')('private runAs staging', () => {
+  test.skipIf(spawnSync('zsh', ['--version']).status !== 0)(
+    'bounds transfer despite a startup-defined head function',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'bounded-function-read-'));
+      try {
+        await writeFile(join(root, '.zshenv'), 'head() { cat; }\n');
+        await writeFile(join(root, 'large.bin'), 'prefix');
+        await truncate(join(root, 'large.bin'), 8 * 1024 * 1024);
+        let transferred = 0;
+        const session = new ShellSession(
+          root,
+          async () => {},
+          async (command) => {
+            const result = await execFileAsync('zsh', ['-c', command], {
+              env: { ...process.env, ZDOTDIR: root },
+              maxBuffer: 16 * 1024 * 1024,
+            });
+            transferred += result.stdout.length;
+            return { status: 0, stdout: result.stdout, stderr: result.stderr };
+          },
+        );
+        const bytes = await session.readFile({
+          path: 'large.bin',
+          maxBytes: 4,
+        });
+        expect(transferred).toBeLessThan(32);
+        expect(Array.from(bytes)).toEqual(Array.from(Buffer.from('pref')));
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   test('rejects partial read errors under shells that enable errexit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'bounded-read-partial-'));
     await writeFile(join(root, 'note.txt'), 'synthetic');
@@ -128,12 +161,36 @@ describe.skipIf(process.platform === 'win32')('private runAs staging', () => {
       async (command) =>
         // Model a storage read that produces a binary prefix and then fails.
         runShell(
-          `set -e; head() { printf '\\n000\\n'; return 1; }; ${command}`,
+          `set -e; failing_read() { printf '\\n000\\n'; return 1; }; ${command.replace('command -p head', 'failing_read')}`,
         ),
     );
     try {
       await expect(
         session.readFile({ path: 'note.txt', maxBytes: 5 }),
+      ).rejects.toBeInstanceOf(SandboxProviderError);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a provider response larger than the requested prefix', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'bounded-read-response-'));
+    try {
+      await writeFile(join(root, 'note.txt'), 'synthetic');
+      const session = new ShellSession(
+        root,
+        async () => {},
+        async (command) =>
+          command.includes('head -c')
+            ? {
+                status: 0,
+                stdout: Buffer.from('oversized\n000\n').toString('base64'),
+                stderr: '',
+              }
+            : await runShell(command),
+      );
+      await expect(
+        session.readFile({ path: 'note.txt', maxBytes: 4 }),
       ).rejects.toBeInstanceOf(SandboxProviderError);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -199,6 +256,9 @@ describe.skipIf(process.platform === 'win32')('private runAs staging', () => {
       await expect(
         session.readFile({ path: 'missing.bin', maxBytes: 0 }),
       ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
+      await expect(
+        session.readFile({ path: 'missing.bin', maxBytes: 0, runAs: 'reader' }),
+      ).rejects.toBeInstanceOf(SandboxProviderError);
       expect(
         Array.from(await session.readFile({ path: 'large.bin', maxBytes: 0 })),
       ).toEqual([]);

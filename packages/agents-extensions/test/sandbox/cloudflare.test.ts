@@ -631,6 +631,88 @@ describe('CloudflareSandboxClient', () => {
     expect(execInit?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  test.each([303, undefined])(
+    'uses the request deadline %s for capped transfers, retaining runAs execution deadlines',
+    async (requestTimeoutMs) => {
+      const session = await new CloudflareSandboxClient({
+        workerUrl: 'https://worker.example.com',
+        timeouts: { execTimeoutMs: 101, requestTimeoutMs },
+      }).create(new Manifest());
+      const original = vi.mocked(global.fetch).getMockImplementation()!;
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const command = String(
+          JSON.parse(String(init?.body ?? '{}')).argv?.[2] ?? '',
+        );
+        if (String(input).endsWith('/exec') && command.includes('head -c')) {
+          return sseExecResponse([
+            {
+              event: 'stdout',
+              data: Buffer.from(
+                Buffer.from('pref\n000\n').toString('base64'),
+              ).toString('base64'),
+            },
+            { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+          ]);
+        }
+        return await original(input, init);
+      });
+      const readTimeouts = () =>
+        vi
+          .mocked(global.fetch)
+          .mock.calls.filter(
+            ([input, init]) =>
+              String(input).endsWith('/exec') &&
+              String(init?.body).includes('head -c'),
+          )
+          .map(([, init]) => JSON.parse(String(init?.body)).timeout_ms);
+      await session.readFile({ path: 'README.md', maxBytes: 4 });
+      expect(readTimeouts()).toEqual([requestTimeoutMs]);
+      await session.readFile({
+        path: 'README.md',
+        maxBytes: 4,
+        runAs: 'alice',
+      });
+      expect(readTimeouts()).toEqual([requestTimeoutMs, 101]);
+    },
+  );
+
+  test('preserves native missing-file details for capped reads', async () => {
+    const session = await new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    }).create(new Manifest());
+    const original = vi.mocked(global.fetch).getMockImplementation()!;
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const command = String(
+        JSON.parse(String(init?.body ?? '{}')).argv?.[2] ?? '',
+      );
+      if (
+        String(input).endsWith('/exec') &&
+        (command.includes('head -c') || command.startsWith('test -e '))
+      ) {
+        return sseExecResponse([
+          { event: 'exit', data: JSON.stringify({ exit_code: 1 }) },
+        ]);
+      }
+      return await original(input, init);
+    });
+    await expect(
+      session.readFile({ path: 'missing.bin', maxBytes: 0 }),
+    ).rejects.toMatchObject({
+      code: 'workspace_read_not_found',
+      details: {
+        provider: 'cloudflare',
+        sandboxId: 'cf_test',
+        path: '/workspace/missing.bin',
+        status: 404,
+      },
+    });
+    const runAsError = await session
+      .readFile({ path: 'missing.bin', maxBytes: 0, runAs: 'reader' })
+      .catch((error: unknown) => error);
+    expect(runAsError).toBeInstanceOf(SandboxProviderError);
+    expect(runAsError).toHaveProperty('details', { provider: 'cloudflare' });
+  });
+
   test('materializes local file entries through the Node local source path', async () => {
     const tempDir = await mkdtemp(
       join(process.cwd(), '.tmp-agents-cloudflare-test-'),
