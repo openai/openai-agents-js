@@ -220,9 +220,14 @@ async fn terminal_carrier_exact_utf8_cap_and_oversized_boundary_deliver_once() {
 async fn terminal_carrier_prefix_precedes_original_error_and_next_ready_event() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let rig = Rig::new().await;
-        let (send, receive) =
-            tokio::sync::oneshot::channel::<anyhow::Result<(Event, Option<CapturedQuestion>)>>();
-        rig.state.events.lock().await.native = Some(Box::pin(async move { receive.await? }));
+        let (send, receive) = tokio::sync::oneshot::channel::<
+            codex_protocol::error::Result<(Event, Option<CapturedQuestion>)>,
+        >();
+        rig.state.events.lock().await.native = Some(Box::pin(async move {
+            receive
+                .await
+                .expect("fixture must deliver its original Core error")
+        }));
         let first = rig.delta("accepted prefix");
         rig.send(first.clone());
         let read_state = Arc::clone(&rig.state);
@@ -244,8 +249,11 @@ async fn terminal_carrier_prefix_precedes_original_error_and_next_ready_event() 
         rig.send(rig.delta("after error"));
         let error = rig.state.next_session_event().await.unwrap_err();
         let original = error
-            .downcast_ref::<std::io::Error>()
-            .expect("must retain original typed error");
+            .downcast_ref::<codex_protocol::error::CodexErr>()
+            .expect("must retain original typed Core error");
+        let codex_protocol::error::CodexErrorDetails::Io(original) = original.details() else {
+            panic!("Core error must retain its original I/O payload: {original}");
+        };
         assert_eq!(original.kind(), std::io::ErrorKind::PermissionDenied);
         assert_eq!(original.to_string(), "original native failure");
         assert_eq!(
