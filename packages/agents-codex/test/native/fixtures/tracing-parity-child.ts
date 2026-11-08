@@ -276,14 +276,13 @@ async function contextCase(batches: unknown[]) {
       ),
     );
     await session.close();
-    for (const record of (
+    const record = (
       session as unknown as {
-        issuedRuns: Map<string, { tracing?: unknown; issuedTracing?: unknown }>;
+        lastRun: { tracing?: unknown; issuedTracing?: unknown };
       }
-    ).issuedRuns.values()) {
-      assert.equal(record.tracing, undefined);
-      assert.equal(record.issuedTracing, undefined);
-    }
+    ).lastRun;
+    assert.equal(record.tracing, undefined);
+    assert.equal(record.issuedTracing, undefined);
     server.assertExhausted();
     await flush();
     const spans = decoded(batches);

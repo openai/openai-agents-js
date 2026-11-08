@@ -32,6 +32,61 @@ afterEach(async () => {
 });
 
 describe('FIFO root enqueue', () => {
+  it('rejects defined busy policies before registration and treats undefined as omission', async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const server = new ModelServer([
+      [call('hold', {}, { callId: 'hold' })],
+      [message('first')],
+      [message('undefined policy')],
+      [message('omitted policy')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use hold.',
+      provider,
+      tools: [
+        tool({
+          name: 'hold',
+          parameters: z.object({}),
+          async execute() {
+            entered.resolve();
+            await release.promise;
+            return 'released';
+          },
+        }),
+      ],
+    }).session();
+    const policy = { ifBusy: 'reject' as const, tools: [] };
+    function typeCheck() {
+      // @ts-expect-error enqueue always queues; submit owns busy rejection.
+      void session.enqueue('not registered', { ifBusy: 'reject' });
+    }
+    void typeCheck;
+    try {
+      await expect(session.enqueue('idle refusal', policy)).rejects.toThrow(
+        'enqueue queues work; use submit',
+      );
+      expect(server.requests).toHaveLength(0);
+      const first = await session.submit('first');
+      await entered.promise;
+      await expect(session.enqueue('busy refusal', policy)).rejects.toThrow(
+        'enqueue queues work; use submit',
+      );
+      const undefinedPolicy = { ifBusy: undefined, tools: [] };
+      const second = await session.enqueue('second', undefinedPolicy);
+      const third = await session.enqueue('third');
+      expect(server.requests).toHaveLength(1);
+      release.resolve();
+      expect((await first.wait()).finalOutput).toBe('first');
+      expect((await second.wait()).finalOutput).toBe('undefined policy');
+      expect((await third.wait()).finalOutput).toBe('omitted policy');
+      server.assertExhausted();
+    } finally {
+      release.resolve();
+    }
+  });
+
   it('acknowledges before admission, captures input/output, and progresses without result readers', async () => {
     const native = await binding();
     const submit = native.NativeThread.prototype._submit;

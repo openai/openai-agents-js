@@ -1079,7 +1079,7 @@ impl ContextChange {
         tokio::select! {
             biased;
             _ = self.candidate_publication_stop.cancelled() => Err(native_error("candidate MCP publication cancelled")),
-            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None) => receipt,
+            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None, None) => receipt,
         }
     }
 
@@ -2589,6 +2589,7 @@ impl NativeThread {
         specs_json: Option<String>,
         startup_boundary: Option<String>,
         cancel_on_resource_close: Option<bool>,
+        default_slots_json: Option<String>,
     ) -> napi::Result<String> {
         let servers_json = servers_json.as_str();
         if startup_boundary
@@ -2633,6 +2634,13 @@ impl NativeThread {
             return Err(input_error(
                 "MCP pre-policy rules do not match selected callbacks",
             ));
+        }
+        let defaults = default_slots_json
+            .map(|json| serde_json::from_str::<Vec<usize>>(&json))
+            .transpose()
+            .map_err(input_error)?;
+        if defaults.is_some() && tool_generation.is_none() {
+            return Err(input_error("Default tool slots require a function update"));
         }
         let function_update = match (tool_generation, specs_json) {
             (Some(generation), Some(specs)) => Some((
@@ -2739,7 +2747,7 @@ impl NativeThread {
                 }
                 // An uncertain function publication cannot reopen the old policy.
                 let published = tools
-                    .replace(&inner.thread, generation, specs, None)
+                    .replace(&inner.thread, generation, specs, defaults)
                     .await
                     .map_err(native_error)?;
                 function_generation = Some(published.to_string());

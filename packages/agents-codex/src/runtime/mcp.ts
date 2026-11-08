@@ -728,9 +728,21 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
     );
   if (
     search?.route === 'hosted' &&
-    functions.some((tool) => tool.name === 'web_search')
+    functions.some((tool) => {
+      const identity = toolIdentity(tool);
+      return (
+        identity.namespace === 'functions' && identity.name === 'web_search'
+      );
+    })
   )
     throw new TypeError('Hosted WebSearch reserves the tool name web_search');
+  if (
+    nativeAgents &&
+    functions.some((tool) => toolIdentity(tool).namespace === 'collaboration')
+  )
+    throw new TypeError(
+      'NativeAgents reserves the collaboration namespace; use another namespace for custom functions',
+    );
   if (
     checklist &&
     functions.some((tool) => {
