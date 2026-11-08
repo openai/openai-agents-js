@@ -282,6 +282,87 @@ describe('native Twilio media bridge', () => {
     expect(session.realtime).toHaveBeenCalledOnce();
   });
 
+  it('keeps a long call open after more than 1024 played responses', async () => {
+    const { media, client, send, running } = await connect();
+    client.on('message', (data) => {
+      const frame = JSON.parse(data.toString());
+      if (frame.event === 'mark')
+        send({ event: 'mark', streamSid: 'call', mark: frame.mark });
+    });
+    // Each next response starts only after the previous playback mark settles.
+    for (let index = 0; index < 1030; index++) {
+      const played = Promise.withResolvers<void>();
+      media.reportPlayback.mockImplementationOnce(() => played.resolve());
+      media.push(audio(`played-${index}`, 1));
+      media.push(done(`played-${index}`));
+      await Promise.race([played.promise, running]);
+    }
+    expect(media.reportPlayback).toHaveBeenCalledTimes(1030);
+    expect(media.close).not.toHaveBeenCalled();
+    client.close();
+    await running;
+  });
+
+  it('rolls over interrupted responses without accepting recent late output or cleared marks', async () => {
+    let observed: (() => void) | undefined;
+    const { media, frames, send, running } = await connect({
+      onEvent(event) {
+        if (event.type === 'playback_interrupted') observed?.();
+      },
+    });
+    for (let index = 0; index < 1030; index++) {
+      const interrupted = Promise.withResolvers<void>();
+      observed = () => interrupted.resolve();
+      media.push(audio(`retired-${index}`, 1));
+      // Ensure Twilio's start has reached the bridge before the first clear.
+      if (index === 0)
+        await vi.waitFor(() =>
+          expect(frames.filter((frame) => frame.event === 'mark')).toHaveLength(
+            1,
+          ),
+        );
+      media.push({
+        type: 'playback_interrupted',
+        retiredResponseIds: [`retired-${index}`],
+      });
+      await Promise.race([interrupted.promise, running]);
+      media.push(done(`retired-${index}`));
+    }
+    await vi.waitFor(() =>
+      expect(frames.filter((frame) => frame.event === 'mark')).toHaveLength(
+        1030,
+      ),
+    );
+    media.push(audio('retired-1029', 99));
+    media.push(audio('survivor', 2));
+    await vi.waitFor(() =>
+      expect(frames.filter((frame) => frame.event === 'mark')).toHaveLength(
+        1031,
+      ),
+    );
+    expect(frames.filter((frame) => frame.event === 'media')).toHaveLength(
+      1031,
+    );
+    expect(
+      Buffer.from(
+        frames.filter((frame) => frame.event === 'media').at(-1)!.media.payload,
+        'base64',
+      ),
+    ).toEqual(Buffer.alloc(80, 2));
+    const marks = frames.filter((frame) => frame.event === 'mark');
+    // Twilio acknowledges cleared marks too, including expired tombstones.
+    send({ event: 'mark', streamSid: 'call', mark: marks[0].mark });
+    send({ event: 'mark', streamSid: 'call', mark: marks.at(-1)!.mark });
+    await vi.waitFor(() => expect(media.reportPlayback).toHaveBeenCalledOnce());
+    expect(media.reportPlayback).toHaveBeenLastCalledWith({
+      responseId: 'survivor',
+      itemId: 'item-survivor',
+      contentIndex: 0,
+      audioEndMs: 10,
+    });
+    expect(media.close).not.toHaveBeenCalled();
+  });
+
   it('rejects incompatible codec settings before native admission', async () => {
     const { socket, session } = await connect();
     await expect(

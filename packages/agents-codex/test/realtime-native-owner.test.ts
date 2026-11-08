@@ -685,7 +685,6 @@ it.each(['close', 'interrupt'] as const)(
     // Model the root terminal that follows Core joining the retired batch.
     peer.waits[0].resolve({ finalOutput: undefined });
     await stopping;
-    if (operation === 'interrupt') await peer.owner.close();
   },
 );
 
@@ -1513,7 +1512,7 @@ it('attaches overlapping responses to one root and scoped interruption preserves
 });
 
 it.each(['interrupt', 'close'] as const)(
-  'retains pending batch admission after a failed %s ACK and joins a successful retry',
+  'retains pending batch admission after a failed %s ACK and joins successful close',
   async (operation) => {
     const peer = fixture();
     await peer.owner._start();
@@ -1551,20 +1550,19 @@ it.each(['interrupt', 'close'] as const)(
     await expect(peer.owner[operation]()).rejects.toBe(primary);
     expect(root.cancel).not.toHaveBeenCalled();
     let stopped = false;
-    const retry = peer.owner[operation]().then(() => {
+    const retry = peer.owner.close().then(() => {
       stopped = true;
     });
     await vi.waitFor(() =>
       expect(
         peer.call.mock.calls.filter(
-          ([name]) => name === `realtime_conversation_${operation}_sdk`,
+          ([name]) => name === `realtime_conversation_close_sdk`,
         ),
-      ).toHaveLength(2),
+      ).toHaveLength(operation === 'close' ? 2 : 1),
     );
     expect(stopped).toBe(false);
     admission.resolve(root);
     await retry;
-    if (operation === 'interrupt') await peer.owner.close();
     expect(root.cancel).not.toHaveBeenCalled();
     expect(peer.release).toHaveBeenCalledOnce();
   },
@@ -1640,7 +1638,7 @@ it('releases an existing failed-interrupt admission waiter on verified graph shu
   await expect(peer.owner.interrupt('A')).rejects.toBe(primary);
   peer.owner._retireFromSession();
   await peer.owner._nativeShutdown();
-  expect(peer.graphClose).toHaveBeenCalledOnce();
+  await expect(peer.owner.sendText('cannot continue')).rejects.toThrow();
   expect(peer.release).toHaveBeenCalledOnce();
   admission.reject(new Error('submission wrapper released later'));
 });
@@ -2356,6 +2354,173 @@ it('reclaims unplayed owner audio only after the exact native retirement receipt
       responseId: 'live-source',
     });
     expect(() => peer.owner.reportPlayback(position)).toThrow('identify');
+  } finally {
+    await peer.owner.close();
+  }
+});
+
+it('reclaims completed request IDs without forgetting live functions', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  peer.payload({ FunctionCallRequested: { call_id: 'live', name: 'held' } });
+  try {
+    for (let i = 0; i < 1030; i++) {
+      const id = `completed-${i}`;
+      peer.payload({ FunctionCallRequested: { call_id: id, name: 'tool' } });
+      peer.payload({ FunctionCallFinished: { call_id: id, succeeded: true } });
+      expect((await events.next()).value).toMatchObject({
+        type: 'function_call',
+        callId: id,
+        status: 'completed',
+      });
+      // Recent terminal duplicates must not replace live records or execute again.
+      peer.payload({
+        FunctionCallRequested: { call_id: id, name: 'duplicate' },
+      });
+      peer.payload({ FunctionCallFinished: { call_id: id, succeeded: true } });
+    }
+    peer.payload({
+      FunctionCallRequested: { call_id: 'live', name: 'duplicate' },
+    });
+    peer.payload({
+      FunctionCallFinished: { call_id: 'live', succeeded: true },
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: 'function_call',
+      callId: 'live',
+      name: 'held',
+      status: 'completed',
+    });
+    await peer.owner.sendText('still live');
+  } finally {
+    await peer.owner.close();
+  }
+});
+
+it('reclaims completed handoff IDs without forgetting live delegations', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  peer.payload(
+    { HandoffRequested: { handoff_id: 'live-handoff' } },
+    'held input',
+  );
+  await events.next();
+  await vi.waitFor(() => expect(peer.waits).toHaveLength(1));
+  const original = peer.session.submit.getMockImplementation()!;
+  peer.session.submit.mockImplementation(async (input) => {
+    const turn = await original(input);
+    peer.waits.at(-1)!.resolve({ finalOutput: 'accepted' });
+    return turn;
+  });
+  try {
+    for (let i = 0; i < 1030; i++) {
+      const id = `handoff-${i}`;
+      peer.payload({ HandoffRequested: { handoff_id: id } }, 'prepared input');
+      expect((await events.next()).value).toMatchObject({
+        type: 'delegation',
+        status: 'started',
+        handoffId: id,
+      });
+      expect((await events.next()).value).toMatchObject({
+        type: 'delegation',
+        status: 'completed',
+        handoffId: id,
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      peer.payload({ HandoffRequested: { handoff_id: id } }, 'duplicate input');
+    }
+    peer.payload(
+      { HandoffRequested: { handoff_id: 'live-handoff' } },
+      'duplicate live input',
+    );
+    expect(peer.inputs).toHaveLength(1031);
+    expect(peer.inputs).not.toContain('duplicate input');
+    expect(peer.inputs).not.toContain('duplicate live input');
+    await peer.owner.sendText('still live');
+  } finally {
+    await peer.owner.close();
+  }
+});
+
+it.each(['rejected', 'malformed'] as const)(
+  'closes the owner after an uncertain explicit interruption: %s',
+  async (mode) => {
+    const peer = fixture();
+    await peer.owner._start();
+    peer.payload({ ResponseCreated: { response_id: 'active' } });
+    const original = peer.call.getMockImplementation()!;
+    const failure = new Error('interruption rejected');
+    peer.call.mockImplementation((operation, params) => {
+      if (operation === 'realtime_conversation_interrupt_sdk')
+        return mode === 'rejected'
+          ? Promise.reject(failure)
+          : Promise.resolve({});
+      return original(operation, params);
+    });
+    await expect(peer.owner.interrupt('active')).rejects.toThrow(
+      mode === 'rejected'
+        ? 'interruption rejected'
+        : 'authoritative effect receipt',
+    );
+    await expect(peer.owner.sendText('cannot continue')).rejects.toThrow();
+    await expect(peer.owner.events().next()).rejects.toThrow(
+      mode === 'rejected'
+        ? 'interruption rejected'
+        : 'authoritative effect receipt',
+    );
+    await peer.owner.close();
+    expect(peer.session.close).not.toHaveBeenCalled();
+    expect(peer.release).toHaveBeenCalledOnce();
+  },
+);
+
+it('bounds response retirement history without forgetting still-owned retired work', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  peer.payload({
+    FunctionCallRequested: {
+      call_id: 'held',
+      name: 'tool',
+      response_id: 'held-response',
+    },
+  });
+  await peer.owner.interrupt('held-response');
+  await events.next();
+  try {
+    for (let i = 0; i < 1030; i++) {
+      const responseId = `interrupted-${i}`;
+      peer.payload({ ResponseCreated: { response_id: responseId } });
+      await events.next();
+      await peer.owner.interrupt(responseId);
+      expect((await events.next()).value).toMatchObject({
+        type: 'playback_interrupted',
+        retiredResponseIds: [responseId],
+      });
+    }
+    peer.payload({
+      AudioOut: {
+        response_id: 'held-response',
+        item_id: 'held-audio',
+        content_index: 0,
+        data: Buffer.alloc(160).toString('base64'),
+        sample_rate: 8000,
+        num_channels: 1,
+        format: 'g711_ulaw',
+      },
+    });
+    peer.payload({ ResponseCreated: { response_id: 'next-live' } });
+    expect((await events.next()).value).toMatchObject({
+      type: 'response',
+      responseId: 'next-live',
+      status: 'created',
+    });
+    await peer.owner.sendText('still live');
   } finally {
     await peer.owner.close();
   }

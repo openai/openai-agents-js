@@ -268,9 +268,14 @@ for (const phase of ['before', 'execute'] as const) {
   );
 }
 
-nativeIt.each([false, true])(
-  'runs overlapping public response tools on one native root and preserves background=%s',
-  async (background) => {
+nativeIt.each([
+  { background: false, maxFunctionConcurrency: undefined },
+  { background: true, maxFunctionConcurrency: undefined },
+  { background: false, maxFunctionConcurrency: 1 },
+  { background: true, maxFunctionConcurrency: 1 },
+])(
+  'runs overlapping public response tools on one native root and preserves background=$background with maxFunctionConcurrency=$maxFunctionConcurrency',
+  async ({ background, maxFunctionConcurrency }) => {
     const enteredA = vi.fn();
     const enteredB = vi.fn();
     const stoppedA = vi.fn();
@@ -314,7 +319,7 @@ nativeIt.each([false, true])(
         model: 'gpt-5.5',
         provider,
         tools: [a, b],
-      }).session();
+      }).session({ maxFunctionConcurrency });
       const voice = await session.realtime({ model: 'fixture-realtime' });
       const observations = session.events();
       const roots = new Set<string>();
@@ -331,13 +336,23 @@ nativeIt.each([false, true])(
           timeout: 10000,
         });
         peer.call('wait_b', {}, 'overlap-b');
-        // B must enter while A has not returned. A sequential new root fails this.
-        await vi.waitFor(() => expect(enteredB).toHaveBeenCalledOnce(), {
-          timeout: 10000,
-        });
+        if (maxFunctionConcurrency === undefined) {
+          // Without a limit, B enters while A has not returned.
+          await vi.waitFor(() => expect(enteredB).toHaveBeenCalledOnce(), {
+            timeout: 10000,
+          });
+        } else {
+          // The ACK fences provider frames for B while A holds the only permit.
+          await voice.update({ instructions: 'Use the declared tools.' });
+          expect(enteredB).not.toHaveBeenCalled();
+        }
         expect(stoppedA).not.toHaveBeenCalled();
         await voice.interrupt(responseA);
         await vi.waitFor(() => expect(stoppedA).toHaveBeenCalledOnce());
+        // Retiring A must release its permit without poisoning B's shared root.
+        await vi.waitFor(() => expect(enteredB).toHaveBeenCalledOnce(), {
+          timeout: 10000,
+        });
         expect(signalB!.aborted).toBe(false);
         const followups = peer.frames.filter(
           (frame) => frame.type === 'response.create',

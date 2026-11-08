@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Agent } from './public-agent';
 
 /** An immutable snapshot of one native response's output. */
@@ -80,10 +81,16 @@ const MAX_WORKERS = 16;
 const MAX_TEXT = 1_048_576;
 const MAX_IDENTITY_BYTES = 8 * 1024 * 1024;
 
+function fingerprint(value: string): string {
+  // Preserve exact JavaScript string units, including isolated surrogates.
+  return createHash('sha256').update(value, 'utf16le').digest('hex');
+}
+
 /** One worker per output item, with only its latest pending snapshot retained. */
 export class NativeRealtimeGuardrails {
   private readonly items = new Map<string, Item>();
   private readonly retiredResponses = new Set<string>();
+  private readonly completed = new Map<string, string | null>();
   private readonly guardrails: readonly NativeRealtimeOutputGuardrail[];
   private readonly threshold: number | null;
   private activeWorkers = 0;
@@ -159,7 +166,19 @@ export class NativeRealtimeGuardrails {
       value.content_index ?? null,
       outputKind,
     ]);
+    const completed = this.completed.get(fingerprint(key));
+    if (completed === null) return;
+    if (completed !== undefined) {
+      if (
+        final &&
+        typeof value.text === 'string' &&
+        fingerprint(value.text) === completed
+      )
+        return;
+      throw new Error('Realtime output changed after its final transcript');
+    }
     let item = this.items.get(key);
+    if (item?.controller.signal.aborted) return;
     if (!item) {
       if (this.items.size >= MAX_ITEMS)
         throw new Error('Realtime guardrail item capacity exceeded');
@@ -213,7 +232,9 @@ export class NativeRealtimeGuardrails {
       const captured = item;
       const worker: Worker = {
         retired: false,
-        completion: Promise.resolve().then(() => this.run(captured, worker)),
+        completion: Promise.resolve().then(() =>
+          this.run(key, captured, worker),
+        ),
       };
       item.worker = worker;
       // Retain rejection for join without an unhandled-rejection side channel.
@@ -221,7 +242,7 @@ export class NativeRealtimeGuardrails {
     }
   }
 
-  private async run(item: Item, worker: Worker): Promise<void> {
+  private async run(key: string, item: Item, worker: Worker): Promise<void> {
     try {
       while (!this.stopped && !worker.retired && item.pending) {
         const input = item.pending;
@@ -282,7 +303,24 @@ export class NativeRealtimeGuardrails {
     } finally {
       item.worker = undefined;
       this.activeWorkers--;
+      if (!item.pending && (item.input.final || item.controller.signal.aborted))
+        this.releaseItem(key, item);
     }
+  }
+
+  private releaseItem(key: string, item: Item): void {
+    if (this.items.get(key) !== item) return;
+    this.items.delete(key);
+    this.textSize -= item.input.text.length;
+    this.identityBytes -=
+      (key.length + item.input.responseId.length + item.input.itemId.length) *
+      2;
+    if (this.completed.size >= MAX_ITEMS)
+      this.completed.delete(this.completed.keys().next().value!);
+    this.completed.set(
+      fingerprint(key),
+      item.controller.signal.aborted ? null : fingerprint(item.input.text),
+    );
   }
 
   /** Snapshot and retire current matching work synchronously; never future work. */
@@ -294,23 +332,28 @@ export class NativeRealtimeGuardrails {
       new Set([...this.items.values()].map((item) => item.input.responseId));
     for (const id of ids) {
       if (!this.stopped && !this.retiredResponses.has(id)) {
-        if (this.retiredResponses.size >= MAX_ITEMS)
-          throw new Error(
-            'Realtime retired guardrail response capacity exceeded',
-          );
+        while (
+          this.retiredResponses.size >= MAX_ITEMS ||
+          this.identityBytes + id.length * 2 > MAX_IDENTITY_BYTES
+        ) {
+          const oldest = this.retiredResponses.values().next().value;
+          if (oldest === undefined) break;
+          this.retiredResponses.delete(oldest);
+          this.identityBytes -= oldest.length * 2;
+        }
         this.reserveIdentity(id);
         this.retiredResponses.add(id);
       }
     }
     const workers: Worker[] = [];
-    for (const item of this.items.values()) {
+    for (const [key, item] of this.items) {
       if (!ids.has(item.input.responseId)) continue;
       item.pending = undefined;
       item.controller.abort();
       if (item.worker) {
         item.worker.retired = true;
         workers.push(item.worker);
-      }
+      } else this.releaseItem(key, item);
     }
     return workers;
   }

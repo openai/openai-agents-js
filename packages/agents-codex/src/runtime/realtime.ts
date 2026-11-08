@@ -1176,6 +1176,7 @@ class NativeRealtimeOwner {
       if (typeof id !== 'string' || !id)
         throw new TypeError('Realtime handoff lacks identity');
       if (this.seen.has(id)) return;
+      this.reclaimRequestId();
       if (
         this.seen.size >= HANDOFF_LIMIT ||
         this.delegations.size >= PENDING_LIMIT
@@ -1207,6 +1208,7 @@ class NativeRealtimeOwner {
       )
         throw new TypeError('Native Realtime function request lacks identity');
       if (this.seen.has(id)) return;
+      this.reclaimRequestId();
       const bytes = Buffer.byteLength(id) + Buffer.byteLength(value.name);
       const pending = [...this.functions.values()].filter(
         (record) => !record.batch && !record.retired,
@@ -1382,6 +1384,43 @@ class NativeRealtimeOwner {
       this.canonical.set(item.id, item);
       this.emit({ type: 'history', item, completed: false });
     }
+  }
+  private reclaimRequestId(): void {
+    if (this.seen.size < HANDOFF_LIMIT) return;
+    // Only terminal IDs may expire; active work retains its duplicate fence.
+    for (const id of this.seen) {
+      if (
+        !this.functions.has(id) &&
+        !this.delegations.has(id) &&
+        ![...this.toolBatches].some((batch) => batch.callIds.includes(id))
+      ) {
+        this.seen.delete(id);
+        return;
+      }
+    }
+  }
+  private retireResponse(id: string): void {
+    if (this.retiredResponses.has(id)) return;
+    if (this.retiredResponses.size >= HANDOFF_LIMIT) {
+      for (const previous of this.retiredResponses) {
+        if (
+          previous !== this.responseId &&
+          ![...this.functions.values()].some(
+            (item) => item.responseId === previous,
+          ) &&
+          ![...this.delegations.values()].some(
+            (item) => item.responseId === previous,
+          ) &&
+          ![...this.toolBatches].some((batch) => batch.responseId === previous)
+        ) {
+          this.retiredResponses.delete(previous);
+          break;
+        }
+      }
+      if (this.retiredResponses.size >= HANDOFF_LIMIT)
+        throw new Error('Native Realtime retired response capacity exceeded');
+    }
+    this.retiredResponses.add(id);
   }
   private startFunctionBatch(value: {
     response_id?: unknown;
@@ -1573,6 +1612,7 @@ class NativeRealtimeOwner {
   }
   /** Interrupt exact response output, or current output/backend work when omitted.
    * Default barge-in may truncate an older playing item while cancelling newer speech.
+   * Native interruption failures close the media owner; call close() to join cleanup.
    */
   async interrupt(
     responseId?: string,
@@ -1616,14 +1656,7 @@ class NativeRealtimeOwner {
     const playback = options.playback
       ? this.playback.report(options.playback)
       : undefined;
-    if (responseId !== undefined) {
-      if (
-        !this.retiredResponses.has(responseId) &&
-        this.retiredResponses.size >= HANDOFF_LIMIT
-      )
-        throw new Error('Native Realtime retired response capacity exceeded');
-      this.retiredResponses.add(responseId);
-    }
+    if (responseId !== undefined) this.retireResponse(responseId);
     for (const record of this.functions.values())
       if (responseId === undefined || record.responseId === responseId)
         record.retired = true;
@@ -1682,14 +1715,7 @@ class NativeRealtimeOwner {
         );
       joinedRoots = new Set<string>(receipt.joined_root_turn_ids ?? []);
       const retired = new Set<string>(receipt.retired_response_ids);
-      for (const id of retired) {
-        if (
-          !this.retiredResponses.has(id) &&
-          this.retiredResponses.size >= HANDOFF_LIMIT
-        )
-          throw new Error('Native Realtime retired response capacity exceeded');
-        this.retiredResponses.add(id);
-      }
+      for (const id of retired) this.retireResponse(id);
       this.playback.retire(retired);
       for (const record of this.functions.values())
         if (record.responseId !== undefined && retired.has(record.responseId))
@@ -1736,6 +1762,9 @@ class NativeRealtimeOwner {
       );
       if (lateFailure?.status === 'rejected') throw lateFailure.reason;
     } catch (error) {
+      // Local cancellation already fenced publication; an uncertain native
+      // result cannot leave that partially retired owner accepting more work.
+      this.finish(error);
       failure = { error };
     }
     if (failure) throw failure.error;

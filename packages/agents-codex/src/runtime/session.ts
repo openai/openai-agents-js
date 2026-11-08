@@ -7603,7 +7603,14 @@ export class Session<OutputT = string, Context = unknown> {
             : 'failed'
           : 'cancelled';
       } catch (error) {
-        if (admission) {
+        if (
+          admission &&
+          !(
+            delivery?.retired &&
+            signal.aborted &&
+            Object.is(error, signal.reason)
+          )
+        ) {
           owner.failure ??= error;
           admission.seal(error);
         }
@@ -7655,7 +7662,14 @@ export class Session<OutputT = string, Context = unknown> {
             this.workflowForTrace(traceId, workflowSpanId),
         );
     } catch (error) {
-      if (admission) {
+      if (
+        admission &&
+        !(
+          delivery?.retired &&
+          signal.aborted &&
+          Object.is(error, signal.reason)
+        )
+      ) {
         owner.failure ??= error;
         admission.seal(error);
       }

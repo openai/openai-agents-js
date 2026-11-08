@@ -157,9 +157,6 @@ export async function bridgeTwilioVoice({
       }
       if (!response.done || response.pending || response.chunks.length) return;
       responses.shift();
-      retired.add(response.id);
-      if (retired.size > RESPONSE_LIMIT)
-        throw new Error('Twilio response capacity exceeded');
     }
   };
   const playbackPosition = () => {
@@ -189,8 +186,10 @@ export async function bridgeTwilioVoice({
       responses.splice(responses.indexOf(response), 1);
     }
     for (const id of responseIds ?? []) retired.add(id);
-    if (retired.size > RESPONSE_LIMIT)
-      throw new Error('Twilio response capacity exceeded');
+    // Native rejects audio for terminal, interrupted or unknown responses.
+    // Retain only a bounded recent window for local interruption races.
+    while (retired.size > RESPONSE_LIMIT)
+      retired.delete(retired.values().next().value!);
     if (clearsWire) {
       // Twilio ACKs cleared marks too. Invalidate them before issuing clear.
       epoch++;
