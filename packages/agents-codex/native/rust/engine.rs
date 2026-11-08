@@ -1678,13 +1678,36 @@ fn bundled_model_catalog(config: &Config, auth: &AuthManager) -> Option<ModelsRe
     {
         return None;
     }
+    cached_bundled_catalog().cloned()
+}
+
+fn cached_bundled_catalog() -> Option<&'static ModelsResponse> {
     static CATALOG: OnceLock<ModelsResponse> = OnceLock::new();
     if let Some(catalog) = CATALOG.get() {
-        return Some(catalog.clone());
+        return Some(catalog);
     }
     // Publish successes only; concurrent first callers may parse independently.
     let parsed = codex_models_manager::bundled_models_response().ok()?;
-    Some(CATALOG.get_or_init(move || parsed).clone())
+    Some(CATALOG.get_or_init(move || parsed))
+}
+
+// Only get_model_info with an explicit base override may use this private view.
+// Keep the full factory-created manager for every other operation. This lookup
+// does not consult auth; no auth-bearing or raw-catalog method uses this manager.
+fn bundled_instruction_override_models()
+-> Option<&'static codex_models_manager::manager::StaticModelsManager> {
+    static MODELS: OnceLock<codex_models_manager::manager::StaticModelsManager> = OnceLock::new();
+    let catalog = cached_bundled_catalog()?;
+    Some(MODELS.get_or_init(|| {
+        let mut catalog = catalog.clone();
+        for model in &mut catalog.models {
+            if let Some(messages) = &mut model.model_messages {
+                messages.instructions_template = None;
+                messages.instructions_variables = None;
+            }
+        }
+        codex_models_manager::manager::StaticModelsManager::new(None, catalog)
+    }))
 }
 
 // Preserve SDK model selection and unattended question policy around the factory.
@@ -1765,7 +1788,13 @@ impl ModelsManager for ConfiguredModels {
         config: &'a ModelsManagerConfig,
     ) -> ModelsManagerFuture<'a, ModelInfo> {
         Box::pin(async move {
-            let mut info = self.inner.get_model_info(model, config).await;
+            let reduced = if self.bundled_catalog && config.base_instructions.is_some() {
+                bundled_instruction_override_models().map(|models| models as &dyn ModelsManager)
+            } else {
+                None
+            };
+            let models = reduced.unwrap_or(self.inner.as_ref());
+            let mut info = models.get_model_info(model, config).await;
             if self.disable_user_input {
                 info.experimental_supported_tools.retain(|tool| {
                     !matches!(

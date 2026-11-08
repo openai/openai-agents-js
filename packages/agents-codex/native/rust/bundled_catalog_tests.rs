@@ -329,3 +329,159 @@ async fn concurrent_catalog_first_use_returns_independent_owned_results() {
     );
     assert_eq!(provider.request_count(), 0);
 }
+
+#[tokio::test]
+async fn instruction_override_lookup_matches_full_catalog_for_each_call() {
+    let provider = Provider::start().await;
+    let full = codex_models_manager::bundled_models_response().unwrap();
+    let mut names: Vec<String> = full.models.iter().map(|model| model.slug.clone()).collect();
+    names.extend([
+        "gpt-5".into(),
+        "fixture-unlisted-model".into(),
+        "custom/gpt-5.5".into(),
+        "gpt-5.5-2026-11-08".into(),
+    ]);
+    for user_input in [true, false] {
+        let home = tempfile::tempdir().unwrap();
+        let engine = open(provider.config(), home.path(), user_input).await;
+        let owned = engine.current().unwrap();
+        let config = &owned.service_config;
+        let auth = crate::auth::manager(config, Some("synthetic-catalog-key".into()))
+            .await
+            .unwrap();
+        let original =
+            codex_model_provider::create_model_provider(config.model_provider.clone(), Some(auth))
+                .models_manager_without_cache(Some(full.clone()));
+        let actual = owned.manager.get_models_manager();
+        // Interleave Some and None: a child/recovery lookup must not inherit a
+        // prior call's override. Some("") is an explicit override too.
+        for base in [Some("custom application base"), None, Some(""), None] {
+            for personality in [None, Some(codex_protocol::config_types::Personality::None)] {
+                let mut policy = config.to_models_manager_config();
+                policy.base_instructions = base.map(str::to_owned);
+                policy.personality = personality;
+                policy.model_context_window = Some(123456);
+                policy.model_auto_compact_token_limit = Some(90000);
+                policy.tool_output_token_limit = Some(4096);
+                for name in &names {
+                    let mut expected = original.get_model_info(name, &policy).await;
+                    if !user_input {
+                        expected.experimental_supported_tools.retain(|tool| {
+                            !matches!(
+                                tool.as_str(),
+                                "request_user_input_async" | "send_user_message_async"
+                            )
+                        });
+                    }
+                    assert_eq!(
+                        actual.get_model_info(name, &policy).await,
+                        expected,
+                        "model={name}, base={base:?}"
+                    );
+                }
+            }
+        }
+        let factory = config.http_client_factory();
+        assert_eq!(
+            serde_json::to_value(
+                actual
+                    .raw_model_catalog(RefreshStrategy::Offline, factory.clone())
+                    .await
+            )
+            .unwrap(),
+            serde_json::to_value(&full).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(actual.get_remote_models().await).unwrap(),
+            serde_json::to_value(&full.models).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(actual.try_get_remote_models().unwrap()).unwrap(),
+            serde_json::to_value(&full.models).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(
+                actual
+                    .list_models(RefreshStrategy::Offline, factory.clone())
+                    .await
+            )
+            .unwrap(),
+            serde_json::to_value(
+                original
+                    .list_models(RefreshStrategy::Offline, factory.clone())
+                    .await
+            )
+            .unwrap()
+        );
+        for requested in [None, Some("gpt-5.5".into()), Some("gpt-5".into())] {
+            for fallback in [true, false] {
+                assert_eq!(
+                    actual
+                        .get_default_model(
+                            &requested,
+                            fallback,
+                            RefreshStrategy::Offline,
+                            factory.clone()
+                        )
+                        .await,
+                    original
+                        .get_default_model(
+                            &requested,
+                            false,
+                            RefreshStrategy::Offline,
+                            factory.clone()
+                        )
+                        .await
+                );
+            }
+        }
+        engine.close().await.unwrap();
+    }
+    assert_eq!(provider.request_count(), 0);
+}
+
+#[tokio::test]
+async fn instruction_override_preserves_explicit_catalog_authority() {
+    let provider = Provider::start().await;
+    let home = tempfile::tempdir().unwrap();
+    let mut catalog = codex_models_manager::bundled_models_response().unwrap();
+    let mut model = catalog.models.remove(0);
+    model.slug = "private-explicit-model".into();
+    model.model_messages.as_mut().unwrap().instructions_template =
+        Some("explicit original base".into());
+    catalog.models = vec![model];
+    let path = home.path().join("models.json");
+    std::fs::write(&path, serde_json::to_vec(&catalog).unwrap()).unwrap();
+    let mut source = provider.config();
+    source["model_catalog_json"] = json!(path);
+    // Force the ConfiguredModels wrapper even though this is not a bundled seed.
+    let engine = open(source, home.path(), false).await;
+    let owned = engine.current().unwrap();
+    let actual = owned.manager.get_models_manager();
+    let original = codex_models_manager::manager::StaticModelsManager::new(None, catalog.clone());
+    for base in [Some("replacement"), None, Some(""), None] {
+        let mut policy = owned.service_config.to_models_manager_config();
+        policy.base_instructions = base.map(str::to_owned);
+        let mut expected = original
+            .get_model_info("private-explicit-model", &policy)
+            .await;
+        expected.experimental_supported_tools.retain(|tool| {
+            !matches!(
+                tool.as_str(),
+                "request_user_input_async" | "send_user_message_async"
+            )
+        });
+        assert_eq!(
+            actual
+                .get_model_info("private-explicit-model", &policy)
+                .await,
+            expected
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(actual.get_remote_models().await).unwrap(),
+        serde_json::to_value(catalog.models).unwrap()
+    );
+    engine.close().await.unwrap();
+    assert_eq!(provider.request_count(), 0);
+}

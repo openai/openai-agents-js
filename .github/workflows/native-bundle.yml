@@ -66,6 +66,17 @@ jobs:
 
       - name: Build the native runtime
         run: node packages/agents-codex/scripts/native.mjs package
+      - name: Qualify SDK catalog and native question policy on Linux
+        if: runner.os == 'Linux'
+        working-directory: packages/agents-codex/native
+        run: |
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
+          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_${native_host}.rs"
+          cold=engine::bundled_catalog_tests::concurrent_catalog_first_use_returns_independent_owned_results
+          cargo test --locked --release --lib "$cold" -- --exact --nocapture
+          cargo test --locked --release --lib engine::bundled_catalog_tests -- --skip "$cold" --nocapture
+          cargo test --locked --release --lib engine::user_input_policy_tests -- --nocapture
       - name: Test Windows project-search filename handling
         if: runner.os == 'Windows'
         working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
