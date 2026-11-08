@@ -219,7 +219,11 @@ fn source_selection(
             source.policy.is_some(),
             "Missing captured MCP callback policy"
         );
-        let selection = step.and_then(|step| step.get::<Selection>());
+        let selection = if source.receipt.is_none() {
+            source.result_selection.clone()
+        } else {
+            step.and_then(|step| step.get::<Selection>())
+        };
         ensure!(
             source.receipt.is_none() || selection.is_some(),
             "Missing captured Agent MCP result selection"
@@ -799,6 +803,14 @@ impl ThreadLifecycleContributor<Config> for McpResultContributor {
                     .thread_store
                     .get_or_init(|| McpResultControl::new(id, root));
             }
+            if let (Some(issuer), Some(results)) = (
+                input
+                    .thread_store
+                    .get::<crate::native_interception::Control>(),
+                input.thread_store.get::<McpResultControl>(),
+            ) {
+                issuer.bind_mcp_results(&results);
+            }
         })
     }
 
@@ -962,6 +974,7 @@ mod tests {
         assert!(inherits_result_source(true, None));
         let source = ExtensionData::new("actual-spawning-step");
         source.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
             receipt: Some(codex_extension_api::AgentProfileReceipt {
                 profile_id: "b".into(),
                 epoch: 1,
@@ -973,10 +986,47 @@ mod tests {
         assert!(inherits_result_source(false, Some(&source)));
         let invalid = ExtensionData::new("missing-policy");
         invalid.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
             receipt: None,
             policy: None,
         });
         assert!(!inherits_result_source(false, Some(&invalid)));
+    }
+
+    #[test]
+    fn mono_source_freezes_selected_and_unselected_result_policy_for_children() {
+        let control = Arc::new(McpResultControl::new("root".into(), true));
+        let issuer = crate::native_interception::Control::new("root".into(), true);
+        issuer.bind_mcp_results(&control);
+        let unselected = issuer.capture_mcp_source();
+        control.publish_selection(
+            serde_json::from_value(json!({
+                "generation": 7, "servers": {"vault": {"record": 0.25}}
+            }))
+            .unwrap(),
+        );
+        let selected = issuer.capture_mcp_source();
+        control.publish_selection(
+            serde_json::from_value(json!({"generation": 8, "servers": {}})).unwrap(),
+        );
+        for (source, expected) in [(unselected, None), (selected, Some(7))] {
+            // Thread/step inheritance clones the exact captured source, including None.
+            let child_thread = ExtensionData::new("child");
+            child_thread.insert(source.clone());
+            let child_step = ExtensionData::new("child-first-step");
+            child_step.insert(
+                (*child_thread
+                    .get::<crate::native_interception::ProfileMcpSource>()
+                    .unwrap())
+                .clone(),
+            );
+            let (bound, actual) = source_selection(&child_thread, Some(&child_step)).unwrap();
+            assert!(bound);
+            assert_eq!(
+                actual.as_ref().map(|selection| selection.generation),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -986,6 +1036,7 @@ mod tests {
         let step = ExtensionData::new("captured-A");
         assert!(control.capture_source_selection().is_none());
         step.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
             receipt: None,
             policy: Some(Arc::new(
                 crate::native_interception::ProfileMcpPolicy::default(),
@@ -1012,6 +1063,7 @@ mod tests {
             epoch: 3,
         };
         step.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
             receipt: Some(receipt.clone()),
             policy: Some(Arc::new(
                 crate::native_interception::ProfileMcpPolicy::default(),

@@ -440,6 +440,7 @@ impl ProfileMcpPolicy {
 /// Callback attribution only; it carries no Session, environment, or callable executor.
 #[derive(Clone)]
 pub(crate) struct ProfileMcpSource {
+    pub(crate) result_selection: Option<Arc<crate::mcp_result_control::Selection>>,
     pub(crate) receipt: Option<codex_extension_api::AgentProfileReceipt>,
     pub(crate) policy: Option<Arc<ProfileMcpPolicy>>,
 }
@@ -692,6 +693,7 @@ impl HeldPolicyStop {
 }
 
 pub struct Control {
+    mcp_results: OnceLock<Weak<crate::mcp_result_control::McpResultControl>>,
     profile_policies: AtomicU8,
     id: String,
     pub(crate) incarnation: String,
@@ -750,6 +752,13 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn bind_mcp_results(
+        &self,
+        results: &Arc<crate::mcp_result_control::McpResultControl>,
+    ) {
+        let _ = self.mcp_results.set(Arc::downgrade(results));
+    }
+
     pub(crate) fn creation_tracing(&self) -> Option<Arc<codex_otel::sdk_trace::ContextLease>> {
         self.creation_tracing.get().cloned().flatten()
     }
@@ -851,7 +860,7 @@ impl Control {
         &self.stopped
     }
 
-    fn new(id: String, root: bool) -> Self {
+    pub(crate) fn new(id: String, root: bool) -> Self {
         Self::with_budget(id, root, MAX_PAYLOAD_BYTES)
     }
 
@@ -860,6 +869,7 @@ impl Control {
         Self {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
+            mcp_results: OnceLock::new(),
             profile_policies: AtomicU8::new(0),
             root,
             native_depth: if root { 0 } else { usize::MAX },
@@ -905,6 +915,7 @@ impl Control {
         Self {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
+            mcp_results: OnceLock::new(),
             profile_policies: AtomicU8::new(parent.profile_policies.load(Ordering::Acquire)),
             root: false,
             native_depth: parent.native_depth.saturating_add(1),
@@ -1308,7 +1319,14 @@ impl Control {
                     .collect::<Rules>()
             })
             .unwrap_or_default();
+        drop(state);
         ProfileMcpSource {
+            result_selection: self
+                .mcp_results
+                .get()
+                .and_then(Weak::upgrade)
+                .and_then(|results| results.capture_source_selection())
+                .map(Arc::new),
             receipt: None,
             policy: Some(Arc::new(ProfileMcpPolicy {
                 names: rules.keys().cloned().collect(),
@@ -7610,6 +7628,7 @@ mod tests {
     fn missing_captured_mcp_policy_fails_closed() {
         let step = ExtensionData::new("invalid-source");
         step.insert(ProfileMcpSource {
+            result_selection: None,
             receipt: None,
             policy: None,
         });
@@ -8579,6 +8598,7 @@ mod mcp_policy_tests {
             rules,
         });
         let source = Arc::new(ProfileMcpSource {
+            result_selection: None,
             receipt: None,
             policy: Some(policy.clone()),
         });

@@ -2391,6 +2391,7 @@ impl ToolContributor for PythonContributor {
                 .ok_or("Managed Realtime source has no captured MCP policy")?;
             execution_data.insert((*policy).clone());
             execution_data.insert(crate::native_interception::ProfileMcpSource {
+                result_selection: None,
                 receipt: Some(source.receipt.clone()),
                 policy: Some(policy),
             });
@@ -2407,6 +2408,7 @@ impl ToolContributor for PythonContributor {
                 .ok_or("Managed child Realtime source has no captured MCP policy")?;
             execution_data.insert((*policy).clone());
             execution_data.insert(crate::native_interception::ProfileMcpSource {
+                result_selection: None,
                 receipt: Some(source.receipt.clone()),
                 policy: Some(policy),
             });
@@ -2528,6 +2530,7 @@ impl ToolContributor for PythonContributor {
         };
         if let Some(receipt) = &profile {
             step.insert(crate::native_interception::ProfileMcpSource {
+                result_selection: None,
                 receipt: Some(receipt.clone()),
                 policy: step.get::<crate::native_interception::ProfileMcpPolicy>(),
             });

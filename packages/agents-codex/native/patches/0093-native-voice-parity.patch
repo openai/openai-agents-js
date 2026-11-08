@@ -24333,7 +24333,7 @@ index e26d83da6b7e23a88e2c0252703f6c5e5342ad00..12ff3232bbab710a6b3de05692c6b7d1
                  call_id,
                  mcp_tool,
 diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
-index b825a5455982ece51150dae14579ec65be009609..720e1c517362185324f58ebb5d646e2445d8542b 100644
+index b825a5455982ece51150dae14579ec65be009609..af0222807a8cf430574c8b5fb4563925d52e1d07 100644
 --- a/codex-rs/core/src/tools/parallel.rs
 +++ b/codex-rs/core/src/tools/parallel.rs
 @@ -47,6 +47,12 @@ pub(crate) struct DirectToolResult {
@@ -24386,9 +24386,9 @@ index b825a5455982ece51150dae14579ec65be009609..720e1c517362185324f58ebb5d646e24
              tracker,
              parallel_execution: Arc::new(RwLock::new(())),
 +            handoff_selection: Default::default(),
-         }
-     }
- 
++        }
++    }
++
 +    fn handoff_target(&self, name: &codex_tools::ToolName) -> Option<String> {
 +        let profile = self.step_context.settings.agent_profile.as_ref()?;
 +        profile
@@ -24407,9 +24407,9 @@ index b825a5455982ece51150dae14579ec65be009609..720e1c517362185324f58ebb5d646e24
 +                .unwrap()
 +                .first_requested
 +                .get_or_insert_with(|| (call_id.to_owned(), target));
-+        }
-+    }
-+
+         }
+     }
+ 
 +    pub(crate) fn observe_requested_item(&self, item: &codex_protocol::models::ResponseItem) {
 +        if let codex_protocol::models::ResponseItem::FunctionCall {
 +            name,
@@ -24467,28 +24467,28 @@ index b825a5455982ece51150dae14579ec65be009609..720e1c517362185324f58ebb5d646e24
 -        );
 +        let retained_step_context = Arc::clone(&step_context);
 +        let dispatch_call_state = Arc::clone(&call_state);
-+        let future = async move {
-+            if ignored {
-+                return Ok(AnyToolResult {
-+                    harness_metadata: None,
-+                    call_id: call.call_id,
-+                    payload: call.payload,
-+                    result: Box::new(crate::tools::context::FunctionToolOutput::from_text(
-+                        "Multiple handoffs detected, ignoring this one.".into(),
-+                        Some(false),
-+                    )),
-+                    post_tool_use_payload: None,
-+                    pending_exec: None,
-+                });
-+            }
-+            self.handle_tool_call_with_source(
++        // Construct dispatch eagerly: manual tool requests can unblock the
++        // provider while the rest of its response is still streaming.
++        let future = if ignored {
++            Either::Left(std::future::ready(Ok(AnyToolResult {
++                harness_metadata: None,
++                call_id: call.call_id,
++                payload: call.payload,
++                result: Box::new(crate::tools::context::FunctionToolOutput::from_text(
++                    "Multiple handoffs detected, ignoring this one.".into(),
++                    Some(false),
++                )),
++                post_tool_use_payload: None,
++                pending_exec: None,
++            })))
++        } else {
++            Either::Right(self.handle_tool_call_with_source(
 +                step_context,
 +                call,
 +                source,
 +                cancellation_token,
 +                dispatch_call_state,
-+            )
-+            .await
++            ))
 +        };
          async move {
              let result = future.await;
