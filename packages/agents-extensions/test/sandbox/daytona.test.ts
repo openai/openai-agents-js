@@ -9,6 +9,7 @@ import {
   rm,
   stat,
   symlink,
+  truncate,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -902,6 +903,43 @@ describe('DaytonaSandboxClient', () => {
     }
     expect(image.image.mediaType).toBe('image/png');
   });
+
+  test.skipIf(process.platform !== 'linux')(
+    'bounds pinned descriptor output for capped file reads',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'daytona-bounded-read-'));
+      try {
+        const large = join(root, 'large.bin');
+        await writeFile(large, Buffer.from([0, 255, 128, 10]));
+        await truncate(large, 8 * 1024 * 1024);
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root }),
+        );
+        let transferred = 0;
+        executeCommandMock.mockImplementation(async (command: string) => {
+          const result = await executeLocalEditorCommand(command);
+          if (command.includes('head -c')) {
+            transferred += result.artifacts.stdout.length;
+          }
+          return result;
+        });
+
+        expect(
+          await session.readFile({ path: 'large.bin', maxBytes: 4 }),
+        ).toEqual(Buffer.from([0, 255, 128, 10]));
+        expect(transferred).toBeLessThan(32);
+        await expect(
+          session.readFile({ path: 'missing.bin', maxBytes: 0 }),
+        ).rejects.toThrow();
+        await writeFile(join(root, 'small.txt'), 'hello');
+        expect(await session.readFile({ path: 'small.txt' })).toEqual(
+          Buffer.from('hello'),
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('reuses resolved manifest environment values during create', async () => {
     let tokenVersion = 0;

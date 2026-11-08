@@ -8,6 +8,7 @@ import {
   readFile,
   rm,
   symlink,
+  truncate,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -330,6 +331,37 @@ describe.skipIf(process.platform === 'win32')(
       expect(await readFile(join(host, 'note.txt'), 'utf8')).toBe(
         'host sentinel\n',
       );
+    });
+
+    it('bounds the Docker transfer for a capped read', async () => {
+      const path = join(workspace, 'large.bin');
+      await writeFile(path, Buffer.from([0, 255, 128, 10]));
+      await truncate(path, 8 * 1024 * 1024);
+      const originalSpawn = vi
+        .mocked(childProcess.spawn)
+        .getMockImplementation()!;
+      let transferred = 0;
+      vi.mocked(childProcess.spawn).mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnOptions,
+      ) => {
+        const child = originalSpawn(command, args, options);
+        if (args.at(-1)?.includes('base64')) {
+          child.stdout?.on('data', (chunk: Buffer) => {
+            transferred += chunk.length;
+          });
+        }
+        return child;
+      }) as typeof childProcess.spawn);
+
+      expect(
+        await session.readFile({ path: 'large.bin', maxBytes: 4 }),
+      ).toEqual(Buffer.from([0, 255, 128, 10]));
+      expect(transferred).toBeLessThan(32);
+      await expect(
+        session.readFile({ path: 'missing.bin', maxBytes: 0 }),
+      ).rejects.toThrow();
     });
 
     it('creates, patches, moves and unlinks container files without touching host files', async () => {
