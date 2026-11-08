@@ -20541,7 +20541,7 @@ index a50b3dbbd19ff30a2b7c7c688644da2b894cf458..960923ed2b1d35be90a22877d62e5350
 +}
 diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d42aec10a7c2866350d9b713ef6ebddcf48f5b7
+index 0000000000000000000000000000000000000000..bfa310b722b12d736385c5e92eba6d29eacbb320
 --- /dev/null
 +++ b/codex-rs/core/src/session/agent_profile.rs
 @@ -0,0 +1,1790 @@
@@ -21793,7 +21793,7 @@ index 0000000000000000000000000000000000000000..2d42aec10a7c2866350d9b713ef6ebdd
 +        attach_thread_persistence(Arc::get_mut(&mut session).expect("unshared session")).await;
 +        // Supply compatible source/target metadata through an authoritative
 +        // fixture catalog; an unlisted model must retain the fallback safety fence.
-+        let source = context.model_info().clone();
++        let source = context.model_info().as_ref().clone();
 +        let mut target = source.clone();
 +        target.slug = "profile-sampling-target".into();
 +        target.display_name = "Profile sampling target".into();
