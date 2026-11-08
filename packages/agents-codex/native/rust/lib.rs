@@ -2667,7 +2667,29 @@ impl NativeThread {
                 .thread_extension_data()
                 .get::<native_interception::Control>()
                 .ok_or_else(|| native_error("native interception owner was not initialized"))?;
-            if rules.is_none() && interception.has_mcp_policy() {
+            let captured = inner
+                .thread
+                .captured_agent_profile()
+                .await
+                .map_err(native_error)?;
+            let captured_policy = captured
+                .as_ref()
+                .map(|captured| {
+                    captured
+                        .profile
+                        .data
+                        .get::<native_interception::ProfileMcpPolicy>()
+                        .ok_or_else(|| {
+                            native_error("Managed Agent MCP source has no captured policy")
+                        })
+                })
+                .transpose()?;
+            if rules.is_none()
+                && (interception.has_mcp_policy()
+                    || captured_policy
+                        .as_ref()
+                        .is_some_and(|policy| policy.has_pre_policy()))
+            {
                 return Err(input_error(
                     "MCP policy replacement requires current compiled rules",
                 ));
@@ -2692,11 +2714,12 @@ impl NativeThread {
                 let selection = selection
                     .as_ref()
                     .ok_or_else(|| input_error("MCP pre-policy requires a selection"))?;
-                native_interception::McpPublication::begin(
+                native_interception::McpPublication::begin_with_profile(
                     &inner.engine.interception,
                     interception,
                     rules,
                     selection.generation,
+                    captured_policy.as_deref(),
                 )
                 .map_err(input_error)?
             } else {

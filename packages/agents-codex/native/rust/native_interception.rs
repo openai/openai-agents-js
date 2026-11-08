@@ -388,6 +388,10 @@ pub(crate) struct ProfileMcpPolicy {
     rules: Rules,
 }
 impl ProfileMcpPolicy {
+    pub(crate) fn has_pre_policy(&self) -> bool {
+        self.rules.values().any(|rule| rule.2.is_some())
+    }
+
     pub(crate) fn prepare(
         binding: &codex_mcp::McpBinding,
         declarations: &std::collections::BTreeMap<
@@ -1895,11 +1899,22 @@ pub(crate) struct McpPublication {
     settled: bool,
 }
 impl McpPublication {
+    #[cfg(test)]
     pub(crate) fn begin(
         boundary: &Boundary,
         control: Arc<Control>,
         rules: Vec<ToolRule>,
         generation: u64,
+    ) -> Result<Option<Self>> {
+        Self::begin_with_profile(boundary, control, rules, generation, None)
+    }
+
+    pub(crate) fn begin_with_profile(
+        boundary: &Boundary,
+        control: Arc<Control>,
+        rules: Vec<ToolRule>,
+        generation: u64,
+        captured: Option<&ProfileMcpPolicy>,
     ) -> Result<Option<Self>> {
         let next = Control::compile_rules(rules)?;
         ensure!(
@@ -1917,7 +1932,10 @@ impl McpPublication {
                 .as_ref()
                 .is_some_and(|rules| rules.values().any(|rule| rule.2.is_some()))
         };
-        if !policy(&state.tools) && !next.values().any(|rule| rule.2.is_some()) {
+        if !policy(&state.tools)
+            && !captured.is_some_and(ProfileMcpPolicy::has_pre_policy)
+            && !next.values().any(|rule| rule.2.is_some())
+        {
             return Ok(None);
         }
         ensure!(
@@ -8552,6 +8570,76 @@ mod mcp_policy_tests {
         assert!(matches!(call.await, Ok(Decision::Continue)));
         assert!(root.release(nonce));
     }
+    #[test]
+    fn captured_old_policy_clear_keeps_publication_fencing_and_rollback() {
+        let (boundary, root) = setup();
+        let rules = Control::compile_rules(rules(1)).unwrap();
+        let policy = Arc::new(ProfileMcpPolicy {
+            names: rules.keys().cloned().collect(),
+            rules,
+        });
+        let source = Arc::new(ProfileMcpSource {
+            receipt: None,
+            policy: Some(policy.clone()),
+        });
+        let name = policy.names.iter().next().unwrap();
+        assert!(!root.has_mcp_policy());
+        assert!(root.mcp_selected_for(name, Some(&source)).unwrap());
+        let guard = McpPublication::begin_with_profile(
+            &boundary,
+            root.clone(),
+            Vec::new(),
+            2,
+            Some(&policy),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(root.mcp_selected_for(name, Some(&source)).is_err());
+        guard.rollback();
+        assert!(
+            root.channel
+                .state
+                .lock()
+                .unwrap()
+                .tools
+                .as_ref()
+                .is_some_and(|rules| rules.is_empty())
+        );
+        assert!(root.mcp_selected_for(name, Some(&source)).unwrap());
+        let child = Arc::new(Control::descendant("child".into(), &root));
+        boundary.register_control(&child);
+        assert!(
+            McpPublication::begin_with_profile(
+                &boundary,
+                root.clone(),
+                Vec::new(),
+                2,
+                Some(&policy),
+            )
+            .is_err()
+        );
+        child.revoke();
+        McpPublication::begin_with_profile(&boundary, root.clone(), Vec::new(), 2, Some(&policy))
+            .unwrap()
+            .unwrap()
+            .commit()
+            .unwrap();
+        assert!(!root.has_mcp_policy());
+        assert!(root.mcp_selected_for(name, Some(&source)).unwrap());
+        drop(
+            McpPublication::begin_with_profile(
+                &boundary,
+                root.clone(),
+                Vec::new(),
+                3,
+                Some(&policy),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        assert!(root.mcp_selected_for(name, Some(&source)).is_err());
+    }
+
     #[test]
     fn removal_of_last_policy_is_guarded_then_returns_to_legacy_admission() {
         let (boundary, root) = setup();
