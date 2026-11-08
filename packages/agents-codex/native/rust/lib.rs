@@ -3253,6 +3253,14 @@ impl NativeThread {
             .map_err(native_error)
     }
 
+    #[napi(js_name = "_next_session_events_bulk")]
+    pub async fn next_session_events_bulk(&self) -> napi::Result<Vec<String>> {
+        self.current()?
+            .next_session_events_bulk()
+            .await
+            .map_err(native_error)
+    }
+
     #[napi(js_name = "_next_session_event")]
     pub async fn next_session_event(&self) -> napi::Result<String> {
         let inner = self.current()?;

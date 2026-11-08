@@ -213,6 +213,7 @@ export class NativeThread {
   _interrupt_session(): Promise<void>;
   _next_session_event(): Promise<string>;
   _next_session_events(): Promise<string[]>;
+  _next_session_events_bulk(): Promise<string[]>;
   _child_turn(child_id: string): Promise<_NativeChildTurn | null>;
   _child_instance(
     child_id: string,

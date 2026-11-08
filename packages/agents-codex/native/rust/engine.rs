@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::{Future, poll_fn};
+use std::io::{self, Write};
 use std::pin::Pin;
 use std::sync::{
     Arc, OnceLock, RwLock, Weak,
@@ -2196,6 +2197,117 @@ fn take_ready_root_text_delta(
     None
 }
 
+// Bulk-only helpers; the ordinary reader and helper above remain unchanged.
+struct BulkSessionEventByteCounter {
+    bytes: usize,
+    limit: usize,
+}
+
+impl Write for BulkSessionEventByteCounter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(data.len())
+            .filter(|bytes| *bytes <= self.limit)
+            .ok_or_else(|| io::Error::other("Session event batch byte budget exceeded"))?;
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+// Count only the admitted text envelope while reusing the canonical payload.
+// A new writer for the full Event type instantiates every protocol variant.
+#[derive(serde::Serialize)]
+struct BulkRootTextEvent<'a> {
+    id: &'a str,
+    msg: BulkRootTextEventMsg<'a>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum BulkRootTextEventMsg<'a> {
+    AgentMessageContentDelta(&'a codex_protocol::protocol::AgentMessageContentDeltaEvent),
+}
+
+// Separate mode keeps the baseline wire string; join mode borrows until commit.
+enum BulkRootTextPayload<'a> {
+    Separate(String),
+    Join(&'a str),
+}
+
+// Poll only this retained root source, never a merged session read. A Pending
+// future may already own question/error metadata and must stay in its slot.
+fn take_ready_bulk_root_text_delta(
+    next: &mut Option<NextNativeEvent>,
+    dequeued: &AtomicBool,
+    thread: &str,
+    turn: &str,
+    item: Option<&str>,
+    remaining_bytes: usize,
+    make_next: impl FnOnce() -> NextNativeEvent,
+    append: impl FnOnce(BulkRootTextPayload<'_>),
+) -> Option<usize> {
+    let reader = next.as_mut()?;
+    let waker = futures_util::task::noop_waker();
+    let mut context = std::task::Context::from_waker(&waker);
+    let Poll::Ready(result) = reader.as_mut().poll(&mut context) else {
+        return None;
+    };
+    let text = match &result {
+        Ok((event @ Event { id, msg }, None)) if id == turn => match msg {
+            EventMsg::AgentMessageContentDelta(
+                data @ codex_protocol::protocol::AgentMessageContentDeltaEvent {
+                    thread_id,
+                    turn_id,
+                    item_id,
+                    delta,
+                },
+            ) if thread_id == thread
+                && turn_id == turn
+                && item.is_none_or(|expected| item_id == expected)
+                && delta.len() <= remaining_bytes =>
+            {
+                if item.is_none() {
+                    // Match the baseline admission and serialization exactly.
+                    serde_json::to_string(event)
+                        .ok()
+                        .filter(|raw| raw.len() <= remaining_bytes)
+                        .map(|raw| (raw.len(), BulkRootTextPayload::Separate(raw)))
+                } else {
+                    // Keep the original serialized-byte budget, including escapes
+                    // and every envelope field. Only their text joins the first event.
+                    let mut counter = BulkSessionEventByteCounter {
+                        bytes: 0,
+                        limit: remaining_bytes,
+                    };
+                    let envelope = BulkRootTextEvent {
+                        id: id.as_str(),
+                        msg: BulkRootTextEventMsg::AgentMessageContentDelta(data),
+                    };
+                    serde_json::to_writer(&mut counter, &envelope)
+                        .ok()
+                        .map(|()| (counter.bytes, BulkRootTextPayload::Join(delta.as_str())))
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some((bytes, payload)) = text {
+        dequeued.store(false, Ordering::Release);
+        *next = Some(make_next());
+        append(payload);
+        return Some(bytes);
+    }
+    // Preserve controls, other items, errors and over-budget text without
+    // applying delivery effects. Keep the dequeue witness.
+    *next = Some(Box::pin(std::future::ready(result)));
+    None
+}
+
 impl ThreadState {
     fn question_owner_current(&self, question: &OwnedNativeQuestion) -> bool {
         if *self.closing.borrow() || self.closed.load(Ordering::Acquire) {
@@ -2922,6 +3034,112 @@ impl ThreadState {
         Ok(batch)
     }
 
+    // Selected by the single JS pump only between completed reads.
+    pub async fn next_session_events_bulk(self: &Arc<Self>) -> anyhow::Result<Vec<String>> {
+        // This first read always stays on the original asynchronous bridge.
+        let mut first = self.next_session_event().await?;
+        let raw = serde_json::to_string(&first)?;
+        let mut bytes = raw.len();
+        let mut batch = vec![raw];
+        let thread = self.id.to_string();
+        if first["msg"]["type"] != "agent_message_content_delta"
+            || first.get("subagent_id").is_some()
+            || first.get("subagent_incarnation").is_some()
+            || first.get("subagent_instance_id").is_some()
+            || first["msg"]["thread_id"].as_str() != Some(thread.as_str())
+            || first["msg"]["turn_id"] != first["id"]
+            || bytes >= SESSION_EVENT_BATCH_BYTES
+        {
+            return Ok(batch);
+        }
+        let Some(turn) = first["id"].as_str() else {
+            return Ok(batch);
+        };
+        // Never wait for another owner, new event, or a full batch.
+        let Ok(mut events) = self.events.try_lock() else {
+            return Ok(batch);
+        };
+        // One receiver-only snapshot, excluding the first event and any retained
+        // future. Controls count too; readiness and ownership still decide admission.
+        let join = self.thread.queued_event_count() >= 16;
+        if join
+            && (first.as_object().is_none_or(|event| event.len() != 2)
+                || first["msg"].as_object().is_none_or(|msg| msg.len() != 5)
+                || !first["msg"]["item_id"].is_string()
+                || !first["msg"]["delta"].is_string())
+        {
+            return Ok(batch);
+        }
+        let python_tools = self
+            .thread
+            .thread_extension_data()
+            .get::<crate::python_tools::PythonTools>();
+        let item = if join {
+            first["msg"]["item_id"].as_str()
+        } else {
+            None
+        };
+        let first_text = if join {
+            first["msg"]["delta"].as_str()
+        } else {
+            None
+        };
+        let mut text: Option<String> = None;
+        // Count original events, not the single coalesced output envelope.
+        let mut consumed = 1;
+        while consumed < SESSION_EVENT_BATCH_LIMIT {
+            if self.is_closed()
+                || events.root_step.is_some()
+                || events.publication_prefix.is_some()
+                || !events.boundary_requests.is_empty()
+                || events.session_terminal.is_some()
+                || !events.children.is_empty()
+                || !events.pending.is_empty()
+                || !events.deferred_child_steps.is_empty()
+                || !events.graph.is_empty()
+                || !events.created.is_empty()
+                || !events.extensions.is_empty()
+                || self.request_metadata.has_pending()
+                || python_tools
+                    .as_ref()
+                    .is_some_and(|tools| tools.has_pending_request())
+            {
+                break;
+            }
+            let witness = events.native_dequeued.clone();
+            let Some(original_bytes) = take_ready_bulk_root_text_delta(
+                &mut events.native,
+                &witness,
+                &thread,
+                turn,
+                item,
+                SESSION_EVENT_BATCH_BYTES - bytes,
+                || next_native_event(self.thread.clone(), witness.clone()),
+                |payload| match payload {
+                    BulkRootTextPayload::Separate(raw) => batch.push(raw),
+                    BulkRootTextPayload::Join(delta) => match text.as_mut() {
+                        Some(text) => text.push_str(delta),
+                        None => {
+                            let first_text = first_text.unwrap();
+                            let mut merged = String::with_capacity(first_text.len() + delta.len());
+                            merged.push_str(first_text);
+                            merged.push_str(delta);
+                            text = Some(merged);
+                        }
+                    },
+                },
+            ) else {
+                break;
+            };
+            bytes += original_bytes;
+            consumed += 1;
+        }
+        if let Some(text) = text {
+            first["msg"]["delta"] = serde_json::Value::String(text);
+            batch[0] = serde_json::to_string(&first)?;
+        }
+        Ok(batch)
+    }
     pub async fn next_session_event(self: &Arc<Self>) -> anyhow::Result<serde_json::Value> {
         let python_tools = self
             .thread

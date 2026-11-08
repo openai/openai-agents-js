@@ -54,17 +54,32 @@ impl Source {
         }
     }
 
-    fn take(&mut self, bytes: usize) -> Option<String> {
+    fn take_bulk(&mut self, bytes: usize) -> Option<(usize, String)> {
         let receive = self.receive.clone();
         let witness = self.witness.clone();
-        take_ready_root_text_delta(
+        let mut text = None;
+        let bytes = take_ready_bulk_root_text_delta(
             &mut self.next,
             &self.witness,
             THREAD,
             TURN,
+            Some("message"),
             bytes,
             || read(receive, witness),
-        )
+            |payload| match payload {
+                BulkRootTextPayload::Join(delta) => text = Some(delta.to_owned()),
+                BulkRootTextPayload::Separate(_) => panic!("join payload expected"),
+            },
+        )?;
+        Some((bytes, text.expect("committed text")))
+    }
+
+    fn take(&mut self, bytes: usize) -> Option<String> {
+        let receive = self.receive.clone();
+        let witness = self.witness.clone();
+        take_ready_root_text_delta(&mut self.next, &self.witness, THREAD, TURN, bytes, || {
+            read(receive, witness)
+        })
     }
 }
 
@@ -267,7 +282,7 @@ async fn retained_control_and_error_precede_publication_without_escaping_their_o
         assert_eq!(batch.len(), 1);
         assert!(batch[0].len() > SESSION_EVENT_BATCH_BYTES);
 
-        for error in [false, true] {
+        for (bulk_first, error) in [(false, false), (false, true), (true, false), (true, true)] {
             let mut text = delta("before-control");
             if let EventMsg::AgentMessageContentDelta(data) = &mut text.msg {
                 data.thread_id = state.id.to_string();
@@ -310,7 +325,11 @@ async fn retained_control_and_error_precede_publication_without_escaping_their_o
                     Ok((control, None))
                 }));
             }
-            let batch = state.next_session_events().await.unwrap();
+            let batch = if bulk_first {
+                state.next_session_events_bulk().await.unwrap()
+            } else {
+                state.next_session_events().await.unwrap()
+            };
 
             assert_eq!(batch.len(), 1);
             assert_eq!(
@@ -328,7 +347,13 @@ async fn retained_control_and_error_precede_publication_without_escaping_their_o
             state
                 .request_publication_boundary("after-retained-control".into())
                 .unwrap();
-            let mut retained_read = Box::pin(state.next_session_events());
+            let mut retained_read: Pin<
+                Box<dyn Future<Output = anyhow::Result<Vec<String>>> + Send + '_>,
+            > = if bulk_first {
+                Box::pin(state.next_session_events())
+            } else {
+                Box::pin(state.next_session_events_bulk())
+            };
             let held = poll_fn(|cx| Poll::Ready(retained_read.as_mut().poll(cx))).await;
             assert!(
                 matches!(held, Poll::Pending),
@@ -843,4 +868,100 @@ async fn root_text_batch_keeps_request_metadata_a_selector_boundary() {
     })
     .await
     .expect("metadata priority must settle");
+}
+
+#[tokio::test]
+async fn pending_metadata_future_survives_both_read_mode_orders() {
+    for bulk_first in [false, true] {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let mut source = Source::new();
+        let witness = source.witness.clone();
+        source.next = Some(Box::pin(async move {
+            witness.store(true, Ordering::Release);
+            receive.await.expect("metadata future must remain owned");
+            Ok((
+                Event {
+                    id: "held-metadata".into(),
+                    msg: EventMsg::ShutdownComplete,
+                },
+                None,
+            ))
+        }));
+        if bulk_first {
+            assert!(source.take_bulk(1024).is_none());
+            assert!(source.take(1024).is_none());
+        } else {
+            assert!(source.take(1024).is_none());
+            assert!(source.take_bulk(1024).is_none());
+        }
+        assert!(source.witness.load(Ordering::Acquire));
+        send.send(())
+            .expect("neither mode may cancel the retained source");
+        let (event, _) = source.next.take().unwrap().await.unwrap();
+        assert_eq!(event.id, "held-metadata");
+        assert!(source.receive.lock().await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn rejected_ready_results_survive_both_read_mode_orders() {
+    for bulk_first in [false, true] {
+        for error in [false, true] {
+            let mut source = Source::new();
+            source.send.send(delta("after-retained-result")).unwrap();
+            source.witness.store(true, Ordering::Release);
+            source.next = Some(Box::pin(std::future::ready(if error {
+                Err(codex_protocol::error::CodexErr::InvalidRequest(
+                    "held-error".into(),
+                ))
+            } else {
+                Ok((
+                    Event {
+                        id: "held-control".into(),
+                        msg: EventMsg::ShutdownComplete,
+                    },
+                    None,
+                ))
+            })));
+            if bulk_first {
+                assert!(source.take_bulk(1024).is_none());
+                assert!(source.take(1024).is_none());
+            } else {
+                assert!(source.take(1024).is_none());
+                assert!(source.take_bulk(1024).is_none());
+            }
+            assert!(source.witness.load(Ordering::Acquire));
+            assert_eq!(source.receive.lock().await.len(), 1);
+            match source.next.take().unwrap().await {
+                Ok((event, _)) => {
+                    assert!(!error);
+                    assert_eq!(event.id, "held-control");
+                }
+                Err(error) => assert!(
+                    matches!(error.details(), codex_protocol::error::CodexErrorDetails::InvalidRequest(text) if text == "held-error")
+                ),
+            }
+            assert_eq!(source.receive.lock().await.recv().await.unwrap().id, TURN);
+        }
+    }
+}
+
+#[tokio::test]
+async fn bulk_narrow_count_matches_canonical_escaped_and_unicode_wire_bytes() {
+    for text in ["", "x", "α🙂\n\\\"end", "\r\t\u{0000}"] {
+        let mut source = Source::new();
+        let event = delta(text);
+        let wire = serde_json::to_string(&event).unwrap();
+        source.send.send(event).unwrap();
+        assert!(source.take_bulk(wire.len() - 1).is_none());
+        assert!(source.witness.load(Ordering::Acquire));
+        assert_eq!(source.take(wire.len()), Some(wire.clone()));
+        source.send.send(delta(text)).unwrap();
+        assert!(source.take(wire.len() - 1).is_none());
+        assert_eq!(
+            source.take_bulk(wire.len()),
+            Some((wire.len(), text.into()))
+        );
+        assert!(!source.witness.load(Ordering::Acquire));
+    }
 }

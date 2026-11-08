@@ -829,7 +829,10 @@ function continuationWasSuperseded(error: unknown): boolean {
   );
 }
 
+const BULK_READ_TEXT_DELTA_THRESHOLD = 32;
+
 class NativeTurn {
+  bulkTextDeltas = 0;
   parentTrace?: TraceContext;
   readonly accepted = Promise.withResolvers<AcceptedSubmission>();
   readonly completion = Promise.withResolvers<NativeRunResult>();
@@ -4009,6 +4012,8 @@ export class Session<OutputT = string, Context = unknown> {
   }
   private async readEvents(): Promise<void> {
     const native = this.#native;
+    // A replacement pump never inherits bulk policy from the retired native owner.
+    if (this.lifecycle.kind === 'turn') this.lifecycle.run.bulkTextDeltas = 0;
     const producer = this.childObservationProducer;
     let batch: string[] = [];
     let batchIndex = 0;
@@ -4017,7 +4022,13 @@ export class Session<OutputT = string, Context = unknown> {
         let event: NativeEvent;
         try {
           if (batchIndex === batch.length) {
-            batch = await native._next_session_events();
+            // This is the only receive call site; finish the current batch first.
+            const readerRun =
+              this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
+            batch = await (readerRun?.bulkTextDeltas ===
+            BULK_READ_TEXT_DELTA_THRESHOLD
+              ? native._next_session_events_bulk()
+              : native._next_session_events());
             batchIndex = 0;
             if (batch.length === 0)
               throw new NativeError('Native event batch was empty');
@@ -4884,6 +4895,17 @@ export class Session<OutputT = string, Context = unknown> {
         itemId: String(msg.item_id ?? ''),
         delta: msg.delta,
       });
+      // Count only published, validated text for the exact current root owner.
+      if (
+        event.id === run.id &&
+        event.subagent_id === undefined &&
+        event.subagent_incarnation === undefined &&
+        event.subagent_instance_id === undefined
+      )
+        run.bulkTextDeltas = Math.min(
+          BULK_READ_TEXT_DELTA_THRESHOLD,
+          run.bulkTextDeltas + 1,
+        );
     }
     if (kind === 'hosted_tool_call_progress' && event.id === run.id)
       this.observeHostedProgress(
@@ -4923,6 +4945,7 @@ export class Session<OutputT = string, Context = unknown> {
       kind === 'turn_complete' ||
       kind === 'turn_aborted'
     ) {
+      run.bulkTextDeltas = 0;
       this.notifyManualProgress();
       let error = run.failure;
       if (

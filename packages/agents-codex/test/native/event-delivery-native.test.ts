@@ -81,20 +81,24 @@ it.each([
   async ({ chunks }) => {
     const batches: NativeEventBatch[] = [];
     const native = await binding();
-    const nextBatch = native.NativeThread.prototype._next_session_events;
-    vi.spyOn(
-      native.NativeThread.prototype,
+    for (const method of [
       '_next_session_events',
-    ).mockImplementation(function (this: NativeThread) {
-      const pending = nextBatch.call(this);
-      void pending.then(
-        (batch) => {
-          batches.push(batch);
+      '_next_session_events_bulk',
+    ] as const) {
+      const nextBatch = native.NativeThread.prototype[method];
+      vi.spyOn(native.NativeThread.prototype, method).mockImplementation(
+        function (this: NativeThread) {
+          const pending = nextBatch.call(this);
+          void pending.then(
+            (batch) => {
+              batches.push(batch);
+            },
+            () => {},
+          );
+          return pending;
         },
-        () => {},
       );
-      return pending;
-    });
+    }
     const expected = chunks.join('');
     const server = new ModelServer([
       {
@@ -121,6 +125,7 @@ it.each([
     let heartbeatBeforeLastDelta = false;
     const direct = (async () => {
       const received: string[] = [];
+      let receivedCharacters = 0;
       for await (const event of turn.events()) {
         if (!('type' in event)) continue;
         expect(event.type).not.toBe('gap');
@@ -131,7 +136,8 @@ it.each([
           });
         }
         received.push(event.delta);
-        if (received.length === chunks.length)
+        receivedCharacters += event.delta.length;
+        if (receivedCharacters === expected.length)
           heartbeatBeforeLastDelta = heartbeatRan;
       }
       return received.join('');
@@ -189,12 +195,17 @@ it('keeps native read failures asynchronous after the owner closes', async () =>
   await (await session.submit('Answer.')).wait();
   await session.close();
   expect(receiver).toBeDefined();
-  let result: Promise<NativeEventBatch> | undefined;
-  expect(() => {
-    result = receiver!._next_session_events();
-  }).not.toThrow();
-  expect(result).toBeInstanceOf(Promise);
-  await expect(result).rejects.toThrow(/closed/i);
+  for (const method of [
+    '_next_session_events',
+    '_next_session_events_bulk',
+  ] as const) {
+    let result: Promise<NativeEventBatch> | undefined;
+    expect(() => {
+      result = receiver![method]();
+    }).not.toThrow();
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).rejects.toThrow(/closed/i);
+  }
   server.assertExhausted();
 }, 20_000);
 
@@ -330,11 +341,14 @@ it('settles a pending batched reader when session close cancels a provider reque
   server.assertExhausted();
 }, 20_000);
 
-it('drops the unread tail of a real text batch when its owner closes', async () => {
-  // Core's root event channel is unbounded. Sixteen short deltas also keep
+async function assertUnreadTextRetirement(reader: 'ordinary' | 'bulk') {
+  // Core's root event channel is unbounded. Short deltas keep
   // fixture transport buffers small. Stored output proves production finished
   // while this test holds the JS reader; the wait has a five-second deadline.
-  const chunks = Array.from({ length: 16 }, (_, index) => `batch-${index};`);
+  const chunks = Array.from(
+    { length: reader === 'bulk' ? 64 : 16 },
+    (_, index) => `batch-${index};`,
+  );
   const expected = chunks.join('');
   const server = new ModelServer([
     {
@@ -352,7 +366,9 @@ it('drops the unread tail of a real text batch when its owner closes', async () 
     supportsWebsockets: false,
   });
   const native = await binding();
-  const original = native.NativeThread.prototype._next_session_events;
+  const method =
+    reader === 'bulk' ? '_next_session_events_bulk' : '_next_session_events';
+  const original = native.NativeThread.prototype[method];
   const finish = vi.spyOn(
     native.NativeThread.prototype,
     '_finish_child_event_reader',
@@ -365,46 +381,46 @@ it('drops the unread tail of a real text batch when its owner closes', async () 
   let preparedBacklog = false;
   let multiEventBatch = 0;
   let tailRead = 0;
-  vi.spyOn(
-    native.NativeThread.prototype,
-    '_next_session_events',
-  ).mockImplementation(async function (this: NativeThread) {
-    const batch = await original.call(this);
-    firstNativeBatchWire(batch);
-    const events = batch.map((wire) => JSON.parse(wire));
-    const backlogGate = events.some(
-      (event) => event.msg.type === 'agent_message_content_delta',
-    );
-    if (!preparedBacklog && backlogGate) {
-      preparedBacklog = true;
-      await vi.waitFor(
-        async () => {
-          expect(await this.read_thread_history(null)).toContain(expected);
-        },
-        { timeout: 5000, interval: 10 },
+  vi.spyOn(native.NativeThread.prototype, method).mockImplementation(
+    async function (this: NativeThread) {
+      const batch = await original.call(this);
+      firstNativeBatchWire(batch);
+      const events = batch.map((wire) => JSON.parse(wire));
+      const backlogGate = events.some(
+        (event) => event.msg.type === 'agent_message_content_delta',
       );
-    }
-    const selectedBatch = batch.length > 1;
-    if (session && preparedBacklog && !retired && selectedBatch) {
-      expect(preparedBacklog).toBe(true);
-      multiEventBatch = batch.length;
-      // The assertion must identify the exact retired receiver.
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      retired = this;
-      const withheld = batch[1]!;
-      // Schedule the real public close at the exact access to the first
-      // unread tail entry. readEvents must recheck ownership after parsing.
-      Object.defineProperty(batch, 1, {
-        configurable: true,
-        get: () => {
-          tailRead++;
-          closing = session!.close();
-          return withheld;
-        },
-      });
-    }
-    return batch;
-  });
+      if (!preparedBacklog && backlogGate) {
+        preparedBacklog = true;
+        await vi.waitFor(
+          async () => {
+            expect(await this.read_thread_history(null)).toContain(expected);
+          },
+          { timeout: 5000, interval: 10 },
+        );
+      }
+      const selectedBatch = batch.length > (reader === 'bulk' ? 0 : 1);
+      if (session && preparedBacklog && !retired && selectedBatch) {
+        expect(preparedBacklog).toBe(true);
+        multiEventBatch = batch.length;
+        // The assertion must identify the exact retired receiver.
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        retired = this;
+        const unreadIndex = reader === 'bulk' ? 0 : 1;
+        const withheld = batch[unreadIndex]!;
+        // Schedule the real public close at the exact access to the first
+        // unread tail entry. readEvents must recheck ownership after parsing.
+        Object.defineProperty(batch, unreadIndex, {
+          configurable: true,
+          get: () => {
+            tailRead++;
+            closing = session!.close();
+            return withheld;
+          },
+        });
+      }
+      return batch;
+    },
+  );
   session = await new Agent({
     instructions: 'Answer.',
     model: 'gpt-5',
@@ -429,7 +445,7 @@ it('drops the unread tail of a real text batch when its owner closes', async () 
     await closing;
     await outcome;
     const events = await observed;
-    expect(multiEventBatch).toBeGreaterThan(1);
+    expect(multiEventBatch).toBeGreaterThan(reader === 'bulk' ? 0 : 1);
     expect(multiEventBatch).toBeLessThanOrEqual(8);
     expect(tailRead).toBe(1);
     expect(finish.mock.contexts).toContain(retired);
@@ -455,10 +471,16 @@ it('drops the unread tail of a real text batch when its owner closes', async () 
     await session.close();
   }
   server.assertExhausted();
-}, 20_000);
+}
+
+it.each(['ordinary', 'bulk'] as const)(
+  'drops unread text from the %s reader when its owner closes',
+  assertUnreadTextRetirement,
+  20_000,
+);
 
 it('retires the exact text reader before a supplied context replacement starts reading', async () => {
-  const chunks = Array.from({ length: 16 }, (_, index) => `source-${index};`);
+  const chunks = Array.from({ length: 64 }, (_, index) => `source-${index};`);
   const expected = chunks.join('');
   const server = new ModelServer([
     {
@@ -480,7 +502,6 @@ it('retires the exact text reader before a supplied context replacement starts r
     supportsWebsockets: false,
   });
   const native = await binding();
-  const original = native.NativeThread.prototype._next_session_events;
   const finish = vi.spyOn(
     native.NativeThread.prototype,
     '_finish_child_event_reader',
@@ -489,34 +510,41 @@ it('retires the exact text reader before a supplied context replacement starts r
   let source: NativeThread | undefined;
   let backlogPrepared = false;
   let batches = 0;
-  vi.spyOn(
-    native.NativeThread.prototype,
+  const bulkContexts = new Set<NativeThread>();
+  for (const method of [
     '_next_session_events',
-  ).mockImplementation(async function (this: NativeThread) {
-    contexts.add(this);
-    const batch = await original.call(this);
-    firstNativeBatchWire(batch);
-    const events = batch.map((wire) => JSON.parse(wire));
-    const backlogGate = events.some(
-      (event) => event.msg.type === 'agent_message_content_delta',
+    '_next_session_events_bulk',
+  ] as const) {
+    const original = native.NativeThread.prototype[method];
+    vi.spyOn(native.NativeThread.prototype, method).mockImplementation(
+      async function (this: NativeThread) {
+        contexts.add(this);
+        if (method === '_next_session_events_bulk') bulkContexts.add(this);
+        const batch = await original.call(this);
+        firstNativeBatchWire(batch);
+        const events = batch.map((wire) => JSON.parse(wire));
+        const backlogGate = events.some(
+          (event) => event.msg.type === 'agent_message_content_delta',
+        );
+        if (!backlogPrepared && backlogGate) {
+          // Preserve the source identity across native context replacement.
+          // eslint-disable-next-line @typescript-eslint/no-this-alias
+          source = this;
+          backlogPrepared = true;
+          await vi.waitFor(
+            async () => {
+              expect(await this.read_thread_history(null)).toContain(expected);
+            },
+            { timeout: 5000, interval: 10 },
+          );
+        }
+        if (this === source && batch.length > 1) {
+          batches++;
+        }
+        return batch;
+      },
     );
-    if (!backlogPrepared && backlogGate) {
-      // Preserve the source identity across native context replacement.
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      source = this;
-      backlogPrepared = true;
-      await vi.waitFor(
-        async () => {
-          expect(await this.read_thread_history(null)).toContain(expected);
-        },
-        { timeout: 5000, interval: 10 },
-      );
-    }
-    if (this === source && batch.length > 1) {
-      batches++;
-    }
-    return batch;
-  });
+  }
   await using session = await new Agent({
     instructions: 'Answer.',
     model: 'gpt-5',
@@ -526,6 +554,7 @@ it('retires the exact text reader before a supplied context replacement starts r
     (await (await session.submit('Original context.')).wait()).finalOutput,
   ).toBe(expected);
   expect(batches).toBeGreaterThan(0);
+  expect(bulkContexts.has(source!)).toBe(true);
   await session.compact({ summary: 'Only the new context remains active.' });
   expect(source).toBeDefined();
   expect(finish.mock.contexts).toContain(source);
@@ -543,5 +572,113 @@ it('retires the exact text reader before a supplied context replacement starts r
   expect((await next.wait()).finalOutput).toBe('new context answer');
   const projected = await events;
   expect(projected).toBe('new context answer');
+  expect([...bulkContexts].every((owner) => owner === source)).toBe(true);
   server.assertExhausted();
 }, 20_000);
+
+it('switches only after32 root deltas and resets before a short successor turn', async () => {
+  const native = await binding();
+  // A matched native build must supply and actually execute this private export.
+  expect(typeof native.NativeThread.prototype._next_session_events_bulk).toBe(
+    'function',
+  );
+  const states = new WeakMap<
+    NativeThread,
+    { pending: boolean; turn: string | null; deltas: Map<string, number> }
+  >();
+  let bulkReads = 0;
+  for (const method of [
+    '_next_session_events',
+    '_next_session_events_bulk',
+  ] as const) {
+    const original = native.NativeThread.prototype[method];
+    vi.spyOn(native.NativeThread.prototype, method).mockImplementation(
+      function (this: NativeThread) {
+        let state = states.get(this);
+        if (!state) {
+          state = { pending: false, turn: null, deltas: new Map() };
+          states.set(this, state);
+        }
+        expect(state.pending).toBe(false);
+        if (method === '_next_session_events_bulk') {
+          bulkReads++;
+          expect(state.turn).not.toBeNull();
+          expect(state.deltas.get(state.turn!) ?? 0).toBeGreaterThanOrEqual(32);
+        }
+        state.pending = true;
+        const captured = state;
+        const pending = original.call(this);
+        void pending.then(
+          (batch) => {
+            captured.pending = false;
+            for (const wire of batch) {
+              const event = JSON.parse(wire);
+              if (event.subagent_id !== undefined) continue;
+              if (
+                event.msg.type === 'agent_message_content_delta' &&
+                event.msg.delta
+              ) {
+                captured.turn = event.id;
+                captured.deltas.set(
+                  event.id,
+                  (captured.deltas.get(event.id) ?? 0) + 1,
+                );
+              }
+              if (
+                ['turn_complete', 'task_complete', 'turn_aborted'].includes(
+                  event.msg.type,
+                ) &&
+                event.id === captured.turn
+              )
+                captured.turn = null;
+            }
+          },
+          () => {
+            captured.pending = false;
+          },
+        );
+        return pending;
+      },
+    );
+  }
+  const counts = [31, 32, 64, 8];
+  const chunks = counts.map((count) =>
+    Array.from({ length: count }, (_, i) => `${i};`),
+  );
+  const server = new ModelServer(
+    chunks.map((parts) => ({
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: streamingBody(parts),
+    })),
+  );
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-bulk-transition',
+    supportsWebsockets: false,
+  });
+  await using session = await new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  }).session();
+  for (let index = 0; index < counts.length; index++) {
+    const before = bulkReads;
+    const turn = await session.submit(`Turn${index}.`);
+    const result = await turn.wait();
+    expect(result.finalOutput).toBe(chunks[index]!.join(''));
+    const replay: string[] = [];
+    for await (const event of turn.events()) {
+      if (!('type' in event)) continue;
+      expect(event.type).not.toBe('gap');
+      if (event.type === 'output_text_delta') replay.push(event.delta);
+    }
+    expect(replay.join('')).toBe(result.finalOutput);
+    if (counts[index]! < 32) expect(bulkReads).toBe(before);
+    else expect(bulkReads).toBeGreaterThan(before);
+  }
+  expect(bulkReads).toBeGreaterThan(0);
+  server.assertExhausted();
+}, 30_000);
