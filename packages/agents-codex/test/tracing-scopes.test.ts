@@ -1241,6 +1241,80 @@ it.each([false, true])(
     child.close();
   },
 );
+it.each(['independent root', 'continuation predecessor'] as const)(
+  'releases tracing from a retained %s after joined close',
+  async (kind) => {
+    const events = Array.from({ length: 4 }, () =>
+      Promise.withResolvers<string>(),
+    );
+    let admitted = 0;
+    const session = await rootFixture(
+      async (wire) => {
+        if (JSON.parse(wire).mode === 'steer')
+          return JSON.stringify({ status: 'steered', turn_id: 'root-1' });
+        return JSON.stringify({
+          status: 'started',
+          turn_id: `root-${++admitted}`,
+        });
+      },
+      {},
+      { _managed_instructions: kind === 'continuation predecessor' },
+      events,
+    );
+    const finish = (index: number, unsampled = false) =>
+      events[index].resolve(
+        JSON.stringify({
+          id: `root-${index + 1}`,
+          msg: { type: 'task_complete', last_agent_message: 'done' },
+          ...(unsampled ? { sdk_unsampled_steering: true } : {}),
+        }),
+      );
+    try {
+      const { turn, workflow, context } = await (async () => {
+        let workflow!: WeakRef<Awaited<ReturnType<typeof startTrace>>>;
+        let context!: { traceId: string; spanId: string };
+        const turn = await withTrace({}, (span) => {
+          workflow = new WeakRef(span);
+          context = {
+            traceId: span.context.traceId,
+            spanId: span.context.spanId,
+          };
+          return session.submit('first');
+        });
+        return { turn, workflow, context };
+      })();
+      const continued = kind === 'continuation predecessor';
+      if (continued) await turn.steer('retained input');
+      finish(0, continued);
+      if (continued) {
+        await vi.waitFor(() => expect(admitted).toBe(2));
+        finish(1);
+      }
+      const result = await turn.wait();
+      const later = await session.submit('later independent root');
+      finish(continued ? 2 : 1);
+      await later.wait();
+      expect(workflowForTrace(context.traceId, context.spanId)).toBeDefined();
+      await session.close();
+      const workflowLease = [...harness.aliases].find(
+        (token) => harness.contexts.get(token)?.span_id === context.spanId,
+      );
+      expect(workflowLease).toBeDefined();
+      await collectUntilReleased(workflow);
+      await vi.waitFor(() =>
+        expect(harness.native.release_trace_context).toHaveBeenCalledWith(
+          workflowLease,
+        ),
+      );
+      expect(workflowForTrace(context.traceId, context.spanId)).toBeUndefined();
+      expect(await turn.wait()).toBe(result);
+      expect(result.turn).toBe(turn);
+      expect(result.finalOutput).toBe('done');
+    } finally {
+      await session.close();
+    }
+  },
+);
 it('inherits a lexical workflow in a delayed arbitrary Promise task', async () => {
   const gate = Promise.withResolvers<void>();
   let child: Promise<void>;

@@ -960,6 +960,9 @@ export class Session<OutputT = string, Context = unknown> {
     NativeRunResult,
     Completed<unknown>
   >();
+  // Close must release tracing on surviving handles without retaining old results.
+  private readonly runs = new Set<WeakRef<NativeTurn>>();
+  private readonly runFinalizer: FinalizationRegistry<WeakRef<NativeTurn>>;
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
   private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
@@ -1125,6 +1128,10 @@ export class Session<OutputT = string, Context = unknown> {
     private readonly oneShot?: OneShotOptions,
     modelApiKey?: string,
   ) {
+    const runs = this.runs;
+    this.runFinalizer = new FinalizationRegistry((reference) =>
+      runs.delete(reference),
+    );
     this.defaultOutput = options.output ?? prepareOutput(undefined);
     this.openingCatalog = catalog;
     const receipts = isOutputAwareState(restored) ? restored : undefined;
@@ -3490,6 +3497,9 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
     const run = new NativeTurn(() => this.assertCanWait(run));
+    const reference = new WeakRef(run);
+    this.runs.add(reference);
+    this.runFinalizer.register(run, reference, reference);
     submissions.set(run, { output, outputOverride, observation: 'open' });
     void run.completion.promise.then(
       () => run.tracing?.finish(),
@@ -9719,12 +9729,15 @@ export class Session<OutputT = string, Context = unknown> {
         } finally {
           // Native, readers and child callbacks have joined; late discovery is now impossible.
           this.options.tracingCapture = undefined;
-          for (const owned of [run, this.lastRun]) {
+          for (const reference of this.runs) {
+            const owned = reference.deref();
             if (owned) {
               owned.tracing = undefined;
               owned.issuedTracing = undefined;
             }
+            this.runFinalizer.unregister(reference);
           }
+          this.runs.clear();
         }
       }
       this.observations.finish('closed');
