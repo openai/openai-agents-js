@@ -712,7 +712,10 @@ it('rejects unexpected MCP calls during native compaction without consuming the 
   expect(approval).not.toHaveBeenCalled();
   expect(remote.effects).toEqual([]);
   expect(model.requests).toHaveLength(2);
-  expect(model.requests[1]?.tools).toEqual([]);
+  expect(model.requests[1]?.tools ?? []).toEqual([]);
+  expect(model.requests[1]?.input).not.toContainEqual(
+    expect.objectContaining({ type: 'additional_tools' }),
+  );
   expect(JSON.stringify(await session.saveState())).not.toContain(
     'unexpected-summary-call',
   );
