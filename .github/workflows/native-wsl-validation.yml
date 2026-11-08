@@ -1,0 +1,183 @@
+name: Native WSL capability probe
+
+on:
+  push:
+    branches: [markstuart/native-wsl-validation]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  capabilities:
+    if: github.ref == 'refs/heads/markstuart/native-wsl-validation'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Probe real WSL2 and WSLg prerequisites
+        timeout-minutes: 13
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $reportPath = Join-Path $env:RUNNER_TEMP 'native-wsl-capabilities.json'
+          $report = [ordered]@{
+            schema_version = 1
+            probe_only = $true
+            image_os = $env:ImageOS
+            image_version = $env:ImageVersion
+            capabilities = [ordered]@{}
+          }
+          $names = @('wsl2_launch', 'linux_tools', 'windows_interop', 'interop_bind_alias', 'no_proc_prerequisites', 'root_reentry', 'wslg_duplicate_root')
+          foreach ($name in $names) {
+            $report.capabilities[$name] = @{ status = 'not_run' }
+          }
+          function Save-Report {
+            $report | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $reportPath
+          }
+          function Invoke-Wsl([string] $Stage, [string[]] $Arguments) {
+            $output = & wsl.exe @Arguments 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            if ($code -ne 0) {
+              $failure = [Exception]::new('WSL command failed.')
+              $failure.Data['native_exit_code'] = $code
+              $failure.Data['stage'] = $Stage
+              $failure.Data['error_codes'] = @([regex]::Matches($output, '(?:Wsl/[A-Za-z0-9_/-]+|HCS_E_[A-Z0-9_]+|0x[0-9A-Fa-f]{8})') | ForEach-Object { $_.Value } | Select-Object -Unique)
+              throw $failure
+            }
+            return $output.Replace("`0", '').Trim()
+          }
+          function Test-Capability([string] $Name, [scriptblock] $Probe) {
+            try {
+              & $Probe | Out-Null
+              $report.capabilities[$Name] = @{ status = 'passed' }
+            } catch {
+              # Keep native output and environment values out of public diagnostics.
+              $report.capabilities[$Name] = @{ status = 'failed' }
+              if ($_.Exception.Data.Contains('native_exit_code')) {
+                $report.capabilities[$Name].native_exit_code = $_.Exception.Data['native_exit_code']
+                $report.capabilities[$Name].stage = $_.Exception.Data['stage']
+                $report.capabilities[$Name].error_codes = $_.Exception.Data['error_codes']
+              }
+            }
+            Save-Report
+            Write-Host "$Name`: $($report.capabilities[$Name].status)"
+          }
+          function Invoke-Linux([string] $Stage, [string] $Script) {
+            Invoke-Wsl -Stage $Stage -Arguments @('-d', 'Ubuntu-24.04', '-u', 'wslprobe', '--', '/bin/bash', '-c', "set -euo pipefail`n$Script") | Out-Null
+          }
+          Save-Report
+          Test-Capability 'wsl2_launch' {
+            $version = Invoke-Wsl -Stage 'version' -Arguments @('--version')
+            $report['versions'] = [ordered]@{}
+            foreach ($match in [regex]::Matches($version, '(?im)^(WSL|Kernel|WSLg|MSRDC|Direct3D|DXCore|Windows) version:\s*([0-9][0-9A-Za-z.+()-]*)\s*$')) {
+              $report.versions[$match.Groups[1].Value] = $match.Groups[2].Value
+            }
+            $status = Invoke-Wsl -Stage 'status' -Arguments @('--status')
+            if ($status -match '(?im)^Default Version:\s*([12])\s*$') {
+              $report['default_wsl_version'] = [int] $Matches[1]
+            }
+            Save-Report
+            Invoke-Wsl -Stage 'install_distro' -Arguments @('--install', '-d', 'Ubuntu-24.04', '--no-launch', '--web-download') | Out-Null
+            Invoke-Wsl -Stage 'set_wsl2' -Arguments @('--set-version', 'Ubuntu-24.04', '2') | Out-Null
+            $list = Invoke-Wsl -Stage 'list_distro_version' -Arguments @('--list', '--verbose')
+            if ($list -notmatch '(?m)^\s*\*?\s*Ubuntu-24\.04\s+\S+\s+2\s*$') {
+              throw 'The probe distro is not listed as WSL2.'
+            }
+            Invoke-Wsl -Stage 'launch_linux' -Arguments @('-d', 'Ubuntu-24.04', '-u', 'root', '--', '/bin/sh', '-c', 'test "$(uname -s)" = Linux') | Out-Null
+          }
+          if ($report.capabilities.wsl2_launch.status -eq 'passed') {
+            Test-Capability 'linux_tools' {
+              Invoke-Wsl -Stage 'install_linux_tools' -Arguments @('-d', 'Ubuntu-24.04', '-u', 'root', '--', '/bin/bash', '-c', @'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update >/dev/null
+          apt-get install --yes --no-install-recommends bubblewrap util-linux bash coreutils >/dev/null
+          useradd --create-home --shell /bin/bash wslprobe
+          '@) | Out-Null
+              Invoke-Linux -Stage 'nonroot_tools' -Script 'test "$(id -u)" -ne 0; test -x /usr/bin/unshare; test -x /usr/bin/mount; test -x /usr/bin/bwrap'
+            }
+          }
+          if ($report.capabilities.linux_tools.status -eq 'passed') {
+            # Use the real WSL-provided socket and Windows executable paths.
+            $interop = @'
+          test -d /run/WSL
+          test -n "${WSL_INTEROP:-}"
+          test -S "$WSL_INTEROP"
+          test -x /init
+          ps="$(wslpath -u 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe')"
+          test -x "$ps"
+          baseline="$(timeout 20s "$ps" -NoProfile -NonInteractive -Command 'Write-Output interop-baseline-ok' | tr -d '\r')"
+          test "$baseline" = interop-baseline-ok
+          '@
+            Test-Capability 'windows_interop' { Invoke-Linux -Stage 'windows_interop' -Script $interop }
+            Test-Capability 'interop_bind_alias' {
+              Invoke-Linux -Stage 'interop_bind_alias' -Script ($interop + "`n" + @'
+          alias_dir="$(mktemp -d)"
+          trap 'rmdir "$alias_dir"' EXIT
+          unshare --user --map-root-user --mount --propagation private -- /bin/bash -c '
+            set -euo pipefail
+            mount --bind /run/WSL "$1"
+            trap '\''umount "$1"'\'' EXIT
+            export WSL_INTEROP="$1/${WSL_INTEROP##*/}"
+            alias_result="$(timeout 20s "$2" -NoProfile -NonInteractive -Command "Write-Output alias-baseline-ok" | tr -d "\r")"
+            test "$alias_result" = alias-baseline-ok
+            direct_result="$(timeout 20s bash -c '\''exec -a "$1" /init "$1" -NoProfile -NonInteractive -Command "Write-Output direct-init-baseline-ok"'\'' bash "$2" | tr -d "\r")"
+            test "$direct_result" = direct-init-baseline-ok
+          ' bash "$alias_dir" "$ps"
+          '@)
+            }
+            Test-Capability 'no_proc_prerequisites' {
+              Invoke-Linux -Stage 'no_proc_prerequisites' -Script ($interop + "`n" + @'
+          # Check namespace and procfs support, without claiming an SDK assertion ran.
+          bwrap --ro-bind / / --dev /dev --unshare-pid --proc /proc -- /bin/sh -c 'test -r /proc/self/status'
+          bwrap --ro-bind / / --dev /dev --unshare-pid --tmpfs /proc -- /bin/sh -c 'test ! -e /proc/1'
+          '@)
+            }
+            Test-Capability 'root_reentry' {
+              Invoke-Linux -Stage 'root_reentry' -Script @'
+          test -d /run/WSL
+          test -n "${WSL_DISTRO_NAME:-}"
+          test "$WSL_DISTRO_NAME" = Ubuntu-24.04
+          wsl="$(wslpath -u 'C:\Windows\System32\wsl.exe')"
+          test -x "$wsl"
+          root_uid="$(timeout 20s "$wsl" -d "$WSL_DISTRO_NAME" -u root -- /usr/bin/id -u | tr -d '\r')"
+          test "$root_uid" = 0
+          '@
+            }
+            Test-Capability 'wslg_duplicate_root' {
+              Invoke-Linux -Stage 'wslg_duplicate_root' -Script @'
+          test -d /mnt/wslg/distro
+          test ! -L /mnt/wslg/distro
+          root_identity="$(stat -c '%d:%i' /)"
+          alias_identity="$(stat -c '%d:%i' /mnt/wslg/distro)"
+          test "$root_identity" = "$alias_identity"
+          '@
+            }
+          }
+          $incomplete = @($report.capabilities.Values | Where-Object { $_.status -ne 'passed' })
+          if ($incomplete.Count -ne 0) {
+            throw 'Required host capabilities failed or were not run. No SDK build or runtime test ran.'
+          }
+      - name: Publish capability JSON and summary
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reportPath = Join-Path $env:RUNNER_TEMP 'native-wsl-capabilities.json'
+          if (-not (Test-Path -LiteralPath $reportPath)) {
+            'Capability report unavailable. Probe did not complete.' >> $env:GITHUB_STEP_SUMMARY
+            throw 'Capability report unavailable.'
+          }
+          $json = Get-Content -Raw -LiteralPath $reportPath
+          $report = $json | ConvertFrom-Json
+          @('# WSL host capabilities', '', 'Capability probe only. No SDK compilation or runtime tests ran.', '', '| Capability | Status |', '| --- | --- |') >> $env:GITHUB_STEP_SUMMARY
+          foreach ($capability in $report.capabilities.PSObject.Properties) {
+            "| $($capability.Name) | $($capability.Value.status) |" >> $env:GITHUB_STEP_SUMMARY
+          }
+          @('', '```json', $json, '```') >> $env:GITHUB_STEP_SUMMARY
+          Write-Output $json
+          $incomplete = @($report.capabilities.PSObject.Properties | Where-Object { $_.Value.status -ne 'passed' })
+          if ($incomplete.Count -ne 0) {
+            throw 'Capability report contains failed or unexecuted prerequisites.'
+          }
