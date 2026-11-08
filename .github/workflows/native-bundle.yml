@@ -65,6 +65,8 @@ jobs:
         run: choco install protoc --yes --no-progress
 
       - name: Build the native runtime
+        env:
+          CC_ENABLE_DEBUG_OUTPUT: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: node packages/agents-codex/scripts/native.mjs package
       - name: Test Windows project-search filename handling
         if: runner.os == 'Windows'
@@ -75,6 +77,8 @@ jobs:
       - name: Build the executor test fixture
         if: runner.os == 'Linux' || runner.os == 'macOS'
         working-directory: packages/agents-codex/native
+        env:
+          CC_ENABLE_DEBUG_OUTPUT: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: |
           native_host=$(rustc -vV | sed -n 's/^host: //p')
           export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
@@ -82,6 +86,58 @@ jobs:
           cargo build --locked --release --example exec-server-fixture
           mkdir -p test-bin
           install -m 0755 "$CARGO_TARGET_DIR/release/examples/exec-server-fixture" test-bin/exec-server-fixture
+      - name: Record Linux private allocator evidence
+        if: runner.os == 'Linux'
+        working-directory: packages/agents-codex
+        run: |
+          evidence="$RUNNER_TEMP/private-allocator-evidence"
+          mkdir -p "$evidence"
+          rustc -Vv > "$evidence/rustc.txt"
+          cargo -V > "$evidence/cargo.txt"
+          cc --version > "$evidence/cc.txt"
+          cp native/Cargo.lock "$evidence/Cargo.lock"
+          cp native/build-receipt.json "$evidence/build-receipt.json"
+          cargo tree --locked --manifest-path native/Cargo.toml --target x86_64-unknown-linux-gnu -e features -i libmimalloc-sys > "$evidence/allocator-features.txt"
+          : > "$evidence/mimalloc-c-commands.txt"
+          for output in "$CARGO_TARGET_DIR"/release/build/libmimalloc-sys-*/output; do
+            test -f "$output"
+            label=$(basename "$(dirname "$output")")
+            cp "$output" "$evidence/$label.output.txt"
+            grep -F 'mimalloc/v3/src/static.c' "$output" >> "$evidence/mimalloc-c-commands.txt"
+          done
+          grep -F -- '-ftls-model=local-dynamic' "$evidence/mimalloc-c-commands.txt"
+          if grep -E -- 'MI_MALLOC_OVERRIDE|initial-exec' "$evidence/mimalloc-c-commands.txt"; then
+            exit 1
+          fi
+          files=(native/codex.node bin/codex-sdk-runtime bin/codex-linux-sandbox bin/codex-execve-wrapper bin/codex-code-mode-host native/test-bin/exec-server-fixture)
+          sha256sum "${files[@]}" > "$evidence/product-sha256.txt"
+          for file in "${files[@]}"; do
+            label=${file//\//_}
+            readelf -W -d "$file" > "$evidence/$label.dynamic.txt"
+            readelf -W -r "$file" > "$evidence/$label.relocations.txt"
+            readelf -W -s "$file" > "$evidence/$label.symbols.txt"
+            nm -D --defined-only "$file" > "$evidence/$label.exports.txt"
+            nm --defined-only "$file" > "$evidence/$label.all-symbols.txt"
+            if [[ "$file" != native/codex.node ]]; then
+              if grep -E '[[:space:]]_?mi_(malloc|free|zalloc|realloc)' "$evidence/$label.all-symbols.txt"; then
+                exit 1
+              fi
+            fi
+          done
+          if grep -E 'STATIC_TLS' "$evidence/native_codex.node.dynamic.txt" || grep -E 'R_X86_64_(TPOFF|GOTTPOFF)' "$evidence/native_codex.node.relocations.txt"; then
+            exit 1
+          fi
+          if grep -E '[[:space:]](malloc|calloc|realloc|free|aligned_alloc|posix_memalign)(@@[^[:space:]]+)?$' "$evidence/native_codex.node.exports.txt"; then
+            exit 1
+          fi
+      - name: Preserve Linux private allocator evidence
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: private-allocator-evidence-linux-x64
+          path: ${{ runner.temp }}/private-allocator-evidence
+          if-no-files-found: error
+          retention-days: 90
       - name: Archive the native bundle
         working-directory: packages/agents-codex
         env:
