@@ -18,6 +18,11 @@ export function suppressTracing<T>(callback: () => T): T {
   return processorSuppressed.run(true, callback);
 }
 
+/** @internal Processor callbacks and their asynchronous descendants share this context. */
+export function inTraceProcessor(): boolean {
+  return processorSuppressed.getStore() === true;
+}
+
 /** Native-owned span. Close ends recording; its parent context lasts while this object is reachable. */
 export class TraceSpan {
   readonly context: SpanContext;

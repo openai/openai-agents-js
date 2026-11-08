@@ -376,6 +376,10 @@ export class Agent<Context = undefined, Output = string> {
     }
   }
 
+  /**
+   * Run once and close the owned Session. When RunCleanupError is thrown,
+   * its cleanup.close() retries only that Session's cleanup.
+   */
   async run(
     input: UserInput | null,
     ...args: RunArguments<Context>

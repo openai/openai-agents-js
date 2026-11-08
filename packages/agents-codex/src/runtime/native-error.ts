@@ -1,6 +1,27 @@
 import type { SessionStoreCleanup } from './custom-thread-store';
 import { encode } from './binding';
 
+/**
+ * A one-shot run and its owned Session cleanup failed.
+ * Retry cleanup.close() on this error; it closes the same Session without
+ * repeating the run. Close can still report a diagnostic after retirement.
+ * The original failure remains in cause and both failures remain in errors.
+ */
+export class RunCleanupError extends AggregateError {
+  readonly cleanup: { close(): Promise<void> };
+
+  constructor(
+    errors: unknown[],
+    message: string,
+    close: () => Promise<void>,
+    options?: ErrorOptions,
+  ) {
+    super(errors, message, options);
+    this.name = new.target.name;
+    this.cleanup = Object.freeze({ close });
+  }
+}
+
 /** Safe cause captured for the selected model-output failure, when known. */
 export type ResponseIntegrityReason =
   | 'undecodable_output_item'

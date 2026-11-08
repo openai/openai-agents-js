@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: retain reconciliation cleanup ownership and align native child, error, and validation interfaces
+fix: retain cleanup ownership and align native session types, MCP metadata, telemetry callbacks, mount defaults, and validation

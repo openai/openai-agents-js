@@ -341,7 +341,26 @@ it('uses full results once, preserves ordered blocks and keeps private metadata 
     content: [
       { type: 'text', text: 'denied' },
       { type: 'image', mimeType: 'image/png', data: 'AA==' },
-      { type: 'audio', mimeType: 'audio/wav', data: 'AQ==' },
+      {
+        type: 'audio',
+        mimeType: 'audio/wav',
+        data: 'AQ==',
+        _meta: { token: 'synthetic-private-audio' },
+      },
+      {
+        type: 'resource',
+        _meta: { token: 'synthetic-private-block' },
+        resource: {
+          uri: 'file:///report',
+          text: 'ordinary resource',
+          _meta: { token: 'synthetic-private-resource' },
+        },
+      },
+      {
+        type: 'custom',
+        _meta: { token: 'synthetic-private-unknown' },
+        payload: { _meta: 'ordinary nested content' },
+      },
       {
         type: 'resource_link',
         uri: 'https://example.invalid/private',
@@ -350,6 +369,8 @@ it('uses full results once, preserves ordered blocks and keeps private metadata 
     ],
   }));
   Object.assign(server, { useStructuredContent: true });
+  const observed = vi.fn();
+  Object.assign(server, { onToolEnd: observed });
   const [selected] = await selectMcpTools(
     { name: 'crm', server },
     { context: undefined },
@@ -370,6 +391,20 @@ it('uses full results once, preserves ordered blocks and keeps private metadata 
     {
       type: 'inputText',
       text: JSON.stringify({
+        type: 'resource',
+        resource: { uri: 'file:///report', text: 'ordinary resource' },
+      }),
+    },
+    {
+      type: 'inputText',
+      text: JSON.stringify({
+        type: 'custom',
+        payload: { _meta: 'ordinary nested content' },
+      }),
+    },
+    {
+      type: 'inputText',
+      text: JSON.stringify({
         type: 'resource_link',
         uri: 'https://example.invalid/private',
         name: 'resource',
@@ -377,6 +412,10 @@ it('uses full results once, preserves ordered blocks and keeps private metadata 
     },
   ]);
   expect(JSON.stringify(result)).not.toContain('synthetic-private');
+  expect(observed).toHaveBeenCalledOnce();
+  expect(observed.mock.calls[0][0].result).toEqual(
+    await server.callToolResult.mock.results[0].value,
+  );
   expect(server.callToolResult).toHaveBeenCalledTimes(1);
   expect(server.callTool).not.toHaveBeenCalled();
 });
