@@ -685,6 +685,24 @@
              },
              DynamicToolCallOutputContentItem::InputAudio {
                  audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+@@ -5428,3 +5437,17 @@
+         }
+     );
+ }
++
++#[test]
++fn file_user_input_core_round_trip_preserves_each_source() {
++    for wire in [
++        serde_json::json!({"type": "file", "file_id": "file-round-trip"}),
++        serde_json::json!({"type": "file", "file_data": "data:text/plain;base64,YQ==", "filename": "note.txt"}),
++        serde_json::json!({"type": "file", "file_url": "https://example.invalid/note.txt", "filename": "note.txt"}),
++    ] {
++        let api: UserInput = serde_json::from_value(wire.clone()).unwrap();
++        let core = api.into_core();
++        let restored = UserInput::from(core);
++        assert_eq!(serde_json::to_value(restored).unwrap(), wire);
++    }
++}
 --- a/codex-rs/app-server-protocol/src/protocol/v2/turn.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/v2/turn.rs
 @@ -423,6 +423,10 @@
@@ -706,7 +724,15 @@
              UserInput::Text {
                  text,
                  text_elements,
-@@ -517,7 +522,8 @@
+@@ -487,6 +492,7 @@
+ impl From<CoreUserInput> for UserInput {
+     fn from(value: CoreUserInput) -> Self {
+         match value {
++            CoreUserInput::File { file } => UserInput::File { file },
+             CoreUserInput::Text {
+                 text,
+                 text_elements,
+@@ -517,7 +523,8 @@
      pub fn text_char_count(&self) -> usize {
          match self {
              UserInput::Text { text, .. } => text.chars().count(),
@@ -10914,6 +10940,16 @@
                  UserInput::Text {
                      text,
                      text_elements: current_text_elements,
+--- a/codex-rs/tui/src/dynamic_tools.rs
++++ b/codex-rs/tui/src/dynamic_tools.rs
+@@ -1315,6 +1315,7 @@
+                 "type": "userMessage",
+                 "id": id,
+                 "content": content.iter().map(|input| match input {
++                    UserInput::File { .. } => json!(input),
+                     UserInput::Text { text, .. } => {
+                         let mut input = json!({"type": "text", "text": truncate(text, DEFAULT_OUTPUT_CHARS)});
+                         if let Some((source_thread_id, delegated)) = parse_delegated_prompt(text)
 --- a/codex-rs/tui/src/dynamic_tools_mcp.rs
 +++ b/codex-rs/tui/src/dynamic_tools_mcp.rs
 @@ -379,10 +379,18 @@
