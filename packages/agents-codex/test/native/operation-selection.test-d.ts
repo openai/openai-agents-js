@@ -1,6 +1,12 @@
 import { expectTypeOf } from 'vitest';
 import { z } from 'zod';
 import {
+  NativeAgents,
+  type ChildBeforeStepContext,
+  type ChildTurn,
+  type ChildCompleted,
+} from '@openai/agents';
+import {
   Agent,
   manualTool,
   tool,
@@ -78,4 +84,29 @@ export async function operationSelectionContracts() {
   void (await selected).steer('go', { tools: [] });
   // @ts-expect-error A manual reply cannot select operation tools.
   void session.respond({}, { tools: [] });
+}
+
+// Child selectors expose only controls supported by the exact child Turn.
+export function childSelectionContracts() {
+  return new NativeAgents<{ enabled: boolean }>({
+    async beforeStep(step) {
+      expectTypeOf(step).toEqualTypeOf<
+        ChildBeforeStepContext<{ enabled: boolean }>
+      >();
+      expectTypeOf(step.submission).toEqualTypeOf<ChildTurn>();
+      expectTypeOf(step.submission.wait()).toEqualTypeOf<
+        Promise<ChildCompleted>
+      >();
+      const completed = await step.submission.wait();
+      expectTypeOf(completed.finalOutput).toEqualTypeOf<string>();
+      expectTypeOf(completed.turn).toEqualTypeOf<ChildTurn>();
+      // @ts-expect-error Child Turns cannot directly cancel native child work.
+      void step.submission.cancel();
+      // @ts-expect-error Child Turns cannot steer native child work.
+      void step.submission.steer('detail');
+      // @ts-expect-error Exact steering is a root Turn control.
+      void step.submission.steerExact('detail');
+      return step.context.enabled ? undefined : [];
+    },
+  });
 }

@@ -3493,53 +3493,97 @@ impl NativeChildTurn {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReconciliationInput {
+    thread_id: codex_protocol::ThreadId,
+    turn_id: String,
+    call_id: String,
+    result: codex_protocol::dynamic_tools::DynamicToolResponse,
+}
+
+// Constructed before the async operation starts, so its original writer remains
+// reachable even when reconciliation or physical release fails.
+#[napi(js_name = "_SessionStoreReconciliation")]
+pub struct SessionStoreReconciliation {
+    store: Arc<custom_storage::CustomThreadStore>,
+    thread_id: codex_protocol::ThreadId,
+    input: std::sync::Mutex<Option<ReconciliationInput>>,
+}
+
+#[napi]
+impl SessionStoreReconciliation {
+    #[napi]
+    pub async fn run(&self) -> napi::Result<()> {
+        let result = self
+            .input
+            .lock()
+            .map_err(native_error)?
+            .take()
+            .ok_or_else(|| input_error("Reconciliation already started"))?;
+        let reconciled = self
+            .store
+            .reconcile(
+                result.thread_id,
+                result.turn_id,
+                result.call_id,
+                result.result,
+            )
+            .await;
+        // Preserve the existing immediate release retry. A later retry through
+        // this same owner only releases the writer, never repeats the receipt.
+        let cleanup = match self.store.release_writer(self.thread_id).await {
+            Ok(_) => Ok(()),
+            Err(first) => {
+                if self
+                    .store
+                    .take_release_failure(self.thread_id)
+                    .await
+                    .is_some()
+                {
+                    self.store
+                        .release_writer(self.thread_id)
+                        .await
+                        .map(|_| ())
+                        .map_err(|retry| format!("{first}; release retry failed: {retry}"))
+                } else {
+                    Err(first.to_string())
+                }
+            }
+        };
+        match (reconciled, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(primary), Ok(())) => Err(native_error(primary)),
+            (Ok(()), Err(cleanup)) => Err(native_error(cleanup)),
+            (Err(primary), Err(cleanup)) => Err(native_error(format!(
+                "reconciliation failed: {primary}; writer cleanup failed: {cleanup}"
+            ))),
+        }
+    }
+
+    #[napi]
+    pub async fn close(&self) -> napi::Result<()> {
+        // The optional returned diagnostic belongs to the original receipt.
+        // Successful physical release completes this cleanup obligation.
+        self.store
+            .release_writer(self.thread_id)
+            .await
+            .map(|_| ())
+            .map_err(native_error)
+    }
+}
+
 #[napi(js_name = "reconcile_thread_store")]
-pub async fn reconcile_thread_store(
+pub fn reconcile_thread_store(
     callback: custom_storage::Callback,
     result_json: String,
-) -> napi::Result<()> {
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct Reconciliation {
-        thread_id: codex_protocol::ThreadId,
-        turn_id: String,
-        call_id: String,
-        result: codex_protocol::dynamic_tools::DynamicToolResponse,
-    }
-    let result: Reconciliation = serde_json::from_str(&result_json).map_err(input_error)?;
-    let store = custom_storage::CustomThreadStore::new(callback);
-    let reconciled = store
-        .reconcile(
-            result.thread_id,
-            result.turn_id,
-            result.call_id,
-            result.result,
-        )
-        .await;
-    // Reconciliation has no Engine cleanup owner. Retry physical release while
-    // keeping the durable receipt outcome separate from cleanup diagnostics.
-    let cleanup = match store.release_writer(result.thread_id).await {
-        Ok(_) => Ok(()),
-        Err(first) => {
-            if store.take_release_failure(result.thread_id).await.is_some() {
-                store
-                    .release_writer(result.thread_id)
-                    .await
-                    .map(|_| ())
-                    .map_err(|retry| format!("{first}; release retry failed: {retry}"))
-            } else {
-                Err(first.to_string())
-            }
-        }
-    };
-    match (reconciled, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(primary), Ok(())) => Err(native_error(primary)),
-        (Ok(()), Err(cleanup)) => Err(native_error(cleanup)),
-        (Err(primary), Err(cleanup)) => Err(native_error(format!(
-            "reconciliation failed: {primary}; writer cleanup failed: {cleanup}"
-        ))),
-    }
+) -> napi::Result<SessionStoreReconciliation> {
+    let result: ReconciliationInput = serde_json::from_str(&result_json).map_err(input_error)?;
+    Ok(SessionStoreReconciliation {
+        store: Arc::new(custom_storage::CustomThreadStore::new(callback)),
+        thread_id: result.thread_id,
+        input: std::sync::Mutex::new(Some(result)),
+    })
 }
 
 #[napi(js_name = "create_store_engine")]

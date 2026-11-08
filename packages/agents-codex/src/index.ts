@@ -28,6 +28,7 @@ export {
   InteractionRequired,
   StaleTurnError,
   TurnAborted,
+  TurnNotSubmitted,
 } from './runtime/session';
 export type {
   Completed,
@@ -193,6 +194,7 @@ export { localStorage } from './runtime/local-storage';
 export { reconcileSessionStore } from './runtime/custom-thread-store';
 export type {
   SessionStore,
+  SessionStoreCleanup,
   ReconciledToolResult,
 } from './runtime/custom-thread-store';
 export { fileSessionStore } from './runtime/file-thread-store';

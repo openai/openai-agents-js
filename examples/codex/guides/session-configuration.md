@@ -31,6 +31,7 @@ Native `modelSettings` accepts these fields:
 | `reasoningEffort` | A string selecting the model's reasoning effort. |
 | `reasoningSummary` | A string selecting the model's reasoning summary setting. |
 | `serviceTier` | A string selecting a service tier, or `null` to clear an inherited override. |
+| `toolChoice` | `'auto'` (the default), `'none'`, or `'required'`. Controls whether the model calls an offered tool; it does not grant execution authority. |
 
 Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Native settings do not accept classic fields such as `temperature`, `maxTokens`, or `retry`; use [Model migration](migrate-models.md) for a supported classic Model.
 

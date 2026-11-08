@@ -3,19 +3,20 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   NativeError,
   InteractionRequired,
+  TurnNotSubmitted,
   type NativeErrorOptions,
   type ResponseIntegrityReason,
 } from '../../src';
 import {
   NativeError as SessionNativeError,
   TurnAborted,
-  TurnNotSubmitted,
 } from '../../src/runtime/session';
 import {
   enrichNativeError,
   nativeError,
   markNativeErrorNotStarted,
 } from '../../src/runtime/native-error';
+import { TurnNotSubmitted as FacadeTurnNotSubmitted } from '@openai/agents';
 import { issueChildTurn } from '../../src/runtime/subagents';
 import type { _NativeChildTurn } from '../../native';
 
@@ -27,6 +28,15 @@ function fields(error: NativeError) {
     category: error.category,
   };
 }
+
+it('exposes the admission error through the native root and Agent facade', () => {
+  expect(FacadeTurnNotSubmitted).toBe(TurnNotSubmitted);
+  const error = new FacadeTurnNotSubmitted({ type: 'busy' });
+  expect(error).toBeInstanceOf(NativeError);
+  expect(error.reason).toEqual({ type: 'busy' });
+  expect(error.effects).toBe('unknown');
+});
+
 const absent = {
   statusCode: null,
   code: null,

@@ -13,6 +13,7 @@ import { captureHostedTool, type HostedTool } from './hosted-tools';
 import type { Environment } from './environment';
 import type { ToolCallContext, Tool, SessionTool } from './tools';
 import { NativeAgents } from './native-agents';
+import { nativeGoalToolNames } from './goals';
 
 // Only these module-owned constructors may declare the host's reserved alias.
 const hostedOptions = new WeakSet<object>();
@@ -616,6 +617,19 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
       })
     )
       throw new TypeError(`Hosted tool reserves the tool name ${hosted.kind}`);
+  if (
+    nativeGoals &&
+    functions.some((tool) => {
+      const identity = toolIdentity(tool);
+      return (
+        identity.namespace === 'functions' &&
+        (nativeGoalToolNames as readonly string[]).includes(identity.name)
+      );
+    })
+  )
+    throw new TypeError(
+      'NativeGoals reserves create_goal, get_goal and update_goal',
+    );
   mcpToolNames(mcp);
   return {
     tools: functions,
