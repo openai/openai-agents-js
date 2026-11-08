@@ -2584,3 +2584,240 @@ it('reclaims native-interrupted function requests that never form a batch or emi
     await peer.owner.close();
   }
 });
+
+it('bounds completed hosted approvals while protecting pending, in-flight and retryable capabilities', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  const request = (id: string) =>
+    peer.payload({
+      HostedMcpApprovalRequested: {
+        approval_id: id,
+        request_id: id,
+        server_label: 'docs',
+        tool_name: 'search',
+        arguments: '{}',
+        response_id: `response-${id}`,
+      },
+    });
+  const nextApproval = async () => {
+    const value = (await events.next()).value;
+    if (!value || value.type !== 'hosted_mcp_approval_requested')
+      throw new Error('Missing approval');
+    return value;
+  };
+  const held = deferred<void>();
+  const original = peer.call.getMockImplementation()!;
+  let rejectRetry = true;
+  peer.call.mockImplementation((operation, params) => {
+    if (operation === 'realtime_conversation_hosted_mcp_approval_sdk') {
+      if (params.approval_id === 'inflight') return held.promise;
+      if (params.approval_id === 'retry' && rejectRetry) {
+        rejectRetry = false;
+        return Promise.reject(new Error('retryable admission'));
+      }
+    }
+    return original(operation, params);
+  });
+  request('pending');
+  const pending = await nextApproval();
+  request('inflight');
+  const inflight = await nextApproval();
+  const deciding = peer.owner.approveHostedMcp(inflight, { approve: false });
+  request('retry');
+  const retry = await nextApproval();
+  await expect(
+    peer.owner.approveHostedMcp(retry, { approve: false }),
+  ).rejects.toThrow('retryable');
+  try {
+    for (let i = 0; i < 1030; i++) {
+      request(`settled-${i}`);
+      const completed = await nextApproval();
+      await peer.owner.approveHostedMcp(completed, { approve: false });
+      await expect(
+        peer.owner.approveHostedMcp(completed, { approve: true }),
+      ).rejects.toThrow('submitted');
+    }
+    for (const id of ['pending', 'inflight', 'retry', 'settled-1029'])
+      request(id);
+    peer.payload({ SessionUpdated: { realtime_session_id: 'dedup-fence' } });
+    expect((await events.next()).value).toMatchObject({
+      type: 'lifecycle',
+      status: 'updated',
+    });
+    await expect(
+      peer.owner.approveHostedMcp(inflight, { approve: true }),
+    ).rejects.toThrow('submitted');
+    await peer.owner.approveHostedMcp(pending, { approve: true });
+    await peer.owner.approveHostedMcp(retry, { approve: false });
+    held.resolve();
+    await deciding;
+    await expect(
+      peer.owner.approveHostedMcp(retry, { approve: true }),
+    ).rejects.toThrow('submitted');
+  } finally {
+    held.resolve();
+    await deciding;
+    await peer.owner.close();
+  }
+});
+
+it('rejects oversized user input before native dispatch and admits exact byte and part boundaries', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const limit = 1024 * 1024;
+  const invalid = [
+    () => peer.owner.sendText('x'.repeat(limit + 1)),
+    () => peer.owner.sendText(' '.repeat(limit + 1)),
+    () => peer.owner.sendText('é'.repeat(limit / 2 + 1)),
+    () => peer.owner.sendMessage('x'.repeat(limit + 1)),
+    () => peer.owner.addImage('é'.repeat(limit / 2 + 1)),
+    () =>
+      peer.owner.sendMessage({
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'a'.repeat(limit / 2) },
+          { type: 'input_image', image: 'b'.repeat(limit / 2 + 1) },
+        ],
+      }),
+    () =>
+      peer.owner.sendMessage({
+        type: 'message',
+        role: 'user',
+        content: Array.from({ length: 1025 }, () => ({
+          type: 'input_text' as const,
+          text: 'x',
+        })),
+      }),
+  ];
+  const before = peer.call.mock.calls.length;
+  for (const send of invalid) await expect(send()).rejects.toThrow('limit');
+  expect(peer.call.mock.calls).toHaveLength(before);
+  await peer.owner.sendText('é'.repeat(limit / 2));
+  await peer.owner.sendMessage({
+    type: 'message',
+    role: 'user',
+    content: [
+      { type: 'input_text', text: 'a'.repeat(limit / 2) },
+      { type: 'input_image', image: 'b'.repeat(limit / 2) },
+    ],
+  });
+  await peer.owner.sendMessage({
+    type: 'message',
+    role: 'user',
+    content: Array.from({ length: 1024 }, () => ({
+      type: 'input_text' as const,
+      text: 'x',
+    })),
+  });
+  expect(
+    peer.call.mock.calls.slice(before).map(([operation]) => operation),
+  ).toEqual([
+    'realtime_conversation_text_sdk',
+    'realtime_conversation_input_sdk',
+    'realtime_conversation_input_sdk',
+  ]);
+  await peer.owner.close();
+});
+
+it('bounds active approval IDs and deduplicates before attempting reclamation', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  const issue = (id: string) =>
+    peer.payload({
+      HostedMcpApprovalRequested: {
+        approval_id: id,
+        request_id: id,
+        server_label: 'docs',
+        tool_name: 'search',
+        arguments: '{}',
+      },
+    });
+  for (let i = 0; i < 1024; i++) {
+    issue(`pending-${i}`);
+    expect((await events.next()).value?.type).toBe(
+      'hosted_mcp_approval_requested',
+    );
+  }
+  issue('pending-0');
+  peer.payload({ SessionUpdated: { realtime_session_id: 'duplicate-fence' } });
+  expect((await events.next()).value).toMatchObject({
+    type: 'lifecycle',
+    status: 'updated',
+  });
+  issue('overflow');
+  await expect(events.next()).rejects.toThrow('approval capacity');
+  await peer.owner.close();
+});
+
+it('retires exact pending approvals but retains in-flight decisions until their native attempt settles', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  const issue = (id: string) =>
+    peer.payload({
+      HostedMcpApprovalRequested: {
+        approval_id: id,
+        request_id: id,
+        response_id: `response-${id}`,
+        server_label: 'docs',
+        tool_name: 'search',
+        arguments: '{}',
+      },
+    });
+  const nextApproval = async () => {
+    const value = (await events.next()).value;
+    if (!value || value.type !== 'hosted_mcp_approval_requested')
+      throw new Error('Missing approval');
+    return value;
+  };
+  issue('pending');
+  const pending = await nextApproval();
+  issue('held');
+  const heldRequest = await nextApproval();
+  const held = deferred<void>();
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) =>
+    operation === 'realtime_conversation_hosted_mcp_approval_sdk' &&
+    params.approval_id === 'held'
+      ? held.promise
+      : original(operation, params),
+  );
+  const deciding = peer.owner.approveHostedMcp(heldRequest, { approve: false });
+  void deciding.catch(() => {});
+  try {
+    await peer.owner.interrupt('response-pending');
+    await events.next();
+    await expect(
+      peer.owner.approveHostedMcp(pending, { approve: false }),
+    ).rejects.toThrow('submitted');
+    await peer.owner.interrupt('response-held');
+    await events.next();
+    for (let i = 0; i < 1030; i++) {
+      issue(`completed-${i}`);
+      await peer.owner.approveHostedMcp(await nextApproval(), {
+        approve: false,
+      });
+    }
+    issue('held');
+    peer.payload({ SessionUpdated: { realtime_session_id: 'inflight-fence' } });
+    expect((await events.next()).value).toMatchObject({
+      type: 'lifecycle',
+      status: 'updated',
+    });
+    held.reject(new Error('native attempt settled after retirement'));
+    await expect(deciding).rejects.toThrow('after retirement');
+    await expect(
+      peer.owner.approveHostedMcp(heldRequest, { approve: true }),
+    ).rejects.toThrow('submitted');
+  } finally {
+    held.resolve();
+    await deciding.catch(() => {});
+    await peer.owner.close();
+  }
+});

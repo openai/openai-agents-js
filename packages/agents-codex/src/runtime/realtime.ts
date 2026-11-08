@@ -239,9 +239,23 @@ const KINDS = new Set([
 ]);
 const EVENT_LIMIT = 128;
 const SDP_BYTES_LIMIT = 1024 * 1024;
+const USER_INPUT_BYTES_LIMIT = 1024 * 1024;
+const USER_INPUT_PARTS_LIMIT = 1024;
 const AUDIO_LIMIT = 2 * 1024 * 1024;
 const HANDOFF_LIMIT = 1024;
 const PENDING_LIMIT = 16;
+
+function userInputBytes(
+  text: string,
+  remaining = USER_INPUT_BYTES_LIMIT,
+): number {
+  if (text.length > remaining)
+    throw new RangeError('Realtime user input exceeds the 1 MiB UTF-8 limit');
+  const bytes = Buffer.byteLength(text);
+  if (bytes > remaining)
+    throw new RangeError('Realtime user input exceeds the 1 MiB UTF-8 limit');
+  return bytes;
+}
 
 function resolveRealtimeApiKey(
   source: NativeRealtimeOptions['apiKey'],
@@ -313,6 +327,10 @@ class NativeRealtimeOwner {
     string
   >();
   private readonly seenHostedApprovals = new Set<string>();
+  private readonly pendingHostedApprovals = new Map<
+    string,
+    { responseId?: string; inFlight: boolean; retired: boolean }
+  >();
   private readonly profileUpdates = new Set<Promise<void>>();
   private readonly retiredResponses = new Set<string>();
   private changed = Promise.withResolvers<void>();
@@ -644,7 +662,8 @@ class NativeRealtimeOwner {
       'approve hosted MCP in its own Realtime session',
     );
     const id = this.hostedApprovals.get(request);
-    if (!id)
+    const pending = id ? this.pendingHostedApprovals.get(id) : undefined;
+    if (!id || !pending || pending.retired)
       throw new TypeError(
         'Hosted MCP approval was not issued here or has already been submitted',
       );
@@ -657,17 +676,35 @@ class NativeRealtimeOwner {
         'Hosted MCP approval requires a boolean decision and optional string reason',
       );
     this.hostedApprovals.delete(request);
+    pending.inFlight = true;
     try {
       await this.call('hosted_mcp_approval', {
         approval_id: id,
         approve: decision.approve,
         ...(decision.reason === undefined ? {} : { reason: decision.reason }),
       });
+      this.pendingHostedApprovals.delete(id);
     } catch (error) {
       // Native consumes before a provider write; a live rejected admission can
       // be corrected and retried. Native still rejects an actually consumed ID.
-      if (this.live && !this.ended) this.hostedApprovals.set(request, id);
+      pending.inFlight = false;
+      if (this.live && !this.ended && !pending.retired)
+        this.hostedApprovals.set(request, id);
+      else this.pendingHostedApprovals.delete(id);
       throw error;
+    }
+  }
+
+  private retireHostedApprovals(responseIds?: ReadonlySet<string>): void {
+    for (const [id, pending] of this.pendingHostedApprovals) {
+      if (
+        responseIds &&
+        (pending.responseId === undefined ||
+          !responseIds.has(pending.responseId))
+      )
+        continue;
+      pending.retired = true;
+      if (!pending.inFlight) this.pendingHostedApprovals.delete(id);
     }
   }
 
@@ -728,15 +765,18 @@ class NativeRealtimeOwner {
     this.inputTail = pending.catch(() => {});
     return pending;
   }
+  /** Send nonempty text within the 1 MiB UTF-8 user input limit. */
   async sendText(text: string): Promise<void> {
     this.checkLive();
-    if (typeof text !== 'string' || !text.trim())
+    if (typeof text !== 'string')
       throw new TypeError('Realtime text must be nonempty');
+    userInputBytes(text);
+    if (!text.trim()) throw new TypeError('Realtime text must be nonempty');
     await this.enqueueInput(async () => {
       await this.call('text', { text, role: 'user' });
     });
   }
-  /** Append one user message, then optionally request a response. */
+  /** Append up to 1024 parts and 1 MiB aggregate UTF-8 text/image input, then optionally respond. */
   async sendMessage(
     message: NativeRealtimeUserInput,
     options: { triggerResponse?: boolean } = {},
@@ -758,6 +798,7 @@ class NativeRealtimeOwner {
     if (typeof message === 'string') {
       if (!message.length)
         throw new TypeError('Realtime user text must be nonempty');
+      userInputBytes(message);
       content = [{ type: 'input_text', text: message }];
     } else {
       if (
@@ -777,6 +818,11 @@ class NativeRealtimeOwner {
         !parts.length
       )
         throw new TypeError('Realtime input requires nonempty user content');
+      if (parts.length > USER_INPUT_PARTS_LIMIT)
+        throw new RangeError(
+          'Realtime user content exceeds the 1024 part limit',
+        );
+      let remaining = USER_INPUT_BYTES_LIMIT;
       content = parts.map((part): JsonObject => {
         if (!part || typeof part !== 'object' || Array.isArray(part))
           throw new TypeError(
@@ -791,6 +837,7 @@ class NativeRealtimeOwner {
             !text.length
           )
             throw new TypeError('Realtime user text must be a nonempty string');
+          remaining -= userInputBytes(text, remaining);
           return { type, text };
         }
         if (type === 'input_image') {
@@ -806,6 +853,7 @@ class NativeRealtimeOwner {
             throw new TypeError(
               'Realtime input requires an inline image and supported detail',
             );
+          remaining -= userInputBytes(image, remaining);
           return {
             type,
             image_url: image,
@@ -824,7 +872,7 @@ class NativeRealtimeOwner {
       });
     });
   }
-  /** Append an inline image reference, optionally without requesting a response. */
+  /** Append an inline image within the 1 MiB UTF-8 input limit, optionally without a response. */
   async addImage(
     image: string,
     options: { triggerResponse?: boolean } = {},
@@ -1090,8 +1138,16 @@ class NativeRealtimeOwner {
         this.seenHostedApprovals.has(value.approval_id)
       )
         return;
-      if (this.seenHostedApprovals.size >= HANDOFF_LIMIT)
-        throw new Error('Hosted MCP approval capacity exceeded');
+      if (this.seenHostedApprovals.size >= HANDOFF_LIMIT) {
+        for (const id of this.seenHostedApprovals) {
+          if (!this.pendingHostedApprovals.has(id)) {
+            this.seenHostedApprovals.delete(id);
+            break;
+          }
+        }
+        if (this.seenHostedApprovals.size >= HANDOFF_LIMIT)
+          throw new Error('Hosted MCP approval capacity exceeded');
+      }
       const request: NativeRealtimeHostedMcpApprovalRequest = Object.freeze({
         type: 'hosted_mcp_approval_requested',
         requestId: value.request_id,
@@ -1101,6 +1157,12 @@ class NativeRealtimeOwner {
         responseId: value.response_id ?? undefined,
       });
       this.seenHostedApprovals.add(value.approval_id);
+      this.pendingHostedApprovals.set(value.approval_id, {
+        responseId:
+          typeof value.response_id === 'string' ? value.response_id : undefined,
+        inFlight: false,
+        retired: false,
+      });
       this.hostedApprovals.set(request, value.approval_id);
       this.emit(request);
     } else if (name === 'HostedMcpToolsListed') {
@@ -1717,6 +1779,7 @@ class NativeRealtimeOwner {
       joinedRoots = new Set<string>(receipt.joined_root_turn_ids ?? []);
       retired = new Set<string>(receipt.retired_response_ids);
       for (const id of retired) this.retireResponse(id);
+      this.retireHostedApprovals(retired);
       this.playback.retire(retired);
       for (const record of this.functions.values())
         if (record.responseId !== undefined && retired.has(record.responseId))
@@ -1875,6 +1938,7 @@ class NativeRealtimeOwner {
         (result) => result.status === 'rejected',
       );
       if (failure?.status === 'rejected') throw failure.reason;
+      this.retireHostedApprovals();
       this.release();
     })().catch((error) => {
       this.closing = undefined;

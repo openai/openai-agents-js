@@ -2054,3 +2054,142 @@ nativeIt(
   },
   120000,
 );
+
+nativeIt(
+  'settles 1030 hosted MCP approvals through the actual native binding without a lifetime cap',
+  async () => {
+    const model = new ModelServer([[message('caller remains reusable')]]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: {
+          hostedMcpTools: [
+            {
+              serverLabel: 'docs',
+              serverUrl: 'https://mcp.example.test/server',
+              allowedTools: ['search'],
+              requireApproval: 'always',
+            },
+          ],
+        },
+      });
+      let approval: NativeRealtimeHostedMcpApprovalRequest | undefined;
+      const completed = new Set<string>();
+      const reading = (async () => {
+        for await (const event of voice.events()) {
+          if (event.type === 'hosted_mcp_approval_requested') approval = event;
+          if (event.type === 'hosted_mcp_call_completed')
+            completed.add(event.itemId);
+        }
+      })();
+      void reading.catch(() => {});
+      try {
+        await peer.frame((frame) => frame.type === 'session.update');
+        for (let index = 0; index < 1030; index++) {
+          const responseId = `approval-response-${index}`;
+          const requestId = `approval-item-${index}`;
+          const callId = `denied-call-${index}`;
+          approval = undefined;
+          const item = {
+            type: 'mcp_approval_request',
+            id: requestId,
+            server_label: 'docs',
+            name: 'search',
+            arguments: '{}',
+          };
+          peer.send({ type: 'response.created', response: { id: responseId } });
+          peer.send({
+            type: 'response.output_item.added',
+            response_id: responseId,
+            output_index: 0,
+            item,
+          });
+          peer.send({ type: 'conversation.item.done', item });
+          peer.send({
+            type: 'response.done',
+            response: { id: responseId, output: [item] },
+          });
+          await vi.waitFor(() => expect(approval?.requestId).toBe(requestId), {
+            timeout: 10000,
+            interval: 1,
+          });
+          const request = approval as
+            NativeRealtimeHostedMcpApprovalRequest | undefined;
+          if (!request) throw new Error('Missing native hosted approval');
+          const after = peer.frames.length;
+          await voice.approveHostedMcp(request, {
+            approve: false,
+            reason: 'Application decision',
+          });
+          await vi.waitFor(
+            () => {
+              expect(peer.frames.slice(after)).toContainEqual(
+                expect.objectContaining({
+                  type: 'conversation.item.create',
+                  previous_item_id: requestId,
+                  item: expect.objectContaining({
+                    type: 'mcp_approval_response',
+                    approval_request_id: requestId,
+                    approve: false,
+                    reason: 'Application decision',
+                  }),
+                }),
+              );
+            },
+            { timeout: 10000, interval: 1 },
+          );
+          // Denial alone is not hosted-call completion. The provider reports its
+          // linked terminal call before the next request enters the same owner.
+          peer.send({
+            type: 'conversation.item.done',
+            response_id: responseId,
+            item: {
+              type: 'mcp_call',
+              id: callId,
+              server_label: 'docs',
+              name: 'search',
+              arguments: '{}',
+              approval_request_id: requestId,
+              status: 'failed',
+              error: {
+                type: 'permission_error',
+                message: 'Application denied the call',
+              },
+            },
+          });
+          await vi.waitFor(() => expect(completed.has(callId)).toBe(true), {
+            timeout: 10000,
+            interval: 1,
+          });
+          await expect(
+            voice.approveHostedMcp(request, { approve: true }),
+          ).rejects.toThrow('submitted');
+        }
+        expect(
+          peer.frames.filter(
+            (frame) => frame.item?.type === 'mcp_approval_response',
+          ),
+        ).toHaveLength(1030);
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+      expect(
+        (await (await session.submit('continue after approvals')).wait())
+          .finalOutput,
+      ).toBe('caller remains reusable');
+      model.assertExhausted();
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  120000,
+);
