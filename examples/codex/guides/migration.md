@@ -16,6 +16,20 @@ Changing a v0 root import to a v1 root import changes the runtime. Port declarat
 
 Classic is available and is not deprecated now. The lifecycle plan is to deprecate classic in a future v1 minor release and remove it in v2. No date is set. Prefer a direct native migration so you avoid an intermediate import migration and a second runtime migration.
 
+## Preflight: port, redesign, or keep the workflow
+
+Choose a destination for each complete workflow before changing imports:
+
+| Decision | Check |
+| --- | --- |
+| Port to native | Required tools, output validation, Responses provider, Node.js 24 host, and native helper assets are available. Port declarations and execution together. |
+| Redesign before porting | Dynamic instructions, guardrails, approval ownership, handoffs, next-turn routing, or external effects need an application-owned native equivalent. Record and test that equivalent first. |
+| Stay on v0 or use classic temporarily | A required custom Model, Realtime integration, active conversation, or durable state still depends on its current runtime. Keep that workflow and its state there until the native path is validated. |
+
+Build the SDK and examples from the same clean, committed source checkout using [Build from source](building.md#build-from-source). For an external application, use that checkout's [five-package bundle](building.md#build-a-local-bundle-for-an-application). Its producer requires committed source; record the source commit and keep its build record. The older four-package preview starter belongs with its included example, not the current-source migration code.
+
+The [tested order-support migration](../migration/README.md) provides explicit released-v0, current-classic, and native implementations. It covers typed context and output, permitted and denied effects, application-owned routing, two-turn history, actual v0 state continued on classic, and a fresh native conversation with native checkpoint restore. Run its released-v0 qualification separately so a workspace import cannot silently substitute the native runtime.
+
 ## 1. Record the workflow's behavior
 
 Before editing, run the application's existing checks and save representative inputs and expected outcomes. Inventory:

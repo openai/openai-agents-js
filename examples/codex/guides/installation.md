@@ -8,6 +8,8 @@ Use Node.js 24 with its bundled npm. Choose a bundle for your operating system a
 
 The Windows x64 bundle uses the Microsoft Visual C++ runtime. If Windows reports that `VCRUNTIME140.dll` is missing, install the [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/).
 
+For the current-source migration example, build the SDK and examples from the same committed checkout using the [source-build guide](building.md). External applications need its matching five-package bundle. The preview starter below has an earlier four-package layout and should use its included example.
+
 ## Run the starter bundle
 
 Choose the starter archive for the machine that will run your application from the [0.22.0-alpha.1 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.1). These prebuilt bundles and the current source checkout can expose different features. Use the guides and examples for the SDK version you install.
