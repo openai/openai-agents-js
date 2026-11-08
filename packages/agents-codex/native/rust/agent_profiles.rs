@@ -757,8 +757,8 @@ pub(crate) async fn update_active(
         if let Some(model) = &settings.model {
             target.model.model = model.clone();
         }
-        if let Some(effort) = settings.effort {
-            target.model.reasoning_effort = effort;
+        if let Some(effort) = &settings.effort {
+            target.model.reasoning_effort = effort.clone();
         }
         if let Some(summary) = settings.summary {
             target.model.reasoning_summary = Some(summary);
@@ -1134,6 +1134,15 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
 }
 
 impl ToolContributor for Contributor {
+    fn tools(
+        &self,
+        _: &ExtensionData,
+        _: &ExtensionData,
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
+        // Handoff declarations require the exact producing native step.
+        Vec::new()
+    }
+
     fn tools_for_step(
         &self,
         _: &ExtensionData,

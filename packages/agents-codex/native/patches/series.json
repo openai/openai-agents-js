@@ -343,7 +343,11 @@
     {
       "path": "0092-realtime-settings-operations.patch",
       "sha256": "98cfa1fe060aaab432e7c32c6ce10051ac9aa9ca75db20d60981cd052482a5bc"
+    },
+    {
+      "path": "0093-native-voice-parity.patch",
+      "sha256": "e6af27de1c485ca648d6af990fd1d11cdda32dd8de53dc7a3e7c3278e14a5d0c"
     }
   ],
-  "result_tree": "35d5299dc189c1ee363074f6eff73d9f5e0795d9"
+  "result_tree": "e57a9c68a3050a277abc828d1f46951d01381547"
 }

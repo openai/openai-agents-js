@@ -1874,9 +1874,9 @@ impl NativeThread {
         if generation.is_empty() {
             return Err(input_error("Realtime generation must not be empty"));
         }
+        let inner = self.current()?;
         Ok(realtime_adapter::NativeRealtimeAdapter::new(
-            &self.current()?,
-            generation,
+            &inner, generation,
         ))
     }
 

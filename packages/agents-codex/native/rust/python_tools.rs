@@ -1912,6 +1912,64 @@ impl ToolContributor for PythonContributor {
                 },
             });
         }
+        if let Some(binding) = input.mcp {
+            for info in binding.tools() {
+                let native_name = info.canonical_tool_name();
+                if !tools.policy.allows(&native_name) {
+                    continue;
+                }
+                let server = binding
+                    .config()
+                    .mcp_server_catalog
+                    .server(&info.server_name)
+                    .ok_or("Captured MCP declaration has no admitted server")?;
+                if info.server_name == codex_mcp::CODEX_APPS_MCP_SERVER_NAME
+                    && server.config().is_local_environment()
+                    && matches!(
+                        server.source(),
+                        codex_mcp::McpServerSource::Compatibility { .. }
+                            | codex_mcp::McpServerSource::Extension {
+                                host_owned_apps: true,
+                                ..
+                            }
+                    )
+                {
+                    return Err(
+                        "Hosted Apps MCP is unavailable for native Realtime tool dispatch".into(),
+                    );
+                }
+                if server
+                    .config()
+                    .omit_tools_from
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(&codex_protocol::config_types::ToolExposureSurface::Direct)
+                {
+                    continue;
+                }
+                let native = codex_tools::mcp_tool_to_responses_api_tool(
+                    &native_name,
+                    &info.tool,
+                    server
+                        .config()
+                        .tool_input_schema_max_bytes
+                        .map(|limit| limit.get()),
+                )
+                .map_err(|error| error.to_string())?;
+                declarations.push(codex_extension_api::RealtimeToolDeclaration {
+                    native_name: native_name.clone(),
+                    spec: codex_extension_api::PreparedToolPresentation {
+                        namespace: native_name.namespace.clone(),
+                        name: native.name,
+                        kind: "function".into(),
+                        strict: native.strict,
+                        defer_loading: None,
+                        description: native.description,
+                        parameters: Value::Object(info.tool.input_schema.as_ref().clone()),
+                    },
+                });
+            }
+        }
         let selection_id = codex_extension_api::realtime_tool_selection_id(
             input.thread_store.level_id(),
             catalog.generation.id,
