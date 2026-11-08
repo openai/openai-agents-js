@@ -2,7 +2,7 @@
 // reproduced here. Core owns routing; a live cell owns its retained delegate.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -2605,11 +2605,6 @@ impl ContextContributor for Boundary {
 impl ModelRequestContributor for Boundary {
     fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
         let engine = self.engine.get()?.upgrade()?;
-        // A selected JavaScript Model owns one-use admission on Node. Decline
-        // before looking up or mutating any retained request ticket.
-        if engine.sdk_selected_model {
-            return None;
-        }
         let base = engine
             .sentinel
             .read()
@@ -2679,7 +2674,6 @@ impl ModelRequestContributor for Boundary {
                 kind: input.kind,
                 model: input.model.to_owned(),
                 admitted: AtomicBool::new(false),
-                application_state: AtomicU8::new(0),
                 owner,
                 failure: Mutex::new(None),
                 command_admission,
@@ -2744,7 +2738,6 @@ struct SentinelTicket {
     kind: ModelRequestKind,
     model: String,
     admitted: AtomicBool,
-    application_state: AtomicU8,
     owner: Option<Arc<DirectTurn>>,
     failure: Mutex<Option<SentinelFailure>>,
     command_admission: Option<CommandAdmission>,
@@ -2941,24 +2934,6 @@ impl ModelResponseInterceptor for SentinelRequest {
     }
 }
 
-pub(crate) async fn sentinel_admit(
-    engine: &crate::engine::EngineState,
-    provider_id: &str,
-    meta: &Value,
-) -> anyhow::Result<String> {
-    sentinel_validate(engine, provider_id, meta, None).await
-}
-
-pub(crate) async fn sentinel_application(
-    engine: &crate::engine::EngineState,
-    provider_id: &str,
-    meta: &Value,
-    expected: &Value,
-    operation: u8,
-) -> anyhow::Result<String> {
-    sentinel_validate(engine, provider_id, meta, Some((expected, operation))).await
-}
-
 fn sentinel_control(engine: &crate::engine::EngineState, id: &str) -> Result<Arc<Control>> {
     engine
         .interception
@@ -2970,11 +2945,10 @@ fn sentinel_control(engine: &crate::engine::EngineState, id: &str) -> Result<Arc
         .context("Missing native control")
 }
 
-async fn sentinel_validate(
+pub(crate) async fn sentinel_admit(
     engine: &crate::engine::EngineState,
     provider_id: &str,
     meta: &Value,
-    application: Option<(&Value, u8)>,
 ) -> anyhow::Result<String> {
     use anyhow::{Context, ensure};
     let id = meta["sdk_sentinel_thread"]
@@ -3066,42 +3040,8 @@ async fn sentinel_validate(
                         && turn.as_ref().is_some_and(|now| Arc::ptr_eq(now, owner)))),
         "Sentinel request retired"
     );
-    if let Some((expected, operation)) = application {
-        ensure!(
-            engine.sdk_selected_model
-                && control.root
-                && control.native_depth == 0
-                && ticket.kind == ModelRequestKind::Generation
-                && expected["thread"].as_str() == Some(id)
-                && expected["control"].as_str() == Some(control.incarnation.as_str())
-                && expected["model"].as_str() == Some(ticket.model.as_str())
-                && ticket
-                    .owner
-                    .as_ref()
-                    .is_some_and(|owner| expected["turn"].as_str() == Some(owner.id.as_str())),
-            "Invalid selected Model root or accepted turn"
-        );
-        let (from, to) = match operation {
-            0 => (0, 1),
-            1 => (1, 1),
-            2 => (1, 2),
-            _ => anyhow::bail!("Invalid selected Model claim operation"),
-        };
-        ensure!(
-            ticket
-                .application_state
-                .compare_exchange(from, to, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok(),
-            "Selected Model ticket already claimed or finished"
-        );
-    } else {
-        ensure!(
-            !engine.sdk_selected_model,
-            "Selected Model requires one-use admission"
-        );
-    }
     ticket.admitted.store(true, Ordering::Release);
-    let completion = if application.is_none() && ticket.kind == ModelRequestKind::Generation {
+    let completion = if ticket.kind == ModelRequestKind::Generation {
         current.completion.take()
     } else {
         None
@@ -7028,7 +6968,6 @@ mod tests {
                         kind: ModelRequestKind::Generation,
                         model: "issuing-model".into(),
                         admitted: AtomicBool::new(false),
-                        application_state: AtomicU8::new(0),
                         owner: Some(owner),
                         failure: Mutex::new(None),
                         command_admission: None,

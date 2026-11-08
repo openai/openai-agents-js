@@ -18,21 +18,6 @@ export class Engine {
     shared_transports?: _ProviderHttpTransports | null,
   ): void;
   _sentinel_admit(provider_id: string, metadata: string): Promise<string>;
-  _sentinel_claim(
-    provider_id: string,
-    metadata: string,
-    expected: string,
-  ): Promise<string>;
-  _sentinel_current(
-    provider_id: string,
-    metadata: string,
-    expected: string,
-  ): Promise<string>;
-  _sentinel_finish(
-    provider_id: string,
-    metadata: string,
-    expected: string,
-  ): Promise<string>;
   _sentinel_restore_schemas(
     provider_id: string,
     ticket: string,
@@ -108,7 +93,6 @@ export class NativeThread {
   ): Promise<boolean>;
   /** Negative retirement only. Positive replies require a captured question. */
   _respond_native_question(response_json: string): Promise<void>;
-  _selected_model_root(): string;
   _read_model_context(): Promise<string>;
   _begin_context_change(): Promise<_ContextChange>;
   _application_instructions(): string | null;

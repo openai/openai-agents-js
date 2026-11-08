@@ -4,15 +4,6 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
-  Agent as ClassicAgent,
-  setTracingDisabled,
-} from '@openai/agents/classic';
-import {
-  ScriptedModel,
-  assistantMessage,
-  modelResponder,
-} from '@openai/agents/classic/testing';
-import {
   Agent,
   Environment,
   NativeAgents,
@@ -22,13 +13,9 @@ import {
   embeddedCommands,
 } from '@openai/agents';
 import { NativeThread } from '../../native/index.js';
-import * as agentRuntime from '../../src/runtime/agent';
 import { binding, type JsonObject } from '../../src/runtime/binding';
-import { SDKRunner } from '../../src/migration';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
-
-setTracingDisabled(true);
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -332,37 +319,6 @@ it.each(['cancel', 'error'] as const)(
   },
   30_000,
 );
-
-it('refuses selected-Model review before native enqueue while the original migration run remains usable', async () => {
-  const open = agentRuntime.openSession;
-  const execute = vi.spyOn(NativeThread.prototype, '_execute_command');
-  let checked = false;
-  vi.spyOn(agentRuntime, 'openSession').mockImplementation(async (...args) => {
-    const session = await open(...args);
-    try {
-      expect(model.calls).toHaveLength(0);
-      await expect(
-        session.executeCommand('review Inspect this change.'),
-      ).rejects.toThrow('selected Model');
-      expect(model.calls).toHaveLength(0);
-      checked = true;
-      return session;
-    } catch (error) {
-      await session.close();
-      throw error;
-    }
-  });
-  const model = new ScriptedModel([
-    modelResponder(() => [assistantMessage('Original model answer')]),
-  ]);
-  const agent = new ClassicAgent({ name: 'Selected Model', model });
-  expect(
-    (await SDKRunner.run(agent, 'Answer.', { context: undefined })).finalOutput,
-  ).toBe('Original model answer');
-  expect(checked).toBe(true);
-  expect(execute).not.toHaveBeenCalled();
-  expect(model.calls).toHaveLength(1);
-});
 
 it('keeps rename and stop available during a Turn while refusing idle-only commands', async () => {
   const release = Promise.withResolvers<void>();

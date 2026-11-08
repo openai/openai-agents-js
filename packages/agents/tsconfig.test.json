@@ -8,7 +8,6 @@
       "@openai/agents/classic": ["./src/classic/index.ts"],
       "@openai/agents/classic/sandbox": ["./src/classic/sandbox/index.ts"],
       "@openai/agents/classic/testing": ["./src/classic/testing/index.ts"],
-      "@openai/agents/migration": ["./src/migration/index.ts"],
       "@openai/agents/experimental/deferred": [
         "./src/experimental/deferred.ts"
       ],

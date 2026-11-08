@@ -3,9 +3,6 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
-import { Agent as ClassicAgent, MemorySession } from '@openai/agents-core';
-import { ScriptedModel } from '@openai/agents-core/testing';
-import { SDKRunner } from '../../src/migration';
 import { localRecoveryRequired } from '../../src/runtime/local-recovery';
 import {
   Agent,
@@ -77,27 +74,6 @@ describe('local profile declarations and failed-opening lease ownership', () => 
     expect(error.message).not.toContain('private-account');
     expect(inspect(error)).not.toContain('private-account');
     expect(JSON.stringify(error)).not.toContain('private-account');
-  });
-
-  it('rejects a Classic Session with native local storage before effects', async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'classic-native-storage-'));
-    try {
-      const path = join(parent, 'unopened-profile');
-      const model = new ScriptedModel([]);
-      const agent = new ClassicAgent({ name: 'Classic', model });
-      const options = {
-        context: undefined,
-        session: new MemorySession(),
-        storage: localStorage(path),
-      };
-      await expect(SDKRunner.run(agent, 'Hello', options)).rejects.toThrow(
-        'requires one persistence source',
-      );
-      expect(model.calls).toHaveLength(0);
-      expect(await exists(path)).toBe(false);
-    } finally {
-      await rm(parent, { recursive: true, force: true });
-    }
   });
 
   it('freezes a plain structural descriptor without touching the profile', async () => {

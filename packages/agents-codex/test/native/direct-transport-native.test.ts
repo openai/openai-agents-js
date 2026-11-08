@@ -1,12 +1,6 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { Agent as ClassicAgent } from '@openai/agents-core';
-import {
-  ScriptedModel,
-  assistantMessage,
-  modelResponse,
-} from '@openai/agents-core/testing';
 import {
   Agent,
   NativeError,
@@ -15,7 +9,6 @@ import {
   type ModelRequestDispatching,
   type ModelResponseLinked,
 } from '../../src';
-import { SDKRunner } from '../../src/migration';
 import {
   binding,
   jsonObject,
@@ -202,31 +195,6 @@ it('dispatches native HTTP directly with full schemas, headers and observations'
   expectDirect(counts);
   server.assertExhausted();
 }, 30_000);
-
-it('declines selected JavaScript Models and keeps their real carrier', async () => {
-  const counts = await carrierCounters();
-  const model = new ScriptedModel([
-    modelResponse([assistantMessage('selected answer')]),
-  ]);
-  const result = await SDKRunner.run(
-    new ClassicAgent({
-      name: 'Selected direct-transport regression',
-      instructions: 'Answer directly.',
-      model,
-    }),
-    'selected request marker',
-    { context: {} },
-  );
-  expect(result.finalOutput).toBe('selected answer');
-  expect(model.calls).toHaveLength(1);
-  expect(JSON.stringify(model.calls[0].request.input)).toContain(
-    'selected request marker',
-  );
-  expect(counts.handle).toHaveBeenCalledTimes(1);
-  // SelectedModelInvocation.produce owns this response rather than native I/O.
-  expect(counts.stream).not.toHaveBeenCalled();
-  expect(counts.chunks).not.toHaveBeenCalled();
-});
 
 it.each(['before headers', 'during SSE'] as const)(
   'joins cancellation %s without accepting a late tool call',

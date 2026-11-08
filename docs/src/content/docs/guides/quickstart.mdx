@@ -1,6 +1,6 @@
 ---
-title: Quickstart
-description: Create your first AI Agent from scratch
+title: Classic quickstart
+description: Create an agent with the classic API
 ---
 
 import { Aside, Code, Steps } from '@astrojs/starlight/components';
@@ -11,6 +11,8 @@ import agentWithToolsExample from '../../../../../examples/classic/docs/quicksta
 import additionalAgentsExample from '../../../../../examples/classic/docs/quickstart/additionalAgents.ts?raw';
 import defineHandoffsExample from '../../../../../examples/classic/docs/quickstart/defineHandoffs.ts?raw';
 import runOrchestrationExample from '../../../../../examples/classic/docs/quickstart/runOrchestration.ts?raw';
+
+This guide uses `@openai/agents/classic`. For new text agents, start with the [native v1 preview](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/README.md). When upgrading a v0 workflow, we recommend [moving directly to native v1](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migration.md). Use classic only if you need to stage that migration.
 
 <Aside type="note" title="Looking for sandbox agents?">
   This quickstart builds a text agent that runs in your app process. If you want

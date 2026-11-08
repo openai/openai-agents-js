@@ -42,7 +42,7 @@ flowchart TB
   Core <--> MCP["Optional MCP servers"]
 ```
 
-`@openai/agents` [exports the native API](../../../packages/agents/src/index.ts) from `@openai/agents-codex`. The [TypeScript runtime](../../../packages/agents-codex/src/runtime/public-agent.ts) manages declarations and callbacks; the [native binding](../../../packages/agents-codex/native/rust/lib.rs) connects it to Codex. An SDK-owned loopback HTTP/WebSocket transport connects native model requests to the provider and supports request editing and model adapters.
+`@openai/agents` [exports the native API](../../../packages/agents/src/index.ts) from `@openai/agents-codex`. The [TypeScript runtime](../../../packages/agents-codex/src/runtime/public-agent.ts) manages declarations and callbacks; the [native binding](../../../packages/agents-codex/native/rust/lib.rs) connects it to Codex. An SDK-owned loopback HTTP/WebSocket transport connects native model requests to the provider and supports request editing.
 
 Your functions execute with your Node application's permissions. An executor's filesystem and network policy applies to its operations, not to arbitrary function code in your process. You select the executor and storage services and control which credentials and permissions they receive.
 
@@ -112,13 +112,11 @@ Stable v0 already provides an agent loop, tools, sessions, and tracing. The arch
 | Execution loop | TypeScript `Runner` coordinates model calls and tools. | Embedded Codex coordinates native execution and history. |
 | Starting work | `Runner.run(agent, input)` | `agent.run(input)` or an explicit Session and Turn |
 | Session | A conversation-history store used by Runner | A live conversation with owned resources; storage is separate |
-| Model integration | TypeScript `Model` and `ModelProvider` | `NativeProvider` and the Responses protocol, or a supported migration adapter |
+| Model integration | TypeScript `Model` and `ModelProvider` | `NativeProvider` and the Responses protocol |
 | Saved work | Session history and `RunState` | Native checkpoints or configured storage, with their own restore contracts |
 
-For a new application that needs this execution model, start with the [native quickstart](../../../packages/agents-codex/README.md#run-an-agent). For an existing v0 workflow, choose one of three routes:
+For a new application, start with the [native quickstart](../../../packages/agents-codex/README.md#run-an-agent). For an existing v0 workflow, prefer a direct [migration to native v1](migration.md). Port Agent declarations, tools, providers, execution, and state ownership together, then validate the application's behavior.
 
-- **Keep Classic.** Use `@openai/agents/classic` to retain the TypeScript Runner and its provider, guardrail, and handoff contracts. Change a workflow's imports together and test its saved state against the installed build. Follow the [Classic guide](../../../packages/agents/CLASSIC.md).
-- **Use the migration adapter.** Experimental `SDKRunner` runs an eligible Classic Agent through Codex while calling its Classic Model in your process. It supports a defined subset and rejects unsupported combinations. Check [model](migrate-models.md), [tool](migrate-tools.md), and [state](migrate-sessions.md) compatibility.
-- **Adopt native APIs.** Define native Agents and manage Sessions and Turns directly. This gives you the native workspace, tool, and child-agent model described above. Port existing state only through a documented migration path; changing imports does not convert it.
+Use [v1 classic](../../../packages/agents/CLASSIC.md) only when a concrete dependency requires a staged migration. It retains the TypeScript Runner and its provider, guardrail, and handoff contracts. Classic is not deprecated now. Keep pending work on its original runtime; changing imports does not convert state or select another engine automatically.
 
 The native package requires a supported platform and matching native binaries. Check [installation requirements](installation.md#requirements), then evaluate the tool, provider, and storage combinations your application needs.

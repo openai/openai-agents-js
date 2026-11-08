@@ -33,6 +33,13 @@ fn assert_finite(config: &Config) {
     assert_eq!(config.model_provider.stream_max_retries(), 9);
 }
 
+#[test]
+fn runtime_defaults_keep_native_configuration_isolated() {
+    let runtime: Value = serde_json::from_str(&super::prepare_runtime("{}").unwrap()).unwrap();
+    assert_eq!(runtime["loader"]["ignore_managed_requirements"], true);
+    assert!(runtime["loader"]["system_requirements_path"].is_string());
+}
+
 #[tokio::test]
 async fn shared_loader_disables_the_default_and_explicit_connection_exception() {
     for enabled in [None, Some(false), Some(true)] {

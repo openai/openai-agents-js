@@ -4,6 +4,8 @@ Import the SDK from `@openai/agents`. Codex runs model turns and maintains conve
 
 Read [the architecture guide](../../examples/codex/guides/architecture.md) for runtime ownership, the differences from v0 and Classic, and the contracts for turns, observations, and recovery.
 
+For an existing v0 application, follow the [direct migration to native v1](../../examples/codex/guides/migration.md). Use classic only when a staged migration is necessary.
+
 ## Install
 
 - [Install the SDK and run the starter](../../examples/codex/guides/installation.md)

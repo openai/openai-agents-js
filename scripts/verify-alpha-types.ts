@@ -3,8 +3,6 @@ import * as classic from '@openai/agents/classic';
 import * as runtime from '@openai/agents-codex';
 import * as facadeTesting from '@openai/agents/testing';
 import * as runtimeTesting from '@openai/agents-codex/testing';
-import * as facadeMigration from '@openai/agents/migration';
-import * as runtimeMigration from '@openai/agents-codex/migration';
 import * as facadeDeferred from '@openai/agents/experimental/deferred';
 import * as runtimeDeferred from '@openai/agents-codex/experimental/deferred';
 import * as facadeTasks from '@openai/agents/experimental/mcp-tasks';
@@ -26,8 +24,6 @@ const runtimeAgent: runtime.Agent<unknown, { count: number }> = new Agent({
 const facadeAgent: Agent<unknown, { count: number }> = runtimeAgent;
 const testing: typeof facadeTesting = runtimeTesting;
 const reverseTesting: typeof runtimeTesting = facadeTesting;
-const migration: typeof facadeMigration = runtimeMigration;
-const reverseMigration: typeof runtimeMigration = facadeMigration;
 const deferred: typeof facadeDeferred = runtimeDeferred;
 const reverseDeferred: typeof runtimeDeferred = facadeDeferred;
 const tasks: typeof facadeTasks = runtimeTasks;
@@ -38,8 +34,6 @@ void [
   facadeAgent,
   testing,
   reverseTesting,
-  migration,
-  reverseMigration,
   deferred,
   reverseDeferred,
   tasks,

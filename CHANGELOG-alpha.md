@@ -2,6 +2,11 @@
 
 Release notes for alpha versions of the OpenAI Agents SDK for JavaScript and TypeScript.
 
+## Unreleased
+
+- Remove the experimental `SDKRunner` and `/migration` entry points. Prefer a [direct move from v0 to native v1](examples/codex/guides/migration.md); use classic only when the port must be staged.
+- Keep classic and the independent MCP and sandbox adapters. Classic is not deprecated by this change. The planned sequence is deprecation in a later v1 minor release, followed by removal in v2.
+
 ## 0.22.0-alpha.1
 
 [GitHub prerelease and prebuilt bundles](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.1)
