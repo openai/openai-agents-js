@@ -120,6 +120,57 @@ it.each(['return', 'reject'] as const)(
   },
 );
 
+it.each(['raise_exception', 'error_as_result'] as const)(
+  'retains cleanup failure when the parent cancels before a %s deadline',
+  async (timeoutBehavior) => {
+    const entered = Promise.withResolvers<void>();
+    const cleanup = new Error('callback cleanup failed');
+    const formatter = vi.fn(() => 'must not publish timeout text');
+    const server = new ModelServer([
+      [call('slow', {}, { callId: 'cancelled-before-deadline' })],
+    ]);
+    await using provider = await providerFor(server);
+    const session = await new Agent({
+      instructions: 'Use slow.',
+      provider,
+      tools: [
+        tool({
+          name: 'slow',
+          parameters: z.object({}),
+          callbackTimeout: 60,
+          timeoutBehavior,
+          timeoutErrorFunction: formatter,
+          async execute(_, context) {
+            const aborted = new Promise<void>((resolve) =>
+              context.signal.addEventListener('abort', () => resolve(), {
+                once: true,
+              }),
+            );
+            entered.resolve();
+            await aborted;
+            throw cleanup;
+          },
+        }),
+      ],
+    }).session();
+    const turn = await session.submit('start');
+    const outcome = turn.wait().catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      const failure = await turn.cancel().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors).toContain(cleanup);
+      expect(await outcome).toBeInstanceOf(AggregateError);
+      expect(formatter).not.toHaveBeenCalled();
+      expect(server.requests).toHaveLength(1);
+      server.assertExhausted();
+    } finally {
+      await session.close().catch(() => {});
+      await outcome;
+    }
+  },
+);
+
 it.each(['cleanup', 'formatter'] as const)(
   'withholds timeout text when public root cancellation occurs during %s',
   async (stage) => {

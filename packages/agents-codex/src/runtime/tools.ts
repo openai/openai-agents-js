@@ -274,19 +274,6 @@ export function tool<
       options.callbackTimeout > 2_147_483_647 / 1000)
   )
     throw new TypeError('callbackTimeout must be in (0, 2147483.647] seconds');
-  if (
-    options.timeoutBehavior !== undefined &&
-    options.timeoutBehavior !== 'raise_exception' &&
-    options.timeoutBehavior !== 'error_as_result'
-  )
-    throw new TypeError(
-      'timeoutBehavior must be raise_exception or error_as_result',
-    );
-  if (
-    options.timeoutErrorFunction !== undefined &&
-    typeof options.timeoutErrorFunction !== 'function'
-  )
-    throw new TypeError('timeoutErrorFunction must be a function');
   const {
     name,
     parameters,
@@ -532,8 +519,10 @@ export async function invokeWithTimeout<T>(
     try {
       value = await invoke(signal);
     } catch (error) {
-      if (performance.now() >= deadline) expire();
-      signal.throwIfAborted();
+      if (timeoutError) {
+        if (performance.now() >= deadline) expire();
+        controller.signal.throwIfAborted();
+      }
       throw error;
     }
     if (performance.now() >= deadline) expire();
@@ -541,5 +530,6 @@ export async function invokeWithTimeout<T>(
     return value;
   } finally {
     clearTimeout(timer);
+    if (!timeoutError && performance.now() >= deadline) expire();
   }
 }

@@ -318,6 +318,39 @@ it('before deadline denies promptly but keeps the entered physical promise joine
   expect(descriptor.approval).not.toHaveBeenCalled();
 });
 
+it('preserves MCP before cleanup failure after its callback deadline', async () => {
+  vi.useFakeTimers();
+  const cleanup = new Error('MCP callback cleanup failed');
+  const descriptor = new HttpMCP({
+    name: 'records',
+    tools: ['find-record'],
+    url: 'http://127.0.0.1:1',
+    async before(context) {
+      await new Promise<void>((resolve) =>
+        context.signal.addEventListener('abort', () => resolve(), {
+          once: true,
+        }),
+      );
+      throw cleanup;
+    },
+  });
+  const deny = vi.fn();
+  const pending = applyMcpPrePolicy(
+    [descriptor],
+    9007199254740993n,
+    undefined,
+    submission,
+    original(),
+    new AbortController().signal,
+    () => {},
+    deny,
+  );
+  const outcome = pending.catch((error: unknown) => error);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(await outcome).toBe(cleanup);
+  expect(deny).toHaveBeenCalledOnce();
+});
+
 it('approval has no before deadline and cancellation prevents its late result from publishing', async () => {
   vi.useFakeTimers();
   const controller = new AbortController();

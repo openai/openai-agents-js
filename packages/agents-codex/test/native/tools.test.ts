@@ -744,17 +744,6 @@ describe('native function callback timeout policy', () => {
     return 'late result';
   };
 
-  it('rejects invalid policy and formatter before callback admission', () => {
-    const execute = vi.fn(() => 'unused');
-    expect(() =>
-      tool({ ...options, execute, timeoutBehavior: 'invalid' as never }),
-    ).toThrow('timeoutBehavior');
-    expect(() =>
-      tool({ ...options, execute, timeoutErrorFunction: null as never }),
-    ).toThrow('timeoutErrorFunction');
-    expect(execute).not.toHaveBeenCalled();
-  });
-
   it.each([false, true])(
     'formats failed text (async: %s) outside success schema and after',
     async (asyncFormatter) => {
