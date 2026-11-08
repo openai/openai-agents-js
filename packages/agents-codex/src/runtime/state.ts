@@ -192,6 +192,7 @@ const childStateSchema = z.discriminatedUnion('status', [
 const rootState = {
   codex_revision: z.literal(CODEX_REVISION),
   source_session_id: z.string().min(1),
+  executor_read_only: z.boolean().optional(),
   executor_policy_digest: z
     .string()
     .regex(/^[0-9a-f]{64}$/)
@@ -839,11 +840,13 @@ export function fromNativeCheckpoint(
   manual?: { manual_continuation: unknown; manual_context: unknown },
   selection: CheckpointSelections = {},
   networkPolicy: string | undefined = undefined,
+  executorReadOnly = false,
 ): SessionState {
   return sessionStateSchema.parse({
     ...state,
     ...manual,
     ...selection,
+    ...(executorReadOnly ? { executor_read_only: true } : {}),
     format_version:
       networkPolicy === undefined
         ? (state.format_version === 4 ? 6 : 4) +
@@ -875,6 +878,7 @@ export function nativeCheckpoint(state: SessionState) {
     default_tools: _defaults,
     default_resource_servers: _resourceServers,
     network_policy_digest: _network,
+    executor_read_only: _readOnly,
     repair_turns: _turns,
     repair_items: _items,
     ...checkpoint

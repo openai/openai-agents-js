@@ -3370,7 +3370,10 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError(
         'Cannot replace writableRoots while storage mounts are active',
       );
-    return captureWritableRoots(roots);
+    const captured = captureWritableRoots(roots);
+    if (this.environment?.readOnly && captured.length)
+      throw new TypeError('Read-only execution does not accept writableRoots');
+    return captured;
   }
 
   private startTurn(
@@ -6174,6 +6177,7 @@ export class Session<OutputT = string, Context = unknown> {
           },
           this.checkpointSelections(run),
           networkPolicyDigest(this.environment?.network),
+          this.environment?.readOnly ?? false,
         );
 
         if (!this.current(run))
@@ -8641,6 +8645,7 @@ export class Session<OutputT = string, Context = unknown> {
         undefined,
         this.checkpointSelections(),
         networkPolicyDigest(this.environment?.network),
+        this.environment?.readOnly ?? false,
       );
     const prior = this.restored.recovery;
     const decorated: NativeCheckpoint = {
@@ -8670,6 +8675,7 @@ export class Session<OutputT = string, Context = unknown> {
       undefined,
       this.checkpointSelections(),
       networkPolicyDigest(this.environment?.network),
+      this.environment?.readOnly ?? false,
     );
   }
 

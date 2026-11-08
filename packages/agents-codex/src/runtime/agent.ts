@@ -97,6 +97,13 @@ export async function openSession(
       'Restore requires the recorded executor write and network policy',
     );
   }
+  if (
+    saved !== null &&
+    (saved.executor_read_only ?? false) !== (environment?.readOnly ?? false)
+  )
+    throw new TypeError(
+      'Checkpoint and Environment must agree on read-only execution',
+    );
   const native = await binding();
   const { _sdk_project_search: _previousSearch, ...baseRuntime } =
     setup.runtime;

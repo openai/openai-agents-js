@@ -673,6 +673,13 @@ export class Agent<Context = undefined, Output = string> {
     if (stateResult && !stateResult.success) throw stateResult.error;
     const state = stateResult?.data;
     if (
+      state &&
+      (state.executor_read_only ?? false) !== (environment?.readOnly ?? false)
+    )
+      throw new TypeError(
+        'Checkpoint and Environment must agree on read-only execution',
+      );
+    if (
       resume !== undefined &&
       (!persistent || typeof resume !== 'string' || !resume)
     )
@@ -684,6 +691,8 @@ export class Agent<Context = undefined, Output = string> {
         'Persistent storage supports current managed tools without MCP or Code Mode',
       );
     const nativeAgents = declarations.nativeAgents;
+    if (nativeAgents && environment?.readOnly)
+      throw new TypeError('Read-only execution does not support NativeAgents');
     if (
       nativeAgents &&
       (!environment ||
