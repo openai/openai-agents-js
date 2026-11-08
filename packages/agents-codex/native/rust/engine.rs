@@ -19,6 +19,7 @@ use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_models_manager::ModelsManagerConfig;
 use codex_models_manager::manager::{ModelsManager, ModelsManagerFuture};
+use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::{ModelInfo, ModelPreset, ModelsResponse};
 use codex_protocol::protocol::Event;
@@ -302,22 +303,26 @@ impl EngineState {
         let responses = Arc::new(crate::response_control::ResponseContributor::default());
         let services = &config;
         let auth = crate::auth::manager(services, api_key).await?;
+        let bundled_catalog = bundled_model_catalog(services, &auth);
+        let injected_bundle = bundled_catalog.is_some();
         let models = codex_model_provider::create_model_provider(
             services.model_provider.clone(),
             Some(auth.clone()),
         )
-        .models_manager_without_cache(services.model_catalog.clone());
+        .models_manager_without_cache(services.model_catalog.clone().or(bundled_catalog));
         models.set_api_key_model_discovery_enabled(
             services.features.enabled(Feature::ApiKeyModelDiscovery),
         );
-        let models: SharedModelsManager = if sdk_user_input_enabled == Some(false) {
-            Arc::new(ConfiguredModels {
-                inner: models,
-                disable_user_input: sdk_user_input_enabled == Some(false),
-            })
-        } else {
-            models
-        };
+        let models: SharedModelsManager =
+            if injected_bundle || sdk_user_input_enabled == Some(false) {
+                Arc::new(ConfiguredModels {
+                    inner: models,
+                    bundled_catalog: injected_bundle,
+                    disable_user_input: sdk_user_input_enabled == Some(false),
+                })
+            } else {
+                models
+            };
         let models: SharedModelsManager = if config::native_agents(&runtime_json)? {
             let catalog = crate::native_agents::validated_catalog(
                 services,
@@ -1659,10 +1664,34 @@ impl EngineState {
     }
 }
 
-// SDK unattended mode removes question capabilities before Core registers tools.
+// Only an immutable API-key catalog can replace the dynamic manager's bundled seed.
+fn bundled_model_catalog(config: &Config, auth: &AuthManager) -> Option<ModelsResponse> {
+    let provider = &config.model_provider;
+    if config.model_catalog.is_some()
+        || provider.model_catalog_url.is_some()
+        || auth.auth_mode() != Some(AuthMode::ApiKey)
+        || config.features.enabled(Feature::ApiKeyModelDiscovery)
+        || provider.auth.is_some()
+        || provider.gateway_oauth.is_some()
+        || provider.aws.is_some()
+        || provider.is_amazon_bedrock()
+    {
+        return None;
+    }
+    static CATALOG: OnceLock<ModelsResponse> = OnceLock::new();
+    if let Some(catalog) = CATALOG.get() {
+        return Some(catalog.clone());
+    }
+    // Publish successes only; concurrent first callers may parse independently.
+    let parsed = codex_models_manager::bundled_models_response().ok()?;
+    Some(CATALOG.get_or_init(move || parsed).clone())
+}
+
+// Preserve SDK model selection and unattended question policy around the factory.
 #[derive(Debug)]
 struct ConfiguredModels {
     inner: SharedModelsManager,
+    bundled_catalog: bool,
     disable_user_input: bool,
 }
 
@@ -1722,8 +1751,12 @@ impl ModelsManager for ConfiguredModels {
         strategy: RefreshStrategy,
         factory: HttpClientFactory,
     ) -> ModelsManagerFuture<'a, String> {
-        self.inner
-            .get_default_model(model, allow_provider_model_fallback, strategy, factory)
+        self.inner.get_default_model(
+            model,
+            allow_provider_model_fallback && !self.bundled_catalog,
+            strategy,
+            factory,
+        )
     }
 
     fn get_model_info<'a>(
@@ -3674,3 +3707,7 @@ mod candidate_startup_tests;
 #[cfg(test)]
 #[path = "user_input_policy_tests.rs"]
 mod user_input_policy_tests;
+
+#[cfg(test)]
+#[path = "bundled_catalog_tests.rs"]
+mod bundled_catalog_tests;
