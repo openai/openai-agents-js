@@ -99,6 +99,68 @@ export interface MCPReadResourceResult {
   [key: string]: unknown;
 }
 
+/** One argument accepted by a server-defined prompt. */
+export interface MCPPromptArgument {
+  name: string;
+  title?: string;
+  description?: string;
+  required?: boolean;
+}
+
+/** Prompt metadata returned in a complete caller-owned inventory. */
+export interface MCPPrompt {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: MCPPromptArgument[];
+  icons?: Record<string, unknown>[];
+  _meta?: Record<string, unknown>;
+}
+
+/** Prompt content remains data, including base64 image/audio and resource contents. */
+export type MCPPromptContent =
+  | {
+      type: 'text';
+      text: string;
+      annotations?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    }
+  | {
+      type: 'image';
+      data: string;
+      mimeType: string;
+      annotations?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    }
+  | {
+      type: 'audio';
+      data: string;
+      mimeType: string;
+      annotations?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    }
+  | {
+      type: 'resource';
+      resource: MCPTextResourceContents | MCPBlobResourceContents;
+      annotations?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+    }
+  | (MCPResource & { type: 'resource_link' });
+
+/** A server-authored message returned only to the caller. */
+export interface MCPPromptMessage {
+  role: 'user' | 'assistant';
+  content: MCPPromptContent;
+}
+
+/** A named prompt result; the SDK never inserts these messages into model context. */
+export interface MCPGetPromptResult {
+  messages: MCPPromptMessage[];
+  description?: string;
+  resultType?: string;
+  _meta?: Record<string, unknown>;
+}
+
 export interface MCPCallContext<Context = unknown> {
   readonly context: Context;
   readonly submission: ToolCallContext<Context>['submission'];

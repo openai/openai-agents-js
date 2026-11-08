@@ -626,7 +626,7 @@ it('declares ordinary resource-only servers without admitting any tools', () => 
   }
 });
 
-it('refuses hosted and undeclared resource aliases before native dispatch', async () => {
+it('refuses hosted and undeclared resource/prompt aliases before native dispatch', async () => {
   const call = vi.fn();
   const owned = new CoreSession(
     {} as Engine,
@@ -643,6 +643,12 @@ it('refuses hosted and undeclared resource aliases before native dispatch', asyn
       'currently selected ordinary',
     );
     await expect(owned.readMcpResource(name, 'memo://first')).rejects.toThrow(
+      'currently selected ordinary',
+    );
+    await expect(owned.listMcpPrompts(name)).rejects.toThrow(
+      'currently selected ordinary',
+    );
+    await expect(owned.getMcpPrompt(name, 'review')).rejects.toThrow(
       'currently selected ordinary',
     );
   }

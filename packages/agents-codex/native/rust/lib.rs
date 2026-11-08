@@ -1799,27 +1799,28 @@ impl NativeThread {
                 serde_json::to_value(subagents::list(&inner).await.map_err(native_error)?)
                     .map_err(native_error)?
             }
-            "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource" => {
+            "list_mcp_resources"
+            | "list_mcp_resource_templates"
+            | "read_mcp_resource"
+            | "list_mcp_prompts"
+            | "get_mcp_prompt" => {
                 #[derive(serde::Deserialize)]
                 #[serde(deny_unknown_fields)]
-                struct ResourceRequest {
+                struct McpRequest {
                     server: String,
                     params: Value,
                 }
-                let request: ResourceRequest =
-                    serde_json::from_value(params).map_err(input_error)?;
+                let request: McpRequest = serde_json::from_value(params).map_err(input_error)?;
                 let _mutation = inner.mutations.lock().await;
                 graph_stop::check_mutation(&inner).map_err(native_error)?;
                 let tools = inner
                     .thread
                     .thread_extension_data()
                     .get::<python_tools::PythonTools>()
-                    .ok_or_else(|| input_error("resource operations require a managed Session"))?;
+                    .ok_or_else(|| input_error("MCP operations require a managed Session"))?;
                 tools.check_idle(&inner.thread).await.map_err(input_error)?;
                 if tools.has_restored_manual() {
-                    return Err(input_error(
-                        "resource operations require a settled open Session",
-                    ));
+                    return Err(input_error("MCP operations require a settled open Session"));
                 }
                 let config = inner.thread.config().await;
                 let selected = config
@@ -1828,11 +1829,11 @@ impl NativeThread {
                     .get(&request.server)
                     .filter(|server| server.enabled && !mcp_roster::enterprise(server))
                     .ok_or_else(|| {
-                        input_error("resource operations require an enabled ordinary MCP server")
+                        input_error("MCP operations require an enabled ordinary MCP server")
                     })?;
                 if selected.sdk_turn_scoped_stdio {
                     return Err(input_error(
-                        "idle resource operations require session-lifetime MCP stdio",
+                        "idle MCP operations require session-lifetime MCP stdio",
                     ));
                 }
                 let cancelled = self
@@ -1859,6 +1860,35 @@ impl NativeThread {
                             )
                             .await
                             .map_err(|error| native_error(format!("{error:#}"))),
+                        "list_mcp_prompts" => {
+                            if !request
+                                .params
+                                .as_object()
+                                .is_some_and(|params| params.is_empty())
+                            {
+                                return Err(input_error("list_mcp_prompts takes empty parameters"));
+                            }
+                            inner
+                                .thread
+                                .list_mcp_prompts(&request.server)
+                                .await
+                                .map_err(|error| native_error(format!("{error:#}")))
+                        }
+                        "get_mcp_prompt" => {
+                            #[derive(serde::Deserialize)]
+                            #[serde(deny_unknown_fields)]
+                            struct PromptParams {
+                                name: String,
+                                arguments: Option<std::collections::HashMap<String, String>>,
+                            }
+                            let params: PromptParams =
+                                serde_json::from_value(request.params).map_err(input_error)?;
+                            inner
+                                .thread
+                                .get_mcp_prompt(&request.server, &params.name, params.arguments)
+                                .await
+                                .map_err(|error| native_error(format!("{error:#}")))
+                        }
                         _ => inner
                             .thread
                             .list_mcp_resource_templates(
@@ -1871,7 +1901,11 @@ impl NativeThread {
                 };
                 tokio::select! {
                     biased;
-                    _ = cancelled.cancelled() => return Err(native_error("Session closed during MCP resource operation")),
+                    _ = cancelled.cancelled() => return Err(native_error(if matches!(operation.as_str(), "list_mcp_prompts" | "get_mcp_prompt") {
+                        "Session closed during MCP prompt operation"
+                    } else {
+                        "Session closed during MCP resource operation"
+                    })),
                     result = request => result?,
                 }
             }

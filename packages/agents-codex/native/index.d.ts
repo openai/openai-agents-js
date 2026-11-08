@@ -152,6 +152,8 @@ export class NativeThread {
       | 'set_instructions'
       | 'list_subagents'
       | 'list_mcp_resources'
+      | 'list_mcp_prompts'
+      | 'get_mcp_prompt'
       | 'list_mcp_resource_templates'
       | 'read_mcp_resource',
     params_json: string,

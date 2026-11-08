@@ -93,6 +93,11 @@ export type {
   MCPListResourcesResult,
   MCPListResourceTemplatesResult,
   MCPReadResourceResult,
+  MCPPrompt,
+  MCPPromptArgument,
+  MCPPromptContent,
+  MCPPromptMessage,
+  MCPGetPromptResult,
 } from './runtime/mcp';
 export type { ChatGPTAuth } from './runtime/chatgpt-auth';
 export type {

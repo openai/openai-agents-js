@@ -83,6 +83,84 @@ const templatePages = {
   '': { resourceTemplates: [] },
 };
 
+const prompt = {
+  name: 'review',
+  title: 'Review changes',
+  description: 'Synthetic prompt metadata',
+  arguments: [
+    {
+      name: 'topic',
+      title: 'Topic',
+      description: 'Review topic',
+      required: true,
+    },
+  ],
+  icons: [{ src: 'https://example.invalid/prompt.png', mimeType: 'image/png' }],
+  _meta: { source: 'prompt-peer' },
+};
+const promptPages: Record<string, JsonObject> = {
+  first: { prompts: [prompt], nextCursor: '', _meta: { page: 1 } },
+  '': { prompts: [], nextCursor: cursor },
+  [cursor]: { prompts: [{ name: 'last' }, prompt], _meta: { page: 3 } },
+};
+const promptResult = {
+  resultType: 'complete',
+  description: 'Caller-owned prompt',
+  messages: [
+    {
+      role: 'user',
+      content: {
+        type: 'text',
+        text,
+        annotations: { priority: 0.5 },
+        _meta: { source: 'text' },
+      },
+    },
+    {
+      role: 'assistant',
+      content: {
+        type: 'image',
+        data: 'AAEC/w==',
+        mimeType: 'image/png',
+        annotations: { audience: ['user'] },
+        _meta: { source: 'image' },
+      },
+    },
+    {
+      role: 'user',
+      content: {
+        type: 'audio',
+        data: 'YXVkaW8=',
+        mimeType: 'audio/wav',
+        annotations: { priority: 0.5 },
+        _meta: { source: 'audio' },
+      },
+    },
+    {
+      role: 'user',
+      content: {
+        type: 'resource',
+        resource: readResult.contents[0],
+        annotations: { priority: 0.5 },
+        _meta: { source: 'embedded-text' },
+      },
+    },
+    {
+      role: 'assistant',
+      content: {
+        type: 'resource',
+        resource: { ...readResult.contents[1], _meta: { source: 'blob' } },
+        _meta: { source: 'embedded-blob' },
+      },
+    },
+    {
+      role: 'user',
+      content: { ...resource, type: 'resource_link', icons: prompt.icons },
+    },
+  ],
+  _meta: { source: 'get-prompt' },
+};
+
 async function httpPeer(
   options: {
     name?: string;
@@ -92,9 +170,16 @@ async function httpPeer(
     hold?: Promise<void>;
     holdInitialize?: Promise<void>;
     elicit?: boolean;
+    prompts?: boolean;
+    promptPage?: (params: JsonObject) => JsonObject | Promise<JsonObject>;
+    promptResult?: JsonObject;
+    failPrompts?: boolean;
+    executionTimeout?: number;
+    protocolVersion?: string;
   } = {},
 ) {
   const calls: JsonObject[] = [];
+  const promptProtocolVersions: Array<string | string[] | undefined> = [];
   const failures: unknown[] = [];
   let pendingElicitation: { id: unknown; response: ServerResponse } | undefined;
   const server = createServer(async (request, response) => {
@@ -116,11 +201,13 @@ async function httpPeer(
       if (rpc.method === 'initialize') {
         if (options.holdInitialize) await options.holdInitialize;
         result = {
-          protocolVersion: params.protocolVersion,
-          capabilities:
-            options.resources === false
+          protocolVersion: options.protocolVersion ?? params.protocolVersion,
+          capabilities: {
+            ...(options.resources === false
               ? { tools: {} }
-              : { resources: {}, ...(options.tools ? { tools: {} } : {}) },
+              : { resources: {}, ...(options.tools ? { tools: {} } : {}) }),
+            ...(options.prompts === false ? {} : { prompts: {} }),
+          },
           serverInfo: { name: 'resources', version: '1' },
         };
       } else if (
@@ -133,7 +220,10 @@ async function httpPeer(
             inputSchema: { type: 'object', properties: {} },
           })),
         };
-      else if (options.elicit && rpc.method === 'resources/read') {
+      else if (
+        options.elicit &&
+        (rpc.method === 'resources/read' || rpc.method === 'prompts/get')
+      ) {
         pendingElicitation = { id: rpc.id, response };
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.write(
@@ -147,6 +237,37 @@ async function httpPeer(
         );
         pendingElicitation = undefined;
         return;
+      } else if (String(rpc.method).startsWith('prompts/')) {
+        promptProtocolVersions.push(request.headers['mcp-protocol-version']);
+        if (
+          options.prompts === false ||
+          options.failPrompts ||
+          params.name === 'missing'
+        ) {
+          response.writeHead(200, { 'content-type': 'application/json' }).end(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: rpc.id,
+              error: { code: -32601, message: 'peer prompt error' },
+            }),
+          );
+          return;
+        }
+        result =
+          rpc.method === 'prompts/list'
+            ? await (options.promptPage?.(params) ??
+                promptPages[String(params.cursor ?? 'first')])
+            : (options.promptResult ?? promptResult);
+        if (result && typeof result === 'object' && 'error' in result) {
+          response.writeHead(200, { 'content-type': 'application/json' }).end(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: rpc.id,
+              error: (result as JsonObject).error,
+            }),
+          );
+          return;
+        }
       } else if (
         options.fail ||
         rpc.method === 'tools/list' ||
@@ -196,16 +317,17 @@ async function httpPeer(
   });
   return {
     calls,
+    promptProtocolVersions,
     declaration: new HttpMCP({
       name: options.name ?? 'resources',
       tools: options.tools ?? [],
       url: `http://127.0.0.1:${address.port}/mcp`,
-      executionTimeout: 2,
+      executionTimeout: options.executionTimeout ?? 2,
     }),
   };
 }
 
-async function stdioPeer() {
+async function stdioPeer(pages: Record<string, JsonObject> = promptPages) {
   const directory = await mkdtemp(join(tmpdir(), 'agents-mcp-resources-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const roster = join(directory, 'roster.json');
@@ -214,11 +336,13 @@ async function stdioPeer() {
   await writeFile(
     roster,
     JSON.stringify({
-      capabilities: { resources: {} },
+      capabilities: { resources: {}, prompts: {} },
       recordRequests: true,
       resourcePages,
       templatePages,
       readResult,
+      promptPages: pages,
+      promptResult,
     }),
   );
   return {
@@ -260,6 +384,62 @@ async function open(
 }
 
 for (const transport of ['http', 'stdio'] as const) {
+  it(`returns complete prompt inventories and rich caller-owned messages over native ${transport}`, async () => {
+    const peer = transport === 'http' ? await httpPeer() : await stdioPeer();
+    const calls = async () =>
+      typeof peer.calls === 'function' ? peer.calls() : peer.calls;
+    const { session, model } = await open(peer.declaration);
+    expect(await calls()).toEqual([]);
+    const before = await session.modelContext();
+    expect(await session.listMcpPrompts('resources')).toEqual([
+      prompt,
+      { name: 'last' },
+      prompt,
+    ]);
+    expect(await session.getMcpPrompt('resources', 'review')).toEqual(
+      promptResult,
+    );
+    expect(await session.getMcpPrompt('resources', '', {})).toEqual(
+      promptResult,
+    );
+    const args = { topic: '  preserve string +/=?  ' };
+    const pending = session.getMcpPrompt('resources', 'review', args);
+    args.topic = 'mutated by caller';
+    expect(await pending).toEqual(promptResult);
+    const promptCalls = (await calls()).filter((call) =>
+      String(call.method).startsWith('prompts/'),
+    );
+    expect(
+      promptCalls.map((call) => {
+        const { _meta: _transportMeta, ...params } = call.params as JsonObject;
+        return params;
+      }),
+    ).toEqual([
+      {},
+      { cursor: '' },
+      { cursor },
+      { name: 'review' },
+      { name: '', arguments: {} },
+      { name: 'review', arguments: { topic: '  preserve string +/=?  ' } },
+    ]);
+    expect(
+      (await calls()).filter((call) => call.method === 'initialize'),
+    ).toHaveLength(1);
+    expect((await calls()).some((call) => call.method === 'tools/list')).toBe(
+      false,
+    );
+    expect(model.requests).toEqual([]);
+    expect(await session.modelContext()).toEqual(before);
+    expect((await (await session.submit('Answer')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect(JSON.stringify(model.requests)).not.toContain(text);
+    expect(JSON.stringify(model.requests)).not.toContain(
+      'Synthetic prompt metadata',
+    );
+    model.assertExhausted();
+  });
+
   it(`returns caller-controlled resource pages and text/blob data over native ${transport}`, async () => {
     const peer = transport === 'http' ? await httpPeer() : await stdioPeer();
     const calls = async () =>
@@ -328,6 +508,316 @@ for (const transport of ['http', 'stdio'] as const) {
   });
 }
 
+it('distinguishes missing prompt capability, advertised errors and omitted get metadata', async () => {
+  const unsupported = await httpPeer({ prompts: false });
+  const { session } = await open(unsupported.declaration);
+  expect(await session.listMcpPrompts('resources')).toEqual([]);
+  await expect(session.getMcpPrompt('resources', 'review')).rejects.toThrow(
+    /prompt/i,
+  );
+  expect(
+    unsupported.calls.some((call) =>
+      String(call.method).startsWith('prompts/'),
+    ),
+  ).toBe(false);
+  const failing = await httpPeer({ failPrompts: true });
+  const { session: failed } = await open(failing.declaration);
+  await expect(failed.listMcpPrompts('resources')).rejects.toThrow(
+    'peer prompt error',
+  );
+  await expect(failed.getMcpPrompt('resources', 'review')).rejects.toThrow(
+    'peer prompt error',
+  );
+  const plain = await httpPeer({ promptResult: { messages: [] } });
+  const { session: minimal } = await open(plain.declaration);
+  expect(await minimal.getMcpPrompt('resources', 'review')).toEqual({
+    messages: [],
+  });
+  await expect(minimal.getMcpPrompt('resources', 'missing')).rejects.toThrow(
+    'peer prompt error',
+  );
+  expect(await minimal.listMcpResources('resources')).toEqual(
+    resourcePages.first,
+  );
+});
+
+it('rejects unselected prompt servers before lazy activation', async () => {
+  const peer = await httpPeer();
+  const { session } = await open(peer.declaration);
+  await expect(session.listMcpPrompts('unknown')).rejects.toThrow(
+    'currently selected',
+  );
+  expect(peer.calls).toEqual([]);
+});
+
+const promptByteLimit = 8 * 1024 * 1024;
+
+function paddedPrompt(bytes: number) {
+  return {
+    ...prompt,
+    _meta: { ...prompt._meta, padding: 'x'.repeat(bytes) },
+  };
+}
+
+it('preserves rich prompt metadata across pages below the aggregate byte limit', async () => {
+  const first = { ...paddedPrompt(3 * 1024 * 1024), name: 'first' };
+  const last = { ...first, name: 'last' };
+  const pages: Record<string, JsonObject> = {
+    first: { prompts: [first], nextCursor: 'last' },
+    last: { prompts: [last] },
+  };
+  const totalBytes =
+    Buffer.byteLength(JSON.stringify([first])) +
+    Buffer.byteLength(JSON.stringify([last]));
+  expect(totalBytes).toBeLessThan(promptByteLimit);
+  const peer = await httpPeer({
+    executionTimeout: 10,
+    promptPage: (params) => pages[String(params.cursor ?? 'first')],
+  });
+  const { session, model } = await open(peer.declaration);
+
+  expect(await session.listMcpPrompts('resources')).toEqual([first, last]);
+  expect(
+    peer.calls.filter((call) => call.method === 'prompts/list'),
+  ).toHaveLength(2);
+  expect(await session.readMcpResource('resources', resource.uri)).toEqual(
+    readResult,
+  );
+  expect(model.requests).toEqual([]);
+});
+
+for (const transport of ['http', 'stdio'] as const) {
+  it(`rejects aggregate prompt bytes over native ${transport} before requesting another page`, async () => {
+    const largePrompt = paddedPrompt(3 * 1024 * 1024);
+    const pageBytes = Buffer.byteLength(JSON.stringify([largePrompt]));
+    expect(pageBytes).toBeLessThan(promptByteLimit);
+    expect(pageBytes * 2).toBeLessThan(promptByteLimit);
+    expect(pageBytes * 3).toBeGreaterThan(promptByteLimit);
+    const pages: Record<string, JsonObject> = {
+      first: { prompts: [largePrompt], nextCursor: 'second' },
+      second: { prompts: [largePrompt], nextCursor: 'third' },
+      third: { prompts: [largePrompt], nextCursor: 'must-not-fetch' },
+      'must-not-fetch': { prompts: [prompt] },
+    };
+    const peer =
+      transport === 'http'
+        ? await httpPeer({
+            executionTimeout: 10,
+            promptPage: (params) => pages[String(params.cursor ?? 'first')],
+          })
+        : await stdioPeer(pages);
+    const calls = async () =>
+      typeof peer.calls === 'function' ? peer.calls() : peer.calls;
+    const { session, model } = await open(peer.declaration);
+
+    await expect(session.listMcpPrompts('resources')).rejects.toThrow(
+      'prompts/list exceeded the catalog byte limit of 8388608 bytes',
+    );
+    const requestedCursors = (await calls())
+      .filter((call) => call.method === 'prompts/list')
+      .map((call) => ((call.params ?? {}) as JsonObject).cursor);
+    expect(requestedCursors).toEqual([undefined, 'second', 'third']);
+    expect(await session.readMcpResource('resources', resource.uri)).toEqual(
+      readResult,
+    );
+    expect(model.requests).toEqual([]);
+  });
+}
+
+for (const method of ['prompts/list', 'prompts/get'] as const) {
+  it(`rejects an oversized legacy HTTP ${method} response and remains usable`, async () => {
+    const largePrompt = paddedPrompt(9 * 1024 * 1024);
+    const largeResult = {
+      messages: [{ role: 'user', content: { type: 'text', text } }],
+      _meta: largePrompt._meta,
+    };
+    expect(Buffer.byteLength(JSON.stringify(largePrompt))).toBeGreaterThan(
+      promptByteLimit,
+    );
+    expect(Buffer.byteLength(JSON.stringify(largeResult))).toBeGreaterThan(
+      promptByteLimit,
+    );
+    const peer = await httpPeer({
+      protocolVersion: '2025-11-25',
+      executionTimeout: 10,
+      promptPage: () => ({
+        prompts: [largePrompt],
+        nextCursor: 'must-not-fetch',
+      }),
+      promptResult: largeResult,
+    });
+    const { session, model } = await open(peer.declaration);
+    const operation =
+      method === 'prompts/list'
+        ? session.listMcpPrompts('resources')
+        : session.getMcpPrompt('resources', 'review');
+
+    await expect(operation).rejects.toThrow(
+      'MCP response body exceeds 8388608 bytes',
+    );
+    expect(peer.promptProtocolVersions).toEqual(['2025-11-25']);
+    expect(peer.calls.filter((call) => call.method === method)).toHaveLength(1);
+    expect(await session.readMcpResource('resources', resource.uri)).toEqual(
+      readResult,
+    );
+    expect(model.requests).toEqual([]);
+  });
+}
+
+for (const scenario of [
+  'later failure',
+  'repeated cursor',
+  'cursor cycle',
+  'page limit',
+  'item limit',
+  'cursor bytes',
+  'malformed page',
+] as const) {
+  it(`rejects prompt ${scenario} without returning a partial inventory`, async () => {
+    let pages = 0;
+    const peer = await httpPeer({
+      promptPage: (): JsonObject => {
+        pages += 1;
+        if (scenario === 'item limit')
+          return {
+            prompts: Array.from({ length: 2049 }, () => ({ name: 'too-many' })),
+          };
+        if (scenario === 'cursor bytes')
+          return { prompts: [prompt], nextCursor: 'é'.repeat(32769) };
+        if (scenario === 'malformed page' && pages === 2)
+          return { prompts: 'invalid' };
+        if (scenario === 'later failure' && pages === 2)
+          return {
+            error: { code: -32000, message: 'later prompt page failed' },
+          };
+        return {
+          prompts: [prompt],
+          nextCursor:
+            scenario === 'repeated cursor'
+              ? 'repeat'
+              : scenario === 'cursor cycle'
+                ? String(pages % 2)
+                : String(pages),
+        };
+      },
+    });
+    const { session } = await open(peer.declaration);
+    await expect(session.listMcpPrompts('resources')).rejects.toThrow();
+    expect(pages).toBe(
+      scenario === 'page limit'
+        ? 100
+        : scenario === 'cursor cycle'
+          ? 3
+          : scenario === 'item limit' || scenario === 'cursor bytes'
+            ? 1
+            : 2,
+    );
+    expect(await session.readMcpResource('resources', resource.uri)).toEqual(
+      readResult,
+    );
+  });
+}
+
+it('accepts a terminal prompt page 100', async () => {
+  let pages = 0;
+  const peer = await httpPeer({
+    promptPage: () => {
+      pages += 1;
+      return {
+        prompts: [{ name: String(pages) }],
+        ...(pages === 100 ? {} : { nextCursor: String(pages) }),
+      };
+    },
+  });
+  const { session } = await open(peer.declaration);
+  const prompts = await session.listMcpPrompts('resources');
+  expect(prompts).toHaveLength(100);
+  expect(prompts[99]).toEqual({ name: '100' });
+  expect(pages).toBe(100);
+});
+
+it('bounds prompt collection by the configured execution deadline', async () => {
+  const held = Promise.withResolvers<void>();
+  cleanup.push(async () => held.resolve());
+  const peer = await httpPeer({
+    executionTimeout: 0.2,
+    promptPage: async (params) => {
+      if (params.cursor !== undefined) await held.promise;
+      return { prompts: [prompt], nextCursor: 'next' };
+    },
+  });
+  const { session, model } = await open(peer.declaration);
+  await expect(session.listMcpPrompts('resources')).rejects.toThrow(
+    /timed out|timeout/i,
+  );
+  expect(
+    peer.calls.filter((call) => call.method === 'prompts/list'),
+  ).toHaveLength(2);
+  expect(model.requests).toEqual([]);
+});
+
+it('fences mutations during later prompt pages and joins close while the peer remains blocked', async () => {
+  const held = Promise.withResolvers<void>();
+  cleanup.push(async () => held.resolve());
+  const peer = await httpPeer({
+    promptPage: async (params) => {
+      if (params.cursor !== undefined) await held.promise;
+      return { prompts: [prompt], nextCursor: 'later' };
+    },
+  });
+  const { session, model } = await open(peer.declaration);
+  const outcome = session.listMcpPrompts('resources').then(
+    () => 'unexpected success',
+    (error: unknown) => String(error),
+  );
+  await vi.waitFor(() =>
+    expect(
+      peer.calls.filter((call) => call.method === 'prompts/list'),
+    ).toHaveLength(2),
+  );
+  await expect(session.submit('overlap')).rejects.toThrow('settled');
+  await expect(session.update({ tools: [] })).rejects.toThrow('settled');
+  await expect(session.saveState()).rejects.toThrow('settled');
+  await expect(session.getMcpPrompt('resources', 'review')).rejects.toThrow(
+    'settled',
+  );
+  await session.close();
+  expect(await outcome).toContain('Session closed during MCP prompt operation');
+  expect(model.requests).toEqual([]);
+  expect(
+    peer.calls.filter((call) => call.method === 'prompts/list'),
+  ).toHaveLength(2);
+});
+
+it('interrupts lazy prompt activation when close starts', async () => {
+  const held = Promise.withResolvers<void>();
+  cleanup.push(async () => held.resolve());
+  const peer = await httpPeer({ holdInitialize: held.promise });
+  const { session } = await open(peer.declaration);
+  const outcome = session.listMcpPrompts('resources').then(
+    () => 'unexpected success',
+    (error: unknown) => String(error),
+  );
+  await vi.waitFor(() =>
+    expect(peer.calls.some((call) => call.method === 'initialize')).toBe(true),
+  );
+  await session.close();
+  expect(await outcome).toContain(
+    'Session closed during MCP resource activation',
+  );
+  expect(peer.calls.some((call) => call.method === 'prompts/list')).toBe(false);
+});
+
+it('cancels idle prompt elicitation and joins the rejected get', async () => {
+  const peer = await httpPeer({ elicit: true });
+  const { session } = await open(peer.declaration);
+  await expect(session.getMcpPrompt('resources', 'review')).rejects.toThrow();
+  expect(
+    peer.calls.find((call) => call.id === 'idle-question')?.result,
+  ).toMatchObject({ action: 'cancel' });
+  await session.close();
+});
+
 it('returns empty lists only for a missing resources capability and preserves advertised errors', async () => {
   const unsupported = await httpPeer({ resources: false });
   const { session } = await open(unsupported.declaration);
@@ -374,6 +864,11 @@ it('preserves empty server selection across update and restore using current end
   expect(await session.listMcpResources('resources')).toEqual(
     resourcePages.first,
   );
+  expect(await session.listMcpPrompts('resources')).toEqual([
+    prompt,
+    { name: 'last' },
+    prompt,
+  ]);
   const selected = await session.saveState();
   const current = await httpPeer();
   const { agent } = await open(current.declaration);
@@ -385,12 +880,19 @@ it('preserves empty server selection across update and restore using current end
   expect(await restored.readMcpResource('resources', resource.uri)).toEqual(
     readResult,
   );
+  expect(await restored.getMcpPrompt('resources', 'review')).toEqual(
+    promptResult,
+  );
+  expect(JSON.stringify(selected)).not.toContain(text);
   expect(old.calls).toHaveLength(oldCount);
   expect(
     current.calls.filter((call) => call.method === 'resources/read'),
   ).toHaveLength(1);
   await restored.update({ tools: [] });
   await expect(restored.listMcpResources('resources')).rejects.toThrow(
+    'currently selected',
+  );
+  await expect(restored.listMcpPrompts('resources')).rejects.toThrow(
     'currently selected',
   );
   const deselected = await restored.saveState();
@@ -562,6 +1064,11 @@ it('activates selected operation HTTP lazily and rejects idle turn-lifetime stdi
   });
   const { session } = await open(operation);
   expect(peer.calls).toEqual([]);
+  expect(await session.listMcpPrompts('resources')).toEqual([
+    prompt,
+    { name: 'last' },
+    prompt,
+  ]);
   expect(await session.listMcpResources('resources')).toEqual(
     resourcePages.first,
   );
@@ -580,6 +1087,12 @@ it('activates selected operation HTTP lazily and rejects idle turn-lifetime stdi
   await expect(deferred.listMcpResources('resources')).rejects.toThrow(
     'session-lifetime',
   );
+  await expect(deferred.listMcpPrompts('resources')).rejects.toThrow(
+    'session-lifetime',
+  );
+  await expect(deferred.getMcpPrompt('resources', 'review')).rejects.toThrow(
+    'session-lifetime',
+  );
   expect(await stdio.calls()).toEqual([]);
 });
 
@@ -594,6 +1107,10 @@ it('activates only the requested selected resource server and retains other acti
   expect(second.calls).toEqual([]);
   expect(await session.listMcpResources('resources')).toEqual(
     resourcePages.first,
+  );
+  expect(second.calls).toEqual([]);
+  expect(await session.getMcpPrompt('resources', 'review')).toEqual(
+    promptResult,
   );
   expect(second.calls).toEqual([]);
   expect(await session.listMcpResources('other')).toEqual(resourcePages.first);

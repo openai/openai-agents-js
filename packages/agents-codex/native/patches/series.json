@@ -327,7 +327,11 @@
     {
       "path": "0088-recognize-proc-mount-diagnostics.patch",
       "sha256": "23c937dfd49b125b3cf5cce8cddb784c7219321e52d36a7d75bb3ec506710e64"
+    },
+    {
+      "path": "0089-caller-controlled-mcp-prompts.patch",
+      "sha256": "f47339c54594aa98d4fd52e40eaed8f80325a50bb69a80693d14524594b68940"
     }
   ],
-  "result_tree": "4b1920dc4ae03599a7e73d07a8db9294d31d9026"
+  "result_tree": "9da183d90bacb237223e4223c82d725c8f83d97a"
 }
