@@ -52,6 +52,24 @@ export class ToolOutput {
   }
 }
 
+/** An elapsed native function callback deadline; effects are not rolled back. */
+export class ToolTimeoutError extends Error {
+  constructor(
+    readonly toolName: string,
+    readonly timeoutSeconds: number,
+  ) {
+    super(`Tool ${toolName} exceeded its callback timeout`);
+    this.name = 'ToolTimeoutError';
+  }
+}
+
+export type FunctionToolTimeoutBehavior = 'raise_exception' | 'error_as_result';
+
+export type ToolTimeoutErrorFunction<Context = unknown> = (
+  context: ToolContext<Context>,
+  error: ToolTimeoutError,
+) => string | Promise<string>;
+
 export interface ToolCallContext<Context = unknown> {
   /** Exact issuing native span, when native tracing has an active context. */
   readonly traceContext?: import('./trace-context').TraceContext;
@@ -120,6 +138,8 @@ export type ToolDecision<Arguments = unknown> =
 
 export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly callbackTimeout?: number;
+  readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
+  readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly kind?: 'function';
   readonly [prepareInvocation]: Invocation<Context>;
   readonly [namespaceBinding]?: Readonly<{
@@ -214,8 +234,15 @@ export function tool<
 >(options: {
   /** Defer selected schema presentation; does not change execution admission. */
   deferLoading?: boolean;
-  /** Callback-body deadline in seconds, at most 2_147_483.647. */
+  /**
+   * Callback-body deadline in seconds, at most 2_147_483.647.
+   * Aborts the callback signal and joins entered work; effects are not rolled back.
+   */
   callbackTimeout?: number;
+  /** Fail the turn by default, or send a failed textual result after cleanup. */
+  timeoutBehavior?: FunctionToolTimeoutBehavior;
+  /** Format timeout failure text; bypasses result validation and after. */
+  timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   name: string;
   description?: string;
   parameters: T;
@@ -247,12 +274,23 @@ export function tool<
       options.callbackTimeout > 2_147_483_647 / 1000)
   )
     throw new TypeError('callbackTimeout must be in (0, 2147483.647] seconds');
-  const { name, parameters, execute, result, before, after, callbackTimeout } =
-    options;
+  const {
+    name,
+    parameters,
+    execute,
+    result,
+    before,
+    after,
+    callbackTimeout,
+    timeoutBehavior = 'raise_exception',
+    timeoutErrorFunction,
+  } = options;
   return Object.freeze({
     name: options.name,
     description: options.description ?? '',
-    callbackTimeout: options.callbackTimeout,
+    callbackTimeout,
+    timeoutBehavior,
+    timeoutErrorFunction,
     deferLoading: options.deferLoading ?? false,
     parameters: decode(
       jsonValue,
@@ -305,13 +343,38 @@ export function tool<
         }
       }
       admit();
-      const value = await invokeWithTimeout(
-        (signal) => execute(parsed, { ...callContext, signal }),
-        context.signal,
-        callbackTimeout,
-        name,
-        onTimeout,
-      );
+      const timeoutError =
+        callbackTimeout === undefined
+          ? undefined
+          : new ToolTimeoutError(name, callbackTimeout);
+      let value: z.input<Result>;
+      try {
+        value = await invokeWithTimeout(
+          (signal) => execute(parsed, { ...callContext, signal }),
+          context.signal,
+          callbackTimeout,
+          name,
+          timeoutBehavior === 'raise_exception' ? onTimeout : () => {},
+          timeoutError,
+          timeoutBehavior,
+        );
+      } catch (error) {
+        if (
+          timeoutBehavior !== 'error_as_result' ||
+          !timeoutError ||
+          error !== timeoutError
+        )
+          throw error;
+        admit();
+        const text = timeoutErrorFunction
+          ? await timeoutErrorFunction(callContext, timeoutError)
+          : timeoutError.message;
+        admit();
+        return {
+          success: false,
+          contentItems: [{ type: 'inputText' as const, text }],
+        };
+      }
       admit();
       let response: ToolResponse;
       try {
@@ -435,12 +498,15 @@ export async function invokeWithTimeout<T>(
   timeoutSeconds: number | undefined,
   name: string,
   onTimeout: (error: Error) => void,
+  timeoutError?: Error,
+  timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
 ): Promise<T> {
   if (timeoutSeconds === undefined) return invoke(parentSignal);
   const controller = new AbortController();
   const signal = AbortSignal.any([parentSignal, controller.signal]);
-  const timeout = new Error(`Tool ${name} exceeded its callback timeout`);
-  timeout.name = 'TimeoutError';
+  const timeout =
+    timeoutError ?? new Error(`Tool ${name} exceeded its callback timeout`);
+  if (!timeoutError) timeout.name = 'TimeoutError';
   const deadline = performance.now() + timeoutSeconds * 1000;
   const expire = () => {
     if (controller.signal.aborted || parentSignal.aborted) return;
@@ -449,12 +515,22 @@ export async function invokeWithTimeout<T>(
   };
   const timer = setTimeout(expire, timeoutSeconds * 1000);
   try {
-    const value = await invoke(signal);
+    let value: T;
+    try {
+      value = await invoke(signal);
+    } catch (error) {
+      if (timeoutError) {
+        if (performance.now() >= deadline) expire();
+        if (timeoutBehavior !== 'error_as_result' || !parentSignal.aborted)
+          controller.signal.throwIfAborted();
+      }
+      throw error;
+    }
     if (performance.now() >= deadline) expire();
     signal.throwIfAborted();
     return value;
   } finally {
     clearTimeout(timer);
-    if (performance.now() >= deadline) expire();
+    if (!timeoutError && performance.now() >= deadline) expire();
   }
 }

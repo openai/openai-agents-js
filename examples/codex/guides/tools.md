@@ -8,7 +8,11 @@ Input is a string or a Responses-shaped user message. For images, send an inline
 
 ### Function tools
 
-`tool()` uses a Zod parameter schema and accepts synchronous or asynchronous callbacks. Use `z.strictObject(...)` to reject unrecognized arguments, as Python function tools do. The callback receives the application context, exact submission, original and validated arguments, and an `AbortSignal`. An optional `callbackTimeout` uses seconds and must be in `(0, 2147483.647]`, the supported timer range. It starts after argument validation and covers callback execution. Cancellation cannot preempt synchronous JavaScript or undo external effects; callbacks should honor the signal and settle their cleanup.
+`tool()` uses a Zod parameter schema and accepts synchronous or asynchronous callbacks. Use `z.strictObject(...)` to reject unrecognized arguments, as Python function tools do. The callback receives the application context, exact submission, original and validated arguments, and an `AbortSignal`. An optional `callbackTimeout` uses seconds and must be in `(0, 2147483.647]`, the supported timer range. The deadline covers only `execute`; argument validation and the `before` hook run first. Result validation, the `after` hook, and timeout formatting are outside the deadline. Cancellation cannot preempt synchronous JavaScript or undo external effects; callbacks should honor the signal and settle their cleanup.
+
+The default `timeoutBehavior: 'raise_exception'` fails the owning turn with `ToolTimeoutError`. The error exposes `toolName` and `timeoutSeconds`. Set `timeoutBehavior: 'error_as_result'` to let the model receive a failed textual tool result and continue. An optional `timeoutErrorFunction(context, error)` returns a string or a promise of a string. Without a formatter, the failure text names the tool and reports its callback timeout.
+
+Both modes abort the callback signal at the deadline and wait for entered callback work and cleanup to settle. A callback that ignores cancellation can therefore delay completion. Result mode runs its formatter after cleanup, using the parent tool context. Timeout results bypass the normal `result` schema and `after` hook, as local tool denial does. Formatter errors propagate normally. Parent cancellation or expired invocation authority prevents publication. With no `callbackTimeout`, the policy and formatter are inactive. A timeout never rolls back effects or makes a retry safe. See [the scripted callback timeout example](../tool-timeout-policy.ts).
 
 ### Tool discovery
 

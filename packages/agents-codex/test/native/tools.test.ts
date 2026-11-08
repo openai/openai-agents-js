@@ -28,6 +28,7 @@ import {
   outputOf,
   invokeFunctionTool,
   ToolOutput,
+  ToolTimeoutError,
 } from '../../src/runtime/tools';
 
 const context = {
@@ -726,5 +727,275 @@ describe('Environment write policy', () => {
         () => new Environment({ ...remote, writePolicy: writePolicy as never }),
       ).toThrow('writePolicy must be strict or legacy');
     }
+  });
+});
+
+describe('native function callback timeout policy', () => {
+  const options = {
+    name: 'slow',
+    parameters: z.object({}),
+    callbackTimeout: 0.005,
+    timeoutBehavior: 'error_as_result' as const,
+  };
+  const expired = async (_: unknown, call: ToolContext) => {
+    await new Promise<void>((resolve) =>
+      call.signal.addEventListener('abort', () => resolve(), { once: true }),
+    );
+    return 'late result';
+  };
+
+  it.each([false, true])(
+    'formats failed text (async: %s) outside success schema and after',
+    async (asyncFormatter) => {
+      const result = z.number().transform(() => {
+        throw new Error('success schema ran');
+      });
+      const after = vi.fn((output: ToolOutput) => output);
+      const onTimeout = vi.fn();
+      const formatter = vi.fn((call: ToolContext, error: ToolTimeoutError) => {
+        expect(call.signal).toBe(context.signal);
+        expect(call.signal.aborted).toBe(false);
+        expect(call.originalArguments).toEqual({});
+        expect(error).toBeInstanceOf(ToolTimeoutError);
+        expect(error).toMatchObject({
+          toolName: 'slow',
+          timeoutSeconds: 0.005,
+        });
+        return asyncFormatter
+          ? Promise.resolve('try another tool')
+          : 'try another tool';
+      });
+      const defined = tool({
+        ...options,
+        result,
+        after,
+        execute: expired as never,
+        timeoutErrorFunction: formatter,
+      });
+      await expect(
+        invokeFunctionTool(defined, {}, context, onTimeout),
+      ).resolves.toEqual({
+        success: false,
+        contentItems: [{ type: 'inputText', text: 'try another tool' }],
+      });
+      expect(formatter).toHaveBeenCalledOnce();
+      expect(after).not.toHaveBeenCalled();
+      expect(onTimeout).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['return', 'reject'] as const)(
+    'joins callback cleanup before timeout formatting when cleanup will %s',
+    async (outcome) => {
+      const aborted = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const effects: string[] = [];
+      const formatter = vi.fn(() => {
+        expect(effects).toEqual(['entered', 'cleanup']);
+        return 'deadline';
+      });
+      const defined = tool({
+        ...options,
+        timeoutErrorFunction: formatter,
+        async execute(_, call) {
+          effects.push('entered');
+          call.signal.addEventListener('abort', () => aborted.resolve(), {
+            once: true,
+          });
+          await release.promise;
+          expect(call.signal.aborted).toBe(true);
+          effects.push('cleanup');
+          if (outcome === 'reject') throw new Error('cleanup rejection');
+          return 'late success';
+        },
+      });
+      let settled = false;
+      const pending = invokeFunctionTool(defined, {}, context, vi.fn()).finally(
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await aborted.promise;
+        expect(settled).toBe(false);
+        expect(formatter).not.toHaveBeenCalled();
+        release.resolve();
+        await expect(pending).resolves.toEqual({
+          success: false,
+          contentItems: [{ type: 'inputText', text: 'deadline' }],
+        });
+        expect(effects).toEqual(['entered', 'cleanup']);
+      } finally {
+        release.resolve();
+        await pending;
+      }
+    },
+  );
+
+  it.each(['return', 'reject'] as const)(
+    'detects elapsed deadline before timer delivery on synchronous %s',
+    async (outcome) => {
+      const defined = tool({
+        ...options,
+        execute() {
+          const end = performance.now() + 15;
+          while (performance.now() < end) {
+            /* Occupy the event loop beyond the deadline. */
+          }
+          if (outcome === 'reject') throw new Error('late rejection');
+          return 'late success';
+        },
+      });
+      await expect(
+        invokeFunctionTool(defined, {}, context, vi.fn()),
+      ).resolves.toEqual({
+        success: false,
+        contentItems: [
+          {
+            type: 'inputText',
+            text: 'Tool slow exceeded its callback timeout',
+          },
+        ],
+      });
+    },
+  );
+
+  it('notifies the exception owner immediately but joins rejecting cleanup', async () => {
+    const aborted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const formatter = vi.fn(() => 'unused');
+    const onTimeout = vi.fn();
+    const defined = tool({
+      ...options,
+      timeoutBehavior: 'raise_exception',
+      timeoutErrorFunction: formatter,
+      async execute(_, call) {
+        call.signal.addEventListener('abort', () => aborted.resolve(), {
+          once: true,
+        });
+        await release.promise;
+        throw new Error('cleanup failed');
+      },
+    });
+    const pending = invokeFunctionTool(defined, {}, context, onTimeout).catch(
+      (error: unknown) => error,
+    );
+    try {
+      await aborted.promise;
+      expect(onTimeout).toHaveBeenCalledOnce();
+      expect(formatter).not.toHaveBeenCalled();
+      release.resolve();
+      expect(await pending).toBe(onTimeout.mock.calls[0]![0]);
+      expect(await pending).toBeInstanceOf(ToolTimeoutError);
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+
+  it.each([
+    new ToolTimeoutError('slow', 0.005),
+    Object.assign(new Error('user timeout'), { name: 'TimeoutError' }),
+  ])('does not convert a callback-thrown lookalike: %s', async (failure) => {
+    const formatter = vi.fn(() => 'unused');
+    const defined = tool({
+      ...options,
+      callbackTimeout: 1,
+      timeoutErrorFunction: formatter,
+      execute() {
+        throw failure;
+      },
+    });
+    await expect(
+      invokeFunctionTool(defined, {}, context, vi.fn()),
+    ).rejects.toBe(failure);
+    expect(formatter).not.toHaveBeenCalled();
+  });
+
+  it('leaves timeout options inactive without a deadline and keeps normal after behavior', async () => {
+    const formatter = vi.fn(() => 'unused');
+    const after = vi.fn((output: ToolOutput) => output);
+    const defined = tool({
+      ...options,
+      callbackTimeout: undefined,
+      timeoutErrorFunction: formatter,
+      result: z.string().transform((value) => value.toUpperCase()),
+      after,
+      execute: () => 'done',
+    });
+    await expect(
+      invokeFunctionTool(defined, {}, context, vi.fn()),
+    ).resolves.toEqual({
+      success: true,
+      contentItems: [{ type: 'inputText', text: 'DONE' }],
+    });
+    expect(after).toHaveBeenCalledOnce();
+    expect(formatter).not.toHaveBeenCalled();
+  });
+
+  it('propagates formatter exceptions without running after', async () => {
+    const failure = new Error('formatter failed');
+    const after = vi.fn((output: ToolOutput) => output);
+    const defined = tool({
+      ...options,
+      execute: expired,
+      after,
+      timeoutErrorFunction() {
+        throw failure;
+      },
+    });
+    await expect(
+      invokeFunctionTool(defined, {}, context, vi.fn()),
+    ).rejects.toBe(failure);
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it.each(['cleanup', 'formatter'] as const)(
+    'prevents publication after parent cancellation during %s',
+    async (stage) => {
+      const controller = new AbortController();
+      const failure = new Error('parent cancelled');
+      const formatter = vi.fn(async () => {
+        controller.abort(failure);
+        return 'must not publish';
+      });
+      const defined = tool({
+        ...options,
+        timeoutErrorFunction: formatter,
+        async execute(_, call) {
+          await expired(_, call);
+          if (stage === 'cleanup') controller.abort(failure);
+          return 'late';
+        },
+      });
+      await expect(
+        invokeFunctionTool(
+          defined,
+          {},
+          { ...context, signal: controller.signal },
+          vi.fn(),
+        ),
+      ).rejects.toBe(failure);
+      expect(formatter).toHaveBeenCalledTimes(stage === 'formatter' ? 1 : 0);
+    },
+  );
+
+  it('revalidates native admission before and after an awaited formatter', async () => {
+    let active = true;
+    const failure = new Error('native admission revoked');
+    const defined = tool({
+      ...options,
+      execute: expired,
+      async timeoutErrorFunction() {
+        await Promise.resolve();
+        active = false;
+        return 'must not publish';
+      },
+    });
+    await expect(
+      invokeFunctionTool(defined, {}, context, vi.fn(), () => {
+        if (!active) throw failure;
+      }),
+    ).rejects.toBe(failure);
   });
 });

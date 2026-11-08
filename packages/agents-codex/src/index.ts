@@ -56,11 +56,19 @@ export type {
   InteractionReply,
   InteractionHandler,
 } from './runtime/native-questions';
-export { checklist, tool, toolRef, ToolOutput } from './runtime/tools';
+export {
+  checklist,
+  tool,
+  toolRef,
+  ToolOutput,
+  ToolTimeoutError,
+} from './runtime/tools';
 export type { ToolCallInfo } from './runtime/call-metadata';
 export type {
   Checklist,
   FunctionTool,
+  FunctionToolTimeoutBehavior,
+  ToolTimeoutErrorFunction,
   Tool,
   ToolContext,
   ToolDecision,
