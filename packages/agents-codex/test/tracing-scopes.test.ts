@@ -1,3 +1,6 @@
+import { setImmediate } from 'node:timers/promises';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { nativeEventBatch } from './fixtures/native-event-batches';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -108,9 +111,23 @@ import {
 
 import {
   captureTracing,
+  workflowForTrace,
   withoutTracing,
   withNativeCallbackContext,
 } from '../src/runtime/tracing-context';
+
+async function collectUntilReleased(reference: WeakRef<object>) {
+  setFlagsFromString('--expose-gc');
+  const collect = runInNewContext('gc') as () => void;
+  setFlagsFromString('--no-expose-gc');
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await setImmediate();
+    collect();
+    await setImmediate();
+    if (reference.deref() === undefined) return;
+  }
+  expect(reference.deref()).toBeUndefined();
+}
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -479,7 +496,7 @@ it.each([
     const { manualTool } = await import('../src/runtime/manual');
     const { z } = await import('zod');
     const { NativeAgents } = await import('../src/runtime/native-agents');
-    const events = Array.from({ length: 3 }, () =>
+    const events = Array.from({ length: 4 }, () =>
       Promise.withResolvers<string>(),
     );
     const submitted: Record<string, unknown>[] = [];
@@ -575,35 +592,55 @@ it.each([
     );
     let childToken: string | undefined;
     try {
-      const first = await withTrace(
-        { traceId: shared ? '1'.repeat(32) : undefined },
-        async (workflow) => {
-          original = workflow;
-          return session.submit('original root');
-        },
-      );
-      // Native child work retains its own borrowed carrier before the root ends.
-      const operation = harness.contexts.get(
-        submitted[0].tracing_context as string,
-      )!;
-      childToken = harness.native.retain_trace_context(
-        operation.handle as string,
-      );
-      events[0].resolve(
-        JSON.stringify({
-          id: 'root-1',
-          msg: {
-            type: 'task_complete',
-            last_agent_message: 'done',
+      const discarded = await (async () => {
+        const first = await withTrace(
+          { traceId: shared ? '1'.repeat(32) : undefined },
+          async (workflow) => {
+            original = workflow;
+            return session.submit('original root');
           },
-        }),
-      );
-      await first.wait();
+        );
+        // Native child work retains its own borrowed carrier before the root ends.
+        const operation = harness.contexts.get(
+          submitted[0].tracing_context as string,
+        )!;
+        childToken = harness.native.retain_trace_context(
+          operation.handle as string,
+        );
+        events[0].resolve(
+          JSON.stringify({
+            id: 'root-1',
+            msg: {
+              type: 'task_complete',
+              last_agent_message: 'done',
+            },
+          }),
+        );
+        await first.wait();
+        return new WeakRef(first);
+      })();
       await withTrace({ traceId: shared ? '1'.repeat(32) : undefined }, () =>
         session.submit('unrelated later root'),
       );
-      // No child owner was observed until after the unrelated root was admitted.
+      // Let the native reader leave its previous event frame before checking GC.
+      // No child owner has reached JS yet.
       events[1].resolve(
+        JSON.stringify({
+          id: 'root-2',
+          msg: {
+            type: 'warning',
+            message: 'later root progress',
+          },
+        }),
+      );
+      for await (const event of session.events()) {
+        if (event.type === 'warning' && event.message === 'later root progress')
+          break;
+      }
+      await collectUntilReleased(discarded);
+      // The Turn is gone, but the application's original workflow is still live.
+      // No child owner was observed until after the unrelated root was admitted.
+      events[2].resolve(
         JSON.stringify({
           id: 'child-turn',
           subagent_id: 'child',
@@ -1192,15 +1229,13 @@ it.each([false, true])(
     if (hookFails)
       await expect(session.close()).rejects.toThrow('synthetic close failure');
     else await session.close();
-    const issued = (
+    const record = (
       session as unknown as {
-        issuedRuns: Map<string, { tracing?: unknown; issuedTracing?: unknown }>;
+        lastRun: { tracing?: unknown; issuedTracing?: unknown };
       }
-    ).issuedRuns;
-    for (const record of issued.values()) {
-      expect(record.tracing).toBeUndefined();
-      expect(record.issuedTracing).toBeUndefined();
-    }
+    ).lastRun;
+    expect(record.tracing).toBeUndefined();
+    expect(record.issuedTracing).toBeUndefined();
     const child = await startSpan({ parent: workflow! });
     expect(child.context.parentSpanId).toBe(workflow!.context.spanId);
     child.close();
@@ -1523,14 +1558,11 @@ it('resolves a retained predecessor workflow after tracing transfers', async () 
       return session.submit('first');
     });
     const internals = session as unknown as {
-      issuedRuns: Map<
-        string,
-        {
-          tracing?: unknown;
-          issuedTracing?: unknown;
-          controller: AbortController;
-        }
-      >;
+      lastRun: {
+        tracing?: unknown;
+        issuedTracing?: unknown;
+        controller: AbortController;
+      };
       invokeCallback: (
         run: unknown,
         callback: () => Promise<void>,
@@ -1538,7 +1570,7 @@ it('resolves a retained predecessor workflow after tracing transfers', async () 
         context: string,
       ) => Promise<void>;
     };
-    const predecessor = internals.issuedRuns.get('root-1')!;
+    const predecessor = internals.lastRun;
     await turn.steer('retained');
     events[0].resolve(
       JSON.stringify({
@@ -1636,7 +1668,7 @@ it.each(['expired', 'live', 'entered'] as const)(
     const token = source.retain();
     if (state !== 'entered') source.releaseContext(token);
     const internals = session as unknown as {
-      issuedRuns: Map<string, unknown>;
+      lastRun: unknown;
       trackNativeQuestion: (owner: never, event: never) => Promise<void>;
       track: () => void;
       admitNativeQuestion: (...args: unknown[]) => Promise<void>;
@@ -1659,7 +1691,7 @@ it.each(['expired', 'live', 'entered'] as const)(
         }),
       );
       const pending = internals.trackNativeQuestion(
-        internals.issuedRuns.get('root') as never,
+        internals.lastRun as never,
         event as never,
       );
       if (state === 'expired') await expect(pending).resolves.toBeUndefined();
@@ -1690,7 +1722,7 @@ it('retains nested question callback context after admission and grant release',
     await session.submit('run');
   });
   const internals = session as unknown as {
-    issuedRuns: Map<string, unknown>;
+    lastRun: unknown;
     trackQuestionCallback: (
       owner: never,
       callback: () => Promise<void>,
@@ -1708,7 +1740,7 @@ it('retains nested question callback context after admission and grant release',
         borrowed,
         () => {
           callback = internals.trackQuestionCallback(
-            internals.issuedRuns.get('root') as never,
+            internals.lastRun as never,
             async () => {
               entered.resolve();
               await release.promise;
@@ -1754,11 +1786,11 @@ it.each([true, false])(
       await session.submit('run');
     });
     const internals = session as unknown as {
-      issuedRuns: Map<string, { toolInvocations: Set<Promise<void>> }>;
+      lastRun: { toolInvocations: Set<Promise<void>> };
       trackNativeQuestion: (owner: never, event: never) => Promise<void>;
       admitNativeQuestion: () => Promise<void>;
     };
-    const owner = internals.issuedRuns.get('root')!;
+    const owner = internals.lastRun;
     const admit = vi
       .spyOn(internals, 'admitNativeQuestion')
       .mockImplementation(async () => {
@@ -1979,7 +2011,7 @@ it.each(['live', 'expired', 'missing carrier'] as const)(
     });
     const internals = session as unknown as {
       readMcpResults: () => Promise<void>;
-      issuedRuns: Map<string, { toolInvocations: Set<Promise<void>> }>;
+      lastRun: { toolInvocations: Set<Promise<void>> };
     };
     next
       .mockResolvedValueOnce(
@@ -2008,14 +2040,12 @@ it.each(['live', 'expired', 'missing carrier'] as const)(
       await withoutTracing(() => internals.readMcpResults());
       if (state !== 'expired') {
         await entered.promise;
-        expect(
-          internals.issuedRuns.get('root')!.toolInvocations.size,
-        ).toBeGreaterThan(0);
+        expect(internals.lastRun.toolInvocations.size).toBeGreaterThan(0);
         release.resolve();
       }
       await released.promise;
       await vi.waitFor(() =>
-        expect(internals.issuedRuns.get('root')!.toolInvocations.size).toBe(0),
+        expect(internals.lastRun.toolInvocations.size).toBe(0),
       );
       const callbacks = harness.starts
         .slice(before)
@@ -2136,4 +2166,45 @@ it('rejects processor flush and shutdown, including descendants after callback r
   expect(harness.native.force_flush_telemetry).toHaveBeenCalledOnce();
   await shutdown();
   expect(harness.native.shutdown_telemetry).toHaveBeenCalledOnce();
+});
+
+it('releases discarded workflow aliases while a native callback carrier keeps its ancestry', async () => {
+  const native = harness.native;
+  async function discardedWorkflow() {
+    const workflow = await startTrace({ name: 'discarded workflow' });
+    const operation = await startSpan({ parent: workflow });
+    const carrier = native.retain_trace_context(operation.handle);
+    const identity = {
+      traceId: workflow.context.traceId,
+      workflowSpanId: workflow.context.spanId,
+      parentSpanId: operation.context.spanId,
+    };
+    expect(workflowForTrace(identity.traceId, identity.workflowSpanId)).toBe(
+      workflow,
+    );
+    operation.close();
+    workflow.close();
+    return { carrier, identity, reference: new WeakRef(workflow) };
+  }
+  const { carrier, identity, reference } = await discardedWorkflow();
+  try {
+    await collectUntilReleased(reference);
+    expect(
+      workflowForTrace(identity.traceId, identity.workflowSpanId),
+    ).toBeUndefined();
+    await withNativeCallbackContext(
+      carrier,
+      () => {
+        expect(getCurrentTrace()).toBeUndefined();
+        expect(getCurrentSpan()?.context).toMatchObject({
+          traceId: identity.traceId,
+          parentSpanId: identity.parentSpanId,
+        });
+      },
+      undefined,
+      workflowForTrace,
+    );
+  } finally {
+    native.release_trace_context(carrier);
+  }
 });

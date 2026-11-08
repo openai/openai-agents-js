@@ -33,6 +33,8 @@ const lookup = tool({
 
 Add `lookup` to the Agent's tools. Two namespaces can contain functions with the same short name. The SDK rejects duplicate namespace/name pairs when opening a Session and captures each declaration for dispatch. Use `toolRef('lookup', 'crm')` to select this function in `beforeStep`. Omit `namespace` for the default function namespace. These fields do not namespace `manualTool()` declarations.
 
+When `NativeAgents` is enabled, its native tools reserve the `collaboration` namespace; choose another namespace for application functions. Without `NativeAgents`, that namespace remains available to application functions.
+
 ### Function admission
 
 Pass `maxFunctionConcurrency` to `agent.session()` or `agent.run()` to limit automatic managed functions per root or child turn. For example, `await agent.session({ maxFunctionConcurrency: 2 })` admits at most two at a time. The value must be a positive integer; omission adds no host admission limit.
@@ -95,7 +97,7 @@ An optional `signal` cancels only that caller's wait with its reason. Native wor
 
 ## Select tools for one root
 
-Use `session.submit(input, { tools, beforeStep })` to select tools for one new root from the tools admitted at opening. `enqueue(input, options)` accepts the same options. Both methods also accept `outputType` in that object.
+Use `session.submit(input, { tools, beforeStep })` to select tools for one new root from the tools admitted at opening. `enqueue(input, options)` accepts the same selection and output options, but always queues work; use `submit(input, { ifBusy: 'reject' })` when busy work should reject. Both methods accept `outputType` in that object.
 
 Omit `tools` to use the current defaults. Pass `tools: []` to select none. To select one tool, pass an array containing its declaration, such as `tools: [lookup]`, or its exact reference, such as `tools: [toolRef('lookup', 'crm')]` for an admitted MCP tool. An omitted or null namespace means `functions`.
 
@@ -156,6 +158,8 @@ A direct `false` approval denies that call through the native tool path. In Code
 ## Programmatic tool calling
 
 Programmatic tool calling is optional and off by default. Ordinary function calls do not need model-generated code cells. Set `programmaticToolCalling: true` to let the model write JavaScript cells that coordinate admitted tool calls. Those cells run in the bundled Codex Code Mode host, which embeds V8. Application functions still execute through their registered callbacks in the Node application.
+
+The tools selected for each model step must have unique generated JavaScript names. Distinct qualified identities can flatten to the same generated name, and names such as `foo-bar` and `foo_bar` both become `foo_bar`. Select only one colliding declaration, or use direct function calls with Code Mode disabled. The admitted catalog may contain both when each effective selection is unambiguous.
 
 The bundled host itself grants no shell tools or workspace access. Supply an [Environment](executors.md#remote-executor-tools) with current tool permissions for remote file and process operations.
 

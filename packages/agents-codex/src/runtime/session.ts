@@ -6,6 +6,7 @@ import {
 import {
   captureTracing,
   getCurrentSpan,
+  workflowForTrace,
   withoutTracing,
   TraceCapture,
   type TraceSpan,
@@ -959,7 +960,6 @@ export class Session<OutputT = string, Context = unknown> {
     NativeRunResult,
     Completed<unknown>
   >();
-  private readonly issuedRuns = new Map<string, NativeTurn>();
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
   private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
@@ -1791,8 +1791,7 @@ export class Session<OutputT = string, Context = unknown> {
             return this.admitNativeQuestion(run, event);
           },
           run.controller.signal,
-          (traceId, workflowSpanId) =>
-            this.workflowForTrace(traceId, workflowSpanId),
+          workflowForTrace,
         );
       } catch (error) {
         if (!entered && !(await pending())) return;
@@ -2382,7 +2381,6 @@ export class Session<OutputT = string, Context = unknown> {
   private issuedTurn(step: NativeTurn): Turn<unknown, string | null> {
     if (step.id) {
       step.issuedTracing ??= step.tracing;
-      this.issuedRuns.set(step.id, step);
     }
     const run = this.rootRun(step);
     let turn = this.turnHandles.get(run);
@@ -2396,7 +2394,7 @@ export class Session<OutputT = string, Context = unknown> {
         () => {
           this.assertCanWait(run);
           return (completion ??= this.#waitResult(run).then((value) =>
-            this.#complete(value),
+            this.#complete(run, value),
           ));
         },
         (options) => this.observations.events(options, scope),
@@ -2429,10 +2427,12 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /** @internal Decode each exact result once, independently of later turns. */
-  #complete(result: NativeRunResult): Completed<unknown> {
+  #complete(root: NativeTurn, result: NativeRunResult): Completed<unknown> {
     const saved = this.completedResults.get(result);
     if (saved) return saved;
-    const run = this.issuedRuns.get(result.turnId);
+    const run = [...this.rootSteps(root)].find(
+      (step) => step.id === result.turnId,
+    );
     if (!run) throw new NativeError('Result has no issued turn');
     const completed = Object.freeze({
       turn: this.#turnFor(run),
@@ -2621,22 +2621,28 @@ export class Session<OutputT = string, Context = unknown> {
   /** Register FIFO new work and issue its exact handle before native admission. */
   enqueue(
     input: UserInput,
-    options?: SubmitOptions<Context>,
+    options?: Omit<SubmitOptions<Context>, 'ifBusy'>,
   ): Promise<Turn<OutputT, string | null>>;
   enqueue<Next>(
     input: UserInput,
-    options: SubmitOptions<Context, Next> & { outputType: OutputSpec<Next> },
+    options: Omit<SubmitOptions<Context, Next>, 'ifBusy'> & {
+      outputType: OutputSpec<Next>;
+    },
   ): Promise<Turn<Next, string | null>>;
   enqueue<Next>(
     input: UserInput,
-    options?: SubmitOptions<Context, Next>,
+    options?: Omit<SubmitOptions<Context, Next>, 'ifBusy'>,
   ): Promise<Turn<OutputT | Next, string | null>>;
   async enqueue<Next>(
     input: UserInput,
-    options?: SubmitOptions<Context, Next>,
+    options?: Omit<SubmitOptions<Context, Next>, 'ifBusy'>,
   ): Promise<Turn<OutputT | Next, string | null>> {
-    const outputType = options?.outputType;
     this.checkCallbackOperation('enqueue on');
+    if (options && 'ifBusy' in options && options.ifBusy !== undefined)
+      throw new TypeError(
+        'enqueue queues work; use submit to reject busy work',
+      );
+    const outputType = options?.outputType;
     if (
       !this.isOpen ||
       this.lifecycle.kind === 'mutation' ||
@@ -4235,36 +4241,6 @@ export class Session<OutputT = string, Context = unknown> {
     return owner;
   }
 
-  private workflowForTrace(
-    traceId: string,
-    workflowSpanId: string,
-  ): TraceSpan | undefined {
-    const current =
-      this.lifecycle.kind === 'turn'
-        ? this.lifecycle.run.tracing?.workflow
-        : this.lastRun?.tracing?.workflow;
-    if (
-      current?.context.traceId === traceId &&
-      current.context.spanId === workflowSpanId
-    )
-      return current;
-    // Issued turns already retain exact result owners, including completed and
-    // retained steps. A child may first reach JS after a later root starts.
-    for (const run of this.issuedRuns.values()) {
-      const workflow = (run.issuedTracing ?? run.tracing)?.workflow;
-      if (
-        workflow?.context.traceId === traceId &&
-        workflow.context.spanId === workflowSpanId
-      )
-        return workflow;
-    }
-    const opening = this.options.tracingCapture?.workflow;
-    return opening?.context.traceId === traceId &&
-      opening.context.spanId === workflowSpanId
-      ? opening
-      : undefined;
-  }
-
   private processChild(
     event: NativeEvent,
     native: NativeThread,
@@ -5294,8 +5270,7 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined,
           () => beforeStep(context),
           signal,
-          (traceId, workflowSpanId) =>
-            this.workflowForTrace(traceId, workflowSpanId),
+          workflowForTrace,
         );
         signal.throwIfAborted();
         if (
@@ -5417,8 +5392,7 @@ export class Session<OutputT = string, Context = unknown> {
                 tracingContext,
                 callback,
                 signal,
-                (traceId, workflowSpanId) =>
-                  this.workflowForTrace(traceId, workflowSpanId),
+                workflowForTrace,
               )
             : tracing
               ? tracing.run('host.callback', 'callback', callback)
@@ -6451,8 +6425,7 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined,
           execute,
           owner.controller.signal,
-          (traceId, workflowSpanId) =>
-            this.workflowForTrace(traceId, workflowSpanId),
+          workflowForTrace,
         );
     } catch (error) {
       if (admission) {
@@ -8774,8 +8747,7 @@ export class Session<OutputT = string, Context = unknown> {
               tracing_context,
               transform,
               owner.controller.signal,
-              (traceId, workflowSpanId) =>
-                this.workflowForTrace(traceId, workflowSpanId),
+              workflowForTrace,
             );
           }
           if (!requestExpired && this.current(owner)) {
@@ -8874,8 +8846,7 @@ export class Session<OutputT = string, Context = unknown> {
                 tracingContext,
                 callback,
                 owner.controller.signal,
-                (traceId, workflowSpanId) =>
-                  this.workflowForTrace(traceId, workflowSpanId),
+                workflowForTrace,
               ),
             );
             pending.resolve();
@@ -9748,11 +9719,7 @@ export class Session<OutputT = string, Context = unknown> {
         } finally {
           // Native, readers and child callbacks have joined; late discovery is now impossible.
           this.options.tracingCapture = undefined;
-          for (const owned of [
-            run,
-            this.lastRun,
-            ...this.issuedRuns.values(),
-          ]) {
+          for (const owned of [run, this.lastRun]) {
             if (owned) {
               owned.tracing = undefined;
               owned.issuedTracing = undefined;
