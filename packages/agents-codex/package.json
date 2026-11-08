@@ -67,6 +67,16 @@
         "types": "./dist/a2a/index.d.ts",
         "default": "./a2a/index.cjs"
       }
+    },
+    "./voice": {
+      "import": {
+        "types": "./dist/voice/index.d.mts",
+        "default": "./dist/voice/index.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/index.d.ts",
+        "default": "./dist/voice/index.js"
+      }
     }
   },
   "scripts": {
@@ -137,6 +147,9 @@
       ],
       "a2a": [
         "dist/a2a/index.d.ts"
+      ],
+      "voice": [
+        "dist/voice/index.d.ts"
       ]
     }
   },
