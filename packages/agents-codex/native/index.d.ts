@@ -388,7 +388,6 @@ declare const binding: {
   _agent_profiles_fingerprint: typeof _agent_profiles_fingerprint;
   _agent_profiles_restore_source: typeof _agent_profiles_restore_source;
   _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
-  _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
   _packaged_runtime(): {
     codex_self_exe: string;
     codex_linux_sandbox_exe?: string;
@@ -446,13 +445,6 @@ export function _agent_profiles_restore_source(
   rosterJson: string,
   rootId: string,
   historyJson: string,
-): string;
-
-export function _agent_profiles_operation_source(
-  rosterJson: string,
-  rootId: string,
-  historyJson: string,
-  turnId: string,
 ): string;
 
 /** Resolve the proved declaration origin of an explicitly selected suspended operation. */

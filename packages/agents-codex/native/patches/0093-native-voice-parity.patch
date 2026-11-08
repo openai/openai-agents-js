@@ -4456,10 +4456,10 @@ index ee0bba99461438b5ae24a1f3d283ab043546e1a3..4de65a8b08e08c4586a533319850e774
 +}
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..6afef1cd7ed23cf2ec8470d11fdf07652f1bddae
+index 0000000000000000000000000000000000000000..b493f8a52a1d12d1ebcf9576ffcbe31e3b02223c
 --- /dev/null
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-@@ -0,0 +1,2942 @@
+@@ -0,0 +1,3013 @@
 +//! Connection-owned accepted configuration and its single pending revision.
 +use crate::ApiError;
 +use codex_protocol::agent_profile::AgentProfileReceipt;
@@ -4934,17 +4934,21 @@ index 0000000000000000000000000000000000000000..6afef1cd7ed23cf2ec8470d11fdf0765
 +
 +    pub(super) fn response_create_for(&self, response_id: &str) -> bool {
 +        let mut state = self.inner.state.lock().unwrap();
++        let request_owner = state
++            .response_contexts
++            .iter()
++            .find(|response| response.id.as_ref() == response_id)
++            .map(|response| Arc::clone(&response.request_owner));
 +        if state.failure.is_none()
++            && request_owner
++                .as_ref()
++                .is_some_and(|owner| Arc::ptr_eq(owner, &state.request_owner))
 +            && state.latest_response_id.as_deref() == Some(response_id)
 +            && state.active_response.is_none()
 +            && !state.response_create_pending
 +        {
 +            state.response_create_pending = true;
-+            state.pending_create_owner = state
-+                .response_contexts
-+                .iter()
-+                .find(|r| r.id.as_ref() == response_id)
-+                .map(|r| Arc::clone(&r.request_owner));
++            state.pending_create_owner = request_owner;
 +            state.pending_create_guard = Some(state.output_owner.new_response());
 +            true
 +        } else {
@@ -5184,6 +5188,10 @@ index 0000000000000000000000000000000000000000..6afef1cd7ed23cf2ec8470d11fdf0765
 +        let feedback_accepted = feedback.is_some()
 +            && response_id.is_some_and(|id| {
 +                state.latest_response_id.as_deref() == Some(id)
++                    && state.response_contexts.iter().any(|response| {
++                        response.id.as_ref() == id
++                            && Arc::ptr_eq(&response.request_owner, &state.request_owner)
++                    })
 +                    && state.feedback_response_id.as_deref() != Some(id)
 +                    && !state.response_create_pending
 +                    && active_response_id
@@ -6330,6 +6338,69 @@ index 0000000000000000000000000000000000000000..6afef1cd7ed23cf2ec8470d11fdf0765
 +            .unwrap();
 +        assert!(actions.payloads.is_empty());
 +        assert!(!actions.result.feedback_accepted);
++    }
++
++    #[test]
++    fn newer_request_blocks_late_feedback_before_response_identity() {
++        for boundary in ["user", "manual", "speech"] {
++            let observer = accepted_observer();
++            let configuration = observer.configuration();
++            created(&observer, "a");
++            chunk(&observer, "a", "item-a");
++            done(&observer, "a");
++            match boundary {
++                "user" => configuration.observe_user_input(),
++                "manual" => assert!(configuration.observe_response_create()),
++                "speech" => {
++                    observer.observe_frame(r#"{"type":"input_audio_buffer.speech_started"}"#, true);
++                }
++                _ => unreachable!(),
++            }
++            // B already owns the request even though response.created has not arrived.
++            let actions = configuration
++                .prepare_interrupt(
++                    Some("a"),
++                    Some(&played("a", "item-a", 0)),
++                    Some("late A feedback"),
++                    false,
++                )
++                .unwrap();
++            assert!(!actions.result.feedback_accepted, "{boundary}");
++            assert!(actions.result.cancelled_response_id.is_none());
++            assert_eq!(actions.payloads.len(), 1);
++            assert_eq!(actions.payloads[0]["type"], "conversation.item.truncate");
++            assert_eq!(actions.payloads[0]["item_id"], "item-a");
++            assert!(!configuration.response_create_for("a"), "{boundary}");
++            assert!(!observer.mismatched());
++        }
++    }
++
++    #[test]
++    fn newer_request_blocks_delayed_corrective_create_before_response_identity() {
++        for boundary in ["user", "manual", "speech"] {
++            let observer = accepted_observer();
++            let configuration = observer.configuration();
++            created(&observer, "a");
++            done(&observer, "a");
++            assert!(
++                configuration
++                    .prepare_interrupt(Some("a"), None, Some("current A feedback"), false)
++                    .unwrap()
++                    .result
++                    .feedback_accepted
++            );
++            match boundary {
++                "user" => configuration.observe_user_input(),
++                "manual" => assert!(configuration.observe_response_create()),
++                "speech" => {
++                    observer.observe_frame(r#"{"type":"input_audio_buffer.speech_started"}"#, true);
++                }
++                _ => unreachable!(),
++            }
++            // Recheck ownership after feedback while the native callback reader catches up.
++            assert!(!configuration.response_create_for("a"), "{boundary}");
++            assert!(!observer.mismatched());
++        }
 +    }
 +
 +    #[test]
@@ -14925,10 +14996,10 @@ index d936d86f5933e282dd14ea76f7caaa543ac94e40..05926b5e26acff8ebe1be96a0f26513e
                  RealtimeInputTask {
 diff --git a/codex-rs/core/src/realtime_conversation/tool_task.rs b/codex-rs/core/src/realtime_conversation/tool_task.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..5f4f406b02cdedc3c6eb06fec100b97f02c8883f
+index 0000000000000000000000000000000000000000..04d1dc1ee5b267e470ac32ef5601ba18081c1bfa
 --- /dev/null
 +++ b/codex-rs/core/src/realtime_conversation/tool_task.rs
-@@ -0,0 +1,1260 @@
+@@ -0,0 +1,1266 @@
 +//! One issuing response's native-selected functions under the ordinary root task lifecycle.
 +use super::SdkRealtimeCommand;
 +use super::SdkRealtimeState;
@@ -15764,7 +15835,12 @@ index 0000000000000000000000000000000000000000..5f4f406b02cdedc3c6eb06fec100b97f
 +        let result = match context {
 +            Ok(context) => {
 +                let execution = cancellation.child_token();
-+                let running = self.run_batch(Arc::clone(&session), context, execution.clone());
++                let running = self.run_batch(
++                    Arc::clone(&session),
++                    Arc::clone(&root),
++                    context,
++                    execution.clone(),
++                );
 +                tokio::pin!(running);
 +                tokio::select! {
 +                    biased;
@@ -15906,6 +15982,7 @@ index 0000000000000000000000000000000000000000..5f4f406b02cdedc3c6eb06fec100b97f
 +    async fn run_batch(
 +        &self,
 +        session: Arc<Session>,
++        root: Arc<TurnContext>,
 +        ctx: Arc<TurnContext>,
 +        cancellation: CancellationToken,
 +    ) -> SessionTaskResult {
@@ -15963,7 +16040,7 @@ index 0000000000000000000000000000000000000000..5f4f406b02cdedc3c6eb06fec100b97f
 +            let accepted = runtime.accepted_handoff();
 +            if let Some(accepted) = &accepted {
 +                let target = session
-+                    .activate_agent_at_tool_boundary(&ctx, &cancellation, Some(accepted))
++                    .activate_agent_at_tool_boundary(&root, &cancellation, Some(accepted))
 +                    .await?
 +                    .filter(|target| target.profile_id == accepted.target_profile_id)
 +                    .ok_or_else(|| {
@@ -20464,10 +20541,10 @@ index a50b3dbbd19ff30a2b7c7c688644da2b894cf458..960923ed2b1d35be90a22877d62e5350
 +}
 diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116fd617f98b
+index 0000000000000000000000000000000000000000..2bb6b5c581a9f49409581ef0b98455b46bb0cc76
 --- /dev/null
 +++ b/codex-rs/core/src/session/agent_profile.rs
-@@ -0,0 +1,1620 @@
+@@ -0,0 +1,1774 @@
 +//! Atomic, host-admitted Agent selection at actual sampling boundaries.
 +
 +use super::session::Session;
@@ -20499,6 +20576,7 @@ index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116f
 +struct TaskFence {
 +    context: Arc<TurnContext>,
 +    done: Arc<Notify>,
++    cancellation: CancellationToken,
 +}
 +
 +fn invalid(message: impl Into<String>) -> CodexErr {
@@ -20641,6 +20719,7 @@ index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116f
 +                TaskFence {
 +                    context: Arc::clone(context),
 +                    done: Arc::clone(&task.done),
++                    cancellation: cancellation.clone(),
 +                },
 +                context.next_step_settings.load_full(),
 +            )
@@ -20757,6 +20836,7 @@ index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116f
 +                if !Arc::ptr_eq(&task.done, &fence.done)
 +                    || !Arc::ptr_eq(&task.turn_context, &fence.context)
 +                    || task.cancellation_token.is_cancelled()
++                    || fence.cancellation.is_cancelled()
 +                    || !Arc::ptr_eq(&context.next_step_settings.load_full(), &current)
 +                {
 +                    return Err(CodexErr::TurnAborted);
@@ -20915,7 +20995,16 @@ index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116f
 +                },
 +            )),
 +        ];
++        // Canonical history loading above can await after the first task check.
++        // A scoped batch can stop while its sibling keeps the root task alive.
++        if task_fence
++            .as_ref()
++            .is_some_and(|fence| fence.cancellation.is_cancelled())
++        {
++            return Err(CodexErr::TurnAborted);
++        }
 +        // No reentrant context capture. The existing task gate stays held through durability.
++        // Once append begins, settle the durable publication even if cancellation arrives.
 +        let publication = async {
 +            live.append_items(&batch).await?;
 +            live.flush().await?;
@@ -21729,6 +21818,46 @@ index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116f
 +            .expect("unshared session")
 +            .services
 +            .extensions = Arc::new(extensions.build());
++        // The client captures request contributors when constructed, independently
++        // of the Session's lifecycle/tool extension registry.
++        let config = &context.config;
++        let model_client = crate::client::ModelClient::new(
++            context.auth_manager.clone(),
++            codex_login::auth::AgentIdentityAuthPolicy::JwtOnly,
++            session.thread_id(),
++            context.provider.info().clone(),
++            context.session_source.clone(),
++            context.originator.clone(),
++            config.model_verbosity,
++            config
++                .features
++                .enabled(codex_features::Feature::ContentItemKinds),
++            config
++                .features
++                .enabled(codex_features::Feature::ReasoningEffortOverride),
++            config
++                .features
++                .enabled(codex_features::Feature::EnableRequestCompression),
++            config
++                .features
++                .enabled(codex_features::Feature::RuntimeMetrics),
++            Session::build_model_client_beta_features_header(config),
++            config
++                .features
++                .enabled(codex_features::Feature::ConcurrentReasoningSummaries),
++            None,
++            config.http_client_factory(),
++            config.workspace_routing_context(),
++            session
++                .services
++                .extensions
++                .model_request_contributors()
++                .to_vec(),
++        );
++        Arc::get_mut(&mut session)
++            .expect("unshared session")
++            .services
++            .model_client = model_client;
 +        let future = session.new_default_turn().await;
 +        let speculative = session
 +            .capture_speculative_step_context(Arc::clone(&future), &CancellationToken::new())
@@ -21846,6 +21975,106 @@ index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116f
 +        );
 +    }
 +
++    struct HoldProfileRoot(Arc<Notify>);
++    impl crate::tasks::SessionTask for HoldProfileRoot {
++        fn kind(&self) -> crate::state::TaskKind {
++            crate::state::TaskKind::Regular
++        }
++        fn span_name(&self) -> &'static str {
++            "profile.held_root"
++        }
++        async fn run(
++            self: Arc<Self>,
++            _: Arc<Session>,
++            _: Arc<TurnContext>,
++            _: Vec<super::super::input_queue::TurnInput>,
++            cancellation: CancellationToken,
++        ) -> crate::tasks::SessionTaskResult {
++            self.0.notify_one();
++            cancellation.cancelled().await;
++            Ok(None)
++        }
++    }
++
++    #[tokio::test]
++    async fn scoped_batch_cancel_at_persistence_gate_keeps_root_and_profile() {
++        let (mut session, context) = make_session_and_context().await;
++        attach_thread_persistence(&mut session).await;
++        let receipt = session
++            .activate_agent_profile(None, profile(&context, "a", "scoped-source"))
++            .await
++            .unwrap();
++        let target = profile(&context, "b", "scoped-target");
++        let session = Arc::new(session);
++        let root = session.new_default_turn().await;
++        let entered = Arc::new(Notify::new());
++        assert!(
++            session
++                .start_task(
++                    Arc::clone(&root),
++                    Vec::new(),
++                    HoldProfileRoot(entered.clone())
++                )
++                .await
++        );
++        tokio::time::timeout(std::time::Duration::from_secs(15), entered.notified())
++            .await
++            .unwrap();
++        let (done, root_cancel) = {
++            let active = session.active_turn.lock().await;
++            let task = active.as_ref().unwrap().task.as_ref().unwrap();
++            assert!(Arc::ptr_eq(&task.turn_context, &root));
++            (task.done.clone(), task.cancellation_token.clone())
++        };
++        let batch_cancel = root_cancel.child_token();
++        let gate = super::super::thread_settings::acquire_persistence_lock(&session).await;
++        let activation = session.commit_agent_profile(
++            Some(TaskFence {
++                context: root.clone(),
++                done,
++                cancellation: batch_cancel.clone(),
++            }),
++            root.clone(),
++            root.next_step_settings.load_full(),
++            Some(receipt.clone()),
++            target,
++        );
++        tokio::pin!(activation);
++        // All source authority remains valid; only this batch ends while the
++        // existing publication gate prevents its candidate from being committed.
++        assert!(futures::poll!(&mut activation).is_pending());
++        batch_cancel.cancel();
++        drop(gate);
++        let error = activation.await.unwrap_err();
++        assert!(matches!(
++            error.details(),
++            codex_protocol::error::CodexErrorDetails::TurnAborted
++        ));
++        assert!(!root_cancel.is_cancelled());
++        {
++            let active = session.active_turn.lock().await;
++            let task = active.as_ref().unwrap().task.as_ref().unwrap();
++            assert!(Arc::ptr_eq(&task.turn_context, &root));
++            assert!(!task.cancellation_token.is_cancelled());
++        }
++        assert_eq!(
++            session.agent_profile_receipt().await.unwrap(),
++            Some(receipt.clone())
++        );
++        let saved = session
++            .live_thread()
++            .unwrap()
++            .load_history(true)
++            .await
++            .unwrap();
++        let (_, persisted) = persisted_profile(&saved.items).unwrap().unwrap();
++        assert_eq!(persisted.profile_id, receipt.profile_id);
++        assert_eq!(persisted.epoch, receipt.epoch);
++        session
++            .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
++            .await;
++    }
++
 +    struct CancelIssuedReplies(CancellationToken);
 +    impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config>
 +        for CancelIssuedReplies
@@ -21942,7 +22171,9 @@ index 0000000000000000000000000000000000000000..41ef664e614124c52f9daab169b4116f
 +
 +    impl ThreadStore for PartialAppend {
 +        fn as_any(&self) -> &dyn Any {
-+            self
++            // Keep the local rollout escape hatch while append_items below
++            // remains the injected storage boundary.
++            self.inner.as_any()
 +        }
 +        fn append_items(&self, mut params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
 +            Box::pin(async move {

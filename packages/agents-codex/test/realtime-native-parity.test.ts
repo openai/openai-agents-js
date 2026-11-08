@@ -669,6 +669,97 @@ nativeIt.each([true, false])(
 );
 
 nativeIt(
+  'fences old response feedback after newer speech begins without a response ID',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Listen for the next user turn.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      peer.send({ type: 'response.created', response: { id: 'old-A' } });
+      peer.send({
+        type: 'response.output_audio.delta',
+        response_id: 'old-A',
+        item_id: 'old-A-audio',
+        content_index: 0,
+        output_index: 0,
+        delta: Buffer.alloc(4800).toString('base64'),
+      });
+      peer.send({ type: 'response.done', response: { id: 'old-A' } });
+      // B is speaking, but the provider has not created its response yet.
+      peer.send({
+        type: 'input_audio_buffer.speech_started',
+        item_id: 'new-B-input',
+        audio_start_ms: 100,
+      });
+      const events = voice.events();
+      let sawAudio = false;
+      let sawDone = false;
+      try {
+        for (;;) {
+          const next = await events.next();
+          if (next.done)
+            throw new Error('The newer speech boundary was not observed');
+          const event = next.value;
+          if (event.type === 'audio' && event.responseId === 'old-A')
+            sawAudio = true;
+          if (event.type === 'response' && event.status === 'done') {
+            expect(event.responseId).toBe('old-A');
+            sawDone = true;
+          }
+          if (event.type === 'lifecycle' && event.status === 'speech_started')
+            break;
+        }
+      } finally {
+        await events.return(undefined);
+      }
+      expect(sawAudio && sawDone).toBe(true);
+      const start = peer.frames.length;
+      await voice.interrupt('old-A', {
+        playback: {
+          responseId: 'old-A',
+          itemId: 'old-A-audio',
+          contentIndex: 0,
+          audioEndMs: 50,
+        },
+        feedback: 'FORBIDDEN_OLD_A_FEEDBACK',
+      });
+      // This acknowledged update is a writer barrier after the interrupt.
+      await voice.update({ instructions: 'Continue listening for B.' });
+      await peer.frame((frame) => frame.type === 'session.update', start);
+      const frames = peer.frames.slice(start);
+      expect(
+        frames.find((frame) => frame.type === 'conversation.item.truncate'),
+      ).toMatchObject({
+        type: 'conversation.item.truncate',
+        item_id: 'old-A-audio',
+        content_index: 0,
+        audio_end_ms: 50,
+      });
+      expect(
+        frames.some(
+          (frame) =>
+            frame.type === 'conversation.item.create' &&
+            frame.item?.role === 'developer',
+        ),
+      ).toBe(false);
+      expect(frames.some((frame) => frame.type === 'response.create')).toBe(
+        false,
+      );
+      expect(model.requests).toHaveLength(0);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
   'waits for the destination configuration before continuing a native handoff',
   async () => {
     const model = new ModelServer([]);
@@ -831,6 +922,140 @@ nativeIt.each([false, true])(
         await updating.catch(() => {});
       }
     } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'activates an attached handoff and gates its target ACK while the original root stays owned',
+  async () => {
+    const enteredA = vi.fn();
+    const releaseA = Promise.withResolvers<void>();
+    const enteredB = vi.fn();
+    const exitedA = vi.fn();
+    let rootA: string | undefined;
+    let rootB: string | undefined;
+    let signalA: AbortSignal | undefined;
+    const slowA = tool({
+      name: 'slow_a',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        rootA = context.turnId;
+        signalA = context.signal;
+        enteredA();
+        try {
+          await releaseA.promise;
+          return 'A retained result';
+        } finally {
+          exitedA();
+        }
+      },
+    });
+    const lookup = tool({
+      name: 'target_lookup',
+      parameters: z.object({}),
+      execute: (_args, context) => {
+        rootB = context.turnId;
+        enteredB();
+        return 'B owns this result';
+      },
+    });
+    const target = new Agent({
+      name: 'B',
+      instructions: 'Target B instructions.',
+      tools: [lookup],
+    });
+    const model = new ModelServer([[message('Caller remains open.')]]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Source A instructions.',
+        tools: [slowA],
+        handoffs: [target],
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        peer.call('slow_a', {}, 'held-a');
+        await vi.waitFor(() => expect(enteredA).toHaveBeenCalledOnce(), {
+          timeout: 10000,
+        });
+        const start = peer.frames.length;
+        peer.autoAck = false;
+        peer.call('transfer_to_b', {}, 'attached-handoff');
+        // Accepted output proves this batch executed while A is still held.
+        await peer.frame((frame) => frame.item?.call_id === 'attached-handoff');
+        expect(exitedA).not.toHaveBeenCalled();
+        const updated = await peer.frame(
+          (frame) => frame.type === 'session.update',
+          start,
+        );
+        expect(await session.getActiveAgent()).toBe(target);
+        expect(updated.session.instructions).toContain(
+          'Target B instructions.',
+        );
+        expect(
+          updated.session.tools.some(
+            (item: Frame) => item.name === 'target_lookup',
+          ),
+        ).toBe(true);
+        // Cross the provider writer after the held target update, without a sleep.
+        await voice.sendAudio(new Int16Array([0]));
+        await peer.frame(
+          (frame) => frame.type === 'input_audio_buffer.append',
+          start,
+        );
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(0);
+        expect(signalA!.aborted).toBe(false);
+        peer.autoAck = true;
+        peer.acknowledge();
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(1);
+
+        peer.call('target_lookup', {}, 'target-b');
+        await vi.waitFor(() => expect(enteredB).toHaveBeenCalledOnce(), {
+          timeout: 10000,
+        });
+        const resultB = await peer.frame(
+          (frame) => frame.item?.call_id === 'target-b',
+        );
+        expect(resultB.item.output).toBe('B owns this result');
+        expect(exitedA).not.toHaveBeenCalled();
+        expect(signalA!.aborted).toBe(false);
+        expect(rootA).toBeTypeOf('string');
+        expect(rootB).toBe(rootA);
+        releaseA.resolve();
+        const resultA = await peer.frame(
+          (frame) => frame.item?.call_id === 'held-a',
+        );
+        expect(resultA.item.output).toBe('A retained result');
+        expect(await session.getActiveAgent()).toBe(target);
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        releaseA.resolve();
+        peer.autoAck = true;
+        while (peer.pendingUpdates.length) peer.acknowledge();
+        await voice.close();
+      }
+      expect(
+        (await (await session.submit('continue')).wait()).finalOutput,
+      ).toBe('Caller remains open.');
+      model.assertExhausted();
+    } finally {
+      releaseA.resolve();
       await peer.close();
       await ModelServer.closeAll();
     }
