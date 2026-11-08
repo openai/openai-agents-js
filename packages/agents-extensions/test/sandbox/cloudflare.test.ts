@@ -5,6 +5,9 @@ import {
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
@@ -630,6 +633,175 @@ describe('CloudflareSandboxClient', () => {
     expect(execBody).not.toHaveProperty('timeoutMs');
     expect(execInit?.signal).toBeInstanceOf(AbortSignal);
   });
+
+  test.each([
+    'validation stdout',
+    'read stdout',
+    'read stderr',
+    'incomplete frame',
+    'HTTP error body',
+  ])(
+    'bounds Cloudflare transport collection and cancels %s',
+    async (scenario) => {
+      const session = await new CloudflareSandboxClient({
+        workerUrl: 'https://worker.example.com',
+      }).create(new Manifest());
+      const original = vi.mocked(global.fetch).getMockImplementation()!;
+      const cancelled = vi.fn();
+      let produced = 0;
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const command = String(
+          JSON.parse(String(init?.body ?? '{}')).argv?.[2] ?? '',
+        );
+        if (
+          !String(input).endsWith('/exec') ||
+          (scenario !== 'validation stdout' && !command.includes('head -c'))
+        )
+          return original(input, init);
+        const text =
+          scenario === 'incomplete frame'
+            ? 'data: ' + 'A'.repeat(4096)
+            : scenario === 'HTTP error body'
+              ? 'X'.repeat(4096)
+              : `event: ${scenario === 'read stderr' ? 'stderr' : 'stdout'}\ndata: ${Buffer.from('A'.repeat(8192)).toString('base64')}\n\n`;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (produced++ === 128) controller.close();
+              else controller.enqueue(new TextEncoder().encode(text));
+            },
+            cancel: cancelled,
+          }),
+          { status: scenario === 'HTTP error body' ? 500 : 200 },
+        );
+      });
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes: 4 }),
+      ).rejects.toBeInstanceOf(SandboxProviderError);
+      expect(produced).toBeLessThan(128);
+      expect(cancelled).toHaveBeenCalledOnce();
+    },
+  );
+
+  test('rejects an oversized Cloudflare raw chunk without draining an endless response', async () => {
+    const session = await new CloudflareSandboxClient({
+      workerUrl: 'https://worker.example.com',
+    }).create(new Manifest());
+    const original = vi.mocked(global.fetch).getMockImplementation()!;
+    const cancelled = vi.fn();
+    vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+      const command = String(
+        JSON.parse(String(init?.body ?? '{}')).argv?.[2] ?? '',
+      );
+      if (!String(input).endsWith('/exec') || !command.includes('head -c'))
+        return original(input, init);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024 * 1024));
+          },
+          cancel: cancelled,
+        }),
+      );
+    });
+    await expect(
+      session.readFile({ path: 'tiny', maxBytes: 4, runAs: 'reader' }),
+    ).rejects.toThrow(/output limit/);
+    expect(cancelled).toHaveBeenCalledOnce();
+  });
+
+  test.each([false, true])(
+    'accepts valid bounded Cloudflare SSE with fragmented=%s',
+    async (fragmented) => {
+      const session = await new CloudflareSandboxClient({
+        workerUrl: 'https://worker.example.com',
+      }).create(new Manifest());
+      const original = vi.mocked(global.fetch).getMockImplementation()!;
+      const bytes = Uint8Array.from({ length: 65 }, (_, i) => i);
+      const encoded = Buffer.concat([bytes, Buffer.from('\n000\n')]).toString(
+        'base64',
+      );
+      const wire = new TextEncoder().encode(
+        `event: stdout\ndata: ${Buffer.from(encoded).toString('base64')}\n\nevent: exit\ndata: {"exit_code":0}\n\n`,
+      );
+      vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+        const command = String(
+          JSON.parse(String(init?.body ?? '{}')).argv?.[2] ?? '',
+        );
+        if (!String(input).endsWith('/exec') || !command.includes('head -c'))
+          return original(input, init);
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              if (fragmented)
+                for (const byte of wire)
+                  controller.enqueue(Uint8Array.of(byte));
+              else controller.enqueue(wire);
+              controller.close();
+            },
+          }),
+        );
+      });
+      expect(
+        Array.from(
+          await session.readFile({ path: 'tiny', maxBytes: bytes.length }),
+        ),
+      ).toEqual(Array.from(bytes));
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'keeps Cloudflare capped reads and nested runAs out of login startup',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'cloudflare-file-startup-'));
+      try {
+        await writeFile(join(root, 'tiny'), 'ABCD');
+        await writeFile(
+          join(root, '.profile'),
+          'printf "login-profile-loaded\\n"\ncommand() { cat; }\ntest() { return 0; }\n',
+        );
+        const session = await new CloudflareSandboxClient({
+          workerUrl: 'https://worker.example.com',
+        }).create(new Manifest());
+        const original = vi.mocked(global.fetch).getMockImplementation()!;
+        const execute = promisify(execFile);
+        let transferred = 0;
+        vi.mocked(global.fetch).mockImplementation(async (input, init) => {
+          if (!String(input).endsWith('/exec')) return original(input, init);
+          const { argv } = JSON.parse(String(init?.body));
+          const { stdout, stderr } = await execute(
+            argv[0],
+            argv
+              .slice(1)
+              .map((arg: string) => arg.replaceAll('/workspace', root)),
+            { env: { ...process.env, HOME: root } },
+          );
+          if (argv.at(-1)?.includes('head -c')) transferred += stdout.length;
+          return sseExecResponse([
+            {
+              event: 'stdout',
+              data: Buffer.from(stdout.replaceAll(root, '/workspace')).toString(
+                'base64',
+              ),
+            },
+            { event: 'stderr', data: Buffer.from(stderr).toString('base64') },
+            { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+          ]);
+        });
+        const user = (await execute('id', ['-un'])).stdout.trim();
+        for (const runAs of [undefined, user]) {
+          expect(
+            Array.from(
+              await session.readFile({ path: 'tiny', maxBytes: 4, runAs }),
+            ),
+          ).toEqual([65, 66, 67, 68]);
+        }
+        expect(transferred).toBe(26);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test.each([303, undefined])(
     'uses the request deadline %s for capped transfers, retaining runAs execution deadlines',

@@ -76,6 +76,348 @@ const processFailure = (stderr: string) => ({
 });
 
 describe('E2BSandboxClient', () => {
+  test.each([
+    'validation stdout',
+    'validation stderr',
+    'read stdout',
+    'read stderr',
+  ])(
+    'bounds login-shell output from %s and cancels only its command',
+    async (phase) => {
+      const session = await new E2BSandboxClient().create(new Manifest());
+      const disconnect = vi
+        .fn()
+        .mockRejectedValue(new Error('disconnect failed'));
+      const kill = vi.fn().mockRejectedValue(new Error('kill failed'));
+      let delivered = 0;
+      const originalRun = runMock.getMockImplementation()!;
+      runMock.mockImplementation(async (command: string, options) => {
+        if (
+          phase.startsWith('read') &&
+          resolvedRemotePathFromValidationCommand(command)
+        ) {
+          return await originalRun(command, options);
+        }
+        // As in both supported SDKs, event processing begins before run()
+        // returns the handle, and synchronous callback failure ends iteration.
+        let failure: unknown;
+        try {
+          for (let index = 0; index < 100; index++) {
+            delivered++;
+            const callback = phase.endsWith('stderr')
+              ? options.onStderr
+              : options.onStdout;
+            callback('x'.repeat(32768));
+          }
+        } catch (error) {
+          failure = error;
+        }
+        return {
+          pid: 42,
+          wait: async () => {
+            throw failure;
+          },
+          disconnect,
+          kill,
+        };
+      });
+      await expect(
+        session.readFile({
+          path: 'notes.txt',
+          maxBytes: 4,
+          runAs: 'sandbox-user',
+        }),
+      ).rejects.toThrow(/exceeded its output limit/u);
+      expect(delivered).toBeLessThanOrEqual(3);
+      expect(disconnect).toHaveBeenCalledOnce();
+      expect(kill).toHaveBeenCalledOnce();
+      expect(killMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('rejects a single oversized startup chunk without retaining its data in the error', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    const disconnect = vi.fn().mockResolvedValue(undefined);
+    const kill = vi.fn().mockResolvedValue(true);
+    runMock.mockImplementation(async (_command: string, options) => {
+      let failure: unknown;
+      try {
+        options.onStdout('x'.repeat(1024 * 1024));
+      } catch (error) {
+        failure = error;
+      }
+      return {
+        pid: 46,
+        wait: async () => {
+          throw failure;
+        },
+        disconnect,
+        kill,
+      };
+    });
+    await expect(
+      session.readFile({ path: 'notes.txt', maxBytes: 0 }),
+    ).rejects.toThrow(
+      /^E2BSandboxClient file read command exceeded its output limit\.$/u,
+    );
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(kill).toHaveBeenCalledOnce();
+  });
+
+  test.each([0, 4, 200000])(
+    'returns the bounded prefix for maxBytes=%s with the existing user identity',
+    async (maxBytes) => {
+      const session = await new E2BSandboxClient().create(new Manifest());
+      const originalRun = runMock.getMockImplementation()!;
+      const content = Buffer.from('hello'.repeat(50000));
+      runMock.mockImplementation(async (command: string, options) => {
+        if (resolvedRemotePathFromValidationCommand(command)) {
+          return await originalRun(command, options);
+        }
+        expect(options.user).toBe('sandbox-user');
+        const stdout = Buffer.concat([
+          content.subarray(0, maxBytes),
+          Buffer.from('\n000\n'),
+        ]).toString('base64');
+        options.onStdout(stdout);
+        return {
+          pid: 43,
+          wait: async () => ({ stdout, stderr: '', exitCode: 0 }),
+        };
+      });
+      await expect(
+        session.readFile({
+          path: 'notes.txt',
+          maxBytes,
+          runAs: 'sandbox-user',
+        }),
+      ).resolves.toEqual(new Uint8Array(content.subarray(0, maxBytes)));
+      expect(readMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('preserves native file permissions for default capped reads', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    files.set('/workspace/private.txt', 'private contents');
+    const originalRun = runMock.getMockImplementation()!;
+    runMock.mockImplementation(async (command: string, options) => {
+      if (
+        resolvedRemotePathFromValidationCommand(command) ||
+        command.startsWith('test -e ')
+      ) {
+        return await originalRun(command, options);
+      }
+      // The native daemon can open this root-owned file, while the template
+      // command user and the explicitly requested user cannot read it.
+      return { stdout: '', stderr: 'Permission denied', exitCode: 1 };
+    });
+    await expect(session.readFile({ path: 'private.txt' })).resolves.toEqual(
+      new TextEncoder().encode('private contents'),
+    );
+    await expect(
+      session.readFile({ path: 'private.txt', maxBytes: 7 }),
+    ).resolves.toEqual(new TextEncoder().encode('private'));
+    expect(readMock).toHaveBeenLastCalledWith('/workspace/private.txt', {
+      format: 'stream',
+      signal: expect.any(AbortSignal),
+    });
+    await expect(
+      session.readFile({
+        path: 'private.txt',
+        maxBytes: 7,
+        runAs: 'sandbox-user',
+      }),
+    ).rejects.toThrow(/Permission denied/u);
+  });
+
+  test.each([0, 4, 200000])(
+    'bounds and cancels the native file stream at maxBytes=%s',
+    async (maxBytes) => {
+      const session = await new E2BSandboxClient().create(new Manifest());
+      const chunkSize = 65536;
+      let pulls = 0;
+      const cancel = vi.fn();
+      readMock.mockImplementation(
+        async () =>
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls++;
+              controller.enqueue(new Uint8Array(chunkSize).fill(97));
+            },
+            cancel,
+          }),
+      );
+      const bytes = await session.readFile({ path: 'large.txt', maxBytes });
+      expect(bytes.byteLength).toBe(maxBytes);
+      expect(Buffer.compare(bytes, Buffer.alloc(maxBytes, 97))).toBe(0);
+      expect(pulls).toBeLessThanOrEqual(Math.ceil(maxBytes / chunkSize) + 1);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(readMock).toHaveBeenCalledWith('/workspace/large.txt', {
+        format: 'stream',
+        signal: expect.any(AbortSignal),
+      });
+    },
+  );
+
+  test('reads empty native files with the minimum SDK response', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    files.set('/workspace/empty.txt', '');
+    await expect(
+      session.readFile({ path: 'empty.txt', maxBytes: 4 }),
+    ).resolves.toEqual(new Uint8Array());
+    expect(readMock).toHaveBeenCalledWith('/workspace/empty.txt', {
+      format: 'stream',
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  test('preserves native stream failures', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    const failure = new Error('native stream read failure');
+    readMock.mockResolvedValue(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(failure);
+        },
+      }),
+    );
+    await expect(
+      session.readFile({ path: 'notes.txt', maxBytes: 4 }),
+    ).rejects.toBe(failure);
+  });
+
+  test.each([25, 0])(
+    'preserves the native request deadline with steady output (%s ms)',
+    async (requestTimeoutMs) => {
+      const session = await new E2BSandboxClient({ requestTimeoutMs }).create(
+        new Manifest(),
+      );
+      readMock.mockImplementation(
+        async (_path: string, options: { signal?: AbortSignal }) => {
+          let timer: ReturnType<typeof setInterval>;
+          const abort = () => {
+            clearInterval(timer);
+            controller.error(options.signal?.reason);
+          };
+          let controller: ReadableStreamDefaultController<Uint8Array>;
+          return new ReadableStream<Uint8Array>({
+            start(streamController) {
+              controller = streamController;
+              timer = setInterval(() => {
+                controller.enqueue(Uint8Array.of(97));
+              }, 5);
+              options.signal?.addEventListener('abort', abort, { once: true });
+            },
+            cancel() {
+              clearInterval(timer);
+              options.signal?.removeEventListener('abort', abort);
+            },
+          });
+        },
+      );
+      const result = session.readFile({ path: 'slow.txt', maxBytes: 16 });
+      if (requestTimeoutMs) {
+        await expect(result).rejects.toMatchObject({ name: 'TimeoutError' });
+      } else {
+        await expect(result).resolves.toEqual(new Uint8Array(16).fill(97));
+      }
+    },
+  );
+
+  test('retains the default command user when native reads are unavailable', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    const sandbox = await createMock.mock.results[0].value;
+    delete sandbox.files.read;
+    const originalRun = runMock.getMockImplementation()!;
+    runMock.mockImplementation(async (command: string, options) => {
+      if (resolvedRemotePathFromValidationCommand(command)) {
+        return await originalRun(command, options);
+      }
+      expect(options.user).toBeUndefined();
+      const stdout = Buffer.from('file\n000\n').toString('base64');
+      options.onStdout(stdout);
+      return {
+        pid: 47,
+        wait: async () => ({ stdout, stderr: '', exitCode: 0 }),
+      };
+    });
+    await expect(
+      session.readFile({ path: 'notes.txt', maxBytes: 4 }),
+    ).resolves.toEqual(new TextEncoder().encode('file'));
+    expect(readMock).not.toHaveBeenCalled();
+  });
+
+  test('isolates concurrent capped reads from uncapped reads and application commands', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    const originalRun = runMock.getMockImplementation()!;
+    let releaseRead!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    runMock.mockImplementation(async (command: string, options) => {
+      if (resolvedRemotePathFromValidationCommand(command))
+        return await originalRun(command, options);
+      if (options?.background) {
+        return {
+          pid: 45,
+          wait: async () => {
+            await waiting;
+            return {
+              stdout: Buffer.from('a\n000\n').toString('base64'),
+              stderr: '',
+              exitCode: 0,
+            };
+          },
+        };
+      }
+      expect(options).not.toHaveProperty('onStdout');
+      return { stdout: 'application output', stderr: '', exitCode: 0 };
+    });
+    const capped = session.readFile({
+      path: 'notes.txt',
+      maxBytes: 1,
+      runAs: 'sandbox-user',
+    });
+    files.set('/workspace/notes.txt', 'uncapped');
+    await expect(session.readFile({ path: 'notes.txt' })).resolves.toEqual(
+      new TextEncoder().encode('uncapped'),
+    );
+    await session.execCommand({ cmd: 'application' });
+    releaseRead();
+    await expect(capped).resolves.toEqual(new TextEncoder().encode('a'));
+  });
+
+  test('preserves bounded read errors and leaves normal command output unrestricted', async () => {
+    const session = await new E2BSandboxClient().create(new Manifest());
+    const originalRun = runMock.getMockImplementation()!;
+    runMock.mockImplementation(async (command: string, options) => {
+      if (resolvedRemotePathFromValidationCommand(command))
+        return await originalRun(command, options);
+      return {
+        pid: 44,
+        wait: async () => {
+          throw new Error('synthetic transport failure');
+        },
+      };
+    });
+    await expect(
+      session.readFile({
+        path: 'notes.txt',
+        maxBytes: 4,
+        runAs: 'sandbox-user',
+      }),
+    ).rejects.toThrow('synthetic transport failure');
+    runMock.mockClear();
+    runMock.mockResolvedValue({
+      stdout: 'x'.repeat(100000),
+      stderr: '',
+      exitCode: 0,
+    });
+    await session.execCommand({ cmd: 'application', runAs: 'sandbox-user' });
+    expect(runMock.mock.calls.at(-1)?.[1]).not.toHaveProperty('onStdout');
+    expect(runMock.mock.calls.at(-1)?.[1]).not.toHaveProperty('background');
+  });
+
   test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
     const client = new E2BSandboxClient();
     const manifest = new Manifest({
@@ -116,8 +458,21 @@ describe('E2BSandboxClient', () => {
       },
     );
     readMock.mockImplementation(
-      async (path: string, opts?: { format?: 'text' | 'bytes' }) => {
+      async (path: string, opts?: { format?: 'text' | 'bytes' | 'stream' }) => {
         const value = files.get(path) ?? '';
+        if (opts?.format === 'stream') {
+          const bytes =
+            typeof value === 'string' ? new TextEncoder().encode(value) : value;
+          if (bytes.length === 0) {
+            return '';
+          }
+          return new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(bytes);
+              controller.close();
+            },
+          });
+        }
         if (opts?.format === 'bytes') {
           return typeof value === 'string'
             ? new TextEncoder().encode(value)

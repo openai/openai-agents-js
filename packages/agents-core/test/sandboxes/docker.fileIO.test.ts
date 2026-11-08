@@ -375,6 +375,57 @@ describe.skipIf(process.platform === 'win32')(
       ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
     });
 
+    it.each(['stdout', 'stderr'] as const)(
+      'bounds %s from path validation for capped reads and images',
+      async (stream) => {
+        const native =
+          await vi.importActual<typeof childProcess>('node:child_process');
+        const originalSpawn = vi
+          .mocked(childProcess.spawn)
+          .getMockImplementation()!;
+        const validators: childProcess.ChildProcess[] = [];
+        vi.mocked(childProcess.spawn).mockImplementation(((
+          command: string,
+          args: string[],
+          options: childProcess.SpawnOptions,
+        ) => {
+          if (!args.includes('/usr/bin/realpath')) {
+            return originalSpawn(command, args, options);
+          }
+          const child = native.spawn(
+            process.execPath,
+            [
+              '-e',
+              `process.${stream}.write(Buffer.alloc(4 * 1024 * 1024, 120)); process.stdout.write(process.argv[1] + '\\n');`,
+              args.at(-1)!,
+            ],
+            options,
+          );
+          validators.push(child);
+          return child;
+        }) as typeof childProcess.spawn);
+
+        await expect(
+          session.readFile({ path: 'note.txt', maxBytes: 0 }),
+        ).rejects.toThrow('failed to resolve a filesystem path');
+        await expect(session.viewImage({ path: 'image.png' })).rejects.toThrow(
+          'failed to resolve a filesystem path',
+        );
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'note.txt',
+            diff: '@@\n-before\n+after\n',
+          }),
+        ).rejects.toThrow('failed to resolve a filesystem path');
+        expect(validators).toHaveLength(3);
+        expect(
+          validators.every((child) => child.signalCode === 'SIGKILL'),
+        ).toBe(true);
+        expect(commands).toHaveLength(0);
+      },
+    );
+
     it('creates, patches, moves and unlinks container files without touching host files', async () => {
       const editor = session.createEditor();
       await editor.createFile({

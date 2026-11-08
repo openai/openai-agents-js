@@ -183,6 +183,7 @@ const DEFAULT_DOCKER_IMAGE = 'python:3.14-slim';
 const DEFAULT_CONTAINER_COMMAND =
   'trap "exit 0" TERM INT; while true; do sleep 3600; done';
 const DOCKER_FAST_COMMAND_TIMEOUT_MS = 10_000;
+const DOCKER_PATH_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const DOCKER_CONTAINER_START_TIMEOUT_MS = 2 * 60_000;
 const DOCKER_CONTAINER_REMOVE_TIMEOUT_MS = 30_000;
 const DOCKER_OWNERSHIP_LABEL = 'openai-agents-sandbox';
@@ -1066,12 +1067,14 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   async validateContainerFilesystemPath(
     path?: string,
     options: ResolveSandboxPathOptions = {},
+    maxOutputBytes?: number,
   ): Promise<string> {
     const absolutePath = this.resolveContainerFilesystemPath(path, options);
     const output = await resolveTrustedDockerPath(
       this,
       absolutePath,
       'resolve a filesystem path',
+      maxOutputBytes,
     );
     const resolved = output.endsWith('\n') ? output.slice(0, -1) : output;
     if (!resolved.startsWith('/')) {
@@ -1093,7 +1096,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     runAs?: string,
     limits?: { maxBytes: number; image?: boolean; truncate?: boolean },
   ): Promise<Uint8Array> {
-    path = await this.validateContainerFilesystemPath(path);
+    // Guest-controlled path resolution precedes the bounded file transfer.
+    path = await this.validateContainerFilesystemPath(
+      path,
+      {},
+      limits === undefined ? undefined : DOCKER_PATH_OUTPUT_LIMIT_BYTES,
+    );
     const imageLimit = limits?.image ? limits.maxBytes : undefined;
     const fileGuard = `if [ -e ${shellQuote(path)} ] && [ ! -f ${shellQuote(path)} ]; then exit 67; fi; `;
     const imageGuard =
@@ -1414,6 +1422,7 @@ class DockerSandboxEditor implements Editor {
       {
         forWrite: true,
       },
+      DOCKER_PATH_OUTPUT_LIMIT_BYTES,
     );
     const destination = operation.moveTo
       ? this.session.resolveContainerFilesystemPath(operation.moveTo, {
@@ -3776,6 +3785,7 @@ async function resolveTrustedDockerPath(
   session: DockerSandboxSession,
   path: string,
   action: string,
+  maxOutputBytes?: number,
 ): Promise<string> {
   session.resolveContainerFilesystemPath();
   const dockerArgs = [
@@ -3800,7 +3810,7 @@ async function resolveTrustedDockerPath(
   );
   let result: SandboxProcessResult;
   try {
-    result = await runDockerProcess(dockerArgs);
+    result = await runDockerProcess(dockerArgs, undefined, maxOutputBytes);
   } catch {
     throw new UserError(`DockerSandboxClient failed to ${action}.`);
   }

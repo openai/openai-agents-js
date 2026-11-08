@@ -17,6 +17,7 @@ import {
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type MaterializeEntryArgs,
+  type ReadFileArgs,
   type S3Mount,
   type SandboxSessionSerializationOptions,
   type SandboxPreservedSessionReuseOptions,
@@ -113,6 +114,9 @@ type VercelSdkSandbox = import('@vercel/sandbox').Sandbox;
 type VercelSdkCreateParams = Parameters<VercelSdkSandboxClass['create']>[0];
 type VercelSdkGetParams = Parameters<VercelSdkSandboxClass['get']>[0];
 type VercelSdkRunCommandParams = Parameters<VercelSdkSandbox['runCommand']>[0];
+// The supported SDK returns binary chunks from Readable.fromWeb. Keep its
+// declarations out of the public facade and require only iteration and cleanup.
+type VercelFileStream = AsyncIterable<Uint8Array> & { destroy(): unknown };
 
 type VercelActiveMount = {
   logicalPath: string;
@@ -186,7 +190,14 @@ type VercelSandboxInstance = {
   runDetachedCommand(
     params: VercelSandboxRunCommandParams,
   ): Promise<VercelCommandLike>;
+  runBoundedReadCommand(
+    params: VercelSandboxRunCommandParams,
+  ): Promise<RemoteSandboxCommandResult>;
   mkDir(path: string): Promise<void>;
+  readFile(file: {
+    path: string;
+    cwd?: string;
+  }): Promise<VercelFileStream | null>;
   readFileToBuffer(file: {
     path: string;
     cwd?: string;
@@ -1190,6 +1201,32 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     });
   }
 
+  override async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    if (args.maxBytes === undefined) {
+      return await super.readFile(args);
+    }
+    this.assertSessionUsable();
+    this.assertFilesystemRunAs(args.runAs);
+    const maxBytes = args.maxBytes;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    }
+    return await this.runWorkspaceOperation(async () => {
+      const path = await validateRemoteSandboxPathForManifest({
+        manifest: this.state.manifest,
+        path: args.path,
+        runCommand: async (command) =>
+          await this.sandbox.runBoundedReadCommand({
+            cmd: '/bin/sh',
+            args: ['-c', command],
+            cwd: this.state.manifest.root,
+            env: {},
+          }),
+      });
+      return await this.readRemoteFilePrefixDirect(path, maxBytes);
+    });
+  }
+
   private async runRemoteCommandDirect(
     command: string,
     options: RemoteSandboxCommandOptions,
@@ -1213,6 +1250,47 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       throw new UserError(`Sandbox path not found: ${path}`);
     }
     return await toUint8Array(bytes);
+  }
+
+  private async readRemoteFilePrefixDirect(
+    path: string,
+    maxBytes: number,
+  ): Promise<Uint8Array> {
+    // This is the same native file API used by readFileToBuffer. Switching to
+    // a command here would change the file authority and error behavior.
+    const stream = await this.sandbox.readFile({ path });
+    if (!stream) {
+      throw new UserError(`Sandbox path not found: ${path}`);
+    }
+    try {
+      if (maxBytes === 0) {
+        return new Uint8Array();
+      }
+      const chunks: Uint8Array[] = [];
+      let byteLength = 0;
+      for await (const chunk of stream) {
+        const bytes = chunk as Uint8Array;
+        // Copy the prefix so a small result cannot retain an oversized chunk's
+        // backing buffer after the native stream has been destroyed.
+        const prefix = Uint8Array.from(
+          bytes.subarray(0, maxBytes - byteLength),
+        );
+        chunks.push(prefix);
+        byteLength += prefix.byteLength;
+        if (byteLength >= maxBytes) {
+          break;
+        }
+      }
+      const result = new Uint8Array(byteLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return result;
+    } finally {
+      stream.destroy();
+    }
   }
 
   private async writeRemoteFileDirect(
@@ -2049,14 +2127,82 @@ function adaptVercelSandboxClass(
   Sandbox: VercelSdkSandboxClass,
 ): VercelSandboxClass {
   return {
-    create: async (params) =>
-      adaptVercelSandbox(await Sandbox.create(params as VercelSdkCreateParams)),
-    get: async (params) =>
-      adaptVercelSandbox(await Sandbox.get(params as VercelSdkGetParams)),
+    create: async (params) => {
+      const readBudgets = new Map<string, VercelReadBudget>();
+      const fetch = boundedVercelReadFetch(
+        (params?.fetch as typeof globalThis.fetch | undefined) ??
+          globalThis.fetch,
+        readBudgets,
+      );
+      return adaptVercelSandbox(
+        await Sandbox.create({ ...params, fetch } as VercelSdkCreateParams),
+        readBudgets,
+      );
+    },
+    get: async (params) => {
+      const readBudgets = new Map<string, VercelReadBudget>();
+      const fetch = boundedVercelReadFetch(
+        (params.fetch as typeof globalThis.fetch | undefined) ??
+          globalThis.fetch,
+        readBudgets,
+      );
+      return adaptVercelSandbox(
+        await Sandbox.get({ ...params, fetch } as VercelSdkGetParams),
+        readBudgets,
+      );
+    },
   };
 }
 
-function adaptVercelSandbox(sandbox: VercelSdkSandbox): VercelSandboxInstance {
+type VercelReadBudget = {
+  rawBytes: number;
+  rawLimit: number;
+  error: SandboxProviderError;
+};
+
+function boundedVercelReadFetch(
+  fetch: typeof globalThis.fetch,
+  readBudgets: Map<string, VercelReadBudget>,
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    const url = new URL(
+      typeof input === 'string' || input instanceof URL ? input : input.url,
+    );
+    // The public command logs route shares this suffix in the supported SDK
+    // and REST API. All authentication and requests remain owned by the SDK.
+    const commandId = url.pathname.match(/\/cmd\/([^/]+)\/logs$/u)?.[1];
+    const budget = commandId ? readBudgets.get(commandId) : undefined;
+    const response = await fetch(input, init);
+    if (!budget || !response.body) {
+      return response;
+    }
+    // Cap the entire raw response before SDK JSON-lines parsing: the SDK's
+    // pipe does not apply parser backpressure, and a record may lack a newline.
+    const body = response.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          budget.rawBytes += chunk.byteLength;
+          if (budget.rawBytes > budget.rawLimit) {
+            throw budget.error;
+          }
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+    const boundedResponse = new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    Object.defineProperty(boundedResponse, 'url', { value: response.url });
+    return boundedResponse;
+  };
+}
+
+function adaptVercelSandbox(
+  sandbox: VercelSdkSandbox,
+  readBudgets: Map<string, VercelReadBudget>,
+): VercelSandboxInstance {
   const optionalSandbox = sandbox as VercelSdkSandbox & {
     domain?: (port: number) => string;
     stop?: () => Promise<unknown>;
@@ -2077,7 +2223,63 @@ function adaptVercelSandbox(sandbox: VercelSdkSandbox): VercelSandboxInstance {
           detached: true,
         }),
       ),
+    runBoundedReadCommand: async (params) => {
+      const maxOutputBytes = 65536;
+      const command = await sandbox.runCommand({
+        ...(params as VercelSdkRunCommandParams),
+        detached: true,
+      });
+      const budget: VercelReadBudget = {
+        rawBytes: 0,
+        // Validation output is limited to 64 KiB. Five additional wire bytes
+        // per byte cover JSON escaping; another 64 KiB covers framing.
+        // Excessive tiny or empty records reject rather than fill the parser.
+        rawLimit: maxOutputBytes + 5 * 65536 + 65536,
+        error: new SandboxProviderError(
+          'VercelSandboxClient file read command exceeded its output limit.',
+          { provider: 'vercel' },
+        ),
+      };
+      readBudgets.set(command.cmdId, budget);
+      const controller = new AbortController();
+      const logs = command.logs({ signal: controller.signal });
+      let failed = true;
+      try {
+        let outputBytes = 0;
+        let output = '';
+        for await (const log of logs) {
+          outputBytes += Buffer.byteLength(log.data);
+          if (outputBytes > maxOutputBytes) {
+            throw budget.error;
+          }
+          output += log.data;
+        }
+        const result = await command.wait({ signal: controller.signal });
+        failed = false;
+        return { status: result.exitCode ?? 1, stdout: output, stderr: '' };
+      } catch (error) {
+        if (budget.rawBytes > budget.rawLimit) {
+          throw budget.error;
+        }
+        throw error;
+      } finally {
+        controller.abort();
+        try {
+          logs.close();
+        } catch {
+          // Preserve the read failure if transport cleanup also fails.
+        }
+        if (readBudgets.get(command.cmdId) === budget) {
+          readBudgets.delete(command.cmdId);
+        }
+        if (failed) {
+          await command.kill('SIGKILL').catch(() => {});
+        }
+      }
+    },
     mkDir: async (path) => await sandbox.mkDir(path),
+    readFile: async (file) =>
+      (await sandbox.readFile(file)) as VercelFileStream | null,
     readFileToBuffer: async (file) => await sandbox.readFileToBuffer(file),
     writeFiles: async (files) => await sandbox.writeFiles(files),
   };

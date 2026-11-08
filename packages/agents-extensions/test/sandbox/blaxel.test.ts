@@ -1,4 +1,9 @@
 import { makeTarArchive } from './tarFixture';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   Manifest,
   SandboxMountError,
@@ -27,6 +32,9 @@ import {
 const createSandboxMock = vi.fn();
 const getMock = vi.fn();
 const processExecMock = vi.fn();
+const transportFetchMock = vi.fn();
+let transportClient: import('@blaxel/core').SandboxInstance['process']['client'];
+let handleResponseError: import('@blaxel/core').SandboxInstance['process']['handleResponseError'];
 const mkdirMock = vi.fn();
 const writeMock = vi.fn();
 const writeBinaryMock = vi.fn();
@@ -40,6 +48,23 @@ const driveUnmountMock = vi.fn();
 const deleteMock = vi.fn();
 const originalWebSocket = globalThis.WebSocket;
 
+async function readProcessRequest(
+  request: Request,
+): Promise<
+  Parameters<import('@blaxel/core').SandboxInstance['process']['exec']>[0]
+> {
+  const value: unknown = await request.clone().json();
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('command' in value) ||
+    typeof value.command !== 'string'
+  ) {
+    throw new Error('Expected a Blaxel process request with a command.');
+  }
+  return { ...value, command: value.command };
+}
+
 function makeSandbox(overrides: Record<string, unknown> = {}) {
   return {
     name: 'blaxel-test',
@@ -52,8 +77,20 @@ function makeSandbox(overrides: Record<string, unknown> = {}) {
     url: 'https://sandbox.blaxel.test',
     process: {
       exec: processExecMock,
+      get client() {
+        return transportClient;
+      },
+      url: 'https://sandbox.blaxel.test',
+      handleResponseError: (...args: Parameters<typeof handleResponseError>) =>
+        handleResponseError(...args),
     },
     fs: {
+      get client() {
+        return transportClient;
+      },
+      url: 'https://sandbox.blaxel.test',
+      handleResponseError: (...args: Parameters<typeof handleResponseError>) =>
+        handleResponseError(...args),
       mkdir: mkdirMock,
       write: writeMock,
       writeBinary: writeBinaryMock,
@@ -73,7 +110,8 @@ function makeSandbox(overrides: Record<string, unknown> = {}) {
   };
 }
 
-vi.mock('@blaxel/core', () => ({
+vi.mock('@blaxel/core', async () => ({
+  ...(await vi.importActual<typeof import('@blaxel/core')>('@blaxel/core')),
   SandboxInstance: {
     create: createSandboxMock,
     get: getMock,
@@ -100,10 +138,37 @@ describe('BlaxelSandboxClient', () => {
     expect(writeMock).not.toHaveBeenCalled();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     createSandboxMock.mockReset();
     getMock.mockReset();
     processExecMock.mockReset();
+    transportFetchMock.mockReset();
+    const actual =
+      await vi.importActual<typeof import('@blaxel/core')>('@blaxel/core');
+    const process = new actual.SandboxInstance({
+      metadata: { name: 'blaxel-test' },
+      spec: {},
+      forceUrl: 'https://sandbox.blaxel.test',
+      headers: { Authorization: 'Bearer synthetic-fixture' },
+    }).process;
+    transportClient = process.client;
+    transportClient.setConfig({ fetch: transportFetchMock });
+    handleResponseError = process.handleResponseError.bind(process);
+    transportFetchMock.mockImplementation(async (request: Request) =>
+      request.method === 'GET'
+        ? new Response(
+            await readBinaryMock(
+              decodeURIComponent(
+                new URL(request.url).pathname.slice('/filesystem/'.length),
+              ),
+            ),
+            { headers: { 'Content-Type': 'application/octet-stream' } },
+          )
+        : new Response(
+            JSON.stringify(await processExecMock(await request.json())),
+            { headers: { 'Content-Type': 'application/json' } },
+          ),
+    );
     mkdirMock.mockReset();
     writeMock.mockReset();
     writeBinaryMock.mockReset();
@@ -528,21 +593,55 @@ describe('BlaxelSandboxClient', () => {
     ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
   });
 
-  test('keeps typed missing-file errors for capped reads', async () => {
-    const session = await new BlaxelSandboxClient().create(new Manifest());
-    const original = processExecMock.getMockImplementation()!;
-    processExecMock.mockImplementation(async (params) =>
-      String(params.command).includes('head -c') ||
-      String(params.command).startsWith('test -e ')
-        ? { exitCode: 1, stdout: '', stderr: '' }
-        : await original(params),
-    );
-
-    await expect(
-      session.readFile({ path: 'missing.txt', maxBytes: 4 }),
-    ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
-    expect(readBinaryMock).not.toHaveBeenCalled();
-  });
+  test.skipIf(process.platform !== 'linux')(
+    'keeps capped Blaxel runAs reads out of login startup',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'blaxel-file-startup-'));
+      try {
+        await writeFile(join(root, 'tiny'), 'ABCD');
+        await writeFile(
+          join(root, '.profile'),
+          'printf "login-profile-loaded\\n"\ncommand() { cat; }\n',
+        );
+        const session = await new BlaxelSandboxClient().create(new Manifest());
+        const execute = promisify(execFile);
+        let transferred = 0;
+        processExecMock.mockImplementation(async (params) => {
+          // Simulate the provider's identity switch; exercise the actual nested shell.
+          const script =
+            'sudo() { shift 4; "$@"; };\n' +
+            params.command.replaceAll('/workspace', root);
+          const { stdout, stderr } = await execute('/bin/sh', ['-c', script], {
+            env: { ...process.env, HOME: root },
+          });
+          if (params.command.includes('head -c')) transferred += stdout.length;
+          return {
+            exitCode: 0,
+            stdout: stdout.replaceAll(root, '/workspace'),
+            stderr,
+          };
+        });
+        expect(
+          Array.from(
+            await session.readFile({
+              path: 'tiny',
+              maxBytes: 4,
+              runAs: 'reader',
+            }),
+          ),
+        ).toEqual([65, 66, 67, 68]);
+        expect(transferred).toBe(13);
+        expect(
+          await session.execCommand({
+            cmd: 'printf user-command',
+            runAs: 'reader',
+          }),
+        ).toContain('login-profile-loaded');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('uses the file download deadline for capped reads', async () => {
     const session = await new BlaxelSandboxClient({
@@ -556,12 +655,374 @@ describe('BlaxelSandboxClient', () => {
     );
 
     await expect(
-      session.readFile({ path: 'README.md', maxBytes: 4 }),
+      session.readFile({ path: 'README.md', maxBytes: 4, runAs: 'reader' }),
     ).rejects.toThrow('read binary file timed out after 1ms');
     expect(processExecMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ timeout: 1 }),
     );
   });
+
+  test.each(['validation', 'read'])(
+    'bounds raw successful and failed responses during %s before JSON parsing',
+    async (phase) => {
+      for (const scenario of [
+        'many chunks',
+        'oversized chunk',
+        'failed response',
+      ]) {
+        const session = await new BlaxelSandboxClient().create(new Manifest());
+        const originalFetch = transportFetchMock.getMockImplementation()!;
+        let pulled = 0;
+        let cancelled = 0;
+        let aborted = 0;
+        transportFetchMock.mockImplementation(async (request: Request) => {
+          const params = await readProcessRequest(request);
+          const command = String(params.command);
+          const validation = Boolean(
+            resolvedRemotePathFromValidationCommand(command),
+          );
+          const read = command.includes('head -c');
+          if (
+            (phase === 'validation' && validation) ||
+            (phase === 'read' && read)
+          ) {
+            request.signal.addEventListener('abort', () => {
+              aborted++;
+            });
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                pull(controller) {
+                  pulled++;
+                  controller.enqueue(
+                    new Uint8Array(
+                      scenario === 'oversized chunk' ? 2 * 1024 * 1024 : 32768,
+                    ),
+                  );
+                },
+                cancel() {
+                  cancelled++;
+                },
+              }),
+              {
+                status: scenario === 'failed response' ? 500 : 200,
+                headers: { 'Content-Type': 'application/json' },
+              },
+            );
+          }
+          return await originalFetch(request);
+        });
+        await expect(
+          session.readFile({ path: 'tiny', maxBytes: 4, runAs: 'reader' }),
+        ).rejects.toThrow(/response.*limit/u);
+        expect(pulled).toBeLessThan(128);
+        expect(cancelled).toBe(1);
+        expect(aborted).toBe(1);
+        transportFetchMock.mockImplementation(originalFetch);
+      }
+    },
+  );
+
+  test('aborts the owned raw transport when the capped download deadline expires', async () => {
+    const session = await new BlaxelSandboxClient({
+      timeouts: { fileDownloadTimeoutMs: 5 },
+    }).create(new Manifest());
+    const originalFetch = transportFetchMock.getMockImplementation()!;
+    let aborted = false;
+    transportFetchMock.mockImplementation(async (request: Request) => {
+      if (request.method !== 'GET') return await originalFetch(request);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            request.signal.addEventListener('abort', () => {
+              aborted = true;
+              controller.error(new DOMException('Aborted', 'AbortError'));
+            });
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    await expect(
+      session.readFile({ path: 'tiny', maxBytes: 4 }),
+    ).rejects.toThrow('read binary file timed out after 5ms');
+    expect(aborted).toBe(true);
+  });
+
+  test.each([0, 4, 200000])(
+    'retains binary prefixes, request authority and normal routes for cap %s',
+    async (maxBytes) => {
+      const session = await new BlaxelSandboxClient({
+        timeouts: { fileDownloadTimeoutMs: 1200 },
+      }).create(new Manifest());
+      const originalFetch = transportFetchMock.getMockImplementation()!;
+      const content = Buffer.from([0, 255, 128, 10]);
+      const expected = Buffer.alloc(maxBytes);
+      expected.set(content.subarray(0, maxBytes));
+      transportFetchMock.mockImplementation(async (request: Request) => {
+        const params = await readProcessRequest(request);
+        if (!String(params.command).includes('head -c'))
+          return await originalFetch(request);
+        expect(request.url).toBe('https://sandbox.blaxel.test/process');
+        expect(request.headers.get('Authorization')).toBe(
+          'Bearer synthetic-fixture',
+        );
+        expect(params.command).toContain("sudo -n -u 'reader' -- /bin/sh -c");
+        expect(params).toMatchObject({
+          timeout: 2,
+          workingDir: '/',
+          waitForCompletion: true,
+        });
+        const stdout =
+          Buffer.concat([expected, Buffer.from('\n000\n')])
+            .toString('base64')
+            .match(/.{1,76}/gu)!
+            .join('\n') + '\n';
+        const stderr = '\u0000'.repeat(8192);
+        return new Response(
+          JSON.stringify({
+            exitCode: 0,
+            stdout,
+            stderr,
+            logs: stdout + stderr,
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      });
+      const bytes = await session.readFile({
+        path: 'tiny',
+        maxBytes,
+        runAs: 'reader',
+      });
+      expect(Buffer.compare(bytes, expected)).toBe(0);
+      const requestCount = transportFetchMock.mock.calls.length;
+      await session.readFile({ path: 'README.md' });
+      await session.execCommand({ cmd: 'application' });
+      expect(transportFetchMock).toHaveBeenCalledTimes(requestCount);
+      expect(readBinaryMock).toHaveBeenCalled();
+    },
+  );
+
+  test('rejects decoded output and diagnostics beyond their own budgets', async () => {
+    const session = await new BlaxelSandboxClient().create(new Manifest());
+    const originalFetch = transportFetchMock.getMockImplementation()!;
+    for (const output of [
+      { stdout: 'A'.repeat(100), stderr: '' },
+      { stdout: '', stderr: 'X'.repeat(8193) },
+    ]) {
+      transportFetchMock.mockImplementation(async (request: Request) => {
+        const params = await readProcessRequest(request);
+        if (!String(params.command).includes('head -c'))
+          return await originalFetch(request);
+        return new Response(JSON.stringify({ exitCode: 0, ...output }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes: 4, runAs: 'reader' }),
+      ).rejects.toThrow(/response.*output limit/u);
+    }
+  });
+
+  test('preserves explicit-runAs SDK HTTP errors inside the raw response budget', async () => {
+    const session = await new BlaxelSandboxClient().create(new Manifest());
+    const originalFetch = transportFetchMock.getMockImplementation()!;
+    transportFetchMock.mockImplementation(async (request: Request) => {
+      const params = await readProcessRequest(request);
+      if (!String(params.command).includes('head -c'))
+        return await originalFetch(request);
+      return new Response(
+        JSON.stringify({ error: 'synthetic permission failure' }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    await expect(
+      session.readFile({ path: 'tiny', maxBytes: 4, runAs: 'reader' }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ status: 403 }),
+    });
+  });
+
+  test.each(['missing', 'permission'])(
+    'preserves repository-owned default %s errors for native and capped SDK reads',
+    async (scenario) => {
+      const session = await new BlaxelSandboxClient().create(new Manifest());
+      const diagnostic =
+        scenario === 'missing'
+          ? 'stat /workspace/tiny: no such file or directory'
+          : 'open /workspace/tiny: permission denied';
+      const status = scenario === 'missing' ? 422 : 403;
+      const body = { error: diagnostic };
+      readBinaryMock.mockImplementation(async () => {
+        handleResponseError(
+          new Response(JSON.stringify(body), { status }),
+          undefined,
+          body,
+        );
+      });
+      const originalFetch = transportFetchMock.getMockImplementation()!;
+      transportFetchMock.mockImplementation(async (request: Request) => {
+        if (request.method !== 'GET') return await originalFetch(request);
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      for (const maxBytes of [undefined, 0]) {
+        const error = await session
+          .readFile({ path: 'tiny', maxBytes })
+          .catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(
+          scenario === 'missing'
+            ? SandboxWorkspaceReadNotFoundError
+            : SandboxWorkspaceArchiveReadError,
+        );
+        expect(error).toHaveProperty('details', {
+          provider: 'blaxel',
+          path: '/workspace/tiny',
+          cause: expect.stringContaining(diagnostic),
+        });
+      }
+    },
+  );
+
+  test('isolates a failed capped transport from concurrent reads and normal commands', async () => {
+    const session = await new BlaxelSandboxClient().create(new Manifest());
+    const originalFetch = transportFetchMock.getMockImplementation()!;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let goodSignal: AbortSignal | undefined;
+    transportFetchMock.mockImplementation(async (request: Request) => {
+      if (request.method !== 'GET') return await originalFetch(request);
+      if (request.url.includes('bad')) {
+        return new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array(32768));
+            },
+          }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      goodSignal = request.signal;
+      started();
+      await waiting;
+      return new Response(new Uint8Array([97]), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const goodRead = session.readFile({ path: 'good', maxBytes: 1 });
+    await running;
+    await expect(
+      session.readFile({ path: 'bad', maxBytes: 4 }),
+    ).rejects.toThrow(/response.*limit/u);
+    expect(goodSignal?.aborted).toBe(false);
+    const requestCount = transportFetchMock.mock.calls.length;
+    await session.readFile({ path: 'README.md' });
+    await session.execCommand({ cmd: 'application' });
+    expect(transportFetchMock).toHaveBeenCalledTimes(requestCount);
+    release();
+    await expect(goodRead).resolves.toEqual(new Uint8Array([97]));
+  });
+
+  test.each([0, 4, 200000])(
+    'uses the original native authority and cancels its stream at cap %s',
+    async (maxBytes) => {
+      const session = await new BlaxelSandboxClient().create(new Manifest());
+      const originalFetch = transportFetchMock.getMockImplementation()!;
+      let pulled = 0;
+      let cancelled = 0;
+      let aborted = 0;
+      let stream: ReadableStream<Uint8Array> | undefined;
+      const chunk = Uint8Array.from(
+        { length: 32768 },
+        (_, index) => index % 256,
+      );
+      transportFetchMock.mockImplementation(async (request: Request) => {
+        if (request.method !== 'GET') return await originalFetch(request);
+        expect(
+          decodeURIComponent(
+            new URL(request.url).pathname.slice('/filesystem/'.length),
+          ),
+        ).toBe('/workspace/tiny');
+        expect(request.headers.get('Accept')).toBe('application/octet-stream');
+        expect(request.headers.get('Authorization')).toBe(
+          'Bearer synthetic-fixture',
+        );
+        request.signal.addEventListener('abort', () => {
+          aborted++;
+        });
+        stream = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulled++;
+            controller.enqueue(chunk);
+          },
+          cancel() {
+            cancelled++;
+          },
+        });
+        return new Response(stream, {
+          headers: { 'Content-Type': 'application/octet-stream' },
+        });
+      });
+      const expected = Uint8Array.from(
+        { length: maxBytes },
+        (_, index) => index % 256,
+      );
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes }),
+      ).resolves.toEqual(expected);
+      expect(pulled).toBeLessThanOrEqual(
+        Math.ceil(maxBytes / chunk.length) + 1,
+      );
+      expect(cancelled).toBe(1);
+      expect(aborted).toBe(1);
+      expect(stream?.locked).toBe(false);
+      expect(readBinaryMock).not.toHaveBeenCalled();
+      expect(
+        processExecMock.mock.calls.some(([params]) =>
+          String(params.command).includes('head -c'),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  test.each([403, 500])(
+    'limits native error response %s before the generated error parser',
+    async (status) => {
+      const session = await new BlaxelSandboxClient().create(new Manifest());
+      const originalFetch = transportFetchMock.getMockImplementation()!;
+      let cancelled = 0;
+      let aborted = 0;
+      transportFetchMock.mockImplementation(async (request: Request) => {
+        if (request.method !== 'GET') return await originalFetch(request);
+        request.signal.addEventListener('abort', () => {
+          aborted++;
+        });
+        return new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array(32768));
+            },
+            cancel() {
+              cancelled++;
+            },
+          }),
+          { status, headers: { 'Content-Type': 'application/json' } },
+        );
+      });
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes: 4 }),
+      ).rejects.toThrow(/response.*limit/u);
+      expect(cancelled).toBe(1);
+      expect(aborted).toBe(1);
+    },
+  );
 
   test('wraps other file read failures into typed archive read errors', async () => {
     const client = new BlaxelSandboxClient();

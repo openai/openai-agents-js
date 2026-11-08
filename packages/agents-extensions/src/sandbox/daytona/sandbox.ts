@@ -135,6 +135,9 @@ const FILE_SHELL_STARTUP_ENVIRONMENT = {
 
 const DEFAULT_WORKSPACE_ROOT = '/home/daytona/workspace';
 const DEFAULT_EXPOSED_PORT_URL_TTL_S = 60;
+// Matches the minimum SDK's HTTP deadline, independently of remote command timeouts.
+const DAYTONA_HTTP_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const DAYTONA_FILE_DIAGNOSTIC_BYTES = 8192;
 const DAYTONA_DELETE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
 type DaytonaClientLike = {
@@ -177,6 +180,7 @@ type DaytonaSandboxLike = {
     }): Promise<DaytonaPtyHandle>;
     killPtySession?(id: string): Promise<void>;
   };
+  getPreviewLink(port: number): Promise<{ url: string; token?: string }>;
   getSignedPreviewUrl?(
     port: number,
     expiresInSeconds?: number,
@@ -485,10 +489,11 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       ? await readRunAsRemoteFile({
           providerName: 'DaytonaSandboxClient',
           providerId: 'daytona',
-          path: await this.resolveRemotePath(args.path),
+          path: await this.resolveRemotePath(args.path, {}, args.maxBytes),
           runAs: args.runAs,
           maxBytes: args.maxBytes,
-          runCommand: this.runAsCommandRunner.bind(this),
+          runCommand: (command, options) =>
+            this.runAsCommandRunner(command, options, args.maxBytes),
         })
       : await this.readFileBytes(args.path, args.maxBytes);
     return bytes;
@@ -1070,14 +1075,28 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
 
   private async runAsCommandRunner(
     command: string,
-    options: { runAs?: string } = {},
+    options: { runAs?: string; login?: false } = {},
+    maxBytes?: number,
   ) {
-    const result = await this.sandbox.process.executeCommand(
-      commandForDaytonaUser(command, options.runAs),
-      this.state.manifest.root,
-      { ...this.state.environment, ...FILE_SHELL_STARTUP_ENVIRONMENT },
-      this.state.timeoutSec,
-    );
+    const wrapped = sandboxUserShellCommand(command, options.runAs, options);
+    const environment = {
+      ...this.state.environment,
+      ...FILE_SHELL_STARTUP_ENVIRONMENT,
+    };
+    const result =
+      maxBytes === undefined
+        ? await this.sandbox.process.executeCommand(
+            wrapped,
+            this.state.manifest.root,
+            environment,
+            this.state.timeoutSec,
+          )
+        : await this.executeBoundedFileCommand(
+            wrapped,
+            environment,
+            this.state.timeoutSec,
+            maxBytes,
+          );
     return {
       status: result.exitCode,
       stdout: result.artifacts?.stdout ?? result.result ?? '',
@@ -1134,6 +1153,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
           ? 'base64 <&3'
           : boundedFileReadCommand(maxBytes),
       ].join('\n'),
+      maxBytes,
     );
     const bytes = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
     return maxBytes === undefined
@@ -1254,13 +1274,153 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     );
   }
 
-  private async runEditorFileCommand(command: string): Promise<string> {
-    const result = await this.sandbox.process.executeCommand(
-      `/bin/sh -c ${shellQuote(command)}`,
-      this.state.manifest.root,
-      { ...this.state.environment, ...FILE_SHELL_STARTUP_ENVIRONMENT },
-      this.state.timeoutSec,
+  private async executeBoundedFileCommand(
+    command: string,
+    environment: Record<string, string>,
+    timeout: number | undefined,
+    maxBytes: number,
+  ): Promise<DaytonaExecuteResponse> {
+    // Base64/status framing, JSON escapes and bounded path/error diagnostics.
+    const encodedBytes = Math.ceil((maxBytes + 5) / 3) * 4;
+    const responseLimit = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      2 * (encodedBytes + Math.ceil(encodedBytes / 76)) +
+        DAYTONA_FILE_DIAGNOSTIC_BYTES,
     );
+    const controller = new AbortController();
+    const failure = (message: string, status?: number) =>
+      new SandboxProviderError(`DaytonaSandboxClient ${message}.`, {
+        provider: 'daytona',
+        ...(status === undefined ? {} : { status }),
+      });
+    let rejectDeadline!: (error: Error) => void;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject;
+    });
+    const timer = setTimeout(() => {
+      rejectDeadline(failure('capped file command timed out'));
+      controller.abort();
+    }, DAYTONA_HTTP_TIMEOUT_MS);
+    const execute = async (): Promise<DaytonaExecuteResponse> => {
+      const preview = await this.sandbox.getPreviewLink(2280);
+      // A late SDK metadata response must not start a command after the deadline.
+      controller.signal.throwIfAborted();
+      const response = await fetch(
+        `${preview.url.replace(/\/+$/u, '')}/process/execute`,
+        {
+          method: 'POST',
+          redirect: 'error',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'X-Daytona-Skip-Preview-Warning': 'true',
+            ...(preview.token
+              ? { 'X-Daytona-Preview-Token': preview.token }
+              : {}),
+          },
+          body: JSON.stringify({
+            command,
+            cwd: this.state.manifest.root,
+            envs: Object.keys(environment).length ? environment : undefined,
+            timeout,
+          }),
+          signal: controller.signal,
+        },
+      );
+      const reader = response.body?.getReader();
+      if (!reader)
+        throw failure('received an invalid capped file command response');
+      const cancelReader = () => {
+        void reader.cancel().catch(() => {});
+      };
+      controller.signal.addEventListener('abort', cancelReader, { once: true });
+      if (controller.signal.aborted) cancelReader();
+      try {
+        controller.signal.throwIfAborted();
+        // HTTP errors carry no file status. Cancel without consuming guest diagnostics.
+        if (!response.ok)
+          throw failure(
+            'capped file command HTTP request failed',
+            response.status,
+          );
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value.byteLength > responseLimit - size) {
+            throw failure('capped file command exceeded response byte limit');
+          }
+          chunks.push(value);
+          size += value.byteLength;
+        }
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const payload: unknown = JSON.parse(new TextDecoder().decode(bytes));
+        if (!payload || typeof payload !== 'object')
+          throw failure('received an invalid capped file command response');
+        const fields = payload as {
+          exitCode?: unknown;
+          code?: unknown;
+          result?: unknown;
+        };
+        const exitCode = fields.exitCode ?? fields.code;
+        if (
+          !Number.isSafeInteger(exitCode) ||
+          (fields.result != null && typeof fields.result !== 'string')
+        ) {
+          throw failure('received an invalid capped file command response');
+        }
+        return {
+          exitCode: exitCode as number,
+          result: (fields.result ?? '') as string,
+        };
+      } finally {
+        controller.signal.removeEventListener('abort', cancelReader);
+        controller.abort();
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+    };
+    try {
+      return await Promise.race([execute(), deadline]);
+    } catch (error) {
+      if (error instanceof SandboxProviderError) throw error;
+      // Neither SDK/fetch errors nor guest HTTP bodies may expose preview credentials.
+      throw failure('capped file command request failed');
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
+  private async runEditorFileCommand(
+    command: string,
+    maxBytes?: number,
+  ): Promise<string> {
+    const wrapped = `/bin/sh -c ${shellQuote(command)}`;
+    const environment = {
+      ...this.state.environment,
+      ...FILE_SHELL_STARTUP_ENVIRONMENT,
+    };
+    const result =
+      maxBytes === undefined
+        ? await this.sandbox.process.executeCommand(
+            wrapped,
+            this.state.manifest.root,
+            environment,
+            this.state.timeoutSec,
+          )
+        : await this.executeBoundedFileCommand(
+            wrapped,
+            environment,
+            this.state.timeoutSec,
+            maxBytes,
+          );
     if (result.exitCode !== 0) {
       throw new UserError(
         (
@@ -1293,6 +1453,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   private async resolveRemotePath(
     path?: string,
     options: RemoteSandboxPathOptions = {},
+    maxBytes?: number,
   ): Promise<string> {
     this.assertSessionUsable();
     return await validateRemoteSandboxPathForManifest({
@@ -1300,11 +1461,19 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       path,
       options,
       runCommand: async (command) => {
-        const result = await this.sandbox.process.executeCommand(
-          command,
-          this.state.manifest.root,
-          {},
-        );
+        const result =
+          maxBytes === undefined
+            ? await this.sandbox.process.executeCommand(
+                command,
+                this.state.manifest.root,
+                {},
+              )
+            : await this.executeBoundedFileCommand(
+                command,
+                {},
+                undefined,
+                maxBytes,
+              );
         return {
           status: result.exitCode,
           stdout: result.artifacts?.stdout ?? result.result ?? '',
@@ -1792,6 +1961,7 @@ function adaptDaytonaSandbox(
           }
         : {}),
     },
+    getPreviewLink: async (port) => await sandbox.getPreviewLink(port),
     getSignedPreviewUrl: async (port, expiresInSeconds) =>
       await sandbox.getSignedPreviewUrl(port, expiresInSeconds),
   };

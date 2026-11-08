@@ -31,6 +31,7 @@ import {
   validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
+  BOUNDED_FILE_READ_STATUS_BYTES,
   NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
   stableJsonStringify,
   withExclusiveSandboxManifestMutation,
@@ -377,8 +378,21 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
-    const absolutePath = await this.resolveRemotePath(args.path);
+    if (
+      args.maxBytes !== undefined &&
+      (!Number.isSafeInteger(args.maxBytes) || args.maxBytes < 0)
+    ) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    }
+    const absolutePath = await this.resolveRemotePath(
+      args.path,
+      {},
+      args.maxBytes === undefined ? undefined : 65536,
+    );
     if (args.maxBytes !== undefined) {
+      const encodedBytes =
+        Math.ceil((args.maxBytes + BOUNDED_FILE_READ_STATUS_BYTES) / 3) * 4;
+      const maxOutputBytes = encodedBytes + Math.ceil(encodedBytes / 76);
       try {
         return await readRunAsRemoteFile({
           providerName: 'CloudflareSandboxClient',
@@ -387,9 +401,12 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           runAs: args.runAs,
           maxBytes: args.maxBytes,
           runCommand: args.runAs
-            ? this.runAsCommandRunner.bind(this)
+            ? (command, options) =>
+                this.runAsCommandRunner(command, { ...options, maxOutputBytes })
             : async (command) => {
                 const result = await this.execShell(command, {
+                  login: false,
+                  maxOutputBytes,
                   timeoutMs:
                     this.state.timeouts?.requestTimeoutMs ??
                     this.state.requestTimeoutMs,
@@ -835,17 +852,18 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
 
   private async execShell(
     shellCommand: string,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; login?: false; maxOutputBytes?: number },
   ): Promise<{
     exitCode: number;
     output: string;
     stdout: string;
     stderr: string;
   }> {
-    const timeoutMs = options
-      ? options.timeoutMs
-      : (this.state.timeouts?.execTimeoutMs ?? this.state.timeoutMs);
-    const response = await this.fetch(
+    const timeoutMs =
+      options && 'timeoutMs' in options
+        ? options.timeoutMs
+        : (this.state.timeouts?.execTimeoutMs ?? this.state.timeoutMs);
+    let response = await this.fetch(
       `/v1/sandbox/${this.state.sandboxId}/exec`,
       {
         method: 'POST',
@@ -853,7 +871,11 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          argv: ['/bin/sh', '-lc', shellCommand],
+          argv: [
+            '/bin/sh',
+            options?.login === false ? '-c' : '-lc',
+            shellCommand,
+          ],
           ...(typeof timeoutMs === 'number'
             ? {
                 timeout_ms: timeoutMs,
@@ -862,6 +884,35 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         }),
       },
     );
+    const maxOutputBytes = options?.maxOutputBytes;
+    const outputError = new SandboxProviderError(
+      'Cloudflare file read command exceeded its output limit.',
+      { provider: 'cloudflare', sandboxId: this.state.sandboxId },
+    );
+    if (maxOutputBytes !== undefined && response.body) {
+      // Base64 expands stdout/stderr by 4/3. Twice their budgets plus fixed
+      // framing space accepts normal SSE batching while rejecting frame floods.
+      const rawLimit = response.ok
+        ? 2 * (maxOutputBytes + 65536) + 65536
+        : 65536;
+      let rawBytes = 0;
+      response = new Response(
+        response.body.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              rawBytes += chunk.byteLength;
+              if (rawBytes > rawLimit) throw outputError;
+              controller.enqueue(chunk);
+            },
+          }),
+        ),
+        {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        },
+      );
+    }
     if (!response.ok) {
       throw await cloudflareProviderHttpErrorWithBody(
         'execute command',
@@ -889,14 +940,31 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     let rawStream = '';
     let stdout = '';
     let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const encoder = new TextEncoder();
+    const pendingLimit =
+      maxOutputBytes === undefined
+        ? undefined
+        : Math.ceil(Math.max(maxOutputBytes, 65536) / 3) * 4 + 65536;
     let exitCode: number | undefined;
     const processEvent = (event: { event: string; data: string }): void => {
       if (event.event === 'stdout') {
-        stdout += decodeBase64Text(event.data);
+        const text = decodeBase64Text(event.data);
+        if (maxOutputBytes !== undefined) {
+          stdoutBytes += encoder.encode(text).byteLength;
+          if (stdoutBytes > maxOutputBytes) throw outputError;
+        }
+        stdout += text;
         return;
       }
       if (event.event === 'stderr') {
-        stderr += decodeBase64Text(event.data);
+        const text = decodeBase64Text(event.data);
+        if (maxOutputBytes !== undefined) {
+          stderrBytes += encoder.encode(text).byteLength;
+          if (stderrBytes > 65536) throw outputError;
+        }
+        stderr += text;
         return;
       }
       if (event.event === 'exit') {
@@ -919,20 +987,27 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
             provider: 'cloudflare',
             operation: 'execute command',
             sandboxId: this.state.sandboxId,
-            cause: event.data || 'unknown error',
+            cause:
+              (maxOutputBytes === undefined
+                ? event.data
+                : truncateCloudflareErrorBody(event.data)) || 'unknown error',
           },
         );
       }
     };
 
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
+    const consume = (text: string): void => {
+      if (
+        pendingLimit !== undefined &&
+        buffer.length + text.length > pendingLimit
+      ) {
+        throw outputError;
       }
-      const text = decoder.decode(chunk.value, { stream: true });
       buffer += text;
-      rawStream += text;
+      rawStream +=
+        maxOutputBytes === undefined
+          ? text
+          : text.slice(0, Math.max(0, 65536 - rawStream.length));
       const { events, remaining } = splitCompleteSseEvents(buffer);
       buffer = remaining;
       for (const part of events) {
@@ -942,15 +1017,37 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         }
         processEvent(event);
       }
-    }
-    const finalText = decoder.decode();
-    buffer += finalText;
-    rawStream += finalText;
-    for (const part of collectSseEvents(buffer)) {
-      const event = parseSseEvent(part);
-      if (event) {
-        processEvent(event);
+    };
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        if (maxOutputBytes === undefined) {
+          consume(decoder.decode(chunk.value, { stream: true }));
+          continue;
+        }
+        // Do not decode/copy an entire coalesced provider chunk at once.
+        for (let offset = 0; offset < chunk.value.byteLength; offset += 65536) {
+          const part = chunk.value.subarray(offset, offset + 65536);
+          if (
+            pendingLimit !== undefined &&
+            buffer.length + part.byteLength > pendingLimit
+          ) {
+            throw outputError;
+          }
+          consume(decoder.decode(part, { stream: true }));
+        }
       }
+      consume(decoder.decode());
+      for (const part of collectSseEvents(buffer)) {
+        const event = parseSseEvent(part);
+        if (event) {
+          processEvent(event);
+        }
+      }
+    } finally {
+      if (maxOutputBytes !== undefined) await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
     if (exitCode === undefined && !stdout && !stderr && rawStream.trim()) {
       throw new SandboxProviderError(
@@ -992,10 +1089,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
 
   private async runAsCommandRunner(
     command: string,
-    options: { runAs?: string } = {},
+    options: { runAs?: string; login?: false; maxOutputBytes?: number } = {},
   ) {
     const result = await this.execShell(
-      sandboxUserShellCommand(command, options.runAs),
+      sandboxUserShellCommand(command, options.runAs, options),
+      options.login === false
+        ? { login: false, maxOutputBytes: options.maxOutputBytes }
+        : undefined,
     );
     return {
       status: result.exitCode,
@@ -1124,13 +1224,19 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
   private async resolveRemotePath(
     path?: string,
     options: RemoteSandboxPathOptions = {},
+    maxOutputBytes?: number,
   ): Promise<string> {
     return await validateRemoteSandboxPathForManifest({
       manifest: this.state.manifest,
       path,
       options,
       runCommand: async (command) => {
-        const result = await this.execShell(command);
+        const result = await this.execShell(
+          command,
+          maxOutputBytes === undefined
+            ? undefined
+            : { login: false, maxOutputBytes },
+        );
         return {
           status: result.exitCode,
           stdout: result.stdout,

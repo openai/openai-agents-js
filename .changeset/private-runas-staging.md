@@ -3,4 +3,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: Keep run-as editor staging files private throughout upload and ownership handoff; bound sandbox file reads before transfer.
+fix: Keep run-as editor staging files private throughout upload and ownership handoff; bound sandbox file reads and command output.
