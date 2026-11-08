@@ -328,6 +328,12 @@ export class OpenAITracingExporter implements TracingExporter {
               Authorization: `Bearer ${apiKey}`,
               'OpenAI-Beta': 'traces=v1',
               ...HEADERS,
+              ...(this.#options.organization
+                ? { 'OpenAI-Organization': this.#options.organization }
+                : {}),
+              ...(this.#options.project
+                ? { 'OpenAI-Project': this.#options.project }
+                : {}),
             },
             body: JSON.stringify(payload),
             signal,

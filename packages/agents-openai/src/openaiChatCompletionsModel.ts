@@ -159,7 +159,7 @@ export class OpenAIChatCompletionsModel implements Model {
                 reasoning_effort: request.modelSettings.reasoning?.effort,
                 verbosity: request.modelSettings.text?.verbosity,
               }
-            : { base_url: this.#client.baseURL };
+            : {};
           const rawResponse = await this.#fetchResponse(request, span, false);
           const rawUsage =
             request.modelSettings.preserveRawUsage === true
@@ -396,7 +396,7 @@ export class OpenAIChatCompletionsModel implements Model {
               reasoning_effort: request.modelSettings.reasoning?.effort,
               verbosity: request.modelSettings.text?.verbosity,
             }
-          : { base_url: this.#client.baseURL };
+          : {};
         span.start();
         setCurrentSpan(span);
       }

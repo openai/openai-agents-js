@@ -77,6 +77,44 @@ describe('OpenAITracingExporter', () => {
     expect(JSON.parse(opts.body as string)).toEqual({ data: [item.toJSON()] });
   });
 
+  it('forwards the captured organization and project options', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    const options = {
+      apiKey: 'key1',
+      organization: 'org-fixture',
+      project: 'project-fixture',
+    };
+    const exporter = new OpenAITracingExporter(options);
+    options.organization = 'org-later';
+    options.project = 'project-later';
+    await exporter.export([fakeSpan]);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual(
+      expect.objectContaining({
+        'OpenAI-Organization': 'org-fixture',
+        'OpenAI-Project': 'project-fixture',
+        Authorization: 'Bearer key1',
+      }),
+    );
+  });
+
+  it.each([{}, { organization: '', project: '' }])(
+    'omits absent or empty routing headers: %j',
+    async (options) => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+      vi.stubGlobal('fetch', fetchMock);
+      await new OpenAITracingExporter({ apiKey: 'key1', ...options }).export([
+        fakeSpan,
+      ]);
+      expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty(
+        'OpenAI-Organization',
+      );
+      expect(fetchMock.mock.calls[0][1].headers).not.toHaveProperty(
+        'OpenAI-Project',
+      );
+    },
+  );
+
   it('moves unsupported generation usage fields into details', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal('fetch', fetchMock);
