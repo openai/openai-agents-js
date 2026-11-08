@@ -1,6 +1,6 @@
 import { once } from 'node:events';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { Agent, NativeProvider } from '../src';
 
@@ -163,6 +163,19 @@ nativeIt.each(['webrtc', 'sip'] as const)(
           await expect(voice.sendAudio(new Int16Array([1]))).rejects.toThrow(
             'SIP',
           );
+          await voice.sendAudio(new Int16Array(), { commit: true });
+          await vi.waitFor(() =>
+            expect(
+              peer.frames.filter(
+                (frame) => frame.type === 'input_audio_buffer.commit',
+              ),
+            ).toHaveLength(1),
+          );
+          expect(
+            peer.frames.some(
+              (frame) => frame.type === 'input_audio_buffer.append',
+            ),
+          ).toBe(false);
         } finally {
           await voice.close();
         }

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { Agent, NativeProvider } from '../src';
+import { Agent, NativeProvider, type NativeRealtimeSession } from '../src';
 import type { Session as CoreSession } from '../src/runtime/session';
 import type { NativeRealtimeAdapter } from '../src/runtime/realtime-adapter';
 import { ModelServer, message } from './native/fixtures/model-server';
@@ -485,6 +485,139 @@ nativeIt.each(['session-close', 'voice-close', 'voice-interrupt'] as const)(
     } finally {
       nestedStop.abort();
       releaseRead.resolve();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'retains ordinary nested text but rejects self-adapter input while committed audio is pending',
+  async () => {
+    const model = new ModelServer([]);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Listen.',
+        provider,
+      }).session();
+      const incoming = new Incoming();
+      const accepted: Record<string, any> = {};
+      const frames: Record<string, any>[] = [];
+      const held = Promise.withResolvers<void>();
+      const proceed = Promise.withResolvers<void>();
+      const ordinary: string[] = [];
+      const blocked: string[] = [];
+      const rejectOwn = async (
+        phase: string,
+        operation: () => Promise<void>,
+      ) => {
+        let rejection: unknown;
+        void operation().catch((error: unknown) => {
+          rejection = error;
+        });
+        await vi.waitFor(
+          () =>
+            expect(String(rejection)).toContain(
+              'Realtime adapter callback cannot',
+            ),
+          { timeout: 2000 },
+        );
+        blocked.push(phase);
+      };
+      const adapter: NativeRealtimeAdapter = {
+        async connect(context) {
+          accepted.model = context.model;
+          return {
+            incoming,
+            async send(raw) {
+              const frame = JSON.parse(raw);
+              frames.push(frame);
+              if (frame.type === 'session.update') {
+                merge(accepted, frame.session);
+                incoming.push({
+                  type: 'session.updated',
+                  session: {
+                    ...structuredClone(accepted),
+                    id: 'committed-adapter',
+                  },
+                });
+              } else if (frame.type === 'conversation.item.create') {
+                const text = frame.item?.content?.[0]?.text;
+                if (text === 'ordinary before' || text === 'ordinary after')
+                  await voice.sendText(`nested ${text}`);
+                else if (text?.startsWith('nested ordinary'))
+                  ordinary.push(text);
+                else if (text === 'held outer') {
+                  held.resolve();
+                  await proceed.promise;
+                  await rejectOwn('queued-before-active', () =>
+                    voice.sendText('blocked queued text'),
+                  );
+                }
+              } else if (frame.type === 'input_audio_buffer.append') {
+                await rejectOwn('append', () =>
+                  voice.sendText('blocked append text'),
+                );
+              } else if (frame.type === 'input_audio_buffer.commit') {
+                await rejectOwn('commit-input', () =>
+                  voice.sendText('blocked commit text'),
+                );
+                await rejectOwn('commit-control', () =>
+                  voice.sendAudio(new Int16Array(), { commit: true }),
+                );
+                await rejectOwn('delete-control', () =>
+                  voice.deleteConversationItem('not-admitted'),
+                );
+              }
+            },
+            async close() {
+              proceed.resolve();
+              await incoming.return();
+            },
+          };
+        },
+      };
+      const voice: NativeRealtimeSession = await session.realtime({
+        model: 'fixture-realtime',
+        adapter,
+      });
+      try {
+        await voice.sendText('ordinary before');
+        await vi.waitFor(() => expect(ordinary).toHaveLength(1));
+        const outer = voice.sendText('held outer');
+        await held.promise;
+        const bulk = voice.sendAudio(new Int16Array(40000), { commit: true });
+        void bulk.catch(() => {});
+        proceed.resolve();
+        await Promise.all([outer, bulk]);
+        expect(blocked).toEqual([
+          'queued-before-active',
+          'append',
+          'append',
+          'commit-input',
+          'commit-control',
+          'delete-control',
+        ]);
+        expect(
+          frames.filter((frame) => frame.type === 'input_audio_buffer.commit'),
+        ).toHaveLength(1);
+        expect(
+          frames.some((frame) => frame.type === 'conversation.item.delete'),
+        ).toBe(false);
+        expect(
+          frames.some((frame) =>
+            frame.item?.content?.[0]?.text?.startsWith('blocked'),
+          ),
+        ).toBe(false);
+        await voice.sendText('ordinary after');
+        await vi.waitFor(() => expect(ordinary).toHaveLength(2));
+        expect(model.requests).toEqual([]);
+      } finally {
+        proceed.resolve();
+        await voice.close();
+      }
+    } finally {
       await ModelServer.closeAll();
     }
   },

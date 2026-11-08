@@ -291,6 +291,7 @@ export type {
   NativeRealtimeHostedMcpApprovalRequest,
   NativeRealtimeHostedMcpToolDefinition,
   NativeRealtimeAudioInput,
+  NativeRealtimeUserInput,
   NativeRealtimeAudioFormat,
   NativeRealtimePlaybackPosition,
   NativeRealtimeTransport,
@@ -298,6 +299,7 @@ export type {
 
 export type {
   NativeRealtimeSettings,
+  NativeRealtimeToolChoice,
   NativeRealtimeHostedMcpTool,
   NativeRealtimeMcpToolFilter,
   NativeRealtimeSessionUpdate,

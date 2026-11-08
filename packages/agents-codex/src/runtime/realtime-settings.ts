@@ -79,6 +79,12 @@ export type NativeRealtimeHostedMcpTool = {
   | { readonly connectorId: string; readonly serverUrl?: never }
 );
 
+export type NativeRealtimeToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { readonly type: 'function'; readonly name: string };
+
 /** Sparse settings; omission retains state and null explicitly disables a setting. */
 export type NativeRealtimeSettings = {
   readonly inputFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
@@ -95,6 +101,7 @@ export type NativeRealtimeSettings = {
   readonly tracing?: 'auto' | NativeRealtimeTracing | null;
   readonly maxOutputTokens?: number | 'inf';
   readonly parallelToolCalls?: boolean;
+  readonly toolChoice?: NativeRealtimeToolChoice;
   /** Omission retains hosted tools; an empty array clears only hosted tools. */
   readonly hostedMcpTools?: readonly NativeRealtimeHostedMcpTool[];
   readonly reasoning?: { readonly effort?: string };
@@ -215,6 +222,23 @@ function settingsObject(
     ['maxOutputTokens', 'max_output_tokens'],
     ['parallelToolCalls', 'parallel_tool_calls'],
   ]);
+  if (settings.toolChoice !== undefined) {
+    const choice = settings.toolChoice;
+    if (choice === 'auto' || choice === 'none' || choice === 'required')
+      result.tool_choice = choice;
+    else {
+      const named = fields(choice, ['type', 'name']);
+      if (
+        named.type !== 'function' ||
+        typeof named.name !== 'string' ||
+        Object.keys(choice).length !== 2
+      )
+        throw new TypeError(
+          'toolChoice must be auto, none, required, or a named function',
+        );
+      result.tool_choice = named;
+    }
+  }
   if (settings.hostedMcpTools !== undefined) {
     if (!Array.isArray(settings.hostedMcpTools))
       throw new TypeError('Hosted MCP tools must be an array');

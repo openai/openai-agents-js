@@ -291,3 +291,32 @@ describe('native Realtime settings serialization', () => {
       ).toThrow(TypeError);
   });
 });
+
+describe('native Realtime tool choice', () => {
+  it.each([
+    'auto',
+    'none',
+    'required',
+    { type: 'function', name: 'weather' },
+  ] as const)(
+    'serializes a typed sparse choice %j without adding tools',
+    (toolChoice) => {
+      expect(serializeRealtimeSettings({ toolChoice })).toEqual({
+        tool_choice: toolChoice,
+      });
+      expect(serializeRealtimeSessionUpdate({ toolChoice })).toEqual({
+        tool_choice: toolChoice,
+      });
+      expect(serializeRealtimeSettings({})).toEqual({});
+    },
+  );
+  it.each([
+    null,
+    'weather',
+    [],
+    { type: 'mcp', name: 'weather' },
+    { type: 'function' },
+  ])('rejects unsupported choice %j before native I/O', (toolChoice) => {
+    expect(() => serializeRealtimeSettings({ toolChoice } as never)).toThrow();
+  });
+});

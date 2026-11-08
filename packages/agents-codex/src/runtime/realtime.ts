@@ -23,6 +23,22 @@ export type {
   NativeRealtimePlaybackPosition,
 } from './realtime-playback';
 
+/** User-only text and inline image references; provider fields and file IDs are unsupported. */
+export type NativeRealtimeUserInput =
+  | string
+  | {
+      readonly type: 'message';
+      readonly role: 'user';
+      readonly content: readonly (
+        | { readonly type: 'input_text'; readonly text: string }
+        | {
+            readonly type: 'input_image';
+            readonly image: string;
+            readonly detail?: 'auto' | 'low' | 'high';
+          }
+      )[];
+    };
+
 export type NativeRealtimeTransport =
   | { readonly type: 'webrtc'; readonly offerSdp: string }
   | { readonly type: 'sip'; readonly callId: string };
@@ -73,6 +89,7 @@ export interface NativeRealtimeHistoryItem {
   readonly text?: string;
   readonly turnId?: string;
   readonly itemId?: string;
+  readonly providerItemId?: string;
   readonly outcome?: string;
   readonly presentation?: string;
   readonly presentationIndex?: number;
@@ -159,6 +176,15 @@ export type NativeRealtimeEvent =
       /** Original application-side failure; never sent to the speech provider. */
       error?: unknown;
     }
+  | {
+      readonly type: 'conversation_item';
+      readonly itemId: string;
+      readonly kind: string;
+      readonly status: 'added' | 'done';
+      readonly role?: string;
+      readonly callId?: string;
+    }
+  | { readonly type: 'conversation_item_deleted'; readonly itemId: string }
   | { type: 'history'; item: NativeRealtimeHistoryItem; completed: boolean }
   | {
       type: 'function_call';
@@ -180,6 +206,10 @@ type Command =
   | 'hosted_mcp_approval'
   | 'update'
   | 'audio'
+  | 'audio_commit'
+  | 'input'
+  | 'response'
+  | 'delete_item'
   | 'text'
   | 'complete'
   | 'fail'
@@ -299,6 +329,8 @@ class NativeRealtimeOwner {
   private sessionClosing = false;
   private consuming = false;
   private queuedBytes = 0;
+  private inputTail: Promise<void> = Promise.resolve();
+  private pendingCommittedAudio = 0;
   private readonly nativeEnded = Promise.withResolvers<void>();
   private responseId?: string;
   private readonly playback = new NativeRealtimePlayback(HANDOFF_LIMIT);
@@ -672,53 +704,218 @@ class NativeRealtimeOwner {
     }
   }
 
+  private enqueueInput(send: () => Promise<void>): Promise<void> {
+    if (this.pendingCommittedAudio)
+      this.session._checkVoiceAdapterOperation(
+        this,
+        'queue input while committed audio is pending',
+      );
+    const pending = this.inputTail.then(() => {
+      this.checkLive();
+      return send();
+    });
+    this.inputTail = pending.catch(() => {});
+    return pending;
+  }
   async sendText(text: string): Promise<void> {
     this.checkLive();
     if (typeof text !== 'string' || !text.trim())
       throw new TypeError('Realtime text must be nonempty');
-    await this.call('text', { text, role: 'user' });
+    await this.enqueueInput(async () => {
+      await this.call('text', { text, role: 'user' });
+    });
+  }
+  /** Append one user message, then optionally request a response. */
+  async sendMessage(
+    message: NativeRealtimeUserInput,
+    options: { triggerResponse?: boolean } = {},
+  ): Promise<void> {
+    this.checkLive();
+    if (
+      typeof options !== 'object' ||
+      options === null ||
+      Array.isArray(options) ||
+      Object.keys(options).some((key) => key !== 'triggerResponse')
+    )
+      throw new TypeError(
+        'Realtime message options only support triggerResponse',
+      );
+    const triggerResponse = options.triggerResponse;
+    if (triggerResponse !== undefined && typeof triggerResponse !== 'boolean')
+      throw new TypeError('Realtime triggerResponse must be a boolean');
+    let content: JsonObject[];
+    if (typeof message === 'string') {
+      if (!message.length)
+        throw new TypeError('Realtime user text must be nonempty');
+      content = [{ type: 'input_text', text: message }];
+    } else {
+      if (
+        !message ||
+        typeof message !== 'object' ||
+        Array.isArray(message) ||
+        Object.keys(message).some(
+          (key) => !['type', 'role', 'content'].includes(key),
+        )
+      )
+        throw new TypeError('Realtime input must be a user message');
+      const { type, role, content: parts } = message;
+      if (
+        type !== 'message' ||
+        role !== 'user' ||
+        !Array.isArray(parts) ||
+        !parts.length
+      )
+        throw new TypeError('Realtime input requires nonempty user content');
+      content = parts.map((part): JsonObject => {
+        if (!part || typeof part !== 'object' || Array.isArray(part))
+          throw new TypeError(
+            'Realtime user content must be text or an inline image',
+          );
+        const type = part.type;
+        if (type === 'input_text') {
+          const text = part.text;
+          if (
+            Object.keys(part).some((key) => !['type', 'text'].includes(key)) ||
+            typeof text !== 'string' ||
+            !text.length
+          )
+            throw new TypeError('Realtime user text must be a nonempty string');
+          return { type, text };
+        }
+        if (type === 'input_image') {
+          const { image, detail } = part;
+          if (
+            Object.keys(part).some(
+              (key) => !['type', 'image', 'detail'].includes(key),
+            ) ||
+            typeof image !== 'string' ||
+            !image.length ||
+            (detail !== undefined && !['auto', 'low', 'high'].includes(detail))
+          )
+            throw new TypeError(
+              'Realtime input requires an inline image and supported detail',
+            );
+          return {
+            type,
+            image_url: image,
+            ...(detail === undefined ? {} : { detail }),
+          };
+        }
+        throw new TypeError(
+          'Realtime user content must be text or an inline image',
+        );
+      });
+    }
+    await this.enqueueInput(async () => {
+      await this.call('input', {
+        content,
+        trigger_response: triggerResponse ?? true,
+      });
+    });
+  }
+  /** Append an inline image reference, optionally without requesting a response. */
+  async addImage(
+    image: string,
+    options: { triggerResponse?: boolean } = {},
+  ): Promise<void> {
+    await this.sendMessage(
+      {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_image', image }],
+      },
+      options,
+    );
+  }
+  /** Request a response using the current accepted Session configuration. */
+  async requestResponse(): Promise<void> {
+    this.checkLive();
+    await this.enqueueInput(async () => {
+      await this.call('response');
+    });
+  }
+  /** Delete one provider conversation item after native dependency checks and durable ACK. */
+  async deleteConversationItem(providerItemId: string): Promise<void> {
+    this.checkLive();
+    this.session._checkVoiceAdapterOperation(
+      this,
+      'delete its own conversation item',
+    );
+    const itemId = providerItemId;
+    if (typeof itemId !== 'string' || !itemId.trim())
+      throw new TypeError('Realtime provider item ID must be nonempty');
+    await this.call('delete_item', { item_id: itemId });
   }
   /** Send immutable PCM16 samples, or explicitly encoded mono24kHz PCM/8kHz G.711.
    * Core checks the provider-accepted codec before admitting each bounded frame.
+   * commit sends one input buffer commit after the final frame; omission only appends.
    */
-  async sendAudio(audio: Int16Array | NativeRealtimeAudioInput): Promise<void> {
+  async sendAudio(
+    audio: Int16Array | NativeRealtimeAudioInput,
+    options: { commit?: boolean } = {},
+  ): Promise<void> {
     this.checkLive();
-    if (this.transport.type === 'existing_call')
-      throw new Error('SIP calls receive audio from the provider');
+    if (
+      typeof options !== 'object' ||
+      options === null ||
+      Array.isArray(options) ||
+      Object.keys(options).some((key) => key !== 'commit')
+    )
+      throw new TypeError('Realtime audio options must be an object');
+    const commit = options.commit;
+    if (commit !== undefined && typeof commit !== 'boolean')
+      throw new TypeError('Realtime audio commit must be a boolean');
     const samples = audio instanceof Int16Array;
     const format = samples ? 'pcm16' : audio?.format;
     const data = samples ? audio : audio?.data;
     if (
       !['pcm16', 'g711_ulaw', 'g711_alaw'].includes(format) ||
       !(samples ? data instanceof Int16Array : data instanceof Uint8Array) ||
-      !data.length
+      (!data.length && !commit)
     )
       throw new TypeError(
         'Realtime audio requires nonempty PCM16 samples or explicitly encoded PCM/G.711 bytes',
       );
+    if (this.transport.type === 'existing_call' && data.length)
+      throw new Error('SIP calls receive audio from the provider');
     const width = format === 'pcm16' ? 2 : 1;
     if (!samples && data.length % width)
       throw new TypeError('PCM16 audio requires complete two-byte samples');
     const frameSize = 32768 * (samples ? 1 : width);
-    for (let offset = 0; offset < data.length; offset += frameSize) {
-      this.checkLive();
-      const count = Math.min(frameSize, data.length - offset);
-      let bytes: Buffer;
-      if (samples) {
-        bytes = Buffer.alloc(count * 2);
-        for (let i = 0; i < count; i++)
-          bytes.writeInt16LE(data[offset + i], i * 2);
-      } else bytes = Buffer.from(data.buffer, data.byteOffset + offset, count);
-      await this.call('audio', {
-        frame: {
-          data: bytes.toString('base64'),
-          format,
-          sample_rate: format === 'pcm16' ? 24000 : 8000,
-          num_channels: 1,
-          samples_per_channel: samples ? count : count / width,
-          item_id: null,
-        },
+    if (commit) {
+      this.session._checkVoiceAdapterOperation(this, 'commit its own audio');
+      this.pendingCommittedAudio++;
+    }
+    try {
+      await this.enqueueInput(async () => {
+        for (let offset = 0; offset < data.length; offset += frameSize) {
+          this.checkLive();
+          const count = Math.min(frameSize, data.length - offset);
+          let bytes: Buffer;
+          if (samples) {
+            bytes = Buffer.alloc(count * 2);
+            for (let i = 0; i < count; i++)
+              bytes.writeInt16LE(data[offset + i], i * 2);
+          } else
+            bytes = Buffer.from(data.buffer, data.byteOffset + offset, count);
+          await this.call('audio', {
+            frame: {
+              data: bytes.toString('base64'),
+              format,
+              sample_rate: format === 'pcm16' ? 24000 : 8000,
+              num_channels: 1,
+              samples_per_channel: samples ? count : count / width,
+              item_id: null,
+            },
+          });
+        }
+        if (commit) {
+          this.checkLive();
+          await this.call('audio_commit');
+        }
       });
+    } finally {
+      if (commit) this.pendingCommittedAudio--;
     }
   }
   /** Record audio actually played; buffering a received frame is not playback. */
@@ -1116,7 +1313,32 @@ class NativeRealtimeOwner {
       this.emit({ type: 'lifecycle', status: 'speech_started' });
     else if (name === 'InputAudioSpeechStopped')
       this.emit({ type: 'lifecycle', status: 'speech_stopped' });
-    else if (name === 'HistoryItemStarted' || name === 'HistoryItemCompleted') {
+    else if (name === 'ConversationItemObserved') {
+      if (
+        typeof value.item_id !== 'string' ||
+        !value.item_id ||
+        typeof value.kind !== 'string' ||
+        !['added', 'done'].includes(value.status) ||
+        (value.role != null && typeof value.role !== 'string') ||
+        (value.call_id != null && typeof value.call_id !== 'string')
+      )
+        throw new TypeError('Invalid native provider conversation item');
+      this.emit({
+        type: 'conversation_item',
+        itemId: value.item_id,
+        kind: value.kind,
+        status: value.status,
+        role: value.role ?? undefined,
+        callId: value.call_id ?? undefined,
+      });
+    } else if (name === 'ConversationItemDeleted') {
+      if (typeof value.item_id !== 'string' || !value.item_id)
+        throw new TypeError('Invalid native provider deletion receipt');
+      this.emit({ type: 'conversation_item_deleted', itemId: value.item_id });
+    } else if (
+      name === 'HistoryItemStarted' ||
+      name === 'HistoryItemCompleted'
+    ) {
       const item: NativeRealtimeHistoryItem = Object.freeze({
         id: value.id,
         realtimeSessionId: value.realtime_session_id,
@@ -1125,6 +1347,7 @@ class NativeRealtimeOwner {
         text: value.text,
         turnId: value.turn_id,
         itemId: value.item_id,
+        providerItemId: value.provider_item_id,
         outcome: value.outcome,
         presentation: value.presentation?.type,
         presentationIndex: value.presentation?.index,
@@ -1614,6 +1837,10 @@ export type NativeRealtimeSession = Pick<
   | 'answerSdp'
   | 'reportPlayback'
   | 'sendText'
+  | 'sendMessage'
+  | 'addImage'
+  | 'requestResponse'
+  | 'deleteConversationItem'
   | 'update'
   | 'approveHostedMcp'
   | 'sendAudio'

@@ -1119,7 +1119,25 @@ nativeIt.each(['omitted', 'empty', 'subset'] as const)(
         ...(mode === 'omitted'
           ? {}
           : { tools: mode === 'empty' ? [] : ceiling }),
+        ...(mode === 'empty'
+          ? {
+              settings: {
+                toolChoice: {
+                  type: 'function' as const,
+                  name: 'background_agent',
+                },
+              },
+            }
+          : {}),
       });
+      const initial = await peer.frame(
+        (frame) => frame.type === 'session.update',
+      );
+      if (mode === 'empty')
+        expect(initial.session.tool_choice).toEqual({
+          type: 'function',
+          name: 'background_agent',
+        });
       // Mutating the caller's list or broadening Session defaults cannot change
       // the explicit roster accepted when this voice owner opened.
       ceiling.length = 0;
@@ -1460,9 +1478,15 @@ nativeIt.each([
         ).toBe('speech');
         expect(signal?.aborted).toBe(false);
         if (committed) {
+          // The provider ends the observed VAD source before committing its user item.
+          peer.send({
+            type: 'input_audio_buffer.speech_stopped',
+            item_id: 'surviving-speech',
+            audio_end_ms: 1,
+          });
           peer.send({
             type: 'input_audio_buffer.committed',
-            item_id: 'new-input',
+            item_id: 'surviving-speech',
           });
           await voice.update({
             instructions: 'Acknowledge the new committed input.',
@@ -1491,6 +1515,454 @@ nativeIt.each([
       }
     } finally {
       release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'sends one provider commit after each complete audio call without requesting an audio response',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Listen.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: { turnDetection: null },
+      });
+      await voice.sendAudio(new Int16Array([0]));
+      await peer.frame((frame) => frame.type === 'input_audio_buffer.append');
+      expect(
+        peer.frames.filter(
+          (frame) => frame.type === 'input_audio_buffer.commit',
+        ),
+      ).toEqual([]);
+      await expect(voice.sendAudio(new Int16Array())).rejects.toThrow(
+        'nonempty',
+      );
+      await voice.sendAudio(new Int16Array(), { commit: true });
+      await peer.frame((frame) => frame.type === 'input_audio_buffer.commit');
+      expect(
+        peer.frames.filter(
+          (frame) => frame.type === 'input_audio_buffer.append',
+        ),
+      ).toHaveLength(1);
+      expect(
+        peer.frames.filter(
+          (frame) => frame.type === 'input_audio_buffer.commit',
+        ),
+      ).toHaveLength(1);
+      expect(
+        peer.frames.filter((frame) => frame.type === 'response.create'),
+      ).toEqual([]);
+      const start = peer.frames.length;
+      const first = voice.sendAudio(new Int16Array(40000).fill(1), {
+        commit: true,
+      });
+      const text = voice.sendText('between audio calls');
+      const second = voice.sendAudio(new Int16Array([2]), { commit: true });
+      await Promise.all([first, text, second]);
+      await vi.waitFor(() =>
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.type === 'input_audio_buffer.commit'),
+        ).toHaveLength(2),
+      );
+      expect(
+        peer.frames
+          .slice(start)
+          .filter((frame) =>
+            [
+              'input_audio_buffer.append',
+              'input_audio_buffer.commit',
+              'conversation.item.create',
+            ].includes(frame.type),
+          )
+          .map((frame) => frame.type),
+      ).toEqual([
+        'input_audio_buffer.append',
+        'input_audio_buffer.append',
+        'input_audio_buffer.commit',
+        'conversation.item.create',
+        'input_audio_buffer.append',
+        'input_audio_buffer.commit',
+      ]);
+      expect(
+        peer.frames.filter((frame) => frame.type === 'response.create'),
+      ).toHaveLength(1);
+      expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'sends ordered user text/images without a response until explicitly requested',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Describe images.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      await voice.sendMessage(
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Describe this image.' },
+            {
+              type: 'input_image',
+              image: 'data:image/png;base64,aW1hZ2U=',
+              detail: 'low',
+            },
+          ],
+        },
+        { triggerResponse: false },
+      );
+      const message = await peer.frame(
+        (frame) => frame.type === 'conversation.item.create',
+      );
+      expect(message.item).toMatchObject({
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Describe this image.' },
+          {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,aW1hZ2U=',
+            detail: 'low',
+          },
+        ],
+      });
+      expect(
+        peer.frames.filter((frame) => frame.type === 'response.create'),
+      ).toEqual([]);
+      await voice.requestResponse();
+      await peer.frame((frame) => frame.type === 'response.create');
+      expect(
+        peer.frames.filter((frame) => frame.type === 'response.create'),
+      ).toHaveLength(1);
+      const start = peer.frames.length;
+      await voice.addImage('https://example.com/image.png');
+      const image = await peer.frame(
+        (frame) => frame.type === 'conversation.item.create',
+        start,
+      );
+      expect(image.item.content).toEqual([
+        { type: 'input_image', image_url: 'https://example.com/image.png' },
+      ]);
+      await peer.frame((frame) => frame.type === 'response.create', start);
+      expect(
+        peer.frames.filter((frame) => frame.type === 'response.create'),
+      ).toHaveLength(2);
+      expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'uses actual tool-choice ACKs and preserves the accepted function subset after local rejection',
+  async () => {
+    const weather = tool({
+      name: 'weather',
+      parameters: z.object({}),
+      execute: () => 'sunny',
+    });
+    const excluded = tool({
+      name: 'excluded',
+      parameters: z.object({}),
+      execute: () => {
+        throw new Error('Excluded function must never execute');
+      },
+    });
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const named = { type: 'function' as const, name: 'weather' };
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use weather.',
+        tools: [weather, excluded],
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [weather],
+        settings: { toolChoice: named },
+      });
+      const initial = await peer.frame(
+        (frame) => frame.type === 'session.update',
+      );
+      expect(initial.session.tool_choice).toEqual(named);
+      expect(
+        initial.session.tools.some((entry: Frame) => entry.name === 'excluded'),
+      ).toBe(false);
+      let start = peer.frames.length;
+      await expect(
+        voice.update({ toolChoice: { type: 'function', name: 'excluded' } }),
+      ).rejects.toThrow('advertised function subset');
+      expect(
+        peer.frames
+          .slice(start)
+          .some((frame) => frame.type === 'session.update'),
+      ).toBe(false);
+      peer.autoAck = false;
+      let settled = false;
+      const updating = voice.update({ outputSpeed: 1.1 }).finally(() => {
+        settled = true;
+      });
+      try {
+        const sparse = await peer.frame(
+          (frame) => frame.type === 'session.update',
+          start,
+        );
+        expect(sparse.session).not.toHaveProperty('tool_choice');
+        expect(peer.pendingUpdates[0].session.tool_choice).toEqual(named);
+        expect(settled).toBe(false);
+        peer.autoAck = true;
+        peer.acknowledge();
+        await updating;
+      } finally {
+        peer.autoAck = true;
+        while (peer.pendingUpdates.length) peer.acknowledge();
+        await updating.catch(() => {});
+      }
+      for (const mode of ['none', 'required', 'auto'] as const) {
+        start = peer.frames.length;
+        await voice.update({ toolChoice: mode });
+        expect(
+          (await peer.frame((frame) => frame.type === 'session.update', start))
+            .session.tool_choice,
+        ).toBe(mode);
+      }
+      start = peer.frames.length;
+      await voice.update({ outputSpeed: 1.2 });
+      await peer.frame((frame) => frame.type === 'session.update', start);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'deletes one observed provider item only after exact ACK and retains its canonical audit target',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Keep the transcript.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      void reading.catch(() => {});
+      try {
+        await voice.sendMessage('Retain this original audit entry.', {
+          triggerResponse: false,
+        });
+        await peer.frame((frame) => frame.type === 'conversation.item.create');
+        const answer = {
+          id: 'retained-answer',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            { type: 'audio', transcript: 'Retain this canonical transcript.' },
+          ],
+        };
+        peer.send({
+          type: 'response.created',
+          response: { id: 'retained-response' },
+        });
+        peer.send({
+          type: 'conversation.item.added',
+          item: { ...answer, status: 'in_progress', content: [] },
+        });
+        peer.send({
+          type: 'response.output_audio_transcript.delta',
+          response_id: 'retained-response',
+          item_id: answer.id,
+          delta: 'Retain this canonical transcript.',
+        });
+        peer.send({
+          type: 'response.output_audio_transcript.done',
+          response_id: 'retained-response',
+          item_id: answer.id,
+          transcript: 'Retain this canonical transcript.',
+        });
+        peer.send({
+          type: 'conversation.item.done',
+          response_id: 'retained-response',
+          item: answer,
+        });
+        peer.send({
+          type: 'response.done',
+          response: { id: 'retained-response', output: [answer] },
+        });
+        await vi.waitFor(() =>
+          expect(JSON.stringify(voice.history)).toContain(
+            'Retain this canonical transcript.',
+          ),
+        );
+        const item = {
+          id: 'provider-delete-target',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [
+            { type: 'input_text', text: 'Retain this original audit entry.' },
+          ],
+        };
+        peer.send({ type: 'conversation.item.added', item });
+        peer.send({ type: 'conversation.item.done', item });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item' &&
+                event.itemId === item.id &&
+                event.status === 'done',
+            ),
+          ).toBe(true),
+        );
+        const before = voice.history.map((entry) => entry.id);
+        let settled = false;
+        const deleting = voice.deleteConversationItem(item.id).then(() => {
+          settled = true;
+        });
+        void deleting.catch(() => {});
+        const request = await peer.frame(
+          (frame) => frame.type === 'conversation.item.delete',
+        );
+        expect(request.item_id).toBe(item.id);
+        expect(settled).toBe(false);
+        expect(voice.history.map((entry) => entry.id)).toEqual(before);
+        peer.send({ type: 'conversation.item.deleted', item_id: item.id });
+        await deleting;
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item_deleted' &&
+                event.itemId === item.id,
+            ),
+          ).toBe(true),
+        );
+        expect(
+          voice.history.some(
+            (entry) =>
+              entry.kind === 'provider_item_deleted' &&
+              entry.providerItemId === item.id,
+          ),
+        ).toBe(true);
+        expect(
+          voice.history
+            .filter((entry) => before.includes(entry.id))
+            .map((entry) => entry.id),
+        ).toEqual(before);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'retires the generation on provider deletion rejection without publishing a deletion audit',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Keep the transcript.',
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      let readFailure: unknown;
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch((error: unknown) => {
+        readFailure = error;
+      });
+      try {
+        const item = {
+          id: 'provider-rejected-delete',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'Keep me.' }],
+        };
+        peer.send({ type: 'conversation.item.added', item });
+        peer.send({ type: 'conversation.item.done', item });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item' && event.itemId === item.id,
+            ),
+          ).toBe(true),
+        );
+        const deleting = voice.deleteConversationItem(item.id);
+        void deleting.catch(() => {});
+        await peer.frame((frame) => frame.type === 'conversation.item.delete');
+        peer.send({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            code: 'item_not_found',
+            message: 'delete rejected',
+            param: 'item_id',
+          },
+        });
+        await expect(deleting).rejects.toThrow();
+        await reading;
+        expect(readFailure).toBeDefined();
+        expect(
+          seen.some((event) => event.type === 'conversation_item_deleted'),
+        ).toBe(false);
+        expect(
+          voice.history.some((entry) => entry.kind === 'provider_item_deleted'),
+        ).toBe(false);
+        await expect(voice.requestResponse()).rejects.toThrow();
+      } finally {
+        await voice.close().catch(() => {});
+        await reading;
+      }
+    } finally {
       await peer.close();
       await ModelServer.closeAll();
     }

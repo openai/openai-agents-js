@@ -1330,6 +1330,16 @@ params!(RealtimeSdkAudio {
     generation: String,
     frame: RealtimeAudioFrame
 });
+params!(RealtimeSdkDeleteItem {
+    generation: String,
+    item_id: String
+});
+params!(RealtimeSdkInput {
+    generation: String,
+    content: Vec<codex_protocol::models::ContentItem>,
+    #[serde(default = "realtime_auto_response_default")]
+    trigger_response: bool
+});
 params!(RealtimeSdkText {
     generation: String,
     text: String,
@@ -1533,6 +1543,36 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
                 params: ConversationAudioParams { frame: p.frame },
                 reply,
             }
+        }
+        "realtime_conversation_audio_commit_sdk" => {
+            let p: RealtimeSdkGeneration = decode(params)?;
+            Op::RealtimeConversationAudioCommitSdk {
+                generation: p.generation,
+                reply,
+            }
+        }
+        "realtime_conversation_delete_item_sdk" => {
+            let p: RealtimeSdkDeleteItem = decode(params)?;
+            Op::RealtimeConversationDeleteItemSdk {
+                generation: p.generation,
+                item_id: p.item_id,
+                reply,
+            }
+        }
+        "realtime_conversation_input_sdk" => {
+            let p: RealtimeSdkInput = decode(params)?;
+            Op::RealtimeConversationInputSdk {
+                generation: p.generation,
+                params: ConversationInputParams {
+                    content: p.content,
+                    trigger_response: p.trigger_response,
+                },
+                reply,
+            }
+        }
+        "realtime_conversation_response_sdk" => {
+            let p: RealtimeSdkGeneration = decode(params)?;
+            Op::RealtimeConversationResponseSdk { generation: p.generation, reply }
         }
         "realtime_conversation_text_sdk" => {
             let p: RealtimeSdkText = decode(params)?;

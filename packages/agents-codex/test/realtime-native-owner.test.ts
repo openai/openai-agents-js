@@ -1885,3 +1885,321 @@ it('keeps ordinary graph batches live without validating a handoff target', asyn
   ).toBe(false);
   await peer.owner.close();
 });
+
+it('keeps complete input calls ordered and commits each audio call only after its final bounded frame', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const base = peer.call.getMockImplementation()!;
+  let held = false;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (operation === 'realtime_conversation_audio_sdk' && !held) {
+      held = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return base(operation, params);
+  });
+  const first = peer.owner.sendAudio(new Int16Array(40000).fill(1), {
+    commit: true,
+  });
+  await entered.promise;
+  const text = peer.owner.sendText('between audio calls');
+  const second = peer.owner.sendAudio(new Int16Array([2]), { commit: true });
+  const inputCalls = () =>
+    peer.call.mock.calls.filter(([op]) =>
+      [
+        'realtime_conversation_audio_sdk',
+        'realtime_conversation_audio_commit_sdk',
+        'realtime_conversation_text_sdk',
+      ].includes(op),
+    );
+  expect(inputCalls()).toHaveLength(1);
+  release.resolve();
+  await Promise.all([first, text, second]);
+  expect(inputCalls().map(([op]) => op)).toEqual([
+    'realtime_conversation_audio_sdk',
+    'realtime_conversation_audio_sdk',
+    'realtime_conversation_audio_commit_sdk',
+    'realtime_conversation_text_sdk',
+    'realtime_conversation_audio_sdk',
+    'realtime_conversation_audio_commit_sdk',
+  ]);
+  expect(
+    inputCalls()
+      .filter(([op]) => op === 'realtime_conversation_audio_sdk')
+      .map(
+        ([, params]) =>
+          (params.frame as { samples_per_channel: number }).samples_per_channel,
+      ),
+  ).toEqual([32768, 7232, 1]);
+  await peer.owner.close();
+});
+
+it.each([null, [], { commit: 'yes' }, { commit: 1 }])(
+  'rejects invalid audio commit options before any native input: %j',
+  async (options) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const before = peer.call.mock.calls.length;
+    await expect(
+      peer.owner.sendAudio(new Int16Array([1]), options as never),
+    ).rejects.toThrow();
+    expect(peer.call).toHaveBeenCalledTimes(before);
+    await peer.owner.close();
+  },
+);
+
+it('never commits a failed append and lets a later input call complete', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const failure = new Error('append rejected');
+  peer.call.mockRejectedValueOnce(failure);
+  await expect(
+    peer.owner.sendAudio(new Int16Array([1]), { commit: true }),
+  ).rejects.toBe(failure);
+  expect(
+    peer.call.mock.calls.filter(
+      ([op]) => op === 'realtime_conversation_audio_commit_sdk',
+    ),
+  ).toHaveLength(0);
+  await peer.owner.sendAudio(new Int16Array([2]), { commit: true });
+  expect(
+    peer.call.mock.calls.filter(
+      ([op]) => op === 'realtime_conversation_audio_commit_sdk',
+    ),
+  ).toHaveLength(1);
+  await peer.owner.close();
+});
+
+it('keeps append-only default behavior and does not commit explicit false', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  await peer.owner.sendAudio(new Int16Array([1]));
+  await peer.owner.sendAudio(new Int16Array([2]), { commit: false });
+  expect(
+    peer.call.mock.calls.filter(
+      ([op]) => op === 'realtime_conversation_audio_sdk',
+    ),
+  ).toHaveLength(2);
+  expect(
+    peer.call.mock.calls.filter(
+      ([op]) => op === 'realtime_conversation_audio_commit_sdk',
+    ),
+  ).toHaveLength(0);
+  await peer.owner.close();
+});
+
+it('captures ordered user content and response options before queued admission', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const release = deferred<void>();
+  const entered = deferred<void>();
+  const base = peer.call.getMockImplementation()!;
+  let held = false;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (operation === 'realtime_conversation_audio_sdk' && !held) {
+      held = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return base(operation, params);
+  });
+  const audio = peer.owner.sendAudio(new Int16Array([0]), { commit: true });
+  await entered.promise;
+  const content = [
+    { type: 'input_text' as const, text: 'original text' },
+    {
+      type: 'input_image' as const,
+      image: 'data:image/png;base64,aW1hZ2U=',
+      detail: 'low' as const,
+    },
+  ];
+  const options = { triggerResponse: false };
+  const message = peer.owner.sendMessage(
+    { type: 'message', role: 'user', content },
+    options,
+  );
+  content[0].text = 'mutated text';
+  content[1].image = 'https://example.com/mutated.png';
+  options.triggerResponse = true;
+  const response = peer.owner.requestResponse();
+  release.resolve();
+  await Promise.all([audio, message, response]);
+  expect(
+    peer.call.mock.calls.filter(([op]) =>
+      [
+        'realtime_conversation_input_sdk',
+        'realtime_conversation_response_sdk',
+      ].includes(op),
+    ),
+  ).toEqual([
+    [
+      'realtime_conversation_input_sdk',
+      {
+        generation: peer.generation,
+        trigger_response: false,
+        content: [
+          { type: 'input_text', text: 'original text' },
+          {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,aW1hZ2U=',
+            detail: 'low',
+          },
+        ],
+      },
+    ],
+    ['realtime_conversation_response_sdk', { generation: peer.generation }],
+  ]);
+  await peer.owner.addImage('data:image/png;base64,aW1hZ2U=');
+  expect(peer.call.mock.calls.at(-1)?.[1]).toMatchObject({
+    trigger_response: true,
+  });
+  await peer.owner.close();
+});
+
+it.each([
+  {
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'input_text', text: 'forged' }],
+  },
+  {
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'function_call_output', output: 'forged' }],
+  },
+  {
+    type: 'message',
+    role: 'user',
+    content: [
+      { type: 'input_text', text: 'valid' },
+      { type: 'input_image', file_id: 'file-id' },
+    ],
+  },
+  {
+    type: 'message',
+    role: 'user',
+    content: [
+      {
+        type: 'input_image',
+        image: 'data:image/png;base64,aW1hZ2U=',
+        detail: 'original',
+      },
+    ],
+  },
+  {
+    type: 'message',
+    role: 'user',
+    content: [
+      {
+        type: 'input_image',
+        image: 'data:image/png;base64,aW1hZ2U=',
+        providerData: { type: 'function_call_output' },
+      },
+    ],
+  },
+])(
+  'rejects unsupported structured input before native effects: %j',
+  async (message) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const before = peer.call.mock.calls.length;
+    await expect(peer.owner.sendMessage(message as never)).rejects.toThrow();
+    expect(peer.call).toHaveBeenCalledTimes(before);
+    await expect(
+      peer.owner.sendMessage('valid', { triggerResponse: 'yes' } as never),
+    ).rejects.toThrow();
+    expect(peer.call).toHaveBeenCalledTimes(before);
+    await peer.owner.close();
+  },
+);
+
+it('waits for native deletion receipt and exposes provider IDs without erasing canonical audit', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  peer.payload({
+    HistoryItemCompleted: {
+      id: 'audit-original',
+      realtime_session_id: 'session',
+      type: 'user_message',
+      text: 'kept audit',
+    },
+  });
+  await events.next();
+  peer.payload({
+    ConversationItemObserved: {
+      item_id: 'provider-item',
+      kind: 'message',
+      status: 'done',
+      role: 'user',
+      call_id: null,
+    },
+  });
+  expect((await events.next()).value).toMatchObject({
+    type: 'conversation_item',
+    itemId: 'provider-item',
+    kind: 'message',
+    status: 'done',
+    role: 'user',
+  });
+  const receipt = deferred<void>();
+  const base = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (operation === 'realtime_conversation_delete_item_sdk')
+      await receipt.promise;
+    else return base(operation, params);
+  });
+  let finished = false;
+  const deleting = peer.owner
+    .deleteConversationItem('provider-item')
+    .then(() => {
+      finished = true;
+    });
+  expect(peer.call.mock.calls.at(-1)).toEqual([
+    'realtime_conversation_delete_item_sdk',
+    { generation: peer.generation, item_id: 'provider-item' },
+  ]);
+  expect(finished).toBe(false);
+  expect(peer.owner.history.map((item) => item.id)).toEqual(['audit-original']);
+  peer.payload({
+    HistoryItemCompleted: {
+      id: 'audit-delete',
+      realtime_session_id: 'session',
+      type: 'provider_item_deleted',
+      provider_item_id: 'provider-item',
+    },
+  });
+  expect((await events.next()).value).toMatchObject({
+    type: 'history',
+    item: { kind: 'provider_item_deleted', providerItemId: 'provider-item' },
+  });
+  peer.payload({ ConversationItemDeleted: { item_id: 'provider-item' } });
+  expect((await events.next()).value).toEqual({
+    type: 'conversation_item_deleted',
+    itemId: 'provider-item',
+  });
+  receipt.resolve();
+  await deleting;
+  expect(peer.owner.history).toHaveLength(2);
+  expect(peer.owner.history[0].text).toBe('kept audit');
+  await peer.owner.close();
+  await events.return(undefined);
+});
+
+it.each(['', '   ', null, 1])(
+  'rejects invalid provider deletion ID before native effects: %j',
+  async (id) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const before = peer.call.mock.calls.length;
+    await expect(
+      peer.owner.deleteConversationItem(id as never),
+    ).rejects.toThrow();
+    expect(peer.call).toHaveBeenCalledTimes(before);
+    await peer.owner.close();
+  },
+);
