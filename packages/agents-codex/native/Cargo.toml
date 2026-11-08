@@ -102,6 +102,9 @@ native-tls = "=0.2.14"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "=0.2.186"
 
+[target.'cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))'.dependencies]
+tikv-jemallocator = { version = "=0.7.0", default-features = false, features = ["disable_initial_exec_tls"] }
+
 [build-dependencies]
 napi-build = "2"
 

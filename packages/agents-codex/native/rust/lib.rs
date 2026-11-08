@@ -2,6 +2,11 @@
 
 #![recursion_limit = "256"]
 
+// Private GNU/Linux addon allocator; companion executable allocators stay unchanged.
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+#[global_allocator]
+static ADDON_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use codex_otel::sdk_trace::FutureExt as _;
 use napi::bindgen_prelude::Either;
 use napi_derive::napi;
