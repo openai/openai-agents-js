@@ -687,6 +687,7 @@ struct NativeThreadOwner {
     live: Option<RuntimeOwned<engine::ThreadState>>,
     interception_reader: tokio_util::sync::CancellationToken,
     mcp_result_reader: tokio_util::sync::CancellationToken,
+    resource_requests_stop: tokio_util::sync::CancellationToken,
 }
 
 /// A private single-use bridge receipt. Keep the reservation through native
@@ -773,6 +774,7 @@ impl NativeThreadOwner {
     fn release(&mut self) {
         self.interception_reader.cancel();
         self.mcp_result_reader.cancel();
+        self.resource_requests_stop.cancel();
         // Engine shutdown need not join the JS event reader. Settle this
         // owner's receipts while the slot still identifies the right state;
         // the reader's later finally may find the slot already empty.
@@ -796,6 +798,7 @@ impl NativeThread {
             live: Some(RuntimeOwned::new(Arc::clone(&state))),
             interception_reader: tokio_util::sync::CancellationToken::new(),
             mcp_result_reader: tokio_util::sync::CancellationToken::new(),
+            resource_requests_stop: tokio_util::sync::CancellationToken::new(),
         }));
         state.engine.register_native_thread(&inner);
         Self {
@@ -859,6 +862,11 @@ impl NativeThread {
     }
 
     async fn close_owned(&self, selected_environment: bool) -> napi::Result<Option<String>> {
+        self.inner
+            .lock()
+            .map_err(native_error)?
+            .resource_requests_stop
+            .cancel();
         let Some(inner) = self.live()? else {
             return Ok(None);
         };
@@ -1077,7 +1085,7 @@ impl ContextChange {
         tokio::select! {
             biased;
             _ = self.candidate_publication_stop.cancelled() => Err(native_error("candidate MCP publication cancelled")),
-            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None) => receipt,
+            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None) => receipt,
         }
     }
 
@@ -1854,6 +1862,82 @@ impl NativeThread {
                 serde_json::to_value(subagents::list(&inner).await.map_err(native_error)?)
                     .map_err(native_error)?
             }
+            "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource" => {
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct ResourceRequest {
+                    server: String,
+                    params: Value,
+                }
+                let request: ResourceRequest =
+                    serde_json::from_value(params).map_err(input_error)?;
+                let _mutation = inner.mutations.lock().await;
+                graph_stop::check_mutation(&inner).map_err(native_error)?;
+                let tools = inner
+                    .thread
+                    .thread_extension_data()
+                    .get::<python_tools::PythonTools>()
+                    .ok_or_else(|| input_error("resource operations require a managed Session"))?;
+                tools.check_idle(&inner.thread).await.map_err(input_error)?;
+                if tools.has_restored_manual() {
+                    return Err(input_error(
+                        "resource operations require a settled open Session",
+                    ));
+                }
+                let config = inner.thread.config().await;
+                let selected = config
+                    .mcp_servers
+                    .get()
+                    .get(&request.server)
+                    .filter(|server| server.enabled && !mcp_roster::enterprise(server))
+                    .ok_or_else(|| {
+                        input_error("resource operations require an enabled ordinary MCP server")
+                    })?;
+                if selected.sdk_turn_scoped_stdio {
+                    return Err(input_error(
+                        "idle resource operations require session-lifetime MCP stdio",
+                    ));
+                }
+                let cancelled = self
+                    .inner
+                    .lock()
+                    .map_err(native_error)?
+                    .resource_requests_stop
+                    .clone();
+                let request = async {
+                    match operation.as_str() {
+                        "read_mcp_resource" => inner
+                            .thread
+                            .read_mcp_resource(
+                                &request.server,
+                                serde_json::from_value(request.params).map_err(input_error)?,
+                            )
+                            .await
+                            .map_err(|error| native_error(format!("{error:#}"))),
+                        "list_mcp_resources" => inner
+                            .thread
+                            .list_mcp_resources(
+                                &request.server,
+                                Some(serde_json::from_value(request.params).map_err(input_error)?),
+                            )
+                            .await
+                            .map_err(|error| native_error(format!("{error:#}"))),
+                        _ => inner
+                            .thread
+                            .list_mcp_resource_templates(
+                                &request.server,
+                                Some(serde_json::from_value(request.params).map_err(input_error)?),
+                            )
+                            .await
+                            .map_err(|error| native_error(format!("{error:#}"))),
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    _ = cancelled.cancelled() => return Err(native_error("Session closed during MCP resource operation")),
+                    result = request => result?,
+                }
+            }
             "set_instructions" => {
                 #[derive(serde::Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -2266,6 +2350,7 @@ impl NativeThread {
         tool_generation: Option<String>,
         specs_json: Option<String>,
         startup_boundary: Option<String>,
+        cancel_on_resource_close: Option<bool>,
     ) -> napi::Result<String> {
         let servers_json = servers_json.as_str();
         if startup_boundary
@@ -2329,7 +2414,7 @@ impl NativeThread {
                 "local storage does not support native MCP roster replacement",
             ));
         }
-        (async move {
+        let operation = async move {
             let _context_operation = inner.engine.operation(false).map_err(native_error)?;
             let _mutation = inner.mutations.lock().await;
             graph_stop::check_mutation(&inner).map_err(native_error)?;
@@ -2440,8 +2525,22 @@ impl NativeThread {
                 receipt["result"]["tools_generation"] = serde_json::json!(function_generation);
             }
             serde_json::to_string(&receipt).map_err(native_error)
-        })
-        .await
+        };
+        if cancel_on_resource_close.unwrap_or(false) {
+            let cancelled = self
+                .inner
+                .lock()
+                .map_err(native_error)?
+                .resource_requests_stop
+                .clone();
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => Err(native_error("Session closed during MCP resource activation")),
+                result = operation => result,
+            }
+        } else {
+            operation.await
+        }
     }
 
     #[napi(js_name = "_cancel_child_callback")]
@@ -3309,6 +3408,12 @@ impl NativeThread {
 
     #[napi(js_name = "_stop_sampling_for_close")]
     pub fn _stop_sampling_for_close(&self) -> napi::Result<()> {
+        // Wake idle resource requests before JS joins the owned mutation.
+        self.inner
+            .lock()
+            .map_err(native_error)?
+            .resource_requests_stop
+            .cancel();
         if let Some(inner) = self.live()?
             && let Some(root) = inner
                 .thread

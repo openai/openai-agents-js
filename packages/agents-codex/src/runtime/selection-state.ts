@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isHostedRegistration, resourceMcpBinding, type McpTool } from './mcp';
 import { toolIdentity, type SessionTool, type ToolCatalog } from './tools';
 
 const referenceSchema = z
@@ -21,10 +22,34 @@ export const checkpointToolReferencesSchema = z
   });
 export type CheckpointToolReference = z.infer<typeof referenceSchema>;
 export interface CheckpointSelections {
+  readonly default_resource_servers?: {
+    readonly selected: readonly string[];
+    readonly resource_only: readonly string[];
+  };
   readonly default_tools?: readonly CheckpointToolReference[];
   readonly operation_tools?: readonly CheckpointToolReference[];
 }
+const resourceServerNames = z
+  .array(z.string().min(1))
+  .refine(
+    (names) => new Set(names).size === names.length,
+    'Duplicate checkpoint resource server',
+  );
 export const checkpointSelectionFields = {
+  default_resource_servers: z
+    .object({
+      selected: resourceServerNames,
+      resource_only: resourceServerNames,
+    })
+    .strict()
+    .refine(
+      (selection) =>
+        selection.resource_only.every((name) =>
+          selection.selected.includes(name),
+        ),
+      'Checkpoint resource-only servers must be selected',
+    )
+    .optional(),
   default_tools: checkpointToolReferencesSchema.optional(),
   operation_tools: checkpointToolReferencesSchema.optional(),
 };
@@ -101,4 +126,36 @@ export function assertCheckpointSelections(
     throw new TypeError(
       'Checkpoint selection does not admit its pending manual tools',
     );
+}
+
+/** @internal Resolve resource selections from current declarations with zero tools. */
+export function checkpointResourceServers(
+  selection: CheckpointSelections['default_resource_servers'],
+  opening: readonly McpTool[],
+): readonly McpTool[] {
+  if (selection === undefined) return opening;
+  if (
+    selection.selected.some(
+      (name) =>
+        !opening.some(
+          (server) => !isHostedRegistration(server) && server.name === name,
+        ),
+    )
+  )
+    throw new TypeError(
+      'Checkpoint resource servers require matching current ordinary declarations',
+    );
+  return Object.freeze(
+    opening
+      .filter(
+        (server) =>
+          isHostedRegistration(server) ||
+          selection.selected.includes(server.name),
+      )
+      .map((server) =>
+        server.tools.length && selection.resource_only.includes(server.name)
+          ? resourceMcpBinding(server)
+          : server,
+      ),
+  );
 }

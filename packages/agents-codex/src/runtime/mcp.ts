@@ -21,6 +21,83 @@ function hostRegistration<T extends object>(options: T): T {
   return options;
 }
 
+/** Resource metadata in the native MCP transport shape. */
+export interface MCPResource {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+  annotations?: Record<string, unknown>;
+  icons?: Record<string, unknown>[];
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** A URI template advertised by an ordinary MCP server. */
+export interface MCPResourceTemplate {
+  uriTemplate: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  annotations?: Record<string, unknown>;
+  icons?: Record<string, unknown>[];
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** Text is returned as data; the SDK does not add it to model instructions. */
+export interface MCPTextResourceContents {
+  uri: string;
+  mimeType?: string;
+  text: string;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** Binary contents remain base64 encoded in the transport result. */
+export interface MCPBlobResourceContents {
+  uri: string;
+  mimeType?: string;
+  blob: string;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** One resource page. Pass nextCursor explicitly to request another page. */
+export interface MCPListResourcesResult {
+  resultType?: string;
+  ttlMs?: number;
+  cacheScope?: 'public' | 'private';
+  resources: MCPResource[];
+  nextCursor?: string;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** One template page, without automatic pagination. */
+export interface MCPListResourceTemplatesResult {
+  resultType?: string;
+  ttlMs?: number;
+  cacheScope?: 'public' | 'private';
+  resourceTemplates: MCPResourceTemplate[];
+  nextCursor?: string;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** Native text/blob results, including transport metadata and extensions. */
+export interface MCPReadResourceResult {
+  resultType?: string;
+  ttlMs?: number;
+  cacheScope?: 'public' | 'private';
+  contents: (MCPTextResourceContents | MCPBlobResourceContents)[];
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface MCPCallContext<Context = unknown> {
   readonly context: Context;
   readonly submission: ToolCallContext<Context>['submission'];
@@ -51,6 +128,7 @@ export interface MCPOptions<Context = unknown> {
   /** Discover selected schemas on supported direct-mode models; never delays connection. */
   deferLoading?: boolean;
   name: string;
+  /** Selected raw tool names. Use [] for a resource-only server. */
   tools: readonly string[];
   /** Follow native rules (default), or preapprove selected tools. Application approval still applies. */
   approvalMode?: 'native' | 'preapproved';
@@ -97,7 +175,6 @@ abstract class MCP<Context> {
       throw new TypeError('MCP name must be an ordinary native server alias');
     if (
       !Array.isArray(options.tools) ||
-      !options.tools.length ||
       options.tools.some((name) => typeof name !== 'string' || !name)
     )
       throw new TypeError('MCP tools must select nonempty raw tool names');
@@ -375,6 +452,29 @@ export function selectHttpLeaves(
     activation: server.activation,
     deferLoading: server.deferLoading,
     tools,
+    approvalMode: server.approvalMode,
+    startupTimeout: server.startupTimeout,
+    executionTimeout: server.executionTimeout,
+    before: server.before,
+    approval: server.approval,
+    transformResult: server.transformResult,
+    transformResultTimeout: server.transformResultTimeout,
+  });
+}
+
+/** @internal Activate one ordinary resource connection without granting tools. */
+export function resourceMcpBinding(server: McpTool): McpTool {
+  if (server instanceof HttpMCP) return selectHttpLeaves(server, []);
+  return new StdioMCP({
+    name: server.name,
+    tools: [],
+    command: server.command,
+    args: server.args,
+    envVars: server.envVars,
+    cwd: server.cwd,
+    location: server.location,
+    lifetime: server.lifetime,
+    deferLoading: server.deferLoading,
     approvalMode: server.approvalMode,
     startupTimeout: server.startupTimeout,
     executionTimeout: server.executionTimeout,

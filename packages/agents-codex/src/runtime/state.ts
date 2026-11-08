@@ -309,6 +309,7 @@ const nativeCheckpointSchema = checkpointTreeSchema
         'manual_context',
         'operation_tools',
         'default_tools',
+        'default_resource_servers',
         'network_policy_digest',
       ].some((key) => key in state)
     )
@@ -478,7 +479,10 @@ export const sessionStateSchema = z
     const aware = state.format_version !== 2 && state.format_version !== 3;
     const network = state.format_version >= 12;
     const selected = state.format_version >= 8 && state.format_version <= 11;
-    const hasSelection = 'operation_tools' in state || 'default_tools' in state;
+    const hasSelection =
+      'operation_tools' in state ||
+      'default_tools' in state ||
+      'default_resource_servers' in state;
     if (!network && selected !== hasSelection)
       ctx.addIssue({
         code: 'custom',
@@ -741,6 +745,9 @@ export function readCheckpointSelections(
     state?.format_version === 15
   )
     return {
+      ...(state.default_resource_servers === undefined
+        ? {}
+        : { default_resource_servers: state.default_resource_servers }),
       ...(state.default_tools === undefined
         ? {}
         : { default_tools: state.default_tools }),
@@ -842,7 +849,8 @@ export function fromNativeCheckpoint(
         ? (state.format_version === 4 ? 6 : 4) +
           (manual ? 1 : 0) +
           (selection.operation_tools !== undefined ||
-          selection.default_tools !== undefined
+          selection.default_tools !== undefined ||
+          selection.default_resource_servers !== undefined
             ? 4
             : 0)
         : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
@@ -865,6 +873,7 @@ export function nativeCheckpoint(state: SessionState) {
     output_context: _output,
     operation_tools: _operation,
     default_tools: _defaults,
+    default_resource_servers: _resourceServers,
     network_policy_digest: _network,
     repair_turns: _turns,
     repair_items: _items,

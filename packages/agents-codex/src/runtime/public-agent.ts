@@ -34,6 +34,8 @@ import { nativeInput } from './input';
 import type { InteractionHandler } from './native-questions';
 import {
   ChatGPTAppsMCP,
+  HttpMCP,
+  StdioMCP,
   isHostedRegistration,
   mcpConfig,
   mcpToolNames,
@@ -201,6 +203,9 @@ export type Session<Output = string, Context = any> = Pick<
   | 'rateLimits'
   | 'goal'
   | 'setPausedGoal'
+  | 'listMcpResources'
+  | 'listMcpResourceTemplates'
+  | 'readMcpResource'
   | 'subagents'
   | 'checklist'
   | 'update'
@@ -767,9 +772,15 @@ export class Agent<Context = undefined, Output = string> {
       ...(persistent ? persistentSessionConfig : {}),
       'tools.update_plan.enabled': declarations.checklist,
       mcp_servers: mcpConfig(
-        declarations.mcp,
+        declarations.mcp.filter(
+          (server) =>
+            (server.tools.length > 0 ||
+              (server instanceof StdioMCP && server.lifetime === 'turn')) &&
+            (!(server instanceof HttpMCP) || server.activation !== 'operation'),
+        ),
         environment,
         programmaticToolCalling,
+        declarations.mcp,
       ),
       'features.non_prefixed_mcp_tool_names': false,
       'features.code_mode': {

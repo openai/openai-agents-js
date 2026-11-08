@@ -2,6 +2,7 @@ import { afterEach, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   HttpMCP,
   StdioMCP,
+  ChatGPTAppsMCP,
   type ToolRef,
   type MCPBeforeDecision,
   type MCPCallContext,
@@ -11,9 +12,15 @@ import {
   hasMcpPrePolicy,
   mcpPrePolicyRules,
   mcpConfig,
+  splitToolDeclarations as splitResourceDeclarations,
 } from '../../src/runtime/mcp';
-import type { JsonObject } from '../../src/runtime/binding';
-import { issueTurn } from '../../src/runtime/session';
+import type {
+  JsonObject,
+  Engine,
+  NativeThread,
+} from '../../src/runtime/binding';
+import { captureTools } from '../../src/runtime/tools';
+import { Session as CoreSession, issueTurn } from '../../src/runtime/session';
 import { nativeMcpResultInfoSchema } from '../../src/runtime/native-mcp';
 
 // Pure adapter tests do not confer a native grant. Native tests own peer effects.
@@ -570,3 +577,41 @@ for (const phase of ['before', 'approval'] as const) {
     expect(stop).not.toHaveBeenCalled();
   });
 }
+
+it('declares ordinary resource-only servers without admitting any tools', () => {
+  for (const server of [
+    new HttpMCP({
+      name: 'resources',
+      tools: [],
+      url: 'https://example.invalid/mcp',
+    }),
+    new StdioMCP({ name: 'resources', tools: [], command: 'peer' }),
+  ]) {
+    expect(splitResourceDeclarations([server]).mcp).toEqual([server]);
+    expect(mcpConfig([server]).resources).toMatchObject({ enabled_tools: [] });
+    expect(() => server.tool('undeclared')).toThrow('not declared');
+  }
+});
+
+it('refuses hosted and undeclared resource aliases before native dispatch', async () => {
+  const call = vi.fn();
+  const owned = new CoreSession(
+    {} as Engine,
+    { id: 'resource-root', call } as unknown as NativeThread,
+    captureTools([]),
+    { mcpTools: [new ChatGPTAppsMCP({ tools: [] })] },
+    {},
+  );
+  for (const name of ['codex_apps', 'undeclared']) {
+    await expect(owned.listMcpResources(name)).rejects.toThrow(
+      'currently selected ordinary',
+    );
+    await expect(owned.listMcpResourceTemplates(name)).rejects.toThrow(
+      'currently selected ordinary',
+    );
+    await expect(owned.readMcpResource(name, 'memo://first')).rejects.toThrow(
+      'currently selected ordinary',
+    );
+  }
+  expect(call).not.toHaveBeenCalled();
+});

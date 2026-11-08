@@ -30,12 +30,14 @@ for await (const line of lines) {
     urlTool = undefined;
     continue;
   }
+  if (roster.recordRequests)
+    await appendFile(callsPath, JSON.stringify(request) + '\n');
   let result;
   switch (request.method) {
     case 'initialize':
       result = {
         protocolVersion: request.params.protocolVersion,
-        capabilities: { tools: {} },
+        capabilities: roster.capabilities ?? { tools: {} },
         serverInfo: { name: 'fixture', version: '1' },
       };
       break;
@@ -43,7 +45,26 @@ for await (const line of lines) {
       result = {};
       break;
     case 'tools/list':
+      if (roster.capabilities && !roster.capabilities.tools) {
+        process.stdout.write(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: request.id,
+            error: { code: -32601, message: 'tools not supported' },
+          }) + '\n',
+        );
+        continue;
+      }
       result = { tools: roster.tools };
+      break;
+    case 'resources/list':
+      result = roster.resourcePages[request.params?.cursor ?? 'first'];
+      break;
+    case 'resources/templates/list':
+      result = roster.templatePages[request.params?.cursor ?? 'first'];
+      break;
+    case 'resources/read':
+      result = roster.readResult;
       break;
     case 'tools/call': {
       const recorded =
