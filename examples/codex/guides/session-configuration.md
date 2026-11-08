@@ -18,7 +18,7 @@ Context, environment, opening overrides, and native model requirements still nee
 
 Close the provider's Sessions before calling `provider.close()`. To open more Sessions after that, create a new provider.
 
-For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and [native Model migration](migrate-models.md).
+For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#port-the-contracts-that-affect-behavior).
 
 ## Per-session configuration
 
@@ -31,8 +31,9 @@ Native `modelSettings` accepts these fields:
 | `reasoningEffort` | A string selecting the model's reasoning effort. |
 | `reasoningSummary` | A string selecting the model's reasoning summary setting. |
 | `serviceTier` | A string selecting a service tier, or `null` to clear an inherited override. |
+| `toolChoice` | `'auto'` (the default), `'none'`, or `'required'`. Controls whether the model calls an offered tool; it does not grant execution authority. |
 
-Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Native settings do not accept classic fields such as `temperature`, `maxTokens`, or `retry`; use [Model migration](migrate-models.md) for a supported classic Model.
+Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Native settings do not accept classic fields such as `temperature`, `maxTokens`, or `retry`; port the provider configuration explicitly or retain the [classic runtime](../../../packages/agents/CLASSIC.md) while you migrate.
 
 - An opening provider or model overrides the Agent default.
 - Defined `modelSettings` keys override the matching Agent settings. Omitted or `undefined` keys inherit the defaults. An empty object inherits every default.
@@ -74,7 +75,7 @@ See [the tenant tools example](../opening-tools.ts) for two Sessions with separa
 
 ## Connection retries and errors
 
-`NativeProvider` uses the native client's request and stream recovery limits and backoff. Its public options do not expose retry budgets. Classic Model retry settings belong to the separate [Model migration](migrate-models.md) route. The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. Native retry limits do not set a total operation timeout or cap server-requested delays.
+`NativeProvider` uses the native client's request and stream recovery limits and backoff. Its public options do not expose retry budgets. Classic Model retry settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md). The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. Native retry limits do not set a total operation timeout or cap server-requested delays.
 
 Use `turn.cancel()` to stop an active Turn and join its cleanup, including while it waits to retry. If a request fails, inspect the error before deciding whether to submit more work.
 

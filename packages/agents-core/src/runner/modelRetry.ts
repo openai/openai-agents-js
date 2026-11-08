@@ -73,12 +73,6 @@ type EvaluateRetryParams = {
 };
 
 type ModelRetryHandlers = {
-  /** Let an invocation owner reject a stale capture before a Model attempt. */
-  beforeAttempt?: () => void;
-  /** Internal invocation owners join callbacks that outlive parent-abort races. */
-  onRetryCallback?: (pending: Promise<unknown>) => void;
-  /** Opt into explicit per-attempt stream closure, including after EOF. */
-  onStreamCleanupFailure?: (error: unknown) => void;
   onModelFailureUsage?: (usage: Usage) => void;
   onModelTimeout?: () => void;
   onPossiblyAcceptedRequestFailure?: () => void;
@@ -1167,41 +1161,6 @@ export const retryPolicies = {
   },
 } as const;
 
-function observeRetryCallback<T>(
-  handlers: ModelRetryHandlers,
-  callback: () => Promise<T>,
-): Promise<T> {
-  if (!handlers.onRetryCallback) return callback();
-  const pending = Promise.resolve().then(callback);
-  handlers.onRetryCallback(pending);
-  return pending;
-}
-
-async function* joinedModelStream(
-  source: AsyncIterable<StreamEvent>,
-  onCleanupFailure: (error: unknown) => void,
-): AsyncIterable<StreamEvent> {
-  const iterator = source[Symbol.asyncIterator]();
-  let failed = false;
-  try {
-    for (;;) {
-      const next = await iterator.next();
-      if (next.done) return;
-      yield next.value;
-    }
-  } catch (error) {
-    failed = true;
-    throw error;
-  } finally {
-    await Promise.resolve()
-      .then(() => iterator.return?.())
-      .catch((error) => {
-        onCleanupFailure(error);
-        if (!failed) throw error;
-      });
-  }
-}
-
 export async function getResponseWithRetry(
   model: Model,
   request: ModelRequest,
@@ -1218,7 +1177,6 @@ export async function getResponseWithRetry(
   let attempt = 1;
   try {
     while (true) {
-      handlers.beforeAttempt?.();
       const requestForAttempt = shouldDisableProviderManagedRetry(
         request,
         attempt,
@@ -1255,14 +1213,12 @@ export async function getResponseWithRetry(
         let providerAdvice: ModelRetryAdvice | undefined;
         try {
           providerAdvice = await awaitWithTimedModelCallParentAbort(
-            observeRetryCallback(handlers, () =>
-              getRetryAdvice(model, {
-                request,
-                error: caughtError,
-                stream: false,
-                attempt,
-              }),
-            ),
+            getRetryAdvice(model, {
+              request,
+              error: caughtError,
+              stream: false,
+              attempt,
+            }),
             request.signal,
             timeoutMs,
           );
@@ -1298,21 +1254,19 @@ export async function getResponseWithRetry(
         let decision: ResolvedRetryDecision;
         try {
           decision = await awaitWithTimedModelCallParentAbort(
-            observeRetryCallback(handlers, () =>
-              evaluateRetry({
-                error,
-                attempt,
-                maxRetries,
-                retryPolicy,
-                retryBackoff,
-                signal: request.signal,
-                stream: false,
-                request,
-                emittedVisibleEvent: false,
-                emittedRawModelEvent: false,
-                providerAdvice,
-              }),
-            ),
+            evaluateRetry({
+              error,
+              attempt,
+              maxRetries,
+              retryPolicy,
+              retryBackoff,
+              signal: request.signal,
+              stream: false,
+              request,
+              emittedVisibleEvent: false,
+              emittedRawModelEvent: false,
+              providerAdvice,
+            }),
             request.signal,
             timeoutMs,
           );
@@ -1364,10 +1318,8 @@ export async function* getStreamedResponseWithRetry(
   let attempt = 1;
   try {
     while (true) {
-      handlers.beforeAttempt?.();
       let emittedVisibleEvent = false;
       let emittedRawModelEvent = false;
-      let cleanupFailed = false;
       const requestForAttempt = shouldDisableProviderManagedRetry(
         request,
         attempt,
@@ -1383,14 +1335,9 @@ export async function* getStreamedResponseWithRetry(
         failedAttemptUsage.report,
       );
       try {
-        const source = model.getStreamedResponse(usageScope.request);
-        const events = handlers.onStreamCleanupFailure
-          ? joinedModelStream(source, (error) => {
-              cleanupFailed = true;
-              handlers.onStreamCleanupFailure!(error);
-            })
-          : source;
-        for await (const event of events) {
+        for await (const event of model.getStreamedResponse(
+          usageScope.request,
+        )) {
           throwIfTimedModelCallParentAborted(request.signal, timeoutMs);
           if (attemptScope.timedOut()) {
             throw (
@@ -1432,7 +1379,6 @@ export async function* getStreamedResponseWithRetry(
         failedAttemptUsage.record(caughtError);
         attemptScope.cleanup();
         const error = attemptScope.normalizeError(caughtError);
-        if (cleanupFailed) throw error;
         const markTimedOutFailure = () => {
           if (attemptScope.timedOut()) {
             handlers.onModelTimeout?.();
@@ -1441,14 +1387,12 @@ export async function* getStreamedResponseWithRetry(
         let providerAdvice: ModelRetryAdvice | undefined;
         try {
           providerAdvice = await awaitWithTimedModelCallParentAbort(
-            observeRetryCallback(handlers, () =>
-              getRetryAdvice(model, {
-                request,
-                error: caughtError,
-                stream: true,
-                attempt,
-              }),
-            ),
+            getRetryAdvice(model, {
+              request,
+              error: caughtError,
+              stream: true,
+              attempt,
+            }),
             request.signal,
             timeoutMs,
           );
@@ -1485,22 +1429,20 @@ export async function* getStreamedResponseWithRetry(
         let decision: ResolvedRetryDecision;
         try {
           decision = await awaitWithTimedModelCallParentAbort(
-            observeRetryCallback(handlers, () =>
-              evaluateRetry({
-                error,
-                attempt,
-                maxRetries,
-                retryPolicy,
-                retryBackoff,
-                signal: request.signal,
-                stream: true,
-                request,
-                emittedVisibleEvent,
-                emittedRawModelEvent,
-                providerAdvice,
-                allowUnsafeStreamReplayApproval: attemptScope.timedOut(),
-              }),
-            ),
+            evaluateRetry({
+              error,
+              attempt,
+              maxRetries,
+              retryPolicy,
+              retryBackoff,
+              signal: request.signal,
+              stream: true,
+              request,
+              emittedVisibleEvent,
+              emittedRawModelEvent,
+              providerAdvice,
+              allowUnsafeStreamReplayApproval: attemptScope.timedOut(),
+            }),
             request.signal,
             timeoutMs,
           );

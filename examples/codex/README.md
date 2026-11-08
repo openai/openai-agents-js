@@ -89,14 +89,12 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | <a name="project-native-text-into-a-ui-stream"></a>Display native results in a browser | [Native UI streams](native-ui/README.md) projects SSE for Vercel UI and AG-UI clients. The [web starter](web-starter/README.md) runs a browser application. |
 | Connect a report worker to a browser | [HTTP report service](http-report-service.md) runs [http-report-service.ts](http-report-service.ts) with model credentials and a local demo token. |
 
-## Use the classic API or migrate a run
+## Migrate a workflow or use classic
+
+Prefer a direct [v0-to-native migration](guides/migration.md). Use classic when a concrete dependency requires a staged migration.
 
 | Task | Recipe |
 | --- | --- |
-| <a name="classic-api-example"></a><a name="use-voice-or-migration-examples"></a>Run a classic Agent and Runner | Run [classic.ts](classic.ts) against a scripted Model with the built classic packages. The [classic guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md) lists the imports. The [GPT Live browser demo](live/README.md) connects voice to a classic order specialist. |
+| Port a v0 workflow to native v1 | Follow the [migration guide](guides/migration.md), including its coding-agent prompt and validation checks. |
+| Run a classic Agent and Runner | Run [classic.ts](classic.ts) against a scripted Model with the built classic packages. The [classic guide](../../packages/agents/CLASSIC.md) lists imports. The [GPT Live browser demo](live/README.md) connects voice to a classic order specialist. |
 | Prepare a classic Model request | [Prepared model declarations](prepared-model-declarations/README.md) changes the request while preserving the original tool's execution and approval policy. |
-| Run a supported classic Model through the native loop | [Migrate a Model](guides/migrate-models.md) runs [migration.ts](migration.ts) with a scripted Model and the built native runtime. |
-| <a name="stream-a-migrated-sdk-model-without-a-model-key"></a>Display tentative events and accepted results | [Migrated streaming](guides/migrate-sessions.md#live-model-events-and-accepted-semantic-replay) runs [migration-stream.ts](migration-stream.ts). |
-| <a name="reopen-a-migrated-file-session-without-a-model-key"></a>Reopen completed classic history | [File Session recovery](guides/migrate-sessions.md#reopen-an-application-owned-file-session) runs [migration-session.ts](migration-session.ts) across three processes. |
-| Finish a classic approval before migrating | [Classic approval handover](migration-engine-ownership/README.md#finish-an-existing-classic-approval) runs [migration-classic-handover.ts](migration-classic-handover.ts) to finish an approval on its original engine. |
-| <a name="held-migration-function"></a>Approve or reject one migrated function | [Migrated tool approval](guides/migrate-tools.md#hold-one-function-for-approval) runs [migration-approvals.ts](migration-approvals.ts) and joins its continuation. |

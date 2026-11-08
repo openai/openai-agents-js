@@ -78,10 +78,6 @@ pub(crate) async fn stop(state: &ThreadState) -> Result<String> {
 }
 
 pub(crate) async fn check_review(state: &ThreadState) -> Result<()> {
-    ensure!(
-        !state.engine.sdk_selected_model,
-        "Review does not support an SDK-selected Model"
-    );
     let tools = state
         .thread
         .thread_extension_data()

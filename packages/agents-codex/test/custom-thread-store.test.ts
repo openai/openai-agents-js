@@ -6,9 +6,13 @@ import {
 } from '../src/runtime/custom-thread-store';
 
 import { outputOf, ToolOutput } from '../src/runtime/tools';
+import { NativeError } from '../src/runtime/native-error';
 
 const nativeReconcile = vi.hoisted(() =>
-  vi.fn(async (_callback: unknown, _payload: string) => {}),
+  vi.fn((_callback: unknown, _payload: string) => ({
+    run: async () => {},
+    close: async () => {},
+  })),
 );
 vi.mock('../src/runtime/binding', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/runtime/binding')>()),
@@ -112,6 +116,45 @@ describe('reconciled tool result normalization', () => {
     commit: async () => {},
     release: async () => {},
   };
+  it('joins cleanup retries without repeating reconciliation', async () => {
+    const started = deferred();
+    const finish = deferred();
+    let attempts = 0;
+    const run = vi.fn(async () => {
+      throw new Error('canonical storage release failed');
+    });
+    const close = vi.fn(async () => {
+      attempts++;
+      if (attempts === 1) {
+        started.resolve();
+        await finish.promise;
+        throw new Error('canonical storage release failed');
+      }
+    });
+    nativeReconcile.mockReturnValueOnce({ run, close });
+    const error = await reconcileSessionStore(store, {
+      sessionId: 'session',
+      turnId: 'turn',
+      callId: 'call',
+      result: 'verified',
+    }).catch((error: unknown) => error);
+    if (!(error instanceof NativeError) || !error.cleanup)
+      throw new Error('Expected storage cleanup');
+    const first = error.cleanup.close();
+    const second = error.cleanup.close();
+    await started.promise;
+    expect(close).toHaveBeenCalledOnce();
+    finish.resolve();
+    const failed = await Promise.allSettled([first, second]);
+    expect(failed.map((result) => result.status)).toEqual([
+      'rejected',
+      'rejected',
+    ]);
+    await error.cleanup.close();
+    await error.cleanup.close();
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledOnce();
+  });
   it.each([
     'verified text',
     new ToolOutput([{ type: 'inputText', text: 'verified failure' }], false),

@@ -13,10 +13,12 @@ import helloWorldSandboxExample from '../../../../examples/classic/docs/toppage/
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    Build text, sandbox, and voice agents with a small set of primitives.
+    Guides for the classic and Realtime APIs.
   </Fragment>
-  <Fragment slot="cta">Let's build</Fragment>
+  <Fragment slot="cta">Read the guides</Fragment>
 </Hero>
+
+For new text and workspace agents, start with the [native v1 preview](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/README.md). These pages document the classic and Realtime APIs. Existing v0 users can stay on v0. When you choose to upgrade, we recommend [moving directly from v0 to native v1](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migration.md). Use classic only if you need to stage that migration.
 
 ## Overview
 
@@ -49,21 +51,22 @@ Here are the main features of the SDK:
 
 ## Installation
 
-These guides use the classic API in the alpha release. Follow the [alpha installation guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application), then install Zod 4 with `npm install zod@4`.
+The classic examples on this page use the alpha release. Follow the [alpha installation guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application), then install Zod 4 with `npm install zod@4`.
 
 ## Choose your starting point
 
-Most new users need only one of these entry points:
+Choose the runtime before changing imports:
 
 | Start with | Use it when | Notes |
 | --- | --- | --- |
-| `@openai/agents/classic` | You are building most text, sandbox, or realtime applications. | Includes the OpenAI provider setup. Use `@openai/agents/classic/sandbox` for sandbox agents and `@openai/agents/classic/realtime` for voice agents. |
-| `@openai/agents-realtime` | You only need the standalone Realtime package. | Useful for browser-only realtime apps or when you want a narrower package boundary. |
+| `@openai/agents` | You are building a native v1 app or moving a v0 workflow directly to native v1. | Start with the [native installation guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md) and use examples that match your installed release. |
+| `@openai/agents/classic` | You need to keep a classic workflow running while you stage its migration. | Includes the classic OpenAI provider setup. Use `@openai/agents/classic/sandbox` for classic sandbox workflows. |
+| `@openai/agents-realtime` | You need the standalone Realtime API. | You can also use `@openai/agents/realtime`. Realtime is separate from the text-agent migration. |
 | Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | You need lower-level composition, custom provider wiring, or specific integrations. | Most new users can ignore these until they have a concrete need. |
 
 ## Hello world examples
 
-Start with a regular `Agent` for text workflows. Use a sandbox agent when the agent should work in a filesystem or carry workspace state across longer tasks.
+The examples below use `@openai/agents/classic`. Start with a regular classic `Agent` for text workflows. Use a classic sandbox agent when the agent should work in a filesystem or carry workspace state across longer tasks.
 
 <Tabs>
   <TabItem label="Text Agent">
@@ -90,16 +93,16 @@ export OPENAI_API_KEY=sk-...
 
 ## Start here
 
-Pick one path, get it working end to end, then read the more detailed guides.
+Use these guides for classic text or workspace workflows and for Realtime applications.
 
 <LinkCard
-  title="Quickstart"
+  title="Classic quickstart"
   href="/openai-agents-js/guides/quickstart"
-  description="Build your first text-based agent and learn the core SDK workflow."
+  description="Run a text agent with the classic API."
 />
 
 <LinkCard
-  title="Sandbox agents"
+  title="Classic sandbox agents"
   href="/openai-agents-js/guides/sandbox-agents"
   description="Start a sandbox agent when the agent needs files, shell commands, patches, or resumable sandbox state."
 />
@@ -112,7 +115,7 @@ Pick one path, get it working end to end, then read the more detailed guides.
 
 ## Choose your path
 
-Use this table when you know the job you want to do, but not which page explains it.
+These links cover classic text and workspace workflows and Realtime voice applications.
 
 | Goal | Start here |
 | --- | --- |

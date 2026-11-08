@@ -123,16 +123,6 @@
         "default": "./dist/classic/utils/index.js"
       }
     },
-    "./migration": {
-      "import": {
-        "types": "./dist/migration/index.d.mts",
-        "default": "./dist/migration/index.mjs"
-      },
-      "require": {
-        "types": "./dist/migration/index.d.ts",
-        "default": "./dist/migration/index.js"
-      }
-    },
     "./experimental/deferred": {
       "import": {
         "types": "./dist/experimental/deferred.d.mts",
@@ -244,9 +234,6 @@
       ],
       "classic/utils": [
         "dist/classic/utils/index.d.ts"
-      ],
-      "migration": [
-        "dist/migration/index.d.ts"
       ],
       "experimental/deferred": [
         "dist/experimental/deferred.d.ts"

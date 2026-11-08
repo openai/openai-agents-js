@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  NativeError,
   LocalRecoveryRequired,
   NativeAgents,
   nativeGoals,
@@ -555,14 +556,12 @@ describe('public native custom storage durability', () => {
       await rm(join(path, `${opened.id}.lock`), { recursive: true });
       const durable = fileSessionStore(path);
       let releases = 0;
-      let fence = '';
+      let releaseBlocked = true;
+      let receiptWrites = 0;
       const storage: SessionStore = {
         ...durable,
-        acquire: async (id) => {
-          fence = await durable.acquire(id);
-          return fence;
-        },
         commit: async (...args) => {
+          receiptWrites++;
           if (
             fault === 'receipt failure' ||
             fault === 'receipt and release failure'
@@ -574,8 +573,9 @@ describe('public native custom storage durability', () => {
           releases++;
           if (
             (releases === 1 && fault !== 'receipt failure') ||
-            fault === 'persistent release' ||
-            fault === 'receipt and release failure'
+            (releaseBlocked &&
+              (fault === 'persistent release' ||
+                fault === 'receipt and release failure'))
           ) {
             if (fault === 'lost release acknowledgment')
               await durable.release(...args);
@@ -595,17 +595,30 @@ describe('public native custom storage durability', () => {
         fault === 'persistent release' ||
         fault === 'receipt and release failure'
       ) {
+        const error = await outcome.catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(NativeError);
+        if (!(error instanceof NativeError) || !error.cleanup)
+          throw new Error('Expected a retained storage cleanup owner');
         if (fault === 'receipt and release failure')
-          await expect(outcome).rejects.toThrow(
+          expect(error.message).toMatch(
             /reconciliation failed:.*canonical storage operation failed.*writer cleanup failed:.*canonical storage operation failed/s,
           );
         else
-          await expect(outcome).rejects.toThrow(
+          expect(error.message).toMatch(
             /canonical storage operation failed.*release retry failed/s,
           );
-        // Both release attempts failed before unlocking; explicitly clean up
-        // after the standalone helper has returned and no owner is running.
-        await durable.release(opened.id, fence);
+        expect(error.message).not.toContain('fixture');
+        const writes = receiptWrites;
+        await expect(error.cleanup.close()).rejects.toThrow(
+          /canonical storage operation failed/,
+        );
+        await expect(durable.acquire(opened.id)).rejects.toMatchObject({
+          code: 'EEXIST',
+        });
+        releaseBlocked = false;
+        await Promise.all([error.cleanup.close(), error.cleanup.close()]);
+        await error.cleanup.close();
+        expect(receiptWrites).toBe(writes);
         if (fault === 'receipt and release failure')
           await reconcileSessionStore(durable, reconciliation);
       } else if (fault === 'receipt failure') {
@@ -616,7 +629,14 @@ describe('public native custom storage durability', () => {
       } else {
         await expect(outcome).resolves.toBeUndefined();
       }
-      expect(releases).toBe(fault === 'receipt failure' ? 1 : 2);
+      expect(releases).toBe(
+        fault === 'receipt failure'
+          ? 1
+          : fault === 'persistent release' ||
+              fault === 'receipt and release failure'
+            ? 4
+            : 2,
+      );
       await expect(
         reconcileSessionStore(durable, reconciliation),
       ).rejects.toThrow(/unresolved|already|intent/i);

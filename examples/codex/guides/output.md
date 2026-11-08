@@ -47,7 +47,7 @@ If validation still fails after the budget is exhausted, `OutputValidationError.
 
 Access `error.issues` deliberately to inspect the captured validator's codes and paths without validating again. Each issue has `code` and `path`; for example, `['items', 0, 'count']` identifies the first item's count. Native non-object roots omit the SDK's `response` prefix. Wrapper-only failures, invalid JSON, and arbitrary application-parser exceptions use the root path `[]`. Non-Zod failures use the generic `validation_error` code. The SDK retains no validator exception or message as an error cause. Codes and field names can contain private data, so keep `issues` out of routine logs just like `rawOutput`. Ordinary error display excludes both fields.
 
-These options apply to the native prompted-output route. The classic API keeps its own behavior. The experimental selected Model migration route accepts text or supported Zod object output, but does not admit prompted repair. See [the adapter contract](migrate-models.md#structured-final-output).
+These options apply to the native prompted-output route. The classic API keeps its own behavior. When [migrating a workflow](migration.md), validate its output contract against the selected native mode.
 
 The [output modes example](../output-modes.ts) shows a native greeting and prompted greetings keyed by name. Call its `runOutputModes()` function from an async application with a built native addon and configured model credentials. The example handles validation errors without printing rejected text.
 

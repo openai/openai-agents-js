@@ -376,6 +376,10 @@ export class Agent<Context = undefined, Output = string> {
     }
   }
 
+  /**
+   * Run once and close the owned Session. When RunCleanupError is thrown,
+   * its cleanup.close() retries only that Session's cleanup.
+   */
   async run(
     input: UserInput | null,
     ...args: RunArguments<Context>
@@ -642,19 +646,6 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError('Project guidance requires an explicit Environment');
     if (declarations.nativeGoals && storage === undefined)
       throw new TypeError('NativeGoals requires explicit local storage');
-    if (
-      declarations.nativeGoals &&
-      declarations.tools.some((tool) => {
-        const identity = toolIdentity(tool);
-        return (
-          identity.namespace === 'functions' &&
-          (nativeGoalToolNames as readonly string[]).includes(identity.name)
-        );
-      })
-    )
-      throw new TypeError(
-        'NativeGoals reserves create_goal, get_goal and update_goal',
-      );
     if (suppliedState != null && (persistent || resume !== undefined))
       throw new TypeError(
         'Portable state cannot be combined with local storage or resume',

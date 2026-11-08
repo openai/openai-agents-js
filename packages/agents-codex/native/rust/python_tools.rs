@@ -80,7 +80,6 @@ pub(crate) struct PendingKey {
 /// Independent schema and local-authority decisions for one root installation.
 pub(crate) struct ToolInstallOptions {
     pub(crate) preserve_schemas: bool,
-    pub(crate) strict_functions: bool,
     pub(crate) allow_local_goals: bool,
 }
 
@@ -105,7 +104,6 @@ pub struct PythonTools {
     local_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
     custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     preserve_schemas: bool,
-    strict_functions: bool,
     schema_receipts: schema_fidelity::Receipts,
     current: RwLock<Arc<Generation>>,
     fixed: HashSet<ToolName>,
@@ -287,7 +285,6 @@ impl PythonTools {
     ) -> Result<()> {
         let ToolInstallOptions {
             preserve_schemas,
-            strict_functions,
             allow_local_goals,
         } = options;
         // Core resolves absent source options from resumed metadata at startup.
@@ -452,7 +449,6 @@ impl PythonTools {
                 .thread_extension_init
                 .get::<crate::local_storage::LocalReceiptStore>()
                 .map(|store| store.0.clone()),
-            strict_functions,
             preserve_schemas,
             schema_receipts: Default::default(),
             current: RwLock::new(Arc::new(Generation {
@@ -522,7 +518,6 @@ impl PythonTools {
             local_store: parent.local_store.clone(),
             custom_store: parent.custom_store.clone(),
             preserve_schemas: parent.preserve_schemas,
-            strict_functions: parent.strict_functions,
             schema_receipts: Default::default(),
             current: RwLock::new(parent.snapshot()),
             fixed: parent.fixed.clone(),
@@ -567,7 +562,7 @@ impl PythonTools {
             );
             let mut function = dynamic_tool_to_responses_api_tool(tool)?;
             function.defer_loading = None;
-            function.strict = self.strict_functions;
+            function.strict = false;
             if let Some(token) = &schema_token {
                 function.description =
                     schema_fidelity::Receipts::description(&tool.description, token, entries.len());
@@ -1827,7 +1822,6 @@ mod pending_tests {
             local_store: None,
             custom_store: None,
             preserve_schemas: false,
-            strict_functions: false,
             schema_receipts: Default::default(),
             current: RwLock::new(Arc::new(Generation {
                 id: 0,

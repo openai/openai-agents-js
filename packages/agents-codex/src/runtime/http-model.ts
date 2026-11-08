@@ -29,7 +29,6 @@ import {
 } from './binding';
 import type { NativeConfig } from './config';
 import type { RuntimeOptions } from './options';
-import type { TokenUsageInfo } from './run-events';
 import { NativeError } from './session';
 
 const maxWebsocketRequestBytes = 64 * 1024 * 1024;
@@ -131,31 +130,6 @@ class Prefix {
     this.activeId = undefined;
   }
 }
-/** A selected producer uses this carrier without importing the classic runtime. */
-export interface SelectedModelTerminal {
-  turnId: string;
-  kind: 'task_complete' | 'turn_complete' | 'turn_aborted';
-  reason: JsonValue | undefined;
-  nativeError: JsonValue | undefined;
-  priorFailure: unknown;
-  nativeFailure: unknown;
-  error: unknown;
-  usage: TokenUsageInfo | null;
-}
-
-export interface SelectedModelRoute {
-  bindRoot(root: string): void;
-  accepted(receipt: Promise<{ turn_id: string }>): void;
-  expected(): Promise<string>;
-  fail(error: unknown): void;
-  produce(
-    body: JsonObject,
-    signal: AbortSignal,
-    current: () => Promise<void>,
-    finish: () => Promise<void>,
-  ): Promise<string | undefined>;
-}
-
 /** Private loopback routes preserve tool schemas before native provider dispatch. */
 export class NativeProviderRoutes {
   private server?: Server;
@@ -167,8 +141,6 @@ export class NativeProviderRoutes {
   // Borrowed from the Provider across this Session's replacement Engines.
   private providerTransports?: _ProviderHttpTransports;
   private stopping?: Promise<void>;
-
-  constructor(private readonly selected?: SelectedModelRoute) {}
 
   async start(config: NativeConfig, runtime: RuntimeOptions, apiKey?: string) {
     const server = createServer((request, response) => {
@@ -271,72 +243,13 @@ export class NativeProviderRoutes {
     for await (const chunk of request) {
       const data = Buffer.from(chunk);
       size += data.length;
-      if (size > (this.selected ? 4 * 1024 * 1024 : 67108864)) {
-        this.selected?.fail(new TypeError('Migration request exceeds 4 MiB'));
+      if (size > 67108864) {
         response.writeHead(413).end();
         return true;
       }
       chunks.push(data);
     }
     const body = decode(jsonObject, Buffer.concat(chunks).toString('utf8'));
-    if (this.selected) {
-      const metadata = jsonObject.parse(body.client_metadata ?? {});
-      const ticket = encode({
-        sdk_sentinel_thread: metadata.sdk_sentinel_thread,
-        sdk_sentinel_nonce: metadata.sdk_sentinel_nonce,
-      });
-      const expected = await this.selected.expected();
-      const receipt = decode(
-        jsonObject,
-        await route.engine._sentinel_claim(route.provider, ticket, expected),
-      );
-      if (receipt.model !== body.model || receipt.kind !== 'generation')
-        throw new NativeError('Invalid selected Model admission');
-      delete metadata.sdk_sentinel_thread;
-      delete metadata.sdk_sentinel_nonce;
-      body.client_metadata = metadata;
-      const current = async () => {
-        await route.engine._sentinel_current(route.provider, ticket, expected);
-      };
-      const finish = async () => {
-        await route.engine._sentinel_finish(route.provider, ticket, expected);
-      };
-      const disconnected = new AbortController();
-      const cancel = () =>
-        disconnected.abort(new NativeError('Selected Model connection closed'));
-      response.once('close', cancel);
-      if (response.destroyed) cancel();
-      try {
-        // Restoration and all producer awaits are part of the carrier's retained task.
-        Object.assign(
-          body,
-          decode(
-            jsonObject,
-            await route.engine._sentinel_restore_schemas(
-              route.provider,
-              ticket,
-              encode(body),
-            ),
-          ),
-        );
-        const wire = await this.selected.produce(
-          body,
-          disconnected.signal,
-          current,
-          finish,
-        );
-        // An owned policy stop joins the real connection close without a Model response.
-        if (wire === undefined) return true;
-        response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.end(wire);
-      } catch (error) {
-        this.selected.fail(error);
-        throw error;
-      } finally {
-        response.off('close', cancel);
-      }
-      return true;
-    }
     const receipt = await this.sentinelPrepare(
       route.engine,
       route.provider,
@@ -412,7 +325,7 @@ export class NativeProviderRoutes {
   ): Promise<void> {
     const wss = this.websocketServer;
     const sentinel = this.sentinelRoute(request);
-    if (sentinel && wss && !this.selected) {
+    if (sentinel && wss) {
       let prefix: Prefix | undefined;
       try {
         const remote = await sentinel.engine._sentinel_open(

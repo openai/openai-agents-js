@@ -67,9 +67,6 @@ import { Environment, type LocalStorageMount } from '@openai/agents';
 
 const mount: LocalStorageMount = {
   source: '/srv/customer-data',
-  destination: '/srv/customer-data',
-  strategy: 'local_bind',
-  readOnly: true,
 };
 const environment = Environment.local({
   cwd: '/srv/agent-work',
@@ -78,7 +75,7 @@ const environment = Environment.local({
 });
 ```
 
-Pass this environment to `agent.session({ environment })`. See [the complete example](../local-storage-mount.ts). Both directories must already exist. Source and destination must be identical canonical absolute paths without symlinks. The workspace remains writable; place mounted storage outside it and outside all writable roots. Mounts cannot overlap each other or expose private SDK runtime or session storage. Native validation also checks filesystem identities and mount aliases. It rejects existing hard links that share a regular file between mounted storage and `cwd` or an additional writable root. Hard links wholly within read-only storage or outside the writable grants are allowed.
+Pass this environment to `agent.session({ environment })`. See [the complete example](../local-storage-mount.ts). Both directories must already exist. The destination defaults to the source, the strategy defaults to `local_bind`, and `readOnly` defaults to `true`. An explicit destination must match the source. Both paths must be canonical absolute paths without symlinks. The workspace remains writable; place mounted storage outside it and outside all writable roots. Mounts cannot overlap each other or expose private SDK runtime or session storage. Native validation also checks filesystem identities and mount aliases. It rejects existing hard links that share a regular file between mounted storage and `cwd` or an additional writable root. Hard links wholly within read-only storage or outside the writable grants are allowed.
 
 ## Direct local mount configurations
 

@@ -2,6 +2,7 @@ import { jsonObject, type JsonValue, type JsonObject } from './binding';
 import type { ToolContext, ToolCallContext } from './tools';
 import { interceptedCallInfo } from './call-metadata';
 import type { BeforeStepContext, OperationOptions } from './session';
+import type { ChildTurn } from './subagents';
 
 /** Identity of a native child's callback; it does not grant execution authority. */
 export interface ChildInvocation {
@@ -13,9 +14,11 @@ export interface ChildInvocation {
 }
 
 /** One preparation of the original, independently owned native child Turn. */
-export interface ChildBeforeStepContext<
-  Context = unknown,
-> extends BeforeStepContext<Context> {
+export interface ChildBeforeStepContext<Context = unknown> extends Omit<
+  BeforeStepContext<Context>,
+  'submission'
+> {
+  readonly submission: ChildTurn;
   readonly child: ChildInvocation;
 }
 

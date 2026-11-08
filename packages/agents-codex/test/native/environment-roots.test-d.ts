@@ -39,11 +39,14 @@ new Environment({
   cwd: '/workspace',
   mounts: [storageMount],
 });
-// @ts-expect-error Strategy is explicit.
-const implicitMount: LocalStorageMount = {
+const implicitMount: LocalStorageMount = { source: '/data' };
+Environment.local({ cwd: '/workspace', mounts: [implicitMount] });
+const writableMount: LocalStorageMount = {
   source: '/data',
-  destination: '/data',
+  // @ts-expect-error Writable local mounts are unsupported.
+  readOnly: false,
 };
+void writableMount;
 void implicitMount;
 const credentialMount: LocalStorageMount = {
   ...storageMount,

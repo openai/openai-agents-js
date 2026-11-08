@@ -9,6 +9,7 @@ export type {
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
+export { RunCleanupError } from './runtime/native-error';
 export { NativeProvider } from './runtime/provider';
 export { CapabilityError } from './runtime/capabilities';
 export type {
@@ -28,8 +29,11 @@ export {
   InteractionRequired,
   StaleTurnError,
   TurnAborted,
+  TurnNotSubmitted,
 } from './runtime/session';
 export type {
+  SessionUpdate,
+  SessionInterruptOptions,
   Completed,
   PendingRequests,
   SteeringReceipt,
@@ -117,6 +121,8 @@ export type {
 } from './runtime/environment';
 export { NativeAgents, NativeRole } from './runtime/native-agents';
 export type {
+  NativeAgentsOptions,
+  NativeRoleOptions,
   NativeToolCall,
   ChildInvocation,
   ChildBeforeStepContext,
@@ -193,6 +199,7 @@ export { localStorage } from './runtime/local-storage';
 export { reconcileSessionStore } from './runtime/custom-thread-store';
 export type {
   SessionStore,
+  SessionStoreCleanup,
   ReconciledToolResult,
 } from './runtime/custom-thread-store';
 export { fileSessionStore } from './runtime/file-thread-store';

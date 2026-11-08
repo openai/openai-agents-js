@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { captureCompletedHistory } from '../../src/migration/history';
 import type { AgentInputItem } from '@openai/agents-core/types';
 import { Agent, MemorySession, Runner, tool } from '@openai/agents/classic';
 import {
@@ -208,7 +207,6 @@ describe('classic Session lifecycle failure ordering', () => {
       output: { type: 'text', text: 'actual effect result' },
     });
     expect(batch[3]).toEqual(assistantMessage('actual final answer'));
-    expect(captureCompletedHistory(batch)).toEqual(batch);
 
     if (mode === 'success' || mode === 'success-after-cancel') {
       expect(final).toHaveProperty('result.finalOutput', 'actual final answer');
