@@ -137,3 +137,20 @@ it('aligns omitted Astra effort with observed provider behavior while retaining 
   ]);
   server.assertExhausted();
 });
+
+// Fresh calls must preserve explicit models, including names absent from the bundle.
+it.each(['gpt-5.5', 'fixture-unlisted-model'])(
+  'preserves the selected model on a fresh call for %s',
+  async (model) => {
+    const server = new ModelServer([[message('selected model finished')]]);
+    await using provider = await providerFor(server);
+    const result = await new Agent({
+      model,
+      instructions: 'Answer.',
+      provider,
+    }).run('one');
+    expect(result.finalOutput).toBe('selected model finished');
+    expect(server.requests.map((request) => request.model)).toEqual([model]);
+    server.assertExhausted();
+  },
+);
