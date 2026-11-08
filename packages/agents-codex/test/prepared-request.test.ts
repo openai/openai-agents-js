@@ -155,7 +155,7 @@ it.each(['default', 'override'] as const)(
       schema: z.object({ answer: z.string() }),
       maxRetries: 1,
     };
-    const agent = new Agent({
+    const agent = new Agent<undefined, string | { answer: string }>({
       instructions: 'Answer.',
       provider,
       ...(source === 'default' ? { outputType } : {}),

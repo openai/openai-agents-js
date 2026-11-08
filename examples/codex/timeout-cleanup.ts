@@ -9,6 +9,8 @@ export async function runWithTimeout(
   options: NativeProviderOptions = {},
   timeoutMs = 30_000,
 ) {
+  if (timeoutMs > 2_147_483_647)
+    throw new RangeError('timeoutMs must be at most 2147483647.');
   await using provider = new NativeProvider(options);
   const agent = new Agent({ instructions: 'Answer briefly.', provider });
   await using session = await agent.session();

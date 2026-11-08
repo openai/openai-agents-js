@@ -1,6 +1,19 @@
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeProvider, type Session } from '@openai/agents';
+import { runQuestionSession } from '../../../../examples/codex/native-questions';
+import {
+  catalogCases,
+  evaluateCatalogCase,
+} from '../../../../examples/codex/evaluate-catalog';
+import { superviseArtifact } from '../../../../examples/codex/supervised-worker/worker';
+import { searchProject } from '../../../../examples/codex/project-search';
+import { readLocalStorage } from '../../../../examples/codex/local-storage-mount';
+import { runWithTrace } from '../../../../examples/codex/native-trace-context';
 import { runWithTimeout } from '../../../../examples/codex/timeout-cleanup';
+import { BorrowedPeer } from './fixtures/borrowed-mcp';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -161,5 +174,156 @@ describe('owned Session timeout example without native execution', () => {
       'session.close.end',
       'provider.close',
     ]);
+  });
+});
+
+// Overflow must fail at the example boundary before any SDK work starts.
+describe('configurable example timer limits', () => {
+  it.each([2_147_483_648, Number.MAX_SAFE_INTEGER])(
+    'rejects an overflowing result deadline of %s before opening a Session',
+    async (timeoutMs) => {
+      const owned = ownedSession();
+      await expect(runWithTimeout({}, timeoutMs)).rejects.toThrow(
+        'timeoutMs must be at most 2147483647.',
+      );
+      expect(owned.session.submit).not.toHaveBeenCalled();
+      expect(Agent.prototype.session).not.toHaveBeenCalled();
+      expect(owned.providerClose).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([0.5, 2_147_483_647])(
+    'preserves a supported result deadline of %s',
+    async (timeoutMs) => {
+      const owned = ownedSession();
+      const running = runWithTimeout({}, timeoutMs);
+      await owned.waiting.promise;
+      owned.answer.resolve({ finalOutput: 'answer' });
+      await expect(running).resolves.toBe('answer');
+      expect(owned.calls).toEqual([
+        'session.close.begin',
+        'session.close.end',
+        'provider.close',
+      ]);
+    },
+  );
+});
+
+describe('question, catalog and worker timer admission', () => {
+  it('rejects an overflowing question deadline before opening a Session', async () => {
+    const session = vi.spyOn(Agent.prototype, 'session');
+    await expect(
+      runQuestionSession(
+        new Agent({ instructions: 'Answer briefly.' }),
+        'question',
+        {
+          collectForm: vi.fn(),
+          decideURL: vi.fn(),
+          collectProof: vi.fn(),
+        },
+        2_147_483_648,
+      ),
+    ).rejects.toThrow('timeoutMs must be positive and at most 2147483647.');
+    expect(session).not.toHaveBeenCalled();
+  });
+
+  it('records an invalid catalog deadline as a runtime failure before opening a Session', async () => {
+    const session = vi
+      .spyOn(Agent.prototype, 'session')
+      .mockRejectedValue(new Error('Unexpected work'));
+    const result = await evaluateCatalogCase(
+      new NativeProvider(),
+      catalogCases[0],
+      2_147_483_648,
+    );
+    expect(result).toEqual({
+      id: 'known',
+      completed: false,
+      answer: null,
+      calls: [],
+      failure: 'runtime',
+    });
+    expect(session).not.toHaveBeenCalled();
+  });
+
+  it.each(['startupMs', 'turnMs'] as const)(
+    'rejects an overflowing worker %s before opening a Session',
+    async (name) => {
+      const session = vi.spyOn(Agent.prototype, 'session');
+      const options = {
+        directory: '/unused-worker-directory',
+        provider: { apiKey: 'synthetic-test' },
+        model: 'fixture',
+        reports: { name: 'reports', server: new BorrowedPeer() },
+        task: 'Draft a release note.',
+        [name]: 2_147_483_648,
+      };
+      await expect(superviseArtifact(options)).rejects.toThrow(
+        `${name} must be an integer from 0 through 2147483647.`,
+      );
+      expect(session).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('helper-owned providers', () => {
+  it('keeps the search provider open until the result settles', async () => {
+    const completed =
+      Promise.withResolvers<Awaited<ReturnType<Agent['run']>>>();
+    const run = vi
+      .spyOn(Agent.prototype, 'run')
+      .mockReturnValue(completed.promise);
+    const close = vi
+      .spyOn(NativeProvider.prototype, 'close')
+      .mockResolvedValue();
+    const running = searchProject('/application/project');
+    expect(run).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    const result = { finalOutput: 'project/config.ts:1' } as Awaited<
+      ReturnType<Agent['run']>
+    >;
+    completed.resolve(result);
+    await expect(running).resolves.toBe(result);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each(
+    (
+      [
+        [
+          'storage',
+          (directory: string) =>
+            readLocalStorage(
+              join(directory, 'project'),
+              join(directory, 'storage'),
+            ),
+        ],
+        [
+          'trace',
+          () =>
+            runWithTrace({
+              traceparent: `00-${'1'.repeat(32)}-${'2'.repeat(16)}-01`,
+            }),
+        ],
+      ] as const
+    ).filter(([name]) => name !== 'storage' || process.platform === 'linux'),
+  )('closes the %s helper Session before its provider', async (_, run) => {
+    const directory = await mkdtemp(join(tmpdir(), 'guidance-provider-'));
+    try {
+      await mkdir(join(directory, 'project'));
+      await mkdir(join(directory, 'storage'));
+      const owned = ownedSession();
+      const running = run(directory);
+      await owned.waiting.promise;
+      owned.answer.resolve({ finalOutput: 'answer' });
+      await expect(running).resolves.toBe('answer');
+      expect(owned.calls).toEqual([
+        'session.close.begin',
+        'session.close.end',
+        'provider.close',
+      ]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

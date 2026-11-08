@@ -1310,7 +1310,7 @@ export function projectHistory(
   const userAliases = new Set<HistoryOccurrence>();
   function remember(item: HistoryItem, native: boolean, recordedId = true) {
     const output = item.type === 'function_call_output';
-    const key = JSON.stringify([item.turnId, output, recordedId, item.id]);
+    const key = JSON.stringify([item.turnId, item.type, recordedId, item.id]);
     const callKey = JSON.stringify([
       item.turnId,
       'callId' in item ? item.callId : item.id,
@@ -1322,7 +1322,8 @@ export function projectHistory(
       else if (occurrence === call.output || native !== call.output.native)
         occurrence = call.output;
       else occurrence = undefined;
-    } else if (native && call && !call.native) occurrence = call;
+    } else if (native && call && !call.native && item.type === call.item.type)
+      occurrence = call;
     else if (!native && !recordedId && call?.output) occurrence = undefined;
     if (!occurrence) {
       occurrence = { item, native, recordedId };
@@ -1505,7 +1506,7 @@ export function projectHistory(
             text(payload.thread_id) ?? subagentId ?? sessionId,
             done,
           );
-          if (item) remember({ ...item, data: native }, true);
+          if (item) remember({ ...item, data: native }, true, false);
         }
         continue;
       }
@@ -1548,7 +1549,7 @@ export function projectHistory(
           text(payload.thread_id) ?? subagentId ?? sessionId,
         )) {
           const seenNative = identities.get(
-            JSON.stringify([item.turnId, false, true, item.id]),
+            JSON.stringify([item.turnId, item.type, true, item.id]),
           )?.native;
           const occurrence = remember(item, true);
           if (native.type === 'UserMessage' && !seenNative) {

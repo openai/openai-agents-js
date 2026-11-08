@@ -140,7 +140,7 @@ export async function runNativeTelemetry() {
             ];
       await telemetry.withTrace({ name: `example.${scenario}` }, () =>
         withScriptedResponses(script, async (peer) => {
-          const agent = new Agent({
+          const agent = new Agent<unknown, string | { label: string }>({
             instructions: 'Use probe, then answer briefly.',
             model: 'gpt-5.5',
             provider: peer.provider,

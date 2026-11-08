@@ -41,7 +41,7 @@ async function syncDirectory(directory: string): Promise<void> {
  */
 export function fileSessionStore(directory: string): SessionStore {
   const root = resolve(directory);
-  const releases = new Map<string, FileHandle | 'released'>();
+  const releases = new Map<string, FileHandle>();
   function paths(sessionId: string) {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionId)) {
       throw new TypeError(
@@ -204,14 +204,19 @@ export function fileSessionStore(directory: string): SessionStore {
     async release(sessionId, fence) {
       const lease = JSON.stringify([sessionId, fence]);
       let ownedDirectory = releases.get(lease);
-      if (ownedDirectory === 'released') {
-        // Retry only the barrier, even when a successor now owns the lock path.
-        await syncDirectory(root);
-        return;
-      }
       const { owner, lock } = paths(sessionId);
       if (!ownedDirectory) {
-        await assertFence(sessionId, fence);
+        let currentFence: string | undefined;
+        try {
+          currentFence = await readFile(owner, 'utf8');
+        } catch (error) {
+          if (!hasCode(error, 'ENOENT')) throw error;
+        }
+        if (currentFence !== fence) {
+          // Obsolete releases repeat durability without touching a successor.
+          await syncDirectory(root);
+          return;
+        }
         ownedDirectory = await open(lock, 'r');
         try {
           await unlink(owner);
@@ -241,8 +246,8 @@ export function fileSessionStore(directory: string): SessionStore {
         throw new Error('Thread writer fence is no longer valid');
       }
       if (current) await rmdir(lock);
-      // Record the physical unlock before a failed barrier can lose its result.
-      releases.set(lease, 'released');
+      // A rejected close still invalidates its fd, so retire ownership first.
+      releases.delete(lease);
       await ownedDirectory.close();
       await syncDirectory(root);
     },

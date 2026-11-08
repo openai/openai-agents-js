@@ -5,13 +5,13 @@ Send native traces, logs, or metrics to an OpenTelemetry collector. To see the s
 ## Configure the process
 
 1. Await `telemetry.configure()` before constructing an engine or opening a Session.
-2. Run and close all Sessions.
+2. Run and close all Sessions, then close their providers.
 3. Await `telemetry.shutdown()` to request a final flush and retire the telemetry owner.
 
 The example below needs a model credential in `OPENAI_API_KEY` and an OTLP/HTTP receiver that accepts JSON logs on port 4318. Save it as `telemetry.mts` and run `npx tsx telemetry.mts` in your application.
 
 ```ts
-import { Agent, telemetry } from '@openai/agents';
+import { Agent, NativeProvider, telemetry } from '@openai/agents';
 
 await telemetry.configure({
   logs: {
@@ -22,7 +22,8 @@ await telemetry.configure({
   environment: 'dev',
 });
 try {
-  const agent = new Agent({ instructions: 'Answer clearly.' });
+  await using provider = new NativeProvider();
+  const agent = new Agent({ instructions: 'Answer clearly.', provider });
   await agent.run('Hello.');
 } finally {
   await telemetry.shutdown();
