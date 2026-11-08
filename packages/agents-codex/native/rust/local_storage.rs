@@ -1832,6 +1832,7 @@ mod tests {
     }
     pub(super) fn create_params(id: ThreadId, home: &std::path::Path) -> CreateThreadParams {
         CreateThreadParams {
+            sdk_mcp_source_required: false,
             creator_user_id: None,
             creator_account_id: None,
             session_id: id.into(),

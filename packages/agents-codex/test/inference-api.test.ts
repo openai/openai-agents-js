@@ -24,7 +24,10 @@ import { prepareOutput } from '../src/runtime/output';
 const fixture = vi.hoisted(() => ({ open: vi.fn(), run: vi.fn() }));
 vi.mock('../src/runtime/binding', async (original) => ({
   ...(await original<typeof import('../src/runtime/binding')>()),
-  binding: async () => ({ _validate_python_tool_declarations() {} }),
+  binding: async () => ({
+    _validate_python_tool_declarations() {},
+    _agent_profiles_fingerprint: () => 'synthetic-profile-fingerprint',
+  }),
 }));
 vi.mock('../src/runtime/agent', () => ({
   openSession: (...args: unknown[]) => fixture.open(...args),
@@ -539,6 +542,82 @@ it('rejects login credentials and state return before acquiring a provider', asy
   );
   expect(acquire).not.toHaveBeenCalled();
 });
+
+it('rejects Decisions handoffs but allows an explicit Responses opening', async () => {
+  await using provider = new NativeProvider();
+  const acquire = vi.spyOn(provider, '_acquire');
+  const target = new Agent({ name: 'specialist', instructions: 'Answer.' });
+  const agent = new Agent({
+    instructions: 'Route.',
+    api: 'decisions',
+    provider,
+    handoffs: [target],
+  });
+  const opening = agent.session();
+  await opening.then(
+    (session) => session.close(),
+    () => {},
+  );
+  await expect(opening).rejects.toThrow('Decisions does not support handoffs');
+  expect(acquire).not.toHaveBeenCalled();
+
+  const session = await agent.session({ api: 'responses' });
+  expect(providerConfig()).not.toHaveProperty('decision_model');
+  expect(fixture.open.mock.calls[0][1].agentGraph).toBeDefined();
+  expect(agent.api).toBe('decisions');
+  await session.close();
+});
+
+it('rejects a Decisions opening override on a Responses handoff graph', async () => {
+  await using provider = new NativeProvider();
+  const acquire = vi.spyOn(provider, '_acquire');
+  const target = new Agent({ name: 'specialist', instructions: 'Answer.' });
+  const agent = new Agent({
+    instructions: 'Route.',
+    provider,
+    handoffs: [target],
+  });
+  const opening = agent.session({ api: 'decisions' });
+  await opening.then(
+    (session) => session.close(),
+    () => {},
+  );
+  await expect(opening).rejects.toThrow('Decisions does not support handoffs');
+  expect(acquire).not.toHaveBeenCalled();
+});
+
+it('rejects a Decisions handoff target before validation or provider acquisition', async () => {
+  await using provider = new NativeProvider();
+  const acquire = vi.spyOn(provider, '_acquire');
+  const target = new Agent({
+    name: 'specialist',
+    instructions: 'Choose.',
+    api: 'decisions',
+  });
+  await target.validate();
+  const agent = new Agent({
+    instructions: 'Route.',
+    provider,
+    handoffs: [target],
+  });
+  await expect(agent.validate()).rejects.toThrow(
+    'Decisions does not support handoffs',
+  );
+  const opening = agent.session();
+  await opening.then(
+    (session) => session.close(),
+    () => {},
+  );
+  await expect(opening).rejects.toThrow('Decisions does not support handoffs');
+  expect(acquire).not.toHaveBeenCalled();
+});
+
+it('rejects native Realtime before starting native work on a Decisions Session', async () => {
+  await expect(coreSession().realtime()).rejects.toThrow(
+    'Decisions does not support native Realtime',
+  );
+});
+
 it('rejects model mutation, portable state, and model compaction without fallback', async () => {
   const session = coreSession();
   await expect(session.update({ model: 'ordinary' })).rejects.toThrow(

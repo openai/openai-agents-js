@@ -104,6 +104,33 @@ The SDK forwards the selected filters and location to the provider. Retrieval, i
 
 ## Tracing and Realtime
 
+### Choose metadata and timing by language
+
+Python Classic task, turn, and agent spans have an optional `span.span_data.metadata` dictionary. Export merges the inherited `agent_harness_id` routing key with that dictionary; the inherited routing key takes precedence. Task and turn usage exports remain separate from that metadata.
+
+TypeScript Classic keeps shared context on `Trace.metadata`, exposed to spans through `Span.traceMetadata`. Use custom span data for operation-specific fields:
+
+```ts
+import { withCustomSpan, withTrace } from '@openai/agents/classic';
+
+await withTrace(
+  'checkout',
+  async () => {
+    await withCustomSpan(
+      async (span) => {
+        span.spanData.data.phase = 'complete';
+      },
+      { data: { name: 'validate cart', data: { phase: 'started' } } },
+    );
+  },
+  { metadata: { request_id: 'example-request' } },
+);
+```
+
+Put only data you intend to export in these fields. Read shared trace context through `Span.traceMetadata`; use custom span data for span-local values. This interface does not provide Python's independent task, turn, or agent metadata merge and precedence rule. TypeScript task and turn spans use custom envelopes with an `sdk_span_type` discriminator and their own usage data.
+
+Python Classic `VoicePipeline` sets `SpeechSpanData.first_content_at` when its TTS model first yields a chunk. The timestamp marks that pipeline event, not speaker playback. It remains available when sensitive audio and text tracing are disabled. TypeScript Classic Realtime exposes `audio_start` and `audio` events. Observe those events and record application timing in a custom span when needed. Those event timings and a span's start time do not reproduce the Python TTS first-chunk timestamp. Keep the event and clock explicit when comparing measurements across languages.
+
 ### Export response spans
 
 Use `withResponseSpan()` to run a callback and manage its span, or `createResponseSpan()` to start and end the span yourself. Both accept response data, identifiers, and `disabled`. The callback still runs when tracing is disabled. Use `createGenerationSpan()` or `withGenerationSpan()` for detailed generation data. Set `BatchTraceProcessor.maxBatchSize` to a positive integer to bound every export, including forced flush and shutdown.

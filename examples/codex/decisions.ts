@@ -11,6 +11,8 @@ const triage = z.strictObject({
  * Optionally set OPENAI_DECISION_MODEL; Decisions defaults to gpt-6-luna.
  * Optionally set OPENAI_DECISION_FALLBACK_MODEL to permit semantic fallback.
  * Model-based context compaction, explicit or automatic, requires that fallback.
+ * Native handoffs and Realtime require a Responses opening. An eager function
+ * tool can call a separate Responses Agent, as consultSpecialist does below.
  */
 export async function runDecisionExample(
   request = 'Our production checkout stopped working. Please help now.',

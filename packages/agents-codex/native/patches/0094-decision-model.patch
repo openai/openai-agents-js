@@ -1,5 +1,5 @@
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 4760e82fa1866533a4ed3f4b6912304faf0e2826..5ed26cd07083d593f3b8f808b106207afdb7d5a3 100644
+index 35001a3745102f0cbfe08d5a04427d74b7109072..6c38565558cee9438a2af08f514c9e7d7b527953 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
 @@ -2930,6 +2930,7 @@ dependencies = [
@@ -1603,7 +1603,7 @@ index 0000000000000000000000000000000000000000..36319fb4a98f6f918d8c55e4cb76323b
 +    }
 +}
 diff --git a/codex-rs/codex-api/src/endpoint/mod.rs b/codex-rs/codex-api/src/endpoint/mod.rs
-index 77b3054aeeca459f33b679e3165f12652eaeaf53..30ea3ac39487ce2fb6db87f64558980add9ed767 100644
+index 14cec182af8b85843fe384c75396a104bc15e246..fb0eb5d0bf971924e610714d12bea4c5b0232f71 100644
 --- a/codex-rs/codex-api/src/endpoint/mod.rs
 +++ b/codex-rs/codex-api/src/endpoint/mod.rs
 @@ -1,3 +1,4 @@
@@ -1633,7 +1633,7 @@ index 75516746c967325b8d3408b38c5091ef146d247a..7ebd4419278742e5c3f703b20b708932
          let (tx_event, mut rx_event) = mpsc::channel(8);
          let (_tx_interrupt, rx_interrupt) = oneshot::channel();
 diff --git a/codex-rs/codex-api/src/lib.rs b/codex-rs/codex-api/src/lib.rs
-index ce0ed21cec52b9ebd98ed82711cf7eafc83000af..3ebe24cd43e9db3a250146014eec98114c69a2dc 100644
+index 7126f39f37a2298b7d2b2ec324a0fe78544e4ed5..95a31e5c29129bc48cd1842c7c05b609833d0af6 100644
 --- a/codex-rs/codex-api/src/lib.rs
 +++ b/codex-rs/codex-api/src/lib.rs
 @@ -2,6 +2,7 @@ pub(crate) mod api_bridge;
@@ -1694,7 +1694,7 @@ index da0af3bca082c5b811e4d4bc4d6bfdecbdca427b..d0fdcc1c157d5338452838283ceb2fbf
              base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
              model_catalog_url: Some("http://127.0.0.1:8061/api/codex/models".into()),
 diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
-index cfd72368816f4356c17823d57f8640e49572a34c..beea9a486273e0767c4294e26347dfaca03a82e3 100644
+index 92a29b658d2bb398f440ba5f8d49aa895d7226b6..95f12926f0291ad837884a010aa6eb8d481e3428 100644
 --- a/codex-rs/core/Cargo.toml
 +++ b/codex-rs/core/Cargo.toml
 @@ -16,6 +16,7 @@ codex-utils-process = { workspace = true }
@@ -1706,7 +1706,7 @@ index cfd72368816f4356c17823d57f8640e49572a34c..beea9a486273e0767c4294e26347dfac
  bm25 = { workspace = true }
  chrono = { workspace = true, features = ["serde"] }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 0f4de2f3d94aa0c8a9a8901deedb00ff4c495515..6916570de6e288dd8786b39bb35658ebf6e89c21 100644
+index 1caeae0f46a6a8ce5f265909efa6fdc612437c28..8957940ef3b80be3e17b44c48e178bb904ed8a99 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -35,6 +35,9 @@ use std::sync::atomic::Ordering;
@@ -1719,7 +1719,7 @@ index 0f4de2f3d94aa0c8a9a8901deedb00ff4c495515..6916570de6e288dd8786b39bb35658eb
  use crate::CodexResponsesHeaders;
  use crate::tools::ExecutedToolCalls;
  use async_channel::Sender;
-@@ -472,7 +475,7 @@ fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap
+@@ -551,7 +554,7 @@ fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap
  }
  
  // Keep EndpointSession's existing HttpTransport boundary. Only a trusted
@@ -1728,7 +1728,7 @@ index 0f4de2f3d94aa0c8a9a8901deedb00ff4c495515..6916570de6e288dd8786b39bb35658eb
  struct ModelResponsesTransport<F> {
      direct: Option<codex_extension_api::ModelHttpStream>,
      fallback: F,
-@@ -487,7 +490,26 @@ where
+@@ -566,7 +569,26 @@ where
          &self,
          req: codex_client::Request,
      ) -> std::result::Result<codex_client::Response, codex_client::TransportError> {
@@ -1756,7 +1756,7 @@ index 0f4de2f3d94aa0c8a9a8901deedb00ff4c495515..6916570de6e288dd8786b39bb35658eb
      }
  
      async fn stream(
-@@ -1094,6 +1116,7 @@ impl ModelClient {
+@@ -1261,6 +1283,7 @@ impl ModelClient {
      /// WebSocket use is controlled by provider capability and session-scoped fallback state.
      pub fn responses_websocket_enabled(&self) -> bool {
          if !self.state.provider.info().supports_websockets
@@ -1764,7 +1764,7 @@ index 0f4de2f3d94aa0c8a9a8901deedb00ff4c495515..6916570de6e288dd8786b39bb35658eb
              || self.state.disable_websockets.load(Ordering::Relaxed)
          {
              return false;
-@@ -2406,6 +2429,32 @@ impl ModelClientSession {
+@@ -2573,6 +2596,32 @@ impl ModelClientSession {
          responses_metadata: &CodexResponsesMetadata,
          inference_trace: &InferenceTraceContext,
      ) -> Result<ResponseStream> {
@@ -1797,7 +1797,7 @@ index 0f4de2f3d94aa0c8a9a8901deedb00ff4c495515..6916570de6e288dd8786b39bb35658eb
          let wire_api = self.client.state.provider.info().wire_api;
          match wire_api {
              WireApi::Responses => {
-@@ -2693,6 +2742,9 @@ where
+@@ -2860,6 +2909,9 @@ where
      (
          ResponseStream {
              request_observation: None,
@@ -2616,10 +2616,10 @@ index 0000000000000000000000000000000000000000..bcfd3bee0b885b8bc30791711ce2d500
 +    }
 +}
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 9ad2c5bf41de1af71d68381b7581237b60a7fe30..8095615bfd26f9f9bfdbacc55063ff85f936ce46 100644
+index d8bc923c2e6f6279d74e472193020943ae841cc9..0de8726fb22d0c7eba06b724f499f3de989e7fce 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
-@@ -2845,39 +2845,294 @@ mod direct_model_http_transport {
+@@ -2845,41 +2845,296 @@ mod direct_model_http_transport {
          assert_eq!(headers["traceparent"], "trace-marker");
      }
      #[tokio::test]
@@ -2940,6 +2940,8 @@ index 9ad2c5bf41de1af71d68381b7581237b60a7fe30..8095615bfd26f9f9bfdbacc55063ff85
      }
 +    Ok(())
  }
+ 
+ #[test]
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
 index dfcbefad750be560751464082da0aec9762364d1..1a3cab0695cc770f81478037aea696c36e54e6e0 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
@@ -2967,7 +2969,7 @@ index 29b77b8920e47b5bf445322d68e92f7d3cdfa0af..5f03a180b103a0afafe714bc983be36a
              model_auto_compact_token_limit: self.model_auto_compact_token_limit,
              tool_output_token_limit: self.tool_output_token_limit,
 diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
-index 979059cb32da459c813c163e365fc1869fd152aa..9cdca473dffb246e3d8041040d5f6405f7ce2f31 100644
+index d0b6fb0df54923cc8d5955a92a45e8ee726469ab..bfe4c158f61b36588d29eee46cb21ee387641b68 100644
 --- a/codex-rs/core/src/model_request.rs
 +++ b/codex-rs/core/src/model_request.rs
 @@ -1,5 +1,10 @@
@@ -3017,7 +3019,7 @@ index 979059cb32da459c813c163e365fc1869fd152aa..9cdca473dffb246e3d8041040d5f6405
      fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream {
          self.inner
              .intercept_with_tool_admission(stream, self.admission)
-@@ -102,6 +129,15 @@ pub(crate) fn tool_admission(
+@@ -136,6 +163,15 @@ pub(crate) fn compaction_source_admission(
      })
  }
  
@@ -3034,7 +3036,7 @@ index 979059cb32da459c813c163e365fc1869fd152aa..9cdca473dffb246e3d8041040d5f6405
      mut stream: ModelResponseStream,
      interceptors: Vec<Box<dyn ModelResponseInterceptor>>,
 diff --git a/codex-rs/core/src/model_request_tests.rs b/codex-rs/core/src/model_request_tests.rs
-index 5b33e6d6da66fdddd578ae9e138537cbfc3d45f7..1eb6c0a5e1eacaa238fd8a1d582eb66b1c1185ac 100644
+index 7f1ef246363a7935b90b51f5a718ecbc369a973e..34df64e3d67ac210ac848afa0f61879facc8df77 100644
 --- a/codex-rs/core/src/model_request_tests.rs
 +++ b/codex-rs/core/src/model_request_tests.rs
 @@ -31,6 +31,9 @@ async fn interceptors_forward_before_completion_in_order_and_cancel_upstream() {
@@ -3048,10 +3050,10 @@ index 5b33e6d6da66fdddd578ae9e138537cbfc3d45f7..1eb6c0a5e1eacaa238fd8a1d582eb66b
                  interrupt: None,
                  consumer_dropped,
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 97ee1864596c2dfecb3d6d2f043922ab8d77d400..d5650847a1deb9e1357947f760d06aed54f19c72 100644
+index 156e0c839f7d1b048319f66d3dddf8fd01d6aaa2..136e90fb5fef53f6d548c9c0f1417a5bbee3fe93 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -4880,16 +4880,44 @@ impl Session {
+@@ -5016,16 +5016,44 @@ impl Session {
          turn_context: &TurnContext,
          settings: &ResolvedStepSettings,
          token_usage: Option<&TokenUsage>,
@@ -3102,7 +3104,7 @@ index 97ee1864596c2dfecb3d6d2f043922ab8d77d400..d5650847a1deb9e1357947f760d06aed
                      state.ensure_auto_compact_window_server_prefill_from_usage(token_usage);
                  }
                  state.token_info()
-@@ -4900,7 +4928,7 @@ impl Session {
+@@ -5036,7 +5064,7 @@ impl Session {
                  .await;
              if let Some(turn_state) = turn_state {
                  turn_state.lock().await.token_usage_by_model.record(
@@ -3112,10 +3114,10 @@ index 97ee1864596c2dfecb3d6d2f043922ab8d77d400..d5650847a1deb9e1357947f760d06aed
                      token_usage,
                  );
 diff --git a/codex-rs/core/src/session/step_settings.rs b/codex-rs/core/src/session/step_settings.rs
-index ae76d4b30fd1a4782a4411ed0b95e0b7096fa327..04e285ad8d433aeacf985c14c20abf31081fed16 100644
+index 370299e22f539bcc9688ae9175bcf8d2e0a5eb63..21410a1662c5cd0e31e07446a0f5f3c1bb473988 100644
 --- a/codex-rs/core/src/session/step_settings.rs
 +++ b/codex-rs/core/src/session/step_settings.rs
-@@ -205,6 +205,7 @@ impl ResolvedStepSettings {
+@@ -217,6 +217,7 @@ impl ResolvedStepSettings {
  /// instructions are not mistaken for explicit overrides.
  #[derive(Clone, Debug, Default, PartialEq, Eq)]
  pub(crate) struct ModelInfoOverrides {
@@ -3123,7 +3125,7 @@ index ae76d4b30fd1a4782a4411ed0b95e0b7096fa327..04e285ad8d433aeacf985c14c20abf31
      pub(crate) context_window: Option<i64>,
      pub(crate) auto_compact_token_limit: Option<i64>,
      pub(crate) tool_output_token_limit: Option<usize>,
-@@ -214,6 +215,7 @@ pub(crate) struct ModelInfoOverrides {
+@@ -226,6 +227,7 @@ pub(crate) struct ModelInfoOverrides {
  impl From<ModelsManagerConfig> for ModelInfoOverrides {
      fn from(config: ModelsManagerConfig) -> Self {
          Self {
@@ -3131,7 +3133,7 @@ index ae76d4b30fd1a4782a4411ed0b95e0b7096fa327..04e285ad8d433aeacf985c14c20abf31
              context_window: config.model_context_window,
              auto_compact_token_limit: config.model_auto_compact_token_limit,
              tool_output_token_limit: config.tool_output_token_limit,
-@@ -228,6 +230,7 @@ impl ModelInfoOverrides {
+@@ -240,6 +242,7 @@ impl ModelInfoOverrides {
          personality: Option<Personality>,
      ) -> ModelsManagerConfig {
          ModelsManagerConfig {
@@ -3212,10 +3214,10 @@ index fb60f4ad0b048dbb37f5f5bf6a11e4d66cb3dc64..31bec69a308b799ecb7bfc594fe78fd4
 +    assert!(restored.use_responses_lite);
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 93d1444d75174cde243dcdbf18410e51d8fd9a38..61f90ecbccb1b4517a2ff48d1971fc6b31059df8 100644
+index f691ae46b8c8d753cdcd2bdd192247d8bd601bd0..ecec92a0c1bc89103ae67da6ddd84aa095c3a68e 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -2715,6 +2715,7 @@ async fn try_run_sampling_request(
+@@ -2732,6 +2732,7 @@ async fn try_run_sampling_request(
      let mut should_emit_turn_diff = false;
      let mut should_emit_token_count = false;
      let mut response_observation_id = None;
@@ -3223,7 +3225,7 @@ index 93d1444d75174cde243dcdbf18410e51d8fd9a38..61f90ecbccb1b4517a2ff48d1971fc6b
      const MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE: usize = 256;
      let mut analytics_tool_call_ids = Vec::new();
      let reasoning_effort = step_context
-@@ -2756,7 +2757,13 @@ async fn try_run_sampling_request(
+@@ -2773,7 +2774,13 @@ async fn try_run_sampling_request(
              .or_cancel(&preempt)
              .or_cancel(&cancellation_token)
              .await;
@@ -3238,7 +3240,7 @@ index 93d1444d75174cde243dcdbf18410e51d8fd9a38..61f90ecbccb1b4517a2ff48d1971fc6b
              break Err(CodexErr::TurnAborted);
          }
          let event = match event {
-@@ -3084,6 +3091,14 @@ async fn try_run_sampling_request(
+@@ -3104,6 +3111,14 @@ async fn try_run_sampling_request(
                      .await;
              }
              ResponseEvent::ResponseObserved(observation) => {
@@ -3253,7 +3255,7 @@ index 93d1444d75174cde243dcdbf18410e51d8fd9a38..61f90ecbccb1b4517a2ff48d1971fc6b
                  let result = sess
                      .record_response_observation(&turn_context, observation)
                      .await;
-@@ -3092,7 +3107,12 @@ async fn try_run_sampling_request(
+@@ -3112,7 +3127,12 @@ async fn try_run_sampling_request(
                  }
                  match result {
                      Ok(id) => {
@@ -3267,7 +3269,7 @@ index 93d1444d75174cde243dcdbf18410e51d8fd9a38..61f90ecbccb1b4517a2ff48d1971fc6b
                              context.response_linked(id);
                          }
                          response_observation_id = id;
-@@ -3100,6 +3120,68 @@ async fn try_run_sampling_request(
+@@ -3120,6 +3140,68 @@ async fn try_run_sampling_request(
                      Err(error) => break Err(error),
                  }
              }
@@ -3336,7 +3338,7 @@ index 93d1444d75174cde243dcdbf18410e51d8fd9a38..61f90ecbccb1b4517a2ff48d1971fc6b
              ResponseEvent::Completed {
                  response_id,
                  token_usage,
-@@ -3123,21 +3205,34 @@ async fn try_run_sampling_request(
+@@ -3143,21 +3225,34 @@ async fn try_run_sampling_request(
                      &mut assistant_message_stream_parsers,
                  )
                  .await;
@@ -3495,11 +3497,11 @@ index 1823275ea4e8a690f6b233a934a044d839a5efb6..2b042599f169f6428be7ecb11aaf8dc1
          base_url: Some(format!("{}/v1", server.uri())),
          model_catalog_url: None,
 diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
-index 527cb73810d844c6266f7992139d34a0265e105b..3ee43d6c58b0c50c380cd4041eff959b6dc9ef37 100644
+index 052c31cd0d7d1d13521d80d1b5b6544f99be703b..48206234442cd3222fab582a668acb2e5d790a55 100644
 --- a/codex-rs/ext/extension-api/src/model_request.rs
 +++ b/codex-rs/ext/extension-api/src/model_request.rs
-@@ -119,6 +119,16 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
-         Box::pin(async { Err("prepared-request contributor is not implemented".into()) })
+@@ -143,6 +143,16 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
+         Box::pin(async move { Ok(input.item) })
      }
  
 +    /// Restore retained function and output schemas before compiling a Decisions request.
@@ -3515,7 +3517,7 @@ index 527cb73810d844c6266f7992139d34a0265e105b..3ee43d6c58b0c50c380cd4041eff959b
      fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>>;
  }
  
-@@ -137,6 +147,10 @@ pub trait ModelToolAdmission: Send + Sync + std::fmt::Debug {
+@@ -165,6 +175,10 @@ pub trait ModelToolAdmission: Send + Sync + std::fmt::Debug {
  /// Interceptors compose in registration order; dropping their stream must release unfinished work.
  /// Trusted host implementations must bound any model-visible content they synthesize.
  pub trait ModelResponseInterceptor: Send + Sync {

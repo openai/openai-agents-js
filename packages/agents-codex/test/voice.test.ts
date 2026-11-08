@@ -262,7 +262,6 @@ describe('OpenAI speech provider', () => {
   it('encodes immutable static PCM as WAV and forwards speech settings', async () => {
     let body: FormData | undefined;
     const provider = new OpenAISpeechProvider({
-      apiKey: 'synthetic',
       transcriptionModel: 'transcribe-test',
       client: new OpenAI({
         apiKey: 'synthetic',
@@ -1265,6 +1264,350 @@ it.each(['abort', 'disconnect', 'error'] as const)(
     }
   },
 );
+
+describe('native voice pipeline controls', () => {
+  const workflow = {
+    run: async function* () {
+      yield 'First. ';
+      yield 'tail';
+    },
+  };
+  function speechProvider() {
+    const spoken: string[] = [];
+    const provider: SpeechProvider = {
+      transcribe: async function* () {
+        yield 'question';
+      },
+      synthesize: async function* (text) {
+        spoken.push(text);
+        yield frame([-32768, 0]);
+        yield frame([32767]);
+      },
+    };
+    return { provider, spoken };
+  }
+  it('keeps default PCM16 delivery and applies float32 conversion before transform and per-synthesis buffering', async () => {
+    const { provider, spoken } = speechProvider();
+    const defaultAudio = (
+      await collect(new VoicePipeline({ workflow, provider }).run(frame()))
+    )
+      .filter((event) => event.type === 'audio')
+      .map((event) => [...event.frame.data]);
+    expect(defaultAudio).toEqual([[-32768, 0], [32767], [-32768, 0], [32767]]);
+    spoken.length = 0;
+    const original: number[][] = [];
+    const pipeline = new VoicePipeline({
+      workflow,
+      provider,
+      outputDtype: 'float32',
+      bufferSamples: 2,
+      outputTransform: (sample) => {
+        expect(sample.data).toBeInstanceOf(Float32Array);
+        original.push([...sample.data]);
+        return {
+          ...sample,
+          data: Float32Array.from(sample.data, (value) => value * 0.5),
+        };
+      },
+    });
+    const audio = (await collect(pipeline.run(frame()))).filter(
+      (event) => event.type === 'audio',
+    );
+    expect(
+      audio.every((event) => event.frame.data instanceof Float32Array),
+    ).toBe(true);
+    expect(audio.map((event) => [...event.frame.data])).toEqual([
+      [-0.5, 0],
+      [0.5],
+      [-0.5, 0],
+      [0.5],
+    ]);
+    expect(original).toEqual([[-1, 0], [1], [-1, 0], [1]]);
+    expect(spoken).toEqual(['First. ', 'tail']);
+  });
+  it('combines tiny frames, splits oversized frames and flushes each synthesis tail in order', async () => {
+    const { provider } = speechProvider();
+    const audio = (
+      await collect(
+        new VoicePipeline({ workflow, provider, bufferSamples: 4 }).run(
+          frame(),
+        ),
+      )
+    ).filter((event) => event.type === 'audio');
+    expect(audio.map((event) => [...event.frame.data])).toEqual([
+      [-32768, 0, 32767],
+      [-32768, 0, 32767],
+    ]);
+    const large = {
+      ...provider,
+      synthesize: async function* () {
+        yield frame([1, 2, 3, 4, 5]);
+      },
+    };
+    const pieces = (
+      await collect(
+        new VoicePipeline({ workflow, provider: large, bufferSamples: 2 }).run(
+          frame(),
+        ),
+      )
+    )
+      .filter((event) => event.type === 'audio')
+      .map((event) => [...event.frame.data]);
+    expect(pieces).toEqual([[1, 2], [3, 4], [5], [1, 2], [3, 4], [5]]);
+  });
+  it('uses a custom incremental splitter and flushes unpunctuated text once', async () => {
+    const { provider, spoken } = speechProvider();
+    const splitter = (text: string, final: boolean) => {
+      const boundary = text.indexOf(' ');
+      return final
+        ? { segments: text ? [text] : [], remainder: '' }
+        : boundary < 0
+          ? { segments: [], remainder: text }
+          : {
+              segments: [text.slice(0, boundary + 1)],
+              remainder: text.slice(boundary + 1),
+            };
+    };
+    await collect(
+      new VoicePipeline({
+        provider,
+        workflow: {
+          run: async function* () {
+            yield 'hello there';
+            yield ' friend';
+          },
+        },
+        textSplitter: splitter,
+      }).run(frame()),
+    );
+    expect(spoken).toEqual(['hello ', 'there ', 'friend']);
+  });
+  it.each([0, -1, 1.5, Infinity, NaN])(
+    'rejects invalid bufferSamples=%s before processing',
+    (bufferSamples) => {
+      expect(
+        () =>
+          new VoicePipeline({
+            workflow,
+            provider: speechProvider().provider,
+            bufferSamples,
+          }),
+      ).toThrow('positive safe integer');
+    },
+  );
+  it('rejects text loss and malformed transforms instead of speaking altered or invalid frames', async () => {
+    const { provider, spoken } = speechProvider();
+    await expect(
+      collect(
+        new VoicePipeline({
+          workflow,
+          provider,
+          textSplitter: () => ({ segments: ['altered'], remainder: '' }),
+        }).run(frame()),
+      ),
+    ).rejects.toThrow('preserve all text');
+    expect(spoken).toEqual([]);
+    await expect(
+      collect(
+        new VoicePipeline({
+          workflow,
+          provider,
+          outputTransform: (() => ({
+            ...frame(),
+            data: new Float32Array([1]),
+          })) as never,
+        }).run(frame()),
+      ),
+    ).rejects.toThrow('preserve the selected dtype');
+    await expect(
+      collect(
+        new VoicePipeline({
+          workflow,
+          provider,
+          outputTransform: (() => Promise.resolve(frame())) as never,
+        }).run(frame()),
+      ),
+    ).rejects.toThrow('mono int16 or float32');
+  });
+  it('does not flush buffered speech after cancellation and leaves provider buffers unchanged', async () => {
+    const signal = new AbortController();
+    const samples = frame([1, 2, 3]);
+    const provider: SpeechProvider = {
+      transcribe: async function* () {
+        yield 'input';
+      },
+      synthesize: async function* () {
+        yield samples;
+        signal.abort(new Error('stop speech'));
+      },
+    };
+    const audio: unknown[] = [];
+    await expect(
+      (async () => {
+        for await (const event of new VoicePipeline({
+          workflow,
+          provider,
+          bufferSamples: 4,
+          outputTransform: (sample) => {
+            sample.data.fill(7);
+            return sample;
+          },
+        }).run(frame(), { signal: signal.signal }))
+          if (event.type === 'audio') audio.push(event.frame);
+      })(),
+    ).rejects.toThrow('stop speech');
+    expect(audio).toEqual([]);
+    expect([...samples.data]).toEqual([1, 2, 3]);
+  });
+});
+
+it('encodes immutable normalized float32 samples as PCM16 and rejects unsupported/nonfinite input', async () => {
+  let bytes = Buffer.alloc(0);
+  const client = new OpenAI({
+    apiKey: 'synthetic',
+    fetch: async (_url, init) => {
+      const file = (init?.body as FormData).get('file') as File;
+      bytes = Buffer.from(await file.arrayBuffer()).subarray(44);
+      return Response.json({ text: 'float input' });
+    },
+  });
+  const provider = new OpenAISpeechProvider({ client });
+  const data = Float32Array.from([-2, -1, -0.5, 0, 0.5, 1, 2]);
+  const original = data.slice();
+  expect(
+    await collect(
+      provider.transcribe(
+        { ...frame(), data },
+        { signal: new AbortController().signal },
+      ),
+    ),
+  ).toEqual(['float input']);
+  expect(
+    Array.from({ length: bytes.length / 2 }, (_, i) =>
+      bytes.readInt16LE(i * 2),
+    ),
+  ).toEqual([-32768, -32768, -16384, 0, 16384, 32767, 32767]);
+  expect(data).toEqual(original);
+  for (const bad of [
+    Float32Array.of(NaN),
+    Float32Array.of(Infinity),
+    new Uint8Array([1]),
+  ]) {
+    await expect(
+      collect(
+        provider.transcribe({ ...frame(), data: bad } as never, {
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).rejects.toThrow();
+  }
+});
+
+it('forwards typed transcription, custom voice and synthesis settings and rejects conflicting client ownership', async () => {
+  const requests: Array<FormData | Record<string, unknown>> = [];
+  const client = new OpenAI({
+    apiKey: 'synthetic',
+    fetch: async (url, init) => {
+      const request = new Request(url, init);
+      if (request.url.endsWith('/transcriptions')) {
+        requests.push(await request.formData());
+        return Response.json({ text: 'settings' });
+      }
+      requests.push((await request.json()) as Record<string, unknown>);
+      return new Response(Uint8Array.from([1, 0]));
+    },
+  });
+  const provider = new OpenAISpeechProvider({
+    client,
+    voice: { id: 'voice_custom' },
+    transcriptionSettings: {
+      language: 'fr',
+      prompt: 'Names',
+      temperature: 0.2,
+    },
+    synthesisSettings: { speed: 1.25, instructions: 'Speak warmly.' },
+  });
+  await collect(
+    provider.transcribe(frame(), { signal: new AbortController().signal }),
+  );
+  const form = requests[0] as FormData;
+  expect([
+    form.get('language'),
+    form.get('prompt'),
+    form.get('temperature'),
+  ]).toEqual(['fr', 'Names', '0.2']);
+  await collect(
+    provider.synthesize('Accepted answer.', {
+      signal: new AbortController().signal,
+    }),
+  );
+  expect(requests[1]).toMatchObject({
+    voice: { id: 'voice_custom' },
+    speed: 1.25,
+    instructions: 'Speak warmly.',
+    response_format: 'pcm',
+    input: 'Accepted answer.',
+  });
+  expect(() => new OpenAISpeechProvider({ client, apiKey: 'other' })).toThrow(
+    'cannot be combined',
+  );
+  expect(
+    () => new OpenAISpeechProvider({ client, baseURL: 'http://localhost' }),
+  ).toThrow('cannot be combined');
+  expect(requests).toHaveLength(2);
+});
+
+it('streams float32 input through the same bounded PCM encoder without modifying samples', async () => {
+  await withSocket(
+    async (socket, events) => {
+      socket.on('message', (raw) => {
+        const event = JSON.parse(raw.toString());
+        events.push(event);
+        if (event.type === 'session.update')
+          socket.send(JSON.stringify({ type: 'session.updated' }));
+        if (event.type === 'input_audio_buffer.commit') {
+          socket.send(
+            JSON.stringify({
+              type: 'input_audio_buffer.committed',
+              item_id: 'float',
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              type: 'conversation.item.input_audio_transcription.completed',
+              item_id: 'float',
+              transcript: 'float recognized',
+            }),
+          );
+        }
+      });
+    },
+    async (provider, events) => {
+      const data = Float32Array.from({ length: 100000 }, (_, i) =>
+        i % 2 ? 1 : -1,
+      );
+      const original = data.slice();
+      async function* source() {
+        yield { ...frame(), data };
+      }
+      expect(
+        await collect(
+          provider.transcribe(source(), {
+            signal: new AbortController().signal,
+          }),
+        ),
+      ).toEqual(['float recognized']);
+      const chunks = events
+        .filter((event) => event.type === 'input_audio_buffer.append')
+        .map((event) => Buffer.from(event.audio, 'base64'));
+      expect(chunks.every((chunk) => chunk.length <= 64 * 1024)).toBe(true);
+      expect(Buffer.concat(chunks).length).toBe(200000);
+      expect(Buffer.concat(chunks).readInt16LE(0)).toBe(-32768);
+      expect(Buffer.concat(chunks).readInt16LE(2)).toBe(32767);
+      expect(data).toEqual(original);
+    },
+  );
+});
 
 it('rejects overflowing speech timers before constructing a client', () => {
   expect(() => new OpenAISpeechProvider({ timeoutMs: 2_147_483_648 })).toThrow(

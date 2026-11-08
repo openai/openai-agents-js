@@ -281,6 +281,7 @@ impl Receipts {
             return Ok(None);
         }
         let generation = Arc::new(Generation {
+            manual_slots: None,
             id: 0,
             schema_token: Some(token),
             entries,
@@ -428,6 +429,7 @@ mod tests {
         let token = ThreadId::new().to_string();
         projected.description = Receipts::description(&original.description, &token, 0);
         let generation = Arc::new(Generation {
+            manual_slots: None,
             id: 0,
             schema_token: Some(token),
             entries: vec![super::super::Entry {
@@ -601,6 +603,7 @@ mod prepared_tests {
             }],
         };
         let generation = Arc::new(Generation {
+            manual_slots: None,
             id: 7,
             schema_token: Some(token),
             entries: vec![Entry {

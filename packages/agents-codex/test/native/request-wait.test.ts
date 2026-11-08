@@ -1420,7 +1420,7 @@ describe('exact request waits with the native pending owner', () => {
     }
   });
 
-  it('keeps exact child public waits behind callback drain after native completion', async () => {
+  it('keeps exact child public waits behind accepted callback cleanup', async () => {
     const executor = await startPublicExecutor();
     const rootSettled = Promise.withResolvers<void>();
     const { NativeThread: Thread } = await binding();
@@ -1513,12 +1513,13 @@ describe('exact request waits with the native pending owner', () => {
           requestSettled = true;
           return result;
         });
-        const raw = JSON.parse(await rawChild.wait_with_usage());
-        expect(raw.final_output).toBe('child done');
+        const nativeCompletion = rawChild.wait_with_usage();
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect(normalSettled).toBe(false);
         expect(requestSettled).toBe(false);
         release.resolve();
+        const raw = JSON.parse(await nativeCompletion);
+        expect(raw.final_output).toBe('child done');
         const completed = await normal;
         expect(await request).toBe(completed);
         expect(completed.finalOutput).toBe('child done');
