@@ -31,9 +31,13 @@ beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'agents-owned-mcp-stdio-'));
 });
 afterEach(async () => {
-  await Promise.all(sessions.splice(0).map((session) => session.close()));
-  await Promise.all(providers.splice(0).map((provider) => provider.close()));
-  await rm(directory, { recursive: true, force: true });
+  try {
+    await Promise.all(sessions.splice(0).map((session) => session.close()));
+    await Promise.all(providers.splice(0).map((provider) => provider.close()));
+    await rm(directory, { recursive: true, force: true });
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 // A peer can still be appending the last line; observe only full records.
@@ -87,6 +91,7 @@ async function peer(
   field: string,
   holdCall = false,
   overrides: Partial<ConstructorParameters<typeof StdioMCP>[0]> = {},
+  observeEnv: readonly string[] = ENV_NAMES,
 ) {
   const roster = join(directory, label + '-roster.json');
   const calls = join(directory, label + '-calls.jsonl');
@@ -111,7 +116,7 @@ async function peer(
         ],
         result: { content: [{ type: 'text', text: label + '-record' }] },
         holdCall,
-        observeEnv: ENV_NAMES,
+        observeEnv,
       }),
     ),
   ]);
@@ -692,3 +697,128 @@ it('preserves literal env through the resource-only stdio projection', async () 
   await expectEnv(selected.starts, 'resource-literal');
   expect(model.requests).toEqual([]);
 }, 30_000);
+
+for (const location of ['host', 'environment'] as const) {
+  it.each(['inherited', 'ascii-duplicates', 'unicode-duplicates', 'path'])(
+    `applies native environment name rules for %s (${location})`,
+    async (testCase) => {
+      let names: [string, string];
+      let envVars: string[] = [];
+      let env: Record<string, string>;
+      if (testCase === 'inherited') {
+        names = ['B04_Case', 'B04_CASE'];
+        vi.stubEnv(names[0], 'executor-inherited');
+        envVars = [names[0]];
+        env = { [names[1]]: 'explicit-value' };
+      } else if (testCase === 'path') {
+        names = ['PATH', 'Path'];
+        env = { [names[1]]: 'synthetic-child-path' };
+      } else {
+        names =
+          testCase === 'ascii-duplicates'
+            ? ['B04_CASE', 'b04_case']
+            : ['B04_É', 'B04_é'];
+        env = { [names[0]]: 'first-value', [names[1]]: 'second-value' };
+      }
+      let executor: Awaited<ReturnType<typeof startPublicExecutor>> | undefined;
+      let session: Session | undefined;
+      try {
+        let environment: Environment | undefined;
+        if (location === 'environment') {
+          executor = await startPublicExecutor();
+          environment = new Environment({
+            url: executor.url,
+            cwd: executor.cwd,
+            headers: executor.headers,
+            tools: [],
+            ...(process.platform === 'win32'
+              ? { writePolicy: 'legacy' as const }
+              : {}),
+          });
+          if (envVars.length)
+            vi.stubEnv(names[0], 'host-value-must-not-be-forwarded');
+        }
+        const selected = await peer(
+          `names-${location}-${testCase}`,
+          'key',
+          false,
+          { location, env, envVars, cwd: undefined },
+          names,
+        );
+        const rejectsDuplicates =
+          process.platform === 'win32' && testCase.endsWith('duplicates');
+        const model = new ModelServer(
+          rejectsDuplicates ? [] : [[message('done')]],
+        );
+        session = await (
+          await agent(model, selected.declaration)
+        ).session({
+          environment,
+        });
+        sessions.push(session);
+        if (rejectsDuplicates) {
+          const run = async () => (await session!.submit('read')).wait();
+          await expect(run()).rejects.toThrow(
+            /duplicate explicit environment/i,
+          );
+          expect(await records(selected.starts)).toHaveLength(0);
+          expect(model.requests).toHaveLength(0);
+          return;
+        }
+        expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+          'done',
+        );
+        await session.close();
+        await stopped(selected.starts);
+        const launches = await records(selected.starts);
+        expect(launches.length).toBeGreaterThan(0);
+        for (const row of launches) {
+          const observed = row.observedEnv as Record<string, string | null>;
+          if (testCase.endsWith('duplicates')) {
+            expect(observed).toEqual(env);
+          } else if (testCase === 'inherited') {
+            expect(observed).toEqual({
+              [names[0]]:
+                process.platform === 'win32'
+                  ? 'explicit-value'
+                  : 'executor-inherited',
+              [names[1]]: 'explicit-value',
+            });
+          } else {
+            expect(observed[names[1]]).toBe('synthetic-child-path');
+            if (process.platform === 'win32') {
+              expect(observed[names[0]]).toBe('synthetic-child-path');
+            } else {
+              expect(observed[names[0]]).toBeTruthy();
+              expect(observed[names[0]]).not.toBe('synthetic-child-path');
+            }
+          }
+        }
+        if (executor && testCase === 'inherited') {
+          const starts = executor.requests.filter(
+            (request) => request.method === 'process/start',
+          );
+          expect(starts.length).toBeGreaterThan(0);
+          for (const request of starts) {
+            const params = request.params as JsonObject;
+            const policy = params.envPolicy as JsonObject;
+            expect(params.env).toEqual(env);
+            expect(policy.set).toEqual({});
+            expect(policy.includeOnly).toContain(names[0]);
+            expect(JSON.stringify(params)).not.toContain(
+              'host-value-must-not-be-forwarded',
+            );
+          }
+        }
+        model.assertExhausted();
+      } finally {
+        try {
+          await session?.close();
+        } finally {
+          await executor?.close();
+        }
+      }
+    },
+    60_000,
+  );
+}
