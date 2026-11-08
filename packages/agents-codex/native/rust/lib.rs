@@ -320,7 +320,7 @@ impl Engine {
         let inner = self
             .current()
             .map_err(|error| anyhow::anyhow!(error.reason))?;
-        let options = config::decode(serde_json::from_str(options_json)?)?;
+        let options: options::ThreadOptions = config::decode(serde_json::from_str(options_json)?)?;
         let initial_messages = initial_messages_json
             .map(initial_messages::Batch::capture)
             .transpose()?;

@@ -9554,6 +9554,28 @@
                  | ContentItem::InputAudio { .. }
                  | ContentItem::OutputText { .. } => {
                      return Err(DecisionsError::UnsupportedEvidence);
+--- a/codex-rs/ext/image-generation/src/tool.rs
++++ b/codex-rs/ext/image-generation/src/tool.rs
+@@ -494,7 +494,8 @@
+             ResponseItem::Message { content, .. } => {
+                 image_references.extend(content.iter().rev().filter_map(|item| match item {
+                     ContentItem::InputImage { image, .. } => Some(image.clone()),
+-                    ContentItem::InputText { .. }
++                    ContentItem::InputFile { .. }
++                    | ContentItem::InputText { .. }
+                     | ContentItem::InputAudio { .. }
+                     | ContentItem::OutputText { .. } => None,
+                 }));
+@@ -555,7 +556,8 @@
+         .rev()
+         .filter_map(|item| match item {
+             FunctionCallOutputContentItem::InputImage { image, .. } => Some(image),
+-            FunctionCallOutputContentItem::InputText { .. }
++            FunctionCallOutputContentItem::InputFile { .. }
++            | FunctionCallOutputContentItem::InputText { .. }
+             | FunctionCallOutputContentItem::InputAudio { .. }
+             | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
+         })
 --- a/codex-rs/ext/memories/src/tests.rs
 +++ b/codex-rs/ext/memories/src/tests.rs
 @@ -225,6 +225,8 @@
