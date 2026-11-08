@@ -1,6 +1,6 @@
 # Prepare a native model request
 
-With the current [source build](building.md), `prepareRequest` changes what the model samples without changing canonical conversation history or the original tools' execution authority. Use it to add sampling-only context or adjust the descriptions and parameter schemas shown to the model.
+In `0.22.0-alpha.2`, `prepareRequest` changes what the model samples without changing canonical conversation history or the original tools' execution authority. Use it to add sampling-only context or adjust the descriptions and parameter schemas shown to the model.
 
 Run the [scripted request preparation example](../prepared-request.ts) from the repository root with matching built packages and native runtime. It needs no model credential:
 

@@ -59,7 +59,7 @@ The command prints a native Turn receipt after checking the request's effective 
 
 ## Load trusted instruction files
 
-With the current [source build](building.md), pass `instructionFiles` when opening a Session or starting a new `agent.run()`. The SDK loads each selected file as UTF-8 during opening, appends its text after the Agent instructions in the supplied order, and separates the parts with blank lines. Relative paths resolve against the application's current working directory. An unreadable file, non-file path, or invalid UTF-8 rejects opening.
+In `0.22.0-alpha.2`, pass `instructionFiles` when opening a Session or starting a new `agent.run()`. The SDK loads each selected file as UTF-8 during opening, appends its text after the Agent instructions in the supplied order, and separates the parts with blank lines. Relative paths resolve against the application's current working directory. An unreadable file, non-file path, or invalid UTF-8 rejects opening.
 
 Select files and parent directories that untrusted actors cannot modify. File contents become developer instructions. This option does not discover project files automatically or read files through an executor. Later edits to a file do not update an open Session's captured instructions.
 
@@ -67,7 +67,7 @@ The [session configuration example](../session-configuration.ts) creates two pri
 
 ## Prepare one model request
 
-With the current [source build](building.md), use `prepareRequest` to edit detached sampling instructions, input, and tool presentation. Return the edited request to apply it. Read [Prepare a native model request](request-preparation.md) for the HTTP, model, tool, compaction, and restore constraints before adding a callback.
+In `0.22.0-alpha.2`, use `prepareRequest` to edit detached sampling instructions, input, and tool presentation. Return the edited request to apply it. Read [Prepare a native model request](request-preparation.md) for the HTTP, model, tool, compaction, and restore constraints before adding a callback.
 
 ## Override opening tools
 
@@ -102,13 +102,13 @@ Before repeating an operation with uncertain effects, check the original action 
 
 ### Diagnose authentication failures
 
-With the current [source build](building.md), terminal HTTP 401 or 403 errors retain their observed status, provider code, request ID, and `authentication_error` category when available. Native authentication recovery can make another attempt before reporting a terminal 401. Once recovery ends, authentication errors report `retryable: false`, even if the server supplied `Retry-After` advice. A reported delay does not make that failure retryable.
+In `0.22.0-alpha.2`, terminal HTTP 401 or 403 errors retain their observed status, provider code, request ID, and `authentication_error` category when available. Native authentication recovery can make another attempt before reporting a terminal 401. Once recovery ends, authentication errors report `retryable: false`, even if the server supplied `Retry-After` advice. A reported delay does not make that failure retryable.
 
 Check the selected endpoint, model credential, and provider error code before starting more work. An explicit provider API key is captured by that provider; changing `OPENAI_API_KEY` does not replace it. Create a provider with corrected credentials for a new Session or supported restore, and close its Sessions before closing the old provider. A later authentication failure can follow a completed tool effect, so reconcile earlier work before repeating the operation.
 
 ### Inspect an incomplete model response
 
-With the current [source build](building.md), `NativeError.responseIntegrityReason` can identify why the runtime rejected model output. Known causes are `undecodable_output_item`, `provider_owned_tool_receipt`, `unfinished_assistant_item`, and `missing_supported_terminal_output`. The field is `null` when the runtime has no recognized cause for the selected failure. Use it for diagnosis alongside the effect information above.
+In `0.22.0-alpha.2`, `NativeError.responseIntegrityReason` can identify why the runtime rejected model output. Known causes are `undecodable_output_item`, `provider_owned_tool_receipt`, `unfinished_assistant_item`, and `missing_supported_terminal_output`. The field is `null` when the runtime has no recognized cause for the selected failure. Use it for diagnosis alongside the effect information above.
 
 ### Check the WebSocket request size
 
