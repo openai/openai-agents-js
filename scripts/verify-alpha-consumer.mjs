@@ -68,7 +68,6 @@ for (const esm of [false, true]) {
   for (const suffix of [
     '',
     '/testing',
-    '/migration',
     '/experimental/deferred',
     '/experimental/mcp-tasks',
     '/a2a',

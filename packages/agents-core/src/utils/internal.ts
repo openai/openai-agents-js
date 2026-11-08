@@ -14,7 +14,6 @@ export { normalizeToolAllowedCallers } from './toolCallers';
 export { snapshotRawUsage } from './rawUsage';
 export { snapshotTestingValue } from './testingSnapshot';
 export {
-  AGENT_TOOL_RUNNER_FACTORY,
   prepareFunctionToolInput,
   setFunctionToolPreparedInput,
   type FunctionToolPreparedInput,
@@ -42,7 +41,6 @@ export {
 } from '../toolInvocation';
 export { getAgentToolParentRunConfigFromDetails } from '../agentToolRunConfig';
 
-export { inspectFunctionToolForMigration } from '../tool';
 export {
   selectModel,
   prepareModelSettings,

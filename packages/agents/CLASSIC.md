@@ -1,6 +1,6 @@
 # Select the classic API explicitly
 
-Use `@openai/agents/classic` for applications built around the TypeScript SDK 0.21.0 Agent and Runner. The package root, `@openai/agents`, opens a native Agent backed by Codex. Each runtime owns its sessions and pending work.
+Use `@openai/agents/classic` when a staged migration must retain the TypeScript SDK 0.21.0 Agent and Runner. Prefer migrating directly from v0 to native v1 with the [migration guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migration.md). Classic is available and is not deprecated now. The package root, `@openai/agents`, opens a native Agent backed by Codex. Each runtime owns its sessions and pending work.
 
 ## Run a classic Agent
 
@@ -35,11 +35,11 @@ A `tool()` declaration requires a supported parameter schema in its TypeScript o
 
 ### Choose a model for a classic run
 
-Classic `Runner` model and model settings supply defaults. An explicit Agent model and explicitly configured Agent settings take precedence. This package adds `modelOverride` and an internal runner-factory hook to classic 0.21.0. The hook defaults to the ordinary classic Runner and does not select a different engine globally.
+Classic `Runner` model and model settings supply defaults. An explicit Agent model and explicitly configured Agent settings take precedence. This package adds `modelOverride` to classic 0.21.0.
 
 To choose the model explicitly for every Agent in a Classic run, including handoff targets, use `new Runner({ modelOverride: yourModel })`.
 
-The value can be a model name or an existing `Model` implementation. The Runner resolves names through its `modelProvider` and uses Model objects directly. The override replaces Agent models and the Runner's `model` default without changing registered Agents or model-setting precedence. Omit `modelOverride` to retain the existing model defaults. The experimental `/migration` entry point does not accept this classic Runner option.
+The value can be a model name or an existing `Model` implementation. The Runner resolves names through its `modelProvider` and uses Model objects directly. The override replaces Agent models and the Runner's `model` default without changing registered Agents or model-setting precedence. Omit `modelOverride` to retain the existing model defaults.
 
 An `Agent.asTool()` call starts a separate nested Runner. That Runner does not inherit the parent's `modelOverride`. Opt in for that child with `child.asTool({ toolDescription: 'Ask the child', runConfig: { modelOverride: childModel } })`. An explicit child Model keeps its existing protection against inherited parent transport settings.
 
@@ -55,24 +55,9 @@ Classic `toTextStream()` emits text from all responses, including intermediate a
 
 `result.input` exposes the stored array for array input. Make a detached copy before editing it.
 
-## Experimental native Model migration
+## Move a workflow to native
 
-Use `SDKRunner` to run a supported classic Agent through the native loop. Start with [models and run options](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md), then choose [tools and delegation](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md) or [streaming and completed session history](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md). The adapter supports specific combinations. For example, its terminal handoff requires two text Agents with the same explicit Model and excludes Session storage and live streaming.
-
-- <a name="supported-declarations-and-settings"></a>[Supported declarations and settings](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#supported-declarations-and-settings)
-- <a name="resolve-instructions-for-each-model-request"></a>[Resolve instructions for each Model request](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#resolve-instructions-for-each-model-request)
-- <a name="select-models-and-control-attempts"></a><a name="argument-conversion"></a><a name="retries-and-cancellation"></a><a name="execution-and-cleanup-errors"></a>[Select Models and control attempts](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#select-models-and-control-attempts)
-- <a name="structured-final-output"></a>[Structured final output](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#structured-final-output)
-- <a name="guardrails-and-lifecycle-events"></a><a name="guardrail-order"></a><a name="lifecycle-listeners"></a>[Guardrails and lifecycle events](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#guardrails-and-lifecycle-events)
-- <a name="finish-with-a-tool-result"></a><a name="completion-and-cleanup"></a>[Finish with a tool result](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#finish-with-a-tool-result)
-- <a name="use-an-agent-as-a-native-tool"></a><a name="child-configuration"></a><a name="output-extraction-and-cleanup"></a>[Use an Agent as a native tool](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#use-an-agent-as-a-native-tool)
-- <a name="transfer-to-one-terminal-agent"></a>[Transfer to one terminal Agent](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#transfer-to-one-terminal-agent)
-- <a name="hold-one-function-for-approval"></a><a name="paused-carrier"></a><a name="decide-and-join-continuation"></a><a name="approval-scope"></a>[Hold one function for approval](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#hold-one-function-for-approval)
-- <a name="live-model-events-and-accepted-semantic-replay"></a><a name="tentative-raw-events"></a><a name="accepted-semantic-replay"></a><a name="completed-results"></a><a name="backlog-and-cancellation"></a>[Live Model events and accepted semantic replay](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md#live-model-events-and-accepted-semantic-replay)
-- <a name="completed-session-history"></a><a name="select-and-append-history"></a>[Completed Session history](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md#completed-session-history)
-- <a name="reopen-an-application-owned-file-session"></a><a name="storage-ownership-and-failure-recovery"></a>[Reopen an application-owned file Session](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md#reopen-an-application-owned-file-session)
-
-<a name="choose-the-full-classic-runtime"></a>Use the [full classic runtime](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#choose-the-full-classic-runtime) when the adapter cannot represent your Agent, pending work, or output contract.
+Follow the [v0-to-native migration guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migration.md) to port declarations, tools, providers, execution, and state ownership together. Native and classic Agents run through their own APIs. Keep pending classic approvals on classic until they settle; starting a native conversation does not resume a classic RunState.
 
 ## Use a selected Modal sandbox
 

@@ -390,54 +390,6 @@ impl Engine {
         .await
     }
 
-    #[napi(js_name = "_sentinel_claim")]
-    pub async fn _sentinel_claim(
-        &self,
-        provider_id: String,
-        metadata: String,
-        expected: String,
-    ) -> napi::Result<String> {
-        let inner = self.current()?;
-        inner.operation(false).map_err(native_error)?;
-        let meta = serde_json::from_str(&metadata).map_err(native_error)?;
-        let expected = serde_json::from_str(&expected).map_err(native_error)?;
-        native_interception::sentinel_application(&inner, &provider_id, &meta, &expected, 0)
-            .await
-            .map_err(native_error)
-    }
-
-    #[napi(js_name = "_sentinel_current")]
-    pub async fn _sentinel_current(
-        &self,
-        provider_id: String,
-        metadata: String,
-        expected: String,
-    ) -> napi::Result<String> {
-        let inner = self.current()?;
-        inner.operation(false).map_err(native_error)?;
-        let meta = serde_json::from_str(&metadata).map_err(native_error)?;
-        let expected = serde_json::from_str(&expected).map_err(native_error)?;
-        native_interception::sentinel_application(&inner, &provider_id, &meta, &expected, 1)
-            .await
-            .map_err(native_error)
-    }
-
-    #[napi(js_name = "_sentinel_finish")]
-    pub async fn _sentinel_finish(
-        &self,
-        provider_id: String,
-        metadata: String,
-        expected: String,
-    ) -> napi::Result<String> {
-        let inner = self.current()?;
-        inner.operation(false).map_err(native_error)?;
-        let meta = serde_json::from_str(&metadata).map_err(native_error)?;
-        let expected = serde_json::from_str(&expected).map_err(native_error)?;
-        native_interception::sentinel_application(&inner, &provider_id, &meta, &expected, 2)
-            .await
-            .map_err(native_error)
-    }
-
     #[napi(js_name = "_sentinel_restore_schemas")]
     pub async fn _sentinel_restore_schemas(
         &self,
@@ -1200,21 +1152,6 @@ impl ContextChange {
 
 #[napi]
 impl NativeThread {
-    #[napi(js_name = "_selected_model_root")]
-    pub fn _selected_model_root(&self) -> napi::Result<String> {
-        let inner = self.current()?;
-        if !inner.engine.sdk_selected_model {
-            return Err(native_error("Thread does not own a selected Model"));
-        }
-        let control = self
-            .native_interception()?
-            .ok_or_else(|| native_error("Native thread ended"))?;
-        serde_json::to_string(&serde_json::json!({
-            "thread": self.id, "control": control.incarnation,
-        }))
-        .map_err(native_error)
-    }
-
     #[napi(js_name = "_fork_settled")]
     pub async fn _fork_settled(&self) -> napi::Result<NativeThread> {
         let source = self.current()?;
@@ -3725,7 +3662,7 @@ async fn direct_sentinel_stream(
     if request.timeout.is_some() || request.response_body_limit_bytes.is_some() {
         return Err(invalid());
     }
-    if request.url != expected_url || inner.sdk_selected_model {
+    if request.url != expected_url {
         return Err(unmatched());
     }
     let binding = inner

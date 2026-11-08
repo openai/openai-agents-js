@@ -58,7 +58,6 @@ async fn current_search_only_extends_local_policy_by_its_exact_identity() {
             vec![],
             ToolInstallOptions {
                 preserve_schemas: false,
-                strict_functions: false,
                 allow_local_goals: false,
             },
         )
@@ -70,7 +69,6 @@ async fn current_search_only_extends_local_policy_by_its_exact_identity() {
         vec![],
         ToolInstallOptions {
             preserve_schemas: false,
-            strict_functions: false,
             allow_local_goals: false,
         },
     )
@@ -95,7 +93,6 @@ async fn current_search_and_checklist_require_both_current_policy_grants() {
                 vec![],
                 ToolInstallOptions {
                     preserve_schemas: false,
-                    strict_functions: false,
                     allow_local_goals: false
                 }
             )
@@ -115,7 +112,6 @@ async fn enabled_search_requires_its_current_policy_grant() {
                 vec![],
                 ToolInstallOptions {
                     preserve_schemas: false,
-                    strict_functions: false,
                     allow_local_goals: false
                 }
             )
@@ -133,7 +129,6 @@ async fn disabled_search_does_not_admit_plain_search_policy_name() {
             vec![],
             ToolInstallOptions {
                 preserve_schemas: false,
-                strict_functions: false,
                 allow_local_goals: false
             }
         )
@@ -150,7 +145,6 @@ async fn hosted_grant_cannot_alias_a_managed_callback() {
             vec![callback()],
             ToolInstallOptions {
                 preserve_schemas: false,
-                strict_functions: false,
                 allow_local_goals: false
             }
         )
@@ -162,7 +156,6 @@ async fn hosted_grant_cannot_alias_a_managed_callback() {
         vec![callback()],
         ToolInstallOptions {
             preserve_schemas: false,
-            strict_functions: false,
             allow_local_goals: false,
         },
     )
@@ -185,7 +178,6 @@ async fn unrelated_policy_and_alternate_route_are_rejected() {
                 vec![],
                 ToolInstallOptions {
                     preserve_schemas: false,
-                    strict_functions: false,
                     allow_local_goals: false
                 }
             )
