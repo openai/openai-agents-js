@@ -8,13 +8,17 @@ if (startsPath) {
     startsPath,
     JSON.stringify({
       pid: process.pid,
-      cwd: process.cwd(),
-      observedEnv: Object.fromEntries(
-        (initial.observeEnv ?? []).map((name) => [
-          name,
-          process.env[name] ?? null,
-        ]),
-      ),
+      ...(initial.observeEnv
+        ? {
+            cwd: process.cwd(),
+            observedEnv: Object.fromEntries(
+              initial.observeEnv.map((name) => [
+                name,
+                process.env[name] ?? null,
+              ]),
+            ),
+          }
+        : {}),
     }) + '\n',
   );
 }
