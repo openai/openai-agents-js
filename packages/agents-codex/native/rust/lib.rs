@@ -1682,6 +1682,34 @@ impl NativeThread {
         .await
     }
 
+    fn python_callback_operation(&self, receipt_json: &str, operation: &str) -> bool {
+        let Ok(receipt) = serde_json::from_str::<Value>(receipt_json) else {
+            return false;
+        };
+        let Ok(inner) = self.current() else {
+            return false;
+        };
+        inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .is_some_and(|tools| {
+                tools.callback_operation(&inner.id.to_string(), &receipt, operation)
+            })
+    }
+    #[napi(js_name = "_enter_python_callback")]
+    pub fn enter_python_callback(&self, receipt_json: String) -> bool {
+        self.python_callback_operation(&receipt_json, "enter")
+    }
+    #[napi(js_name = "_python_callback_cancelled")]
+    pub fn python_callback_cancelled(&self, receipt_json: String) -> bool {
+        self.python_callback_operation(&receipt_json, "cancelled")
+    }
+    #[napi(js_name = "_release_python_callback")]
+    pub fn release_python_callback(&self, receipt_json: String) -> bool {
+        self.python_callback_operation(&receipt_json, "release")
+    }
+
     // Recheck after caller-owned checkpoint storage has settled, immediately
     // before invoking the JavaScript effect. A raw native interrupt may have raced it.
     #[napi(js_name = "_check_python_tool")]
@@ -2172,7 +2200,15 @@ impl NativeThread {
         let inner = self.current()?;
         (async move {
             let _context_operation = inner.engine.operation(false).map_err(native_error)?;
-            let result = match graph_stop::submit(&inner, &params).await {
+            let attachment = params
+                .get("expected_root_turn_id")
+                .is_some_and(|root| !root.is_null());
+            let admission = if attachment {
+                Ok(())
+            } else {
+                graph_stop::submit(&inner, &params).await
+            };
+            let result = match admission {
                 Ok(()) => ops::submit_realtime_tools(&inner, params).await,
                 Err(error) => Err(error),
             }
@@ -2709,6 +2745,11 @@ impl NativeThread {
                     }
                     guard.commit().map_err(native_error)?;
                 }
+                // Function replacement may have captured the preceding roster.
+                // Rebind only after the new roster and callback policies commit.
+                agent_profiles::refresh_active_mcp(&inner.thread)
+                    .await
+                    .map_err(native_error)?;
                 if let Some(id) = startup_boundary {
                     inner
                         .request_publication_boundary(id)

@@ -217,3 +217,33 @@ it.each([42, 'x'.repeat(8 * 1024 * 1024 + 1)])(
     await driver.finish();
   },
 );
+
+it('joins the first failed close on retirement until an explicit retry', async () => {
+  const handle = new Handle();
+  const io = connection();
+  const failure = new Error('first physical failure');
+  io.close.mockRejectedValueOnce(failure);
+  const driver = new NativeRealtimeAdapterDriver(
+    { connect: async () => io },
+    handle,
+    invoke,
+  );
+  expect(await handle.request(connect)).toBe(true);
+  expect(await handle.request({ type: 'close' })).toBe(false);
+  handle.finish();
+  await expect(driver.finish()).rejects.toBe(failure);
+  expect(io.close).toHaveBeenCalledTimes(1);
+  expect(driver.cleanupFailure?.error).toBe(failure);
+  const released = Promise.withResolvers<void>();
+  io.close.mockImplementationOnce(async () => {
+    await released.promise;
+    await io.incoming.return();
+  });
+  const retry = driver.finish();
+  const sameRetry = driver.finish();
+  await vi.waitFor(() => expect(io.close).toHaveBeenCalledTimes(2));
+  released.resolve();
+  await Promise.all([retry, sameRetry]);
+  expect(io.close).toHaveBeenCalledTimes(2);
+  expect(driver.cleanupFailure).toBeUndefined();
+});

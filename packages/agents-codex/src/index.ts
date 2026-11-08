@@ -131,6 +131,7 @@ export type {
   LocalEnvironmentOptions,
   LocalStorageMount,
   ExecutorContext,
+  ExecutorToolName,
 } from './runtime/environment';
 export { NativeAgents, NativeRole } from './runtime/native-agents';
 export type {
@@ -167,6 +168,7 @@ export type {
 export type { Subagent, ChildTurn, ChildCompleted } from './runtime/subagents';
 export type {
   SessionItem,
+  ItemStatus,
   ExecutionItem,
   PatchChange,
   RecordedTurn,

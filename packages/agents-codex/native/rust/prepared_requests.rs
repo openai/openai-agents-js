@@ -218,21 +218,22 @@ impl PythonTools {
             self.retire_preparation(None);
             return;
         }
+        let generation = input
+            .turn_store
+            .get::<Option<OperationSelection>>()
+            .and_then(|operation| {
+                operation.as_ref().as_ref().and_then(|operation| {
+                    operation
+                        .generation
+                        .parse()
+                        .ok()
+                        .and_then(|id| self.resolve_generation(id))
+                })
+            })
+            .unwrap_or_else(|| self.snapshot());
         let owner = input.turn_store.get_or_init(|| Owner {
             tools: Arc::downgrade(self),
-            generation: input
-                .turn_store
-                .get::<Option<OperationSelection>>()
-                .and_then(|operation| {
-                    operation.as_ref().as_ref().and_then(|operation| {
-                        operation
-                            .generation
-                            .parse()
-                            .ok()
-                            .and_then(|id| self.resolve_generation(id))
-                    })
-                })
-                .unwrap_or_else(|| self.snapshot()),
+            generation,
             turn: input.turn_id.to_owned(),
             thread: input.thread_store.level_id().to_owned(),
             store: input.turn_store as *const ExtensionData as usize,
@@ -395,6 +396,7 @@ mod tests {
         let impostor = Arc::new(ExtensionData::new("turn"));
         // Even the same marker and textual ID cannot change the original store identity.
         let wrong = Admission {
+            generation: tools.resolve_generation(tools.generation()).unwrap(),
             owner: owner.clone(),
             original: Arc::new(Original { turn: impostor }),
             _sampling_schemas: None,

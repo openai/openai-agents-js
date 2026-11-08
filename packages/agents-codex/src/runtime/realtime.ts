@@ -37,7 +37,7 @@ import {
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import type { Session as PublicSession } from './public-agent';
-import type { Session } from './session';
+import { TurnAborted, type Turn, type Session } from './session';
 import type { NativeEvent } from './events';
 import { copyJsonValue, type JsonObject, type JsonValue } from './binding';
 import {
@@ -189,6 +189,12 @@ export type NativeRealtimeCall = (
   operation: `realtime_conversation_${Command}_sdk`,
   params: JsonObject,
 ) => Promise<unknown>;
+interface ToolsRoot {
+  turn: Turn<unknown>;
+  monitor: Promise<void>;
+  settled: boolean;
+  failure?: { error: unknown };
+}
 interface Delegation {
   workflow: NativeSessionVoiceWorkflow;
   retired: boolean;
@@ -267,6 +273,9 @@ class NativeRealtimeOwner {
     }
   >();
   private readonly toolBatches = new Set<NativeRealtimeToolBatch>();
+  private readonly toolsRoots = new WeakMap<Turn<unknown>, ToolsRoot>();
+  private readonly toolsRootMonitors = new Set<ToolsRoot>();
+  private readonly toolsGraphClosed = Promise.withResolvers<void>();
   private functionBytes = 0;
   private readonly hostedApprovals = new WeakMap<
     NativeRealtimeHostedMcpApprovalRequest,
@@ -448,7 +457,9 @@ class NativeRealtimeOwner {
             initial_items: [],
             realtime_start_instructions: null,
             realtime_end_instructions: null,
-            prompt: this.options.instructions ?? null,
+            ...(this.options.instructions === undefined
+              ? {}
+              : { prompt: this.options.instructions }),
             realtime_session_id: null,
             transport: this.transport,
             version: 'v2',
@@ -502,17 +513,23 @@ class NativeRealtimeOwner {
           return raw;
         });
       };
-      const preparation =
+      const mcpPreparation =
         this.selectedTools === undefined
+          ? this.session._prepareRealtimeMcp()
+          : Promise.resolve();
+      const preparation = mcpPreparation.then(() => {
+        signal?.throwIfAborted();
+        this.checkLive();
+        return this.selectedTools === undefined
           ? start(null)
           : this.session
               ._realtimeFunctionTools(this.selectedTools)
               .then((tools) => {
                 signal?.throwIfAborted();
-                if (!this.live)
-                  throw new Error('Native Realtime admission stopped');
+                this.checkLive();
                 return start(tools.tools, tools.selectionId);
               });
+      });
       await Promise.race([preparation, aborted.promise, this.terminal.promise]);
       await Promise.race([
         this.ready.promise,
@@ -596,6 +613,10 @@ class NativeRealtimeOwner {
   ): Promise<void> {
     this.checkLive();
     try {
+      if (includeMono && this.selectedTools === undefined) {
+        await this.session._prepareRealtimeMcp();
+        this.checkLive();
+      }
       const target =
         bound?.responseId !== undefined
           ? this.session._realtimeProfileTarget(bound.target)
@@ -741,6 +762,7 @@ class NativeRealtimeOwner {
     this.wake();
   }
   private finish(...errors: [] | [unknown]): void {
+    const wasEnded = this.ended;
     const failure =
       this.adapterDriver?.failure ??
       (errors.length ? { error: errors[0] } : undefined);
@@ -757,7 +779,7 @@ class NativeRealtimeOwner {
       this.terminal.resolve();
       this.wake();
     }
-    if (!this.sessionClosing) void this.close().catch(() => {});
+    if (!this.sessionClosing && !wasEnded) void this.close().catch(() => {});
   }
   /** @internal Reader control is synchronous and independent of public observers. */
   _ingest(event: NativeEvent): boolean {
@@ -891,7 +913,10 @@ class NativeRealtimeOwner {
     } else if (name === 'FunctionBatchFinished') {
       if (typeof value.response_id !== 'string' || !value.response_id)
         throw new TypeError('Invalid native function-batch receipt');
-      if (this.retiredResponses.has(value.response_id)) return;
+      for (const batch of this.toolBatches)
+        if (batch.responseId === value.response_id) batch.complete();
+      if (this.retiredResponses.has(value.response_id) || value.target == null)
+        return;
       if (this.profileUpdates.size >= PENDING_LIMIT)
         throw new Error('Native Realtime profile update capacity exceeded');
       const task = this.#context(async () => {
@@ -1134,8 +1159,17 @@ class NativeRealtimeOwner {
     const batch = new NativeRealtimeToolBatch(
       responseId,
       Object.freeze([...ids]),
-      () =>
-        this.session._submitRealtimeTools(this.#generation, responseId, ids),
+      async (signal) => {
+        const root = await this.session._submitRealtimeTools(
+          this.#generation,
+          responseId,
+          ids,
+          signal,
+        );
+        batch.root = root;
+        this.observeToolsRoot(root, batch);
+        return root;
+      },
     );
     this.toolBatches.add(batch);
     for (const id of ids) {
@@ -1152,6 +1186,49 @@ class NativeRealtimeOwner {
     if (this.live) {
       batch.task = this.#context(() => this.runFunctionBatch(batch));
       void batch.task.catch((error) => this.finish(error));
+    }
+  }
+  private observeToolsRoot(
+    turn: Turn<unknown>,
+    batch: NativeRealtimeToolBatch,
+  ): void {
+    let root = this.toolsRoots.get(turn);
+    if (!root) {
+      root = { turn, monitor: Promise.resolve(), settled: false };
+      this.toolsRoots.set(turn, root);
+      const captured = root;
+      root.monitor = Promise.race([
+        turn.wait(),
+        this.toolsGraphClosed.promise,
+      ]).then(
+        () => {
+          captured.settled = true;
+          for (const owned of this.toolBatches)
+            if (owned.root === turn && owned.retired) owned.retiredByCore();
+        },
+        (error) => {
+          captured.settled = true;
+          captured.failure = { error };
+          const batches = [...this.toolBatches].filter(
+            (owned) => owned.root === turn,
+          );
+          for (const owned of batches) owned.fail(error);
+          if (
+            this.live &&
+            (!(error instanceof TurnAborted) ||
+              batches.some((owned) => !owned.retired))
+          )
+            this.finish(error);
+        },
+      );
+      this.toolsRootMonitors.add(root);
+      void root.monitor.then(() => this.toolsRootMonitors.delete(captured));
+    }
+    // A receipt may arrive after its actual root's terminal observation. Reuse
+    // that monitor without replacing or joining an unrelated newer root.
+    if (root.settled) {
+      if (root.failure) batch.fail(root.failure.error);
+      else if (batch.retired) batch.retiredByCore();
     }
   }
   private async runFunctionBatch(
@@ -1307,7 +1384,7 @@ class NativeRealtimeOwner {
     const batches = [...this.toolBatches].filter(
       (batch) => responseId === undefined || batch.responseId === responseId,
     );
-    // Cancel owned native work immediately, even if the media command stalls.
+    // Retire admission immediately. Core owns response-scoped native cancellation.
     const guardWork = this.guardrails.retire(
       responseId === undefined ? undefined : new Set([responseId]),
     );
@@ -1316,7 +1393,8 @@ class NativeRealtimeOwner {
       ...owned.map((item) => item.workflow.cancel()),
       ...batches.map((batch) => batch.cancel()),
     ]);
-    let failure: unknown;
+    let failure: { error: unknown } | undefined;
+    let joinedRoots = new Set<string>();
     try {
       const raw = await this.call('interrupt', {
         response_id: responseId ?? null,
@@ -1331,11 +1409,17 @@ class NativeRealtimeOwner {
           (id: unknown) => typeof id !== 'string' || !id,
         ) ||
         (receipt.cancelled_response_id != null &&
-          typeof receipt.cancelled_response_id !== 'string')
+          typeof receipt.cancelled_response_id !== 'string') ||
+        (receipt.joined_root_turn_ids !== undefined &&
+          (!Array.isArray(receipt.joined_root_turn_ids) ||
+            receipt.joined_root_turn_ids.some(
+              (id: unknown) => typeof id !== 'string' || !id,
+            )))
       )
         throw new Error(
           'Native Realtime interruption lacks an authoritative effect receipt',
         );
+      joinedRoots = new Set<string>(receipt.joined_root_turn_ids ?? []);
       const retired = new Set<string>(receipt.retired_response_ids);
       for (const id of retired) {
         if (
@@ -1366,6 +1450,7 @@ class NativeRealtimeOwner {
       ]);
       owned.push(...lateOwned);
       batches.push(...lateBatches);
+      for (const batch of batches) batch.retiredByCore();
       for (let i = this.queue.length - 1; i >= 0; i--) {
         const event = this.queue[i];
         if (
@@ -1389,16 +1474,29 @@ class NativeRealtimeOwner {
       );
       if (lateFailure?.status === 'rejected') throw lateFailure.reason;
     } catch (error) {
-      failure = error;
+      failure = { error };
     }
+    if (failure) throw failure.error;
     const cleanup = await joining;
     const failed = cleanup.find((result) => result.status === 'rejected');
-    if (failure !== undefined) throw failure;
     if (failed?.status === 'rejected') throw failed.reason;
     await Promise.all([
       ...owned.flatMap((item) => (item.task ? [item.task] : [])),
       ...batches.flatMap((batch) => (batch.task ? [batch.task] : [])),
     ]);
+    // Core names only roots it sealed and joined. A delayed attachment may
+    // share a live sibling root, which this response must never wait for.
+    const monitors = new Set(this.toolsRootMonitors);
+    for (const batch of batches) {
+      const root = batch.root && this.toolsRoots.get(batch.root);
+      if (root) monitors.add(root);
+    }
+    for (const root of monitors) {
+      if (!joinedRoots.has(root.turn.turnId)) continue;
+      await root.monitor;
+      if (root.failure && !(root.failure.error instanceof TurnAborted))
+        throw root.failure.error;
+    }
   }
   /** @internal Session fences results before its broader graph cleanup begins. */
   _retireFromSession(): void {
@@ -1411,6 +1509,7 @@ class NativeRealtimeOwner {
     // Its retained manager/runtime do not keep the Session or Engine alive.
     this.closeNative = () => this.closeAfterGraph(this.#generation);
     this.nativeEnded.resolve();
+    this.toolsGraphClosed.resolve();
     for (const item of this.delegations.values())
       voiceWorkflowGraphClosed(item.workflow);
     for (const batch of this.toolBatches) batch.afterGraphClosed();
@@ -1443,6 +1542,7 @@ class NativeRealtimeOwner {
       try {
         // Core cancellation must run while allocation/readiness is pending.
         if (!this.nativeClosed) await this.closeNative();
+        for (const batch of this.toolBatches) batch.retiredByCore();
         await this.preparation?.catch(() => {});
         const admitted = await this.admission?.then(
           () => true,
@@ -1456,16 +1556,19 @@ class NativeRealtimeOwner {
       } catch (error) {
         mediaFailure = this.adapterDriver?.cleanupFailure ?? { error };
       }
+      if (mediaFailure) throw mediaFailure.error;
       const results = await joining;
       const tasks = await Promise.allSettled([
         ...this.profileUpdates,
         ...owned.flatMap((item) => (item.task ? [item.task] : [])),
         ...batches.flatMap((batch) => (batch.task ? [batch.task] : [])),
       ]);
+      await Promise.all(
+        [...this.toolsRootMonitors].map((root) => root.monitor),
+      );
       const failure = [...results, ...tasks].find(
         (result) => result.status === 'rejected',
       );
-      if (mediaFailure) throw mediaFailure.error;
       if (failure?.status === 'rejected') throw failure.reason;
       this.release();
     })().catch((error) => {

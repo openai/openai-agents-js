@@ -431,3 +431,111 @@ it('restores ordinary default slots before the first profile receipt is configur
     await f.session.close();
   }
 });
+
+it('attaches a second response to the same actual native tools root', async () => {
+  const f = fixture();
+  await f.session._start();
+  try {
+    const first = await f.session._submitRealtimeTools('voice', 'A', ['a']);
+    f.native._submit_realtime_tools.mockImplementation(
+      async (...args: unknown[]) => {
+        expect(JSON.parse(args[0] as string)).toMatchObject({
+          expected_root_turn_id: 'native-batch',
+          response_id: 'B',
+        });
+        return JSON.stringify({
+          status: 'attached',
+          root_turn_id: 'native-batch',
+        });
+      },
+    );
+    const second = await f.session._submitRealtimeTools('voice', 'B', ['b']);
+    expect(second).toBe(first);
+    f.emit('native-batch', 'task_complete', { last_agent_message: '' });
+    await first.wait();
+  } finally {
+    await f.session.close();
+  }
+});
+
+it.each(['not_idle', 'superseded'])(
+  'passively joins exact prior root on %s before starting a new batch root',
+  async (reason) => {
+    const f = fixture();
+    await f.session._start();
+    try {
+      const first = await f.session._submitRealtimeTools('voice', 'A', ['a']);
+      f.native._submit_realtime_tools
+        .mockResolvedValueOnce(
+          JSON.stringify({ status: 'not_submitted', reason: { type: reason } }),
+        )
+        .mockResolvedValueOnce(
+          JSON.stringify({ status: 'started', turn_id: 'next-root' }),
+        );
+      const pending = f.session._submitRealtimeTools('voice', 'B', ['b']);
+      await vi.waitFor(() =>
+        expect(f.native._submit_realtime_tools).toHaveBeenCalledTimes(2),
+      );
+      f.emit('native-batch', 'task_complete', {
+        last_agent_message: 'A accepted',
+      });
+      expect((await first.wait()).finalOutput).toBe('A accepted');
+      const second = await pending;
+      expect(second).not.toBe(first);
+      expect(f.native._submit_realtime_tools).toHaveBeenCalledTimes(3);
+      f.emit('next-root', 'task_complete', { last_agent_message: '' });
+      await second.wait();
+    } finally {
+      await f.session.close();
+    }
+  },
+);
+
+it('does not attach voice tools to an ordinary caller root', async () => {
+  const f = fixture();
+  await f.session._start();
+  try {
+    const ordinary = await f.session.submit('caller work');
+    await expect(
+      f.session._submitRealtimeTools('voice', 'A', ['a']),
+    ).rejects.toThrow();
+    expect(f.native._submit_realtime_tools).not.toHaveBeenCalled();
+    f.emit('ordinary', 'task_complete', {
+      last_agent_message: 'caller accepted',
+    });
+    expect((await ordinary.wait()).finalOutput).toBe('caller accepted');
+  } finally {
+    await f.session.close();
+  }
+});
+
+it('cancels only a passive retry wait without restarting its retired batch', async () => {
+  const f = fixture();
+  await f.session._start();
+  try {
+    const first = await f.session._submitRealtimeTools('voice', 'A', ['a']);
+    f.native._submit_realtime_tools.mockResolvedValueOnce(
+      JSON.stringify({ status: 'not_submitted', reason: { type: 'not_idle' } }),
+    );
+    const stop = new AbortController();
+    const pending = f.session._submitRealtimeTools(
+      'voice',
+      'B',
+      ['b'],
+      stop.signal,
+    );
+    await vi.waitFor(() =>
+      expect(f.native._submit_realtime_tools).toHaveBeenCalledTimes(2),
+    );
+    const reason = new Error('B retired');
+    stop.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    f.emit('native-batch', 'task_complete', {
+      last_agent_message: 'A accepted',
+    });
+    expect((await first.wait()).finalOutput).toBe('A accepted');
+    expect(f.native._submit_realtime_tools).toHaveBeenCalledTimes(2);
+  } finally {
+    await f.session.close();
+  }
+});

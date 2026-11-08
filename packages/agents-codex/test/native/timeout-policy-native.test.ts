@@ -37,6 +37,54 @@ function toolText(request: Record<string, unknown>, callId: string) {
         .join('');
 }
 
+it.each(['raise_exception', 'error_as_result'] as const)(
+  'publishes on-time synchronous success after queued reporting work in %s mode',
+  async (timeoutBehavior) => {
+    const effects: string[] = [];
+    const formatter = vi.fn(() => 'must not replace success');
+    const after = vi.fn((output) => output);
+    const server = new ModelServer([
+      [call('fast', {}, { callId: 'on-time-sync' })],
+      [message('completed')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use fast.',
+      provider,
+      tools: [
+        tool({
+          name: 'fast',
+          parameters: z.object({}),
+          callbackTimeout: 0.02,
+          timeoutBehavior,
+          timeoutErrorFunction: formatter,
+          execute() {
+            effects.push('effect');
+            queueMicrotask(() => {
+              const end = performance.now() + 60;
+              while (performance.now() < end) {
+                /* Reporting runs after the synchronous callback has returned. */
+              }
+              effects.push('reporting');
+            });
+            return 'on-time success';
+          },
+          result: z.string().transform((value) => value.toUpperCase()),
+          after,
+        }),
+      ],
+    });
+    expect((await agent.run('Read')).finalOutput).toBe('completed');
+    expect(toolText(server.requests[1], 'on-time-sync')).toBe(
+      'ON-TIME SUCCESS',
+    );
+    expect(effects).toEqual(['effect', 'reporting']);
+    expect(after).toHaveBeenCalledOnce();
+    expect(formatter).not.toHaveBeenCalled();
+    server.assertExhausted();
+  },
+);
+
 it.each(['return', 'reject'] as const)(
   'continues a public root Session after timeout and %s cleanup',
   async (outcome) => {

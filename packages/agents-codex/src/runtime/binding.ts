@@ -223,6 +223,29 @@ export function parseNative(source: string): unknown {
       restore(msg._sdk_python_tool, 'generation');
       restore(msg._sdk_python_tool, 'profile_epoch');
     }
+    if (typeof msg === 'object' && msg !== null) {
+      const callbacks = [
+        '_sdk_callback' in msg ? msg._sdk_callback : undefined,
+        'type' in msg && msg.type === '_sdk_callback_cancel' && 'receipt' in msg
+          ? msg.receipt
+          : undefined,
+      ];
+      for (const callback of callbacks) {
+        if (
+          typeof callback !== 'object' ||
+          callback === null ||
+          !('request' in callback)
+        )
+          continue;
+        const request = callback.request;
+        if (
+          typeof request === 'object' &&
+          request !== null &&
+          '_sdk_python_tool' in request
+        )
+          restore(request._sdk_python_tool, 'generation');
+      }
+    }
   }
   if (typeof parsed === 'object' && parsed !== null && 'msg' in parsed) {
     const msg = parsed.msg;

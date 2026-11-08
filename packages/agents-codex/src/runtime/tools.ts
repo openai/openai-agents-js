@@ -539,7 +539,12 @@ export async function invokeWithTimeout<T>(
   try {
     let value: T;
     try {
-      value = await invoke(signal);
+      const result = invoke(signal);
+      // Check synchronous completion before unrelated queued work can delay us.
+      value =
+        result && typeof (result as Promise<T>).then === 'function'
+          ? await result
+          : (result as T);
     } catch (error) {
       if (timeoutError) {
         if (performance.now() >= deadline) expire();

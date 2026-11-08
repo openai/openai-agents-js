@@ -1,12 +1,14 @@
+import type {
+  SandboxClient,
+  SandboxClientOptions,
+  SandboxSessionLike,
+  SandboxSessionState,
+} from '@openai/agents-core/sandbox';
 import {
   cloneManifest,
   Manifest,
-  type SandboxClient,
-  type SandboxClientOptions,
-  type SandboxSessionLike,
-  type SandboxSessionState,
-} from '@openai/agents-core/sandbox';
-import { cleanupSandboxSession } from '@openai/agents-core/sandbox/internal';
+  cleanupSandboxSession,
+} from '@openai/agents-core/sandbox/internal';
 import type { Environment } from './environment';
 import {
   acquireEnvironment,

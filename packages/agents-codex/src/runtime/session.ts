@@ -176,6 +176,7 @@ import {
   type NativeThread,
 } from './binding';
 import {
+  nativeMarker,
   parseEvent,
   parseEvents,
   requestTypes,
@@ -835,7 +836,7 @@ const submissions = new WeakMap<
     cancelled?: boolean;
     blankFinal?: boolean;
     compaction?: boolean;
-    realtimeTools?: boolean;
+    realtimeTools?: { generation: string };
     review?: boolean;
     retirement?: Promise<never>;
     tracingAdmissionFailed?: boolean;
@@ -865,6 +866,39 @@ function continuationWasSuperseded(error: unknown): boolean {
     !Array.isArray(reason) &&
     (reason.type === 'superseded' || reason.type === 'pending_trigger_turn')
   );
+}
+
+const nativeCallbackReceipt = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('tool'),
+      request: z
+        .object({
+          _sdk_python_tool: nativeMarker.strict(),
+          turnId: z.string(),
+          callId: z.string(),
+        })
+        .strict(),
+      invocation: z.string().regex(/^(0|[1-9][0-9]*)$/),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('preparation'),
+      thread: z.string(),
+      instance: z.string().optional(),
+      id: z.string().regex(/^(0|[1-9][0-9]*)$/),
+    })
+    .strict(),
+]);
+interface NativeCallbackDelivery {
+  wire: string;
+  native: NativeThread;
+  controller: AbortController;
+  claimed: boolean;
+  buffered: boolean;
+  retired: boolean;
+  released: boolean;
 }
 
 class NativeTurn {
@@ -1073,6 +1107,18 @@ export class Session<OutputT = string, Context = unknown> {
     );
     this.realtimeOwner = owner;
     return owner._start();
+  }
+
+  /** @internal Promote inherited idle MCP defaults without starting a model turn. */
+  async _prepareRealtimeMcp(): Promise<void> {
+    this.checkCallbackOperation('open Realtime MCP on');
+    if (
+      this.options.agentGraph ||
+      this.lifecycle.kind === 'turn' ||
+      !this.mcpBindings.length
+    )
+      return;
+    await this.mutate(() => this.promoteMcp(undefined));
   }
 
   /** @internal Select only sealed captured functions; Core rechecks its atomic source catalog. */
@@ -1442,6 +1488,14 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly completedResults = new WeakMap<
     NativeRunResult,
     Completed<unknown>
+  >();
+  private readonly callbackDeliveries = new Map<
+    string,
+    NativeCallbackDelivery
+  >();
+  private readonly callbackEvents = new WeakMap<
+    NativeEvent,
+    NativeCallbackDelivery
   >();
   private readonly issuedRuns = new Map<string, NativeTurn>();
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
@@ -3323,9 +3377,9 @@ export class Session<OutputT = string, Context = unknown> {
     generation: string,
     responseId: string,
     callIds: readonly string[],
+    signal?: AbortSignal,
   ): Promise<Turn<unknown>> {
     this.checkCallbackOperation('start Realtime tools in');
-    this.idle('start Realtime tools');
     if (
       !generation ||
       !responseId ||
@@ -3337,16 +3391,89 @@ export class Session<OutputT = string, Context = unknown> {
         'Realtime tool batches require a response and distinct nonempty call IDs',
       );
     const selected = [...callIds];
+    const parentTrace = captureTraceContext() ?? this.options.parentTrace;
+    const wait = <T>(pending: Promise<T>): Promise<T> => {
+      if (!signal) return pending;
+      signal.throwIfAborted();
+      return new Promise<T>((resolve, reject) => {
+        const abort = () => {
+          signal.removeEventListener('abort', abort);
+          reject(signal.reason);
+        };
+        signal.addEventListener('abort', abort, { once: true });
+        pending
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener('abort', abort));
+      });
+    };
+    for (;;) {
+      signal?.throwIfAborted();
+      const current =
+        this.lifecycle.kind === 'turn'
+          ? this.rootRun(this.lifecycle.run)
+          : undefined;
+      if (
+        !current ||
+        submissions.get(current)?.realtimeTools?.generation !== generation
+      )
+        break;
+      await wait(current.accepted.promise);
+      if (!this.owns(current)) continue;
+      signal?.throwIfAborted();
+      const tracingContext = current.tracing
+        ? await wait(this.tracingContext(current))
+        : undefined;
+      signal?.throwIfAborted();
+      if (!this.owns(current)) continue;
+      const raw = parseNative(
+        await this.#native._submit_realtime_tools(
+          JSON.stringify({
+            generation,
+            response_id: responseId,
+            call_ids: selected,
+            expected_root_turn_id: current.id,
+            ...(parentTrace ? { trace: parentTrace.toHeaders() } : {}),
+            ...(tracingContext ? { tracing_context: tracingContext } : {}),
+          }),
+        ),
+      );
+      const receipt = z
+        .discriminatedUnion('status', [
+          z.object({
+            status: z.literal('attached'),
+            root_turn_id: z.string().min(1),
+          }),
+          z.object({
+            status: z.literal('not_submitted'),
+            reason: z.object({ type: z.enum(['not_idle', 'superseded']) }),
+          }),
+        ])
+        .parse(raw);
+      if (receipt.status === 'attached') {
+        if (receipt.root_turn_id !== current.id)
+          throw new NativeError('Native Realtime attachment changed its root');
+        return this.#turnFor(current);
+      }
+      if (this.owns(current)) {
+        try {
+          await wait(current.completion.promise);
+        } catch (error) {
+          if (!(error instanceof TurnAborted)) throw error;
+        }
+      }
+    }
+    signal?.throwIfAborted();
+    this.idle('start Realtime tools');
     const output = prepareOutput(undefined);
     const selection = this.captureSelection(undefined, output);
-    const parentTrace = captureTraceContext() ?? this.options.parentTrace;
     const run = this.allocateRun(output, true);
-    submissions.get(run)!.realtimeTools = true;
+    submissions.get(run)!.realtimeTools = { generation };
     run.parentTrace = parentTrace;
     run.selection = selection;
     run.tracing = this.captureRootTracing(undefined);
-    const send = (tracingContext?: string) =>
-      this.#native._submit_realtime_tools(
+    const send = (tracingContext?: string) => {
+      signal?.throwIfAborted();
+      return this.#native._submit_realtime_tools(
         JSON.stringify({
           generation,
           response_id: responseId,
@@ -3356,6 +3483,7 @@ export class Session<OutputT = string, Context = unknown> {
           ...(tracingContext ? { tracing_context: tracingContext } : {}),
         }),
       );
+    };
     this.dispatchRun(run, () =>
       run.tracing
         ? this.tracingContext(run).then((context) => {
@@ -3922,10 +4050,18 @@ export class Session<OutputT = string, Context = unknown> {
     );
   }
 
-  private async promoteMcp(run: NativeTurn): Promise<void> {
-    if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
-      throw new TurnAborted('HTTP activation no longer owns this root');
-    const names = run.selection?.names;
+  private async promoteMcp(run: NativeTurn | undefined): Promise<void> {
+    const assertOwner = () => {
+      if (
+        !this.isOpen ||
+        (run
+          ? !this.owns(run) || run.controller.signal.aborted
+          : this.lifecycle.kind !== 'mutation')
+      )
+        throw new TurnAborted('HTTP activation no longer owns this root');
+    };
+    assertOwner();
+    const names = run?.selection?.names;
     const next = this.mcpBindings.flatMap((server) => {
       if (!(server instanceof HttpMCP) || server.activation !== 'operation')
         return this.defaultMcpTools.filter(
@@ -3991,8 +4127,7 @@ export class Session<OutputT = string, Context = unknown> {
       ),
     );
     checkMcpPublication(receipt, next, generation, this.mcpBindings);
-    if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
-      throw new TurnAborted('HTTP activation no longer owns this root');
+    assertOwner();
     this.mcpTools = next;
     this.mcpGeneration = generation;
     await this.acknowledgeProfilePublication();
@@ -4704,13 +4839,114 @@ export class Session<OutputT = string, Context = unknown> {
       this.finishObservation(run);
     }
   }
+  private captureCallbackDelivery(
+    native: NativeThread,
+    receipt: unknown,
+    event?: NativeEvent,
+  ): NativeCallbackDelivery {
+    const wire = encodeReceipt(nativeCallbackReceipt.parse(receipt));
+    let delivery = this.callbackDeliveries.get(wire);
+    if (!delivery) {
+      delivery = {
+        wire,
+        native,
+        controller: new AbortController(),
+        claimed: false,
+        buffered: false,
+        retired: false,
+        released: false,
+      };
+      this.callbackDeliveries.set(wire, delivery);
+    } else if (delivery.native !== native) {
+      throw new NativeError('Native callback receipt changed its owner');
+    }
+    if (event) this.callbackEvents.set(event, delivery);
+    return delivery;
+  }
+  private releaseCallbackDelivery(delivery: NativeCallbackDelivery): void {
+    if (delivery.released) return;
+    delivery.native._release_python_callback(delivery.wire);
+    delivery.released = true;
+    if (this.callbackDeliveries.get(delivery.wire) === delivery)
+      this.callbackDeliveries.delete(delivery.wire);
+  }
+  private retireCallbackDelivery(delivery: NativeCallbackDelivery): void {
+    delivery.retired = true;
+    delivery.controller.abort(new NativeError('Native callback cancelled'));
+    if (!delivery.claimed) this.releaseCallbackDelivery(delivery);
+  }
+  private callbackAuthorityFailed(
+    delivery: NativeCallbackDelivery | undefined,
+    error: unknown,
+  ): never {
+    let cancelled = delivery?.retired ?? false;
+    if (delivery && !cancelled) {
+      try {
+        cancelled = delivery.native._python_callback_cancelled(delivery.wire);
+      } catch {
+        throw error;
+      }
+    }
+    if (delivery && cancelled) {
+      this.retireCallbackDelivery(delivery);
+      throw delivery.controller.signal.reason;
+    }
+    throw error;
+  }
+  private async ownCallbackDelivery(
+    event: NativeEvent,
+    owner: NativeTurn | ChildCallbackOwner,
+    callback: (
+      signal: AbortSignal,
+      delivery?: NativeCallbackDelivery,
+    ) => Promise<void>,
+  ): Promise<void> {
+    const delivery = this.callbackEvents.get(event);
+    if (!delivery) return callback(owner.controller.signal);
+    if (delivery.claimed || delivery.released) return;
+    delivery.claimed = true;
+    const signal = AbortSignal.any([
+      owner.controller.signal,
+      delivery.controller.signal,
+    ]);
+    let primary: { error: unknown } | undefined;
+    try {
+      // The outer owner registers this Promise before native claim or any
+      // application validation, including synchronous policy callbacks.
+      await Promise.resolve();
+      if (
+        !signal.aborted &&
+        delivery.native._enter_python_callback(delivery.wire)
+      )
+        await callback(signal, delivery);
+    } catch (error) {
+      if (!(
+        delivery.retired &&
+        signal.aborted &&
+        Object.is(error, signal.reason)
+      ))
+        primary = { error };
+    } finally {
+      try {
+        this.releaseCallbackDelivery(delivery);
+      } catch (error) {
+        primary ??= { error };
+      }
+    }
+    if (primary) throw primary.error;
+  }
+
   private async readEvents(): Promise<void> {
     const native = this.#native;
     const producer = this.childObservationProducer;
     let batch: string[] = [];
     let batchIndex = 0;
+    let delivery: NativeCallbackDelivery | undefined;
     try {
       while (this.isOpen && this.#native === native) {
+        if (delivery && !delivery.claimed && !delivery.buffered)
+          this.releaseCallbackDelivery(delivery);
+        delivery = undefined;
         let event: NativeEvent;
         try {
           if (batchIndex === batch.length) {
@@ -4721,6 +4957,12 @@ export class Session<OutputT = string, Context = unknown> {
           }
           const raw = batch[batchIndex++]!;
           event = parseEvent(raw);
+          if (event.msg._sdk_callback !== undefined)
+            delivery = this.captureCallbackDelivery(
+              native,
+              event.msg._sdk_callback,
+              event,
+            );
           if (event.msg.type === 'elicitation_request') {
             // The generic event schema drops prototype-named record keys.
             // Preserve raw form data; prepareNativeForm validates it separately.
@@ -4733,6 +4975,15 @@ export class Session<OutputT = string, Context = unknown> {
           throw error;
         }
         if (!this.isOpen || this.#native !== native) return;
+        if (event.msg.type === '_sdk_callback_cancel') {
+          const wire = encodeReceipt(
+            nativeCallbackReceipt.parse(event.msg.receipt),
+          );
+          const cancelled = this.callbackDeliveries.get(wire);
+          if (cancelled?.native === native)
+            this.retireCallbackDelivery(cancelled);
+          continue;
+        }
         if (this.realtimeOwner?._ingest(event)) continue;
         const msg = event.msg;
         if (msg.type === 'token_count') {
@@ -4860,21 +5111,49 @@ export class Session<OutputT = string, Context = unknown> {
               msg.type === 'token_count'
             )
               this.process(run, event);
-            else run.pending.push(event);
+            else {
+              if (delivery) delivery.buffered = true;
+              run.pending.push(event);
+            }
           }
           continue;
         }
-        if (run.id === null) run.pending.push(event);
-        else this.process(run, event);
+        if (run.id === null) {
+          if (delivery) delivery.buffered = true;
+          run.pending.push(event);
+        } else this.process(run, event);
       }
     } finally {
-      this.realtimeOwner?._readerClosed();
-      // Release callbacks waiting for this reader before auxiliary readers
-      // join their callback work during replacement, suspension, or close.
-      producer.eventReaderEnded = true;
-      this.observations.notify();
-      // Retire receipts from this native owner, without closing the new one.
-      native._finish_child_event_reader();
+      try {
+        // A batch can already contain requests never routed to application work.
+        // Release those deliveries as well as buffered, unclaimed requests.
+        for (const raw of batch.slice(batchIndex)) {
+          const pending = parseNative(raw);
+          if (
+            pending &&
+            typeof pending === 'object' &&
+            !Array.isArray(pending) &&
+            'msg' in pending &&
+            pending.msg &&
+            typeof pending.msg === 'object' &&
+            !Array.isArray(pending.msg) &&
+            '_sdk_callback' in pending.msg &&
+            pending.msg._sdk_callback !== undefined
+          )
+            this.captureCallbackDelivery(native, pending.msg._sdk_callback);
+        }
+        for (const pending of this.callbackDeliveries.values())
+          if (pending.native === native && !pending.claimed)
+            this.releaseCallbackDelivery(pending);
+      } finally {
+        this.realtimeOwner?._readerClosed();
+        // Release callbacks waiting for this reader before auxiliary readers
+        // join their callback work during replacement, suspension, or close.
+        producer.eventReaderEnded = true;
+        this.observations.notify();
+        // Retire receipts from this native owner, without closing the new one.
+        native._finish_child_event_reader();
+      }
     }
   }
 
@@ -5200,6 +5479,8 @@ export class Session<OutputT = string, Context = unknown> {
     const callKey = msg.type + ':' + callId;
     if (owner.calls.has(callKey)) return;
     owner.calls.add(callKey);
+    const delivery = this.callbackEvents.get(event);
+    if (delivery) delivery.buffered = true;
     this.childCallbacks.track(
       owner,
       async () => {
@@ -5697,10 +5978,21 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
   private prepareRequest(run: NativeTurn, event: NativeEvent): Promise<void> {
+    return this.ownCallbackDelivery(event, run, (signal, delivery) =>
+      this.prepareCallbackRequest(run, event, signal, delivery),
+    );
+  }
+  private prepareCallbackRequest(
+    run: NativeTurn,
+    event: NativeEvent,
+    callbackSignal: AbortSignal,
+    delivery?: NativeCallbackDelivery,
+  ): Promise<void> {
     const msg = event.msg;
+    const native = delivery?.native ?? this.#native;
     const selection = run.selection;
     const preparation = new AbortController();
-    const signal = AbortSignal.any([run.controller.signal, preparation.signal]);
+    const signal = AbortSignal.any([callbackSignal, preparation.signal]);
     run.preparation = preparation;
     return this.invokeCallback(
       run,
@@ -5713,11 +6005,19 @@ export class Session<OutputT = string, Context = unknown> {
           const receipt = `{"thread":${JSON.stringify(this.id)},"turn_id":${JSON.stringify(msg.turn_id)},"generation":${JSON.stringify(msg.generation)},"request_id":${JSON.stringify(msg.request_id)},"failed":${failed},"data":${data ?? 'null'}}`;
           if (failed) {
             try {
-              this.#native._reply_prepared_request(receipt);
+              native._reply_prepared_request(receipt);
             } catch {
               /* Already revoked. */
             }
-          } else this.#native._reply_prepared_request(receipt);
+          } else {
+            try {
+              (delivery?.native ?? this.#native)._reply_prepared_request(
+                receipt,
+              );
+            } catch (error) {
+              this.callbackAuthorityFailed(delivery, error);
+            }
+          }
         };
         const abort = () => reply(undefined, true);
         signal.addEventListener('abort', abort, { once: true });
@@ -5776,10 +6076,21 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private selectStep(run: NativeTurn, event: NativeEvent): Promise<void> {
+    return this.ownCallbackDelivery(event, run, (signal, delivery) =>
+      this.selectCallbackStep(run, event, signal, delivery),
+    );
+  }
+  private selectCallbackStep(
+    run: NativeTurn,
+    event: NativeEvent,
+    callbackSignal: AbortSignal,
+    delivery?: NativeCallbackDelivery,
+  ): Promise<void> {
     const msg = event.msg;
+    const native = delivery?.native ?? this.#native;
     const selection = run.selection;
     const preparation = new AbortController();
-    const signal = AbortSignal.any([run.controller.signal, preparation.signal]);
+    const signal = AbortSignal.any([callbackSignal, preparation.signal]);
     run.preparation = preparation;
     // Keep the effective preparation signal through callback settlement.
     return this.invokeCallback(
@@ -5801,11 +6112,17 @@ export class Session<OutputT = string, Context = unknown> {
           if (names === null) {
             // Native retirement may already have dropped this exact sender.
             try {
-              this.#native._reply_step(response);
+              native._reply_step(response);
             } catch {
               /* Already revoked. */
             }
-          } else this.#native._reply_step(response);
+          } else {
+            try {
+              native._reply_step(response);
+            } catch (error) {
+              this.callbackAuthorityFailed(delivery, error);
+            }
+          }
         };
         const abort = () => reply(null);
         signal.addEventListener('abort', abort, { once: true });
@@ -5836,13 +6153,17 @@ export class Session<OutputT = string, Context = unknown> {
           const nonce = encode(receipt);
           const assertActive = () => {
             signal.throwIfAborted();
-            if (
-              !this.current(run) ||
-              this.sourceCatalog(msg, msg.generation as string) !==
-                sourceCatalog ||
-              !this.#native._check_step(nonce)
-            )
-              throw new NativeError('Step selection is no longer active');
+            try {
+              if (
+                !this.current(run) ||
+                this.sourceCatalog(msg, msg.generation as string) !==
+                  sourceCatalog ||
+                !native._check_step(nonce)
+              )
+                throw new NativeError('Step selection is no longer active');
+            } catch (error) {
+              this.callbackAuthorityFailed(delivery, error);
+            }
           };
           assertActive();
           selection.budget?.check(assertActive);
@@ -5881,6 +6202,27 @@ export class Session<OutputT = string, Context = unknown> {
     event: NativeEvent,
     native: NativeThread,
   ): Promise<void> {
+    const delivery = this.callbackEvents.get(event);
+    if (delivery) delivery.buffered = true;
+    return this.trackOwnedCallback(owner, () =>
+      this.ownCallbackDelivery(event, owner, (signal, captured) =>
+        this.selectCallbackChildStep(
+          owner,
+          event,
+          captured?.native ?? native,
+          signal,
+          captured,
+        ),
+      ),
+    );
+  }
+  private async selectCallbackChildStep(
+    owner: ChildCallbackOwner,
+    event: NativeEvent,
+    native: NativeThread,
+    signal: AbortSignal,
+    delivery?: NativeCallbackDelivery,
+  ): Promise<void> {
     const beforeStep = this.options.nativeAgents?.beforeStep;
     if (!beforeStep)
       return Promise.reject(
@@ -5897,100 +6239,131 @@ export class Session<OutputT = string, Context = unknown> {
       this.childSelections.set(owner, selection);
     }
     const capturedSelection = selection;
-    return this.trackOwnedCallback(owner, async () => {
-      const signal = owner.controller.signal;
-      const receipt = {
-        thread: owner.childId,
-        instance: owner.incarnation,
-        turn_id: event.msg.turn_id,
-        generation: event.msg.generation,
-        request_id: event.msg.request_id,
-      };
-      let replied = false;
-      const reply = (
-        names: readonly ReturnType<typeof toolIdentity>[] | null,
-      ) => {
-        if (replied) return;
-        replied = true;
-        const response = encode({ ...receipt, names });
-        if (names === null) {
-          try {
-            native._reply_child_step(response);
-          } catch {
-            /* This original preparation may already have retired. */
-          }
-        } else native._reply_child_step(response);
-      };
-      const abort = () => reply(null);
-      signal.addEventListener('abort', abort, { once: true });
-      try {
-        signal.throwIfAborted();
-        const original = await native._child_turn(owner.childId);
-        if (
-          !this.current(owner) ||
-          native !== this.#native ||
-          [...this.graphStops].some(
-            (stop) => stop.options.scope === 'thread_tree',
-          ) ||
-          !original ||
-          original.incarnation !== owner.incarnation ||
-          original.turn_id !== owner.turnId ||
-          event.msg.turn_id !== owner.turnId ||
-          event.msg.thread !== owner.childId ||
-          event.msg.generation !== this.catalog.generation.toString() ||
-          capturedSelection.generation !== this.catalog.generation
-        ) {
-          reply(null);
-          return;
+    const receipt = {
+      thread: owner.childId,
+      instance: owner.incarnation,
+      turn_id: event.msg.turn_id,
+      generation: event.msg.generation,
+      request_id: event.msg.request_id,
+    };
+    let replied = false;
+    const reply = (
+      names: readonly ReturnType<typeof toolIdentity>[] | null,
+    ) => {
+      if (replied) return;
+      replied = true;
+      const response = encode({ ...receipt, names });
+      if (names === null) {
+        try {
+          native._reply_child_step(response);
+        } catch {
+          /* This original preparation may already have retired. */
         }
-        const submission = this.publicChildTurn(
-          original,
-          owner.observationProducer,
-        );
-        const context = Object.freeze({
-          context: this.options.context as Context,
-          submission,
-          child: Object.freeze({
-            sessionId: this.id,
-            childId: owner.childId,
-            instanceId: original.instance_id,
-            turnId: owner.turnId,
-            submissionId: `child:${owner.childId}:${owner.incarnation}:${owner.turnId}`,
-          }),
-          stepIndex: capturedSelection.stepIndex,
-          signal,
-        });
-        // Read-only admission must be adjacent to entry, after every await.
-        if (!native._check_step(encode(receipt))) return;
-        signal.throwIfAborted();
-        capturedSelection.stepIndex++;
-        const selected = await withNativeCallbackContext(
-          typeof event.msg.tracing_context === 'string'
-            ? event.msg.tracing_context
-            : undefined,
-          () => beforeStep(context),
-          signal,
-          (traceId, workflowSpanId) =>
-            this.workflowForTrace(traceId, workflowSpanId),
-        );
-        signal.throwIfAborted();
-        if (
-          !this.current(owner) ||
-          native !== this.#native ||
-          capturedSelection.generation !== this.catalog.generation
-        ) {
-          reply(null);
-          return;
+      } else {
+        try {
+          native._reply_child_step(response);
+        } catch (error) {
+          this.callbackAuthorityFailed(delivery, error);
         }
-        if (!native._check_step(encode(receipt))) return;
-        reply(this.selectedStepNames(event, selected));
-      } catch (error) {
-        reply(null);
-        throw error;
-      } finally {
-        signal.removeEventListener('abort', abort);
       }
-    });
+    };
+    const abort = () => reply(null);
+    signal.addEventListener('abort', abort, { once: true });
+    try {
+      signal.throwIfAborted();
+      const original = await native._child_turn(owner.childId);
+      if (
+        !this.current(owner) ||
+        native !== this.#native ||
+        [...this.graphStops].some(
+          (stop) => stop.options.scope === 'thread_tree',
+        ) ||
+        !original ||
+        original.incarnation !== owner.incarnation ||
+        original.turn_id !== owner.turnId ||
+        event.msg.turn_id !== owner.turnId ||
+        event.msg.thread !== owner.childId ||
+        event.msg.generation !== this.catalog.generation.toString() ||
+        capturedSelection.generation !== this.catalog.generation
+      ) {
+        reply(null);
+        return;
+      }
+      const submission = this.publicChildTurn(
+        original,
+        owner.observationProducer,
+      );
+      const context = Object.freeze({
+        context: this.options.context as Context,
+        submission,
+        child: Object.freeze({
+          sessionId: this.id,
+          childId: owner.childId,
+          instanceId: original.instance_id,
+          turnId: owner.turnId,
+          submissionId: `child:${owner.childId}:${owner.incarnation}:${owner.turnId}`,
+        }),
+        stepIndex: capturedSelection.stepIndex,
+        signal,
+      });
+      // Read-only admission must be adjacent to entry, after every await.
+      try {
+        if (!native._check_step(encode(receipt))) {
+          if (
+            delivery &&
+            delivery.native._python_callback_cancelled(delivery.wire)
+          )
+            this.callbackAuthorityFailed(
+              delivery,
+              new NativeError('Child step selection is no longer active'),
+            );
+          return;
+        }
+      } catch (error) {
+        this.callbackAuthorityFailed(delivery, error);
+      }
+      signal.throwIfAborted();
+      capturedSelection.stepIndex++;
+      const selected = await withNativeCallbackContext(
+        typeof event.msg.tracing_context === 'string'
+          ? event.msg.tracing_context
+          : undefined,
+        () => beforeStep(context),
+        signal,
+        (traceId, workflowSpanId) =>
+          this.workflowForTrace(traceId, workflowSpanId),
+      );
+      signal.throwIfAborted();
+      if (
+        !this.current(owner) ||
+        native !== this.#native ||
+        capturedSelection.generation !== this.catalog.generation
+      ) {
+        reply(null);
+        return;
+      }
+      try {
+        if (!native._check_step(encode(receipt))) {
+          if (
+            delivery &&
+            delivery.native._python_callback_cancelled(delivery.wire)
+          )
+            this.callbackAuthorityFailed(
+              delivery,
+              new NativeError('Child step selection is no longer active'),
+            );
+          return;
+        }
+      } catch (error) {
+        this.callbackAuthorityFailed(delivery, error);
+      }
+      reply(this.selectedStepNames(event, selected));
+    } catch (error) {
+      reply(null);
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', abort);
+    }
   }
 
   private profileOperationNames(
@@ -6038,16 +6411,22 @@ export class Session<OutputT = string, Context = unknown> {
     defaults?: readonly ReturnType<typeof toolIdentity>[],
     sourceCatalog?: ToolCatalog,
   ): readonly ReturnType<typeof toolIdentity>[] {
-    const candidates = z
-      .array(z.object({ name: z.string(), namespace: z.string().nullish() }))
-      .parse(event.msg.candidates)
-      .map((tool) => ({
+    const toolNames = z.array(
+      z.object({ name: z.string(), namespace: z.string().nullish() }),
+    );
+    const normalize = (tools: z.infer<typeof toolNames>) =>
+      tools.map((tool) => ({
         name: tool.name,
         namespace: tool.namespace || 'functions',
       }));
+    const candidates = normalize(toolNames.parse(event.msg.candidates));
+    const nativeDefaults =
+      event.msg.defaults === undefined
+        ? undefined
+        : normalize(toolNames.parse(event.msg.defaults));
     const names =
       selected === undefined
-        ? (defaults ?? candidates)
+        ? (defaults ?? nativeDefaults ?? candidates)
         : this.selectionNames([...selected], sourceCatalog);
     const ceiling =
       defaults && this.options.agentGraph
@@ -6109,16 +6488,12 @@ export class Session<OutputT = string, Context = unknown> {
     callId: string,
     callback: () => Promise<void>,
     tracingContext?: string,
+    signal = run.controller.signal,
   ): Promise<void> {
     if (run.toolCallIds.has(callId))
       return Promise.reject(new NativeError('Native tool call ID was reused'));
     run.toolCallIds.add(callId);
-    return this.invokeCallback(
-      run,
-      callback,
-      run.controller.signal,
-      tracingContext,
-    );
+    return this.invokeCallback(run, callback, signal, tracingContext);
   }
 
   private invokeCallback(
@@ -7018,9 +7393,19 @@ export class Session<OutputT = string, Context = unknown> {
       this.publishManualRequest(run, event);
     }
   }
-  private async handleRequest(
+  private handleRequest(
     owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
+  ): Promise<void> {
+    return this.ownCallbackDelivery(event, owner, (signal, delivery) =>
+      this.executeCallbackRequest(owner, event, signal, delivery),
+    );
+  }
+  private async executeCallbackRequest(
+    owner: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+    signal: AbortSignal,
+    delivery?: NativeCallbackDelivery,
   ): Promise<void> {
     const msg = event.msg;
     const marker = msg._sdk_python_tool;
@@ -7048,16 +7433,25 @@ export class Session<OutputT = string, Context = unknown> {
     if (tool.kind === 'manual') return;
     if (typeof msg.callId !== 'string')
       throw new NativeError('Native tool invocation has no call identity');
+    const native = delivery?.native ?? this.#native;
+    const check = () => {
+      signal.throwIfAborted();
+      try {
+        native._check_python_tool(encodeReceipt(msg));
+      } catch (error) {
+        this.callbackAuthorityFailed(delivery, error);
+      }
+    };
     const execute = async () => {
-      if (!this.current(owner)) return;
-      this.#native._check_python_tool(encodeReceipt(msg));
+      if (!this.current(owner) || signal.aborted) return;
+      check();
       const submission = root
         ? this.#turnFor(owner)
         : await this.childSubmission(owner);
       if (!submission) return;
       if (!root) {
         if (!this.current(owner)) return;
-        this.#native._check_python_tool(encodeReceipt(msg));
+        check();
       }
       const context = {
         traceContext: nativeTraceContext(
@@ -7076,7 +7470,7 @@ export class Session<OutputT = string, Context = unknown> {
         threadId: root ? this.id : owner.childId,
         turnId: root ? owner.id! : owner.turnId,
         callId: msg.callId as string,
-        signal: owner.controller.signal,
+        signal,
       };
       const identity: ToolIdentity = {
         callId: context.callId,
@@ -7113,32 +7507,35 @@ export class Session<OutputT = string, Context = unknown> {
           () => {
             if (!this.current(owner))
               throw new NativeError('Tool invocation is no longer active');
-            this.#native._check_python_tool(encodeReceipt(msg));
+            check();
           },
         );
-        if (!this.current(owner)) {
+        if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';
           return;
         }
-        this.#native._check_python_tool(encodeReceipt(msg));
-        const accepted = await this.#native._respond_python_tool(
-          encodeReceipt({
-            request: msg,
-            response,
-            ...(isBackgroundToolResponse(response)
-              ? { start_response: false }
-              : {}),
-          }),
-        );
+        check();
+        let accepted: boolean;
+        try {
+          accepted = await native._respond_python_tool(
+            encodeReceipt({
+              request: msg,
+              response,
+              ...(isBackgroundToolResponse(response)
+                ? { start_response: false }
+                : {}),
+            }),
+          );
+        } catch (error) {
+          this.callbackAuthorityFailed(delivery, error);
+        }
         status = accepted
           ? response.success
             ? 'completed'
             : 'failed'
           : 'cancelled';
       } finally {
-        const finalStatus = owner.controller.signal.aborted
-          ? 'cancelled'
-          : status;
+        const finalStatus = signal.aborted ? 'cancelled' : status;
         if (finalStatus !== undefined)
           getCurrentSpan()?.end({
             status:
@@ -7169,6 +7566,7 @@ export class Session<OutputT = string, Context = unknown> {
         typeof msg.tracing_context === 'string'
           ? msg.tracing_context
           : undefined,
+        signal,
       );
     else
       await withNativeCallbackContext(
@@ -7176,7 +7574,7 @@ export class Session<OutputT = string, Context = unknown> {
           ? msg.tracing_context
           : undefined,
         execute,
-        owner.controller.signal,
+        signal,
         (traceId, workflowSpanId) =>
           this.workflowForTrace(traceId, workflowSpanId),
       );

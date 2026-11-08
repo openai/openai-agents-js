@@ -15,7 +15,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::{ResponseItemId, ThreadId};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use crate::options::ThreadInstructions;
 
@@ -519,6 +519,7 @@ impl ContextContributor for Contributor {
                         .thread_store
                         .get::<ThreadInstructions>()
                         .and_then(|owner| owner.accepted())
+                        .map(Arc::new)
                 }
             });
             let control = input

@@ -31,7 +31,12 @@ function fixture(
       result.reject(new Error('owned turn cancelled')),
     );
     cancellations.push(cancel);
-    return { wait: () => result.promise, cancel, events: vi.fn() };
+    return {
+      turnId: `root-${waits.length}`,
+      wait: vi.fn(() => result.promise),
+      cancel,
+      events: vi.fn(),
+    };
   };
   const session = {
     submit: vi.fn(async (input: string) => {
@@ -43,8 +48,10 @@ function fixture(
         _generation: string,
         _responseId: string,
         _callIds: readonly string[],
+        _signal?: AbortSignal,
       ) => admit(),
     ),
+    _prepareRealtimeMcp: vi.fn(async () => {}),
     _realtimeFunctionTools: vi.fn(async (_tools: readonly unknown[]) => ({
       tools: [],
       selectionId: null,
@@ -561,6 +568,7 @@ it('admits one exact response batch for parallel functions and reports only auth
     peer.generation,
     'response',
     ['one', 'two'],
+    expect.any(AbortSignal),
   );
   expect(peer.session.submit).not.toHaveBeenCalled();
   expect((await events.next()).value).toMatchObject({
@@ -649,7 +657,7 @@ it('joins the exact late-published tool batch on close and releases its wrapper 
 });
 
 it.each(['close', 'interrupt'] as const)(
-  'cancels exact batch work before a stalled media %s acknowledgement',
+  'retires exact batch admission before a stalled media %s acknowledgement',
   async (operation) => {
     const peer = fixture();
     await peer.owner._start();
@@ -667,10 +675,13 @@ it.each(['close', 'interrupt'] as const)(
       return implementation(name, params);
     });
     const stopping = peer.owner[operation]();
-    await vi.waitFor(() =>
-      expect(peer.cancellations[0]).toHaveBeenCalledOnce(),
+    expect(peer.cancellations[0]).not.toHaveBeenCalled();
+    expect(peer.session._submitRealtimeTools.mock.calls[0][3]?.aborted).toBe(
+      true,
     );
     gate.resolve();
+    // Model the root terminal that follows Core joining the retired batch.
+    peer.waits[0].resolve({ finalOutput: undefined });
     await stopping;
     if (operation === 'interrupt') await peer.owner.close();
   },
@@ -1447,3 +1458,429 @@ it.each([null, undefined])(
     expect(peer.release).toHaveBeenCalledOnce();
   },
 );
+
+it('attaches overlapping responses to one root and scoped interruption preserves the sibling', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const submit = peer.session._submitRealtimeTools.getMockImplementation()!;
+  const shared = submit('generation', 'A', ['a']);
+  peer.session._submitRealtimeTools.mockImplementation(() => shared);
+  const events: Array<{ type: string; callId?: string; status?: string }> = [];
+  const reading = (async () => {
+    for await (const event of peer.owner.events()) events.push(event);
+  })();
+  for (const [responseId, callId] of [
+    ['A', 'a'],
+    ['B', 'b'],
+  ]) {
+    peer.payload({
+      FunctionCallRequested: {
+        call_id: callId,
+        name: 'tool',
+        response_id: responseId,
+      },
+    });
+    peer.payload({
+      ResponseDone: { response_id: responseId, function_call_ids: [callId] },
+    });
+  }
+  await vi.waitFor(() =>
+    expect(peer.session._submitRealtimeTools).toHaveBeenCalledTimes(2),
+  );
+  const root = await shared;
+  expect(root.wait).toHaveBeenCalledOnce();
+  expect(peer.waits).toHaveLength(1);
+  await peer.owner.interrupt('A');
+  expect(root.cancel).not.toHaveBeenCalled();
+  peer.payload({ FunctionCallFinished: { call_id: 'b', succeeded: true } });
+  peer.payload({ FunctionBatchFinished: { response_id: 'B', target: null } });
+  await vi.waitFor(() =>
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'function_call',
+        callId: 'b',
+        status: 'completed',
+      }),
+    ),
+  );
+  peer.waits[0].resolve({ finalOutput: '' });
+  await peer.owner.close();
+  await reading;
+  expect(root.wait).toHaveBeenCalledOnce();
+  expect(root.cancel).not.toHaveBeenCalled();
+});
+
+it.each(['interrupt', 'close'] as const)(
+  'retains pending batch admission after a failed %s ACK and joins a successful retry',
+  async (operation) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const root = {
+      turnId: 'root-1',
+      wait: vi.fn(async () => ({ finalOutput: '' })),
+      cancel: vi.fn(async () => {}),
+      events: vi.fn(),
+    };
+    const admission = deferred<typeof root>();
+    peer.session._submitRealtimeTools.mockReturnValueOnce(admission.promise);
+    peer.payload({
+      FunctionCallRequested: {
+        call_id: 'held',
+        name: 'tool',
+        response_id: 'A',
+      },
+    });
+    peer.payload({
+      ResponseDone: { response_id: 'A', function_call_ids: ['held'] },
+    });
+    await vi.waitFor(() =>
+      expect(peer.session._submitRealtimeTools).toHaveBeenCalledOnce(),
+    );
+    const original = peer.call.getMockImplementation()!;
+    const primary = new Error('media cleanup failed');
+    let fail = true;
+    peer.call.mockImplementation((name, params) => {
+      if (name === `realtime_conversation_${operation}_sdk` && fail) {
+        fail = false;
+        return Promise.reject(primary);
+      }
+      return original(name, params);
+    });
+    await expect(peer.owner[operation]()).rejects.toBe(primary);
+    expect(root.cancel).not.toHaveBeenCalled();
+    let stopped = false;
+    const retry = peer.owner[operation]().then(() => {
+      stopped = true;
+    });
+    await vi.waitFor(() =>
+      expect(
+        peer.call.mock.calls.filter(
+          ([name]) => name === `realtime_conversation_${operation}_sdk`,
+        ),
+      ).toHaveLength(2),
+    );
+    expect(stopped).toBe(false);
+    admission.resolve(root);
+    await retry;
+    if (operation === 'interrupt') await peer.owner.close();
+    expect(root.cancel).not.toHaveBeenCalled();
+    expect(peer.release).toHaveBeenCalledOnce();
+  },
+);
+
+it('joins a late old-root attach without waiting for a newer response root', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const submit = peer.session._submitRealtimeTools.getMockImplementation()!;
+  const first = await submit('generation', 'A', ['a']);
+  const current = await submit('generation', 'C', ['c']);
+  const late = deferred<typeof first>();
+  peer.session._submitRealtimeTools
+    .mockReturnValueOnce(Promise.resolve(first))
+    .mockReturnValueOnce(late.promise)
+    .mockReturnValueOnce(Promise.resolve(current));
+  const request = (responseId: string, callId: string) => {
+    peer.payload({
+      FunctionCallRequested: {
+        call_id: callId,
+        name: 'tool',
+        response_id: responseId,
+      },
+    });
+    peer.payload({
+      ResponseDone: { response_id: responseId, function_call_ids: [callId] },
+    });
+  };
+  request('A', 'a');
+  await vi.waitFor(() => expect(first.wait).toHaveBeenCalledOnce());
+  request('B', 'b');
+  await vi.waitFor(() =>
+    expect(peer.session._submitRealtimeTools).toHaveBeenCalledTimes(2),
+  );
+  peer.payload({ FunctionBatchFinished: { response_id: 'A', target: null } });
+  peer.waits[0].resolve({ finalOutput: '' });
+  await first.wait();
+  request('C', 'c');
+  await vi.waitFor(() => expect(current.wait).toHaveBeenCalledOnce());
+  late.resolve(first);
+  await peer.owner.interrupt('B');
+  expect(first.cancel).not.toHaveBeenCalled();
+  expect(current.cancel).not.toHaveBeenCalled();
+  peer.payload({ FunctionBatchFinished: { response_id: 'C', target: null } });
+  peer.waits[1].resolve({ finalOutput: '' });
+  await peer.owner.close();
+  // One application call above also awaits first.wait().
+  expect(first.wait).toHaveBeenCalledTimes(2);
+  expect(current.wait).toHaveBeenCalledOnce();
+});
+
+it('releases an existing failed-interrupt admission waiter on verified graph shutdown', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const admission = deferred<never>();
+  peer.session._submitRealtimeTools.mockReturnValueOnce(admission.promise);
+  peer.payload({
+    FunctionCallRequested: { call_id: 'held', name: 'tool', response_id: 'A' },
+  });
+  peer.payload({
+    ResponseDone: { response_id: 'A', function_call_ids: ['held'] },
+  });
+  await vi.waitFor(() =>
+    expect(peer.session._submitRealtimeTools).toHaveBeenCalledOnce(),
+  );
+  const original = peer.call.getMockImplementation()!;
+  const primary = new Error('interrupt failed');
+  peer.call.mockImplementation((operation, params) =>
+    operation === 'realtime_conversation_interrupt_sdk'
+      ? Promise.reject(primary)
+      : original(operation, params),
+  );
+  await expect(peer.owner.interrupt('A')).rejects.toBe(primary);
+  peer.owner._retireFromSession();
+  await peer.owner._nativeShutdown();
+  expect(peer.graphClose).toHaveBeenCalledOnce();
+  expect(peer.release).toHaveBeenCalledOnce();
+  admission.reject(new Error('submission wrapper released later'));
+});
+
+it('reports a shared root fatal error and joins both admitted response batches', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const submit = peer.session._submitRealtimeTools.getMockImplementation()!;
+  const shared = submit('generation', 'A', ['a']);
+  peer.session._submitRealtimeTools.mockImplementation(() => shared);
+  const reading = (async () => {
+    for await (const _event of peer.owner.events()) {
+      /* drain */
+    }
+  })();
+  const primary = new Error('native root failed');
+  const observed = expect(reading).rejects.toBe(primary);
+  for (const [responseId, callId] of [
+    ['A', 'a'],
+    ['B', 'b'],
+  ]) {
+    peer.payload({
+      FunctionCallRequested: {
+        call_id: callId,
+        name: 'tool',
+        response_id: responseId,
+      },
+    });
+    peer.payload({
+      ResponseDone: { response_id: responseId, function_call_ids: [callId] },
+    });
+  }
+  await vi.waitFor(() =>
+    expect(peer.session._submitRealtimeTools).toHaveBeenCalledTimes(2),
+  );
+  peer.waits[0].reject(primary);
+  await observed;
+  await peer.owner.close();
+  expect((await shared).wait).toHaveBeenCalledOnce();
+  expect(peer.release).toHaveBeenCalledOnce();
+});
+
+it.each([undefined, '', 'Explicit voice instructions'])(
+  'preserves initial instruction inheritance for %s',
+  async (instructions) => {
+    const peer = fixture(instructions === undefined ? {} : { instructions });
+    await peer.owner._start();
+    const preparation = peer.call.mock.calls.find(
+      ([operation]) => operation === 'realtime_conversation_prepare_sdk',
+    )![1];
+    if (instructions === undefined)
+      expect(preparation.params).not.toHaveProperty('prompt');
+    else expect(preparation.params).toHaveProperty('prompt', instructions);
+    await peer.owner.close();
+  },
+);
+
+it('waits only for an exact native-joined root receipt before interrupt returns', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const request = (responseId: string, callId: string) => {
+    peer.payload({
+      FunctionCallRequested: {
+        call_id: callId,
+        name: 'tool',
+        response_id: responseId,
+      },
+    });
+    peer.payload({
+      ResponseDone: { response_id: responseId, function_call_ids: [callId] },
+    });
+  };
+  request('A', 'a');
+  request('B', 'b');
+  await vi.waitFor(() => expect(peer.waits).toHaveLength(2));
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) =>
+    operation === 'realtime_conversation_interrupt_sdk'
+      ? Promise.resolve({
+          retired_response_ids: ['A'],
+          joined_root_turn_ids: ['root-1'],
+        })
+      : original(operation, params),
+  );
+  let stopped = false;
+  const stopping = peer.owner.interrupt('A').then(() => {
+    stopped = true;
+  });
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([operation]) => operation === 'realtime_conversation_interrupt_sdk',
+      ),
+    ).toBe(true),
+  );
+  expect(stopped).toBe(false);
+  peer.waits[0].resolve({ finalOutput: '' });
+  await stopping;
+  expect(
+    peer.cancellations.every((cancel) => cancel.mock.calls.length === 0),
+  ).toBe(true);
+  peer.payload({ FunctionBatchFinished: { response_id: 'B', target: null } });
+  peer.waits[1].resolve({ finalOutput: '' });
+  await peer.owner.close();
+});
+
+it('associates a pending admission before joining the exact sealed root', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const terminal = deferred<{ finalOutput: unknown }>();
+  const root = {
+    turnId: 'delayed-root',
+    wait: vi.fn(() => terminal.promise),
+    cancel: vi.fn(async () => {}),
+    events: vi.fn(),
+  };
+  const admission = deferred<typeof root>();
+  peer.session._submitRealtimeTools.mockReturnValueOnce(admission.promise);
+  peer.payload({
+    FunctionCallRequested: { call_id: 'a', name: 'tool', response_id: 'A' },
+  });
+  peer.payload({
+    ResponseDone: { response_id: 'A', function_call_ids: ['a'] },
+  });
+  await vi.waitFor(() =>
+    expect(peer.session._submitRealtimeTools).toHaveBeenCalledOnce(),
+  );
+  const original = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation((operation, params) =>
+    operation === 'realtime_conversation_interrupt_sdk'
+      ? Promise.resolve({
+          retired_response_ids: ['A'],
+          joined_root_turn_ids: ['delayed-root'],
+        })
+      : original(operation, params),
+  );
+  let stopped = false;
+  const stopping = peer.owner.interrupt('A').then(() => {
+    stopped = true;
+  });
+  admission.resolve(root);
+  await vi.waitFor(() => expect(root.wait).toHaveBeenCalledOnce());
+  expect(stopped).toBe(false);
+  terminal.resolve({ finalOutput: '' });
+  await stopping;
+  expect(root.cancel).not.toHaveBeenCalled();
+  await peer.owner.close();
+});
+
+it('promotes inherited MCP before opening native media', async () => {
+  const peer = fixture();
+  const promoted = deferred<void>();
+  peer.session._prepareRealtimeMcp.mockReturnValueOnce(promoted.promise);
+  const opening = peer.owner._start();
+  expect(peer.session._realtimeFunctionTools).not.toHaveBeenCalled();
+  expect(peer.call).not.toHaveBeenCalled();
+  promoted.resolve();
+  await opening;
+  expect(peer.session._realtimeFunctionTools).not.toHaveBeenCalled();
+  expect(peer.call.mock.calls[0][0]).toBe('realtime_conversation_prepare_sdk');
+  await peer.owner.close();
+});
+
+it.each([false, true])(
+  'promotes MCP before a live inherited refresh and skips explicit tools (explicit=%s)',
+  async (explicit) => {
+    const peer = fixture(explicit ? { tools: [] } : {});
+    await peer.owner._start();
+    peer.session._prepareRealtimeMcp.mockClear();
+    peer.call.mockClear();
+    const promoted = deferred<void>();
+    peer.session._prepareRealtimeMcp.mockReturnValueOnce(promoted.promise);
+    const refreshing = peer.owner._syncProfile(true);
+    if (explicit) {
+      await refreshing;
+      expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
+    } else {
+      expect(peer.session._prepareRealtimeMcp).toHaveBeenCalledOnce();
+      expect(peer.call).not.toHaveBeenCalled();
+      promoted.resolve();
+      await refreshing;
+    }
+    expect(peer.call.mock.calls[0][0]).toBe('realtime_conversation_update_sdk');
+    await peer.owner.close();
+  },
+);
+
+it('does not capture tools or start media after close during MCP promotion', async () => {
+  const peer = fixture();
+  const promoted = deferred<void>();
+  peer.session._prepareRealtimeMcp.mockReturnValueOnce(promoted.promise);
+  const opening = peer.owner._start();
+  const rejected = expect(opening).rejects.toThrow();
+  await peer.owner.close();
+  await rejected;
+  promoted.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(peer.session._realtimeFunctionTools).not.toHaveBeenCalled();
+  expect(
+    peer.call.mock.calls.some(
+      ([op]) => op === 'realtime_conversation_prepare_sdk',
+    ),
+  ).toBe(false);
+  expect(
+    peer.call.mock.calls.some(
+      ([op]) => op === 'realtime_conversation_activate_sdk',
+    ),
+  ).toBe(false);
+});
+
+it.each([false, true])(
+  'skips inherited MCP promotion for explicit voice tools (nonempty=%s)',
+  async (nonempty) => {
+    const tools = nonempty ? [{} as never] : [];
+    const peer = fixture({ tools });
+    await peer.owner._start();
+    expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
+    expect(peer.session._realtimeFunctionTools).toHaveBeenCalledWith(tools);
+    expect(peer.call.mock.calls[0][0]).toBe(
+      'realtime_conversation_prepare_sdk',
+    );
+    await peer.owner.close();
+  },
+);
+
+it('keeps ordinary graph batches live without validating a handoff target', async () => {
+  const peer = fixture();
+  peer.session._realtimeProfileTarget.mockImplementation(() => {
+    throw new TypeError('Native source has no admitted Agent profile');
+  });
+  await peer.owner._start();
+  peer.call.mockClear();
+  peer.payload({
+    FunctionBatchFinished: { response_id: 'ordinary-MCP', target: null },
+  });
+  await peer.owner.sendText('Keep listening after the ordinary result.');
+  expect(peer.session._realtimeProfileTarget).not.toHaveBeenCalled();
+  expect(
+    peer.call.mock.calls.some(
+      ([operation]) => operation === 'realtime_conversation_update_sdk',
+    ),
+  ).toBe(false);
+  await peer.owner.close();
+});

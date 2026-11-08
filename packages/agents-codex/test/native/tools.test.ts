@@ -744,6 +744,35 @@ describe('native function callback timeout policy', () => {
     return 'late result';
   };
 
+  it.each(['raise_exception', 'error_as_result'] as const)(
+    'keeps an on-time synchronous result when unrelated queued work delays %s completion',
+    async (timeoutBehavior) => {
+      const formatter = vi.fn(() => 'must not replace success');
+      const onTimeout = vi.fn();
+      const defined = tool({
+        ...options,
+        callbackTimeout: 0.02,
+        timeoutBehavior,
+        timeoutErrorFunction: formatter,
+        execute: () => 'on-time success',
+      });
+      queueMicrotask(() => {
+        const end = performance.now() + 60;
+        while (performance.now() < end) {
+          /* Separate ready work can delay the SDK after the body returns. */
+        }
+      });
+      await expect(
+        invokeFunctionTool(defined, {}, context, onTimeout),
+      ).resolves.toEqual({
+        success: true,
+        contentItems: [{ type: 'inputText', text: 'on-time success' }],
+      });
+      expect(formatter).not.toHaveBeenCalled();
+      expect(onTimeout).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])(
     'formats failed text (async: %s) outside success schema and after',
     async (asyncFormatter) => {

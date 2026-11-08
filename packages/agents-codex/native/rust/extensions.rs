@@ -400,6 +400,7 @@ impl ThreadLifecycleContributor<Config> for EnteredMedia {
                     config: &config,
                     session_source: input.session_source,
                     persistent_thread_state_available: input.persistent_thread_state_available,
+                    spawning_step_store: input.spawning_step_store,
                     environments: input.environments,
                     mcp_resource_client: input.mcp_resource_client,
                     extension_metrics: input.extension_metrics,

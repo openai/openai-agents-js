@@ -35,9 +35,13 @@ class RealtimePeer {
         this.server.emit('connection', connection, request),
       );
     });
-    this.server.on('connection', (connection) => {
+    this.server.on('connection', (connection, request) => {
       this.socket = connection;
-      const state: Frame = {};
+      const state: Frame = {
+        model: new URL(request.url ?? '/', 'http://fixture').searchParams.get(
+          'model',
+        ),
+      };
       connection.on('message', (raw) => {
         const frame: Frame = JSON.parse(raw.toString());
         this.frames.push(frame);
@@ -286,20 +290,33 @@ async function mcpPeer() {
   };
 }
 
-nativeIt.each([false, true])(
-  'clears and restores live native MCP selection and its result policy (graph=%s)',
-  async (withGraph) => {
+nativeIt.each([
+  [false, 'session', false],
+  [false, 'operation', false],
+  [true, 'session', false],
+  [true, 'session', true],
+] as const)(
+  'clears and restores live native MCP selection and its result policy (graph=%s, activation=%s, guarded=%s)',
+  async (withGraph, activation, guarded) => {
     const model = new ModelServer([]);
     const peer = new RealtimePeer(model);
     const mcp = await mcpPeer();
     const accepted: MCPResultContext[] = [];
+    let checked = 0;
     try {
       await using provider = await providerFor(model);
       const descriptor = new HttpMCP({
         name: 'records',
         url: mcp.url,
+        activation,
         tools: ['lookup'],
         approvalMode: 'preapproved',
+        before: guarded
+          ? () => {
+              checked++;
+              return { action: 'allow' as const };
+            }
+          : undefined,
         transformResult(context) {
           accepted.push(context);
           return { content: [{ type: 'text', text: 'accepted MCP result' }] };
@@ -366,6 +383,7 @@ nativeIt.each([false, true])(
       expect(after.item.output).toContain('accepted MCP result');
       await settle();
       expect(accepted).toHaveLength(2);
+      expect(checked).toBe(guarded ? 2 : 0);
       expect(mcp.calls.map((call) => call.arguments.key)).toEqual([
         'before',
         'after',
@@ -423,7 +441,7 @@ nativeIt.each([true, false])(
           id: `hosted-${index}`,
           server_label: 'docs',
           name: 'search',
-          arguments: '',
+          arguments: JSON.stringify({ query: `query-${index}` }),
           status: 'in_progress',
         }));
         items.forEach((item, output_index) =>

@@ -1,22 +1,38 @@
 import type { Turn } from './session';
 
-/** Private ownership of one response's single native tool admission. Core runs
- * the tools and publishes each correlated result; this class joins lifecycle. */
+/** One response's native work; several batches can share one actual root Turn. */
 export class NativeRealtimeToolBatch {
   retired = false;
   admitted = false;
   cleaned = false;
+  finished = false;
+  root?: Turn<unknown>;
   task?: Promise<void>;
   private submission?: Promise<Turn<unknown>>;
   private cancellation?: Promise<void>;
-  private settled = false;
+  private readonly controller = new AbortController();
+  private readonly completion = Promise.withResolvers<void>();
   private readonly graphClosed = Promise.withResolvers<void>();
   constructor(
     readonly responseId: string,
     readonly callIds: readonly string[],
-    private readonly submit: () => Promise<Turn<unknown>>,
-  ) {}
+    private readonly submit: (signal: AbortSignal) => Promise<Turn<unknown>>,
+  ) {
+    void this.completion.promise.catch(() => {});
+  }
 
+  complete(): void {
+    this.finished = true;
+    this.completion.resolve();
+  }
+  fail(error: unknown): void {
+    this.finished = true;
+    this.completion.reject(error);
+  }
+  /** Successful native interruption/close joins this batch's actual work. */
+  retiredByCore(): void {
+    this.complete();
+  }
   afterGraphClosed(): void {
     this.retired = true;
     this.cleaned = true;
@@ -38,42 +54,37 @@ export class NativeRealtimeToolBatch {
     let primary: { error: unknown } | undefined;
     try {
       this.submission = Promise.resolve().then(() => {
-        if (this.retired)
-          throw new Error('Realtime tool batch stopped before admission');
-        return this.submit();
+        this.controller.signal.throwIfAborted();
+        return this.submit(this.controller.signal);
       });
-      const turn = await this.beforeGraphClose(this.submission);
+      this.root = await this.beforeGraphClose(this.submission);
       this.admitted = true;
+      await this.beforeGraphClose(this.completion.promise);
       if (this.retired) throw new Error('Realtime tool batch stopped');
-      await this.beforeGraphClose(turn.wait());
-      if (this.retired) throw new Error('Realtime tool batch stopped');
-      this.settled = true;
       this.cleaned = true;
     } catch (error) {
       primary = { error };
     }
-    if (!this.settled) {
-      try {
-        await this.cleanup();
-      } catch (error) {
-        throw primary ? primary.error : error;
-      }
-    }
+    if (!this.cleaned) await this.cleanup();
     if (primary) throw primary.error;
   }
   cancel(): Promise<void> {
     this.retired = true;
+    this.controller.abort(new Error('Realtime tool batch stopped'));
     return this.cleanup();
   }
   private cleanup(): Promise<void> {
     if (this.cleaned) return Promise.resolve();
     return (this.cancellation ??= (async () => {
-      const turn = await Promise.race([
+      const root = await Promise.race([
         this.submission?.catch(() => undefined),
         this.graphClosed.promise.then(() => undefined),
       ]);
-      if (turn && !this.settled)
-        await Promise.race([turn.cancel(), this.graphClosed.promise]);
+      if (root)
+        await Promise.race([
+          this.completion.promise.catch(() => {}),
+          this.graphClosed.promise,
+        ]);
       this.cleaned = true;
     })().catch((error) => {
       this.cancellation = undefined;

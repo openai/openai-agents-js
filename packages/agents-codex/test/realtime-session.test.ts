@@ -39,8 +39,11 @@ function fixture(providerFailure?: Error) {
     }),
     call: vi.fn(async (operation: string, raw: string) => {
       const params = JSON.parse(raw);
-      if (operation === 'realtime_conversation_start_sdk') {
+      if (operation === 'realtime_conversation_prepare_sdk') {
         generation = params.generation;
+        return JSON.stringify({ generation });
+      }
+      if (operation === 'realtime_conversation_activate_sdk') {
         emit(generation, 'realtime_conversation_started');
       }
       if (operation === 'realtime_conversation_close_sdk')

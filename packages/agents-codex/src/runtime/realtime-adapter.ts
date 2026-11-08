@@ -113,7 +113,7 @@ export class NativeRealtimeAdapterDriver {
               break;
             }
             case 'close':
-              void this.cleanup().then(
+              void this.cleanup(true).then(
                 () => {
                   request.complete(true);
                 },
@@ -235,9 +235,12 @@ export class NativeRealtimeAdapterDriver {
     }
   }
 
-  private cleanup(): Promise<void> {
+  private cleanup(retryFailed = false): Promise<void> {
     if (this.cleaned) return Promise.resolve();
-    if (this.cleaning) return this.cleaning;
+    if (this.cleaning && !(retryFailed && this.closeError))
+      return this.cleaning;
+    // This explicit retry owns a new attempt; concurrent callers join it.
+    this.closeError = undefined;
     this.cancellation.abort(new Error('Native Realtime adapter closed'));
     const cleaning = (async () => {
       await this.setup;
@@ -254,14 +257,14 @@ export class NativeRealtimeAdapterDriver {
     this.cleaning = cleaning;
     void cleaning.catch((error) => {
       this.closeError = { error };
-      if (this.cleaning === cleaning) this.cleaning = undefined;
+      // Preserve this attempt for implicit finalizers; only an explicit retry replaces it.
     });
     return cleaning;
   }
 
   /** Call only after native cleanup succeeds; a rejected join can be retried. */
   async finish(): Promise<void> {
-    if (this.finished) return this.cleanup();
+    if (this.finished) return this.cleanup(true);
     this.finished = true;
     this.handle.finish();
     await this.running;

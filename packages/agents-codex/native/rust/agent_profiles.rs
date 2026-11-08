@@ -24,7 +24,7 @@ use crate::application_instructions::Accepted;
 type InstructionFile = Value;
 use crate::python_tools::{ProfileCatalog, PythonTools};
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OpeningProfiles {
     pub(crate) root_id: String,
@@ -76,6 +76,24 @@ pub(crate) struct McpToolDeclaration {
 struct OpeningFiles(Vec<InstructionFile>);
 
 impl OpeningProfiles {
+    /// Names admitted by the fresh graph installed before native startup.
+    pub(crate) fn admitted_tool_names(&self) -> HashSet<ToolName> {
+        self.roster
+            .iter()
+            .flat_map(|profile| {
+                let mut names = crate::python_tools::tool_names(&profile.tools);
+                names.extend(
+                    profile
+                        .handoffs
+                        .keys()
+                        .cloned()
+                        .map(|name| ToolName::new(None, name).with_default_namespace()),
+                );
+                names
+            })
+            .collect()
+    }
+
     pub(crate) fn validate_restored_handoff(
         &self,
         tool_name: &ToolName,
@@ -744,6 +762,22 @@ pub(crate) async fn update_active(
     instructions: Option<(&str, Vec<InstructionFile>)>,
     catalog: Option<ProfileCatalog>,
 ) -> Result<bool> {
+    update_active_inner(thread, settings, instructions, catalog, false).await
+}
+
+/// Publish the newly accepted MCP roster with the current immutable SDK catalog.
+/// Existing voice sources keep their original profile and connection bindings.
+pub(crate) async fn refresh_active_mcp(thread: &CodexThread) -> Result<bool> {
+    update_active_inner(thread, None, None, None, true).await
+}
+
+async fn update_active_inner(
+    thread: &CodexThread,
+    settings: Option<&codex_protocol::protocol::ThreadSettingsOverrides>,
+    instructions: Option<(&str, Vec<InstructionFile>)>,
+    catalog: Option<ProfileCatalog>,
+    refresh_mcp: bool,
+) -> Result<bool> {
     let Some(profiles) = thread.thread_extension_data().get::<Arc<AgentProfiles>>() else {
         return Ok(false);
     };
@@ -752,6 +786,19 @@ pub(crate) async fn update_active(
         .captured_agent_profile()
         .await?
         .context("Managed Agent update has no committed source")?;
+    let catalog = if refresh_mcp {
+        Some(
+            captured
+                .profile
+                .data
+                .get::<ProfileCatalog>()
+                .context("Managed Agent MCP update has no captured catalog")?
+                .as_ref()
+                .clone(),
+        )
+    } else {
+        catalog
+    };
     let mut target = (*captured.profile).clone();
     if let Some(settings) = settings {
         if let Some(model) = &settings.model {
@@ -1133,6 +1180,41 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
     }
 }
 
+fn handoff_declaration(name: &str, target: &str) -> DynamicToolFunctionSpec {
+    DynamicToolFunctionSpec {
+        name: name.to_owned(),
+        description: format!("Transfer this conversation to captured Agent {target}."),
+        input_schema: json!({"type":"object","properties":{},"required":[],"additionalProperties":false}),
+        defer_loading: false,
+    }
+}
+
+/// Project only the handoffs admitted by this immutable producing Agent profile.
+pub(crate) fn realtime_handoff_declarations(
+    handoffs: &codex_extension_api::AgentProfileHandoffTools,
+) -> Result<Vec<codex_extension_api::RealtimeToolDeclaration>> {
+    handoffs
+        .targets
+        .iter()
+        .map(|(name, target)| {
+            let raw = handoff_declaration(&name.name, target);
+            let native = dynamic_tool_to_responses_api_tool(&raw)?;
+            Ok(codex_extension_api::RealtimeToolDeclaration {
+                native_name: name.clone(),
+                spec: codex_extension_api::PreparedToolPresentation {
+                    namespace: name.namespace.clone(),
+                    name: native.name,
+                    kind: "function".into(),
+                    description: native.description,
+                    parameters: raw.input_schema,
+                    strict: native.strict,
+                    defer_loading: None,
+                },
+            })
+        })
+        .collect()
+}
+
 impl ToolContributor for Contributor {
     fn tools(
         &self,
@@ -1158,21 +1240,50 @@ impl ToolContributor for Contributor {
         let Some(profile) = profiles.profiles.get(&source.receipt.profile_id) else {
             return Vec::new();
         };
-        profile.declaration.handoffs.iter().filter_map(|(name, target)| {
-            let declaration = DynamicToolFunctionSpec { name: name.clone(),
-                description: format!("Transfer this conversation to captured Agent {target}."),
-                input_schema: json!({"type":"object","properties":{},"required":[],"additionalProperties":false}),
-                defer_loading: false };
-            let spec = ToolSpec::Function(dynamic_tool_to_responses_api_tool(&declaration).ok()?);
-            Some(Arc::new(HandoffExecutor { profiles: profiles.as_ref().clone(), source: source.receipt.clone(),
-                name: name.clone(), target: target.clone(), spec }) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>)
-        }).collect()
+        profile
+            .declaration
+            .handoffs
+            .iter()
+            .filter_map(|(name, target)| {
+                let declaration = handoff_declaration(name, target);
+                let spec =
+                    ToolSpec::Function(dynamic_tool_to_responses_api_tool(&declaration).ok()?);
+                Some(Arc::new(HandoffExecutor {
+                    profiles: profiles.as_ref().clone(),
+                    source: source.receipt.clone(),
+                    name: name.clone(),
+                    target: target.clone(),
+                    spec,
+                })
+                    as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>)
+            })
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_graph_policy_names_include_captured_nondefault_targets_and_handoffs() {
+        let mut raw = roster();
+        raw[1]["tools"] = json!([{"type":"function","name":"destination_lookup",
+            "description":"target","inputSchema":{"type":"object","properties":{}},"deferLoading":false}]);
+        raw[1]["step_defaults"] = json!([]);
+        let roster = decode_roster(&raw.to_string()).unwrap();
+        let opening = OpeningProfiles {
+            fingerprint: roster_fingerprint(&roster, "a").unwrap(),
+            root_id: "a".into(),
+            roster,
+        };
+        let names = opening.admitted_tool_names();
+        for name in ["lookup", "destination_lookup", "transfer_to_b"] {
+            assert!(names.contains(&ToolName::new(None, name).with_default_namespace()));
+        }
+        assert_eq!(names.len(), 3);
+        assert!(!names.contains(&ToolName::new(None, "exec_command").with_default_namespace()));
+    }
 
     fn roster() -> Value {
         json!([
@@ -1246,12 +1357,10 @@ mod tests {
                 .profile_id,
             "a"
         );
-        history.push(
-            serde_json::from_value(json!({"type":"compacted","payload":{
-                "message":"summary","replacement_history":[b]
-            }}))
-            .unwrap(),
-        );
+        let mut compacted: codex_history::CompactedItem =
+            serde_json::from_value(json!({"message":"summary"})).unwrap();
+        compacted.replacement_history = Some(vec![b.clone()]);
+        history.push(RolloutItem::Compacted(compacted));
         history.push(context(original));
         assert_eq!(
             operation_source(&opening, &history, "queued-turn")

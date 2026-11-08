@@ -2,7 +2,7 @@
 // reproduced here. Core owns routing; a live cell owns its retained delegate.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -327,7 +327,10 @@ struct Pending {
     control: Weak<Control>,
     payload: Payload,
     _bytes: OwnedSemaphorePermit,
+    // Drop after charged bytes, only when the physical callback owner returns.
+    _released: Option<oneshot::Sender<()>>,
 }
+type NoticeRelease = oneshot::Receiver<()>;
 enum Reply {
     Decision(Decision),
     HoldForStop,
@@ -1550,17 +1553,20 @@ impl Control {
         if state.revoked || state.mcp_poisoned || state.mcp_publication.is_some() {
             return None;
         }
-        if state
-            .pending
-            .get(&nonce)
-            .and_then(|p| p.generation)
-            .is_some_and(|generation| {
-                !state
-                    .tools
-                    .as_ref()
-                    .is_some_and(|rules| rules.values().any(|rule| rule.2 == Some(generation)))
+        if state.pending.get(&nonce).is_some_and(|pending| {
+            pending.generation.is_some_and(|generation| {
+                if let Some(source) = &pending.profile_source {
+                    !source.policy.as_ref().is_some_and(|policy| {
+                        policy.rules.values().any(|rule| rule.2 == Some(generation))
+                    })
+                } else {
+                    !state
+                        .tools
+                        .as_ref()
+                        .is_some_and(|rules| rules.values().any(|rule| rule.2 == Some(generation)))
+                }
             })
-        {
+        }) {
             return None;
         }
         let Some(pending) = state.pending.get_mut(&nonce) else {
@@ -1663,6 +1669,18 @@ impl Control {
         token: &CancellationToken,
         previous: Option<OwnedSemaphorePermit>,
         is_cancelled: Option<CancellationProbe>,
+    ) -> Result<Decision, String> {
+        self.decide_released(request, token, previous, is_cancelled, None)
+            .await
+    }
+
+    async fn decide_released<T: DecisionRequest + Send>(
+        self: &Arc<Self>,
+        request: T,
+        token: &CancellationToken,
+        previous: Option<OwnedSemaphorePermit>,
+        is_cancelled: Option<CancellationProbe>,
+        physical_release: Option<&mut Option<NoticeRelease>>,
     ) -> Result<Decision, String> {
         let profile_source = request.profile_source().cloned();
         let source_policy = profile_source
@@ -1781,6 +1799,11 @@ impl Control {
                 (bytes, serde_json::to_string(&notice).map_err(|_| FAILURE)?)
             };
             let (tx, rx) = oneshot::channel();
+            let released = physical_release.map(|receipt| {
+                let (released, returned) = oneshot::channel();
+                *receipt = Some(returned);
+                released
+            });
             state.pending.insert(
                 nonce,
                 Pending {
@@ -1797,6 +1820,7 @@ impl Control {
                     control: Arc::downgrade(self),
                     payload: Payload::Queued(wire),
                     _bytes: bytes,
+                    _released: released,
                 },
             );
             if self.channel.sender.send(Message::Payload(nonce)).is_err() {
@@ -2865,6 +2889,40 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn admit_tools_only_call(
+        &self,
+        input: codex_extension_api::ToolsOnlyCallInput,
+    ) -> futures_util::future::BoxFuture<'_, Result<ResponseItem, String>> {
+        Box::pin(async move {
+            let control = self
+                .threads
+                .lock()
+                .expect("interception index poisoned")
+                .get(input.admission.thread_id())
+                .and_then(Weak::upgrade)
+                .ok_or_else(|| FAILURE.to_owned())?;
+            let owner = input
+                .admission
+                .turn_store()
+                .get::<DirectTurn>()
+                .ok_or_else(|| FAILURE.to_owned())?;
+            let command_admission = *owner
+                .command_admission
+                .lock()
+                .expect("command admission poisoned");
+            let request = DirectRequest {
+                tool_admission: Some(input.admission),
+                control,
+                owner,
+                model: input.model,
+                command_admission,
+            };
+            request
+                .admit_tools_only(input.item, &input.cancellation)
+                .await
+        })
+    }
+
     fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
         let engine = self.engine.get()?.upgrade()?;
         let base = engine
@@ -3536,6 +3594,37 @@ fn rejected() -> ModelResponseError {
 }
 
 impl DirectRequest {
+    async fn admit_tools_only(
+        &self,
+        item: ResponseItem,
+        cancellation: &CancellationToken,
+    ) -> Result<ResponseItem, String> {
+        if cancellation.is_cancelled() || self.owner.cancelled.is_cancelled() {
+            return Err(FAILURE.to_owned());
+        }
+        let mut release = None;
+        let result = {
+            let before = self.before_scoped(item, None, cancellation, Some(&mut release));
+            tokio::pin!(before);
+            tokio::select! {biased;
+                _=cancellation.cancelled()=>Err(rejected()),
+                _=self.owner.cancelled.cancelled()=>Err(rejected()),
+                result=&mut before=>result,
+            }
+        };
+        // Fencing the nonce only prevents publication. The charged notice owns
+        // the callback until release(), including cancellation and timeout.
+        if let Some(released) = release {
+            let _ = released.await;
+        }
+        let (item, _) = result.map_err(|_| FAILURE.to_owned())?;
+        if self.owner.cancelled.is_cancelled() {
+            return Err(FAILURE.to_owned());
+        }
+        self.control
+            .publish_result(&self.owner, cancellation, false, None, || item)
+    }
+
     #[cfg(test)]
     async fn before(&self, item: ResponseItem) -> Result<ResponseItem, ModelResponseError> {
         self.before_edited(item, None).await.map(|(item, _)| item)
@@ -3543,8 +3632,19 @@ impl DirectRequest {
 
     async fn before_edited(
         &self,
+        item: ResponseItem,
+        previous: Option<OwnedSemaphorePermit>,
+    ) -> Result<(ResponseItem, bool), ModelResponseError> {
+        self.before_scoped(item, previous, &self.owner.cancelled, None)
+            .await
+    }
+
+    async fn before_scoped(
+        &self,
         mut item: ResponseItem,
         previous: Option<OwnedSemaphorePermit>,
+        cancellation: &CancellationToken,
+        physical_release: Option<&mut Option<NoticeRelease>>,
     ) -> Result<(ResponseItem, bool), ModelResponseError> {
         if self.control.code_import_poisoned() {
             return Err(rejected());
@@ -3667,7 +3767,7 @@ impl DirectRequest {
         .map_err(|_| rejected())?;
         let decision = self
             .control
-            .decide_retained(
+            .decide_released(
                 ProfiledRequest {
                     source,
                     request: OwnedRequest {
@@ -3677,13 +3777,14 @@ impl DirectRequest {
                         cell_owner_id: None,
                     },
                 },
-                &self.owner.cancelled,
+                cancellation,
                 previous,
                 None,
+                physical_release,
             )
             .await
             .map_err(|_| rejected())?;
-        if self.owner.cancelled.is_cancelled() {
+        if cancellation.is_cancelled() || self.owner.cancelled.is_cancelled() {
             return Err(rejected());
         }
         let mut changed = false;
@@ -7115,6 +7216,95 @@ mod tests {
             "survivor"
         );
         assert!(boundary.starts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tools_only_policy_join_waits_for_callback_release_after_scoped_stop() {
+        const BUDGET: usize = 8192;
+        // Advance the paused Tokio clock only after all real-Instant deadlines.
+        for finish in ["call", "root", "decision", "timeout"] {
+            let control = Arc::new(Control::with_budget("root".into(), true, BUDGET));
+            control.enable(3.0, Scope::Root).unwrap();
+            let request = direct_request(control.clone(), "turn");
+            let cancellation = CancellationToken::new();
+            let item=serde_json::from_value(json!({"type":"function_call","call_id":"policy-call","name":"lookup","arguments":"{}"})).unwrap();
+            let mut joined = Box::pin(request.admit_tools_only(item, &cancellation));
+            assert!(
+                futures_util::poll!(&mut joined).is_pending(),
+                "Premature completion in {finish} case"
+            );
+            let wire = control.next_wire().await.unwrap();
+            let nonce = serde_json::from_str::<Value>(&wire).unwrap()["nonce"]
+                .as_u64()
+                .unwrap();
+            assert!(control.handoff(nonce));
+            match finish {
+                "call" => cancellation.cancel(),
+                "root" => request.owner.cancelled.cancel(),
+                "timeout" => tokio::time::advance(Duration::from_secs(4)).await,
+                _ => assert!(control.resolve(nonce, r#"{"action":"continue"}"#)),
+            }
+            assert!(futures_util::poll!(&mut joined).is_pending());
+            // Cancellation must actively reach the SDK callback before joining
+            // its finally cleanup; nonce fencing alone cannot wake that task.
+            let cancel = control.next_wire().await.unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&cancel).unwrap()["cancel"],
+                json!(nonce)
+            );
+            assert!(control.channel.bytes.available_permits() < BUDGET);
+            if finish != "root" {
+                assert!(!request.owner.cancelled.is_cancelled());
+            }
+            assert!(!control.resolve(nonce, r#"{"action":"continue"}"#));
+            assert!(control.release(nonce));
+            assert_eq!(joined.await.is_ok(), finish == "decision");
+            assert_eq!(control.channel.bytes.available_permits(), BUDGET);
+            assert!(control.channel.state.lock().unwrap().pending.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_tools_only_policy_keeps_its_sibling_live() {
+        let control = Arc::new(Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        let request = direct_request(control.clone(), "turn");
+        let token = CancellationToken::new();
+        let sibling_token = CancellationToken::new();
+        let item = |id: &str| {
+            serde_json::from_value(
+                json!({"type":"function_call","call_id":id,"name":"lookup","arguments":"{}"}),
+            )
+            .unwrap()
+        };
+        let mut first = Box::pin(request.admit_tools_only(item("cancelled"), &token));
+        let mut sibling = Box::pin(request.admit_tools_only(item("sibling"), &sibling_token));
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(futures_util::poll!(&mut sibling).is_pending());
+        let mut nonces = Vec::new();
+        for _ in 0..2 {
+            let wire = control.next_wire().await.unwrap();
+            let nonce = serde_json::from_str::<Value>(&wire).unwrap()["nonce"]
+                .as_u64()
+                .unwrap();
+            assert!(control.handoff(nonce));
+            nonces.push(nonce);
+        }
+        token.cancel();
+        assert!(futures_util::poll!(&mut first).is_pending());
+        let cancel = control.next_wire().await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&cancel).unwrap()["cancel"],
+            json!(nonces[0])
+        );
+        assert!(!request.owner.cancelled.is_cancelled() && !sibling_token.is_cancelled());
+        assert!(control.resolve(nonces[1], r#"{"action":"continue"}"#));
+        assert!(futures_util::poll!(&mut sibling).is_pending());
+        assert!(control.release(nonces[1]));
+        assert!(sibling.await.is_ok());
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(control.release(nonces[0]));
+        assert!(first.await.is_err());
     }
 
     fn direct_request(control: Arc<Control>, turn: &str) -> DirectRequest {

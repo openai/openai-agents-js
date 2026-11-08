@@ -16,22 +16,21 @@ Choose the lifetime before submitting work:
 The following example keeps one conversation open for two turns.
 
 ```ts
-import { Agent } from '@openai/agents';
+import { Agent, NativeProvider } from '@openai/agents';
 
-const agent = new Agent({ instructions: 'Answer clearly.' });
-const session = await agent.session({
+await using provider = new NativeProvider();
+const agent = new Agent({ instructions: 'Answer clearly.', provider });
+await using session = await agent.session({
   model: 'gpt-5.2',
   modelSettings: { reasoningEffort: 'low' },
 });
-try {
-  const first = await session.submit('Remember the number 42.');
-  console.log((await first.wait()).finalOutput);
-  const second = await session.submit('What number did I give you?');
-  console.log((await second.wait()).finalOutput);
-} finally {
-  await session.close();
-}
+const first = await session.submit('Remember the number 42.');
+console.log((await first.wait()).finalOutput);
+const second = await session.submit('What number did I give you?');
+console.log((await second.wait()).finalOutput);
 ```
+
+The disposal scope closes the Session before its provider. The provider can serve several Sessions; close it after all of them close. If you omit `provider`, the Agent creates one at `agent.provider` that your application also owns. See [provider lifetime](session-configuration.md#provider-lifetime).
 
 `await session.submit()` returns a Turn handle. Await `turn.wait()` for its completed result. Choose what a submission should do while another turn is active:
 
@@ -147,11 +146,13 @@ A rejected wait can be the expected stopped outcome or a callback failure. Inspe
 Put `checklist()` in the opening tools to enable Core's `update_plan`. The accepted value is an ordered whole list with native thread and turn identity:
 
 ```ts
-import { Agent, checklist } from '@openai/agents';
+import { Agent, checklist, NativeProvider } from '@openai/agents';
 
+await using provider = new NativeProvider();
 const agent = new Agent({
   instructions: 'Inspect the task.',
   tools: [checklist()],
+  provider,
 });
 await using session = await agent.session();
 await (await session.submit('Inspect and record your progress.')).wait();

@@ -483,6 +483,8 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
 params!(RealtimeToolSubmission {
     generation: String,
     response_id: String,
+    #[serde(default)]
+    expected_root_turn_id: Option<String>,
     call_ids: Vec<String>,
     observation_submission_id: Option<String>,
     trace: Option<W3cTraceContext>
@@ -504,6 +506,21 @@ pub(crate) async fn submit_realtime_tools(
         .get::<crate::python_tools::PythonTools>()
         .context("Realtime tool submission requires a managed tool session")
         .map_err(pre_admission)?;
+    if let Some(expected_root_turn_id) = p.expected_root_turn_id {
+        // Attachment owns work on the existing root. It must not reopen the
+        // graph or seed a replacement turn/admission receipt.
+        let result = state
+            .thread
+            .attach_realtime_tools_if_owned(
+                p.generation,
+                p.response_id,
+                p.call_ids,
+                expected_root_turn_id.clone(),
+                p.trace,
+            )
+            .await?;
+        return realtime_attachment(result, &expected_root_turn_id);
+    }
     let mut init = state.thread.config_snapshot().await.turn_extension_init;
     init.insert(None::<crate::python_tools::OperationSelection>);
     if let Some(submission) = p.observation_submission_id {
@@ -523,6 +540,22 @@ pub(crate) async fn submit_realtime_tools(
         )
         .await?,
     ))
+}
+
+fn realtime_attachment(result: TurnInputSubmission, expected_root_turn_id: &str) -> Result<Value> {
+    match result {
+        TurnInputSubmission::Steered { turn_id } => {
+            anyhow::ensure!(
+                turn_id == expected_root_turn_id,
+                "Realtime attachment root changed"
+            );
+            Ok(json!({"status":"attached","root_turn_id":turn_id}))
+        }
+        TurnInputSubmission::NotSubmitted { reason } => Ok(rejection(reason)),
+        TurnInputSubmission::Started { .. } => {
+            bail!("Realtime attachment created an unexpected root")
+        }
+    }
 }
 
 async fn prepare_write_selection(

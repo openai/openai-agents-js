@@ -16,7 +16,11 @@ Context, environment, opening overrides, and native model requirements still nee
 - A custom endpoint uses HTTP by default.
 - When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
 
-Close the provider's Sessions before calling `provider.close()`. To open more Sessions after that, create a new provider.
+### Provider lifetime
+
+Your application owns the provider, including the default provider created by `new Agent(...)` when you omit `provider`. That default is available as `agent.provider`. Closing a Session or completing `agent.run()` releases that Session's resources. The provider remains available for later Sessions, including its reusable HTTP connections.
+
+Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
 
 For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#port-the-contracts-that-affect-behavior).
 

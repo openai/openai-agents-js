@@ -2,6 +2,10 @@
 
 This guide describes the current source branch. Build the SDK and native runtime from the same checkout, or use examples from the exact release you installed. These examples make live API requests.
 
+## Prepare the SDK
+
+Follow [Build the native SDK from source](building.md) before running current-branch examples. That guide lists the Node.js runtime, native build tools, and commands to build the matching workspace packages. Run the commands below from that checkout, with `OPENAI_API_KEY` set. The recording examples do not open a microphone or speaker.
+
 ## Start with a recording
 
 Set `OPENAI_API_KEY`, then run from the repository root:
@@ -20,11 +24,59 @@ The native Session owns Realtime control, tools, history, and cancellation. Clos
 | --- | --- |
 | Server WebSocket | Omit `transport`. Use `sendText()`, `sendAudio()`, and `events()` on the returned native owner. The application owns recording and playback. |
 | Browser WebRTC | The server passes `transport: {type: 'webrtc', offerSdp}` to `Session.realtime()`. Return `answerSdp` only after that call resolves. Keep the Session and its native sideband control open for the call. |
-| SIP | Pass `transport: {type: 'sip', callId}` for an already accepted provider call. Native control owns its sideband and call cleanup. |
+| SIP | Pass `transport: {type: 'sip', callId}` for an already accepted provider call. Closing this owner detaches its sideband; your application still owns hanging up the existing call. |
 | Twilio Media Streams | Use the [Twilio bridge](realtime-twilio.md). The application authenticates the incoming socket; the bridge owns media delivery and playback marks. |
 | Application transport or model | Set `adapter` to a `NativeRealtimeAdapter`. Do not combine it with a built-in call transport. |
 
 Native execution runs on the server. Browser code can import `NativeVoiceWebRTC` from `@openai/agents/voice/browser`. Its `connect({exchangeSdp})` callback sends the offer to your authenticated server and returns the server's answer. The helper owns browser media only; its data-channel observations cannot execute native tools or approve work. Keep server credentials out of the browser. Close the server owner when the application call ends; closing browser media alone does not replace server cleanup.
+
+SIP calls must be accepted and configured before attachment. Do not pass initial `model`, `voice`, or `instructions` overrides with the SIP transport, or send client audio on that owner. Closing an SDK-created WebRTC owner also hangs up its created call.
+
+### Keep server control open
+
+This recipe runs on the Node.js application server. `publishAnswer` sends the SDP answer through your authenticated endpoint. `serveCall` consumes `voice.events()`, routes application decisions, and returns when the call ends. The server function stays running after it sends the answer.
+
+```ts
+import { Agent, NativeProvider } from '@openai/agents';
+import type { NativeRealtimeSession } from '@openai/agents';
+
+export async function serveWebRtc(
+  offerSdp: string,
+  publishAnswer: (answer: string) => Promise<void>,
+  serveCall: (voice: NativeRealtimeSession) => Promise<void>,
+) {
+  await using provider = new NativeProvider();
+  const agent = new Agent({
+    provider,
+    instructions: 'Answer spoken questions briefly.',
+  });
+  await using session = await agent.session();
+  await using voice = await session.realtime({
+    transport: { type: 'webrtc', offerSdp },
+  });
+  if (!voice.answerSdp) throw new Error('WebRTC startup returned no answer.');
+  await publishAnswer(voice.answerSdp);
+  await serveCall(voice);
+}
+```
+
+Browser code creates its media helper with an audio element. Call `connect()` from the application's start-call action, and close both browser media and server control when the call ends:
+
+```ts
+import { NativeVoiceWebRTC } from '@openai/agents/voice/browser';
+import type { VoiceSdpExchange } from '@openai/agents/voice/browser';
+
+export async function startBrowserCall(
+  audioElement: HTMLAudioElement,
+  exchangeSdp: VoiceSdpExchange,
+) {
+  const media = new NativeVoiceWebRTC({ audioElement });
+  await media.connect({ exchangeSdp });
+  return media; // The application calls media.close() and ends server control.
+}
+```
+
+For an already accepted SIP call, use the same server lifetime and event consumer with `transport: { type: 'sip', callId }`. Context disposal detaches native control; the application that owns the provider call handles hangup.
 
 `@openai/agents/voice/workerd` supplies a socket relay helper for an application server. It does not load or run the native runtime in the Worker. The retained `@openai/agents/realtime` entrypoint continues to expose the Classic runtime.
 
@@ -36,7 +88,15 @@ Import `NativeRealtimeAdapter`, `NativeRealtimeAdapterContext`, and `NativeRealt
 
 Return a connection with `incoming: AsyncIterable<string>`, `send(frame: string): Promise<void>`, and `close(): Promise<void>`. Incoming and outgoing I/O must work independently. Honor the setup signal and clean partial resources before rejecting. `close()` must release resources and wake pending sends and incoming iteration. Cleanup must support retries. Do not await the owning Session's close from an adapter callback; the application controls that outer lifetime. Never log connection headers or credential values.
 
-The native runtime still checks configuration acknowledgements, tool authority, response ordering, and history. A custom adapter must supply the expected protocol; it does not bypass those checks.
+Run the complete [custom adapter example](../native-realtime-adapter.ts):
+
+```sh
+pnpm exec tsx examples/codex/native-realtime-adapter.ts 'Explain a rainbow briefly' > adapter-answer.pcm
+```
+
+It implements the factory, incoming iterator, send, and cleanup methods with the workspace's existing `ws` dependency. It preserves one WebSocket message per iterator value and forwards canonical frames unchanged to the native-selected endpoint. Output is a fixed window of mono PCM16 at 24 kHz without a file header. It does not translate another model's protocol.
+
+The native runtime still checks configuration acknowledgements, tool authority, response ordering, and history. A translating adapter must implement the applicable [Realtime client events](https://developers.openai.com/api/reference/resources/realtime/client-events) and [server events](https://developers.openai.com/api/reference/resources/realtime/server-events), including configuration acknowledgements and actual response/item IDs. Replacing I/O does not bypass these checks.
 
 ## Settings, tools, and live Agents
 
@@ -52,6 +112,12 @@ Realtime speech itself streams before completion. Optional `outputGuardrails` ch
 
 ## Separate transcription and synthesis
 
-Run [voice.ts](../voice.ts) for a PCM file → native Session → PCM file pipeline. `VoicePipeline` takes one workflow and one speech provider. `NativeSessionVoiceWorkflow` waits for accepted final string output before synthesis, retaining the caller's history, tools, and approval policy.
+Run [voice.ts](../voice.ts) for a PCM file → native Session → PCM file pipeline. Supply raw mono PCM16 at 24 kHz without a WAV header:
+
+```sh
+pnpm exec tsx examples/codex/voice.ts input.pcm spoken-answer.pcm
+```
+
+`VoicePipeline` takes one workflow and one speech provider. `NativeSessionVoiceWorkflow` waits for accepted final string output before synthesis, retaining the caller's history, tools, and approval policy.
 
 The OpenAI speech provider accepts mono 24 kHz PCM16 or normalized float32 input. Streaming input uses explicit `{type: 'commit'}` boundaries; EOF commits remaining audio. It does not add VAD. `transcriptionSettings` applies to static/file transcription only. Configure synthesis, voice IDs, ordered text splitting, output dtype, synchronous transforms, and sample buffering through the provider and pipeline options. Synthesis stays serial, and each synthesis boundary flushes its buffered tail. The caller owns its input source, playback, and Session lifetime.

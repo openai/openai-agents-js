@@ -14,6 +14,17 @@ function functionNames(request: JsonObject): string[] {
     }
   }
   visit(request.tools);
+  if (Array.isArray(request.input)) {
+    for (const item of request.input) {
+      if (
+        item &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        item.type === 'additional_tools'
+      )
+        visit(item.tools);
+    }
+  }
   return names;
 }
 
@@ -44,7 +55,11 @@ nativeIt.each([false, true])(
     const model = new ModelServer([
       (request) => {
         expect(functionNames(request)).toContain('source_lookup');
-        expect(functionNames(request)).not.toContain('source_unused');
+        if (explicit) {
+          expect(functionNames(request)).toContain('source_unused');
+        } else {
+          expect(functionNames(request)).not.toContain('source_unused');
+        }
         expect(functionNames(request)).toContain('transfer_to_b');
         return [call('transfer_to_b', {}, { callId: 'handoff' })];
       },
@@ -82,11 +97,69 @@ nativeIt.each([false, true])(
       await session.update({ tools: [source] });
       const turn = await session.submit(
         'Handle this with B.',
-        explicit ? { tools: [source, toolRef('transfer_to_b')] } : undefined,
+        explicit
+          ? { tools: [source, unused, toolRef('transfer_to_b')] }
+          : undefined,
       );
       expect((await turn.wait()).finalOutput).toBe('done');
       expect(await session.getActiveAgent()).toBe(target);
       expect(effects).toEqual(explicit ? [] : ['B']);
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each(['inherited', 'empty', 'nondefault'] as const)(
+  'keeps profile defaults separate from an explicit beforeStep choice (%s)',
+  async (selection) => {
+    const source = tool({
+      name: 'source_lookup',
+      parameters: z.object({}),
+      execute: () => 'A',
+    });
+    const unused = tool({
+      name: 'source_unused',
+      parameters: z.object({}),
+      execute: () => 'unused',
+    });
+    const model = new ModelServer([
+      (request) => {
+        const names = functionNames(request);
+        expect(names.includes('source_lookup')).toBe(selection === 'inherited');
+        expect(names.includes('source_unused')).toBe(
+          selection === 'nondefault',
+        );
+        return [message('done')];
+      },
+    ]);
+    try {
+      const config = await model.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-profile-before-step',
+        supportsWebsockets: false,
+      });
+      const target = new Agent({ name: 'B', instructions: 'Target profile.' });
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Source profile.',
+        tools: [source, unused],
+        handoffs: [target],
+        provider,
+      }).session();
+      await session.update({ tools: [source] });
+      const turn = await session.submit('Reply.', {
+        beforeStep: () =>
+          selection === 'inherited'
+            ? undefined
+            : selection === 'empty'
+              ? []
+              : [unused],
+      });
+      expect((await turn.wait()).finalOutput).toBe('done');
     } finally {
       await ModelServer.closeAll();
     }

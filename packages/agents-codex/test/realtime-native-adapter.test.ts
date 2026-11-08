@@ -101,7 +101,10 @@ nativeIt.each([false, true])(
           if (key.toLowerCase() === 'authorization') delete headers[key];
         context.signal.throwIfAborted();
         const socket = new WebSocket(url, { headers });
-        const stream = createWebSocketStream(socket, { encoding: 'utf8' });
+        const stream = createWebSocketStream(socket, {
+          encoding: 'utf8',
+          readableObjectMode: true,
+        });
         const abort = () => socket.terminate();
         context.signal.addEventListener('abort', abort, { once: true });
         try {

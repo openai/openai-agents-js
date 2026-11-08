@@ -1,6 +1,6 @@
 # Native voice with Twilio
 
-Use `bridgeTwilioVoice` to connect a Twilio bidirectional Media Stream to an existing native Agent Session. The application accepts and authenticates the incoming WebSocket, then gives it to the bridge.
+Use `bridgeTwilioVoice` to connect a Twilio bidirectional Media Stream to an existing native Agent Session. The application accepts and authenticates the incoming WebSocket, then gives it to the bridge. Complete the [native source setup](building.md) first. Call the function below from your server's authenticated Media Streams handler. Configure the HTTP server and Twilio separately.
 
 ```ts
 import type { Session } from '@openai/agents';
@@ -18,7 +18,7 @@ export async function handleAuthenticatedCall(
     signal,
     realtimeOptions: { model: 'gpt-realtime' },
     onEvent(event) {
-      if (event.type === 'error') console.error(event.error);
+      if (event.type === 'tool_batch_error') console.error(event.error);
     },
   });
 }

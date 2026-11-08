@@ -52,6 +52,7 @@ function peer(model: ModelServer) {
       if (frame.type === 'response.create') {
         const id = `response-${frames.length}`;
         send({ type: 'response.created', response: { id } });
+        const output: any[] = [];
         if (
           frames.some(
             (prior) =>
@@ -59,6 +60,18 @@ function peer(model: ModelServer) {
               prior.item?.type === 'function_call_output',
           )
         ) {
+          const answer = {
+            id: 'frontend-answer',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'audio', transcript: 'Spoken frontend answer.' }],
+          };
+          output.push(answer);
+          send({
+            type: 'conversation.item.added',
+            item: { ...answer, status: 'in_progress', content: [] },
+          });
           send({
             type: 'response.output_audio_transcript.delta',
             response_id: id,
@@ -71,8 +84,13 @@ function peer(model: ModelServer) {
             item_id: 'frontend-answer',
             transcript: 'Spoken frontend answer.',
           });
+          send({
+            type: 'conversation.item.done',
+            response_id: id,
+            item: answer,
+          });
         }
-        send({ type: 'response.done', response: { id } });
+        send({ type: 'response.done', response: { id, output } });
       }
     });
   });
@@ -103,7 +121,12 @@ function peer(model: ModelServer) {
         arguments: JSON.stringify({ input_transcript: text }),
       };
       send({ type: 'response.created', response: { id: responseId } });
-      send({ type: 'conversation.item.done', item });
+      send({
+        type: 'response.output_item.done',
+        response_id: responseId,
+        output_index: 0,
+        item,
+      });
       send({
         type: 'response.done',
         response: { id: responseId, output: [item] },
@@ -169,10 +192,13 @@ nativeIt(
         model: 'gpt-5.5',
         provider,
       });
+      const outputSchema = z
+        .string()
+        .refine((text) => !text.includes('UNACCEPTED'));
       await using session = await agent
         .withOutputType({
           mode: 'prompted',
-          schema: z.string().refine((text) => !text.includes('UNACCEPTED')),
+          schema: outputSchema,
           maxRetries: 1,
         })
         .session();
@@ -190,6 +216,13 @@ nativeIt(
           realtime.upgrades[0].headers['x-sdk-sentinel-grant'],
         ).toBeUndefined();
         await voice.sendText('voice input');
+        // The native command admits input before the provider finishes responding.
+        // Let that response complete before injecting a later handoff response.
+        await vi.waitFor(() =>
+          expect(
+            realtime.frames.some((frame) => frame.type === 'response.create'),
+          ).toBe(true),
+        );
         realtime.handoff('Read record.');
         const output = await realtime.output();
         expect(output).toContain('ACCEPTED_NATIVE_MARKER');
@@ -214,7 +247,14 @@ nativeIt(
       expect(
         (
           await (
-            await session.submit('continue', { prepareRequest: editor })
+            await session.submit('continue', {
+              prepareRequest: editor,
+              outputType: {
+                mode: 'prompted',
+                schema: outputSchema,
+                maxRetries: 0,
+              },
+            })
           ).wait()
         ).finalOutput,
       ).toBe('after voice');

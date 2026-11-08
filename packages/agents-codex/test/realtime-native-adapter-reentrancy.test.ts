@@ -121,7 +121,8 @@ nativeIt(
       let attempts = 0;
       let original: unknown;
       const adapter: NativeRealtimeAdapter = {
-        async connect() {
+        async connect(context) {
+          accepted.model = context.model;
           return {
             incoming,
             async send(raw) {
