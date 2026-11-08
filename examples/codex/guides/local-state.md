@@ -11,10 +11,11 @@ For application-owned canonical snapshot files, use [Store canonical conversatio
 `localStorage(path)` returns a frozen readonly `{ path }` descriptor. The factory resolves relative paths once, without opening files. Session opening also accepts a structural descriptor with an absolute path. Only trusted application configuration should choose that directory.
 
 ```ts
-import { Agent, localStorage } from '@openai/agents';
+import { Agent, localStorage, NativeProvider } from '@openai/agents';
 
+await using provider = new NativeProvider();
 const storage = localStorage('/application/conversations');
-const agent = new Agent({ instructions: 'Answer clearly.' });
+const agent = new Agent({ instructions: 'Answer clearly.', provider });
 const session = await agent.session({ storage });
 const id = session.id;
 try {
@@ -23,11 +24,10 @@ try {
   await session.close();
 }
 // A later process supplies its current Agent/provider/tools/context.
-const reopened = await agent.session({ storage, resume: id });
-await reopened.close();
+await using reopened = await agent.session({ storage, resume: id });
 ```
 
-See the [local-storage example](../local-storage.ts).
+The first Session closes before reopening the profile. At the end of the scope, the reopened Session closes before the provider. See [provider lifetime](session-configuration.md#provider-lifetime) and the [local-storage example](../local-storage.ts).
 
 ### Profile ownership
 
@@ -84,11 +84,18 @@ For canonical failures that remain visible after cleanup, see [native-profile du
 Declare `nativeGoals()` in `Agent.tools` when opening a LocalStorage Session. Core then provides `create_goal`, `get_goal` and `update_goal`. `await session.goal()` reads current native state without starting model work. It returns null when no goal exists. Integer fields use numbers when safe and bigint otherwise; timestamps use epoch seconds.
 
 ```ts
-import { Agent, localStorage, nativeGoals } from '@openai/agents';
+import {
+  Agent,
+  localStorage,
+  nativeGoals,
+  NativeProvider,
+} from '@openai/agents';
 
+await using provider = new NativeProvider();
 const agent = new Agent({
   instructions: 'Manage only the requested goal.',
   tools: [nativeGoals()],
+  provider,
 });
 await using session = await agent.session({
   storage: localStorage('/application/goals'),
