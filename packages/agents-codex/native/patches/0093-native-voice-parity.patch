@@ -20541,10 +20541,10 @@ index a50b3dbbd19ff30a2b7c7c688644da2b894cf458..960923ed2b1d35be90a22877d62e5350
 +}
 diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..2bb6b5c581a9f49409581ef0b98455b46bb0cc76
+index 0000000000000000000000000000000000000000..2d42aec10a7c2866350d9b713ef6ebddcf48f5b7
 --- /dev/null
 +++ b/codex-rs/core/src/session/agent_profile.rs
-@@ -0,0 +1,1774 @@
+@@ -0,0 +1,1790 @@
 +//! Atomic, host-admitted Agent selection at actual sampling boundaries.
 +
 +use super::session::Session;
@@ -21791,6 +21791,22 @@ index 0000000000000000000000000000000000000000..2bb6b5c581a9f49409581ef0b98455b4
 +            )
 +            .await;
 +        attach_thread_persistence(Arc::get_mut(&mut session).expect("unshared session")).await;
++        // Supply compatible source/target metadata through an authoritative
++        // fixture catalog; an unlisted model must retain the fallback safety fence.
++        let source = context.model_info().clone();
++        let mut target = source.clone();
++        target.slug = "profile-sampling-target".into();
++        target.display_name = "Profile sampling target".into();
++        assert_ne!(source.slug, target.slug);
++        Arc::get_mut(&mut session)
++            .expect("unshared session")
++            .services
++            .models_manager = Arc::new(codex_models_manager::manager::StaticModelsManager::new(
++            context.auth_manager.clone(),
++            codex_protocol::openai_models::ModelsResponse {
++                models: vec![source, target],
++            },
++        ));
 +        let mut a = profile(&context, "a", "sampling-a").as_ref().clone();
 +        a.data.insert(ProfileTool("only_a"));
 +        let receipt = session
@@ -21798,7 +21814,7 @@ index 0000000000000000000000000000000000000000..2bb6b5c581a9f49409581ef0b98455b4
 +            .await
 +            .unwrap();
 +        let mut b = profile(&context, "b", "sampling-b").as_ref().clone();
-+        b.model.model = "gpt-5.4".into();
++        b.model.model = "profile-sampling-target".into();
 +        b.data.insert(ProfileTool("only_b"));
 +        let boundary = Arc::new(BoundaryActivation {
 +            candidate: std::sync::Mutex::new(Some(codex_extension_api::AgentProfileActivation {
@@ -21894,7 +21910,7 @@ index 0000000000000000000000000000000000000000..2bb6b5c581a9f49409581ef0b98455b4
 +            .await
 +            .unwrap()
 +            .unwrap();
-+        assert_eq!(routed, "gpt-5.4");
++        assert_eq!(routed, "profile-sampling-target");
 +        assert_eq!(
 +            session
 +                .agent_profile_receipt()
