@@ -12,6 +12,7 @@ import {
   hasMcpPrePolicy,
   mcpPrePolicyRules,
   mcpConfig,
+  resourceMcpBinding,
   splitToolDeclarations as splitResourceDeclarations,
 } from '../../src/runtime/mcp';
 import type {
@@ -55,6 +56,67 @@ const original = (): JsonObject => ({
   }),
 });
 afterEach(() => vi.useRealTimers());
+
+it('captures private literal environments through resource selection without sharing mutable maps', () => {
+  const entries = [
+    ['PRIVATE_ENV', 'private-literal'],
+    ['EMPTY', ''],
+    ['UNICODE', 'café 🚀'],
+    ['service.é', 'literal-name'],
+    ['__proto__', 'literal-prototype'],
+  ];
+  const env = Object.fromEntries(entries);
+  const declaration = new StdioMCP({
+    name: 'records',
+    tools: ['read'],
+    command: 'peer',
+    env,
+  });
+  env.PRIVATE_ENV = 'later-literal';
+  const expected = Object.fromEntries(entries);
+  expect(declaration.env).toEqual(expected);
+  expect(Object.isFrozen(declaration.env)).toBe(true);
+  expect(() => {
+    (declaration.env as Record<string, string>).PRIVATE_ENV = 'mutated';
+  }).toThrow(TypeError);
+  expect(Object.keys(declaration)).not.toContain('env');
+  expect(JSON.stringify(declaration)).not.toContain('private-literal');
+  const first = mcpConfig([declaration]).records as JsonObject;
+  (first.env as JsonObject).PRIVATE_ENV = 'changed-config';
+  const selected = resourceMcpBinding(declaration);
+  expect((mcpConfig([selected]).records as JsonObject).env).toEqual(expected);
+  expect(selected.tools).toEqual([]);
+});
+
+it.each([
+  null,
+  [],
+  'PRIVATE_ENV',
+  { '': 'private-literal' },
+  { 'BAD=NAME': 'private-literal' },
+  { 'bad\0name': 'private-literal' },
+  { 'bad\ud800name': 'private-literal' },
+  { PRIVATE_ENV: 3 },
+  { PRIVATE_ENV: 'private\0literal' },
+  { PRIVATE_ENV: 'private\ud800literal' },
+])(
+  'rejects an invalid literal environment without revealing its value (%j)',
+  (env) => {
+    let error: unknown;
+    try {
+      new StdioMCP({
+        name: 'records',
+        tools: ['read'],
+        command: 'peer',
+        env: env as never,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(TypeError);
+    expect(String(error)).not.toContain('private');
+  },
+);
 
 it('names native MCP preapproval without changing native policy or application gates', () => {
   const approval = vi.fn(() => false);

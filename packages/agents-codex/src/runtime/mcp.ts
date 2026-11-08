@@ -307,17 +307,20 @@ export interface StdioMCPOptions<
   command: string;
   args?: readonly string[];
   envVars?: readonly string[];
+  /** Captured child values override inherited names; reserved process identity variables stay excluded. */
+  env?: Readonly<Record<string, string>>;
   cwd?: string;
   location?: 'host' | 'environment';
   /** Keep the process for the Session, or isolate it to each admitted turn. */
   lifetime?: 'session' | 'turn';
 }
 
-/** A native-owned process. Variables come from its explicitly selected location. */
+/** A native-owned process with inherited names and captured literal environment values. */
 export class StdioMCP<Context = unknown> extends MCP<Context> {
   readonly command: string;
   readonly args: readonly string[];
   readonly envVars: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
   readonly cwd?: string;
   readonly location: 'host' | 'environment';
   readonly lifetime: 'session' | 'turn';
@@ -329,6 +332,29 @@ export class StdioMCP<Context = unknown> extends MCP<Context> {
     for (const value of options.envVars ?? [])
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value))
         throw new TypeError('MCP envVars must name environment variables');
+    if (options.env !== undefined) {
+      if (
+        options.env === null ||
+        typeof options.env !== 'object' ||
+        Array.isArray(options.env)
+      )
+        throw new TypeError('MCP env must be an object of strings');
+      const entries = Object.entries(options.env);
+      for (const [name, value] of entries) {
+        launchText(name);
+        if (name.includes('='))
+          throw new TypeError('MCP env names must contain no equals sign');
+        launchText(value, true);
+        if (
+          Buffer.from(name, 'utf8').toString('utf8') !== name ||
+          Buffer.from(value, 'utf8').toString('utf8') !== value
+        )
+          throw new TypeError(
+            'MCP env names and values must contain valid Unicode',
+          );
+      }
+      this.env = Object.freeze(Object.fromEntries(entries));
+    }
     if (options.cwd !== undefined) launchText(options.cwd);
     this.command = options.command;
     this.args = Object.freeze([...(options.args ?? [])]);
@@ -340,7 +366,7 @@ export class StdioMCP<Context = unknown> extends MCP<Context> {
       throw new TypeError('Invalid MCP location');
     if (!['session', 'turn'].includes(this.lifetime))
       throw new TypeError('Invalid MCP lifetime');
-    for (const name of ['command', 'args', 'envVars', 'cwd'])
+    for (const name of ['command', 'args', 'envVars', 'env', 'cwd'])
       Object.defineProperty(this, name, { enumerable: false });
     Object.freeze(this);
   }
@@ -357,6 +383,8 @@ function remoteFilePath(value: string): string {
 export interface HttpMCPOptions<Context = unknown> extends MCPOptions<Context> {
   url: string;
   bearerToken?: string;
+  /** Captured HTTP fields. Do not combine Authorization with bearerToken. */
+  headers?: Readonly<Record<string, string>>;
   /** Connect at opening (default), or only when selected by a root operation. */
   activation?: 'session' | 'operation';
 }
@@ -365,6 +393,7 @@ export interface HttpMCPOptions<Context = unknown> extends MCPOptions<Context> {
 export class HttpMCP<Context = unknown> extends MCP<Context> {
   readonly url: string;
   readonly bearerToken?: string;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly activation: 'session' | 'operation';
 
   constructor(options: HttpMCPOptions<Context>) {
@@ -387,6 +416,40 @@ export class HttpMCP<Context = unknown> extends MCP<Context> {
       throw new TypeError(
         'MCP bearerToken must contain visible ASCII characters',
       );
+    if (options.headers !== undefined) {
+      if (
+        typeof options.headers !== 'object' ||
+        options.headers === null ||
+        Array.isArray(options.headers)
+      )
+        throw new TypeError('MCP headers must be a string map');
+      const entries = Object.entries(options.headers);
+      const names = new Set<string>();
+      for (const [name, value] of entries) {
+        if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name))
+          throw new TypeError('MCP header names must be HTTP tokens');
+        if (
+          typeof value !== 'string' ||
+          // eslint-disable-next-line no-control-regex -- HTTP field values must exclude controls except horizontal tab.
+          /[\x00-\x08\x0a-\x1f\x7f]/.test(value) ||
+          Buffer.from(value, 'utf8').toString('utf8') !== value
+        )
+          throw new TypeError(
+            'MCP header values must be valid HTTP field values',
+          );
+        const normalized = name.toLowerCase();
+        if (names.has(normalized))
+          throw new TypeError(
+            'MCP headers must have distinct case-insensitive names',
+          );
+        if (normalized === 'authorization' && options.bearerToken !== undefined)
+          throw new TypeError(
+            'Use either bearerToken or an Authorization header',
+          );
+        names.add(normalized);
+      }
+      this.headers = Object.freeze(Object.fromEntries(entries));
+    }
     this.activation = options.activation ?? 'session';
     if (!['session', 'operation'].includes(this.activation))
       throw new TypeError('Invalid HTTP MCP activation');
@@ -396,7 +459,7 @@ export class HttpMCP<Context = unknown> extends MCP<Context> {
       );
     this.url = options.url;
     this.bearerToken = options.bearerToken;
-    for (const name of ['url', 'bearerToken'])
+    for (const name of ['url', 'bearerToken', 'headers'])
       Object.defineProperty(this, name, { enumerable: false });
     Object.freeze(this);
   }
@@ -432,9 +495,9 @@ export type ChatGPTAppsMCPOptions<Context = unknown> = Omit<
 export class ChatGPTAppsMCP<Context = unknown> extends HttpMCP<Context> {
   declare readonly name: 'codex_apps';
   constructor(options: ChatGPTAppsMCPOptions<Context>) {
-    if ('url' in options || 'bearerToken' in options)
+    if ('url' in options || 'bearerToken' in options || 'headers' in options)
       throw new TypeError(
-        'ChatGPT Apps has a fixed target and no bearerToken option',
+        'ChatGPT Apps has a fixed target and no bearerToken or headers option',
       );
     super(
       hostRegistration({
@@ -477,11 +540,14 @@ function mcpServerConfig(
   if (server instanceof HttpMCP) {
     config.url = server.url;
     if (server instanceof ChatGPTAppsMCP) config.auth = 'chatgpt';
+    const headers: Record<string, string> = { ...server.headers };
     if (server.bearerToken !== undefined)
-      config.http_headers = { Authorization: `Bearer ${server.bearerToken}` };
+      headers.Authorization = `Bearer ${server.bearerToken}`;
+    if (Object.keys(headers).length) config.http_headers = headers;
   } else {
     config.command = server.command;
     config.args = [...server.args];
+    if (server.env !== undefined) config.env = { ...server.env };
     if (server.lifetime === 'turn') config.sdk_turn_scoped_stdio = true;
     if (server.location === 'environment') {
       if (!environment)
@@ -512,6 +578,7 @@ export function selectHttpLeaves(
     name: server.name,
     url: server.url,
     bearerToken: server.bearerToken,
+    headers: server.headers,
     activation: server.activation,
     deferLoading: server.deferLoading,
     tools,
@@ -534,6 +601,7 @@ export function resourceMcpBinding(server: McpTool): McpTool {
     command: server.command,
     args: server.args,
     envVars: server.envVars,
+    env: server.env,
     cwd: server.cwd,
     location: server.location,
     lifetime: server.lifetime,

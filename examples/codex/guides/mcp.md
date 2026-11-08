@@ -14,6 +14,12 @@ Invocation approval does not necessarily precede connection or discovery. Choose
 
 Add `StdioMCP` or `HttpMCP` declarations to `tools`, naming the MCP tools the session may expose. Their optional `transformResult` callback runs before the result reaches the model and history. Codex owns the connection and sends calls to the selected server. That server performs the operation in its own process or service. A stdio server runs at its declared host or Environment location. An HTTP server runs at its configured service endpoint.
 
+## Configure HTTP headers
+
+Pass `headers` to `HttpMCP` for application-supplied HTTP fields, for example `headers: { 'X-Region': 'eu' }`. The declaration captures a copy of the map. Header names are case-insensitive for duplicate detection. If you supply an `Authorization` header, omit `bearerToken` so the declaration has one source of authorization.
+
+`HostedVerificationMCP` also accepts these headers. `ChatGPTAppsMCP` keeps its fixed authentication fields and does not accept custom headers. Headers belong to the MCP connection; they are not forwarded to the model provider or an unrelated executor. On restore, supply the current headers through the application's declarations.
+
 ## Connect HTTP tools on demand
 
 `HttpMCP` defaults to `activation: 'session'`: it connects and lists tools during opening. To connect only when a root selects the server, set `activation: 'operation'` in a fresh ordinary root/direct HTTP Session.
@@ -36,10 +42,12 @@ Use on-demand HTTP connections in a fresh plain Session with a direct root. The 
 
 `StdioMCP` defaults to `location: 'host'`. For example, construct a host declaration with `new StdioMCP({ name: 'records', tools: ['lookup'], command: 'node', args: ['/application/mcp-server.mjs'], envVars: ['RECORDS_TOKEN'] })`. Import `StdioMCP` from `@openai/agents`. Install the command and script on the controller host, and provide `RECORDS_TOKEN` in that host process's environment. `envVars` lists variable names rather than secret values.
 
+Use `env` to supply string values directly, such as `env: { REGION: 'eu' }`. The declaration copies the map, and explicit values override names selected by `envVars`. Empty strings are preserved. These values configure only the selected server process and do not change the application's environment. Executor control credentials remain protected; `NODE_REPL_AUTH_TOKEN` cannot be supplied this way.
+
 To run the server on a trusted executor:
 
 1. Set `location: 'environment'` and use the executor's command and script path, such as `args: ['/workspace/mcp-server.mjs']`.
-2. Open the Session with its current `Environment`. The executor supplies the selected variable values. The SDK does not forward controller-host secret values.
+2. Open the Session with its current `Environment`. The executor supplies the selected variable values. The SDK does not automatically forward controller-host secret values. Values explicitly supplied in `env` are sent to the selected executor for that server process.
 
 The remote MCP process can start even when `Environment.tools` is empty. Those tools control model-visible executor operations, not MCP startup. Choose a process and executor the application trusts. Session-scoped connections start during opening, before invocation approval can run.
 
