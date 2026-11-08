@@ -1271,17 +1271,22 @@ it.each(['independent root', 'continuation predecessor'] as const)(
       );
     try {
       const { turn, workflow, context } = await (async () => {
-        let workflow!: WeakRef<Awaited<ReturnType<typeof startTrace>>>;
-        let context!: { traceId: string; spanId: string };
-        const turn = await withTrace({}, (span) => {
-          workflow = new WeakRef(span);
-          context = {
+        // Explicit parenting isolates run-owned references from Node's lexical
+        // AsyncLocalStorage stores on the retained Turn's promises.
+        const span = await startTrace();
+        try {
+          const workflow = new WeakRef(span);
+          const context = {
             traceId: span.context.traceId,
             spanId: span.context.spanId,
           };
-          return session.submit('first');
-        });
-        return { turn, workflow, context };
+          const turn = await session.submit('first', {
+            tracing: { parent: span },
+          });
+          return { turn, workflow, context };
+        } finally {
+          span.close();
+        }
       })();
       const continued = kind === 'continuation predecessor';
       if (continued) await turn.steer('retained input');
