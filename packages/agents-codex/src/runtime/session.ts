@@ -6579,11 +6579,14 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private checkCallbackOperation(operation: string): void {
-    const scope = toolInvocation.getStore();
-    if (scope?.active && scope.session === this)
-      throw new NativeError(
-        `A tool callback cannot ${operation} its own session`,
-      );
+    let scope = toolInvocation.getStore();
+    while (scope) {
+      if (scope.active && scope.session === this)
+        throw new NativeError(
+          `A tool callback cannot ${operation} its own session`,
+        );
+      scope = scope.parent;
+    }
   }
   private observeToolStart(
     owner: NativeTurn | ChildCallbackOwner,

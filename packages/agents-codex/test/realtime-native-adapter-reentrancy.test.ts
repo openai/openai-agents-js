@@ -335,3 +335,153 @@ nativeIt.each(['update', 'approval'] as const)(
   },
   20000,
 );
+
+nativeIt.each(['session-close', 'voice-close', 'voice-interrupt'] as const)(
+  'rejects nested adapter %s against an active ancestor before mutation',
+  async (operation) => {
+    const model = new ModelServer([[message('usable after nested adapter')]]);
+    const nestedStop = new AbortController();
+    const releaseRead = Promise.withResolvers<void>();
+    const releaseControl = Promise.withResolvers<void>();
+    let nestedOpening: Promise<unknown> | undefined;
+    let delayedRead: Promise<unknown> | undefined;
+    try {
+      await using provider = await providerFor(model);
+      const agent = new Agent({
+        instructions: 'A',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using a = await agent.session();
+      await using b = await new Agent({
+        instructions: 'B',
+        provider,
+      }).session();
+      await using unrelated = await new Agent({
+        instructions: 'C',
+        provider,
+      }).session();
+      const incoming = new Incoming();
+      const accepted: Record<string, any> = {};
+      let rejected: unknown;
+      let unrelatedClosed = false;
+      let callbackFinished = false;
+      const adapter: NativeRealtimeAdapter = {
+        async connect(context) {
+          accepted.model = context.model;
+          return {
+            incoming,
+            async send(raw) {
+              const frame = JSON.parse(raw);
+              if (frame.type === 'session.update') {
+                merge(accepted, frame.session);
+                incoming.push({
+                  type: 'session.updated',
+                  session: {
+                    ...structuredClone(accepted),
+                    id: 'nested-adapter',
+                  },
+                });
+              } else if (frame.type === 'response.create') {
+                incoming.push({
+                  type: 'response.created',
+                  response: { id: 'empty-response' },
+                });
+                incoming.push({
+                  type: 'response.done',
+                  response: { id: 'empty-response', output: [] },
+                });
+              } else if (frame.item?.content?.[0]?.text === 'outer') {
+                nestedOpening = b.realtime({
+                  model: 'fixture-realtime',
+                  signal: nestedStop.signal,
+                  adapter: {
+                    async connect(nestedContext) {
+                      // Neither active ancestor owns C. A blanket callback ban is wrong.
+                      await unrelated.close();
+                      unrelatedClosed = true;
+                      // This task keeps B -> A scopes but runs after both retire.
+                      delayedRead = releaseRead.promise.then(() =>
+                        a.getActiveAgent(),
+                      );
+                      void delayedRead.catch(() => {});
+                      const cancelled = Promise.withResolvers<never>();
+                      void cancelled.promise.catch(() => {});
+                      const abort = () =>
+                        cancelled.reject(new Error('Nested adapter cleanup'));
+                      nestedContext.signal.addEventListener('abort', abort, {
+                        once: true,
+                      });
+                      if (nestedContext.signal.aborted) abort();
+                      try {
+                        // Cancellation releases the old broken cycle during teardown.
+                        // The expected fix rejects synchronously before changing A.
+                        const controlling =
+                          operation === 'session-close'
+                            ? a.close()
+                            : operation === 'voice-close'
+                              ? voice.close()
+                              : voice.interrupt();
+                        await Promise.race([
+                          controlling,
+                          cancelled.promise,
+                          releaseControl.promise,
+                        ]);
+                        throw new Error(
+                          'Ancestor lifecycle operation was unexpectedly admitted',
+                        );
+                      } catch (error) {
+                        rejected = error;
+                        throw error;
+                      } finally {
+                        nestedContext.signal.removeEventListener(
+                          'abort',
+                          abort,
+                        );
+                      }
+                    },
+                  },
+                });
+                await nestedOpening.catch(() => {});
+                callbackFinished = true;
+              }
+            },
+            async close() {
+              await incoming.return();
+            },
+          };
+        },
+      };
+      const voice = await a.realtime({ model: 'fixture-realtime', adapter });
+      try {
+        await voice.sendText('outer');
+        await vi.waitFor(() => expect(callbackFinished).toBe(true), {
+          timeout: 2000,
+        });
+        expect(unrelatedClosed).toBe(true);
+        expect(String(rejected)).toContain('A tool callback cannot');
+        // Its ACK proves A's physical send returned and retired the adapter scope.
+        await voice.update({
+          instructions: 'Still live after rejected nesting',
+        });
+        releaseRead.resolve();
+        expect(await delayedRead).toBe(agent);
+        await voice.close();
+        expect(
+          (await (await a.submit('Verify caller reuse.')).wait()).finalOutput,
+        ).toBe('usable after nested adapter');
+        model.assertExhausted();
+      } finally {
+        releaseControl.resolve();
+        nestedStop.abort(new Error('Release nested adapter setup'));
+        releaseRead.resolve();
+        await Promise.allSettled([nestedOpening, delayedRead, voice.close()]);
+      }
+    } finally {
+      nestedStop.abort();
+      releaseRead.resolve();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
