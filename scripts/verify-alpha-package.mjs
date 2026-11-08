@@ -297,9 +297,33 @@ export async function verifyTypes(consumer, env) {
     consumer,
     env,
   );
+  // Also check the declarations an ordinary installed consumer resolves.
+  const installedConfig = JSON.parse(
+    await readFile(join(consumer, 'tsconfig.verify.json'), 'utf8'),
+  );
+  delete installedConfig.compilerOptions.typeRoots;
+  await writeFile(
+    join(consumer, 'tsconfig.verify-installed.json'),
+    JSON.stringify(installedConfig, null, 2),
+  );
+  await run(
+    process.execPath,
+    [
+      resolve(dirname(compilerManifest), compiler.bin.tsc6),
+      '-p',
+      'tsconfig.verify-installed.json',
+    ],
+    consumer,
+    env,
+  );
+  const installedNodeTypes = createRequire(
+    join(consumer, 'package.json'),
+  ).resolve('@types/node/package.json');
   return {
     typescript: compiler.version,
     nodeTypes: JSON.parse(await readFile(nodeTypes, 'utf8')).version,
+    installedNodeTypes: JSON.parse(await readFile(installedNodeTypes, 'utf8'))
+      .version,
   };
 }
 

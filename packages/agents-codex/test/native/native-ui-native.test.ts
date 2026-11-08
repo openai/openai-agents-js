@@ -272,8 +272,13 @@ describe('native UI adapters with real Sessions', () => {
       });
       try {
         await (await session.submit('Start both children.')).wait();
-        await vi.waitFor(() => expect(children.size).toBe(2));
-        const [selected, sibling] = await Array.fromAsync(session.subagents());
+        const [selected, sibling] = await vi.waitFor(async () => {
+          expect(children.size).toBe(2);
+          const snapshot = await Array.fromAsync(session.subagents());
+          expect(snapshot).toHaveLength(2);
+          expect(snapshot.every((child) => child.turn !== null)).toBe(true);
+          return snapshot;
+        });
         if (!selected?.turn || !sibling?.turn)
           throw new Error('Missing native child Turns');
         const selectedWire = agUiResponse(

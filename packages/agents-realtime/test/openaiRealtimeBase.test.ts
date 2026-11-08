@@ -51,6 +51,12 @@ class VoidMessageOverrideTransport extends TestBase {
   }
 }
 
+class EmitterProbeTransport extends TestBase {
+  getEmitter() {
+    return this.eventEmitter;
+  }
+}
+
 function createToolCall() {
   return {
     type: 'function_call' as const,
@@ -88,6 +94,34 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(transport).toBeInstanceOf(OpenAIRealtimeBase);
     expectTypeOf(transport).toMatchTypeOf<OpenAIRealtimeBase>();
+  });
+
+  it('preserves SDK event keys and protected Node emitter methods', () => {
+    const transport = new EmitterProbeTransport();
+    const emitter = transport.getEmitter();
+    const listener = vi.fn();
+    const once = vi.fn();
+
+    emitter.once('connected', () => {}).setMaxListeners(15);
+    expect(emitter.getMaxListeners()).toBe(15);
+
+    transport.on('connected', (...args) => {
+      expectTypeOf(args).toEqualTypeOf<[]>();
+    });
+    transport.on('future.notification', (...args) => {
+      expectTypeOf(args).toEqualTypeOf<any[]>();
+    });
+    transport.emit('connected');
+    transport.emit('future.notification', 'custom payload');
+
+    transport.on(42, listener);
+    transport.once(42, once);
+    transport.emit(42, 'first');
+    transport.emit('42', 'second');
+    transport.off(42, listener);
+    transport.emit(42, 'third');
+    expect(listener.mock.calls).toEqual([['first'], ['second']]);
+    expect(once).toHaveBeenCalledExactlyOnceWith('first');
   });
 
   it.each([
