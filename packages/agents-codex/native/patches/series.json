@@ -346,12 +346,12 @@
     },
     {
       "path": "0093-native-voice-parity.patch",
-      "sha256": "dfe002f762b7c55ae900a3b5fc8fe42e7953abf8607cf7da54eb5d45edae8bd5"
+      "sha256": "0fc0c6de83a103c77a928e8c53f423aa81a54e3e18d420ee4c461aac785d4e0e"
     },
     {
       "path": "0094-reject-ambiguous-code-mode-names.patch",
       "sha256": "4e2bb732edab48888aa9bdca723f591caaf87465c86c0ce0a76ea5baa60c1081"
     }
   ],
-  "result_tree": "b616cf67a61c0c6bf7f42b81d264a9505583f01f"
+  "result_tree": "e363456ca9a20944b926f928191d9cbe5e781786"
 }
