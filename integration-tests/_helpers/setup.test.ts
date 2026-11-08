@@ -38,6 +38,10 @@ beforeEach(async () => {
       '# Custom fixture configuration\n@openai:registry=https://registry.npmjs.org\npackage-lock=false',
     );
     await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      path.join(path.dirname(file), 'package.json'),
+      '{"private":true}\n',
+    );
     await fs.writeFile(file, content);
     originals.set(file, content);
   }

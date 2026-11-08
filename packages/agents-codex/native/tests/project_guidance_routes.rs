@@ -216,6 +216,7 @@ async fn installed_skill_read_preserves_real_provider_eof_and_lifecycle_authorit
                     config: &(),
                     session_source: &codex_protocol::protocol::SessionSource::Exec,
                     persistent_thread_state_available: false,
+                    spawning_step_store: None,
                     environments: &[],
                     mcp_resource_client: None,
                     extension_metrics: None,

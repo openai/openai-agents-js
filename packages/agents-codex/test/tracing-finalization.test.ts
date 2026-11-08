@@ -17,7 +17,7 @@ const fixture = vi.hoisted(() => {
     retain_trace_context: vi.fn((source: string) => `retained:${source}`),
     release_trace_context: vi.fn(),
     release_trace_span: vi.fn(),
-    end_trace_span: vi.fn(),
+    end_trace_span: vi.fn((_handle: string, _outcome: string) => {}),
   };
   return {
     pending,
@@ -87,3 +87,18 @@ it.each(['retain', 'register'])(
     );
   },
 );
+
+it('forwards explicitly supplied end data through the existing native privacy boundary', () => {
+  const span = new TraceSpan(
+    fixture.native as never,
+    'payload-span',
+    'custom',
+    context,
+  );
+  span.end({ status: 'ok', data: { speech: 'bounded prefix' } });
+  span.close();
+  expect(fixture.native.end_trace_span).toHaveBeenCalledOnce();
+  expect(
+    JSON.parse(fixture.native.end_trace_span.mock.calls[0][1]),
+  ).toMatchObject({ data: { speech: 'bounded prefix' } });
+});

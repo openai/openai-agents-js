@@ -53,7 +53,7 @@ export function executorPolicyRules(
  */
 export async function applyExecutorPolicy<Context>(
   environment: Environment<Context>,
-  session: Session<any>,
+  session: Session<any, any>,
   agent: Agent<any, any>,
   context: Context,
   submission: ToolCallContext<Context>['submission'],

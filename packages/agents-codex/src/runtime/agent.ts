@@ -1,4 +1,5 @@
 import { RunCleanupError } from './native-error';
+import { projectProfileCatalog } from './agent-profiles';
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
@@ -64,7 +65,8 @@ export async function openSession(
   oneShot?: OneShotOptions,
   catalog: ToolCatalog = captureTools(setup.tools),
 ): Promise<Session> {
-  const { instructions, model, config, apiKey } = setup;
+  const { model, config, apiKey } = setup;
+  let instructions = setup.instructions;
   // Keep the full declaration for profile checks, updates and checkpoints.
   // Only native construction defers MCP until the Session owns its reader.
   const initialConfig: NativeConfig = { ...config, mcp_servers: {} };
@@ -98,6 +100,20 @@ export async function openSession(
     );
   }
   const native = await binding();
+  const restoredSource = saved && options.agentGraph?.restoredSource;
+  if (restoredSource) {
+    // The pure preflight verified this graph and the exact accepted envelope.
+    // Validate fresh tool/manual schemas against its producing Agent, preserving
+    // accepted instruction overrides rather than comparing root defaults.
+    const profile = options.agentGraph!.profiles.get(
+      restoredSource.profile_id,
+    )!;
+    catalog = projectProfileCatalog(profile.catalog, saved.managed_tool_specs);
+    instructions = native._read_session_instructions(encode(saved.history));
+  }
+  const restoredMcp = restoredSource
+    ? options.agentGraph!.profiles.get(restoredSource.profile_id)!.mcp
+    : (options.mcpTools ?? []);
   const { _sdk_project_search: _previousSearch, ...baseRuntime } =
     setup.runtime;
   const runtime: RuntimeOptions = {
@@ -138,7 +154,7 @@ export async function openSession(
   if (saved) {
     checkpointResourceServers(
       readCheckpointSelections(saved).default_resource_servers,
-      options.mcpTools ?? [],
+      restoredMcp,
     );
     const policy = threadOptions.tool_policy;
     assertCheckpointSelections(
@@ -152,7 +168,7 @@ export async function openSession(
         : [],
     );
   }
-  if (saved)
+  if (saved && !restoredSource)
     native._validate_application_instructions(
       encode(saved.history),
       instructions,
@@ -185,7 +201,7 @@ export async function openSession(
       ),
     );
     if (
-      saved.manual_context.instructions !== instructions ||
+      (!restoredSource && saved.manual_context.instructions !== instructions) ||
       schemas.some((tool) => tool === undefined) ||
       expected.some((tool) => tool === undefined) ||
       !isDeepStrictEqual(expected, schemas)
