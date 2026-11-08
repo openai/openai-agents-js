@@ -71,6 +71,7 @@ import {
   probeRemoteSandboxPathExists,
 } from './pathProbe';
 import { assertRunAsUnsupported } from './session';
+import { readRunAsRemoteFile } from './runAs';
 import {
   assertRemoteSandboxSessionStateUsable,
   isRemoteSandboxSessionStateUnsafe,
@@ -84,7 +85,7 @@ import type {
 } from './types';
 
 export type RemoteSandboxCommandKind =
-  'archive' | 'exec' | 'manifest' | 'path' | 'running';
+  'archive' | 'exec' | 'fileRead' | 'manifest' | 'path' | 'running';
 
 export type RemoteSandboxCommandOptions = {
   kind: RemoteSandboxCommandKind;
@@ -247,12 +248,24 @@ export abstract class RemoteSandboxSessionBase<
     this.assertSessionUsable();
     this.assertFilesystemRunAs(args.runAs);
     const absolutePath = await this.resolveRemotePath(args.path);
+    if (args.maxBytes !== undefined) {
+      return await readRunAsRemoteFile({
+        providerName: this.providerName,
+        providerId: this.providerId,
+        path: absolutePath,
+        runAs: args.runAs,
+        maxBytes: args.maxBytes,
+        runCommand: async (command, options) =>
+          await this.runRemoteCommand(command, {
+            kind: 'fileRead',
+            workdir: '/',
+            runAs: options?.runAs,
+          }),
+      });
+    }
     const bytes = args.runAs
       ? await this.readRemoteFileAs(absolutePath, args.runAs)
       : await this.readRemoteFile(absolutePath);
-    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
-      return bytes.subarray(0, args.maxBytes);
-    }
     return bytes;
   }
 

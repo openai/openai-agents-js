@@ -1,3 +1,8 @@
+import {
+  BOUNDED_FILE_READ_STATUS_BYTES,
+  boundedFileReadCommand,
+  decodeBoundedFileRead,
+} from '../shared/boundedFileRead';
 import { UserError } from '../../errors';
 import type {
   ApplyPatchOperation,
@@ -301,11 +306,19 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   override async readFile(args: ReadFileArgs): Promise<Uint8Array> {
-    const bytes = await this.readDockerFileAs(args.path, args.runAs);
-    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
-      return bytes.subarray(0, args.maxBytes);
+    if (
+      args.maxBytes !== undefined &&
+      (!Number.isSafeInteger(args.maxBytes) || args.maxBytes < 0)
+    ) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
     }
-    return bytes;
+    return await this.readDockerFileAs(
+      args.path,
+      args.runAs,
+      args.maxBytes === undefined
+        ? undefined
+        : { maxBytes: args.maxBytes, truncate: true },
+    );
   }
 
   override async listDir(
@@ -1078,7 +1091,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   async readDockerFileAs(
     path: string,
     runAs?: string,
-    limits?: { maxBytes: number; image?: boolean },
+    limits?: { maxBytes: number; image?: boolean; truncate?: boolean },
   ): Promise<Uint8Array> {
     path = await this.validateContainerFilesystemPath(path);
     const imageLimit = limits?.image ? limits.maxBytes : undefined;
@@ -1090,9 +1103,18 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     const limit = limits?.maxBytes;
     // GNU base64 adds one newline per 76 encoded bytes, including the last line.
     const encodedBytes =
-      limit === undefined ? undefined : Math.ceil(limit / 3) * 4;
+      limit === undefined
+        ? undefined
+        : Math.ceil(
+            (limit + (limits?.truncate ? BOUNDED_FILE_READ_STATUS_BYTES : 0)) /
+              3,
+          ) * 4;
+    const readCommand =
+      limit !== undefined && limits?.truncate
+        ? `exec 3< ${shellQuote(path)} && ${boundedFileReadCommand(limit)}`
+        : `base64 -- ${shellQuote(path)}`;
     const output = await this.runReadableDockerFilesystemCommand(
-      `${fileGuard}${imageGuard}base64 -- ${shellQuote(path)}`,
+      `${fileGuard}${imageGuard}${readCommand}`,
       {
         runAs,
         maxOutputBytes:
@@ -1104,7 +1126,8 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       path,
       imageLimit !== undefined,
     );
-    const bytes = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    const decoded = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    const bytes = limits?.truncate ? decodeBoundedFileRead(decoded) : decoded;
     if (limit !== undefined && bytes.byteLength > limit) {
       throw new UserError(
         `Docker file exceeds the ${limit} byte read limit: ${path}`,

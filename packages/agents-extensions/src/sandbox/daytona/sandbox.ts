@@ -1,3 +1,7 @@
+import {
+  boundedFileReadCommand,
+  decodeBoundedFileRead,
+} from '@openai/agents-core/sandbox/internal';
 import { UserError, type ToolOutputImage } from '@openai/agents-core';
 import {
   cloneManifest,
@@ -464,18 +468,22 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
     this.assertSessionUsable();
+    if (
+      args.maxBytes !== undefined &&
+      (!Number.isSafeInteger(args.maxBytes) || args.maxBytes < 0)
+    ) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    }
     const bytes = args.runAs
       ? await readRunAsRemoteFile({
           providerName: 'DaytonaSandboxClient',
           providerId: 'daytona',
           path: await this.resolveRemotePath(args.path),
           runAs: args.runAs,
+          maxBytes: args.maxBytes,
           runCommand: this.runAsCommandRunner.bind(this),
         })
-      : await this.readFileBytes(args.path);
-    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
-      return bytes.subarray(0, args.maxBytes);
-    }
+      : await this.readFileBytes(args.path, args.maxBytes);
     return bytes;
   }
 
@@ -1097,11 +1105,15 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     };
   }
 
-  private async readFileBytes(path: string): Promise<Uint8Array> {
+  private async readFileBytes(
+    path: string,
+    maxBytes?: number,
+  ): Promise<Uint8Array> {
     const absolutePath = this.resolveEditorPath(path);
     const output = await this.runEditorFileCommand(
       [
         'set -eu',
+        'PATH=/usr/bin:/bin',
         `root=${shellQuote(this.state.manifest.root)}`,
         `path=${shellQuote(absolutePath)}`,
         'resolved_root=$(realpath -m -- "$root")',
@@ -1111,10 +1123,13 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         'exec 3< "$resolved"',
         'resolved=$(readlink -f "/proc/$$/fd/3")',
         'case "$resolved" in "$resolved_root"|"$resolved_root"/*) ;; *) printf "workspace escape: %s\\n" "$resolved" >&2; exit 111 ;; esac',
-        'base64 <&3',
+        maxBytes === undefined
+          ? 'base64 <&3'
+          : boundedFileReadCommand(maxBytes),
       ].join('\n'),
     );
-    return Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    const bytes = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    return maxBytes === undefined ? bytes : decodeBoundedFileRead(bytes);
   }
 
   private async readEditorText(path: string): Promise<string> {

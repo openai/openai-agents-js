@@ -56,6 +56,11 @@ export type {
 } from './mountSecurity';
 export { stableJsonStringify } from './shared/stableJson';
 export {
+  BOUNDED_FILE_READ_STATUS_BYTES,
+  boundedFileReadCommand,
+  decodeBoundedFileRead,
+} from './shared/boundedFileRead';
+export {
   Manifest,
   cloneManifest,
   copyManifestMountCredentialExposurePolicy,

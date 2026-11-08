@@ -1,4 +1,13 @@
-import { SandboxProviderError, type Entry } from '@openai/agents-core/sandbox';
+import {
+  boundedFileReadCommand,
+  decodeBoundedFileRead,
+} from '@openai/agents-core/sandbox/internal';
+import { UserError } from '@openai/agents-core';
+import {
+  SandboxProviderError,
+  SandboxWorkspaceReadNotFoundError,
+  type Entry,
+} from '@openai/agents-core/sandbox';
 import { RemoteSandboxEditor } from './editor';
 import type { ManifestMaterializationOptions } from './manifest';
 import { sandboxEntryPermissionsMode } from './metadata';
@@ -112,18 +121,39 @@ export async function readRunAsRemoteFile(args: {
   providerName: string;
   providerId: string;
   path: string;
-  runAs: string;
+  runAs?: string;
+  maxBytes?: number;
   runCommand: RemoteRunAsCommandRunner;
 }): Promise<Uint8Array> {
+  if (
+    args.maxBytes !== undefined &&
+    (!Number.isSafeInteger(args.maxBytes) || args.maxBytes < 0)
+  ) {
+    throw new UserError('maxBytes must be a non-negative safe integer.');
+  }
+  const command =
+    args.maxBytes === undefined
+      ? `base64 -- ${shellQuote(args.path)}`
+      : `PATH=/usr/bin:/bin; test -f ${shellQuote(args.path)} && exec 3< ${shellQuote(args.path)} && ${boundedFileReadCommand(args.maxBytes)}`;
   const output = await runCheckedRunAsRemoteCommand(
     args.providerName,
     args.providerId,
     args.runCommand,
-    `base64 -- ${shellQuote(args.path)}`,
+    command,
     `read file ${args.path}`,
     args.runAs,
+    args.maxBytes === undefined ? undefined : args.path,
   );
-  return decodeBase64(output);
+  const bytes = decodeBase64(output);
+  return args.maxBytes === undefined
+    ? bytes
+    : decodeBoundedFileRead(
+        bytes,
+        new SandboxProviderError(
+          `${args.providerName} failed to read file ${args.path}`,
+          { provider: args.providerId },
+        ),
+      );
 }
 
 export async function runAsRemotePathExists(
@@ -293,8 +323,24 @@ async function runCheckedRunAsRemoteCommand(
   command: string,
   action: string,
   runAs?: string,
+  missingFilePath?: string,
 ): Promise<string> {
   const result = await runCommand(command, { runAs });
+  if (
+    missingFilePath !== undefined &&
+    result.status !== 0 &&
+    !(await probeRemoteSandboxPathExists({
+      providerName,
+      providerId,
+      path: missingFilePath,
+      runCommand: async (command) => await runCommand(command, { runAs }),
+    }))
+  ) {
+    throw new SandboxWorkspaceReadNotFoundError(
+      `${providerName} sandbox file not found: ${missingFilePath}`,
+      { provider: providerId, path: missingFilePath },
+    );
+  }
   if (result.status !== 0) {
     const output = [result.stdout ?? '', result.stderr ?? '']
       .filter((value) => value.trim().length > 0)

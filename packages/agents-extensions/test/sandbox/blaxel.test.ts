@@ -528,6 +528,41 @@ describe('BlaxelSandboxClient', () => {
     ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
   });
 
+  test('keeps typed missing-file errors for capped reads', async () => {
+    const session = await new BlaxelSandboxClient().create(new Manifest());
+    const original = processExecMock.getMockImplementation()!;
+    processExecMock.mockImplementation(async (params) =>
+      String(params.command).includes('head -c') ||
+      String(params.command).startsWith('test -e ')
+        ? { exitCode: 1, stdout: '', stderr: '' }
+        : await original(params),
+    );
+
+    await expect(
+      session.readFile({ path: 'missing.txt', maxBytes: 4 }),
+    ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
+    expect(readBinaryMock).not.toHaveBeenCalled();
+  });
+
+  test('uses the file download deadline for capped reads', async () => {
+    const session = await new BlaxelSandboxClient({
+      timeouts: { fileDownloadTimeoutMs: 1, fastOperationTimeoutMs: 1000 },
+    }).create(new Manifest());
+    const original = processExecMock.getMockImplementation()!;
+    processExecMock.mockImplementation(async (params) =>
+      String(params.command).includes('head -c')
+        ? await new Promise(() => {})
+        : await original(params),
+    );
+
+    await expect(
+      session.readFile({ path: 'README.md', maxBytes: 4 }),
+    ).rejects.toThrow('read binary file timed out after 1ms');
+    expect(processExecMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ timeout: 1 }),
+    );
+  });
+
   test('wraps other file read failures into typed archive read errors', async () => {
     const client = new BlaxelSandboxClient();
     const session = await client.create(new Manifest());

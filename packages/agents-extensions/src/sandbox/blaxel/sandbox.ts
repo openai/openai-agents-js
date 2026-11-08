@@ -705,12 +705,20 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     const commandForUser = options.runAs
       ? `sudo -n -u ${shellQuote(options.runAs)} -- sh -lc ${shellQuote(shellCommand)}`
       : shellCommand;
-    const result = await this.sandbox.process.exec({
+    const operation = this.sandbox.process.exec({
       command: commandForUser,
       workingDir: options.workdir,
       waitForCompletion: true,
       timeout: toBlaxelTimeoutSeconds(this.timeoutForCommand(options)),
     });
+    const result =
+      options.kind === 'fileRead'
+        ? await withBlaxelOperationTimeout(
+            operation,
+            this.state.timeouts?.fileDownloadTimeoutMs,
+            'read binary file',
+          )
+        : await operation;
     return {
       status: result.exitCode ?? 1,
       stdout: result.stdout ?? '',
@@ -836,6 +844,9 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     }
     if (options.kind === 'exec') {
       return this.state.timeouts?.execTimeoutMs ?? this.state.timeoutMs;
+    }
+    if (options.kind === 'fileRead') {
+      return this.state.timeouts?.fileDownloadTimeoutMs;
     }
     if (options.kind === 'path' || options.kind === 'running') {
       return this.state.timeouts?.fastOperationTimeoutMs;

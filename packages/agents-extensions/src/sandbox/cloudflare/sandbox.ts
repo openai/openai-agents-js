@@ -378,6 +378,16 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
     const absolutePath = await this.resolveRemotePath(args.path);
+    if (args.maxBytes !== undefined) {
+      return await readRunAsRemoteFile({
+        providerName: 'CloudflareSandboxClient',
+        providerId: 'cloudflare',
+        path: absolutePath,
+        runAs: args.runAs,
+        maxBytes: args.maxBytes,
+        runCommand: this.runAsCommandRunner.bind(this),
+      });
+    }
     const bytes = args.runAs
       ? await readRunAsRemoteFile({
           providerName: 'CloudflareSandboxClient',
@@ -387,9 +397,6 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           runCommand: this.runAsCommandRunner.bind(this),
         })
       : await this.readFileBytes(absolutePath);
-    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
-      return bytes.subarray(0, args.maxBytes);
-    }
     return bytes;
   }
 
