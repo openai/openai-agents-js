@@ -127,6 +127,13 @@ import {
   prepareMaterializedManifestTransition,
 } from '../shared/manifest';
 
+// File helpers do not execute writable user shell startup files.
+const FILE_SHELL_STARTUP_ENVIRONMENT = {
+  ZDOTDIR: '/dev/null',
+  BASH_ENV: '/dev/null',
+  ENV: '/dev/null',
+};
+
 const DEFAULT_WORKSPACE_ROOT = '/home/daytona/workspace';
 const DEFAULT_EXPOSED_PORT_URL_TTL_S = 60;
 const DAYTONA_DELETE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -1063,7 +1070,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     const result = await this.sandbox.process.executeCommand(
       commandForDaytonaUser(command, options.runAs),
       this.state.manifest.root,
-      this.state.environment,
+      { ...this.state.environment, ...FILE_SHELL_STARTUP_ENVIRONMENT },
       this.state.timeoutSec,
     );
     return {
@@ -1124,7 +1131,9 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       ].join('\n'),
     );
     const bytes = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
-    return maxBytes === undefined ? bytes : decodeBoundedFileRead(bytes);
+    return maxBytes === undefined
+      ? bytes
+      : decodeBoundedFileRead(bytes, maxBytes);
   }
 
   private async readEditorText(path: string): Promise<string> {
@@ -1242,9 +1251,9 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
 
   private async runEditorFileCommand(command: string): Promise<string> {
     const result = await this.sandbox.process.executeCommand(
-      command,
+      `/bin/sh -c ${shellQuote(command)}`,
       this.state.manifest.root,
-      this.state.environment,
+      { ...this.state.environment, ...FILE_SHELL_STARTUP_ENVIRONMENT },
       this.state.timeoutSec,
     );
     if (result.exitCode !== 0) {

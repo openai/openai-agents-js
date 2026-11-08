@@ -142,13 +142,14 @@ export async function readRunAsRemoteFile(args: {
     command,
     `read file ${args.path}`,
     args.runAs,
-    args.maxBytes === undefined ? undefined : args.path,
+    args.maxBytes === undefined || args.runAs ? undefined : args.path,
   );
   const bytes = decodeBase64(output);
   return args.maxBytes === undefined
     ? bytes
     : decodeBoundedFileRead(
         bytes,
+        args.maxBytes,
         new SandboxProviderError(
           `${args.providerName} failed to read file ${args.path}`,
           { provider: args.providerId },

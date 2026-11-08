@@ -1,5 +1,5 @@
 import { makeTarArchive } from './tarFixture';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import {
   chmod,
   mkdtemp,
@@ -49,6 +49,14 @@ const stopMock = vi.fn();
 const deleteMock = vi.fn();
 const daytonaConstructorMock = vi.fn();
 const execFileAsync = promisify(execFile);
+
+// Fault-injection fixtures target the POSIX script inside the provider wrapper.
+function editorScript(command: string): string {
+  const prefix = "/bin/sh -c '";
+  return command.startsWith(prefix)
+    ? command.slice(prefix.length, -1).replaceAll("'\\''", "'")
+    : command;
+}
 
 async function executeLocalEditorCommand(command: string) {
   try {
@@ -145,6 +153,7 @@ describe('DaytonaSandboxClient', () => {
     createMock.mockResolvedValue(sandbox);
     getMock.mockResolvedValue(sandbox);
     executeCommandMock.mockImplementation(async (command: string) => {
+      command = editorScript(command);
       const resolvedPath =
         resolvedRemotePathFromValidationCommand(command) ??
         resolvedRemoteEffectivePathFromCommand(command);
@@ -402,6 +411,7 @@ describe('DaytonaSandboxClient', () => {
     uploadFileMock.mockClear();
 
     executeCommandMock.mockImplementation(async (command: string) => {
+      command = editorScript(command);
       if (command.includes('resolve-workspace-path.sh')) {
         return {
           exitCode: 0,
@@ -486,6 +496,7 @@ describe('DaytonaSandboxClient', () => {
         );
         let denyOwnershipCopy = false;
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (denyOwnershipCopy) {
             command =
               'chown() { printf "Operation not permitted\\n" >&2; return 1; }\n' +
@@ -587,6 +598,7 @@ describe('DaytonaSandboxClient', () => {
           new Manifest({ root }),
         );
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             const mutation = {
               'mode-change': 'chmod 644 "$target"',
@@ -662,6 +674,7 @@ describe('DaytonaSandboxClient', () => {
           new Manifest({ root }),
         );
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             command = [
               'chown() {',
@@ -724,6 +737,7 @@ describe('DaytonaSandboxClient', () => {
         const outside = join(root, 'outside');
         await execFileAsync('/bin/mkdir', [outside]);
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             command =
               attack === 'occupied-child'
@@ -787,6 +801,7 @@ describe('DaytonaSandboxClient', () => {
           new Manifest({ root }),
         );
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             command = `chown() { command chown "$@"; kill -TERM "$(sh -c 'printf %s "$PPID"')"; }\n${command}`;
           }
@@ -815,6 +830,7 @@ describe('DaytonaSandboxClient', () => {
     uploadFileMock.mockClear();
 
     executeCommandMock.mockImplementation(async (command: string) => {
+      command = editorScript(command);
       if (command.includes('test -e ')) {
         return {
           exitCode: 1,
@@ -861,6 +877,7 @@ describe('DaytonaSandboxClient', () => {
     downloadFileMock.mockClear();
 
     executeCommandMock.mockImplementation(async (command: string) => {
+      command = editorScript(command);
       if (command.includes('exec 3<') && command.includes('base64')) {
         const stdout = Buffer.concat([
           pngBytes,
@@ -923,6 +940,7 @@ describe('DaytonaSandboxClient', () => {
         );
         let transferred = 0;
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           const result = await executeLocalEditorCommand(command);
           if (command.includes('head -c')) {
             transferred += result.artifacts.stdout.length;
@@ -941,6 +959,62 @@ describe('DaytonaSandboxClient', () => {
         expect(await session.readFile({ path: 'small.txt' })).toEqual(
           Buffer.from('hello'),
         );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(
+    process.platform !== 'linux' ||
+      spawnSync('zsh', ['--version']).status !== 0,
+  )(
+    'bounds reads when the provider shell has user startup functions',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'daytona-startup-read-'));
+      try {
+        await writeFile(
+          join(root, '.zshenv'),
+          'printf "startup-file-loaded\\n"\nhead() { cat; }\n',
+        );
+        const large = join(root, 'large.bin');
+        await writeFile(large, 'prefix');
+        await truncate(large, 8 * 1024 * 1024);
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root, environment: { ZDOTDIR: root } }),
+        );
+        let transferred = 0;
+        executeCommandMock.mockImplementation(
+          async (
+            command: string,
+            _cwd: string,
+            environment: Record<string, string>,
+          ) => {
+            const { stdout } = await execFileAsync('zsh', ['-c', command], {
+              env: { ...process.env, ...environment },
+              maxBuffer: 16 * 1024 * 1024,
+            });
+            if (command.includes('head -c')) transferred += stdout.length;
+            return { exitCode: 0, result: stdout, artifacts: { stdout } };
+          },
+        );
+        const bytes = await session.readFile({
+          path: 'large.bin',
+          maxBytes: 4,
+        });
+        expect(transferred).toBeLessThan(32);
+        expect(bytes).toEqual(Buffer.from('pref'));
+        const user = (await execFileAsync('id', ['-un'])).stdout.trim();
+        const runAsBytes = await session.readFile({
+          path: 'large.bin',
+          maxBytes: 4,
+          runAs: user,
+        });
+        expect(Array.from(runAsBytes)).toEqual(Array.from(Buffer.from('pref')));
+        expect(transferred).toBeLessThan(64);
+        expect(
+          await session.execCommand({ cmd: 'printf user-command' }),
+        ).toContain('startup-file-loaded');
       } finally {
         await rm(root, { recursive: true, force: true });
       }

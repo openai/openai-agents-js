@@ -6,15 +6,17 @@ export const BOUNDED_FILE_READ_STATUS_BYTES = 5;
 
 /** Read at most maxBytes from the already-open descriptor 3. */
 export function boundedFileReadCommand(maxBytes: number): string {
-  return `{ if head -c ${maxBytes} <&3; then read_status=0; else read_status=$?; fi; printf '\\n%03d\\n' "$read_status"; } | base64`;
+  return `{ if command -p head -c ${maxBytes} <&3; then read_status=0; else read_status=$?; fi; command -p printf '\\n%03d\\n' "$read_status"; } | command -p base64`;
 }
 
 export function decodeBoundedFileRead(
   bytes: Uint8Array,
+  maxBytes: number,
   error: Error = new UserError('Sandbox file read failed.'),
 ): Uint8Array {
   const status = bytes.subarray(-BOUNDED_FILE_READ_STATUS_BYTES);
   if (
+    bytes.byteLength > maxBytes + BOUNDED_FILE_READ_STATUS_BYTES ||
     status.length !== BOUNDED_FILE_READ_STATUS_BYTES ||
     status[0] !== 10 ||
     status[1] !== 48 ||

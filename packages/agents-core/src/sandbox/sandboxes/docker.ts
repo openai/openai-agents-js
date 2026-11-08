@@ -1120,14 +1120,20 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         maxOutputBytes:
           encodedBytes === undefined
             ? undefined
-            : encodedBytes + Math.ceil(encodedBytes / 76),
+            : // Keep bounded diagnostic space even when maxBytes is zero, so an
+              // open failure reaches the missing/permission classification below.
+              encodedBytes +
+              Math.ceil(encodedBytes / 76) +
+              (limits?.truncate ? 8192 : 0),
       },
       `read file ${path}`,
       path,
       imageLimit !== undefined,
     );
     const decoded = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
-    const bytes = limits?.truncate ? decodeBoundedFileRead(decoded) : decoded;
+    const bytes = limits?.truncate
+      ? decodeBoundedFileRead(decoded, limits.maxBytes)
+      : decoded;
     if (limit !== undefined && bytes.byteLength > limit) {
       throw new UserError(
         `Docker file exceeds the ${limit} byte read limit: ${path}`,
@@ -1153,12 +1159,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         throw new UserError(`Image file exceeds the 10 MB limit: ${path}`);
     }
     if (result.status !== 0) {
-      if (
-        result.status === 1 &&
-        !result.timedOut &&
-        !result.signal &&
-        !result.error
-      ) {
+      if (!result.timedOut && !result.signal && !result.error) {
         const exists = await probeSandboxPathExists({
           path,
           runCommand: async (command) =>
