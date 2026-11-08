@@ -31,9 +31,7 @@ const command = (
   callId = 'command',
   extra: { sandbox_permissions?: string } = {},
 ) => ({
-  items: [
-    toolCall('exec_command', { cmd, login: false, ...extra }, { callId }),
-  ],
+  items: [toolCall('exec_command', { cmd, ...extra }, { callId })],
 });
 const answer = (value: string) => ({ items: [text(value)] });
 const folders: string[] = [];
@@ -398,7 +396,9 @@ it.skipIf(!supported)(
         });
         expect(result.finalOutput).toBe('done');
         expect(output(peer.requests[1]!, 'read')).toContain('ORIGINAL');
-        expect(output(peer.requests[2]!, 'elevated')).toMatch(/failed|error/i);
+        expect(output(peer.requests[2]!, 'elevated')).toMatch(
+          /approval policy.*reject command/i,
+        );
         expect(existsSync(join(cwd, 'elevated'))).toBe(false);
       },
     );
