@@ -8,6 +8,8 @@ import {
 } from './trace-context';
 import { assertOutputState, sessionStateSchema } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
+import { issueOwnedOpeningAuthority } from './owned-opening-authority';
+import { markPlainTerminalOpening } from './terminal-carrier-policy';
 import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
@@ -44,6 +46,7 @@ import {
 } from './mcp';
 import {
   NativeProvider,
+  isCanonicalProviderForOwnedOpening,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
@@ -236,6 +239,42 @@ export type Session<Output = string, Context = any> = Pick<
 
 /** A declaration; opening a Session captures its current configuration. */
 export class Agent<Context = undefined, Output = string> {
+  static readonly #ownedRequests = new WeakSet<object>();
+  static readonly #plainTerminalRequests = new WeakSet<object>();
+  static readonly #apply = Reflect.apply;
+  static readonly #canonicalOpening = Object.freeze({
+    prototype: this.prototype,
+    session: this.prototype.session,
+    prepare: this.prototype.prepare,
+    outputTypeFor: this.prototype.outputTypeFor,
+    functionPrototype: Function.prototype,
+    apply: Function.prototype.apply,
+  });
+
+  #hasCanonicalOwnedFactory(factory: unknown): boolean {
+    const canonical = Agent.#canonicalOpening;
+    if (
+      Object.getPrototypeOf(this) !== canonical.prototype ||
+      factory !== canonical.session ||
+      Object.getPrototypeOf(canonical.session) !==
+        canonical.functionPrototype ||
+      Object.getOwnPropertyDescriptor(canonical.session, 'apply') !==
+        undefined ||
+      Object.getOwnPropertyDescriptor(canonical.functionPrototype, 'apply')
+        ?.value !== canonical.apply
+    )
+      return false;
+    for (const name of ['session', 'prepare', 'outputTypeFor'] as const) {
+      if (
+        Object.getOwnPropertyDescriptor(this, name) !== undefined ||
+        Object.getOwnPropertyDescriptor(canonical.prototype, name)?.value !==
+          canonical[name]
+      )
+        return false;
+    }
+    return true;
+  }
+
   instructions: string;
   name?: string;
   model?: string;
@@ -319,6 +358,10 @@ export class Agent<Context = undefined, Output = string> {
   async session(
     ...args: SessionArguments<Context>
   ): Promise<Session<Output, Context>> {
+    const requestedOwnedFactory =
+      args[0] !== undefined && Agent.#ownedRequests.delete(args[0]);
+    const requestedPlainTerminal =
+      args[0] !== undefined && Agent.#plainTerminalRequests.delete(args[0]);
     const options = {
       ...(args[0] ?? {}),
       parentTrace: captureTraceContext(args[0]?.parentTrace),
@@ -333,7 +376,8 @@ export class Agent<Context = undefined, Output = string> {
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
     try {
-      const { setup, session, lease, environmentOwner } = await this.prepare(
+      const prepare = this.prepare;
+      const prepared = await Agent.#apply(prepare, this, [
         options,
         (owner) => {
           acquiredEnvironment = owner;
@@ -341,7 +385,18 @@ export class Agent<Context = undefined, Output = string> {
         () => {
           providerOwnsCleanup = true;
         },
-      );
+      ]);
+      const { setup, session, lease, environmentOwner } = prepared;
+      const ownedFactoryAuthority =
+        requestedOwnedFactory &&
+        #hasCanonicalOwnedFactory in this &&
+        prepare === Agent.#canonicalOpening.prepare &&
+        this.#hasCanonicalOwnedFactory(Agent.#canonicalOpening.session) &&
+        prepared.canonicalOutputSelector === true
+          ? issueOwnedOpeningAuthority()
+          : undefined;
+      if (ownedFactoryAuthority && requestedPlainTerminal)
+        markPlainTerminalOpening(ownedFactoryAuthority);
       let openingError: unknown;
       try {
         session.tracingCapture = tracingCapture;
@@ -362,6 +417,8 @@ export class Agent<Context = undefined, Output = string> {
           session,
           lease,
           (options as OwnedSessionOptions<Context>)[ownedRun],
+          undefined,
+          ownedFactoryAuthority,
         );
         environmentOwner.opened();
         (options as OwnedSessionOptions<Context>)[deferredOpening]?.opened(
@@ -443,6 +500,25 @@ export class Agent<Context = undefined, Output = string> {
         prepareRequest: options.prepareRequest,
       },
     };
+    if (
+      preparedInput !== null &&
+      #hasCanonicalOwnedFactory in this &&
+      this.#hasCanonicalOwnedFactory(factory)
+    ) {
+      Agent.#ownedRequests.add(sessionOptions);
+      // options is the existing private spread copy; never re-read the caller's getter.
+      const state = Object.getOwnPropertyDescriptor(options, 'returnState');
+      if (
+        typeof input === 'string' &&
+        maxModelSteps === undefined &&
+        budget === undefined &&
+        (state
+          ? 'value' in state &&
+            (state.value === false || state.value === undefined)
+          : !('returnState' in options))
+      )
+        Agent.#plainTerminalRequests.add(sessionOptions);
+    }
     const session = await factory.apply(this, [
       sessionOptions,
     ] as SessionArguments<Context>);
@@ -600,7 +676,8 @@ export class Agent<Context = undefined, Output = string> {
       suppliedState == null
         ? undefined
         : sessionStateSchema.safeParse(suppliedState);
-    const declaredOutput = this.outputTypeFor(options);
+    const selectOutput = this.outputTypeFor;
+    const declaredOutput = Agent.#apply(selectOutput, this, [options]);
     const outputType =
       declaredOutput &&
       'mode' in declaredOutput &&
@@ -854,6 +931,8 @@ export class Agent<Context = undefined, Output = string> {
     const native = await binding();
     native._validate_python_tool_declarations(catalog.specsJson);
     environmentOwner.signal.throwIfAborted();
+    const canonicalProviderAtAcquire =
+      isCanonicalProviderForOwnedOpening(provider);
     const lease = provider._acquire(correction ?? opening);
     const previousOpeningCleanup: (() => Promise<void>) | undefined =
       lease.retainOpeningCleanup(() =>
@@ -977,6 +1056,9 @@ export class Agent<Context = undefined, Output = string> {
       };
       const session: CoreSessionOptions = {
         maxFunctionConcurrency,
+        ownedDrainProvider:
+          canonicalProviderAtAcquire &&
+          isCanonicalProviderForOwnedOpening(provider),
         parentTrace: captureTraceContext(options.parentTrace),
         state,
         localStorage: persistent,
@@ -1095,7 +1177,16 @@ export class Agent<Context = undefined, Output = string> {
           }
         };
       }
-      return { setup, session, lease, environmentOwner };
+      return {
+        setup,
+        session,
+        lease,
+        environmentOwner,
+        canonicalOutputSelector:
+          #hasCanonicalOwnedFactory in this &&
+          selectOutput === Agent.#canonicalOpening.outputTypeFor &&
+          this.#hasCanonicalOwnedFactory(Agent.#canonicalOpening.session),
+      };
     } catch (error) {
       return lease.failOpening(error);
     }

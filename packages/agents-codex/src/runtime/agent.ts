@@ -63,6 +63,7 @@ export async function openSession(
   lease: ProviderLease,
   oneShot?: OneShotOptions,
   catalog: ToolCatalog = captureTools(setup.tools),
+  ownedFactoryAuthority?: unknown,
 ): Promise<Session> {
   const { instructions, model, config, apiKey } = setup;
   // Keep the full declaration for profile checks, updates and checkpoints.
@@ -327,6 +328,7 @@ export async function openSession(
     environment ?? null,
     oneShot,
     apiKey,
+    ownedFactoryAuthority,
   );
   lease.retainOpeningCleanup(() => session.close());
   options.environmentOwner?.attachSession(session);

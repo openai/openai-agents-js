@@ -35,7 +35,43 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
  * Ordinary API-key HTTP clients may retain default/custom trust and ambient proxy
  * state until close. Construct a new provider to force fresh physical clients.
  */
+let canonicalOwnedProvider: (value: unknown) => boolean = () => false;
+/** @internal No getters or Proxy traps are invoked by this provenance check. */
+export function isCanonicalProviderForOwnedOpening(value: unknown): boolean {
+  return canonicalOwnedProvider(value);
+}
+
 export class NativeProvider {
+  static {
+    const prototype = NativeProvider.prototype;
+    const names = [
+      '_acquire',
+      'baseUrl',
+      'apiKey',
+      'supportsWebsockets',
+    ] as const;
+    const original = names.map((name) =>
+      Object.getOwnPropertyDescriptor(prototype, name)!,
+    );
+    canonicalOwnedProvider = (value: unknown): boolean => {
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        !(#options in value) ||
+        Object.getPrototypeOf(value) !== prototype
+      )
+        return false;
+      return names.every((name, index) => {
+        const current = Object.getOwnPropertyDescriptor(prototype, name);
+        return (
+          Object.getOwnPropertyDescriptor(value, name) === undefined &&
+          current?.value === original[index]!.value &&
+          current?.get === original[index]!.get &&
+          current?.set === original[index]!.set
+        );
+      });
+    };
+  }
   #options: Readonly<NativeProviderOptions>;
   #leases = new Set<LeaseToken>();
   #closed = false;

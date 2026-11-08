@@ -86,6 +86,8 @@ import {
 } from './output';
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { consumeOwnedOpeningAuthority } from './owned-opening-authority';
+import { consumePlainTerminalOpening } from './terminal-carrier-policy';
 import type { EnvironmentAcquisition } from './environment-source';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -245,6 +247,8 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   maxFunctionConcurrency?: number;
+  /** @internal Resolved provider provenance; requires private owner authority too. */
+  ownedDrainProvider?: boolean;
   onInteraction?: InteractionHandler;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
@@ -1113,6 +1117,12 @@ export class Session<OutputT = string, Context = unknown> {
     { source: NativeThread; payload: string; length: number }
   >();
 
+  readonly #ownedFactoryAuthority: boolean;
+  readonly #plainTerminalAuthority: boolean;
+  #terminalModelRequestSeen = false;
+  #terminalStartedTurn: string | undefined;
+  #awaitedDrainStopped = false;
+
   constructor(
     engine: Engine,
     native: NativeThread,
@@ -1124,7 +1134,17 @@ export class Session<OutputT = string, Context = unknown> {
     private readonly environment: Environment | null = null,
     private readonly oneShot?: OneShotOptions,
     modelApiKey?: string,
+    ownedFactoryAuthority?: unknown,
   ) {
+    this.#ownedFactoryAuthority = consumeOwnedOpeningAuthority(
+      ownedFactoryAuthority,
+    );
+    const plainTerminal = consumePlainTerminalOpening(ownedFactoryAuthority);
+    this.#plainTerminalAuthority = this.#ownedFactoryAuthority && plainTerminal;
+    if (this.#ownedFactoryAuthority && !this.oneShot)
+      throw new NativeError(
+        'Owned factory authority requires a one-shot owner',
+      );
     this.defaultOutput = options.output ?? prepareOutput(undefined);
     this.openingCatalog = catalog;
     const receipts = isOutputAwareState(restored) ? restored : undefined;
@@ -4035,23 +4055,99 @@ export class Session<OutputT = string, Context = unknown> {
       this.finishObservation(run);
     }
   }
+  private ownedTerminalTurn(): string | undefined {
+    if (
+      !this.#plainTerminalAuthority ||
+      this.#awaitedDrainStopped ||
+      !this.options.ownedDrainProvider ||
+      this.starting ||
+      this.lifecycle.kind !== 'turn'
+    )
+      return;
+    const run = this.lifecycle.run;
+    if (
+      !run.id ||
+      this.#terminalStartedTurn !== run.id ||
+      !this.oneShot ||
+      this.oneShot.input == null ||
+      this.oneShot.prepareRequest ||
+      this.restored ||
+      this.environment !== null ||
+      this.options.localStorage ||
+      this.options.customStore ||
+      this.options.localResume ||
+      this.options.onInteraction ||
+      this.options.tracingCapture ||
+      this.options.parentTrace ||
+      this.options.nativeAgents ||
+      this.options.nativeGoals ||
+      this.options.checklist ||
+      this.options.webSearch ||
+      this.options.hostedTools?.length ||
+      this.mcpTools.length ||
+      this.catalog.tools.length ||
+      this.mcpReaderStarted ||
+      this.codeModeEnabled ||
+      run.selection ||
+      run.tracing ||
+      run.parentTrace ||
+      this.manualCalls.size ||
+      this.defaultOutput.parse ||
+      this.defaultOutput.prompt ||
+      this.defaultOutput.schema ||
+      this.defaultOutput.repair
+    )
+      return;
+    return run.id;
+  }
+
   private async readEvents(): Promise<void> {
     const native = this.#native;
     const producer = this.childObservationProducer;
     let batch: string[] = [];
     let batchIndex = 0;
+    let ownedBatch = false;
+    let ownedTurn: string | undefined;
     try {
       while (this.isOpen && this.#native === native) {
         let event: NativeEvent;
         try {
           if (batchIndex === batch.length) {
-            batch = await native._next_session_events();
+            ownedTurn = this.ownedTerminalTurn();
+            ownedBatch = ownedTurn !== undefined;
+            if (ownedBatch) this.#awaitedDrainStopped = true;
+            batch =
+              ownedTurn === undefined
+                ? await native._next_session_events()
+                : await native._next_owned_session_events(
+                    ownedTurn,
+                    this.#terminalModelRequestSeen,
+                  );
             batchIndex = 0;
             if (batch.length === 0)
               throw new NativeError('Native event batch was empty');
           }
           const raw = batch[batchIndex++]!;
           event = parseEvent(raw);
+          if (
+            (event.msg.type === 'task_started' ||
+              event.msg.type === 'turn_started') &&
+            event.subagent_id === undefined &&
+            event.subagent_incarnation === undefined &&
+            event.subagent_instance_id === undefined &&
+            typeof event.id === 'string'
+          )
+            this.#terminalStartedTurn = event.id;
+          if (event.msg.type === '_sdk_request_metadata') {
+            const observation = event.msg.observation;
+            if (
+              observation &&
+              typeof observation === 'object' &&
+              !Array.isArray(observation) &&
+              observation.type === 'model_request_dispatching'
+            )
+              this.#terminalModelRequestSeen = true;
+          }
           if (event.msg.type === 'elicitation_request') {
             // The generic event schema drops prototype-named record keys.
             // Preserve raw form data; prepareNativeForm validates it separately.

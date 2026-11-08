@@ -66,6 +66,28 @@ jobs:
 
       - name: Build the native runtime
         run: node packages/agents-codex/scripts/native.mjs package
+      - name: Qualify SDK terminal carrier and ordinary policy on Linux
+        if: runner.os == 'Linux'
+        working-directory: packages/agents-codex/native
+        run: |
+          set -euo pipefail
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
+          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_${native_host}.rs"
+          qualify() {
+            label=$1; expected=$2; filter=$3; shift 3
+            cargo test --locked --release --lib "$filter" -- "$@" --list --format terse > "$label.list"
+            cat "$label.list"
+            test "$(grep -Ec ': test$' "$label.list")" = "$expected"
+            cargo test --locked --release --lib "$filter" -- "$@" --nocapture 2>&1 | tee "$label.log"
+            grep -E "^test result: ok[.] ${expected} passed; 0 failed; 0 ignored; 0 measured;" "$label.log"
+          }
+          cold=engine::bundled_catalog_tests::concurrent_catalog_first_use_returns_independent_owned_results
+          qualify catalog-cold 1 "$cold" --exact
+          qualify catalog-warm 4 engine::bundled_catalog_tests --skip "$cold"
+          qualify questions 4 engine::user_input_policy_tests
+          qualify carrier-classifier 2 engine::private_owned_drain_classifier_tests
+          qualify terminal-carrier 10 engine::terminal_carrier_tests
       - name: Test Windows project-search filename handling
         if: runner.os == 'Windows'
         working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs

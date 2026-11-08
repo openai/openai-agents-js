@@ -908,6 +908,7 @@ impl EngineState {
                 native: Some(next_native_event(new.thread, native_dequeued.clone())),
                 native_dequeued,
                 session_terminal: None,
+                deferred_session_error: None,
                 root_step: None,
                 children: VecDeque::new(),
                 pending: VecDeque::new(),
@@ -1854,6 +1855,7 @@ struct ForkCopy {
 }
 
 struct ThreadEvents {
+    deferred_session_error: Option<anyhow::Error>,
     initial: Option<Event>,
     extensions: broadcast::Receiver<(String, Event)>,
     created: broadcast::Receiver<ThreadId>,
@@ -2153,6 +2155,34 @@ fn graph_event(event: crate::storage::GraphEvent) -> anyhow::Result<serde_json::
 
 const SESSION_EVENT_BATCH_LIMIT: usize = 8;
 const SESSION_EVENT_BATCH_BYTES: usize = 16 * 1024;
+
+fn owned_passive_root_event(value: &serde_json::Value, thread: &str, turn: &str) -> bool {
+    if value.get("subagent_id").is_some()
+        || value.get("subagent_incarnation").is_some()
+        || value.get("subagent_instance_id").is_some()
+        || value["id"].as_str() != Some(turn)
+    {
+        return false;
+    }
+    let kind = value["msg"]["type"].as_str();
+    if kind == Some("agent_message_content_delta") {
+        return value["msg"]["thread_id"].as_str() == Some(thread)
+            && value["msg"]["turn_id"].as_str() == Some(turn);
+    }
+    matches!(
+        kind,
+        Some(
+            "raw_response_item"
+                | "item_started"
+                | "item_completed"
+                | "user_message"
+                | "_sdk_request_metadata"
+                | "agent_message"
+                | "raw_response_completed"
+                | "token_count"
+        )
+    )
+}
 
 // Poll only this retained root source, never a merged session read. A Pending
 // future may already own question/error metadata and must stay in its slot.
@@ -2922,6 +2952,100 @@ impl ThreadState {
         Ok(batch)
     }
 
+    async fn defer_session_error(&self, error: anyhow::Error) -> anyhow::Result<()> {
+        let mut events = self.events.lock().await;
+        if !*self.closing.borrow() {
+            ensure!(
+                events.deferred_session_error.is_none(),
+                "Concurrent owned event reader"
+            );
+            events.deferred_session_error = Some(error);
+        }
+        Ok(())
+    }
+
+    // CLOSED, private one-attempt carrier. The public reducer and shared batch limits stay unchanged.
+    pub async fn next_owned_session_events(
+        self: &Arc<Self>,
+        turn: String,
+        mut model_request_seen: bool,
+    ) -> anyhow::Result<Vec<String>> {
+        ensure!(!turn.is_empty(), "Owned turn identity is empty");
+        let thread = self.id.to_string();
+        let mut rows = Vec::new();
+        let mut bytes = 0;
+        loop {
+            let value = match self.next_session_event().await {
+                Ok(value) => value,
+                Err(error) if rows.is_empty() => return Err(error),
+                Err(error) => {
+                    self.defer_session_error(error).await?;
+                    return Ok(rows);
+                }
+            };
+            let raw = match serde_json::to_string(&value) {
+                Ok(raw) => raw,
+                Err(error) if rows.is_empty() => return Err(error.into()),
+                Err(error) => {
+                    self.defer_session_error(error.into()).await?;
+                    return Ok(rows);
+                }
+            };
+            if raw.len() > OWNED_TERMINAL_BYTES - bytes {
+                // One boundary-row exception, as in ordinary oversized-row delivery.
+                // Return the exact serialized row once; never wait or reserialize it.
+                rows.push(raw);
+                return Ok(rows);
+            }
+            let kind = value
+                .get("msg")
+                .and_then(|m| m.get("type"))
+                .and_then(serde_json::Value::as_str);
+            let dispatch = kind == Some("_sdk_request_metadata")
+                && value
+                    .get("msg")
+                    .and_then(|m| m.get("observation"))
+                    .and_then(|o| o.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("model_request_dispatching");
+            let second_request = dispatch && model_request_seen;
+            model_request_seen |= dispatch;
+            let plain_item = !matches!(kind, Some("item_started" | "item_completed"))
+                || (value
+                    .get("msg")
+                    .and_then(|m| m.get("thread_id"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(thread.as_str())
+                    && value
+                        .get("msg")
+                        .and_then(|m| m.get("turn_id"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(turn.as_str())
+                    && matches!(
+                        value
+                            .get("msg")
+                            .and_then(|m| m.get("item"))
+                            .and_then(|i| i.get("type"))
+                            .and_then(serde_json::Value::as_str),
+                        Some("UserMessage" | "AgentMessage" | "Reasoning")
+                    ));
+            let plain_envelope = value
+                .as_object()
+                .is_some_and(|row| row.keys().all(|key| key == "id" || key == "msg"));
+            let passive =
+                plain_envelope && plain_item && owned_passive_root_event(&value, &thread, &turn);
+            bytes += raw.len();
+            rows.push(raw);
+            if !passive
+                || second_request
+                || rows.len() == OWNED_TERMINAL_ROWS
+                || bytes == OWNED_TERMINAL_BYTES
+            {
+                return Ok(rows);
+            }
+        }
+    }
+
     pub async fn next_session_event(self: &Arc<Self>) -> anyhow::Result<serde_json::Value> {
         let python_tools = self
             .thread
@@ -2931,6 +3055,9 @@ impl ThreadState {
         ensure!(!*closing.borrow(), "Codex thread is closed");
         let mut events = self.events.lock().await;
         ensure!(!*closing.borrow(), "Codex thread is closed");
+        if let Some(error) = events.deferred_session_error.take() {
+            return Err(error);
+        }
         if let Some(event) = events.initial.take() {
             return self.root_event(event, None);
         }
@@ -3234,6 +3361,7 @@ impl ThreadState {
         {
             let mut events = self.events.lock().await;
             events.native = None;
+            events.deferred_session_error = None;
             events.session_terminal = None;
             events.root_step = None;
             events.publication_prefix = None;
@@ -3711,3 +3839,59 @@ mod user_input_policy_tests;
 #[cfg(test)]
 #[path = "bundled_catalog_tests.rs"]
 mod bundled_catalog_tests;
+
+#[cfg(test)]
+mod private_owned_drain_classifier_tests {
+    use super::owned_passive_root_event;
+    use serde_json::json;
+
+    #[test]
+    fn keeps_controls_unknowns_children_and_other_turns_as_fences() {
+        for kind in [
+            "_sdk_select_step",
+            "_sdk_prepare_request",
+            "sdk_mcp_publication_boundary",
+            "request_user_input",
+            "exec_approval_request",
+            "elicitation_request",
+            "task_complete",
+            "turn_complete",
+            "turn_aborted",
+            "future_unknown",
+        ] {
+            assert!(!owned_passive_root_event(
+                &json!({"id":"turn","msg":{"type":kind}}),
+                "thread",
+                "turn"
+            ));
+        }
+        assert!(!owned_passive_root_event(
+            &json!({"id":"other","msg":{"type":"item_started"}}),
+            "thread",
+            "turn"
+        ));
+        assert!(!owned_passive_root_event(
+            &json!({"id":"turn","subagent_id":"child","msg":{"type":"item_started"}}),
+            "thread",
+            "turn"
+        ));
+    }
+
+    #[test]
+    fn text_requires_exact_root_thread_and_turn_identity() {
+        let mut event = json!({"id":"turn","msg":{"type":"agent_message_content_delta","thread_id":"thread","turn_id":"turn","item_id":"item","delta":"a\u{0}é"}});
+        assert!(owned_passive_root_event(&event, "thread", "turn"));
+        event["msg"]["thread_id"] = json!("other");
+        assert!(!owned_passive_root_event(&event, "thread", "turn"));
+        event["msg"]["thread_id"] = json!("thread");
+        event["msg"]["turn_id"] = json!("other");
+        assert!(!owned_passive_root_event(&event, "thread", "turn"));
+    }
+}
+
+const OWNED_TERMINAL_ROWS: usize = 64;
+const OWNED_TERMINAL_BYTES: usize = 65_536;
+
+#[cfg(test)]
+#[path = "terminal_carrier_tests.rs"]
+mod terminal_carrier_tests;
