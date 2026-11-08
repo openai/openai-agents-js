@@ -1253,6 +1253,8 @@ params!(RealtimeSdkProfileUpdate {
     #[serde(default)]
     response_id: Option<String>,
     #[serde(default)]
+    delegation_id: Option<String>,
+    #[serde(default)]
     target: Option<codex_protocol::agent_profile::AgentProfileReceipt>,
     #[serde(default)]
     function_tools: Option<Vec<codex_protocol::dynamic_tools::DynamicToolFunctionSpec>>,
@@ -1265,6 +1267,7 @@ impl From<RealtimeSdkProfileUpdate>
     fn from(value: RealtimeSdkProfileUpdate) -> Self {
         Self {
             response_id: value.response_id,
+            delegation_id: value.delegation_id,
             target: value.target,
             function_tools: realtime_function_tools(value.function_tools),
             expected_selection_id: value.expected_selection_id,

@@ -590,14 +590,18 @@ class NativeRealtimeOwner {
   /** @internal Refresh an authoritative source; Core owns provider ACK and continuation. */
   async _syncProfile(
     includeMono = false,
-    bound?: { responseId: string; target: unknown },
+    bound?:
+      | { responseId: string; target: unknown; delegationId?: never }
+      | { delegationId: string; responseId?: never; target?: never },
   ): Promise<void> {
     this.checkLive();
     try {
-      const target = bound
-        ? this.session._realtimeProfileTarget(bound.target)
-        : await this.session._realtimeCurrentProfile();
-      if (target === null && !includeMono) return;
+      const target =
+        bound?.responseId !== undefined
+          ? this.session._realtimeProfileTarget(bound.target)
+          : await this.session._realtimeCurrentProfile();
+      if (target === null && !includeMono && bound?.delegationId === undefined)
+        return;
       const selection =
         this.selectedTools === undefined
           ? undefined
@@ -609,6 +613,9 @@ class NativeRealtimeOwner {
         update: {},
         profile: {
           response_id: bound?.responseId ?? null,
+          ...(bound?.delegationId === undefined
+            ? {}
+            : { delegation_id: bound.delegationId }),
           target,
           function_tools: selection?.tools ?? null,
           expected_selection_id: selection?.selectionId ?? null,
@@ -1191,7 +1198,7 @@ class NativeRealtimeOwner {
         let accepted = '';
         for await (const text of owned.workflow.run(input)) accepted += text;
         if (this.live && !owned.retired) {
-          await this._syncProfile();
+          await this._syncProfile(false, { delegationId: id });
           if (this.live && !owned.retired) {
             await this.call('complete', { handoff_id: id, text: accepted });
             this.emit({

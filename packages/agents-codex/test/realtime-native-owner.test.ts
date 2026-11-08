@@ -1069,49 +1069,62 @@ it('fences concurrent hosted approval attempts before the first native reply', a
   await peer.owner.close();
 });
 
-it('waits for accepted source refresh before forwarding delegated native text', async () => {
-  const peer = fixture();
-  const target = { profile_id: 'B', epoch: '2' };
-  peer.session._realtimeCurrentProfile.mockResolvedValue(target as never);
-  const held = deferred<void>();
-  const original = peer.call.getMockImplementation()!;
-  peer.call.mockImplementation((operation, params) =>
-    operation === 'realtime_conversation_update_sdk'
-      ? held.promise
-      : original(operation, params),
-  );
-  await peer.owner._start();
-  peer.payload(
-    { HandoffRequested: { handoff_id: 'delegate', response_id: 'response-A' } },
-    'native input',
-  );
-  await vi.waitFor(() => expect(peer.waits).toHaveLength(1));
-  peer.waits[0].resolve({ finalOutput: 'accepted B text' });
-  await vi.waitFor(() =>
+it.each([
+  null,
+  { profile_id: 'A', epoch: '1' },
+  { profile_id: 'B', epoch: '2' },
+])(
+  'binds exact delegation source before forwarding accepted text (target=%j)',
+  async (target) => {
+    const peer = fixture();
+    peer.session._realtimeCurrentProfile.mockResolvedValue(target as never);
+    const held = deferred<void>();
+    const original = peer.call.getMockImplementation()!;
+    peer.call.mockImplementation((operation, params) =>
+      operation === 'realtime_conversation_update_sdk'
+        ? held.promise
+        : original(operation, params),
+    );
+    await peer.owner._start();
+    peer.payload(
+      {
+        HandoffRequested: { handoff_id: 'delegate', response_id: 'response-A' },
+      },
+      'native input',
+    );
+    await vi.waitFor(() => expect(peer.waits).toHaveLength(1));
+    peer.waits[0].resolve({ finalOutput: 'accepted B text' });
+    await vi.waitFor(() =>
+      expect(
+        peer.call.mock.calls.find(
+          ([operation]) => operation === 'realtime_conversation_update_sdk',
+        )?.[1],
+      ).toMatchObject({
+        update: {},
+        profile: {
+          response_id: null,
+          delegation_id: 'delegate',
+          target,
+          function_tools: null,
+        },
+      }),
+    );
     expect(
-      peer.call.mock.calls.find(
-        ([operation]) => operation === 'realtime_conversation_update_sdk',
-      )?.[1],
-    ).toMatchObject({
-      update: {},
-      profile: { response_id: null, target, function_tools: null },
-    }),
-  );
-  expect(
-    peer.call.mock.calls.some(
-      ([operation]) => operation === 'realtime_conversation_complete_sdk',
-    ),
-  ).toBe(false);
-  held.resolve();
-  await vi.waitFor(() =>
-    expect(
-      peer.call.mock.calls.find(
+      peer.call.mock.calls.some(
         ([operation]) => operation === 'realtime_conversation_complete_sdk',
-      )?.[1],
-    ).toMatchObject({ text: 'accepted B text' }),
-  );
-  await peer.owner.close();
-});
+      ),
+    ).toBe(false);
+    held.resolve();
+    await vi.waitFor(() =>
+      expect(
+        peer.call.mock.calls.find(
+          ([operation]) => operation === 'realtime_conversation_complete_sdk',
+        )?.[1],
+      ).toMatchObject({ text: 'accepted B text' }),
+    );
+    await peer.owner.close();
+  },
+);
 
 it('keeps the reader moving during a bound ACK and joins its rejection on close', async () => {
   const context = new AsyncLocalStorage<string>();
