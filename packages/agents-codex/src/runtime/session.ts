@@ -1,3 +1,4 @@
+import type { DecisionsPolicy } from './inference-api';
 import {
   capturePreparedRequest,
   preparedRequestFromNative,
@@ -243,6 +244,8 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  /** @internal Captured native Decisions configuration; never restored from state. */
+  decisionsApi?: DecisionsPolicy;
   onInteraction?: InteractionHandler;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
@@ -3455,6 +3458,8 @@ export class Session<OutputT = string, Context = unknown> {
     output = this.defaultOutput,
     outputOverride = false,
   ): NativeTurn {
+    if (this.options.decisionsApi && output.identity.mode === 'prompted')
+      throw new TypeError('Decisions supports only plain or native output');
     if (this.options.localStorage && output.repair)
       throw new TypeError('Local storage does not support output repair');
     const run = new NativeTurn(() => this.assertCanWait(run));
@@ -6873,6 +6878,10 @@ export class Session<OutputT = string, Context = unknown> {
   async update(options: SessionUpdate<Context> = {}): Promise<void> {
     this.checkCallbackOperation('update');
     this.idle('update');
+    if (this.options.decisionsApi && options.model !== undefined)
+      throw new TypeError(
+        'Decisions Sessions cannot change model; open a new Session',
+      );
     const settings = modelOverrides(options.model, options.modelSettings);
     if (
       this.options.nativeAgents &&
@@ -6891,6 +6900,13 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (options.tools !== undefined) {
       const next = splitToolDeclarations(options.tools);
+      if (
+        this.options.decisionsApi &&
+        next.tools.some((tool) => tool.kind === 'manual' || tool.deferLoading)
+      )
+        throw new TypeError(
+          'Decisions supports only ordinary eager function tools',
+        );
       const registration = this.options.mcpTools?.find(isHostedRegistration);
       if (
         next.mcp.some(
@@ -7641,6 +7657,14 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   async compact(options?: SuppliedCompactionOptions): Promise<void> {
+    if (
+      this.options.decisionsApi &&
+      !this.options.decisionsApi.fallbackModel &&
+      options === undefined
+    )
+      throw new TypeError(
+        'Decisions compaction requires an explicit fallback model',
+      );
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
       throw new TypeError(
@@ -7964,6 +7988,8 @@ export class Session<OutputT = string, Context = unknown> {
 
   /** Copy settled root history into an independently owned portable state. */
   async fork(): Promise<SessionState> {
+    if (this.options.decisionsApi)
+      throw new TypeError('Decisions does not support portable state');
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
       throw new TypeError('Local storage does not support fork');
@@ -8268,6 +8294,8 @@ export class Session<OutputT = string, Context = unknown> {
     return pending;
   }
   async saveState(): Promise<SessionState> {
+    if (this.options.decisionsApi)
+      throw new TypeError('Decisions does not support portable state');
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
       throw new TypeError(
@@ -8294,6 +8322,8 @@ export class Session<OutputT = string, Context = unknown> {
     return snapshot;
   }
   async suspend(): Promise<SessionState> {
+    if (this.options.decisionsApi)
+      throw new TypeError('Decisions does not support portable state');
     if (this.nativeQuestions.size)
       throw new TypeError('Native questions cannot be suspended or serialized');
     if (this.options.localStorage)

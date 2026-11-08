@@ -10,6 +10,7 @@ export type {
   RunOptions,
 } from './runtime/public-agent';
 export { RunCleanupError } from './runtime/native-error';
+export type { InferenceApi } from './runtime/inference-api';
 export { NativeProvider } from './runtime/provider';
 export { CapabilityError } from './runtime/capabilities';
 export type {

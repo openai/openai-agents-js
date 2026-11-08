@@ -97,3 +97,20 @@ it('keeps existing reader closure and bounded gap behavior with bigint effort', 
     ),
   ).toBe(true);
 });
+
+it('preserves Decisions request dispatch metadata', () => {
+  expect(
+    decodeRequestMetadata(
+      { ...payload(), wire: 'decisions', transport: 'http_json' },
+      'submission',
+    ),
+  ).toMatchObject({
+    type: 'model_request_dispatching',
+    wire: 'decisions',
+    transport: 'http_json',
+    model: 'resolved-model',
+  });
+  expect(
+    decodeRequestMetadata({ ...payload(), wire: 'unknown' }, 'submission'),
+  ).toBeNull();
+});

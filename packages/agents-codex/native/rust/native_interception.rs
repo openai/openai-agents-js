@@ -2603,6 +2603,74 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn restore_decision_request<'a>(
+        &'a self,
+        request: &'a mut Value,
+        admission: Option<&'a Arc<dyn ModelToolAdmission>>,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let restore = async {
+                let engine = self
+                    .engine
+                    .get()
+                    .and_then(Weak::upgrade)
+                    .context("Native engine ended")?;
+                let admission = admission.context("Missing Decisions request owner")?;
+                let control = sentinel_control(&engine, admission.thread_id())?;
+                let owner = admission
+                    .turn_store()
+                    .get::<DirectTurn>()
+                    .context("Native turn ended")?;
+                let thread = engine
+                    .manager
+                    .get_thread(codex_protocol::ThreadId::from_string(
+                        admission.thread_id(),
+                    )?)
+                    .await?;
+                let current = thread
+                    .current_turn_extension_data::<DirectTurn>(&owner.id)
+                    .await
+                    .context("Native turn ended")?;
+                let native_control = thread
+                    .thread_extension_data()
+                    .get::<Control>()
+                    .context("Native thread ended")?;
+                anyhow::ensure!(
+                    Arc::ptr_eq(&current, &owner) && Arc::ptr_eq(&native_control, &control),
+                    "Native Decisions owner changed"
+                );
+                let state = control
+                    .channel
+                    .state
+                    .lock()
+                    .expect("interception control poisoned");
+                let turn = control
+                    .direct_turn
+                    .lock()
+                    .expect("interception turn poisoned");
+                anyhow::ensure!(
+                    !control.stopped.is_cancelled()
+                        && !owner.cancelled.is_cancelled()
+                        && !state.revoked
+                        && !state.mcp_poisoned
+                        && turn
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &owner)),
+                    "Native Decisions request retired"
+                );
+                if let Some(tools) = thread
+                    .thread_extension_data()
+                    .get::<crate::python_tools::PythonTools>()
+                {
+                    tools.restore_schema_request(request)?;
+                }
+                Ok::<(), anyhow::Error>(())
+            }
+            .await;
+            restore.map_err(|_| "Native Decisions schema owner is unavailable".into())
+        })
+    }
+
     fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
         let engine = self.engine.get()?.upgrade()?;
         let base = engine
@@ -2840,6 +2908,43 @@ impl SentinelRequest {
 }
 
 impl ModelResponseInterceptor for SentinelRequest {
+    fn admit_request(&self) -> Result<(), String> {
+        let state = self
+            .control
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        let turn = self
+            .control
+            .direct_turn
+            .lock()
+            .expect("interception turn poisoned");
+        let request = self
+            .control
+            .sentinel_request
+            .lock()
+            .expect("sentinel request poisoned");
+        if state.revoked
+            || state.mcp_poisoned
+            || self.control.stopped.is_cancelled()
+            || !request
+                .request
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.ticket))
+            || (self.ticket.kind == ModelRequestKind::Generation
+                && !self.ticket.owner.as_ref().is_some_and(|owner| {
+                    !owner.cancelled.is_cancelled()
+                        && turn
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, owner))
+                }))
+        {
+            return Err("Native request retired".into());
+        }
+        Ok(())
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
@@ -3250,6 +3355,9 @@ pub(crate) fn sentinel_failed(
 struct RevokedRequest;
 
 impl ModelResponseInterceptor for RevokedRequest {
+    fn admit_request(&self) -> Result<(), String> {
+        Err("Native request retired".into())
+    }
     fn intercept(self: Box<Self>, upstream: ModelResponseStream) -> ModelResponseStream {
         drop(upstream);
         Box::pin(futures_util::stream::once(async { Err(rejected()) }))
@@ -3569,6 +3677,31 @@ fn valid_stdin_arguments(arguments: &str) -> bool {
 }
 
 impl ModelResponseInterceptor for DirectRequest {
+    fn admit_request(&self) -> Result<(), String> {
+        let state = self
+            .control
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        let turn = self
+            .control
+            .direct_turn
+            .lock()
+            .expect("interception turn poisoned");
+        if state.revoked
+            || state.mcp_poisoned
+            || self.control.stopped.is_cancelled()
+            || self.owner.cancelled.is_cancelled()
+            || !turn
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.owner))
+        {
+            return Err("Native request retired".into());
+        }
+        Ok(())
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,

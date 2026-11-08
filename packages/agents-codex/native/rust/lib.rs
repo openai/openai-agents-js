@@ -458,9 +458,15 @@ impl Engine {
         let cancelled = request.cancelled.clone();
         let work = async {
             let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
-            let (status, headers, body) =
-                sentinel_stream_dispatch(&inner, &provider_id, &headers, body.into(), &ticket)
-                    .await?;
+            let (status, headers, body) = sentinel_stream_dispatch(
+                &inner,
+                &provider_id,
+                &headers,
+                body.into(),
+                &ticket,
+                "responses",
+            )
+            .await?;
             Ok(NativeModelResponse {
                 inner: RuntimeOwned::new(Arc::new(tokio::sync::Mutex::new(body))),
                 cancelled: cancelled.clone(),
@@ -3706,10 +3712,16 @@ async fn direct_sentinel_stream(
         .clone()
         .ok_or_else(unmatched)?;
     let prefix = format!("{}/p-", binding.0.trim_end_matches('/'));
+    let endpoint = if request.url.ends_with("/decisions") {
+        "decisions"
+    } else {
+        "responses"
+    };
+    let suffix = format!("/{endpoint}");
     let encoded = request
         .url
         .strip_prefix(&prefix)
-        .and_then(|path| path.strip_suffix("/responses"))
+        .and_then(|path| path.strip_suffix(&suffix))
         .filter(|encoded| {
             !encoded.is_empty()
                 && encoded
@@ -3783,7 +3795,13 @@ async fn direct_sentinel_stream(
     let mut metadata = metadata.as_object().cloned().ok_or_else(invalid)?;
     metadata.remove("sdk_sentinel_thread");
     metadata.remove("sdk_sentinel_nonce");
-    body["client_metadata"] = serde_json::Value::Object(metadata);
+    if endpoint == "decisions" {
+        body.as_object_mut()
+            .ok_or_else(invalid)?
+            .remove("client_metadata");
+    } else {
+        body["client_metadata"] = serde_json::Value::Object(metadata);
+    }
     native_interception::sentinel_restore_schemas(inner, provider_id, &ticket, &mut body)
         .await
         .map_err(|_| invalid())?;
@@ -3808,7 +3826,7 @@ async fn direct_sentinel_stream(
     let headers = serde_json::to_string(&headers).map_err(|_| invalid())?;
     let body = serde_json::to_vec(&body).map_err(|_| invalid())?;
     let (status, headers, body) =
-        sentinel_stream_dispatch(inner, provider_id, &headers, body.into(), &ticket)
+        sentinel_stream_dispatch(inner, provider_id, &headers, body.into(), &ticket, endpoint)
             .await
             .map_err(|_| invalid())?;
     let headers = sentinel_response_headers(headers).map_err(|_| invalid())?;
@@ -3842,6 +3860,7 @@ async fn direct_sentinel_stream(
                 })
                 .boxed(),
         }),
+        NativeModelBody::Failed(error) => Err(error),
         NativeModelBody::Closed => Ok(codex_client::StreamResponse {
             status,
             headers,
@@ -3907,6 +3926,7 @@ async fn sentinel_stream_dispatch(
     headers: &str,
     body: bytes::Bytes,
     ticket: &serde_json::Value,
+    endpoint: &str,
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
@@ -3914,7 +3934,7 @@ async fn sentinel_stream_dispatch(
         .map_err(native_error)?;
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let mut request = provider
-        .build_request("POST".parse().map_err(native_error)?, "responses")
+        .build_request("POST".parse().map_err(native_error)?, endpoint)
         .with_raw_body(body);
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
     let result = match request.into_prepared() {
@@ -3955,6 +3975,11 @@ async fn sentinel_stream_dispatch(
             body,
             ..
         }) => NativeModelBody::http_error(status, headers, body)?,
+        Err(error) if endpoint == "decisions" => (
+            http::StatusCode::OK,
+            http::HeaderMap::new(),
+            NativeModelBody::Failed(error),
+        ),
         Err(error) => {
             native_interception::sentinel_failed(
                 inner,
@@ -4001,6 +4026,7 @@ struct NativeModelRoute {
 // Closing first retires that owner's pending send/read, then acquires the mutex.
 enum NativeModelBody {
     Streaming(ByteStream),
+    Failed(TransportError),
     HttpError(Option<String>),
     Closed,
 }
@@ -4108,6 +4134,12 @@ impl NativeModelResponse {
                 NativeModelBody::HttpError(text) => {
                     if let Some(text) = text.take() {
                         return Ok(Some(napi::bindgen_prelude::Buffer::from(text.into_bytes())));
+                    }
+                }
+                NativeModelBody::Failed(_) => {
+                    let failed = std::mem::replace(&mut *body, NativeModelBody::Closed);
+                    if let NativeModelBody::Failed(error) = failed {
+                        return Err(native_error(error));
                     }
                 }
                 NativeModelBody::Closed => {}

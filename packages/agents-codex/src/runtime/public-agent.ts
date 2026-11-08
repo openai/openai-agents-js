@@ -1,3 +1,9 @@
+import {
+  captureInferenceApi,
+  captureDecisionsPolicy,
+  type InferenceApi,
+  type DecisionsPolicy,
+} from './inference-api';
 import type { SessionPersistenceOptions } from './persistence-options';
 import { captureTracing } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -63,7 +69,18 @@ import type {
 export interface AgentOptions<Context = undefined, Output = string> {
   instructions: string;
   name?: string;
+  /** Model ID; omission uses gpt-6-luna for Decisions or the native Responses default. */
   model?: string;
+  /** Default inference API; each run or Session can override it. */
+  api?: InferenceApi;
+  /**
+   * Explicit generative model for unfillable or uncertain Decisions routes and
+   * internal generation. Provider failures and refusals do not trigger fallback.
+   * Responses ignores this policy.
+   */
+  fallbackModel?: string;
+  /** Minimum selected-route probability for Decisions, between zero and one; ignored by Responses. */
+  minRouteProbability?: number;
   modelSettings?: ModelSettings;
   provider?: NativeProvider;
   outputType?: OutputSpec<Output>;
@@ -86,6 +103,8 @@ export interface SessionBaseOptions<Context = undefined> {
   provider?: NativeProvider;
   /** Override the Agent model for a new conversation; omit when restoring state. */
   model?: string;
+  /** Override the Agent API default; changing API kind without a model uses the new API default. */
+  api?: InferenceApi;
   /** Merge defined keys over Agent settings; null serviceTier clears its override. */
   modelSettings?: ModelSettings;
   environment?: Environment<Context> | EnvironmentSource<Context>;
@@ -136,6 +155,8 @@ interface CapturedOpening {
   readonly instructionFiles: readonly InstructionFileReceipt[];
   readonly name?: string;
   readonly model?: string;
+  readonly api: InferenceApi;
+  readonly decisionsPolicy: DecisionsPolicy;
   readonly settings?: ModelSettings;
   readonly programmaticToolCalling: boolean;
   readonly declarations: ReturnType<typeof splitToolDeclarations>;
@@ -148,7 +169,11 @@ interface CapturedOpening {
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
-  [ownedRun]?: OneShotOptions;
+  [ownedRun]?: OneShotOptions & {
+    agentApi: InferenceApi;
+    agentModel?: string;
+    decisionsPolicy: DecisionsPolicy;
+  };
   [deferredOpening]?: {
     readonly opening: CapturedOpening;
     readonly restoredOutput: {
@@ -227,6 +252,9 @@ export class Agent<Context = undefined, Output = string> {
   instructions: string;
   name?: string;
   model?: string;
+  api: InferenceApi;
+  fallbackModel?: string;
+  minRouteProbability?: number;
   modelSettings?: ModelSettings;
   provider: NativeProvider;
   outputType?: OutputSpec<Output>;
@@ -239,6 +267,10 @@ export class Agent<Context = undefined, Output = string> {
     this.instructions = options.instructions;
     this.name = options.name;
     this.model = options.model;
+    this.api = captureInferenceApi(options.api);
+    this.fallbackModel = options.fallbackModel;
+    this.minRouteProbability = options.minRouteProbability;
+    captureDecisionsPolicy(this);
     this.modelSettings = options.modelSettings && { ...options.modelSettings };
     this.provider = options.provider ?? new NativeProvider();
     this.outputType = options.outputType;
@@ -405,6 +437,12 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
+    const inheritedApi = captureInferenceApi(this.api);
+    const api = captureInferenceApi(
+      options.api === undefined ? inheritedApi : options.api,
+    );
+    if (options.returnState && api !== 'responses')
+      throw new TypeError('Decisions does not support returnState');
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
@@ -419,11 +457,15 @@ export class Agent<Context = undefined, Output = string> {
       signal: options.signal,
       provider: options.provider,
       model: options.model,
+      api,
       modelSettings: options.modelSettings,
       [outputSelection]: (options as OwnedSessionOptions<Context>)[
         outputSelection
       ],
       [ownedRun]: {
+        agentApi: inheritedApi,
+        agentModel: this.model,
+        decisionsPolicy: captureDecisionsPolicy(this),
         input: preparedInput,
         prepareRequest: options.prepareRequest,
       },
@@ -469,6 +511,7 @@ export class Agent<Context = undefined, Output = string> {
     const {
       provider: openingProvider,
       model: openingModel,
+      api: openingApi,
       modelSettings: openingSettings,
       state: suppliedState,
     } = options;
@@ -495,7 +538,24 @@ export class Agent<Context = undefined, Output = string> {
     const provider = opening
       ? opening.provider
       : (openingProvider ?? this.provider);
-    const model = opening ? opening.model : (openingModel ?? this.model);
+    const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
+    const inheritedApi =
+      opening?.api ?? owned?.agentApi ?? captureInferenceApi(this.api);
+    const api = captureInferenceApi(
+      openingApi === undefined ? inheritedApi : openingApi,
+    );
+    const model = opening
+      ? opening.model
+      : (openingModel ??
+        (api === inheritedApi
+          ? owned
+            ? owned.agentModel
+            : this.model
+          : undefined) ??
+        (api === 'decisions' ? 'gpt-6-luna' : undefined));
+    const declaredPolicy =
+      opening?.decisionsPolicy ?? owned?.decisionsPolicy ?? this;
+    const decisionsPolicy = captureDecisionsPolicy(declaredPolicy);
     let settings = opening
       ? opening.settings
       : this.modelSettings && { ...this.modelSettings };
@@ -604,8 +664,9 @@ export class Agent<Context = undefined, Output = string> {
           'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
         );
       if (
+        api === 'responses' &&
         (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
-        false
+          false
       )
         throw new TypeError(
           'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
@@ -626,6 +687,34 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(
           'prepareRequest supports only direct root eager function and ordinary MCP tools',
         );
+    }
+    if (api !== 'responses') {
+      if (typeof model !== 'string' || !model.trim())
+        throw new TypeError('The Decisions API requires a non-empty model');
+      provider._assertDecisionsSupported();
+      if (suppliedState != null || resume !== undefined || persistent)
+        throw new TypeError(
+          'Decisions does not support checkpoint restore or persistent storage',
+        );
+      if (
+        environmentInput !== undefined ||
+        projectGuidance ||
+        programmaticToolCalling ||
+        declarations.webSearch ||
+        declarations.hostedTools.length > 0 ||
+        declarations.nativeAgents ||
+        declarations.nativeGoals ||
+        declarations.checklist ||
+        declarations.mcp.length > 0 ||
+        declarations.tools.some(
+          (tool) => tool.kind === 'manual' || tool.deferLoading,
+        )
+      )
+        throw new TypeError(
+          'Decisions supports only ordinary eager function tools without an Environment',
+        );
+      if (output.identity.mode === 'prompted')
+        throw new TypeError('Decisions supports only plain or native output');
     }
     const { instructions, files } =
       !opening && options.instructionFiles !== undefined
@@ -885,7 +974,10 @@ export class Agent<Context = undefined, Output = string> {
       const setup: SessionSetup = {
         name: name ?? '',
         instructions,
-        model,
+        model:
+          api === 'responses'
+            ? model
+            : (decisionsPolicy.fallbackModel ?? model),
         tools: declarations.tools,
         apiKey: lease.apiKey,
         applicationAppsJson,
@@ -895,6 +987,24 @@ export class Agent<Context = undefined, Output = string> {
           'model_providers.native_agent': {
             ...(lease.config['model_providers.native_agent'] as JsonObject),
             supports_standalone_web_search: search?.route === 'standalone',
+            ...(api !== 'responses'
+              ? {
+                  supports_websockets: false,
+                  stream_max_retries: 0,
+                  decision_model: {
+                    model: model!,
+                    ...(decisionsPolicy.fallbackModel === undefined
+                      ? {}
+                      : { fallback_model: decisionsPolicy.fallbackModel }),
+                    ...(decisionsPolicy.minRouteProbability === undefined
+                      ? {}
+                      : {
+                          min_route_probability:
+                            decisionsPolicy.minRouteProbability,
+                        }),
+                  },
+                }
+              : {}),
           },
         },
         runtime: {
@@ -958,6 +1068,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        decisionsApi: api === 'responses' ? undefined : decisionsPolicy,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
         localStorage: persistent,
@@ -976,7 +1087,8 @@ export class Agent<Context = undefined, Output = string> {
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
         checklist: declarations.checklist,
-        websocketsAllowed: lease.websocketsAllowed,
+        websocketsAllowed:
+          api === 'responses' ? lease.websocketsAllowed : false,
         onClose: lease.release,
         environmentOwner,
         openCorrection: async (
@@ -1014,6 +1126,8 @@ export class Agent<Context = undefined, Output = string> {
           instructionFiles: files,
           name,
           model,
+          api,
+          decisionsPolicy,
           settings,
           programmaticToolCalling,
           declarations,
