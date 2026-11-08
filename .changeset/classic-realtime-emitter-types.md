@@ -1,5 +1,6 @@
 ---
+'@openai/agents-codex': patch
 '@openai/agents-realtime': patch
 ---
 
-Fix realtime declarations with newer Node types while preserving existing event keys and protected emitter methods.
+fix: preserve Realtime emitter compatibility with newer Node declarations
