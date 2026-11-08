@@ -389,7 +389,8 @@ describe('VercelSandboxClient', () => {
       path: 'large.bin',
       maxBytes: 131072,
     });
-    expect(bytes).toEqual(new Uint8Array(131072).fill(255));
+    expect(bytes.byteLength).toBe(131072);
+    expect(Buffer.compare(bytes, Buffer.alloc(131072, 255))).toBe(0);
     expect(pulled).toBeLessThan(5);
     expect(destroyed).toHaveBeenCalledOnce();
   });

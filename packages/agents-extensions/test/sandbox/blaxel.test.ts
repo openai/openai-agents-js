@@ -118,6 +118,9 @@ vi.mock('@blaxel/core', async () => ({
   },
 }));
 
+const actualBlaxel =
+  await vi.importActual<typeof import('@blaxel/core')>('@blaxel/core');
+
 describe('BlaxelSandboxClient', () => {
   test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
     const client = new BlaxelSandboxClient();
@@ -138,14 +141,12 @@ describe('BlaxelSandboxClient', () => {
     expect(writeMock).not.toHaveBeenCalled();
   });
 
-  beforeEach(async () => {
+  beforeEach(() => {
     createSandboxMock.mockReset();
     getMock.mockReset();
     processExecMock.mockReset();
     transportFetchMock.mockReset();
-    const actual =
-      await vi.importActual<typeof import('@blaxel/core')>('@blaxel/core');
-    const process = new actual.SandboxInstance({
+    const process = new actualBlaxel.SandboxInstance({
       metadata: { name: 'blaxel-test' },
       spec: {},
       forceUrl: 'https://sandbox.blaxel.test',
@@ -974,9 +975,9 @@ describe('BlaxelSandboxClient', () => {
         { length: maxBytes },
         (_, index) => index % 256,
       );
-      await expect(
-        session.readFile({ path: 'tiny', maxBytes }),
-      ).resolves.toEqual(expected);
+      const bytes = await session.readFile({ path: 'tiny', maxBytes });
+      expect(bytes).toHaveLength(maxBytes);
+      expect(Buffer.compare(bytes, expected)).toBe(0);
       expect(pulled).toBeLessThanOrEqual(
         Math.ceil(maxBytes / chunk.length) + 1,
       );
