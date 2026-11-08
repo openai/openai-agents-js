@@ -1,268 +1,171 @@
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { MemorySession, Runner, RunState } from '@openai/agents/classic';
 import {
   ScriptedModel,
   assistantMessage,
   functionCall,
 } from '@openai/agents/classic/testing';
+import { parseSessionState } from '@openai/agents';
 import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
+import { classicLookup } from '../../../../examples/codex/migration/classic';
 import {
-  answer,
-  applicationContext,
-  reviewedFacts,
-  routeSupport,
-} from '../../../../examples/codex/migration/advanced/business';
-import {
-  classicSupport,
-  continueClassic,
-  runClassicExample,
-} from '../../../../examples/codex/migration/advanced/classic';
-import {
-  startNativeFromReviewedFacts,
-  runNativeExample,
-} from '../../../../examples/codex/migration/advanced/native';
+  answerSchema,
+  nativeLookup,
+} from '../../../../examples/codex/migration/native';
 
-import { runClassicLookup } from '../../../../examples/codex/migration/classic';
-import { runNativeLookup } from '../../../../examples/codex/migration/native';
-
-const lookup = { orderId: 'ORDER-42' };
-const final = JSON.stringify(answer);
-
-// Use a conflicting order first so the lookup must consult typed customer context.
-const lookupContext = {
+const facts = { orderId: 'ORDER-42', status: 'shipped', tracking: 'TRACK-42' };
+const lookup = { orderId: facts.orderId };
+const context = {
   customerId: 'CUSTOMER-7',
   orders: [
-    {
-      customerId: 'CUSTOMER-8',
-      orderId: 'ORDER-42',
-      status: 'private',
-      tracking: 'PRIVATE',
-    },
-    {
-      customerId: 'CUSTOMER-7',
-      orderId: 'ORDER-42',
-      status: 'shipped',
-      tracking: 'TRACK-42',
-    },
+    { customerId: 'CUSTOMER-8', ...facts, tracking: 'PRIVATE' },
+    { customerId: 'CUSTOMER-7', ...facts },
   ],
 };
-const lookupAnswer = {
-  orderId: 'ORDER-42',
-  status: 'shipped',
-  tracking: 'TRACK-42',
-};
 
-it('the optional classic import step preserves the read-only typed lookup', async () => {
+it('classic preserves the typed customer-scoped lookup and its actual tool result', async () => {
   const model = new ScriptedModel([
     [functionCall('lookup_order', lookup, { callId: 'lookup' })],
-    [assistantMessage(JSON.stringify(lookupAnswer))],
+    [assistantMessage(JSON.stringify(facts))],
   ]);
-  expect(await runClassicLookup(model, lookupContext)).toEqual(lookupAnswer);
-  expect(JSON.stringify(model.calls[1].request.input)).toContain('TRACK-42');
-  expect(JSON.stringify(model.calls[1].request.input)).not.toContain('PRIVATE');
+  const result = await new Runner({ tracingDisabled: true }).run(
+    classicLookup(model),
+    'Where is ORDER-42?',
+    { context },
+  );
+  expect(result.finalOutput).toEqual(facts);
+  expect(
+    result.newItems.find((item) => item.type === 'tool_call_output_item')
+      ?.output,
+  ).toEqual(facts);
+  expect(JSON.stringify(model.calls)).not.toContain('PRIVATE');
   model.assertComplete();
 });
 
 it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
-  'the native walkthrough reads only the current customer order and returns typed output',
+  'native preserves the typed lookup and restores its own checkpoint',
   async () => {
     await withScriptedResponses(
       [
         [toolCall('lookup_order', lookup, { callId: 'lookup' })],
-        [text(JSON.stringify(lookupAnswer))],
+        [text(JSON.stringify(facts))],
+        [text(JSON.stringify(facts))],
       ],
       async (peer) => {
-        expect(await runNativeLookup(peer.provider, lookupContext)).toEqual(
-          lookupAnswer,
-        );
-        expect(JSON.parse(peer.toolOutput('lookup')!)).toEqual(lookupAnswer);
+        const agent = nativeLookup(peer.provider);
+        let checkpoint;
+        {
+          await using session = await agent.session({ context });
+          expect(
+            (await (await session.submit('Where is ORDER-42?')).wait())
+              .finalOutput,
+          ).toEqual(facts);
+          expect(JSON.parse(peer.toolOutput('lookup')!)).toEqual(facts);
+          checkpoint = JSON.stringify(await session.saveState());
+        }
+        await using restored = await agent.session({
+          context,
+          state: parseSessionState(checkpoint),
+        });
+        expect(
+          (
+            await (
+              await restored.submit('Recall the order without tools.')
+            ).wait()
+          ).finalOutput,
+        ).toEqual(facts);
+        expect(JSON.stringify(peer.requests[2].input)).toContain('TRACK-42');
         expect(JSON.stringify(peer.requests)).not.toContain('PRIVATE');
       },
     );
   },
 );
 
-it('keeps next-turn routing in the application', () => {
-  expect(routeSupport('shipping')).toBe('order-support');
-  expect(routeSupport('refund')).toBe('refund-review');
-  const refund = classicSupport(new ScriptedModel([]), 'refund');
-  expect(refund.name).toBe('refund-review');
-  expect(refund.tools).toEqual([]);
-});
-
-it('classic preserves typed tools, permission checks, and two-turn history', async () => {
-  const model = new ScriptedModel([
-    [functionCall('lookup_order', lookup, { callId: 'lookup-1' })],
-    [functionCall('notify_customer', lookup, { callId: 'notify-1' })],
-    [assistantMessage(final)],
-    [functionCall('notify_customer', lookup, { callId: 'denied-1' })],
-    [assistantMessage(final)],
-  ]);
-  const context = applicationContext();
-  const result = await runClassicExample(model, context);
-  expect(result.first).toEqual(answer);
-  expect(result.second).toEqual(answer);
-  expect(context.lookups).toEqual(['ORDER-42']);
-  expect(JSON.stringify(model.calls[3].request.input)).toContain('TRACK-42');
-  expect(JSON.stringify(model.calls[4].request.input)).toContain(
-    'Notification was not sent',
-  );
-  expect(context.notifications).toEqual(['ORDER-42']);
-  model.assertComplete();
-});
-
-// The separate qualification command creates this file with installed v0.21.0.
-// Ordinary CI never downloads a historical SDK to manufacture the fixture.
-it.skipIf(!process.env.MIGRATION_V0_RECORD)(
-  'continues actual v0-produced RunState and history on classic',
+// Produced by this same small app under the separately installed v0.21.0 SDK.
+// Ordinary CI never downloads a historical SDK to manufacture this record.
+it.skipIf(
+  !process.env.MIGRATION_V0_RECORD ||
+    process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1',
+)(
+  'continues real v0 state on classic and cuts over direct and current classic facts',
   async () => {
     const saved = JSON.parse(
-      await readFile(resolve(process.env.MIGRATION_V0_RECORD!), 'utf8'),
+      await readFile(process.env.MIGRATION_V0_RECORD!, 'utf8'),
     );
-    const model = new ScriptedModel([[assistantMessage(final)]]);
-    const context = applicationContext();
-    expect((await continueClassic(model, context, saved)).finalOutput).toEqual(
-      answer,
+    expect(saved.sdkVersion).toBe('0.21.0');
+    const current = {
+      ...facts,
+      status: 'delivered',
+      tracking: 'TRACK-CURRENT',
+    };
+    const model = new ScriptedModel([
+      [
+        functionCall('lookup_order', lookup, {
+          callId: 'current-classic-lookup',
+        }),
+      ],
+      [assistantMessage(JSON.stringify(current))],
+    ]);
+    const agent = classicLookup(model);
+    const runner = new Runner({ tracingDisabled: true });
+    const currentContext = {
+      customerId: context.customerId,
+      orders: [{ customerId: context.customerId, ...current }],
+    };
+    const reads = vi.spyOn(currentContext.orders, 'find');
+    const hydrated = await RunState.fromString(agent, saved.state);
+    expect(
+      (await runner.run(agent, hydrated, { context: currentContext }))
+        .finalOutput,
+    ).toEqual(facts);
+    expect(reads).not.toHaveBeenCalled(); // Completed v0 callbacks must not replay.
+    expect(model.calls).toHaveLength(0);
+    const session = new MemorySession({ initialItems: saved.history });
+    const continued = await runner.run(
+      agent,
+      'Look up the current order again.',
+      { context: currentContext, session },
     );
+    expect(continued.finalOutput).toEqual(current);
+    expect(reads).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(model.calls[0].request.input)).toContain('TRACK-42');
-    expect(JSON.stringify(model.calls[0].request.input)).toContain(
-      'notification:ORDER-42',
-    );
-    expect(context.lookups).toEqual([]);
-    expect(context.notifications).toEqual([]);
     model.assertComplete();
-  },
-);
-
-describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
-  'native migration',
-  () => {
-    it('ports tools and permissions, then saves and restores its own conversation', async () => {
-      await withScriptedResponses(
-        [
-          [toolCall('lookup_order', lookup, { callId: 'lookup-1' })],
-          [toolCall('notify_customer', lookup, { callId: 'notify-1' })],
-          [text(final)],
-          [toolCall('notify_customer', lookup, { callId: 'denied-1' })],
-          [text(final)],
-          [text(final)],
-        ],
-        async (peer) => {
-          const context = applicationContext();
-          const result = await runNativeExample(peer.provider, context);
-          expect(result).toEqual({
-            first: answer,
-            second: answer,
-            recalled: answer,
-          });
-          expect(peer.toolOutput('notify-1')).toContain(
-            'notification:ORDER-42',
+    await withScriptedResponses(
+      [[text(JSON.stringify(facts))], [text(JSON.stringify(current))]],
+      async (peer) => {
+        const native = nativeLookup(peer.provider);
+        for (const [index, selected] of [
+          saved.facts,
+          continued.finalOutput,
+        ].entries()) {
+          // The application reviews these fields; state and history never cross.
+          const { orderId, status, tracking } = answerSchema.parse(selected);
+          const input = `Reviewed order facts: ${JSON.stringify({ orderId, status, tracking })}. Recall without tools.`;
+          expect(
+            (await native.run(input, { context: currentContext })).finalOutput,
+          ).toEqual(selected);
+          const request = JSON.stringify(peer.requests[index].input);
+          expect(request).toContain(tracking);
+          expect(request).not.toContain('old-v0-lookup');
+          expect(request).not.toContain('current-classic-lookup');
+          expect(request).not.toContain('PRIVATE');
+          expect(request).not.toContain('function_call');
+          expect(peer.requests[index].input).toContainEqual(
+            expect.objectContaining({
+              role: 'user',
+              content: expect.arrayContaining([
+                expect.objectContaining({ text: input }),
+              ]),
+            }),
           );
-          expect(JSON.stringify(peer.requests[3].input)).toContain('TRACK-42');
-          expect(peer.toolOutput('denied-1')).toBe(
-            'Notification permission denied',
-          );
-          expect(JSON.stringify(peer.requests[5].input)).toContain('TRACK-42');
-          expect(JSON.stringify(peer.requests[5].input)).toContain(
-            'notification:ORDER-42',
-          );
-          expect(context.lookups).toEqual(['ORDER-42']);
-          expect(context.notifications).toEqual(['ORDER-42']);
-        },
-      );
-    });
-
-    it('starts native from the current classic result, without its state', async () => {
-      const model = new ScriptedModel([
-        [functionCall('lookup_order', lookup, { callId: 'lookup-1' })],
-        [functionCall('notify_customer', lookup, { callId: 'notify-1' })],
-        [assistantMessage(final)],
-        [functionCall('notify_customer', lookup, { callId: 'denied-1' })],
-        [assistantMessage(final)],
-      ]);
-      const classic = await runClassicExample(model, applicationContext());
-      model.assertComplete();
-      await withScriptedResponses([[text(final)]], async (peer) => {
-        const context = applicationContext();
-        expect(
-          (
-            await startNativeFromReviewedFacts(
-              peer.provider,
-              classic.second,
-              context,
-            )
-          ).finalOutput,
-        ).toEqual(answer);
-        expect(peer.requests[0].input).toContainEqual(
-          expect.objectContaining({
-            role: 'user',
-            content: expect.arrayContaining([
-              expect.objectContaining({ text: reviewedFacts(classic.second!) }),
-            ]),
-          }),
+        }
+        expect(JSON.stringify(peer.requests[1].input)).not.toContain(
+          'TRACK-42',
         );
-        expect(JSON.stringify(peer.requests[0].input)).not.toContain(
-          'notify-1',
-        );
-        expect(context.lookups).toEqual([]);
-        expect(context.notifications).toEqual([]);
-      });
-    });
-
-    it.skipIf(!process.env.MIGRATION_V0_RECORD)(
-      'ports actual v0 facts directly and through continued classic to native',
-      async () => {
-        const saved = JSON.parse(
-          await readFile(resolve(process.env.MIGRATION_V0_RECORD!), 'utf8'),
-        );
-        const model = new ScriptedModel([[assistantMessage(final)]]);
-        const continued = await continueClassic(
-          model,
-          applicationContext(),
-          saved,
-        );
-        model.assertComplete();
-        await withScriptedResponses(
-          [[text(final)], [text(final)]],
-          async (peer) => {
-            const context = applicationContext();
-            // The application selects these validated business outputs for cutover.
-            expect(
-              (
-                await startNativeFromReviewedFacts(
-                  peer.provider,
-                  saved.facts,
-                  context,
-                )
-              ).finalOutput,
-            ).toEqual(answer);
-            expect(
-              (
-                await startNativeFromReviewedFacts(
-                  peer.provider,
-                  continued.finalOutput,
-                  context,
-                )
-              ).finalOutput,
-            ).toEqual(answer);
-            for (const request of peer.requests) {
-              expect(request.input).toContainEqual(
-                expect.objectContaining({
-                  role: 'user',
-                  content: expect.arrayContaining([
-                    expect.objectContaining({ text: reviewedFacts(answer) }),
-                  ]),
-                }),
-              );
-              expect(JSON.stringify(request.input)).not.toContain('notify-1');
-              expect(JSON.stringify(request.input)).not.toContain('denied-1');
-            }
-            expect(context.lookups).toEqual([]);
-            expect(context.notifications).toEqual([]);
-          },
-        );
+        expect(reads).toHaveBeenCalledTimes(1);
       },
     );
+    reads.mockRestore();
   },
 );

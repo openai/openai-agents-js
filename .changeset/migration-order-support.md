@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-docs: add a tested read-only v0-to-native walkthrough and optional stateful migration examples.
+docs: add a compact typed order-lookup migration example with released-v0 state qualification and direct and staged native cutover checks.

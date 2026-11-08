@@ -18,7 +18,7 @@ Context, environment, opening overrides, and native model requirements still nee
 
 Close the provider's Sessions before calling `provider.close()`. To open more Sessions after that, create a new provider.
 
-For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#port-the-contracts-that-affect-behavior).
+For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#check-application-compatibility).
 
 ## Per-session configuration
 

@@ -1,10 +1,4 @@
-import {
-  Agent,
-  Runner,
-  tool,
-  type Model,
-  type RunContext,
-} from '@openai/agents';
+import { Agent, tool, type Model, type RunContext } from '@openai/agents';
 import { z } from 'zod';
 
 export interface SupportContext {
@@ -23,7 +17,7 @@ const answerSchema = z.object({
   tracking: z.string(),
 });
 
-export async function runV0Lookup(model: Model, context: SupportContext) {
+export function v0Lookup(model: Model) {
   const lookupOrder = tool({
     name: 'lookup_order',
     description: 'Read an order owned by the current customer.',
@@ -42,18 +36,12 @@ export async function runV0Lookup(model: Model, context: SupportContext) {
       };
     },
   });
-  const agent = new Agent<SupportContext, typeof answerSchema>({
+  return new Agent<SupportContext, typeof answerSchema>({
     name: 'Order support',
     model,
     instructions:
-      'Look up ORDER-42 and return its orderId, status, and tracking.',
+      'Look up the requested order. Return its orderId, status, and tracking. Reuse reviewed facts without tools.',
     tools: [lookupOrder],
     outputType: answerSchema,
   });
-  const result = await new Runner({ tracingDisabled: true }).run(
-    agent,
-    'Where is ORDER-42?',
-    { context },
-  );
-  return result.finalOutput;
 }

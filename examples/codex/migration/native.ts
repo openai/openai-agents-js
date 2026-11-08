@@ -11,17 +11,14 @@ export interface SupportContext {
   }[];
 }
 
-const answerSchema = z.strictObject({
+export const answerSchema = z.strictObject({
   orderId: z.string(),
   status: z.string(),
   tracking: z.string(),
 });
 export type OrderAnswer = z.infer<typeof answerSchema>;
 
-export async function runNativeLookup(
-  provider: NativeProvider,
-  context: SupportContext,
-): Promise<OrderAnswer> {
+export function nativeLookup(provider: NativeProvider) {
   const lookupOrder = tool({
     name: 'lookup_order',
     description: 'Read an order owned by the current customer.',
@@ -39,15 +36,13 @@ export async function runNativeLookup(
       };
     },
   });
-  const agent = new Agent<SupportContext, OrderAnswer>({
+  return new Agent<SupportContext, OrderAnswer>({
     name: 'Order support',
     provider,
     model: 'gpt-4.1-mini',
     instructions:
-      'Look up ORDER-42 and return its orderId, status, and tracking.',
+      'Look up the requested order. Return its orderId, status, and tracking. Reuse reviewed facts without tools.',
     tools: [lookupOrder],
     outputType: { mode: 'native', schema: answerSchema },
   });
-  const result = await agent.run('Where is ORDER-42?', { context });
-  return result.finalOutput;
 }
