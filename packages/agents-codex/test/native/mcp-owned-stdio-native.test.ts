@@ -9,11 +9,14 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   Agent,
   Environment,
   NativeProvider,
   StdioMCP,
+  tool,
+  toolRef,
   type Session,
   type MCPCallContext,
 } from '../../src';
@@ -179,6 +182,33 @@ it('observes a live native-owned peer without terminating it and sees its exit a
 }, 30_000);
 
 it('sees original and current peers exit after close and uses only current launch authority on restore', async () => {
+  const effects: string[] = [];
+  const originalFunction = tool({
+    name: 'local',
+    namespace: 'crm',
+    parameters: z.object({}),
+    execute: () => {
+      effects.push('old');
+      return 'old';
+    },
+  });
+  const replacement = tool({
+    name: 'local',
+    namespace: 'crm',
+    parameters: z.object({}),
+    execute: () => {
+      effects.push('new');
+      return 'new';
+    },
+  });
+  const other = tool({
+    name: 'other',
+    parameters: z.object({}),
+    execute: () => {
+      effects.push('other');
+      return 'other';
+    },
+  });
   const original = await peer('original', 'key', false, {
     env: { B04_LITERAL: 'old-captured' },
   });
@@ -188,15 +218,40 @@ it('sees original and current peers exit after close and uses only current launc
   const model = new ModelServer([
     [lookup('key', 'old')],
     [message('old')],
-    [lookup('revision', 'replaced')],
+    (request) => {
+      expect(request.tools).not.toContainEqual(
+        expect.objectContaining({ name: 'other' }),
+      );
+      return [
+        lookup('revision', 'replaced'),
+        call('local', {}, { namespace: 'crm', callId: 'default-local' }),
+      ];
+    },
     [message('new')],
+    [
+      call('local', {}, { namespace: 'crm', callId: 'selected-local' }),
+      call('other', {}, { callId: 'retained-local' }),
+    ],
+    [message('selected')],
   ]);
-  const session = await (await agent(model, original.declaration)).session();
+  const session = await (
+    await agent(model, original.declaration)
+  ).session({ tools: [original.declaration, originalFunction, other] });
   sessions.push(session);
   expect((await (await session.submit('old')).wait()).finalOutput).toBe('old');
-  await session.update({ tools: [current.declaration] });
+  await session.update({ tools: [current.declaration, replacement] });
   expect((await (await session.submit('new')).wait()).finalOutput).toBe('new');
   expect(JSON.stringify(model.requests[3].input)).toContain('current-record');
+  expect(
+    (
+      await (
+        await session.submit('select retained functions', {
+          tools: [replacement, toolRef('other')],
+        })
+      ).wait()
+    ).finalOutput,
+  ).toBe('selected');
+  expect(effects.sort()).toEqual(['new', 'new', 'other']);
   const saved = await session.saveState();
   expect(saved.agent_options).toEqual({});
   expect(JSON.stringify(saved)).not.toContain('old-captured');
@@ -215,6 +270,7 @@ it('sees original and current peers exit after close and uses only current launc
   const restored = await (
     await agent(resumedModel, current.declaration)
   ).session({
+    tools: [current.declaration, replacement, other],
     state: {
       ...saved,
       agent_options: {

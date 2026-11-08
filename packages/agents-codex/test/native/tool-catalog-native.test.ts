@@ -33,7 +33,7 @@ const callback = (name: string, execute: () => string, namespace?: string) =>
   tool({ name, namespace, parameters: z.object({}), execute });
 
 async function mcpPeer() {
-  const methods: string[] = [];
+  const calls: { name: string; tenant: string | string[] | undefined }[] = [];
   const server = createServer(async (request, response) => {
     if (request.method !== 'POST') {
       response.writeHead(405).end();
@@ -42,7 +42,11 @@ async function mcpPeer() {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const rpc = JSON.parse(Buffer.concat(chunks).toString());
-    methods.push(rpc.method);
+    if (rpc.method === 'tools/call')
+      calls.push({
+        name: rpc.params.name,
+        tenant: request.headers['x-catalog-tenant'],
+      });
     if (rpc.id === undefined) {
       response.writeHead(202).end();
       return;
@@ -54,14 +58,16 @@ async function mcpPeer() {
             capabilities: { tools: {} },
             serverInfo: { name: 'catalog', version: '1' },
           }
-        : {
-            tools: [
-              {
-                name: 'remote',
-                inputSchema: { type: 'object', properties: {} },
-              },
-            ],
-          };
+        : rpc.method === 'tools/call'
+          ? { content: [{ type: 'text', text: 'remote result' }] }
+          : {
+              tools: [
+                {
+                  name: 'remote',
+                  inputSchema: { type: 'object', properties: {} },
+                },
+              ],
+            };
     response
       .writeHead(200, { 'content-type': 'application/json' })
       .end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }));
@@ -77,7 +83,7 @@ async function mcpPeer() {
   const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('No MCP listener');
-  return { url: `http://127.0.0.1:${address.port}/mcp`, methods };
+  return { url: `http://127.0.0.1:${address.port}/mcp`, calls };
 }
 
 it.each(['none', 'dormant', 'ordinary', 'guarded'] as const)(
@@ -95,6 +101,9 @@ it.each(['none', 'dormant', 'ordinary', 'guarded'] as const)(
     });
     const peer =
       kind === 'ordinary' || kind === 'guarded' ? await mcpPeer() : undefined;
+    const oldBefore = vi.fn(() => ({ action: 'allow' as const }));
+    const currentBefore = vi.fn(() => ({ action: 'allow' as const }));
+    const suppliedHeaders = { 'X-Catalog-Tenant': 'current-captured' };
     const mcp =
       kind === 'none'
         ? []
@@ -105,11 +114,23 @@ it.each(['none', 'dormant', 'ordinary', 'guarded'] as const)(
               tools: peer ? ['remote'] : [],
               activation: peer ? 'session' : 'operation',
               approvalMode: 'preapproved',
-              ...(kind === 'guarded'
-                ? { before: () => ({ action: 'allow' as const }) }
-                : {}),
+              headers: { 'X-Catalog-Tenant': 'old-captured' },
+              ...(kind === 'guarded' ? { before: oldBefore } : {}),
             }),
           ];
+    const currentMcp = mcp.map(
+      (server) =>
+        new HttpMCP({
+          name: server.name,
+          url: server.url,
+          tools: server.tools,
+          activation: server.activation,
+          approvalMode: server.approvalMode,
+          headers: suppliedHeaders,
+          ...(kind === 'guarded' ? { before: currentBefore } : {}),
+        }),
+    );
+    suppliedHeaders['X-Catalog-Tenant'] = 'mutated-after-capture';
     const managedNames = (request: { tools?: unknown }) =>
       (request.tools as { type: string; name: string }[])
         .filter(
@@ -129,6 +150,15 @@ it.each(['none', 'dormant', 'ordinary', 'guarded'] as const)(
         return [
           call('lookup', {}, { callId: 'replacement' }),
           call('other', {}, { callId: 'retained' }),
+          ...(peer
+            ? [
+                call(
+                  'remote',
+                  {},
+                  { namespace: 'mcp__catalog', callId: 'remote' },
+                ),
+              ]
+            : []),
         ];
       },
       [message('selected')],
@@ -146,7 +176,7 @@ it.each(['none', 'dormant', 'ordinary', 'guarded'] as const)(
       model: 'gpt-5',
       tools: [original, other, ...mcp],
     }).session();
-    await session.update({ tools: [replacement, ...mcp] });
+    await session.update({ tools: [replacement, ...currentMcp] });
     expect(server.requests).toHaveLength(0);
     expect((await (await session.submit('default')).wait()).finalOutput).toBe(
       'default',
@@ -155,12 +185,16 @@ it.each(['none', 'dormant', 'ordinary', 'guarded'] as const)(
       (
         await (
           await session.submit('select', {
-            tools: [replacement, toolRef('other')],
+            tools: [
+              replacement,
+              toolRef('other'),
+              ...(peer ? [currentMcp[0].tool('remote')] : []),
+            ],
           })
         ).wait()
       ).finalOutput,
     ).toBe('selected');
-    await session.update({ tools: mcp });
+    await session.update({ tools: currentMcp });
     expect((await (await session.submit('empty')).wait()).finalOutput).toBe(
       'empty',
     );
@@ -172,7 +206,11 @@ it.each(['none', 'dormant', 'ordinary', 'guarded'] as const)(
       ).finalOutput,
     ).toBe('retained');
     expect(effects.sort()).toEqual(['new', 'new', 'new', 'other']);
-    expect(peer?.methods ?? []).not.toContain('tools/call');
+    expect(peer?.calls ?? []).toEqual(
+      peer ? [{ name: 'remote', tenant: 'current-captured' }] : [],
+    );
+    expect(oldBefore).not.toHaveBeenCalled();
+    expect(currentBefore).toHaveBeenCalledTimes(kind === 'guarded' ? 1 : 0);
     server.assertExhausted();
   },
   30_000,
