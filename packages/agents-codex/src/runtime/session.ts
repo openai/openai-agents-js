@@ -7024,8 +7024,21 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TypeError(
             'Updated MCP tools must have been declared when the Session opened',
           );
+      const replacements = captureTools(next.tools);
+      const byName = new Map(
+        replacements.tools.map((tool) => [
+          JSON.stringify(toolIdentity(tool)),
+          tool,
+        ]),
+      );
+      const candidate = captureTools(
+        this.catalog.tools.map(
+          (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
+        ),
+        this.catalog.generation + 1n,
+      );
       if (!this.options.mcpTools) {
-        await this.#replaceTools(next.tools);
+        await this.publishCatalog(async () => candidate, replacements.tools);
         return;
       }
       for (const server of next.mcp) {
@@ -7065,7 +7078,7 @@ export class Session<OutputT = string, Context = unknown> {
           (!(server instanceof HttpMCP) || server.activation !== 'operation'),
       );
       const guarded = hasMcpPrePolicy(this.mcpTools) || hasMcpPrePolicy(active);
-      const candidate = captureTools(next.tools, this.catalog.generation + 1n);
+      const slots = this.catalogSlots(candidate, replacements.tools);
       const generation = this.mcpGeneration + 1n;
       await this.mutate(async () => {
         let published = false;
@@ -7086,6 +7099,9 @@ export class Session<OutputT = string, Context = unknown> {
                 encode(this.interceptionRules(active, generation)),
                 candidate.generation.toString(),
                 candidate.specsJson,
+                undefined,
+                undefined,
+                encode(slots),
               ),
             );
             // The combined ingress owns function and MCP publication. Any
@@ -7102,6 +7118,7 @@ export class Session<OutputT = string, Context = unknown> {
             const accepted = await this.#native._replace_tools(
               candidate.generation.toString(),
               candidate.specsJson,
+              encode(slots),
             );
             if (accepted !== candidate.generation.toString())
               throw new NativeError(
@@ -7125,8 +7142,7 @@ export class Session<OutputT = string, Context = unknown> {
             );
           }
           checkMcpPublication(receipt, active, generation, bindings);
-          this.catalog = candidate;
-          this.defaultTools = candidate.tools;
+          this.acceptCatalog(candidate, replacements.tools, slots);
           this.mcpTools = active;
           this.defaultMcpTools = Object.freeze([...next.mcp]);
           this.mcpBindings = Object.freeze(bindings);
@@ -7168,21 +7184,38 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
-  async #replaceTools(tools: readonly SessionTool[]): Promise<void> {
-    const replacements = captureTools(tools);
-    const byName = new Map(
-      replacements.tools.map((tool) => [
-        JSON.stringify(toolIdentity(tool)),
-        tool,
-      ]),
+  private catalogSlots(
+    catalog: ToolCatalog,
+    defaults: readonly SessionTool[],
+  ): number[] {
+    return defaults.map((tool) => {
+      const identity = toolIdentity(tool);
+      return catalog.tools.findIndex((binding) => {
+        const current = toolIdentity(binding);
+        return (
+          current.name === identity.name &&
+          current.namespace === identity.namespace
+        );
+      });
+    });
+  }
+  private acceptCatalog(
+    candidate: ToolCatalog,
+    defaults: readonly SessionTool[],
+    slots: readonly number[],
+  ): void {
+    this.catalog = candidate;
+    this.defaultTools = Object.freeze(
+      slots.map((slot) => candidate.tools[slot]),
     );
-    const candidate = captureTools(
-      this.catalog.tools.map(
-        (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
-      ),
-      this.catalog.generation + 1n,
-    );
-    await this.publishCatalog(async () => candidate, replacements.tools);
+    for (const tool of defaults) {
+      const identity = toolIdentity(tool);
+      const key = JSON.stringify([identity.namespace, identity.name]);
+      let admitted = this.admittedDeclarations.get(key);
+      if (!admitted)
+        this.admittedDeclarations.set(key, (admitted = new WeakSet()));
+      admitted.add(toolDeclarationIdentity(tool));
+    }
   }
   private async publishCatalog(
     create: () => Promise<ToolCatalog>,
@@ -7191,16 +7224,7 @@ export class Session<OutputT = string, Context = unknown> {
     let confirmed = false;
     await this.mutate(async () => {
       const candidate = await create();
-      const slots = defaults.map((tool) => {
-        const identity = toolIdentity(tool);
-        return candidate.tools.findIndex((binding) => {
-          const current = toolIdentity(binding);
-          return (
-            current.name === identity.name &&
-            current.namespace === identity.namespace
-          );
-        });
-      });
+      const slots = this.catalogSlots(candidate, defaults);
       const accepted = await this.#native._replace_tools(
         candidate.generation.toString(),
         candidate.specsJson,
@@ -7208,18 +7232,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
       confirmed = accepted === candidate.generation.toString();
       if (confirmed) {
-        this.catalog = candidate;
-        this.defaultTools = Object.freeze(
-          slots.map((slot) => candidate.tools[slot]),
-        );
-        for (const tool of defaults) {
-          const identity = toolIdentity(tool);
-          const key = JSON.stringify([identity.namespace, identity.name]);
-          let admitted = this.admittedDeclarations.get(key);
-          if (!admitted)
-            this.admittedDeclarations.set(key, (admitted = new WeakSet()));
-          admitted.add(toolDeclarationIdentity(tool));
-        }
+        this.acceptCatalog(candidate, defaults, slots);
         await this.configureManualTools();
       }
     });

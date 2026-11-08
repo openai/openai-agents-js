@@ -331,7 +331,11 @@
     {
       "path": "0089-caller-controlled-mcp-prompts.patch",
       "sha256": "f47339c54594aa98d4fd52e40eaed8f80325a50bb69a80693d14524594b68940"
+    },
+    {
+      "path": "0090-reject-ambiguous-code-mode-names.patch",
+      "sha256": "5dc61549f54d2b00e3725503561dcc24895e16431efdc3cbd5835e9677b76b32"
     }
   ],
-  "result_tree": "9da183d90bacb237223e4223c82d725c8f83d97a"
+  "result_tree": "43de2f51a043e6f66c42cf589f34c2826156c746"
 }
