@@ -2085,3 +2085,55 @@ it.each(['live', 'aborted', 'explicit ok', 'explicit error'] as const)(
     }
   },
 );
+
+it('rejects processor flush and shutdown, including descendants after callback return, while external calls remain usable', async () => {
+  const telemetry = await import('../src/runtime/telemetry');
+  const release = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  let descendant: Promise<void> | undefined;
+  let delivered = 0;
+  await telemetry.setTraceProcessors([
+    {
+      async onEvent() {
+        await expect(forceFlush()).rejects.toThrow(/processor.*async context/i);
+        await expect(shutdown()).rejects.toThrow(/processor.*async context/i);
+        descendant = (async () => {
+          entered.resolve();
+          await release.promise;
+          await expect(forceFlush()).rejects.toThrow(
+            /processor.*async context/i,
+          );
+          await expect(shutdown()).rejects.toThrow(/processor.*async context/i);
+        })();
+        delivered++;
+      },
+    },
+  ]);
+  const ids = JSON.parse(
+    harness.native.set_trace_routes.mock.calls.at(-1)![0],
+  ).processor_ids;
+  const batch = (sequence: number) =>
+    JSON.stringify({
+      events: [
+        { sequence, lifecycle: 'end', processor_ids: ids, attributes: {} },
+      ],
+      through_sequence: sequence,
+    });
+  harness.native.drain_trace_events.mockResolvedValueOnce(batch(200000));
+  await entered.promise;
+  await vi.waitFor(() =>
+    expect(harness.native.ack_trace_events).toHaveBeenCalledWith(200000, 0),
+  );
+  expect(harness.native.force_flush_telemetry).not.toHaveBeenCalled();
+  expect(harness.native.shutdown_telemetry).not.toHaveBeenCalled();
+  release.resolve();
+  await descendant;
+  // A rejected shutdown must preserve the registered processor route.
+  harness.native.drain_trace_events.mockResolvedValueOnce(batch(200001));
+  await forceFlush();
+  await vi.waitFor(() => expect(delivered).toBe(2));
+  await descendant;
+  expect(harness.native.force_flush_telemetry).toHaveBeenCalledOnce();
+  await shutdown();
+  expect(harness.native.shutdown_telemetry).toHaveBeenCalledOnce();
+});

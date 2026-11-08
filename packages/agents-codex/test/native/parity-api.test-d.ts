@@ -1,6 +1,10 @@
 import { expectTypeOf } from 'vitest';
 import type {
   ActionReply,
+  NativeAgentsOptions,
+  NativeRoleOptions,
+  SessionUpdate,
+  SessionInterruptOptions,
   FunctionCallOutput,
   Session,
   SessionState,
@@ -24,3 +28,21 @@ session.respond(either);
 expectTypeOf(session.fork()).toEqualTypeOf<Promise<SessionState>>();
 // @ts-expect-error fork captures only the latest settled root, without selectors.
 session.fork({ turn: 1 });
+
+// Named options are available from the owner and the convenience root.
+expectTypeOf<NativeAgentsOptions<{ account: string }>>().toEqualTypeOf<
+  import('@openai/agents-codex').NativeAgentsOptions<{ account: string }>
+>();
+expectTypeOf<NativeRoleOptions>().toEqualTypeOf<
+  import('@openai/agents-codex').NativeRoleOptions
+>();
+expectTypeOf<SessionUpdate<unknown>>().toEqualTypeOf<
+  import('@openai/agents-codex').SessionUpdate<unknown>
+>();
+expectTypeOf<SessionInterruptOptions>().toEqualTypeOf<
+  import('@openai/agents-codex').SessionInterruptOptions
+>();
+const update: SessionUpdate<unknown> = { instructions: 'Continue carefully.' };
+const interrupt: SessionInterruptOptions = { scope: 'all', mode: 'graceful' };
+session.update(update);
+session.interrupt(interrupt);

@@ -4,8 +4,7 @@ import { NativeError } from './native-error';
 import { addRunUsage, parseTokenCount, type TokenUsage } from './run-events';
 
 /**
- * Limits for direct native Agent runs and Session submissions. Migration
- * runners reject this option before invoking the selected Model. A new root
+ * Limits for direct native Agent runs and Session submissions. A new root
  * starts fresh. Live manual replies, retained steering, and SDK output
  * corrections share the root budget. Active portable checkpoints are unavailable.
  *

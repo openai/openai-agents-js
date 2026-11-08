@@ -1,3 +1,4 @@
+import { RunCleanupError } from './native-error';
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
@@ -382,9 +383,10 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
-      throw new AggregateError(
+      throw new RunCleanupError(
         [options.signal.reason, cleanupError],
         'Native run cancelled and cleanup failed',
+        () => session.close(),
         { cause: options.signal.reason },
       );
     }
@@ -401,10 +403,10 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
-      if (cleanupError === primary) throw primary;
-      throw new AggregateError(
+      throw new RunCleanupError(
         [primary, cleanupError],
         'Native run failed and its owned cleanup is incomplete',
+        () => session.close(),
         { cause: primary },
       );
     }
@@ -423,10 +425,10 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
-      if (cleanupError === primary) throw primary;
-      throw new AggregateError(
+      throw new RunCleanupError(
         [primary, cleanupError],
         'Run completion and cleanup failed',
+        () => session.close(),
         { cause: primary },
       );
     }

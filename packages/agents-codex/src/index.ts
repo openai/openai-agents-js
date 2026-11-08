@@ -9,6 +9,7 @@ export type {
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
+export { RunCleanupError } from './runtime/native-error';
 export { NativeProvider } from './runtime/provider';
 export { CapabilityError } from './runtime/capabilities';
 export type {
@@ -31,6 +32,8 @@ export {
   TurnNotSubmitted,
 } from './runtime/session';
 export type {
+  SessionUpdate,
+  SessionInterruptOptions,
   Completed,
   PendingRequests,
   SteeringReceipt,
@@ -118,6 +121,8 @@ export type {
 } from './runtime/environment';
 export { NativeAgents, NativeRole } from './runtime/native-agents';
 export type {
+  NativeAgentsOptions,
+  NativeRoleOptions,
   NativeToolCall,
   ChildInvocation,
   ChildBeforeStepContext,
