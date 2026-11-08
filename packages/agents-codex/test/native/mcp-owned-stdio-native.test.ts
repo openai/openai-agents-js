@@ -1,9 +1,17 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   Agent,
+  Environment,
   NativeProvider,
   StdioMCP,
   type Session,
@@ -11,18 +19,25 @@ import {
 } from '../../src';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { startPublicExecutor } from './fixtures/public-executor';
 
 let directory: string;
 const providers: NativeProvider[] = [];
 const sessions: Session[] = [];
 
 beforeEach(async () => {
+  vi.stubEnv('OPENAI_API_KEY', 'synthetic-parent-api-key');
+  vi.stubEnv('NODE_REPL_AUTH_TOKEN', 'synthetic-protected-parent');
   directory = await mkdtemp(join(tmpdir(), 'agents-owned-mcp-stdio-'));
 });
 afterEach(async () => {
-  await Promise.all(sessions.splice(0).map((session) => session.close()));
-  await Promise.all(providers.splice(0).map((provider) => provider.close()));
-  await rm(directory, { recursive: true, force: true });
+  try {
+    await Promise.all(sessions.splice(0).map((session) => session.close()));
+    await Promise.all(providers.splice(0).map((provider) => provider.close()));
+    await rm(directory, { recursive: true, force: true });
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 // A peer can still be appending the last line; observe only full records.
@@ -71,7 +86,13 @@ async function stopped(starts: string): Promise<void> {
   );
 }
 
-async function peer(label: string, field: string, holdCall = false) {
+async function peer(
+  label: string,
+  field: string,
+  holdCall = false,
+  overrides: Partial<ConstructorParameters<typeof StdioMCP>[0]> = {},
+  observeEnv: readonly string[] = ENV_NAMES,
+) {
   const roster = join(directory, label + '-roster.json');
   const calls = join(directory, label + '-calls.jsonl');
   const starts = join(directory, label + '-starts.jsonl');
@@ -95,6 +116,7 @@ async function peer(label: string, field: string, holdCall = false) {
         ],
         result: { content: [{ type: 'text', text: label + '-record' }] },
         holdCall,
+        observeEnv,
       }),
     ),
   ]);
@@ -105,8 +127,9 @@ async function peer(label: string, field: string, holdCall = false) {
     command: process.execPath,
     args: [resolve(import.meta.dirname, 'mcp-peer.mjs'), roster, calls, starts],
     cwd: directory,
+    ...overrides,
   });
-  return { calls, starts, declaration };
+  return { calls, starts, roster, declaration };
 }
 
 async function agent(model: ModelServer, declaration: StdioMCP) {
@@ -156,8 +179,12 @@ it('observes a live native-owned peer without terminating it and sees its exit a
 }, 30_000);
 
 it('sees original and current peers exit after close and uses only current launch authority on restore', async () => {
-  const original = await peer('original', 'key');
-  const current = await peer('current', 'revision');
+  const original = await peer('original', 'key', false, {
+    env: { B04_LITERAL: 'old-captured' },
+  });
+  const supplied = { B04_LITERAL: 'current-captured' };
+  const current = await peer('current', 'revision', false, { env: supplied });
+  supplied.B04_LITERAL = 'mutated-after-capture';
   const model = new ModelServer([
     [lookup('key', 'old')],
     [message('old')],
@@ -172,6 +199,8 @@ it('sees original and current peers exit after close and uses only current launc
   expect(JSON.stringify(model.requests[3].input)).toContain('current-record');
   const saved = await session.saveState();
   expect(saved.agent_options).toEqual({});
+  expect(JSON.stringify(saved)).not.toContain('old-captured');
+  expect(JSON.stringify(saved)).not.toContain('current-captured');
   model.assertExhausted();
   await session.close();
   // Source 102f asserts these after Session close, not at replacement time.
@@ -195,6 +224,7 @@ it('sees original and current peers exit after close and uses only current launc
               command: original.declaration.command,
               args: [...original.declaration.args],
               cwd: directory,
+              env: { B04_LITERAL: 'poisoned-saved-config' },
             },
           },
         },
@@ -209,6 +239,17 @@ it('sees original and current peers exit after close and uses only current launc
     'current-record',
   );
   expect((await restored.saveState()).agent_options).toEqual({});
+  expect(JSON.stringify(await restored.saveState())).not.toContain(
+    'current-captured',
+  );
+  for (const secret of [
+    'old-captured',
+    'current-captured',
+    'poisoned-saved-config',
+  ])
+    expect(
+      JSON.stringify([...model.requests, ...resumedModel.requests]),
+    ).not.toContain(secret);
   resumedModel.assertExhausted();
   await restored.close();
   await stopped(current.starts);
@@ -220,6 +261,23 @@ it('sees original and current peers exit after close and uses only current launc
     { revision: 'replaced' },
     { revision: 'restored' },
   ]);
+  expect(
+    new Set(
+      (await records(original.starts)).map(
+        (row) => (row.observedEnv as JsonObject).B04_LITERAL,
+      ),
+    ),
+  ).toEqual(new Set(['old-captured']));
+  expect(
+    new Set(
+      (await records(current.starts)).map(
+        (row) => (row.observedEnv as JsonObject).B04_LITERAL,
+      ),
+    ),
+  ).toEqual(new Set(['current-captured']));
+  expect(JSON.stringify(await records(current.starts))).not.toContain(
+    'poisoned-saved-config',
+  );
 }, 40_000);
 
 it.each(['cancel', 'close'] as const)(
@@ -371,3 +429,392 @@ it('captures the first local MCP at opening and closes same-provider managers in
   await b.close();
   await stopped(second.starts);
 }, 30_000);
+
+const ENV_NAMES = [
+  'B04_LITERAL',
+  'B04_EMPTY',
+  'B04_UNICODE',
+  'service.é',
+  'OPENAI_API_KEY',
+  'NODE_REPL_AUTH_TOKEN',
+  'B04_UNREQUESTED_SECRET',
+  'B04_INHERITED',
+];
+const envValues = (label: string): Record<string, string> => ({
+  B04_LITERAL: label,
+  B04_EMPTY: '',
+  B04_UNICODE: '東京 café',
+  'service.é': 'non-identifier',
+  OPENAI_API_KEY: 'synthetic-child-grant',
+  NODE_REPL_AUTH_TOKEN: 'synthetic-protected-literal',
+});
+const parentEnv = () =>
+  Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]));
+async function expectEnv(
+  starts: string,
+  label: string,
+  inherited: string | null = null,
+) {
+  const launches = await records(starts);
+  expect(launches.length).toBeGreaterThan(0);
+  for (const row of launches)
+    expect(row.observedEnv).toEqual({
+      B04_LITERAL: label,
+      B04_EMPTY: '',
+      B04_UNICODE: '東京 café',
+      'service.é': 'non-identifier',
+      OPENAI_API_KEY: 'synthetic-child-grant',
+      NODE_REPL_AUTH_TOKEN: null,
+      B04_UNREQUESTED_SECRET: null,
+      B04_INHERITED: inherited,
+    });
+}
+afterEach(() => vi.unstubAllEnvs());
+
+it('captures independent literal maps for concurrent real stdio children without changing parent env', async () => {
+  vi.stubEnv('B04_LITERAL', 'parent-conflict');
+  vi.stubEnv('B04_INHERITED', 'host-inherited');
+  vi.stubEnv('B04_UNREQUESTED_SECRET', 'synthetic-unrequested-host-secret');
+  vi.stubEnv('NODE_REPL_AUTH_TOKEN', 'synthetic-protected-parent');
+  const parent = parentEnv();
+  await Promise.all(
+    ['first-child', 'second-child'].map(async (label) => {
+      const marker = `captured-${label}-private`;
+      const supplied = envValues(marker);
+      const selected = await peer(label, 'key', false, {
+        env: supplied,
+        envVars: ['B04_LITERAL', 'B04_INHERITED', 'NODE_REPL_AUTH_TOKEN'],
+      });
+      supplied.B04_LITERAL = 'mutated-after-capture';
+      const model = new ModelServer([
+        [lookup('key', label)],
+        [message('done')],
+      ]);
+      const session = await (
+        await agent(model, selected.declaration)
+      ).session();
+      sessions.push(session);
+      expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+        'done',
+      );
+      expect(JSON.stringify(await session.saveState())).not.toContain(
+        'synthetic-child-grant',
+      );
+      expect(JSON.stringify(await session.saveState())).not.toContain(marker);
+      expect(JSON.stringify(model.requests)).not.toContain(
+        'synthetic-child-grant',
+      );
+      await session.close();
+      await stopped(selected.starts);
+      await expectEnv(selected.starts, marker, 'host-inherited');
+      for (const secret of [
+        'captured-first-child-private',
+        'captured-second-child-private',
+        'synthetic-child-grant',
+        'synthetic-unrequested-host-secret',
+      ])
+        expect(JSON.stringify(model.requests)).not.toContain(secret);
+      model.assertExhausted();
+    }),
+  );
+  expect(parentEnv()).toEqual(parent);
+}, 40_000);
+
+it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
+  'delivers explicit literal grants to a real local Environment MCP child',
+  async (context) => {
+    vi.stubEnv('B04_LITERAL', 'parent-conflict');
+    vi.stubEnv('B04_INHERITED', 'local-inherited');
+    vi.stubEnv('B04_UNREQUESTED_SECRET', 'synthetic-unrequested-host-secret');
+    const parent = parentEnv();
+    const selected = await peer('local-env', 'key');
+    const script = join(directory, 'peer.mjs');
+    await copyFile(resolve(import.meta.dirname, 'mcp-peer.mjs'), script);
+    const declaration = new StdioMCP({
+      name: 'fixture',
+      tools: ['lookup'],
+      approvalMode: 'preapproved',
+      command: process.execPath,
+      args: [script, selected.roster, selected.calls, selected.starts],
+      cwd: directory,
+      location: 'environment',
+      env: envValues('local-literal'),
+      envVars: ['B04_LITERAL', 'B04_INHERITED', 'NODE_REPL_AUTH_TOKEN'],
+    });
+    const model = new ModelServer([
+      [lookup('key', 'local')],
+      [message('done')],
+    ]);
+    const session = await (
+      await agent(model, declaration)
+    )
+      .session({
+        environment: Environment.local({ cwd: directory, tools: [] }),
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          /could not establish the platform sandbox/.test(error.message) &&
+          process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+        ) {
+          expect(model.requests).toHaveLength(0);
+          context.skip('This host cannot launch a nested platform sandbox');
+        }
+        throw error;
+      });
+    sessions.push(session);
+    expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+      'done',
+    );
+    for (const secret of ['local-literal', 'synthetic-child-grant'])
+      expect(JSON.stringify(await session.saveState())).not.toContain(secret);
+    await session.close();
+    await stopped(selected.starts);
+    await expectEnv(selected.starts, 'local-literal', 'local-inherited');
+
+    for (const secret of [
+      'local-literal',
+      'synthetic-child-grant',
+      'synthetic-unrequested-host-secret',
+    ])
+      expect(JSON.stringify(model.requests)).not.toContain(secret);
+    expect(parentEnv()).toEqual(parent);
+    expect(JSON.stringify(model.requests)).not.toContain(
+      'synthetic-child-grant',
+    );
+  },
+  40_000,
+);
+
+it('uses executor-side inherited names and captured literals through the existing real WSS executor', async () => {
+  vi.stubEnv('B04_INHERITED', 'executor-inherited');
+  vi.stubEnv('B04_LITERAL', 'executor-conflict');
+  vi.stubEnv('NODE_REPL_AUTH_TOKEN', 'synthetic-protected-executor');
+  let session: Session | undefined;
+  const executor = await startPublicExecutor();
+  try {
+    const selected = await peer('remote-env', 'key', false, {
+      location: 'environment',
+      cwd: undefined,
+      env: envValues('remote-literal'),
+      envVars: ['B04_LITERAL', 'B04_INHERITED', 'NODE_REPL_AUTH_TOKEN'],
+    });
+    vi.stubEnv('B04_INHERITED', 'synthetic-host-inherited-secret');
+    vi.stubEnv('B04_LITERAL', 'host-conflict');
+    vi.stubEnv('B04_UNREQUESTED_SECRET', 'synthetic-unrequested-host-secret');
+    const parent = parentEnv();
+    const model = new ModelServer([
+      [lookup('key', 'remote')],
+      [message('done')],
+    ]);
+    session = await (
+      await agent(model, selected.declaration)
+    ).session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: [],
+        ...(process.platform === 'win32'
+          ? { writePolicy: 'legacy' as const }
+          : {}),
+      }),
+    });
+    sessions.push(session);
+    expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+      'done',
+    );
+    for (const secret of ['remote-literal', 'synthetic-child-grant'])
+      expect(JSON.stringify(await session.saveState())).not.toContain(secret);
+    await session.close();
+    await stopped(selected.starts);
+    await expectEnv(selected.starts, 'remote-literal', 'executor-inherited');
+    for (const secret of [
+      'remote-literal',
+      'synthetic-child-grant',
+      'synthetic-unrequested-host-secret',
+    ])
+      expect(JSON.stringify(model.requests)).not.toContain(secret);
+    for (const row of await records(selected.starts))
+      expect(row.cwd).toBe(await realpath(executor.cwd));
+    expect(parentEnv()).toEqual(parent);
+    expect(JSON.stringify(model.requests)).not.toContain(
+      'synthetic-child-grant',
+    );
+    expect(JSON.stringify(executor.requests)).not.toContain(
+      'synthetic-host-inherited-secret',
+    );
+    expect(JSON.stringify(executor.requests)).not.toContain(
+      'synthetic-unrequested-host-secret',
+    );
+  } finally {
+    try {
+      await session?.close();
+    } finally {
+      await executor.close();
+    }
+  }
+}, 60_000);
+
+it('preserves literal env through the resource-only stdio projection', async () => {
+  const selected = await peer('resources-env', 'key', false, {
+    tools: [],
+    env: envValues('resource-literal'),
+  });
+  const roster = JSON.parse(
+    await readFile(selected.roster, 'utf8'),
+  ) as JsonObject;
+  await writeFile(
+    selected.roster,
+    JSON.stringify({
+      ...roster,
+      capabilities: { resources: {} },
+      resourcePages: {
+        first: {
+          resources: [{ uri: 'fixture://environment', name: 'environment' }],
+        },
+      },
+      readResult: {
+        contents: [{ uri: 'fixture://environment', text: 'resource-only' }],
+      },
+    }),
+  );
+  const model = new ModelServer([]);
+  const session = await (await agent(model, selected.declaration)).session();
+  sessions.push(session);
+  expect((await session.listMcpResources('fixture')).resources).toEqual([
+    { uri: 'fixture://environment', name: 'environment' },
+  ]);
+  expect(
+    (await session.readMcpResource('fixture', 'fixture://environment'))
+      .contents,
+  ).toEqual([{ uri: 'fixture://environment', text: 'resource-only' }]);
+  expect((await session.saveState()).agent_options).toEqual({});
+  for (const secret of ['resource-literal', 'synthetic-child-grant'])
+    expect(JSON.stringify(await session.saveState())).not.toContain(secret);
+  await session.close();
+  await stopped(selected.starts);
+  await expectEnv(selected.starts, 'resource-literal');
+  expect(model.requests).toEqual([]);
+}, 30_000);
+
+for (const location of ['host', 'environment'] as const) {
+  it.each(['inherited', 'ascii-duplicates', 'unicode-duplicates', 'path'])(
+    `applies native environment name rules for %s (${location})`,
+    async (testCase) => {
+      let names: [string, string];
+      let envVars: string[] = [];
+      let env: Record<string, string>;
+      if (testCase === 'inherited') {
+        names = ['B04_Case', 'B04_CASE'];
+        vi.stubEnv(names[0], 'executor-inherited');
+        envVars = [names[0]];
+        env = { [names[1]]: 'explicit-value' };
+      } else if (testCase === 'path') {
+        names = ['PATH', 'Path'];
+        env = { [names[1]]: 'synthetic-child-path' };
+      } else {
+        names =
+          testCase === 'ascii-duplicates'
+            ? ['B04_CASE', 'b04_case']
+            : ['B04_É', 'B04_é'];
+        env = { [names[0]]: 'first-value', [names[1]]: 'second-value' };
+      }
+      let executor: Awaited<ReturnType<typeof startPublicExecutor>> | undefined;
+      let session: Session | undefined;
+      try {
+        let environment: Environment | undefined;
+        if (location === 'environment') {
+          executor = await startPublicExecutor();
+          environment = new Environment({
+            url: executor.url,
+            cwd: executor.cwd,
+            headers: executor.headers,
+            tools: [],
+            ...(process.platform === 'win32'
+              ? { writePolicy: 'legacy' as const }
+              : {}),
+          });
+          if (envVars.length)
+            vi.stubEnv(names[0], 'host-value-must-not-be-forwarded');
+        }
+        const selected = await peer(
+          `names-${location}-${testCase}`,
+          'key',
+          false,
+          { location, env, envVars, cwd: undefined },
+          names,
+        );
+        const rejectsDuplicates =
+          process.platform === 'win32' && testCase.endsWith('duplicates');
+        const model = new ModelServer(
+          rejectsDuplicates ? [] : [[message('done')]],
+        );
+        const configured = await agent(model, selected.declaration);
+        if (rejectsDuplicates) {
+          await expect(configured.session({ environment })).rejects.toThrow(
+            'Native MCP publication was not confirmed',
+          );
+          expect(await records(selected.starts)).toHaveLength(0);
+          expect(model.requests).toHaveLength(0);
+          return;
+        }
+        session = await configured.session({ environment });
+        sessions.push(session);
+        expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+          'done',
+        );
+        await session.close();
+        await stopped(selected.starts);
+        const launches = await records(selected.starts);
+        expect(launches.length).toBeGreaterThan(0);
+        for (const row of launches) {
+          const observed = row.observedEnv as Record<string, string | null>;
+          if (testCase.endsWith('duplicates')) {
+            expect(observed).toEqual(env);
+          } else if (testCase === 'inherited') {
+            expect(observed).toEqual({
+              [names[0]]:
+                process.platform === 'win32'
+                  ? 'explicit-value'
+                  : 'executor-inherited',
+              [names[1]]: 'explicit-value',
+            });
+          } else {
+            expect(observed[names[1]]).toBe('synthetic-child-path');
+            if (process.platform === 'win32') {
+              expect(observed[names[0]]).toBe('synthetic-child-path');
+            } else {
+              expect(observed[names[0]]).toBeTruthy();
+              expect(observed[names[0]]).not.toBe('synthetic-child-path');
+            }
+          }
+        }
+        if (executor && testCase === 'inherited') {
+          const starts = executor.requests.filter(
+            (request) => request.method === 'process/start',
+          );
+          expect(starts.length).toBeGreaterThan(0);
+          for (const request of starts) {
+            const params = request.params as JsonObject;
+            const policy = params.envPolicy as JsonObject;
+            expect(params.env).toEqual(env);
+            expect(policy.set).toEqual({});
+            expect(policy.includeOnly).toContain(names[0]);
+            expect(JSON.stringify(params)).not.toContain(
+              'host-value-must-not-be-forwarded',
+            );
+          }
+        }
+        model.assertExhausted();
+      } finally {
+        try {
+          await session?.close();
+        } finally {
+          await executor?.close();
+        }
+      }
+    },
+    60_000,
+  );
+}
