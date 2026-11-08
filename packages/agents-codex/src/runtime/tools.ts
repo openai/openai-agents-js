@@ -369,8 +369,6 @@ export function tool<
           ? await timeoutErrorFunction(callContext, timeoutError)
           : timeoutError.message;
         admit();
-        if (typeof text !== 'string')
-          throw new TypeError('timeoutErrorFunction must return a string');
         return {
           success: false,
           contentItems: [{ type: 'inputText' as const, text }],

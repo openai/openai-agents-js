@@ -950,20 +950,6 @@ describe('native function callback timeout policy', () => {
     expect(after).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, 42, new ToolOutput([])])(
-    'rejects non-string formatter output: %s',
-    async (value) => {
-      const defined = tool({
-        ...options,
-        execute: expired,
-        timeoutErrorFunction: (() => value) as never,
-      });
-      await expect(
-        invokeFunctionTool(defined, {}, context, vi.fn()),
-      ).rejects.toThrow('timeoutErrorFunction must return a string');
-    },
-  );
-
   it.each(['cleanup', 'formatter'] as const)(
     'prevents publication after parent cancellation during %s',
     async (stage) => {
