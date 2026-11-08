@@ -3,6 +3,7 @@ import {
   profileRoster,
   parseProfileReceipt,
   checkProfileReceipt,
+  type CapturedAgentProfile,
 } from './agent-profiles';
 import type { SessionPersistenceOptions } from './persistence-options';
 import { captureTracing } from './tracing-context';
@@ -1233,14 +1234,6 @@ export class Agent<Context = undefined, Output = string> {
       return lease.failOpening(error);
     }
   }
-}
-
-/** @internal Immutable declarations and original identities for one native roster. */
-export interface CapturedAgentProfile<Context, Output> {
-  readonly id: string;
-  readonly agent: Agent<Context, Output>;
-  readonly declaration: Agent<Context, Output>;
-  readonly handoffs: Readonly<Record<string, string>>;
 }
 
 /** @internal Resolve a graph synchronously, before any provider/native acquisition. */

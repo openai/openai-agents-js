@@ -58,6 +58,7 @@ function fixture(
     })),
     close: vi.fn(),
     _checkVoiceOperation: vi.fn(),
+    _checkVoiceAdapterOperation: vi.fn(),
     _runVoiceCallback: vi.fn(async (callback: () => unknown) => callback()),
     _realtimeCurrentProfile: vi.fn(async () => null),
     _realtimeProfileTarget: vi.fn((target: unknown) => target ?? null),

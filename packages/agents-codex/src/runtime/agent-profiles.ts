@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { CapturedAgentProfile } from './public-agent';
+import type { Agent } from './public-agent';
 import { captureTools, type ToolCatalog } from './tools';
 import {
   splitToolDeclarations,
@@ -12,6 +12,14 @@ import {
 import { prepareOutput, type PreparedOutput } from './output';
 import type { Environment } from './environment';
 import type { JsonObject } from './binding';
+
+/** Immutable declarations and original identities for one native roster. */
+export interface CapturedAgentProfile<Context, Output> {
+  readonly id: string;
+  readonly agent: Agent<Context, Output>;
+  readonly declaration: Agent<Context, Output>;
+  readonly handoffs: Readonly<Record<string, string>>;
+}
 
 export interface AgentProfileRuntime {
   readonly profile: CapturedAgentProfile<any, any>;
