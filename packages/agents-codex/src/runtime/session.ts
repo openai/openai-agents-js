@@ -7246,8 +7246,9 @@ export class Session<OutputT = string, Context = unknown> {
   /**
    * List every prompt from a currently selected ordinary MCP server while idle.
    * Core exhausts pagination and rejects failures without returning a partial list.
-   * Its existing catalog limits apply: 100 pages, 2,048 items, 64 KiB per cursor,
-   * and the server execution timeout for the collection. Missing capability returns [].
+   * Catalog limits are 100 pages, 2,048 items, 64 KiB per cursor, and 8 MiB total
+   * across serialized prompt-page arrays. The server execution timeout bounds
+   * the collection. Missing capability returns [].
    * Lazy activation grants no tools. Results never enter instructions or model context.
    */
   async listMcpPrompts(server: string): Promise<MCPPrompt[]> {
@@ -7260,6 +7261,8 @@ export class Session<OutputT = string, Context = unknown> {
    * Get a named prompt as caller-owned data, preserving rich content and metadata.
    * Omitted arguments remain omitted; an explicit empty object remains empty.
    * The server validates names and required arguments. Native errors propagate.
+   * HTTP POST responses are limited to 8 MiB. Legacy SSE continuations use the
+   * transport's per-event limit, which defaults to 16 MiB.
    * Idle interaction and joined close semantics match readMcpResource.
    */
   async getMcpPrompt(
@@ -7267,17 +7270,9 @@ export class Session<OutputT = string, Context = unknown> {
     name: string,
     args?: Readonly<Record<string, string>>,
   ): Promise<MCPGetPromptResult> {
-    if (typeof name !== 'string')
-      throw new TypeError('MCP prompt name must be a string');
     const params: JsonObject = { name };
-    if (args !== undefined) {
-      if (args === null || typeof args !== 'object' || Array.isArray(args))
-        throw new TypeError('MCP prompt arguments must map strings to strings');
-      const entries = Object.entries(args);
-      if (entries.some(([, value]) => typeof value !== 'string'))
-        throw new TypeError('MCP prompt arguments must map strings to strings');
-      params.arguments = Object.fromEntries(entries);
-    }
+    if (args !== undefined)
+      params.arguments = Object.fromEntries(Object.entries(args));
     return this.mcpRequest(
       'get_mcp_prompt',
       server,
