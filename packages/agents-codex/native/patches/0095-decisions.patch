@@ -984,19 +984,6 @@ index 00b6d1f67617c97e3e6620fca36bf66bd17955af..634ae659e738a7f82b69132bfffbe65c
  pub use codex_network_proxy::EnvironmentNetworkPolicy;
  pub use codex_network_proxy::NetworkDomainPermission;
  pub use codex_network_proxy::NetworkDomainPermissionEntry;
-diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
-index bfa310b722b12d736385c5e92eba6d29eacbb320..45133c220d3d87d844873c63a8f6b0353efc44e9 100644
---- a/codex-rs/core/src/session/agent_profile.rs
-+++ b/codex-rs/core/src/session/agent_profile.rs
-@@ -1238,7 +1238,7 @@ for line in sys.stdin:
-     {
-         let (mut session, context, _events) =
-             super::super::tests::make_session_and_context_with_auth_and_config_and_rx(
--                crate::CodexAuth::from_api_key("Test API Key"),
-+                codex_login::CodexAuth::from_api_key("Test API Key"),
-                 Vec::new(),
-                 |config| config.model_provider.supports_websockets = false,
-             )
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
 index 156e0c839f7d1b048319f66d3dddf8fd01d6aaa2..23fd6e1bd0d20fcf9527b7cd5644843ba66ef1ba 100644
 --- a/codex-rs/core/src/session/mod.rs
@@ -1086,7 +1073,7 @@ index 156e0c839f7d1b048319f66d3dddf8fd01d6aaa2..23fd6e1bd0d20fcf9527b7cd5644843b
          &self,
          turn_context: &TurnContext,
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 92c4eea3405fa5f6afe7a94e01d1616930aec0d7..96ae442889deb321675d2d6bcb5b496f557e27b8 100644
+index c292a0e8f7e851b7f93e240941ea334c3e24e9d5..b19a760b0f2fff148d871e83b9c1291beea1a98e 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
 @@ -1,5 +1,5 @@
@@ -1096,7 +1083,7 @@ index 92c4eea3405fa5f6afe7a94e01d1616930aec0d7..96ae442889deb321675d2d6bcb5b496f
  #[path = "notification_tests.rs"]
  mod notification_tests;
  
-@@ -14172,3 +14172,98 @@ async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_he
+@@ -14173,3 +14173,98 @@ async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_he
      .await
      .expect("cancelled root termination wait test timed out");
  }
@@ -1196,7 +1183,7 @@ index 92c4eea3405fa5f6afe7a94e01d1616930aec0d7..96ae442889deb321675d2d6bcb5b496f
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index f691ae46b8c8d753cdcd2bdd192247d8bd601bd0..93bb61c7f3ff42d24eebd444433c4fc25410e6c4 100644
+index 8a919a4982accb365f04d510fadbb88048ca2af6..71d1b22a879ea37439faa06f464d9217c777d1d5 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -413,6 +413,7 @@ pub(crate) async fn run_turn(

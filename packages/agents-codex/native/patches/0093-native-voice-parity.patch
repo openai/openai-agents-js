@@ -22490,7 +22490,7 @@ index a50b3dbbd19ff30a2b7c7c688644da2b894cf458..960923ed2b1d35be90a22877d62e5350
 +}
 diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..bfa310b722b12d736385c5e92eba6d29eacbb320
+index 0000000000000000000000000000000000000000..45133c220d3d87d844873c63a8f6b0353efc44e9
 --- /dev/null
 +++ b/codex-rs/core/src/session/agent_profile.rs
 @@ -0,0 +1,1790 @@
@@ -23734,7 +23734,7 @@ index 0000000000000000000000000000000000000000..bfa310b722b12d736385c5e92eba6d29
 +    {
 +        let (mut session, context, _events) =
 +            super::super::tests::make_session_and_context_with_auth_and_config_and_rx(
-+                crate::CodexAuth::from_api_key("Test API Key"),
++                codex_login::CodexAuth::from_api_key("Test API Key"),
 +                Vec::new(),
 +                |config| config.model_provider.supports_websockets = false,
 +            )
