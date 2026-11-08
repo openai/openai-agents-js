@@ -5,3 +5,5 @@ packages/*/src/metadata.ts
 packages/agents-codex/test/native/fixtures/checkpoint-upgrades/*/idle.json
 packages/agents-codex/test/native/fixtures/checkpoint-upgrades/*/manual.json
 packages/agents-codex/test/native/fixtures/checkpoint-upgrades/*/code.json
+# Preserve the verified upstream Hyper source payload byte-for-byte.
+packages/agents-codex/native/rust/vendor/hyper-1.8.1/

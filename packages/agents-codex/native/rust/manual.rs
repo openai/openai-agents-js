@@ -868,6 +868,7 @@ impl PythonTools {
         self.manual.lock().expect("manual tools poisoned").waiter = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn has_manual_tools(&self) -> bool {
         !self
             .manual

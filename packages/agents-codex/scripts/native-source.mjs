@@ -58,6 +58,135 @@ function keys(value, expected) {
       JSON.stringify([...expected].sort())
   );
 }
+
+export function verifyVendoredHyper(root) {
+  // This fixed published inventory needs no additional prepared-source backend.
+  const vendor = join(root, 'rust/vendor');
+  for (const name of [
+    'rust/vendor/hyper-1.8.1-provenance.json',
+    'rust/vendor/hyper-1.8.1-readiness.patch',
+    'Cargo.toml',
+    'Cargo.lock',
+    'rust/tests/hyper-readiness/Cargo.lock',
+    '../licenses/hyper/LICENSE',
+  ]) {
+    if (!regular(join(root, name)))
+      throw new Error(`Vendored Hyper input must be a regular file: ${name}`);
+  }
+  const manifest = JSON.parse(
+    readFileSync(join(vendor, 'hyper-1.8.1-provenance.json'), 'utf8'),
+  );
+  const original = manifest.original_files;
+  const originalDigest = sha256Bytes(
+    Buffer.from(
+      JSON.stringify(
+        Object.fromEntries(
+          Object.keys(original)
+            .sort()
+            .map((name) => [name, original[name]]),
+        ),
+      ),
+    ),
+  );
+  const upstream = manifest.upstream;
+  const changed = Object.keys(manifest.files).filter(
+    (name) =>
+      JSON.stringify(manifest.files[name]) !== JSON.stringify(original[name]),
+  );
+  if (
+    manifest.format !== 'hyper-1.8.1-backport-v1' ||
+    !keys(upstream, ['name', 'version', 'license', 'archive', 'sha256']) ||
+    upstream.name !== 'hyper' ||
+    upstream.version !== '1.8.1' ||
+    upstream.license !== 'MIT' ||
+    upstream.archive !==
+      'https://static.crates.io/crates/hyper/hyper-1.8.1.crate' ||
+    upstream.sha256 !==
+      '2ab2d4f250c3d7b1c9fcdff1cece94ea4e2dfbec68614f7b87cb205f24ca9d11' ||
+    originalDigest !==
+      'a28fc1a73b6285118b347eb2a4daa862d7abb9e680ed6b5d9e41a5f27d83ca18' ||
+    sha256Bytes(
+      Buffer.from(
+        JSON.stringify(
+          Object.fromEntries(
+            Object.keys(manifest.files)
+              .sort()
+              .map((name) => [name, manifest.files[name]]),
+          ),
+        ),
+      ),
+    ) !== '673337b63602b1cfd3974bdb948bc629aad822bca8cad2f3326cb8e60936a30e' ||
+    manifest.patch_sha256 !==
+      'f273142389a7036fcaff8fa3e2cfa26d093d3bccc75d227afaf314956a1198c1' ||
+    Object.keys(manifest.files).length !== 69 ||
+    Object.values(manifest.files).some(
+      (value) =>
+        !Array.isArray(value) ||
+        value.length !== 2 ||
+        value[0] !== '100644' ||
+        !/^[0-9a-f]{40}$/.test(value[1]),
+    ) ||
+    JSON.stringify(Object.keys(manifest.files).sort()) !==
+      JSON.stringify(Object.keys(original).sort()) ||
+    JSON.stringify(changed) !== JSON.stringify(['src/client/dispatch.rs']) ||
+    JSON.stringify(manifest.changed_files) !== JSON.stringify(changed) ||
+    manifest.patch !== 'hyper-1.8.1-readiness.patch'
+  )
+    throw new Error(
+      'Vendored Hyper provenance differs from the reviewed release',
+    );
+  if (
+    sha256Bytes(readFileSync(join(vendor, manifest.patch))) !==
+    manifest.patch_sha256
+  )
+    throw new Error(
+      'Vendored Hyper patch bytes differ from their reviewed identity',
+    );
+  verifyTree(
+    join(vendor, 'hyper-1.8.1'),
+    new Map(
+      Object.entries(manifest.files).map(([name, [mode, id]]) => [
+        name,
+        { mode, id },
+      ]),
+    ),
+  );
+  const cargo = readFileSync(join(root, 'Cargo.toml'), 'utf8');
+  const overrides = cargo
+    .split(/^\[patch\.crates-io\]\r?\n/m)[1]
+    ?.split(/^\[/m)[0];
+  if (
+    !/^hyper = \{ version = "=1\.8\.1",/m.test(cargo) ||
+    !/^hyper = \{ path = "rust\/vendor\/hyper-1\.8\.1" \}\r?$/m.test(
+      overrides || '',
+    )
+  )
+    throw new Error(
+      'Native Cargo manifest must select the reviewed Hyper path and exact version',
+    );
+  for (const name of ['Cargo.lock', 'rust/tests/hyper-readiness/Cargo.lock']) {
+    const packages = readFileSync(join(root, name), 'utf8')
+      .split('[[package]]')
+      .filter((section) => /^name = "hyper"\r?$/m.test(section));
+    if (
+      packages.length !== 1 ||
+      !/^version = "1\.8\.1"\r?$/m.test(packages[0]) ||
+      /^(source|checksum) =/m.test(packages[0])
+    )
+      throw new Error(
+        `Cargo lock must select only the vendored Hyper 1.8.1: ${name}`,
+      );
+  }
+  if (
+    !readFileSync(join(root, '../licenses/hyper/LICENSE')).equals(
+      readFileSync(join(vendor, 'hyper-1.8.1/LICENSE')),
+    )
+  )
+    throw new Error(
+      'Packaged Hyper license differs from the authenticated source',
+    );
+}
+
 export function readSeries(directory) {
   if (
     !lstatSync(directory).isDirectory() ||

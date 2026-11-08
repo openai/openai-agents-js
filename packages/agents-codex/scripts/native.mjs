@@ -22,7 +22,11 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout } from 'node:timers/promises';
 import * as tls from 'node:tls';
-import { prepareSources, sha256Bytes } from './native-source.mjs';
+import {
+  prepareSources,
+  sha256Bytes,
+  verifyVendoredHyper,
+} from './native-source.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(packageRoot, 'native');
@@ -99,6 +103,7 @@ const sources = [
   },
 ];
 function audit(prepare = false) {
+  verifyVendoredHyper(root);
   return prepareSources(root, sources, prepare);
 }
 
@@ -110,6 +115,7 @@ function buildInputs() {
     'native/Cargo.lock',
     'native/build.rs',
     'native/tests/fixtures/exec_server.rs',
+    'licenses/hyper/LICENSE',
   ]);
   for (const directory of [
     'native/rust',
@@ -252,6 +258,29 @@ async function build() {
     bindingName,
     environment.RUSTY_V8_SRC_BINDING_PATH,
   );
+  // Keep the regression graph and its outputs separate from the Core build.
+  run(
+    'cargo',
+    [
+      'test',
+      '--locked',
+      '--target',
+      host,
+      '--manifest-path',
+      join(root, 'rust/tests/hyper-readiness/Cargo.toml'),
+      '--test',
+      'readiness',
+    ],
+    {
+      env: {
+        ...environment,
+        CARGO_TARGET_DIR: join(environment.CARGO_TARGET_DIR, 'hyper-readiness'),
+      },
+      stdio: 'inherit',
+    },
+  );
+  equalSnapshot(audit(), sourceIdentity, 'Reviewed source');
+  equalSnapshot(buildInputs(), inputs, 'Native inputs');
   // Restored Cargo fingerprints can otherwise accept SDK files with old timestamps.
   const clean = [
     'clean',

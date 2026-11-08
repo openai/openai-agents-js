@@ -1,0 +1,18 @@
+[package]
+name = "hyper-readiness-regression"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Keep these public-API tests independent of the native SDK/Core dependency graph.
+[workspace]
+
+[[test]]
+name = "readiness"
+path = "readiness.rs"
+
+[dependencies]
+bytes = "=1.12.1"
+http-body-util = "=0.1.3"
+hyper = { path = "../../vendor/hyper-1.8.1", version = "=1.8.1", features = ["client", "http1"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt", "sync"] }
