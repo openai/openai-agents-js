@@ -61,6 +61,106 @@ async function providerFor(model: ModelServer) {
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 
 nativeIt(
+  'retries unpublished startup cleanup before opening a replacement owner',
+  async () => {
+    const model = new ModelServer([[message('usable after failed startup')]]);
+    const retryEntered = Promise.withResolvers<void>();
+    const releaseRetry = Promise.withResolvers<void>();
+    let allowClose = false;
+    try {
+      await using provider = await providerFor(model);
+      const agent = new Agent({
+        instructions: 'Answer briefly.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using session = await agent.session();
+      const startupError = new Error('Synthetic startup send failure');
+      const cleanupError = new Error('Synthetic startup cleanup failure');
+      const incoming = new Incoming();
+      let closed = false;
+      const failedAdapter: NativeRealtimeAdapter = {
+        async connect() {
+          return {
+            incoming,
+            async send() {
+              throw startupError;
+            },
+            async close() {
+              if (!allowClose) throw cleanupError;
+              retryEntered.resolve();
+              await releaseRetry.promise;
+              await incoming.return();
+              closed = true;
+            },
+          };
+        },
+      };
+      let replacementConnections = 0;
+      const replacement: NativeRealtimeAdapter = {
+        async connect(context) {
+          expect(closed).toBe(true);
+          replacementConnections++;
+          const frames = new Incoming();
+          const accepted: Record<string, any> = { model: context.model };
+          return {
+            incoming: frames,
+            async send(raw) {
+              const frame = JSON.parse(raw);
+              if (frame.type === 'session.update') {
+                merge(accepted, frame.session);
+                frames.push({
+                  type: 'session.updated',
+                  session: { ...structuredClone(accepted), id: 'replacement' },
+                });
+              }
+            },
+            async close() {
+              await frames.return();
+            },
+          };
+        },
+      };
+      try {
+        const failure = await session
+          .realtime({ model: 'gpt-realtime', adapter: failedAdapter })
+          .catch((error) => error);
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect(failure.errors).toEqual([startupError, cleanupError]);
+        expect(failure.cause).toBe(startupError);
+        // A failed recovery must not detach the old connection or start another.
+        await expect(
+          session.realtime({ model: 'gpt-realtime', adapter: replacement }),
+        ).rejects.toBe(cleanupError);
+        expect(replacementConnections).toBe(0);
+        expect(closed).toBe(false);
+        allowClose = true;
+        const opening = session.realtime({
+          model: 'gpt-realtime',
+          adapter: replacement,
+        });
+        await retryEntered.promise;
+        expect(replacementConnections).toBe(0);
+        releaseRetry.resolve();
+        const voice = await opening;
+        expect(replacementConnections).toBe(1);
+        await voice.close();
+        const turn = await session.submit('Check caller ownership.');
+        expect((await turn.wait()).finalOutput).toBe(
+          'usable after failed startup',
+        );
+      } finally {
+        allowClose = true;
+        releaseRetry.resolve();
+      }
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
   'rejects adapter connect awaiting its owning Session.close before mutation',
   async () => {
     const model = new ModelServer([[message('usable after blocked connect')]]);

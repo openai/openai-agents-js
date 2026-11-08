@@ -44,6 +44,8 @@ type InputFrame =
   | { inactivityEpoch: number };
 
 const BUFFER_BYTES = 2 * 1024 * 1024;
+// Charge queued metadata too, so tiny or empty frames cannot bypass the bound.
+const INPUT_FRAME_BYTES = 128;
 const MESSAGE_LIMIT = 128;
 const RESPONSE_LIMIT = 1024;
 
@@ -335,7 +337,8 @@ export async function bridgeTwilioVoice({
       voice ??= await admission;
       while (!stopped && incoming.length) {
         const next = incoming.shift()!;
-        inputBytes -= 'data' in next ? next.data.byteLength : 0;
+        inputBytes -=
+          INPUT_FRAME_BYTES + ('data' in next ? next.data.byteLength : 0);
         await receive(next);
       }
     })()
@@ -347,8 +350,9 @@ export async function bridgeTwilioVoice({
   }
   const enqueue = (frame: InputFrame) => {
     if (stopped) return;
-    const bytes = 'data' in frame ? frame.data.byteLength : 0;
-    if (incoming.length >= MESSAGE_LIMIT || inputBytes + bytes > BUFFER_BYTES) {
+    const bytes =
+      INPUT_FRAME_BYTES + ('data' in frame ? frame.data.byteLength : 0);
+    if (inputBytes + bytes > BUFFER_BYTES) {
       stop(new Error('Twilio input buffer overflow'));
       return;
     }

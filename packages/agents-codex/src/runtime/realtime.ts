@@ -241,6 +241,8 @@ const EVENT_LIMIT = 128;
 const SDP_BYTES_LIMIT = 1024 * 1024;
 const USER_INPUT_BYTES_LIMIT = 1024 * 1024;
 const USER_INPUT_PARTS_LIMIT = 1024;
+const INPUT_QUEUE_COUNT_LIMIT = 128;
+const INPUT_QUEUE_BYTES_LIMIT = 8 * 1024 * 1024;
 const AUDIO_LIMIT = 2 * 1024 * 1024;
 const HANDOFF_LIMIT = 1024;
 const PENDING_LIMIT = 16;
@@ -345,10 +347,13 @@ class NativeRealtimeOwner {
   private ended = false;
   private failure?: { error: unknown };
   private nativeClosed = false;
+  private startupFailed = false;
   private sessionClosing = false;
   private consuming = false;
   private queuedBytes = 0;
   private inputTail: Promise<void> = Promise.resolve();
+  private inputCount = 0;
+  private inputBytes = 0;
   private pendingCommittedAudio = 0;
   private readonly nativeEnded = Promise.withResolvers<void>();
   private responseId?: string;
@@ -476,6 +481,10 @@ class NativeRealtimeOwner {
     });
     this.ready.promise.catch(() => {});
     this.terminal.promise.catch(() => {});
+  }
+  /** @internal Allow a later public opening to retry failed startup cleanup. */
+  get _startupFailed(): boolean {
+    return this.startupFailed;
   }
   get history(): readonly NativeRealtimeHistoryItem[] {
     return Object.freeze(
@@ -613,6 +622,7 @@ class NativeRealtimeOwner {
       const primary = this.adapterDriver?.failure
         ? this.adapterDriver.failure.error
         : error;
+      this.startupFailed = true;
       this.finish(primary);
       try {
         await this.close();
@@ -752,16 +762,30 @@ class NativeRealtimeOwner {
     }
   }
 
-  private enqueueInput(send: () => Promise<void>): Promise<void> {
+  private enqueueInput(send: () => Promise<void>, bytes = 0): Promise<void> {
     if (this.pendingCommittedAudio)
       this.session._checkVoiceAdapterOperation(
         this,
         'queue input while committed audio is pending',
       );
-    const pending = this.inputTail.then(() => {
-      this.checkLive();
-      return send();
-    });
+    if (
+      this.inputCount >= INPUT_QUEUE_COUNT_LIMIT ||
+      bytes > INPUT_QUEUE_BYTES_LIMIT - this.inputBytes
+    )
+      throw new RangeError(
+        'Realtime input queue exceeds its 128 operation or 8 MiB limit',
+      );
+    this.inputCount++;
+    this.inputBytes += bytes;
+    const pending = this.inputTail
+      .then(() => {
+        this.checkLive();
+        return send();
+      })
+      .finally(() => {
+        this.inputCount--;
+        this.inputBytes -= bytes;
+      });
     this.inputTail = pending.catch(() => {});
     return pending;
   }
@@ -770,11 +794,11 @@ class NativeRealtimeOwner {
     this.checkLive();
     if (typeof text !== 'string')
       throw new TypeError('Realtime text must be nonempty');
-    userInputBytes(text);
+    const bytes = userInputBytes(text);
     if (!text.trim()) throw new TypeError('Realtime text must be nonempty');
     await this.enqueueInput(async () => {
       await this.call('text', { text, role: 'user' });
-    });
+    }, bytes);
   }
   /** Append up to 1024 parts and 1 MiB aggregate UTF-8 text/image input, then optionally respond. */
   async sendMessage(
@@ -795,10 +819,11 @@ class NativeRealtimeOwner {
     if (triggerResponse !== undefined && typeof triggerResponse !== 'boolean')
       throw new TypeError('Realtime triggerResponse must be a boolean');
     let content: JsonObject[];
+    let bytes = 0;
     if (typeof message === 'string') {
       if (!message.length)
         throw new TypeError('Realtime user text must be nonempty');
-      userInputBytes(message);
+      bytes = userInputBytes(message);
       content = [{ type: 'input_text', text: message }];
     } else {
       if (
@@ -864,13 +889,14 @@ class NativeRealtimeOwner {
           'Realtime user content must be text or an inline image',
         );
       });
+      bytes = USER_INPUT_BYTES_LIMIT - remaining;
     }
     await this.enqueueInput(async () => {
       await this.call('input', {
         content,
         trigger_response: triggerResponse ?? true,
       });
-    });
+    }, bytes);
   }
   /** Append an inline image within the 1 MiB UTF-8 input limit, optionally without a response. */
   async addImage(
@@ -972,7 +998,7 @@ class NativeRealtimeOwner {
           this.checkLive();
           await this.call('audio_commit');
         }
-      });
+      }, data.buffer.byteLength);
     } finally {
       if (commit) this.pendingCommittedAudio--;
     }

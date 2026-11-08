@@ -18,6 +18,8 @@ The example opens `Session.realtime()`, sends one text prompt, and records mono 
 
 The native Session owns Realtime control, tools, history, and cancellation. Closing its Realtime owner joins that owner's delegated work and releases media. It leaves the caller's Session available for text turns. Closing the Session also closes its Realtime owner. Use `await using`, or await `close()` in `finally`. A failed cleanup remains retryable; do not discard the owner after a failed close.
 
+If opening voice fails and its cleanup also fails, the next `session.realtime(...)` call retries the previous owner's cleanup first. A failed retry preserves that owner for another attempt; a successful retry allows the new voice connection. An already open or still opening voice connection continues to reject another owner.
+
 ## Choose the audio path
 
 | Path | API and ownership |
@@ -29,6 +31,8 @@ The native Session owns Realtime control, tools, history, and cancellation. Clos
 | Application transport or model | Set `adapter` to a `NativeRealtimeAdapter`. Do not combine it with a built-in call transport. |
 
 `await voice.sendAudio(samples, { commit: true })` appends every bounded frame, then commits the input buffer once. For manual turn detection, first call `await voice.update({ turnDetection: null })`. Omitting `commit` or passing `false` only appends audio. Pass a valid empty audio buffer with `commit: true` to commit previously appended chunks without adding another frame. A commit does not request a model response. Call `await voice.requestResponse()` when the input is ready. Input calls are queued in invocation order. A committed audio call flushes its frames and commit before the next queued input; append-only calls retain their existing native admission behavior. Keep audio buffers unchanged until `sendAudio()` resolves, because encoding reads them one frame at a time.
+
+Text and image URLs share a 1 MiB UTF-8 limit per message, with at most 1,024 content parts. Across active and waiting input calls, each voice owner allows 128 operations and 8 MiB of input payload. Audio counts its full backing buffer, including bytes outside a supplied view. Excess input rejects with `RangeError` before it joins the queue. Await input calls and copy larger audio inputs into smaller, separately allocated buffers; capacity becomes available as calls settle.
 
 `sendMessage` accepts user text or an ordered user message containing `input_text` and inline `input_image` parts. `addImage` appends one inline image reference. Both request a response by default; use `{ triggerResponse: false }` to collect inputs first, then call `requestResponse()`. Images support `detail: 'auto' | 'low' | 'high'`. File IDs, local media, arbitrary provider fields, and assistant/tool messages are unsupported.
 

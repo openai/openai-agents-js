@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Agent, captureAgentProfiles } from '../src/runtime/public-agent';
 import { tool } from '../src/runtime/tools';
 import { NativeAgents } from '../src/runtime/native-agents';
+import { HttpMCP } from '../src/runtime/mcp';
 
 it('captures cyclic Agent identity and resolves each synchronous target once', () => {
   const toB = vi.fn<() => Agent>(() => b);
@@ -131,6 +132,52 @@ it('rejects generated handoff/tool collisions and output views that silently rep
   expect(() => a.withOutputType(z.string())).toThrow(
     'without outgoing handoffs',
   );
+});
+
+it.each([
+  tool({
+    name: 'transfer_to_b',
+    namespace: 'records',
+    parameters: z.object({}),
+    execute: () => '',
+  }),
+  new HttpMCP({
+    name: 'transfer_to_b',
+    url: 'https://mcp.example.test',
+    tools: ['lookup'],
+  }),
+])(
+  'allows distinct tool identities alongside a generated handoff: %s',
+  (declaration) => {
+    const b = new Agent({ name: 'B', instructions: 'b' });
+    const a = new Agent({
+      instructions: 'a',
+      tools: [declaration],
+      handoffs: [b],
+    });
+    const profiles = captureAgentProfiles(a);
+    expect({ ...profiles[0].handoffs }).toEqual({ transfer_to_b: 'agent_1' });
+    expect(profiles[0].declaration.tools[0]).toMatchObject({
+      name: 'transfer_to_b',
+    });
+  },
+);
+
+it('rejects an explicit functions namespace collision with a generated handoff', () => {
+  const b = new Agent({ name: 'B', instructions: 'b' });
+  const a = new Agent({
+    instructions: 'a',
+    tools: [
+      tool({
+        name: 'transfer_to_b',
+        namespace: 'functions',
+        parameters: z.object({}),
+        execute: () => '',
+      }),
+    ],
+    handoffs: [b],
+  });
+  expect(() => captureAgentProfiles(a)).toThrow('conflicts with declared tool');
 });
 
 it('captures native tool parameters and output retry declarations before later application mutation', () => {

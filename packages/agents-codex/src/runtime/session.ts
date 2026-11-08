@@ -1021,6 +1021,9 @@ export class Session<OutputT = string, Context = unknown> {
     options: NativeRealtimeOptions = {},
   ): Promise<NativeRealtimeSession> {
     this.checkCallbackOperation('open Realtime on');
+    // A rejected startup cannot return its owner as a cleanup retry handle.
+    // Keep it installed until this explicit retry joins its retained cleanup.
+    if (this.realtimeOwner?._startupFailed) await this.realtimeOwner.close();
     if (
       !this.isOpen ||
       this.lifecycle.kind === 'mutation' ||

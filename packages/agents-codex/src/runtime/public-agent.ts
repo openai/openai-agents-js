@@ -1371,7 +1371,10 @@ export function captureAgentProfiles<Context, Output>(
           `Duplicate handoff name in Agent ${agent.name ?? 'root'}: ${name}`,
         );
       if (
-        declaration.tools.some((tool) => 'name' in tool && tool.name === name)
+        capturedTools.some((tool) => {
+          const identity = toolIdentity(tool);
+          return identity.namespace === 'functions' && identity.name === name;
+        })
       )
         throw new TypeError(
           `Handoff name conflicts with declared tool: ${name}`,

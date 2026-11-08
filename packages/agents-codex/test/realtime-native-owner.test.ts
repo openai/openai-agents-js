@@ -142,6 +142,95 @@ function fixture(
   };
 }
 
+it.each([false, true])(
+  'bounds queued input count and releases reservations after settlement (failure=%s)',
+  async (fail) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const base = peer.call.getMockImplementation()!;
+    peer.call.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      if (fail) throw new Error('stalled write failed');
+      return {};
+    });
+    const first = peer.owner.sendText('first');
+    const settled = first.catch(() => {});
+    await entered.promise;
+    const queued = Array.from({ length: 127 }, (_, i) => {
+      if (i % 4 === 0) return peer.owner.sendText('queued');
+      if (i % 4 === 1) return peer.owner.sendMessage('queued');
+      if (i % 4 === 2) return peer.owner.sendAudio(new Int16Array([1]));
+      return peer.owner.requestResponse();
+    });
+    let overflow: unknown;
+    const extra = peer.owner.requestResponse().catch((error) => {
+      overflow = error;
+    });
+    try {
+      await vi.waitFor(() => expect(overflow).toBeInstanceOf(RangeError), {
+        timeout: 200,
+      });
+    } finally {
+      release.resolve();
+      await Promise.all([settled, ...queued, extra]);
+      peer.call.mockImplementation(base);
+      await peer.owner.sendText('reused after settlement');
+      await peer.owner.close();
+    }
+  },
+);
+
+it('bounds retained text, image and audio bytes while a write is stalled', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  peer.call.mockImplementationOnce(async () => {
+    entered.resolve();
+    await release.promise;
+    return {};
+  });
+  const mib = 1024 * 1024;
+  const first = peer.owner.sendText('x'.repeat(mib));
+  await entered.promise;
+  const queued = Array.from({ length: 6 }, () =>
+    peer.owner.sendMessage({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_image', image: 'x'.repeat(mib) }],
+    }),
+  );
+  queued.push(peer.owner.sendAudio(new Int16Array(mib / 2)));
+  let overflow: unknown;
+  const extra = peer.owner.sendText('x').catch((error) => {
+    overflow = error;
+  });
+  try {
+    await vi.waitFor(() => expect(overflow).toBeInstanceOf(RangeError), {
+      timeout: 200,
+    });
+  } finally {
+    release.resolve();
+    await Promise.all([first, ...queued, extra]);
+    await peer.owner.sendMessage('reused after settlement');
+    await peer.owner.close();
+  }
+});
+
+it('charges the retained backing buffer before queueing an audio view', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const data = new Int16Array(new ArrayBuffer(8 * 1024 * 1024 + 2), 0, 1);
+  try {
+    await expect(peer.owner.sendAudio(data)).rejects.toThrow('input queue');
+  } finally {
+    await peer.owner.close();
+  }
+});
+
 it('uses Core-prepared input and only accepted output, retaining caller context and deduplicating handoffs', async () => {
   const context = new AsyncLocalStorage<string>();
   const peer = context.run('voice entry', () => fixture());

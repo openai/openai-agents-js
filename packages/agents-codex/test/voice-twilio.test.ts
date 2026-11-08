@@ -464,6 +464,82 @@ describe('native Twilio media bridge', () => {
     expect(media.close).toHaveBeenCalledOnce();
   });
 
+  it.each(['admission', 'audio write'])(
+    'buffers more than 128 normal media frames during delayed %s and drains them in order',
+    async (waiting) => {
+      const admission = Promise.withResolvers<NativeRealtimeSession>();
+      const write = Promise.withResolvers<void>();
+      const { client, socket, media, send } = await connect(
+        {},
+        waiting === 'admission' ? () => admission.promise : undefined,
+      );
+      if (waiting === 'audio write')
+        media.sendAudio.mockImplementationOnce(() => write.promise);
+      let received = 0;
+      socket.on('message', (raw) => {
+        if (JSON.parse(raw.toString()).event === 'media') received++;
+      });
+      try {
+        for (let i = 0; i < 150; i++)
+          send({
+            event: 'media',
+            streamSid: 'call',
+            media: {
+              timestamp: i * 20,
+              payload: Buffer.alloc(160, i).toString('base64'),
+            },
+          });
+        await vi.waitFor(() => expect(received).toBe(150));
+        expect(client.readyState).toBe(WebSocket.OPEN);
+        expect(media.close).not.toHaveBeenCalled();
+        admission.resolve(media as unknown as NativeRealtimeSession);
+        write.resolve();
+        await vi.waitFor(() =>
+          expect(media.sendAudio).toHaveBeenCalledTimes(150),
+        );
+        expect(media.sendAudio.mock.calls.map(([input]) => input.data)).toEqual(
+          Array.from({ length: 150 }, (_, i) => Buffer.alloc(160, i)),
+        );
+      } finally {
+        admission.resolve(media as unknown as NativeRealtimeSession);
+        write.resolve();
+      }
+    },
+  );
+
+  it.each([
+    { name: 'empty', samples: 0, frames: 17000 },
+    { name: 'audio', samples: 32768, frames: 70 },
+  ])(
+    'bounds queued $name media and joins the eventual owner on overload',
+    async ({ samples, frames }) => {
+      const admission = Promise.withResolvers<NativeRealtimeSession>();
+      const { client, media, send, running } = await connect(
+        {},
+        () => admission.promise,
+      );
+      try {
+        const closed = once(client, 'close');
+        for (let i = 0; i < frames; i++)
+          send({
+            event: 'media',
+            streamSid: 'call',
+            media: {
+              timestamp: (i * samples) / 8,
+              payload: Buffer.alloc(samples).toString('base64'),
+            },
+          });
+        await closed;
+        admission.resolve(media as unknown as NativeRealtimeSession);
+        await expect(running).rejects.toThrow('input buffer overflow');
+        expect(media.close).toHaveBeenCalledOnce();
+        expect(media.sendAudio).not.toHaveBeenCalled();
+      } finally {
+        admission.resolve(media as unknown as NativeRealtimeSession);
+      }
+    },
+  );
+
   it('handles a stop message while native admission is pending', async () => {
     const pending = Promise.withResolvers<NativeRealtimeSession>();
     const { media, send, client, running, session } = await connect(
@@ -492,7 +568,7 @@ describe('native Twilio media bridge', () => {
 
   it('handles a stop message while an audio write is pending', async () => {
     const pending = Promise.withResolvers<void>();
-    const { media, send, running } = await connect();
+    const { media, send, running, frames } = await connect();
     media.sendAudio.mockImplementationOnce(() => pending.promise);
     send({
       event: 'media',
@@ -500,10 +576,33 @@ describe('native Twilio media bridge', () => {
       media: { timestamp: 0, payload: Buffer.alloc(80).toString('base64') },
     });
     await vi.waitFor(() => expect(media.sendAudio).toHaveBeenCalledOnce());
+    for (let i = 1; i < 150; i++)
+      send({
+        event: 'media',
+        streamSid: 'call',
+        media: {
+          timestamp: i * 10,
+          payload: Buffer.alloc(80, i).toString('base64'),
+        },
+      });
+    media.push(audio('A', 1));
+    media.push(done('A'));
+    // Playback acknowledgements remain live while input cannot drain.
+    // The stop below must then discard the queued media without sending it.
+    await vi.waitFor(() =>
+      expect(frames.some((frame) => frame.event === 'mark')).toBe(true),
+    );
+    send({
+      event: 'mark',
+      streamSid: 'call',
+      mark: frames.find((frame) => frame.event === 'mark')!.mark,
+    });
+    await vi.waitFor(() => expect(media.reportPlayback).toHaveBeenCalledOnce());
     send({ event: 'stop', streamSid: 'call' });
     await vi.waitFor(() => expect(media.close).toHaveBeenCalledOnce());
     pending.resolve();
     await running;
+    expect(media.sendAudio).toHaveBeenCalledOnce();
   });
 
   it('discards old inactivity padding when newer audio arrives', async () => {
