@@ -269,3 +269,70 @@ nativeIt.each(['model', 'voice', 'instructions'] as const)(
   },
   30000,
 );
+
+nativeIt.each(['ascii', 'utf8', 'astral', 'whitespace'] as const)(
+  'rejects an oversized %s offer before credentials and leaves the Session reusable',
+  async (kind) => {
+    const unit = { ascii: 'a', utf8: 'é', astral: '😀', whitespace: ' ' }[kind];
+    const offerSdp = unit.repeat(
+      Math.floor((1024 * 1024) / Buffer.byteLength(unit)) + 1,
+    );
+    const apiKey = vi.fn(() => 'synthetic-native-call-key');
+    const peer = await callPeer();
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: peer.baseUrl,
+        apiKey: 'synthetic-native-call-key',
+        supportsWebsockets: false,
+      });
+      await using session = await new Agent({
+        instructions: 'Answer briefly.',
+        provider,
+      }).session();
+      await expect(
+        session.realtime({
+          transport: { type: 'webrtc', offerSdp },
+          apiKey,
+        }),
+      ).rejects.toThrow(/offerSdp.*1048576.*UTF-8/);
+      expect(apiKey).not.toHaveBeenCalled();
+      expect(peer.offers).toEqual([]);
+      expect(peer.sidebands).toEqual([]);
+      await using voice = await session.realtime({
+        transport: { type: 'webrtc', offerSdp: OFFER },
+        apiKey,
+      });
+      expect(voice.answerSdp).toBe(ANSWER);
+      expect(apiKey).toHaveBeenCalledTimes(1);
+      expect(peer.offers).toEqual([OFFER]);
+    } finally {
+      await peer.close();
+    }
+  },
+);
+
+nativeIt.each(['a', 'é'])(
+  'accepts an offer at the UTF-8 byte limit using %s',
+  async (unit) => {
+    const offerSdp = unit.repeat((1024 * 1024) / Buffer.byteLength(unit));
+    const peer = await callPeer();
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: peer.baseUrl,
+        apiKey: 'synthetic-native-call-key',
+        supportsWebsockets: false,
+      });
+      await using session = await new Agent({
+        instructions: 'Answer briefly.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        transport: { type: 'webrtc', offerSdp },
+      });
+      expect(voice.answerSdp).toBe(ANSWER);
+      expect(peer.offers).toEqual([offerSdp]);
+    } finally {
+      await peer.close();
+    }
+  },
+);

@@ -83,6 +83,8 @@ Native execution runs on the server. Browser code can import `NativeVoiceWebRTC`
 
 SIP calls must be accepted and configured before attachment. Do not pass initial `model`, `voice`, or `instructions` overrides with the SIP transport. Nonempty client audio is rejected; an empty audio buffer with `{ commit: true }` can control audio already buffered by the provider. Closing an SDK-created WebRTC owner also hangs up its created call.
 
+WebRTC SDP offers are limited to 1 MiB of UTF-8 text. Oversized offers are rejected before credentials are resolved or a connection is opened.
+
 ### Keep server control open
 
 This recipe runs on the Node.js application server. `publishAnswer` sends the SDP answer through your authenticated endpoint. `serveCall` consumes `voice.events()`, routes application decisions, and returns when the call ends. The server function stays running after it sends the answer.

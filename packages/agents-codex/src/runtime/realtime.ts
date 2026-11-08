@@ -238,6 +238,7 @@ const KINDS = new Set([
   'realtime_conversation_sdp',
 ]);
 const EVENT_LIMIT = 128;
+const SDP_BYTES_LIMIT = 1024 * 1024;
 const AUDIO_LIMIT = 2 * 1024 * 1024;
 const HANDOFF_LIMIT = 1024;
 const PENDING_LIMIT = 16;
@@ -389,6 +390,16 @@ class NativeRealtimeOwner {
       options.tools === undefined
         ? undefined
         : Object.freeze([...options.tools]);
+    // Bound the offer before trimming or native JSON/multipart serialization.
+    if (
+      options.transport?.type === 'webrtc' &&
+      typeof options.transport.offerSdp === 'string' &&
+      (options.transport.offerSdp.length > SDP_BYTES_LIMIT ||
+        Buffer.byteLength(options.transport.offerSdp, 'utf8') > SDP_BYTES_LIMIT)
+    )
+      throw new RangeError(
+        `offerSdp must not exceed ${SDP_BYTES_LIMIT} UTF-8 bytes`,
+      );
     if (options.transport === undefined) this.transport = { type: 'websocket' };
     else if (
       options.transport.type === 'webrtc' &&
