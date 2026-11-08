@@ -1,4 +1,5 @@
 import { RuntimeEventEmitter, UserError, Usage } from '@openai/agents-core';
+import type { EventEmitter } from '@openai/agents-core/_shims';
 import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
 import {
   logModelActionError,
@@ -186,8 +187,11 @@ export abstract class OpenAIRealtimeBase
   >();
   #historyRequestSeq = 0;
 
-  protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
-    new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
+  // Node's newer declarations exclude numeric keys that the emitter still accepts.
+  // Preserve the SDK event keys and the protected Node emitter methods.
+  protected eventEmitter =
+    new RuntimeEventEmitter<OpenAIRealtimeEventTypes>() as RuntimeEventEmitter<OpenAIRealtimeEventTypes> &
+      EventEmitter<OpenAIRealtimeEventTypes>;
 
   constructor(options: OpenAIRealtimeBaseOptions = {}) {
     super();
