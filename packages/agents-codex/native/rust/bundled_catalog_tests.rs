@@ -233,8 +233,13 @@ async fn warm_cache_keeps_catalog_and_auth_eligibility_checks() {
         .enable(Feature::ApiKeyModelDiscovery)
         .unwrap();
     assert!(bundled_model_catalog(&excluded, &auth).is_none());
+    let no_auth = crate::auth::manager(config, Some("synthetic-catalog-key".into()))
+        .await
+        .unwrap();
+    no_auth.clear_external_auth();
+    assert_eq!(no_auth.auth_mode(), None);
     for auth in [
-        AuthManager::from_optional_auth_for_testing(None),
+        no_auth,
         AuthManager::from_auth_for_testing(
             codex_login::CodexAuth::create_dummy_chatgpt_auth_for_testing(),
         ),
