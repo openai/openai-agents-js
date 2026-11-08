@@ -356,6 +356,7 @@ export function tool<
           name,
           timeoutBehavior === 'raise_exception' ? onTimeout : () => {},
           timeoutError,
+          timeoutBehavior,
         );
       } catch (error) {
         if (
@@ -498,6 +499,7 @@ export async function invokeWithTimeout<T>(
   name: string,
   onTimeout: (error: Error) => void,
   timeoutError?: Error,
+  timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
 ): Promise<T> {
   if (timeoutSeconds === undefined) return invoke(parentSignal);
   const controller = new AbortController();
@@ -519,7 +521,8 @@ export async function invokeWithTimeout<T>(
     } catch (error) {
       if (timeoutError) {
         if (performance.now() >= deadline) expire();
-        controller.signal.throwIfAborted();
+        if (timeoutBehavior !== 'error_as_result' || !parentSignal.aborted)
+          controller.signal.throwIfAborted();
       }
       throw error;
     }

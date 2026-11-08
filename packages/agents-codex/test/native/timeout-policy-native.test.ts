@@ -171,6 +171,97 @@ it.each(['raise_exception', 'error_as_result'] as const)(
   },
 );
 
+it('keeps the default root timeout error when cleanup rejects', async () => {
+  const stopped = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const server = new ModelServer([
+    [call('slow', {}, { callId: 'default-timeout-cleanup' })],
+  ]);
+  await using provider = await providerFor(server);
+  const session = await new Agent({
+    instructions: 'Use slow.',
+    provider,
+    tools: [
+      tool({
+        name: 'slow',
+        parameters: z.object({}),
+        callbackTimeout: 0.01,
+        async execute(_, context) {
+          context.signal.addEventListener('abort', () => stopped.resolve(), {
+            once: true,
+          });
+          await release.promise;
+          throw new Error('callback cleanup failed after default timeout');
+        },
+      }),
+    ],
+  }).session();
+  const turn = await session.submit('start');
+  const outcome = turn.wait().catch((error: unknown) => error);
+  try {
+    await stopped.promise;
+    release.resolve();
+    expect(await outcome).toBeInstanceOf(ToolTimeoutError);
+    expect(server.requests).toHaveLength(1);
+    server.assertExhausted();
+  } finally {
+    release.resolve();
+    await session.close().catch(() => {});
+    await outcome;
+  }
+});
+
+it('retains cleanup failure when the parent cancels after the deadline', async () => {
+  const stopped = Promise.withResolvers<unknown>();
+  const release = Promise.withResolvers<void>();
+  const cleanup = new Error('callback cleanup failed after timeout');
+  const formatter = vi.fn(() => 'must not publish timeout text');
+  const server = new ModelServer([
+    [call('slow', {}, { callId: 'cancelled-after-deadline' })],
+  ]);
+  await using provider = await providerFor(server);
+  const session = await new Agent({
+    instructions: 'Use slow.',
+    provider,
+    tools: [
+      tool({
+        name: 'slow',
+        parameters: z.object({}),
+        callbackTimeout: 0.01,
+        timeoutBehavior: 'error_as_result',
+        timeoutErrorFunction: formatter,
+        async execute(_, context) {
+          context.signal.addEventListener(
+            'abort',
+            () => stopped.resolve(context.signal.reason),
+            { once: true },
+          );
+          await release.promise;
+          throw cleanup;
+        },
+      }),
+    ],
+  }).session();
+  const turn = await session.submit('start');
+  const outcome = turn.wait().catch((error: unknown) => error);
+  try {
+    expect(await stopped.promise).toBeInstanceOf(ToolTimeoutError);
+    const cancelled = turn.cancel().catch((error: unknown) => error);
+    release.resolve();
+    const failure = await cancelled;
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toContain(cleanup);
+    expect(await outcome).toBeInstanceOf(AggregateError);
+    expect(formatter).not.toHaveBeenCalled();
+    expect(server.requests).toHaveLength(1);
+    server.assertExhausted();
+  } finally {
+    release.resolve();
+    await session.close().catch(() => {});
+    await outcome;
+  }
+});
+
 it.each(['cleanup', 'formatter'] as const)(
   'withholds timeout text when public root cancellation occurs during %s',
   async (stage) => {
