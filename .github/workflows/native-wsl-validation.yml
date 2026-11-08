@@ -86,8 +86,8 @@ jobs:
           '@
               $body = ("$preamble`n$Script`n").Replace("`r`n", "`n").Replace("`r", "`n")
               [System.IO.File]::WriteAllText($path, $body, [System.Text.UTF8Encoding]::new($false))
-              $linuxPath = Invoke-Wsl -Stage "$($Stage)_path" -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--', 'wslpath', '-u', $path)
-              Invoke-Wsl -Stage $Stage -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--', '/bin/bash', $linuxPath) | Out-Null
+              $linuxPath = Invoke-Wsl -Stage "$($Stage)_path" -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--exec', 'wslpath', '-u', $path)
+              Invoke-Wsl -Stage $Stage -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--exec', '/bin/bash', $linuxPath) | Out-Null
             } finally {
               Remove-Item -LiteralPath $directory -Recurse -Force
             }
