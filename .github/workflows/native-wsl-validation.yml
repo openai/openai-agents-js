@@ -1,4 +1,4 @@
-name: Native WSL capability probe
+name: Native WSL source validation
 
 on:
   push:
@@ -11,13 +11,13 @@ jobs:
   capabilities:
     if: github.ref == 'refs/heads/markstuart/native-wsl-validation'
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
     steps:
-      - name: Probe real WSL2 and WSLg prerequisites
-        timeout-minutes: 13
+      - name: Verify capabilities and run pinned SDK source tests
+        timeout-minutes: 82
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
@@ -46,7 +46,7 @@ jobs:
               $failure = [Exception]::new('WSL command failed.')
               $failure.Data['native_exit_code'] = $code
               $failure.Data['stage'] = $Stage
-              $check = [regex]::Match($output, '(?m)^probe-check=(script_start|linux_tools|package_index|package_install|create_probe_user|nonroot_tools|wsl_directory|interop_environment|interop_socket|init_binary|powershell_path|powershell_binary|powershell_execution|powershell_marker|alias_namespace|fresh_proc|no_proc|distro_environment|wsl_path|wsl_binary|root_execution|root_marker|wslg_directory|wslg_identity)\r?$')
+              $check = [regex]::Match($output, '(?m)^probe-check=(script_start|linux_tools|package_index|package_install|create_probe_user|nonroot_tools|wsl_directory|interop_environment|interop_socket|init_binary|powershell_path|powershell_binary|powershell_execution|powershell_marker|alias_namespace|fresh_proc|no_proc|distro_environment|wsl_path|wsl_binary|root_execution|root_marker|wslg_directory|wslg_identity|build_package_index|build_package_install|source_build)\r?$')
               if ($check.Success) { $failure.Data['check'] = $check.Groups[1].Value }
               $failure.Data['error_codes'] = @([regex]::Matches($output, '(?:Wsl/[A-Za-z0-9_/-]+|HCS_E_[A-Z0-9_]+|0x[0-9A-Fa-f]{8})') | ForEach-Object { $_.Value } | Select-Object -Unique)
               throw $failure
@@ -74,7 +74,7 @@ jobs:
             Save-Report
             Write-Host "$Name`: $($report.capabilities[$Name].status)"
           }
-          function Invoke-Linux([string] $Stage, [string] $Script, [string] $User = 'wslprobe') {
+          function Invoke-Linux([string] $Stage, [string] $Script, [string] $User = 'wslprobe', [string[]] $Arguments = @()) {
             $directory = Join-Path $env:RUNNER_TEMP ("native-wsl-script-" + [guid]::NewGuid().ToString('N'))
             [System.IO.Directory]::CreateDirectory($directory) | Out-Null
             try {
@@ -87,7 +87,8 @@ jobs:
               $body = ("$preamble`n$Script`n").Replace("`r`n", "`n").Replace("`r", "`n")
               [System.IO.File]::WriteAllText($path, $body, [System.Text.UTF8Encoding]::new($false))
               $linuxPath = Invoke-Wsl -Stage "$($Stage)_path" -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--exec', 'wslpath', '-u', $path)
-              Invoke-Wsl -Stage $Stage -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--exec', '/bin/bash', $linuxPath) | Out-Null
+              $linuxArguments = @('-d', 'Ubuntu-24.04', '-u', $User, '--exec', '/bin/bash', $linuxPath) + $Arguments
+              Invoke-Wsl -Stage $Stage -Arguments $linuxArguments | Out-Null
             } finally {
               Remove-Item -LiteralPath $directory -Recurse -Force
             }
@@ -224,18 +225,68 @@ jobs:
           if ($incomplete.Count -ne 0) {
             throw 'Required host capabilities failed or were not run. No SDK build or runtime test ran.'
           }
-      - name: Publish capability JSON and summary
+          # Public helper comes from this workflow's immutable commit; no checkout or token.
+          $evidence = Join-Path $env:RUNNER_TEMP 'native-wsl-evidence'
+          [System.IO.Directory]::CreateDirectory($evidence) | Out-Null
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_REPOSITORY -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+            throw 'Invalid workflow source identity.'
+          }
+          $helper = Join-Path $env:RUNNER_TEMP 'native-wsl-source-tests.py'
+          $url = "https://raw.githubusercontent.com/$($env:GITHUB_REPOSITORY)/$($env:GITHUB_SHA)/.github/scripts/native-wsl-source-tests.py"
+          Invoke-WebRequest -Uri $url -OutFile $helper
+          @{ repository = $env:GITHUB_REPOSITORY; commit = $env:GITHUB_SHA; helper_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $helper).Hash.ToLowerInvariant() } |
+            ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $evidence 'workflow-source.json')
+          $linuxEvidence = Invoke-Wsl -Stage 'source_evidence_path' -Arguments @('-d', 'Ubuntu-24.04', '-u', 'wslprobe', '--exec', 'wslpath', '-u', $evidence)
+          Invoke-Linux -Stage 'install_build_tools' -User root -Arguments @($linuxEvidence) -Script @'
+          exec >"$1/build-tools.log" 2>&1
+          check=build_package_index
+          apt-get update
+          check=build_package_install
+          # Cargo compiles bundled bwrap directly with cc and pkg-config/libcap, without autotools.
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential pkg-config libcap-dev libssl-dev cmake clang protobuf-compiler git python3 rustup curl ca-certificates xz-utils strace
+          '@
+          $linuxHelper = Invoke-Wsl -Stage 'source_helper_path' -Arguments @('-d', 'Ubuntu-24.04', '-u', 'wslprobe', '--exec', 'wslpath', '-u', $helper)
+          Invoke-Linux -Stage 'source_tests' -Arguments @($linuxHelper, $linuxEvidence) -Script @'
+          check=source_build
+          exec /usr/bin/python3 "$1" --evidence "$2"
+          '@
+      - name: Terminate owned WSL distro
         if: always()
+        timeout-minutes: 1
         run: |
           $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'native-wsl-evidence'
+          [System.IO.Directory]::CreateDirectory($evidence) | Out-Null
+          # This dedicated hosted runner installed only this named distro.
+          $process = $null
+          $passed = $false
+          try {
+            $process = Start-Process -FilePath 'wsl.exe' -ArgumentList @('--terminate', 'Ubuntu-24.04') -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $evidence 'distro-termination.log') -RedirectStandardError (Join-Path $evidence 'distro-termination-error.log')
+            $finished = $process.WaitForExit(30000)
+            if (-not $finished) { $process.Kill(); $process.WaitForExit(5000) | Out-Null }
+            $process.Refresh()
+            $passed = $finished -and $process.ExitCode -eq 0
+          } finally {
+            @{ status = $(if ($passed) { 'passed' } else { 'failed' }); native_exit_code = $(if ($null -ne $process -and $process.HasExited) { $process.ExitCode } else { $null }) } |
+              ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $evidence 'distro-cleanup.json')
+          }
+          if (-not $passed) { throw 'Owned WSL distro termination failed or timed out.' }
+      - name: Publish capability and source-test summary
+        if: always()
+        timeout-minutes: 1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'native-wsl-evidence'
+          [System.IO.Directory]::CreateDirectory($evidence) | Out-Null
           $reportPath = Join-Path $env:RUNNER_TEMP 'native-wsl-capabilities.json'
           if (-not (Test-Path -LiteralPath $reportPath)) {
             'Capability report unavailable. Probe did not complete.' >> $env:GITHUB_STEP_SUMMARY
             throw 'Capability report unavailable.'
           }
+          Copy-Item -LiteralPath $reportPath -Destination (Join-Path $evidence 'capabilities.json')
           $json = Get-Content -Raw -LiteralPath $reportPath
           $report = $json | ConvertFrom-Json
-          @('# WSL host capabilities', '', 'Capability probe only. No SDK compilation or runtime tests ran.', '', '| Capability | Status |', '| --- | --- |') >> $env:GITHUB_STEP_SUMMARY
+          @('# WSL host capabilities', '', 'Capability prerequisites and independently built, pinned Linux SDK tests in genuine WSL2.', '', '| Capability | Status |', '| --- | --- |') >> $env:GITHUB_STEP_SUMMARY
           foreach ($capability in $report.capabilities.PSObject.Properties) {
             "| $($capability.Name) | $($capability.Value.status) |" >> $env:GITHUB_STEP_SUMMARY
           }
@@ -245,3 +296,27 @@ jobs:
           if ($incomplete.Count -ne 0) {
             throw 'Capability report contains failed or unexecuted prerequisites.'
           }
+          $sourcePath = Join-Path $evidence 'source-results.json'
+          if (-not (Test-Path -LiteralPath $sourcePath)) {
+            throw 'Source-test report unavailable; assertion coverage is not established.'
+          }
+          $source = Get-Content -Raw -LiteralPath $sourcePath | ConvertFrom-Json
+          @('', '| SDK | Status | Assertion paths |', '| --- | --- | --- |') >> $env:GITHUB_STEP_SUMMARY
+          foreach ($sdk in $source.sdks.PSObject.Properties) {
+            $passed = @($sdk.Value.tests | Where-Object { $_.status -eq 'passed' }).Count
+            "| $($sdk.Name) | $($sdk.Value.status) | $passed/5 |" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "$($sdk.Name): $($sdk.Value.status), $passed/5 assertion paths"
+          }
+          if ($source.status -ne 'passed') { throw 'Source tests or execution proof failed. Inspect dedicated evidence.' }
+          $cleanup = Get-Content -Raw -LiteralPath (Join-Path $evidence 'distro-cleanup.json') | ConvertFrom-Json
+          if ($cleanup.status -ne 'passed') { throw 'Owned WSL distro cleanup did not pass.' }
+      - name: Upload public validation evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-wsl-source-evidence
+          path: ${{ runner.temp }}/native-wsl-evidence/
+          include-hidden-files: false
+          if-no-files-found: error
+          retention-days: 7
