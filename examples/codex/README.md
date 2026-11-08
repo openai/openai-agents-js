@@ -1,5 +1,7 @@
 # SDK examples
 
+Read the [native voice guide](guides/native-voice.md) for Session-owned Realtime, per-connection credentials, custom adapters, and speech pipelines. Run [native-realtime-voice.ts](native-realtime-voice.ts) to record a reply.
+
 Use Node.js 24 and [build the SDK and native runtime](guides/building.md) from the same checkout as the examples. Run commands from the repository root. For a released starter bundle, use the [installation guide](guides/installation.md).
 
 ## Check a native workflow without a model key

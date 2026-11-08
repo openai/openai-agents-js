@@ -110,7 +110,7 @@ export function createResponseSpan(
   options?: CreateArgs<ResponseSpanData>,
   parent?: Span<any> | Trace,
 ): Span<ResponseSpanData> {
-  options = {};
+  options ??= {};
   return getGlobalTraceProvider().createSpan(
     {
       ...options,

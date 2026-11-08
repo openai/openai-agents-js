@@ -182,7 +182,11 @@ export function toSessionStateEnvelope(
     sanitizeMountCredentialEnvironmentForPersistence(stateForEnvelope).manifest,
   );
   return {
-    version: SANDBOX_SESSION_STATE_VERSION,
+    // Runner-owned envelopes retain the published v5 format; v6 marks client preparation.
+    version:
+      options.environmentPreparation === 'client'
+        ? SANDBOX_SESSION_STATE_VERSION
+        : 5,
     backendId,
     ...(options.environmentPreparation
       ? { environmentPreparation: options.environmentPreparation }

@@ -43,6 +43,9 @@ export interface SessionMessage {
   message: any;
 }
 
+// Preserve the published Classic default without loading the optional MCP runtime.
+const DEFAULT_MCP_TOOL_TIMEOUT_MSEC = 60_000;
+
 type MCPClientModule = typeof import('@modelcontextprotocol/client');
 
 function failedToImport(error: unknown): never {
@@ -421,7 +424,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
-  protected timeout: number | undefined;
+  protected timeout: number;
   private readonly maxListPages: number | undefined;
 
   params: DefaultMCPServerStdioOptions;
@@ -432,7 +435,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     super(params);
     this.maxListPages = validateMaxListPages(params.maxListPages);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
-    this.timeout = params.timeout;
+    this.timeout = params.timeout ?? DEFAULT_MCP_TOOL_TIMEOUT_MSEC;
     if ('fullCommand' in params) {
       const elements = params.fullCommand.split(' ');
       const command = elements.shift();
@@ -567,7 +570,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       (requestSignal, runtime) =>
         session.callTool(params, {
           ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
-            timeout: this.timeout ?? runtime.DEFAULT_REQUEST_TIMEOUT_MSEC,
+            timeout: this.timeout,
             signal: requestSignal,
           }),
           toolDefinition: getListedToolForCall(listedTools, toolName, runtime),
@@ -680,7 +683,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
-  protected timeout: number | undefined;
+  protected timeout: number;
   private readonly maxListPages: number | undefined;
 
   params: MCPServerSSEOptions;
@@ -693,7 +696,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `sse: ${this.params.url}`;
-    this.timeout = params.timeout;
+    this.timeout = params.timeout ?? DEFAULT_MCP_TOOL_TIMEOUT_MSEC;
   }
 
   async connect(): Promise<void> {
@@ -813,7 +816,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
         callWithMCPRequestSignal(options?.signal, (requestSignal, runtime) =>
           session.callTool(params, {
             ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
-              timeout: this.timeout ?? runtime.DEFAULT_REQUEST_TIMEOUT_MSEC,
+              timeout: this.timeout,
               signal: requestSignal,
             }),
             toolDefinition: getListedToolForCall(
@@ -945,7 +948,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
-  protected timeout: number | undefined;
+  protected timeout: number;
   private readonly maxListPages: number | undefined;
 
   params: MCPServerStreamableHttpOptions;
@@ -965,7 +968,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `streamable-http: ${this.params.url}`;
-    this.timeout = params.timeout;
+    this.timeout = params.timeout ?? DEFAULT_MCP_TOOL_TIMEOUT_MSEC;
   }
 
   private async loadStreamableHttpRuntime(): Promise<{
@@ -1242,7 +1245,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
       (requestSignal, runtime) =>
         client.callTool(params, {
           ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
-            timeout: this.timeout ?? runtime.DEFAULT_REQUEST_TIMEOUT_MSEC,
+            timeout: this.timeout,
             signal: requestSignal,
           }),
           toolDefinition: getListedToolForCall(listedTools, toolName, runtime),

@@ -661,8 +661,12 @@ export function mcpConfig(
       const server = selected ?? declared;
       const config = {
         ...mcpServerConfig(server, environment),
-        ...(server.deferLoading && !codeMode
-          ? { omit_tools_from: ['code_mode'] }
+        ...(!codeMode
+          ? {
+              omit_tools_from: server.deferLoading
+                ? ['code_mode']
+                : ['deferred', 'code_mode'],
+            }
           : {}),
         ...(!selected ? { enabled: false, required: false } : {}),
       };

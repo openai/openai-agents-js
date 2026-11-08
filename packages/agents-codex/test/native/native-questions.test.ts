@@ -4,7 +4,11 @@ import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { createServer, type ServerResponse } from 'node:http';
+import {
+  createServer,
+  request as forwardHttp,
+  type ServerResponse,
+} from 'node:http';
 import {
   afterAll,
   afterEach,
@@ -57,6 +61,7 @@ async function fixture(
     completeStartupList?: Promise<void>;
     missingSelectedTool?: boolean;
     formOrigin?: 'previous' | 'current';
+    deferGetUntilPostHeaders?: boolean;
     urlQuestion?: boolean;
     urlCompletion?: boolean;
     urlRequired?: boolean;
@@ -465,6 +470,50 @@ async function fixture(
   const address = peer.address();
   if (!address || typeof address === 'string')
     throw new Error('Expected TCP peer');
+  // Exercise legal request ordering: a GET can arrive after the held POST's
+  // response headers. Forwarding waits for actual headers, not a timer.
+  const postHeaders = Promise.withResolvers<void>();
+  const proxy = options.deferGetUntilPostHeaders
+    ? createServer((request, response) => {
+        const forward = () => {
+          if (response.destroyed) return;
+          const upstream = forwardHttp(
+            {
+              hostname: '127.0.0.1',
+              port: address.port,
+              method: request.method,
+              path: request.url,
+              headers: request.headers,
+            },
+            (incoming) => {
+              if (
+                request.method === 'POST' &&
+                incoming.headers['content-type']?.startsWith(
+                  'text/event-stream',
+                )
+              )
+                postHeaders.resolve();
+              response.writeHead(incoming.statusCode ?? 502, incoming.headers);
+              incoming.pipe(response);
+            },
+          );
+          upstream.on('error', () => response.destroy());
+          response.once('close', () => upstream.destroy());
+          request.pipe(upstream);
+        };
+        if (request.method === 'GET') void postHeaders.promise.then(forward);
+        else forward();
+      })
+    : undefined;
+  if (proxy) {
+    proxy.listen(0, '127.0.0.1');
+    await once(proxy, 'listening');
+  }
+  const proxyAddress = proxy?.address();
+  const endpointPort =
+    proxyAddress && typeof proxyAddress !== 'string'
+      ? proxyAddress.port
+      : address.port;
   let rootModelId: string | undefined;
   const childModelCounts = new Map<string, number>();
   const childModelInputs: JsonObject[] = [];
@@ -584,7 +633,7 @@ async function fixture(
         : []),
       new HttpMCP({
         name: 'fixture',
-        url: `http://127.0.0.1:${address.port}`,
+        url: `http://127.0.0.1:${endpointPort}`,
         tools: ['lookup'],
         approvalMode: sessionStream ? 'preapproved' : 'native',
       }),
@@ -656,6 +705,10 @@ async function fixture(
         await provider.close();
       } catch (error) {
         errors.push(error);
+      }
+      if (proxy) {
+        proxy.closeAllConnections();
+        await new Promise<void>((resolve) => proxy.close(() => resolve()));
       }
       peer.closeAllConnections();
       try {
@@ -976,9 +1029,13 @@ it('starts the sole real event reader before publishing MCP and refuses an unown
   }
 }, 30_000);
 
-for (const formOrigin of ['previous', 'current'] as const) {
-  it(`refuses an unsolicited GET-stream form from ${formOrigin} during same-server B without issuing a grant`, async () => {
-    const f = await fixture({ formOrigin });
+for (const { formOrigin, deferGetUntilPostHeaders } of [
+  { formOrigin: 'previous', deferGetUntilPostHeaders: false },
+  { formOrigin: 'current', deferGetUntilPostHeaders: false },
+  { formOrigin: 'previous', deferGetUntilPostHeaders: true },
+] as const) {
+  it(`refuses an unsolicited GET-stream form from ${formOrigin} during same-server B without issuing a grant${deferGetUntilPostHeaders ? ' when GET follows POST headers' : ''}`, async () => {
+    const f = await fixture({ formOrigin, deferGetUntilPostHeaders });
     let issued = 0;
     try {
       f.trace('agent_run_wait');

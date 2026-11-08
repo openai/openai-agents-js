@@ -143,6 +143,9 @@ pub fn build(
     builder.tool_lifecycle_contributor(managed.clone());
     builder.prompt_contributor(managed.clone());
     builder.tool_contributor(managed);
+    let profiles = Arc::new(crate::agent_profiles::Contributor);
+    builder.tool_contributor(profiles.clone());
+    builder.turn_lifecycle_contributor(profiles);
     let recovery = Arc::new(crate::recovery_guard::RecoveryContributor::default());
     builder.thread_lifecycle_contributor(recovery.clone());
     builder.turn_lifecycle_contributor(recovery.clone());
@@ -218,36 +221,8 @@ pub fn build(
     codex_mcp_extension::install_plugins(&mut builder, environment.clone());
     // Apply the explicit host capability after generic MCP defaults and plugins.
     builder.mcp_server_contributor(Arc::new(crate::verification::Contributor));
-    let media_project: Arc<dyn Fn(&Config) -> Config + Send + Sync> = {
-        // The entered Engine is the only source of this pairing. Core can
-        // change thread settings after start: never project an old provider
-        // over a different current one. Other current settings stay current.
-        let entered = config.clone();
-        let auth = auth.clone();
-        Arc::new(move |current| {
-            let mut media = current.clone();
-            if let Some(provider) = entered.model_providers.get(&current.model_provider_id) {
-                let mut expected = entered.clone();
-                let issued = match sentinel.read().expect("sentinel poisoned").as_ref() {
-                    Some((base, grant, excluded)) => crate::engine::EngineState::prepare_sentinel(
-                        &mut expected,
-                        &auth,
-                        base,
-                        grant,
-                        excluded.as_deref(),
-                    ),
-                    None => Ok(()),
-                };
-                if issued.is_ok()
-                    && expected.model_providers.get(&current.model_provider_id)
-                        == Some(&current.model_provider)
-                {
-                    media.model_provider = provider.clone();
-                }
-            }
-            media
-        })
-    };
+    let media_project = entered_media_projection(config.clone(), auth.clone(), sentinel.clone());
+    builder.thread_lifecycle_contributor(Arc::new(RealtimeProjection(media_project.clone())));
     let mut media_registry = ExtensionRegistryBuilder::with_event_sink(builder.event_sink());
     {
         let project = media_project.clone();
@@ -356,6 +331,52 @@ pub fn build(
     Arc::new(builder.build())
 }
 
+// Restore only a provider issued by this entered Engine. Keep current settings
+// and never project an old provider over a later native profile/config change.
+fn entered_media_projection(
+    entered: Config,
+    auth: Arc<AuthManager>,
+    sentinel: Arc<RwLock<Option<(String, String, Option<String>)>>>,
+) -> Arc<dyn Fn(&Config) -> Config + Send + Sync> {
+    Arc::new(move |current| {
+        let mut media = current.clone();
+        if let Some(provider) = entered.model_providers.get(&current.model_provider_id) {
+            let mut expected = entered.clone();
+            let issued = match sentinel.read().expect("sentinel poisoned").as_ref() {
+                Some((base, grant, excluded)) => crate::engine::EngineState::prepare_sentinel(
+                    &mut expected,
+                    &auth,
+                    base,
+                    grant,
+                    excluded.as_deref(),
+                ),
+                None => Ok(()),
+            };
+            if issued.is_ok()
+                && expected.model_providers.get(&current.model_provider_id)
+                    == Some(&current.model_provider)
+            {
+                media.model_provider = provider.clone();
+            }
+        }
+        media
+    })
+}
+
+struct RealtimeProjection(Arc<dyn Fn(&Config) -> Config + Send + Sync>);
+impl ThreadLifecycleContributor<Config> for RealtimeProjection {
+    fn on_thread_start<'a>(
+        &'a self,
+        input: ThreadStartInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            input
+                .thread_store
+                .get_or_init(|| codex_core::RealtimeConfigProjection::new(self.0.clone()));
+        })
+    }
+}
+
 /// Pinned web and image configs live in their existing Core thread stores.
 /// Delegate start and config commits without owning thread or auth-result state.
 struct EnteredMedia {
@@ -379,6 +400,7 @@ impl ThreadLifecycleContributor<Config> for EnteredMedia {
                     config: &config,
                     session_source: input.session_source,
                     persistent_thread_state_available: input.persistent_thread_state_available,
+                    spawning_step_store: input.spawning_step_store,
                     environments: input.environments,
                     mcp_resource_client: input.mcp_resource_client,
                     extension_metrics: input.extension_metrics,
@@ -444,5 +466,68 @@ fn install_audited_extensions(
             )),
             output,
         )));
+    }
+}
+
+#[cfg(test)]
+mod realtime_projection_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn restores_only_the_exact_current_entered_provider_and_never_the_private_grant() {
+        let home = tempfile::tempdir().unwrap();
+        let (entered, _) = crate::config::load(
+            &json!({"model_provider":"fixture_a",
+                "model_providers.fixture_a":{"name":"A","base_url":"https://a.invalid/v1","wire_api":"responses","requires_openai_auth":true},
+                "model_providers.fixture_b":{"name":"B","base_url":"https://b.invalid/v1","wire_api":"responses","requires_openai_auth":true},
+                "features.apps":false,"features.plugins":false}).to_string(),
+            &json!({"codex_home":home.path(),"cwd":home.path(),"loader":{"ignore_user_config":true,"ignore_project_config":true}}).to_string(),
+            None,
+        ).await.unwrap();
+        let auth = crate::auth::manager(&entered, Some("synthetic-projection".into()))
+            .await
+            .unwrap();
+        let sentinel = Arc::new(RwLock::new(Some((
+            "http://127.0.0.1:9876".into(),
+            "private-transport-grant".into(),
+            None,
+        ))));
+        let project = entered_media_projection(entered.clone(), auth.clone(), sentinel);
+        let mut issued = entered.clone();
+        crate::engine::EngineState::prepare_sentinel(
+            &mut issued,
+            &auth,
+            "http://127.0.0.1:9876",
+            "private-transport-grant",
+            None,
+        )
+        .unwrap();
+        let projected = project(&issued);
+        assert_eq!(projected.model_provider, entered.model_provider);
+        assert!(
+            !projected
+                .model_provider
+                .http_headers
+                .as_ref()
+                .is_some_and(|headers| headers.contains_key("x-sdk-sentinel-grant"))
+        );
+        // Resolve the actual current provider, rather than projecting root A over B.
+        let mut b = issued.clone();
+        b.model_provider_id = "fixture_b".into();
+        b.model_provider = b.model_providers["fixture_b"].clone();
+        assert_eq!(
+            project(&b).model_provider,
+            entered.model_providers["fixture_b"]
+        );
+        // The URL and a plausible grant alone cannot authorize the projection.
+        let mut mismatch = issued.clone();
+        mismatch.model_provider.request_max_retries = Some(37);
+        assert_eq!(project(&mismatch).model_provider, mismatch.model_provider);
+        mismatch = issued.clone();
+        mismatch.model_provider.base_url = Some("https://different.invalid/v1".into());
+        assert_eq!(project(&mismatch).model_provider, mismatch.model_provider);
+        mismatch.model_provider_id = "unrecognized-provider".into();
+        assert_eq!(project(&mismatch).model_provider, mismatch.model_provider);
     }
 }

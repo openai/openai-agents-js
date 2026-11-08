@@ -2,7 +2,7 @@
 // reproduced here. Core owns routing; a live cell owns its retained delegate.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -120,6 +120,9 @@ struct OwnedRequest<'a, T> {
     cell_owner_id: Option<String>,
 }
 impl<T: DecisionRequest> DecisionRequest for OwnedRequest<'_, T> {
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        self.request.profile_source()
+    }
     fn tool_identity(&self) -> Option<(Option<&str>, &str)> {
         self.request.tool_identity()
     }
@@ -214,6 +217,9 @@ impl Drop for CellPolicyOwner {
 }
 
 trait DecisionRequest: Serialize {
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        None
+    }
     fn owner(&self) -> Option<&Arc<DirectTurn>> {
         None
     }
@@ -245,6 +251,9 @@ impl<I: Serialize, R: Serialize, K: Serialize> DecisionRequest for Request<'_, I
 }
 
 impl<T: DecisionRequest> DecisionRequest for &T {
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        (*self).profile_source()
+    }
     fn owner(&self) -> Option<&Arc<DirectTurn>> {
         (*self).owner()
     }
@@ -292,6 +301,10 @@ struct Identified<'a, T> {
 }
 #[derive(Serialize)]
 struct Notice<'a, T> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_epoch: Option<u64>,
     nonce: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation: Option<u64>,
@@ -301,6 +314,7 @@ struct Notice<'a, T> {
 type CancellationProbe = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
 
 struct Pending {
+    profile_source: Option<Arc<ProfileMcpSource>>,
     owner: Option<Arc<DirectTurn>>,
     retained: bool,
     generation: Option<u64>,
@@ -313,7 +327,10 @@ struct Pending {
     control: Weak<Control>,
     payload: Payload,
     _bytes: OwnedSemaphorePermit,
+    // Drop after charged bytes, only when the physical callback owner returns.
+    _released: Option<oneshot::Sender<()>>,
 }
+type NoticeRelease = oneshot::Receiver<()>;
 enum Reply {
     Decision(Decision),
     HoldForStop,
@@ -363,6 +380,118 @@ pub(crate) struct ToolRule {
 }
 
 type Rules = HashMap<ToolName, (Option<Duration>, Scope, Option<u64>, bool, bool)>;
+
+/// Immutable MCP callback policy from the same native Agent profile as its tool router.
+#[derive(Clone, Default)]
+pub(crate) struct ProfileMcpPolicy {
+    names: HashSet<ToolName>,
+    rules: Rules,
+}
+impl ProfileMcpPolicy {
+    pub(crate) fn has_pre_policy(&self) -> bool {
+        self.rules.values().any(|rule| rule.2.is_some())
+    }
+
+    pub(crate) fn prepare(
+        binding: &codex_mcp::McpBinding,
+        declarations: &std::collections::BTreeMap<
+            String,
+            crate::agent_profiles::McpToolDeclaration,
+        >,
+        generation: u64,
+    ) -> Result<Self> {
+        let mut names = HashSet::new();
+        let mut rules = Vec::new();
+        for tool in binding.tools() {
+            let name = ToolName::new(
+                Some(tool.callable_namespace.clone()),
+                tool.callable_name.clone(),
+            )
+            .with_default_namespace();
+            names.insert(name.clone());
+            let Some(declaration) = declarations.get(&tool.server_name) else {
+                continue;
+            };
+            if !(declaration.before || declaration.approval)
+                || !declaration
+                    .tools
+                    .iter()
+                    .any(|name| name.as_str() == tool.tool.name.as_ref())
+            {
+                continue;
+            }
+            rules.push(ToolRule {
+                name: name.name,
+                namespace: name.namespace,
+                timeout: (!declaration.approval).then_some(30.0),
+                scope: Scope::ThreadTree,
+                generation: Some(generation.to_string()),
+                result: false,
+                executor_before: false,
+            });
+        }
+        Ok(Self {
+            names,
+            rules: Control::compile_rules(rules)?,
+        })
+    }
+}
+
+/// Callback attribution only; it carries no Session, environment, or callable executor.
+#[derive(Clone)]
+pub(crate) struct ProfileMcpSource {
+    pub(crate) result_selection: Option<Arc<crate::mcp_result_control::Selection>>,
+    pub(crate) receipt: Option<codex_extension_api::AgentProfileReceipt>,
+    pub(crate) policy: Option<Arc<ProfileMcpPolicy>>,
+}
+fn capture_mcp_source(
+    step: Option<&ExtensionData>,
+) -> Result<Option<Arc<ProfileMcpSource>>, String> {
+    let source = step.and_then(|step| step.get::<ProfileMcpSource>());
+    if source
+        .as_ref()
+        .is_some_and(|source| source.policy.is_none())
+        || (source.is_none()
+            && step.is_some_and(|step| {
+                step.get::<codex_extension_api::CapturedAgentProfile>()
+                    .is_some()
+            }))
+    {
+        return Err(FAILURE.into());
+    }
+    Ok(source)
+}
+
+#[derive(Serialize)]
+struct ProfiledRequest<T> {
+    #[serde(flatten)]
+    request: T,
+    #[serde(skip)]
+    source: Option<Arc<ProfileMcpSource>>,
+}
+impl<T: DecisionRequest> DecisionRequest for ProfiledRequest<T> {
+    fn owner(&self) -> Option<&Arc<DirectTurn>> {
+        self.request.owner()
+    }
+    fn retained(&self) -> bool {
+        self.request.retained()
+    }
+    fn binding(&self) -> Option<&CellOwnerMetadata> {
+        self.request.binding()
+    }
+    fn tool_identity(&self) -> Option<(Option<&str>, &str)> {
+        self.request.tool_identity()
+    }
+    fn phase(&self) -> Option<&str> {
+        self.request.phase()
+    }
+    fn boundary(&self) -> Option<&str> {
+        self.request.boundary()
+    }
+    fn profile_source(&self) -> Option<&Arc<ProfileMcpSource>> {
+        self.source.as_ref()
+    }
+}
 
 struct State {
     tools: Option<Rules>,
@@ -564,6 +693,8 @@ impl HeldPolicyStop {
 }
 
 pub struct Control {
+    mcp_results: OnceLock<Weak<crate::mcp_result_control::McpResultControl>>,
+    profile_policies: AtomicU8,
     id: String,
     pub(crate) incarnation: String,
     root: bool,
@@ -621,6 +752,13 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn bind_mcp_results(
+        &self,
+        results: &Arc<crate::mcp_result_control::McpResultControl>,
+    ) {
+        let _ = self.mcp_results.set(Arc::downgrade(results));
+    }
+
     pub(crate) fn creation_tracing(&self) -> Option<Arc<codex_otel::sdk_trace::ContextLease>> {
         self.creation_tracing.get().cloned().flatten()
     }
@@ -722,7 +860,7 @@ impl Control {
         &self.stopped
     }
 
-    fn new(id: String, root: bool) -> Self {
+    pub(crate) fn new(id: String, root: bool) -> Self {
         Self::with_budget(id, root, MAX_PAYLOAD_BYTES)
     }
 
@@ -731,6 +869,8 @@ impl Control {
         Self {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
+            mcp_results: OnceLock::new(),
+            profile_policies: AtomicU8::new(0),
             root,
             native_depth: if root { 0 } else { usize::MAX },
             native_agents: std::sync::OnceLock::new(),
@@ -775,6 +915,8 @@ impl Control {
         Self {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
+            mcp_results: OnceLock::new(),
+            profile_policies: AtomicU8::new(parent.profile_policies.load(Ordering::Acquire)),
             root: false,
             native_depth: parent.native_depth.saturating_add(1),
             native_agents: parent.native_agents.clone(),
@@ -1085,6 +1227,21 @@ impl Control {
                     .any(|rule| rule.2.is_none() && (self.root || rule.1 == Scope::ThreadTree))
             })
     }
+    fn mcp_selected_for(
+        &self,
+        name: &ToolName,
+        source: Option<&Arc<ProfileMcpSource>>,
+    ) -> Result<bool, String> {
+        let global = self.mcp_selected(name)?;
+        let Some(source) = source else {
+            return Ok(global);
+        };
+        let policy = source.policy.as_ref().ok_or(FAILURE)?;
+        Ok(policy
+            .rules
+            .contains_key(&name.clone().with_default_namespace()))
+    }
+
     fn mcp_selected(&self, name: &ToolName) -> Result<bool, String> {
         let state = self
             .channel
@@ -1144,7 +1301,48 @@ impl Control {
         state.timeout.is_some() && (self.root || state.scope == Scope::ThreadTree)
     }
 
+    pub(crate) fn capture_mcp_source(&self) -> ProfileMcpSource {
+        self.profile_policies.fetch_max(1, Ordering::AcqRel);
+        let state = self
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        let rules = state
+            .tools
+            .as_ref()
+            .map(|rules| {
+                rules
+                    .iter()
+                    .filter(|(_, rule)| rule.2.is_some())
+                    .map(|(name, rule)| (name.clone(), *rule))
+                    .collect::<Rules>()
+            })
+            .unwrap_or_default();
+        drop(state);
+        ProfileMcpSource {
+            result_selection: self
+                .mcp_results
+                .get()
+                .and_then(Weak::upgrade)
+                .and_then(|results| results.capture_source_selection())
+                .map(Arc::new),
+            receipt: None,
+            policy: Some(Arc::new(ProfileMcpPolicy {
+                names: rules.keys().cloned().collect(),
+                rules,
+            })),
+        }
+    }
+
+    pub(crate) fn enable_profile_policies(&self) {
+        self.profile_policies.store(2, Ordering::Release);
+    }
+
     fn configured(&self) -> bool {
+        if self.profile_policies.load(Ordering::Acquire) != 0 {
+            return true;
+        }
         // Revocation must fail closed for an opted-in owner, never convert it
         // to a new opted-out owner while native work is being cancelled.
         self.configured_in(
@@ -1286,9 +1484,15 @@ impl Control {
             && state.pending.get(&nonce).is_some_and(|pending| {
                 pending.reply.is_some()
                     && pending.generation.is_none_or(|generation| {
-                        state.tools.as_ref().is_some_and(|rules| {
-                            rules.values().any(|rule| rule.2 == Some(generation))
-                        })
+                        if let Some(source) = &pending.profile_source {
+                            source.policy.as_ref().is_some_and(|policy| {
+                                policy.rules.values().any(|rule| rule.2 == Some(generation))
+                            })
+                        } else {
+                            state.tools.as_ref().is_some_and(|rules| {
+                                rules.values().any(|rule| rule.2 == Some(generation))
+                            })
+                        }
                     })
                     && pending
                         .owner
@@ -1371,17 +1575,20 @@ impl Control {
         if state.revoked || state.mcp_poisoned || state.mcp_publication.is_some() {
             return None;
         }
-        if state
-            .pending
-            .get(&nonce)
-            .and_then(|p| p.generation)
-            .is_some_and(|generation| {
-                !state
-                    .tools
-                    .as_ref()
-                    .is_some_and(|rules| rules.values().any(|rule| rule.2 == Some(generation)))
+        if state.pending.get(&nonce).is_some_and(|pending| {
+            pending.generation.is_some_and(|generation| {
+                if let Some(source) = &pending.profile_source {
+                    !source.policy.as_ref().is_some_and(|policy| {
+                        policy.rules.values().any(|rule| rule.2 == Some(generation))
+                    })
+                } else {
+                    !state
+                        .tools
+                        .as_ref()
+                        .is_some_and(|rules| rules.values().any(|rule| rule.2 == Some(generation)))
+                }
             })
-        {
+        }) {
             return None;
         }
         let Some(pending) = state.pending.get_mut(&nonce) else {
@@ -1485,6 +1692,29 @@ impl Control {
         previous: Option<OwnedSemaphorePermit>,
         is_cancelled: Option<CancellationProbe>,
     ) -> Result<Decision, String> {
+        self.decide_released(request, token, previous, is_cancelled, None)
+            .await
+    }
+
+    async fn decide_released<T: DecisionRequest + Send>(
+        self: &Arc<Self>,
+        request: T,
+        token: &CancellationToken,
+        previous: Option<OwnedSemaphorePermit>,
+        is_cancelled: Option<CancellationProbe>,
+        physical_release: Option<&mut Option<NoticeRelease>>,
+    ) -> Result<Decision, String> {
+        let profile_source = request.profile_source().cloned();
+        let source_policy = profile_source
+            .as_ref()
+            .map(|source| source.policy.as_ref().ok_or(FAILURE))
+            .transpose()?;
+        let identity = request.tool_identity().map(|(namespace, name)| {
+            ToolName::new(namespace.map(str::to_owned), name).with_default_namespace()
+        });
+        let source_rule = source_policy
+            .and_then(|policy| identity.as_ref().and_then(|key| policy.rules.get(key)))
+            .copied();
         let owner = request.owner().cloned();
         let retained = request.retained();
         let binding = request.binding().is_some();
@@ -1500,21 +1730,28 @@ impl Control {
             {
                 return Err(FAILURE.into());
             }
-            if !self.configured_in(&state) {
+            if !self.configured_in(&state) && source_rule.is_none() {
                 return Ok(Decision::Continue);
             }
             let (timeout, generation, stop_allowed) = if binding {
                 (state.timeout, None, false)
-            } else if let Some(tools) = &state.tools {
-                let Some((namespace, name)) = request.tool_identity() else {
+            } else if state.tools.is_some() || source_policy.is_some() {
+                let Some(key) = identity.as_ref() else {
                     return Ok(Decision::Continue);
                 };
-                // Match the identity Core will route, while preserving the
-                // original namespace in the callback's request.
-                let key =
-                    ToolName::new(namespace.map(str::to_owned), name).with_default_namespace();
-                let Some(&(timeout, scope, generation, _, executor_before)) = tools.get(&key)
-                else {
+                let global = state
+                    .tools
+                    .as_ref()
+                    .and_then(|tools| tools.get(key))
+                    .copied();
+                let rule = if source_policy.is_some_and(|policy| policy.names.contains(key))
+                    || (source_policy.is_some() && global.is_some_and(|rule| rule.2.is_some()))
+                {
+                    source_rule
+                } else {
+                    global
+                };
+                let Some((timeout, scope, generation, _, executor_before)) = rule else {
                     return Ok(Decision::Continue);
                 };
                 if !self.root && scope != Scope::ThreadTree {
@@ -1553,6 +1790,14 @@ impl Control {
             let nonce = state.nonce;
             let deadline = timeout.map(|timeout| Instant::now() + timeout);
             let notice = Notice {
+                profile_id: profile_source
+                    .as_ref()
+                    .and_then(|source| source.receipt.as_ref())
+                    .map(|receipt| receipt.profile_id.as_str()),
+                profile_epoch: profile_source
+                    .as_ref()
+                    .and_then(|source| source.receipt.as_ref())
+                    .map(|receipt| receipt.epoch),
                 nonce,
                 generation,
                 request: Identified {
@@ -1576,9 +1821,15 @@ impl Control {
                 (bytes, serde_json::to_string(&notice).map_err(|_| FAILURE)?)
             };
             let (tx, rx) = oneshot::channel();
+            let released = physical_release.map(|receipt| {
+                let (released, returned) = oneshot::channel();
+                *receipt = Some(returned);
+                released
+            });
             state.pending.insert(
                 nonce,
                 Pending {
+                    profile_source: profile_source.clone(),
                     owner: owner.clone(),
                     retained,
                     generation,
@@ -1591,6 +1842,7 @@ impl Control {
                     control: Arc::downgrade(self),
                     payload: Payload::Queued(wire),
                     _bytes: bytes,
+                    _released: released,
                 },
             );
             if self.channel.sender.send(Message::Payload(nonce)).is_err() {
@@ -1665,11 +1917,22 @@ pub(crate) struct McpPublication {
     settled: bool,
 }
 impl McpPublication {
+    #[cfg(test)]
     pub(crate) fn begin(
         boundary: &Boundary,
         control: Arc<Control>,
         rules: Vec<ToolRule>,
         generation: u64,
+    ) -> Result<Option<Self>> {
+        Self::begin_with_profile(boundary, control, rules, generation, None)
+    }
+
+    pub(crate) fn begin_with_profile(
+        boundary: &Boundary,
+        control: Arc<Control>,
+        rules: Vec<ToolRule>,
+        generation: u64,
+        captured: Option<&ProfileMcpPolicy>,
     ) -> Result<Option<Self>> {
         let next = Control::compile_rules(rules)?;
         ensure!(
@@ -1687,7 +1950,10 @@ impl McpPublication {
                 .as_ref()
                 .is_some_and(|rules| rules.values().any(|rule| rule.2.is_some()))
         };
-        if !policy(&state.tools) && !next.values().any(|rule| rule.2.is_some()) {
+        if !policy(&state.tools)
+            && !captured.is_some_and(ProfileMcpPolicy::has_pre_policy)
+            && !next.values().any(|rule| rule.2.is_some())
+        {
             return Ok(None);
         }
         ensure!(
@@ -1796,6 +2062,7 @@ impl Drop for Reservation {
 // separately, never in this index. Register opt-out starts too so even
 // reuse of a completed native task id cannot adopt a stale opted-in owner.
 struct StartedExec {
+    profile_source: Result<Option<Arc<ProfileMcpSource>>, String>,
     rules: Option<crate::canonical_rules::CellImageOrigin>,
     turn: Option<Arc<DirectTurn>>,
     control: Arc<Control>,
@@ -2190,6 +2457,16 @@ impl Boundary {
     }
 
     fn start_exec(&self, control: Arc<Control>, turn_id: &str, call_id: &str, name: &'static str) {
+        self.start_exec_source(control, turn_id, call_id, name, None)
+    }
+    fn start_exec_source(
+        &self,
+        control: Arc<Control>,
+        turn_id: &str,
+        call_id: &str,
+        name: &'static str,
+        step: Option<&ExtensionData>,
+    ) {
         // A retained cell keeps its issuing model across later generations.
         let turn = control
             .direct_turn
@@ -2210,6 +2487,7 @@ impl Boundary {
             .insert(
                 tokio::task::id(),
                 StartedExec {
+                    profile_source: capture_mcp_source(step),
                     rules: None,
                     turn,
                     control,
@@ -2356,6 +2634,12 @@ impl std::fmt::Debug for Boundary {
 }
 
 impl ThreadLifecycleContributor<Config> for Boundary {
+    fn on_thread_execution_revoked(&self, thread_store: &ExtensionData) {
+        if let Some(control) = thread_store.get::<Control>() {
+            control.revoke();
+        }
+    }
+
     fn on_thread_start<'a>(
         &'a self,
         input: ThreadStartInput<'a, Config>,
@@ -2398,6 +2682,32 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     None => Control::new(id, root),
                 }
             });
+            if input
+                .thread_store
+                .get::<crate::agent_profiles::OpeningProfiles>()
+                .is_some()
+            {
+                control.enable_profile_policies();
+            }
+            if let Some(step) = input.spawning_step_store {
+                match capture_mcp_source(Some(step)) {
+                    Ok(Some(source)) => {
+                        input.thread_store.insert((*source).clone());
+                        if let Some(selection) = step.get::<crate::mcp_result_control::Selection>()
+                        {
+                            input.thread_store.insert((*selection).clone());
+                        }
+                    }
+                    Ok(None) if control.profile_policies.load(Ordering::Acquire) == 2 => {
+                        control.revoke()
+                    }
+                    Err(_) => control.revoke(),
+                    _ => {}
+                }
+            } else if !root && control.profile_policies.load(Ordering::Acquire) == 2 {
+                // Runtime-only spawn authority is absent on an unvalidated managed restart.
+                control.revoke();
+            }
             let _ = control.creation_tracing.set(creation_tracing);
             let _ = control.creation_trace.set(creation_trace);
             if strict_executor_writes {
@@ -2565,6 +2875,18 @@ impl ContextContributor for Boundary {
         input: WorldStateContributionInput<'a>,
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
+            if input.step_store.get::<ProfileMcpSource>().is_none() {
+                if let Some(source) = input.thread_store.get::<ProfileMcpSource>() {
+                    input.step_store.insert((*source).clone());
+                    if let Some(selection) = input
+                        .thread_store
+                        .get::<crate::mcp_result_control::Selection>()
+                    {
+                        input.step_store.insert((*selection).clone());
+                    }
+                }
+            }
+
             if let Some(turn) = input.turn_store.get::<DirectTurn>() {
                 let selected = match (
                     input.thread_store.get::<Control>(),
@@ -2603,6 +2925,40 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn admit_tools_only_call(
+        &self,
+        input: codex_extension_api::ToolsOnlyCallInput,
+    ) -> futures_util::future::BoxFuture<'_, Result<ResponseItem, String>> {
+        Box::pin(async move {
+            let control = self
+                .threads
+                .lock()
+                .expect("interception index poisoned")
+                .get(input.admission.thread_id())
+                .and_then(Weak::upgrade)
+                .ok_or_else(|| FAILURE.to_owned())?;
+            let owner = input
+                .admission
+                .turn_store()
+                .get::<DirectTurn>()
+                .ok_or_else(|| FAILURE.to_owned())?;
+            let command_admission = *owner
+                .command_admission
+                .lock()
+                .expect("command admission poisoned");
+            let request = DirectRequest {
+                tool_admission: Some(input.admission),
+                control,
+                owner,
+                model: input.model,
+                command_admission,
+            };
+            request
+                .admit_tools_only(input.item, &input.cancellation)
+                .await
+        })
+    }
+
     fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
         let engine = self.engine.get()?.upgrade()?;
         let base = engine
@@ -2706,6 +3062,7 @@ impl ModelRequestContributor for Boundary {
                 .lock()
                 .expect("interception control poisoned");
             if !control.configured_in(&state)
+                && control.profile_policies.load(Ordering::Acquire) == 0
                 && control.stdin_admission.get().is_none()
                 && command_admission.is_none()
                 && !control.has_native_agents()
@@ -3273,6 +3630,37 @@ fn rejected() -> ModelResponseError {
 }
 
 impl DirectRequest {
+    async fn admit_tools_only(
+        &self,
+        item: ResponseItem,
+        cancellation: &CancellationToken,
+    ) -> Result<ResponseItem, String> {
+        if cancellation.is_cancelled() || self.owner.cancelled.is_cancelled() {
+            return Err(FAILURE.to_owned());
+        }
+        let mut release = None;
+        let result = {
+            let before = self.before_scoped(item, None, cancellation, Some(&mut release));
+            tokio::pin!(before);
+            tokio::select! {biased;
+                _=cancellation.cancelled()=>Err(rejected()),
+                _=self.owner.cancelled.cancelled()=>Err(rejected()),
+                result=&mut before=>result,
+            }
+        };
+        // Fencing the nonce only prevents publication. The charged notice owns
+        // the callback until release(), including cancellation and timeout.
+        if let Some(released) = release {
+            let _ = released.await;
+        }
+        let (item, _) = result.map_err(|_| FAILURE.to_owned())?;
+        if self.owner.cancelled.is_cancelled() {
+            return Err(FAILURE.to_owned());
+        }
+        self.control
+            .publish_result(&self.owner, cancellation, false, None, || item)
+    }
+
     #[cfg(test)]
     async fn before(&self, item: ResponseItem) -> Result<ResponseItem, ModelResponseError> {
         self.before_edited(item, None).await.map(|(item, _)| item)
@@ -3280,8 +3668,19 @@ impl DirectRequest {
 
     async fn before_edited(
         &self,
+        item: ResponseItem,
+        previous: Option<OwnedSemaphorePermit>,
+    ) -> Result<(ResponseItem, bool), ModelResponseError> {
+        self.before_scoped(item, previous, &self.owner.cancelled, None)
+            .await
+    }
+
+    async fn before_scoped(
+        &self,
         mut item: ResponseItem,
         previous: Option<OwnedSemaphorePermit>,
+        cancellation: &CancellationToken,
+        physical_release: Option<&mut Option<NoticeRelease>>,
     ) -> Result<(ResponseItem, bool), ModelResponseError> {
         if self.control.code_import_poisoned() {
             return Err(rejected());
@@ -3396,22 +3795,32 @@ impl DirectRequest {
             input,
             result: (),
         };
+        let source = capture_mcp_source(
+            self.tool_admission
+                .as_ref()
+                .and_then(|admission| admission.step_store()),
+        )
+        .map_err(|_| rejected())?;
         let decision = self
             .control
-            .decide_retained(
-                OwnedRequest {
-                    request,
-                    owner: &self.owner,
-                    retained: false,
-                    cell_owner_id: None,
+            .decide_released(
+                ProfiledRequest {
+                    source,
+                    request: OwnedRequest {
+                        request,
+                        owner: &self.owner,
+                        retained: false,
+                        cell_owner_id: None,
+                    },
                 },
-                &self.owner.cancelled,
+                cancellation,
                 previous,
                 None,
+                physical_release,
             )
             .await
             .map_err(|_| rejected())?;
-        if self.owner.cancelled.is_cancelled() {
+        if cancellation.is_cancelled() || self.owner.cancelled.is_cancelled() {
             return Err(rejected());
         }
         let mut changed = false;
@@ -3868,7 +4277,13 @@ impl ToolLifecycleContributor for Boundary {
                     } else {
                         codex_code_mode::WAIT_TOOL_NAME
                     };
-                    self.start_exec(control, input.turn_id, input.call_id, name);
+                    self.start_exec_source(
+                        control,
+                        input.turn_id,
+                        input.call_id,
+                        name,
+                        input.step_store,
+                    );
                     if name == codex_code_mode::PUBLIC_TOOL_NAME {
                         let origin = input
                             .thread_store
@@ -3948,6 +4363,8 @@ impl ToolLifecycleContributor for Boundary {
                 .is_some_and(|control| {
                     let tool = input.mcp_tool.tool_info();
                     control.owns_result(
+                        input.thread_store,
+                        input.step_store,
                         &tool.server_name,
                         &tool.tool.name,
                         matches!(
@@ -3984,7 +4401,14 @@ impl ToolLifecycleContributor for Boundary {
                 input: Input::JsonText(input.arguments),
                 result: &original,
             };
-            let edited = match control.decide(request, &owner.cancelled).await {
+            let source = match capture_mcp_source(input.step_store) {
+                Ok(source) => source,
+                Err(_) => return,
+            };
+            let edited = match control
+                .decide(ProfiledRequest { request, source }, &owner.cancelled)
+                .await
+            {
                 Ok(Decision::Continue) => Some(original),
                 Ok(Decision::Replace { value }) => {
                     crate::mcp_result_control::validated(&value.to_string())
@@ -4228,6 +4652,7 @@ impl Session {
             let Some(owner) = owner? else {
                 return self.inner.execute(request, delegate, preempt).await;
             };
+            let profile_source = owner.profile_source.clone()?;
             let configured = owner.control.configured();
             let accounted = if configured && owner.control.has_legacy_policy() {
                 let bytes = owner.control.account(&request.source, None)?;
@@ -4241,6 +4666,7 @@ impl Session {
                 .control
                 .cell_policy_owner(owner.turn.as_ref(), &request.tool_call_id)?;
             let delegate = Arc::new(Delegate {
+                profile_source,
                 rules: owner.rules.clone(),
                 cell_owner: Mutex::new(cell_owner.clone()),
                 turn: owner.turn.clone(),
@@ -4704,6 +5130,7 @@ impl CodeModeSession for Session {
     }
 }
 struct Delegate {
+    profile_source: Option<Arc<ProfileMcpSource>>,
     rules: Option<crate::canonical_rules::CellImageOrigin>,
     cell_owner: Mutex<Option<Arc<CellPolicyOwner>>>,
     turn: Option<Arc<DirectTurn>>,
@@ -4744,7 +5171,8 @@ impl CodeModeSessionDelegate for Delegate {
             let Some(control) = &self.control else {
                 return self.inner.invoke_tool(invocation, cancellation_token).await;
             };
-            let mcp = control.mcp_selected(&invocation.tool_name)?;
+            let mcp =
+                control.mcp_selected_for(&invocation.tool_name, self.profile_source.as_ref())?;
             if !mcp && !control.has_legacy_policy() {
                 // Empty MCP enrollment must not add post-effect byte failures
                 // to ordinary, unselected native calls.
@@ -4781,6 +5209,10 @@ impl CodeModeSessionDelegate for Delegate {
                 // An originally opted-out cell cannot acquire callback authority.
                 return Err(FAILURE.into());
             }
+            let request = ProfiledRequest {
+                request,
+                source: self.profile_source.clone(),
+            };
             let decision = if builtin || executor_before {
                 if let Some(lease) = &lease {
                     lease.identify(&invocation.cell_id)?;
@@ -6822,6 +7254,95 @@ mod tests {
         assert!(boundary.starts.lock().unwrap().is_empty());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn tools_only_policy_join_waits_for_callback_release_after_scoped_stop() {
+        const BUDGET: usize = 8192;
+        // Advance the paused Tokio clock only after all real-Instant deadlines.
+        for finish in ["call", "root", "decision", "timeout"] {
+            let control = Arc::new(Control::with_budget("root".into(), true, BUDGET));
+            control.enable(3.0, Scope::Root).unwrap();
+            let request = direct_request(control.clone(), "turn");
+            let cancellation = CancellationToken::new();
+            let item=serde_json::from_value(json!({"type":"function_call","call_id":"policy-call","name":"lookup","arguments":"{}"})).unwrap();
+            let mut joined = Box::pin(request.admit_tools_only(item, &cancellation));
+            assert!(
+                futures_util::poll!(&mut joined).is_pending(),
+                "Premature completion in {finish} case"
+            );
+            let wire = control.next_wire().await.unwrap();
+            let nonce = serde_json::from_str::<Value>(&wire).unwrap()["nonce"]
+                .as_u64()
+                .unwrap();
+            assert!(control.handoff(nonce));
+            match finish {
+                "call" => cancellation.cancel(),
+                "root" => request.owner.cancelled.cancel(),
+                "timeout" => tokio::time::advance(Duration::from_secs(4)).await,
+                _ => assert!(control.resolve(nonce, r#"{"action":"continue"}"#)),
+            }
+            assert!(futures_util::poll!(&mut joined).is_pending());
+            // Cancellation must actively reach the SDK callback before joining
+            // its finally cleanup; nonce fencing alone cannot wake that task.
+            let cancel = control.next_wire().await.unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&cancel).unwrap()["cancel"],
+                json!(nonce)
+            );
+            assert!(control.channel.bytes.available_permits() < BUDGET);
+            if finish != "root" {
+                assert!(!request.owner.cancelled.is_cancelled());
+            }
+            assert!(!control.resolve(nonce, r#"{"action":"continue"}"#));
+            assert!(control.release(nonce));
+            assert_eq!(joined.await.is_ok(), finish == "decision");
+            assert_eq!(control.channel.bytes.available_permits(), BUDGET);
+            assert!(control.channel.state.lock().unwrap().pending.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_tools_only_policy_keeps_its_sibling_live() {
+        let control = Arc::new(Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        let request = direct_request(control.clone(), "turn");
+        let token = CancellationToken::new();
+        let sibling_token = CancellationToken::new();
+        let item = |id: &str| {
+            serde_json::from_value(
+                json!({"type":"function_call","call_id":id,"name":"lookup","arguments":"{}"}),
+            )
+            .unwrap()
+        };
+        let mut first = Box::pin(request.admit_tools_only(item("cancelled"), &token));
+        let mut sibling = Box::pin(request.admit_tools_only(item("sibling"), &sibling_token));
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(futures_util::poll!(&mut sibling).is_pending());
+        let mut nonces = Vec::new();
+        for _ in 0..2 {
+            let wire = control.next_wire().await.unwrap();
+            let nonce = serde_json::from_str::<Value>(&wire).unwrap()["nonce"]
+                .as_u64()
+                .unwrap();
+            assert!(control.handoff(nonce));
+            nonces.push(nonce);
+        }
+        token.cancel();
+        assert!(futures_util::poll!(&mut first).is_pending());
+        let cancel = control.next_wire().await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&cancel).unwrap()["cancel"],
+            json!(nonces[0])
+        );
+        assert!(!request.owner.cancelled.is_cancelled() && !sibling_token.is_cancelled());
+        assert!(control.resolve(nonces[1], r#"{"action":"continue"}"#));
+        assert!(futures_util::poll!(&mut sibling).is_pending());
+        assert!(control.release(nonces[1]));
+        assert!(sibling.await.is_ok());
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(control.release(nonces[0]));
+        assert!(first.await.is_err());
+    }
+
     fn direct_request(control: Arc<Control>, turn: &str) -> DirectRequest {
         let admission = test_tool_admission(&control.id, turn, None);
         DirectRequest {
@@ -7069,6 +7590,49 @@ mod tests {
                 assert!(parent.release(nonce));
             }
         }
+    }
+
+    #[test]
+    fn captured_mono_mcp_hook_selection_survives_later_policy_replacement() {
+        let control = Control::new("root".into(), true);
+        control.enable(3.0, Scope::Root).unwrap();
+        let rules = Control::compile_rules(result_rules()).unwrap();
+        control.channel.state.lock().unwrap().tools = Some(rules.clone());
+        let original = Arc::new(control.capture_mcp_source());
+        assert!(original.receipt.is_none());
+        let lookup = ToolName::new(Some("mcp__fixture".into()), "lookup");
+        assert_eq!(original.policy.as_ref().unwrap().rules[&lookup].2, Some(7));
+        assert!(
+            !original
+                .policy
+                .as_ref()
+                .unwrap()
+                .rules
+                .contains_key(&ToolName::plain("exec_command").with_default_namespace())
+        );
+        control.channel.state.lock().unwrap().tools = Some(HashMap::new());
+        assert!(control.mcp_selected_for(&lookup, Some(&original)).unwrap());
+        let unselected = Arc::new(control.capture_mcp_source());
+        control.channel.state.lock().unwrap().tools = Some(rules);
+        assert!(control.mcp_selected(&lookup).unwrap());
+        assert!(
+            !control
+                .mcp_selected_for(&lookup, Some(&unselected))
+                .unwrap()
+        );
+        control.revoke();
+        assert!(control.mcp_selected_for(&lookup, Some(&original)).is_err());
+    }
+
+    #[test]
+    fn missing_captured_mcp_policy_fails_closed() {
+        let step = ExtensionData::new("invalid-source");
+        step.insert(ProfileMcpSource {
+            result_selection: None,
+            receipt: None,
+            policy: None,
+        });
+        assert!(capture_mcp_source(Some(&step)).is_err());
     }
 
     #[test]
@@ -7429,6 +7993,30 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn native_execution_revoke_rejects_an_entered_callback_before_publication() {
+        let boundary = import_cleanup_boundary();
+        let thread_store = ExtensionData::new("root");
+        let control = thread_store.get_or_init(|| Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        boundary.register_control(&control);
+        let request = direct_request(control.clone(), "entered");
+        *control.direct_turn.lock().unwrap() = Some(request.owner.clone());
+        let mut before = Box::pin(request.before(response(json!({
+            "type":"function_call", "call_id":"call", "name":"echo", "arguments":"{}",
+        }))));
+        assert!(futures_util::poll!(&mut before).is_pending());
+        let notice = control.next().await.unwrap();
+        let nonce = notice["nonce"].as_u64().unwrap();
+        assert!(control.handoff(nonce));
+        boundary.on_thread_execution_revoked(&thread_store);
+        assert!(!control.can_enter(nonce));
+        assert!(!control.resolve(nonce, r#"{"action":"continue"}"#));
+        assert!(before.await.is_err());
+        assert!(request.owner.cancelled.is_cancelled());
+        assert!(control.release(nonce));
     }
 
     #[tokio::test]
@@ -7802,6 +8390,7 @@ mod tests {
         control.configure_tools(Vec::new()).unwrap();
         let actual = Arc::new(Actual(AtomicUsize::new(0)));
         let delegate = Delegate {
+            profile_source: None,
             rules: None,
             cell_owner: Mutex::new(None),
             turn: None,
@@ -7839,6 +8428,7 @@ mod tests {
         let actual = Arc::new(Actual(AtomicUsize::new(0)));
         control.agent_role.set(Some("researcher".into())).unwrap();
         let delegate = Delegate {
+            profile_source: None,
             rules: None,
             cell_owner: Mutex::new(None),
             turn: None,
@@ -7999,6 +8589,77 @@ mod mcp_policy_tests {
         assert!(matches!(call.await, Ok(Decision::Continue)));
         assert!(root.release(nonce));
     }
+    #[test]
+    fn captured_old_policy_clear_keeps_publication_fencing_and_rollback() {
+        let (boundary, root) = setup();
+        let rules = Control::compile_rules(rules(1)).unwrap();
+        let policy = Arc::new(ProfileMcpPolicy {
+            names: rules.keys().cloned().collect(),
+            rules,
+        });
+        let source = Arc::new(ProfileMcpSource {
+            result_selection: None,
+            receipt: None,
+            policy: Some(policy.clone()),
+        });
+        let name = policy.names.iter().next().unwrap();
+        assert!(!root.has_mcp_policy());
+        assert!(root.mcp_selected_for(name, Some(&source)).unwrap());
+        let guard = McpPublication::begin_with_profile(
+            &boundary,
+            root.clone(),
+            Vec::new(),
+            2,
+            Some(&policy),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(root.mcp_selected_for(name, Some(&source)).is_err());
+        guard.rollback();
+        assert!(
+            root.channel
+                .state
+                .lock()
+                .unwrap()
+                .tools
+                .as_ref()
+                .is_some_and(|rules| rules.is_empty())
+        );
+        assert!(root.mcp_selected_for(name, Some(&source)).unwrap());
+        let child = Arc::new(Control::descendant("child".into(), &root));
+        boundary.register_control(&child);
+        assert!(
+            McpPublication::begin_with_profile(
+                &boundary,
+                root.clone(),
+                Vec::new(),
+                2,
+                Some(&policy),
+            )
+            .is_err()
+        );
+        child.revoke();
+        McpPublication::begin_with_profile(&boundary, root.clone(), Vec::new(), 2, Some(&policy))
+            .unwrap()
+            .unwrap()
+            .commit()
+            .unwrap();
+        assert!(!root.has_mcp_policy());
+        assert!(root.mcp_selected_for(name, Some(&source)).unwrap());
+        drop(
+            McpPublication::begin_with_profile(
+                &boundary,
+                root.clone(),
+                Vec::new(),
+                3,
+                Some(&policy),
+            )
+            .unwrap()
+            .unwrap(),
+        );
+        assert!(root.mcp_selected_for(name, Some(&source)).is_err());
+    }
+
     #[test]
     fn removal_of_last_policy_is_guarded_then_returns_to_legacy_admission() {
         let (boundary, root) = setup();
