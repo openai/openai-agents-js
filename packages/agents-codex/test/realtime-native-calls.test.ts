@@ -227,12 +227,15 @@ nativeIt.each(['model', 'voice', 'instructions'] as const)(
       expect(peer.sidebands).toEqual([]);
       expect(await session.getActiveAgent()).toBe(agent);
 
-      const settings = { audio: { output: { voice: 'marin' } } };
+      const settings = { outputVoice: 'marin' };
       const warmup = await session.realtime({
         transport: { type: 'webrtc', offerSdp: OFFER },
         settings,
       });
       await warmup.close();
+      expect(peer.sessions.get('rtc_native_1')!.audio.output.voice).toBe(
+        'marin',
+      );
       peer.sessions.set(
         'rtc_external_sip',
         structuredClone(peer.sessions.get('rtc_native_1')!),
