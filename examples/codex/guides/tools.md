@@ -97,7 +97,7 @@ An optional `signal` cancels only that caller's wait with its reason. Native wor
 
 ## Select tools for one root
 
-Use `session.submit(input, { tools, beforeStep })` to select tools for one new root from the tools admitted at opening. `enqueue(input, options)` accepts the same selection and output options, but always queues work; use `submit(input, { ifBusy: 'reject' })` when busy work should reject. Both methods accept `outputType` in that object.
+Use `session.submit(input, { tools, beforeStep })` to select tools for one new root from the tools admitted at opening. `enqueue(input, options)` accepts the same selection and output options, but always queues work; use `submit(input, { ifBusy: 'reject' })` to reject a new submission when the Session is busy. Both methods accept `outputType` in that object.
 
 Omit `tools` to use the current defaults. Pass `tools: []` to select none. To select one tool, pass an array containing its declaration, such as `tools: [lookup]`, or its exact reference, such as `tools: [toolRef('lookup', 'crm')]` for an admitted MCP tool. An omitted or null namespace means `functions`.
 
