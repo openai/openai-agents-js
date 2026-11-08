@@ -56,6 +56,8 @@ export type {
 } from './mountSecurity';
 export { stableJsonStringify } from './shared/stableJson';
 export {
+  Manifest,
+  cloneManifest,
   copyManifestMountCredentialExposurePolicy,
   replaceManifestMountCredentialExposurePolicy,
 } from './manifest';
