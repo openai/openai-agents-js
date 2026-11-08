@@ -984,6 +984,19 @@ index 00b6d1f67617c97e3e6620fca36bf66bd17955af..634ae659e738a7f82b69132bfffbe65c
  pub use codex_network_proxy::EnvironmentNetworkPolicy;
  pub use codex_network_proxy::NetworkDomainPermission;
  pub use codex_network_proxy::NetworkDomainPermissionEntry;
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index bfa310b722b12d736385c5e92eba6d29eacbb320..45133c220d3d87d844873c63a8f6b0353efc44e9 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -1238,7 +1238,7 @@ for line in sys.stdin:
+     {
+         let (mut session, context, _events) =
+             super::super::tests::make_session_and_context_with_auth_and_config_and_rx(
+-                crate::CodexAuth::from_api_key("Test API Key"),
++                codex_login::CodexAuth::from_api_key("Test API Key"),
+                 Vec::new(),
+                 |config| config.model_provider.supports_websockets = false,
+             )
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
 index 156e0c839f7d1b048319f66d3dddf8fd01d6aaa2..23fd6e1bd0d20fcf9527b7cd5644843ba66ef1ba 100644
 --- a/codex-rs/core/src/session/mod.rs
