@@ -424,6 +424,7 @@ async function fixture(
               // A's retained callback or B's current callback sends the same
               // server request on the same unsolicited GET stream.
               response.writeHead(200, { 'content-type': 'text/event-stream' });
+              response.flushHeaders();
               trace('tool_call_held', {
                 id: rpcId(rpc.id),
                 origin,

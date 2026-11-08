@@ -169,7 +169,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const result = await (await session.submit('Run.')).wait();
       expect(result.finalOutput).toBe('assistant after cell');
       expect(result.toolCall).toBeUndefined();
-      expect(routes).toEqual(['code']);
+      expect(routes, JSON.stringify(server.requests[1]?.input)).toEqual([
+        'code',
+      ]);
       expect(effect).toHaveBeenCalledTimes(1);
       expect(server.requests).toHaveLength(2);
     });
@@ -441,7 +443,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                       )
                     : call(
                         'spawn_agent',
-                        { task_name: 'terminal-child', message: 'Finish.' },
+                        { task_name: 'terminal_child', message: 'Finish.' },
                         { namespace: 'collaboration', callId: 'spawn' },
                       ),
                 ]
@@ -455,15 +457,22 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         );
         await using provider = resource;
         const calls: unknown[] = [];
-        const effect = vi.fn((_args: unknown, context: { call?: unknown }) => {
-          calls.push(context.call);
-          return calls.length === 1
-            ? new ToolOutput([
+        const firstEntered = Promise.withResolvers<void>();
+        const firstRelease = Promise.withResolvers<void>();
+        const effect = vi.fn(
+          async (_args: unknown, context: { call?: unknown }) => {
+            calls.push(context.call);
+            if (calls.length === 1) {
+              firstEntered.resolve();
+              await firstRelease.promise;
+              return new ToolOutput([
                 { type: 'inputText', text: 'one' },
                 { type: 'inputText', text: 'two' },
-              ])
-            : 'replacement child result';
-        });
+              ]);
+            }
+            return 'replacement child result';
+          },
+        );
         const agent = new Agent({
           instructions: 'Delegate.',
           model: 'gpt-5.6-terra',
@@ -485,13 +494,24 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           tools: ['exec_command', 'write_stdin', 'apply_patch'],
         });
         await using session = await agent.session({ environment });
-        expect(
-          (await (await session.submit('Delegate.')).wait()).finalOutput,
-        ).toBe('root done');
-        const children = await vi.waitUntil(async () => {
-          const children = await Array.fromAsync(session.subagents());
-          return children.length === 1 && children[0].turn ? children : false;
-        });
+        const rootResult = (await session.submit('Delegate.')).wait();
+        const children = await (async () => {
+          try {
+            await firstEntered.promise;
+            const captured = await vi.waitUntil(async () => {
+              const children = await Array.fromAsync(session.subagents());
+              return children.length === 1 && children[0].turn
+                ? children
+                : false;
+            });
+            // Capture the live owner before its failed reply retires the native turn.
+            void captured[0].turn!.wait().catch(() => {});
+            return captured;
+          } finally {
+            firstRelease.resolve();
+          }
+        })();
+        expect((await rootResult).finalOutput).toBe('root done');
         const child = children[0];
         const childId = child.id;
         const first = child.turn!;
@@ -569,7 +589,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       } finally {
         await executor.close();
       }
-    });
+    }, 30_000);
     it.each([true, false])(
       'T02/T07 retains FunctionTool ownership across an application approval hook (allow=%s)',
       async (allow) => {

@@ -67,7 +67,12 @@ export class ModelServer {
       const output =
         typeof selected === 'function' ? await selected(requestBody) : selected;
       if (!Array.isArray(output)) {
-        response.writeHead(output.status, output.headers).end(output.body);
+        response.writeHead(output.status, output.headers);
+        if (this.beforeBody) {
+          response.flushHeaders();
+          await this.beforeBody(requestBody);
+        }
+        response.end(output.body);
         return;
       }
       const id = `response-${requestIndex + 1}`;
@@ -125,6 +130,7 @@ export class ModelServer {
       request: JsonObject,
     ) => void | Promise<void>,
     private readonly terminalFrames?: readonly string[],
+    private readonly beforeBody?: (request: JsonObject) => void | Promise<void>,
   ) {
     this.rawUsage = Array.isArray(usage)
       ? usage

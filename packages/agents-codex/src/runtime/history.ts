@@ -1,5 +1,10 @@
 import { responseContent } from './input';
 import { z } from 'zod';
+import {
+  projectResponseFactRecord,
+  responseFactRecordSchema,
+  type RecordedResponseFact,
+} from './response-facts';
 import type { HostedToolItem } from './hosted-tools';
 import {
   projectTurnReceipt,
@@ -85,6 +90,8 @@ export interface RecordedResponse {
   threadId: string;
   turnId: string;
   responseId: string | null;
+  /** Actual provider request header; absent on profiles that cannot supply it. */
+  upstreamRequestId?: string;
   status?: 'completed' | 'incomplete' | 'failed';
   incompleteReason?:
     'content_filter' | 'max_output_tokens' | 'interrupted' | 'unknown';
@@ -114,6 +121,7 @@ export type HistoryTurn = {
   usage: RecordedTokenUsage | null;
   /** Retained observations, not complete provider-attempt or charge coverage. */
   responses?: RecordedResponse[];
+  responseFacts?: RecordedResponseFact[];
   receipt?: TurnReceipt;
 };
 export type RecordedTurn = HistoryTurn & {
@@ -163,6 +171,7 @@ const recordedResponseWireSchema = z
     threadId: z.string().min(1),
     turnId: z.string().min(1),
     responseId: z.string().nullable(),
+    upstreamRequestId: z.string().optional(),
     status: z.enum(['completed', 'incomplete', 'failed']).optional(),
     incompleteReason: z
       .enum(['content_filter', 'max_output_tokens', 'interrupted', 'unknown'])
@@ -207,6 +216,7 @@ export const repairTurnWireSchema = z
       .strict()
       .nullable(),
     responses: z.array(recordedResponseWireSchema).optional(),
+    responseFacts: z.array(responseFactRecordSchema).optional(),
     receipt: repairTurnReceiptSchema.optional(),
     parentSessionId: z.string().min(1),
     parentTurnId: z.string().min(1),
@@ -1305,6 +1315,7 @@ export function projectHistory(
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
   const responses = new Map<string, RecordedResponse[]>();
+  const responseFacts: RecordedResponseFact[] = [];
   const observations = new Map<string, Set<string>>();
   function appendResponse(
     target: Map<string, RecordedResponse[]>,
@@ -1376,6 +1387,9 @@ export function projectHistory(
       current = payload.turn_id;
       aborted = null;
       if (!order.includes(current)) order.push(current);
+    } else if (type === 'response_fact_record') {
+      const fact = projectResponseFactRecord(payload);
+      if (fact) responseFacts.push(fact);
     } else if (
       type === 'response_observation_record' &&
       typeof payload.turn_id === 'string' &&
@@ -1392,6 +1406,9 @@ export function projectHistory(
           turnId: payload.turn_id,
           responseId: text(payload.response_id),
           status: payload.status as RecordedResponse['status'],
+          ...(typeof payload.upstream_request_id === 'string'
+            ? { upstreamRequestId: payload.upstream_request_id }
+            : {}),
           ...(reason === null
             ? {}
             : {
@@ -1670,6 +1687,14 @@ export function projectHistory(
     )
       delete turn.usage.inputTokensDetails.cacheWriteTokens;
     if (retained.length) turn.responses = retained;
+    const seenFacts = new Set<string>();
+    const facts = responseFacts.filter(
+      (record) =>
+        record.turnId === id &&
+        !seenFacts.has(record.id) &&
+        !!seenFacts.add(record.id),
+    );
+    if (facts.length) turn.responseFacts = facts;
   }
   const cursorIds = new Set(
     items.filter(({ recordedId }) => recordedId).map(({ item }) => item.id),

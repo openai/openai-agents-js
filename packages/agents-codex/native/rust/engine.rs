@@ -125,6 +125,41 @@ impl EngineState {
         Ok(())
     }
 
+    /// Validate the proposed captured controls before publishing accepted settings.
+    pub(crate) async fn validate_request_controls(
+        &self,
+        thread: &codex_core::CodexThread,
+        settings: &codex_protocol::protocol::ThreadSettingsOverrides,
+    ) -> anyhow::Result<()> {
+        let current = thread.thread_settings_snapshot().await;
+        let mut controls = current.request_controls;
+        if settings.tool_choice.is_some() {
+            controls.named_tool_choice = Some(None);
+        }
+        if let Some(patch) = &settings.request_controls {
+            controls.apply_patch(patch);
+        }
+        controls.validate_shape().map_err(anyhow::Error::msg)?;
+        if controls.has_wire_values() {
+            let model = settings.model.as_deref().unwrap_or(&current.model);
+            let info = self
+                .manager
+                .get_models_manager()
+                .get_model_info(model, &self.service_config.to_models_manager_config())
+                .await;
+            controls
+                .validate_profile(&info)
+                .map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(
+                controls.store.flatten() != Some(true)
+                    || self.manager.auth_manager().auth_mode()
+                        == Some(codex_protocol::auth::AuthMode::ApiKey),
+                "store=true requires API-key Responses authentication"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) async fn validate_hosted_search_model(&self, model: &str) -> anyhow::Result<()> {
         if crate::config::web_search_tool(&self.service_config)
             .is_some_and(|name| name.is_default_namespace())
@@ -604,7 +639,7 @@ impl EngineState {
         let (mut startup, instructions) = self.build_startup(options).await?;
         if let Some(batch) = &initial_messages {
             // B02 owns current route/model admission; this runs before thread writes.
-            self.validate_seed_files(&mut startup, batch.items())
+            self.validate_seed_media(&mut startup, batch.items())
                 .await?;
         }
         let mut local_resume_admission = None;
@@ -1019,6 +1054,7 @@ impl EngineState {
         startup.config.model_reasoning_summary = settings.reasoning_summary;
         startup.config.service_tier = settings.service_tier;
         startup.config.sdk_tool_choice = settings.tool_choice;
+        startup.config.sdk_request_controls = settings.request_controls.clone();
         startup.config.mcp_servers.set(HashMap::new())?;
         let history = self.history(source.id).await?;
         startup.initial_history = history.clone();
@@ -1444,12 +1480,12 @@ impl EngineState {
     }
 
     /// Validate seed file data against the resolved current startup, before seed writes.
-    pub(crate) async fn validate_seed_files(
+    pub(crate) async fn validate_seed_media(
         &self,
         startup: &mut StartThreadOptions,
         items: &[codex_protocol::models::ResponseItem],
     ) -> anyhow::Result<()> {
-        use codex_protocol::models::{ContentItem, ResponseItem};
+        use codex_protocol::models::{ContentItem, ImageDetail, ResponseItem};
         use codex_protocol::provider_reference_profile::ProviderImageReferencePolicy;
         let files: Vec<_> = items
             .iter()
@@ -1464,7 +1500,23 @@ impl EngineState {
                 _ => Vec::new(),
             })
             .collect();
-        if files.is_empty() {
+        let low_images: Vec<_> = items
+            .iter()
+            .flat_map(|item| match item {
+                ResponseItem::Message { content, .. } => content
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentItem::InputImage {
+                            image,
+                            detail: Some(ImageDetail::Low),
+                        } => Some(image),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        if files.is_empty() && low_images.is_empty() {
             return Ok(());
         }
         // Match Core Session::spawn's existing selector before any seed write.
@@ -1510,6 +1562,12 @@ impl EngineState {
             .get_models_manager()
             .get_model_info(&model, &startup.config.to_models_manager_config())
             .await;
+        let low_supported =
+            codex_core::inline_data_url_low_detail_supported(&startup.config, &info);
+        for image in low_images {
+            codex_core::validate_inline_image_detail(image, Some(ImageDetail::Low), low_supported)
+                .map_err(anyhow::Error::msg)?;
+        }
         for file in files {
             file.validate_for_model(profile, &info)
                 .map_err(anyhow::Error::msg)?;
@@ -1520,7 +1578,7 @@ impl EngineState {
     }
 
     /// The live native owner selects metadata; saved media grants no profile.
-    pub(crate) async fn validate_tool_files(
+    pub(crate) async fn validate_tool_media(
         &self,
         thread_id: &str,
         _turn_id: &str,
@@ -1530,6 +1588,7 @@ impl EngineState {
         response: &codex_protocol::dynamic_tools::DynamicToolResponse,
     ) -> anyhow::Result<()> {
         use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+        use codex_protocol::models::ImageDetail;
         use codex_protocol::protocol::AgentStatus;
         use codex_protocol::provider_reference_profile::ProviderImageReferencePolicy;
         let files: Vec<_> = response
@@ -1540,12 +1599,31 @@ impl EngineState {
                 _ => None,
             })
             .collect();
-        if files.is_empty() {
+        let low_images: Vec<_> = response
+            .content_items
+            .iter()
+            .filter_map(|part| match part {
+                DynamicToolCallOutputContentItem::InputImage {
+                    image,
+                    detail: Some(ImageDetail::Low),
+                } => Some(image),
+                _ => None,
+            })
+            .collect();
+        if files.is_empty() && low_images.is_empty() {
             return Ok(());
         }
         if let Some(media) = native_media {
             // Representability belongs to this immutable native step/receipt.
             // The caller separately owns and rechecks publication authority.
+            for image in low_images {
+                codex_core::validate_inline_image_detail(
+                    image,
+                    Some(ImageDetail::Low),
+                    media.inline_data_url_low_detail_supported,
+                )
+                .map_err(anyhow::Error::msg)?;
+            }
             for file in files {
                 file.validate_for_model(media.profile, &media.model_info)
                     .map_err(anyhow::Error::msg)?;
@@ -1595,6 +1673,11 @@ impl EngineState {
             .get::<ProviderImageReferencePolicy>()
             .map(|value| *value)
             .unwrap_or_default();
+        let low_supported = codex_core::inline_data_url_low_detail_supported(&config, &info);
+        for image in low_images {
+            codex_core::validate_inline_image_detail(image, Some(ImageDetail::Low), low_supported)
+                .map_err(anyhow::Error::msg)?;
+        }
         for file in files {
             file.validate_for_model(profile, &info)
                 .map_err(anyhow::Error::msg)?;
@@ -1795,9 +1878,10 @@ impl EngineState {
             .map_err(crate::native_error)?;
         let mut builder = codex_http_client::HttpClientBuilder::new().without_request_logging();
         // Resolve redirect policy before narrowing original header declarations.
-        let no_redirects = original
-            .headers
-            .contains_key(codex_model_provider::ACCOUNT_ROUTING_HEADER);
+        let no_redirects = info.has_request_routing_overrides()
+            || original
+                .headers
+                .contains_key(codex_model_provider::ACCOUNT_ROUTING_HEADER);
         if no_redirects {
             builder = builder.without_redirects();
         }

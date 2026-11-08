@@ -333,9 +333,13 @@
       "sha256": "f47339c54594aa98d4fd52e40eaed8f80325a50bb69a80693d14524594b68940"
     },
     {
+      "path": "0091-mcp-windows-env-precedence.patch",
+      "sha256": "dbb4d10ce9a81028bf2d09a7d478b73805b337d74c328df567e68b373e2fb422"
+    },
+    {
       "path": "0090-native-session-media-history.patch",
-      "sha256": "41a1826ced3b23ffe8a3762eb521f70178a85ac7c7c02de3a1373e89f01d0d1f"
+      "sha256": "9a5fb84986f6a42e4c742c8ef08ff193f2f92118aed39a78790452eb0518d96c"
     }
   ],
-  "result_tree": "09245b10d832f1fafa2a79e1a1289f8de741a7e9"
+  "result_tree": "953c21df88e0827b7106bdedd278a493e47f7e42"
 }

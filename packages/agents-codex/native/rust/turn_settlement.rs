@@ -159,6 +159,11 @@ impl Turn {
     pub(crate) fn stop_sampling(&self) {
         self.sampling_stop.request();
     }
+    pub(crate) fn capture_model_deadline(
+        &self,
+    ) -> Option<Arc<codex_extension_api::ModelInvocationDeadlineState>> {
+        self.sampling_stop.capture_model_deadline()
+    }
     pub(crate) fn sampling_stopped(&self) -> bool {
         self.sampling_stop.requested()
     }

@@ -79,7 +79,7 @@ function scriptedEvents() {
               })),
         ]),
       _finish_child_event_reader: () => {},
-      _check_python_tool: () => {},
+      _check_python_tool: () => true,
       _respond_python_tool: async () => {
         responded.resolve();
         return true;

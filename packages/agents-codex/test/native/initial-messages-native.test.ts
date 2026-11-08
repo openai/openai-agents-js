@@ -31,10 +31,7 @@ async function providerFor(server: ModelServer) {
 function messages(snapshot: { items: readonly any[] }) {
   return snapshot.items.filter(
     (item) =>
-      item.type === 'message' &&
-      ['user', 'assistant'].includes(item.role) &&
-      !item.internal_chat_message_metadata_passthrough?.content_item_kinds
-        ?.length,
+      item.type === 'message' && ['user', 'assistant'].includes(item.role),
   );
 }
 it('round-trips seed identities without a turn or provider request', async () => {
@@ -255,8 +252,10 @@ it('uses Core canonical inline preparation and retains it on portable restore', 
     });
     expect(seed.content[1]).toMatchObject({
       type: 'input_image',
-      detail: 'high',
+      image_url: expect.stringMatching(/^data:image\//),
     });
+    // Core keeps the omitted default; High is its effective detail, not a wire rewrite.
+    expect(seed.content[1].detail).toBeUndefined();
     const turns = [];
     for await (const turn of session.turns()) turns.push(turn);
     expect(turns).toEqual([]);

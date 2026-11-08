@@ -103,10 +103,12 @@ pub(crate) struct ManualOwner {
 pub(crate) struct NativeMediaContext {
     pub(crate) model_info: Arc<codex_protocol::openai_models::ModelInfo>,
     pub(crate) profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy,
+    pub(crate) inline_data_url_low_detail_supported: bool,
 }
 
 struct PendingCall {
     media: Option<NativeMediaContext>,
+    deadline: Option<Arc<codex_extension_api::ModelInvocationDeadlineState>>,
     _tracing: Option<codex_otel::sdk_trace::ContextLease>,
     sender: oneshot::Sender<DynamicToolResponse>,
     manual_request: Option<Value>,
@@ -744,6 +746,24 @@ impl PythonTools {
         Ok(())
     }
 
+    // Private callback delivery/admission may deny ended work. Strict checkpoint checks above remain unchanged.
+    pub(crate) fn admit_callback(&self, owner: &str, key: &PendingKey) -> Result<bool> {
+        ensure!(
+            key.reply.thread == owner
+                && key.reply.instance == self.instance
+                && key.reply.generation == self.snapshot().id,
+            "Expired or invalid managed JavaScript tool request"
+        );
+        let pending = self.pending.lock().expect("JavaScript replies poisoned");
+        let Some(call) = pending.get(key) else {
+            return Ok(false);
+        };
+        Ok(match &call.deadline {
+            Some(state) => state.admit(|| true).unwrap_or(false),
+            None => true,
+        })
+    }
+
     fn snapshot(&self) -> Arc<Generation> {
         self.current
             .read()
@@ -878,6 +898,7 @@ impl PythonTools {
         source: &ToolCallSource,
         model: &str,
         media: Option<NativeMediaContext>,
+        admission: Option<Arc<crate::turn_settlement::Turn>>,
     ) -> Result<(PendingKey, oneshot::Receiver<DynamicToolResponse>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -934,6 +955,7 @@ impl PythonTools {
                 PendingCall {
                     media,
                     _tracing: tracing,
+                    deadline: admission.and_then(|turn| turn.capture_model_deadline()),
                     sender,
                     manual_request: key.reply.manual_grant.as_ref().map(|_| request.clone()),
                 },
@@ -984,6 +1006,8 @@ pub struct PythonContributor {
 
 // Presentation follows the current model; it never grants a tool.
 struct ModelPresentation {
+    // Captured from the original turn before model preparation, never resolved by wire ID.
+    admission: Option<Arc<crate::turn_settlement::Turn>>,
     use_deferred_specs: bool,
 }
 
@@ -1417,6 +1441,9 @@ impl PythonContributor {
             .copied()
             .map(|slot| {
                 Arc::new(PythonExecutor {
+                    admission: thread
+                        .get::<ModelPresentation>()
+                        .and_then(|state| state.admission.clone()),
                     thread: thread.level_id().to_string(),
                     tools: tools.clone(),
                     generation: generation.clone(),
@@ -1616,6 +1643,7 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    admission: Option<Arc<crate::turn_settlement::Turn>>,
     thread: String,
     tools: Arc<PythonTools>,
     generation: Arc<Generation>,
@@ -1708,7 +1736,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     Some(NativeMediaContext {
                         model_info: Arc::clone(&call.model_info),
                         profile: call.provider_reference_profile,
+                        inline_data_url_low_detail_supported: call
+                            .inline_data_url_low_detail_supported,
                     }),
+                    self.admission.clone(),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let _reply = PendingReply {
@@ -1791,9 +1822,10 @@ impl TurnLifecycleContributor for PythonContributor {
                 } else {
                     false
                 };
-                input
-                    .thread_store
-                    .insert(ModelPresentation { use_deferred_specs });
+                input.thread_store.insert(ModelPresentation {
+                    admission: input.turn_store.get::<crate::turn_settlement::Turn>(),
+                    use_deferred_specs,
+                });
                 let operation = input.turn_store.get::<Option<OperationSelection>>();
                 let selection = tools
                     .turn_selection(input.turn_id, operation.as_deref().and_then(Option::as_ref));
@@ -1950,6 +1982,7 @@ mod pending_tests {
         let context = NativeMediaContext {
             model_info: Arc::clone(&model),
             profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses,
+            inline_data_url_low_detail_supported: true,
         };
         let source = ToolCallSource::CodeMode {
             cell_id: "1".into(),
@@ -1966,11 +1999,13 @@ mod pending_tests {
                 &source,
                 "gpt-5.5",
                 Some(context),
+                None,
             )
             .unwrap();
         // The existing pending owner retains data without a live root-turn query.
         let captured = tools.native_media(&key).unwrap();
         assert!(Arc::ptr_eq(&captured.model_info, &model));
+        assert!(captured.inline_data_url_low_detail_supported);
         let _sender = tools.take_reply("root", &key).unwrap().unwrap();
         assert!(tools.native_media(&key).is_none());
         assert!(tools.take_reply("root", &key).unwrap().is_none());
@@ -2007,6 +2042,7 @@ mod pending_tests {
                 &ToolCallSource::Direct,
                 "fixture-model",
                 None,
+                None,
             )
             .unwrap();
         let (b, _b_receiver) = tools
@@ -2019,6 +2055,7 @@ mod pending_tests {
                 json!({"value":"b"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
                 None,
             )
             .unwrap();
@@ -2059,6 +2096,7 @@ mod pending_tests {
                 &ToolCallSource::Direct,
                 "fixture-model",
                 None,
+                None,
             )
             .unwrap();
         let guard = PendingReply {
@@ -2087,6 +2125,7 @@ mod pending_tests {
             &ToolCallSource::Direct,
             "fixture-model",
             None,
+            None,
         );
         assert!(result.is_err());
         assert!(tools.pending.lock().unwrap().is_empty());
@@ -2106,6 +2145,7 @@ mod pending_tests {
                 json!({"value":"old"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
                 None,
             )
             .unwrap();
@@ -2131,6 +2171,7 @@ mod pending_tests {
                 json!({"value":"new"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
                 None,
             )
             .unwrap();
@@ -2162,6 +2203,7 @@ mod pending_tests {
                 &ToolCallSource::Direct,
                 "fixture-model",
                 None,
+                None,
             )
             .unwrap();
         assert!(root.owner("root", &old_key).is_some());
@@ -2181,6 +2223,7 @@ mod pending_tests {
                 json!({"value":"new"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
                 None,
             )
             .unwrap();

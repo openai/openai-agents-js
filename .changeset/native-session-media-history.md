@@ -3,4 +3,4 @@
 '@openai/agents-codex': patch
 ---
 
-feat: add optional native function-tool completion, richer image/file input and tool output, and settled initial user/assistant messages. Terminal function results use the captured output contract and complete only after durable native settlement. Existing defaults and Classic entrypoints stay unchanged.
+feat: add optional native tool completion, image/file input and output, settled initial history, model request controls and invocation deadlines, typed response facts, and bounded buffered Responses support. Terminal results use the captured output contract and publish after durable native settlement. Existing defaults and Classic entrypoints stay unchanged.

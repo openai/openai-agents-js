@@ -27,7 +27,9 @@ export type ResponseIntegrityReason =
   | 'undecodable_output_item'
   | 'provider_owned_tool_receipt'
   | 'unfinished_assistant_item'
-  | 'missing_supported_terminal_output';
+  | 'missing_supported_terminal_output'
+  | 'provider_refusal'
+  | 'malformed_probability_facts';
 
 function responseIntegrityReason(
   value: unknown,
@@ -38,6 +40,8 @@ function responseIntegrityReason(
       'provider_owned_tool_receipt',
       'unfinished_assistant_item',
       'missing_supported_terminal_output',
+      'provider_refusal',
+      'malformed_probability_facts',
     ].includes(value)
     ? (value as ResponseIntegrityReason)
     : null;
@@ -193,6 +197,7 @@ function category(value: unknown): string | null {
   if (Object.hasOwn(aliases, code)) return aliases[code];
   return [
     'session_budget_exceeded',
+    'model_invocation_deadline_exceeded',
     'usage_limit_exceeded',
     'project_spend_limit_exceeded',
     'organization_spend_limit_exceeded',
@@ -215,10 +220,14 @@ function category(value: unknown): string | null {
 export function enrichNativeError(error: NativeError, value: unknown): void {
   const provider = object(object(value)?._sdk_provider_error);
   const status = provider?.status_code;
-  const code = provider?.code;
+  const localDeadline =
+    category(value) === 'model_invocation_deadline_exceeded';
+  const code = localDeadline
+    ? 'model_invocation_deadline_exceeded'
+    : provider?.code;
   const requestId = provider?.request_id;
-  const retryable = provider?.retryable;
-  const retryAfterMs = provider?.retry_after_ms;
+  const retryable = localDeadline ? false : provider?.retryable;
+  const retryAfterMs = localDeadline ? undefined : provider?.retry_after_ms;
   metadata.set(error, {
     effects: metadata.get(error)!.effects,
     responseIntegrityReason: metadata.get(error)!.responseIntegrityReason,

@@ -148,7 +148,7 @@ export class NativeThread {
     closing: boolean,
     probe?: boolean,
   ): Promise<string>;
-  _check_python_tool(request_json: string): void;
+  _check_python_tool(request_json: string): boolean;
   /** JSON array of original native event strings, preserving exact receipt integers. */
   _pending_manual_tools(owner_json: string): string;
   _manual_tool_current(request_json: string): boolean;

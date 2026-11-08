@@ -231,6 +231,8 @@ pub struct ThreadOptions {
     session_source: Option<SessionSource>,
     thread_source: Option<ThreadSource>,
     dynamic_tools: Vec<DynamicToolSpec>,
+    #[serde(rename = "_buffered_responses", default)]
+    buffered_responses: bool,
     #[serde(rename = "_hosted_tools")]
     hosted_tools: Vec<codex_tools::HostedToolSpec>,
     metrics_service_name: Option<String>,
@@ -342,6 +344,11 @@ impl ThreadOptions {
         let source = merged(base_config, self.config)?;
         let configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
         let mut options = StartThreadOptions::new(configuration);
+        options
+            .thread_extension_init
+            .insert(codex_core::BufferedResponsesPreference(
+                self.buffered_responses,
+            ));
         options
             .thread_extension_init
             .insert(codex_extension_api::HostedModelTools {

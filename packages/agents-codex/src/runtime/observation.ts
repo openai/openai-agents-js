@@ -1,3 +1,4 @@
+import { summarizeResponseFactRecord } from './response-facts';
 import type { ExecutionItem, SearchItem } from './history';
 import type { JsonObject } from './binding';
 import type { HostedToolItem } from './hosted-tools';
@@ -32,7 +33,7 @@ export type HostedToolItemSummary = Readonly<
 
 export type ObservationOptions = {
   after?: number;
-  /** Include local and hosted tool payloads for a trusted consumer. */
+  /** Include tool payloads and received response-fact content for a trusted consumer. */
   includeExecutionDetails?: boolean;
 };
 
@@ -62,7 +63,7 @@ export type ModelRequestDispatching = SubmissionEvent &
     reasoningSummary: string | null;
     serviceTier: string | null;
     wire: 'responses' | 'responses_lite';
-    transport: 'http_sse' | 'websocket';
+    transport: 'http_sse' | 'http_json' | 'websocket';
   }>;
 
 /** Best-effort link to a retained terminal occurrence. Retirement can drop a
@@ -93,6 +94,7 @@ export type Observation =
       Readonly<{ item: HostedToolItemSummary | HostedToolItem }>)
   | ModelRequestDispatching
   | ModelResponseLinked
+  | ResponseFactReceived
   | (Event & Readonly<{ type: 'warning'; message: string }>)
   | (SubmissionEvent & Readonly<{ type: 'turn_started' }>)
   | (SubmissionEvent &
@@ -130,6 +132,14 @@ export type Observation =
   | (Event & Readonly<{ type: 'gap'; firstSequence: number }>);
 
 type WithoutIdentity<T> = T extends Event ? Omit<T, keyof Event> : never;
+export type ResponseFactReceived = SubmissionEvent &
+  Readonly<{
+    type: 'response_fact';
+    record:
+      | import('./response-facts').RecordedResponseFact
+      | import('./response-facts').RecordedResponseFactSummary;
+  }>;
+
 type RetainedObservation =
   | Exclude<Observation, ExecutionObservation | HostedToolItemObservation>
   | (ExecutionObservation & Readonly<{ item: ExecutionItem }>)
@@ -150,6 +160,13 @@ function projectObservation(
   event: RetainedObservation,
   includeExecutionDetails: boolean,
 ): Observation {
+  if (event.type === 'response_fact')
+    return Object.freeze({
+      ...event,
+      record: includeExecutionDetails
+        ? structuredClone(event.record)
+        : summarizeResponseFactRecord(event.record),
+    });
   if (event.type === 'search_item_completed')
     return Object.freeze({ ...event, item: structuredClone(event.item) });
   if (event.type === 'hosted_tool_item_completed') {
@@ -278,17 +295,19 @@ export class ObservationBuffer {
     const payloadSize = partial?.length ?? 0;
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
-      event.type === 'execution_item_completed' ||
-        event.type === 'search_item_completed' ||
-        event.type === 'hosted_tool_item_completed'
-        ? JSON.stringify(event.item).length
-        : event.type === 'hosted_tool_call_progress'
-          ? JSON.stringify(
-              partial === undefined
-                ? event.event
-                : { ...event.event, partial_image_b64: '' },
-            ).length
-          : 0,
+      event.type === 'response_fact'
+        ? JSON.stringify(event.record).length
+        : event.type === 'execution_item_completed' ||
+            event.type === 'search_item_completed' ||
+            event.type === 'hosted_tool_item_completed'
+          ? JSON.stringify(event.item).length
+          : event.type === 'hosted_tool_call_progress'
+            ? JSON.stringify(
+                partial === undefined
+                  ? event.event
+                  : { ...event.event, partial_image_b64: '' },
+              ).length
+            : 0,
     );
     if (size > 65_536 || payloadSize > 16 * 1024 * 1024) {
       this.records = [];

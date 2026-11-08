@@ -473,9 +473,15 @@ impl Engine {
         let cancelled = request.cancelled.clone();
         let work = async {
             let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
-            let (status, headers, body) =
-                sentinel_stream_dispatch(&inner, &provider_id, &headers, body.into(), &ticket)
-                    .await?;
+            let (status, headers, body) = sentinel_stream_dispatch(
+                &inner,
+                &provider_id,
+                &headers,
+                body.into(),
+                &ticket,
+                None,
+            )
+            .await?;
             Ok(NativeModelResponse {
                 inner: RuntimeOwned::new(Arc::new(tokio::sync::Mutex::new(body))),
                 cancelled: cancelled.clone(),
@@ -1649,7 +1655,7 @@ impl NativeThread {
     // Recheck after caller-owned checkpoint storage has settled, immediately
     // before invoking the JavaScript effect. A raw native interrupt may have raced it.
     #[napi(js_name = "_check_python_tool")]
-    pub fn _check_python_tool(&self, request_json: String) -> napi::Result<()> {
+    pub fn _check_python_tool(&self, request_json: String) -> napi::Result<bool> {
         let _admission_state = self.current()?;
         let _admission = _admission_state
             .engine
@@ -1672,33 +1678,25 @@ impl NativeThread {
                     serde_json::from_value(request.clone()).map_err(native_error)?;
                 return tools
                     .check_restored_manual(&inner.id.to_string(), &key)
+                    .map(|()| true)
                     .map_err(native_error);
             }
             // A live manual grant continues through normal exact root/child
             // pending admission below. Presence of a grant no longer implies restore.
         }
-        if request
-            .get("_sdk_python_tool")
-            .and_then(|marker| marker.get("instance"))
-            .is_some_and(|id| !id.is_null())
-        {
-            let key: python_tools::PendingKey =
-                serde_json::from_value(request).map_err(native_error)?;
-            let root = inner
-                .thread
-                .thread_extension_data()
-                .get::<python_tools::PythonTools>()
-                .ok_or_else(|| native_error("managed tool owner is unavailable"))?;
-            let owner = root
-                .owner(&inner.id.to_string(), &key)
-                .ok_or_else(|| native_error("managed child tool owner has expired"))?;
-            return owner
-                .check_pending(&key.reply.thread, &key)
-                .map_err(native_error);
-        }
-        checkpoint::check_capture(&inner, &request).map_err(native_error)?;
-
-        Ok(())
+        let key: python_tools::PendingKey =
+            serde_json::from_value(request).map_err(native_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("managed tool owner is unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("managed child tool owner has expired"))?;
+        owner
+            .admit_callback(&key.reply.thread, &key)
+            .map_err(native_error)
     }
     #[napi(js_name = "_native_question_pending")]
     pub async fn _native_question_pending(&self, question_id: String) -> napi::Result<bool> {
@@ -2097,6 +2095,11 @@ impl NativeThread {
                 .await
                 .map_err(input_error)?;
         }
+        inner
+            .engine
+            .validate_request_controls(&inner.thread, &settings)
+            .await
+            .map_err(input_error)?;
         inner
             .thread
             .update_thread_settings(settings)
@@ -2669,7 +2672,7 @@ impl NativeThread {
                 };
                 inner
                     .engine
-                    .validate_tool_files(
+                    .validate_tool_media(
                         &request.reply.thread,
                         &request.turn,
                         false,
@@ -3152,7 +3155,7 @@ impl NativeThread {
             .map_err(native_error)?;
         inner
             .engine
-            .validate_tool_files(
+            .validate_tool_media(
                 &request.reply.thread,
                 &request.turn,
                 true,
@@ -3812,9 +3815,9 @@ async fn direct_sentinel_stream(
     // errors so Core keeps its existing auth recovery and retry classification.
     let unmatched = || reject(http::StatusCode::UNAUTHORIZED);
     let invalid = || reject(http::StatusCode::BAD_GATEWAY);
-    // Current ResponsesOptions never supplies these transport limits. Reject a
-    // future incompatible caller explicitly rather than silently dropping limits.
-    if request.timeout.is_some() || request.response_body_limit_bytes.is_some() {
+    // The direct route does not own a request timeout. The existing invocation
+    // deadline remains responsible for cancellation and joining its request work.
+    if request.timeout.is_some() {
         return Err(invalid());
     }
     if request.url != expected_url {
@@ -3928,13 +3931,24 @@ async fn direct_sentinel_stream(
     // authoritative for provider/grant/Host resolution.
     let headers = serde_json::to_string(&headers).map_err(|_| invalid())?;
     let body = serde_json::to_vec(&body).map_err(|_| invalid())?;
-    let (status, headers, body) =
-        sentinel_stream_dispatch(inner, provider_id, &headers, body.into(), &ticket)
-            .await
-            .map_err(|_| invalid())?;
+    let (status, headers, body) = sentinel_stream_dispatch(
+        inner,
+        provider_id,
+        &headers,
+        body.into(),
+        &ticket,
+        request.response_body_limit_bytes,
+    )
+    .await
+    .map_err(|_| invalid())?;
     let headers = sentinel_response_headers(headers).map_err(|_| invalid())?;
     match body {
         NativeModelBody::HttpError(text) => {
+            if let Some(max_bytes) = request.response_body_limit_bytes {
+                if text.as_ref().is_some_and(|body| body.len() > max_bytes) {
+                    return Err(TransportError::ResponseTooLarge { max_bytes });
+                }
+            }
             // The carrier sends UTF-8 diagnostics, then the outer transport
             // decodes again. Keep BOM/charset behavior and filtered Retry-After.
             let mut response = http::Response::new(bytes::Bytes::from(text.unwrap_or_default()));
@@ -3958,8 +3972,10 @@ async fn direct_sentinel_stream(
             // transport failure category instead of exposing a raw native error.
             bytes: bytes
                 .map(|chunk| {
-                    chunk
-                        .map_err(|_| TransportError::Network("error decoding response body".into()))
+                    chunk.map_err(|error| match error {
+                        error @ TransportError::ResponseTooLarge { .. } => error,
+                        _ => TransportError::Network("error decoding response body".into()),
+                    })
                 })
                 .boxed(),
         }),
@@ -4028,6 +4044,7 @@ async fn sentinel_stream_dispatch(
     headers: &str,
     body: bytes::Bytes,
     ticket: &serde_json::Value,
+    response_body_limit_bytes: Option<usize>,
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
@@ -4038,6 +4055,8 @@ async fn sentinel_stream_dispatch(
         .build_request("POST".parse().map_err(native_error)?, "responses")
         .with_raw_body(body);
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
+    // Reuse the physical transport's existing streaming and error-body bounds.
+    request.response_body_limit_bytes = response_body_limit_bytes;
     let result = match request.into_prepared() {
         Ok(request) => {
             codex_client::run_with_retry(

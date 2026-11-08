@@ -4016,12 +4016,26 @@ impl CodeModeSessionProvider for Provider {
         &self,
         id: codex_protocol::ThreadId,
     ) -> CodeModeSessionProviderFuture<'_> {
+        self.create_session_for_thread_with_reference_profile(
+            id,
+            codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::PrepareInline,
+        )
+    }
+
+    fn create_session_for_thread_with_reference_profile(
+        &self,
+        id: codex_protocol::ThreadId,
+        profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy,
+    ) -> CodeModeSessionProviderFuture<'_> {
         Box::pin(async move {
             self.boundary
                 .check_code_import_admission()
                 .map_err(|error| error.to_string())?;
             let Some(state) = self.boundary.pending_code_state(id) else {
-                let session = self.inner.create_session_for_thread(id).await?;
+                let session = self
+                    .inner
+                    .create_session_for_thread_with_reference_profile(id, profile)
+                    .await?;
                 return Ok(Session::new(session, self.boundary.clone()) as Arc<dyn CodeModeSession>);
             };
             let control = self
@@ -4044,7 +4058,10 @@ impl CodeModeSessionProvider for Provider {
             self.boundary
                 .check_code_import_admission()
                 .map_err(|error| error.to_string())?;
-            let session = self.inner.create_session_for_thread(id).await?;
+            let session = self
+                .inner
+                .create_session_for_thread_with_reference_profile(id, profile)
+                .await?;
             // No await or fallible operation may precede retention of this raw
             // receiver, even when Control admission below has already expired.
             let pending = self

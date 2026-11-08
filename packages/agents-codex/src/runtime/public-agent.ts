@@ -48,6 +48,7 @@ import {
 } from './mcp';
 import {
   NativeProvider,
+  captureModelSettings,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
@@ -263,7 +264,10 @@ export class Agent<Context = undefined, Output = string> {
     this.instructions = options.instructions;
     this.name = options.name;
     this.model = options.model;
-    this.modelSettings = options.modelSettings && { ...options.modelSettings };
+    this.modelSettings =
+      options.modelSettings === undefined
+        ? undefined
+        : captureModelSettings(options.modelSettings);
     this.provider = options.provider ?? new NativeProvider();
     this.outputType = options.outputType;
     this.tools = [...(options.tools ?? [])];
@@ -539,34 +543,12 @@ export class Agent<Context = undefined, Output = string> {
     const model = opening ? opening.model : (openingModel ?? this.model);
     let settings = opening
       ? opening.settings
-      : this.modelSettings && { ...this.modelSettings };
+      : this.modelSettings && captureModelSettings(this.modelSettings);
     if (!opening && openingSettings !== undefined) {
-      if (
-        openingSettings === null ||
-        typeof openingSettings !== 'object' ||
-        Array.isArray(openingSettings)
-      )
-        throw new TypeError('Opening modelSettings must be an object');
-      settings ??= {};
-      for (const key of Object.getOwnPropertyNames(openingSettings)) {
-        if (
-          ![
-            'reasoningEffort',
-            'reasoningSummary',
-            'serviceTier',
-            'toolChoice',
-          ].includes(key)
-        )
-          throw new TypeError(`Unsupported opening model setting: ${key}`);
-        const value = openingSettings[key as keyof ModelSettings];
-        if (value === undefined) continue;
-        if (
-          typeof value !== 'string' &&
-          !(key === 'serviceTier' && value === null)
-        )
-          throw new TypeError(`Invalid opening model setting: ${key}`);
-        Object.assign(settings, { [key]: value });
-      }
+      settings = captureModelSettings({
+        ...settings,
+        ...captureModelSettings(openingSettings),
+      });
     }
     const declarations = opening
       ? {
@@ -707,6 +689,10 @@ export class Agent<Context = undefined, Output = string> {
         'Persistent storage supports current managed tools without MCP or Code Mode',
       );
     const nativeAgents = declarations.nativeAgents;
+    if (nativeAgents && provider.responseMode === 'buffered')
+      throw new TypeError(
+        'Native child agents are not supported in buffered mode',
+      );
     if (
       nativeAgents &&
       (!environment ||
@@ -970,6 +956,9 @@ export class Agent<Context = undefined, Output = string> {
         },
         threadOptions: {
           _hosted_tools: hostedToolSpecs(declarations.hostedTools),
+          ...(provider.responseMode === 'buffered'
+            ? { _buffered_responses: true }
+            : {}),
           ...(projectGuidance ? { _canonical_rules: true } : {}),
           ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
           ...(resume === undefined ? {} : { _sdk_resume_thread_id: resume }),

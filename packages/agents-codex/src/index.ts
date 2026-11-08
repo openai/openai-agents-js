@@ -291,3 +291,16 @@ export type {
   InitialMessage,
   AssistantMessage,
 } from './runtime/initial-messages';
+
+export type {
+  RecordedResponseFact,
+  ResponseFact,
+  ProbabilityToken,
+  ProbabilityAlternative,
+} from './runtime/response-facts';
+export type { ResponseFactReceived } from './runtime/observation';
+
+export type {
+  RecordedResponseFactSummary,
+  ResponseFactSummary,
+} from './runtime/response-facts';

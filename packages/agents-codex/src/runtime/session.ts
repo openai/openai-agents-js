@@ -26,6 +26,7 @@ import {
   type TraceContextHeaders,
 } from './trace-context';
 import { decodeRequestMetadata } from './request-metadata';
+import { projectResponseFactRecord } from './response-facts';
 import { networkPolicyDigest } from './network-policy';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
@@ -111,7 +112,11 @@ import {
   applyNativeAgentsApproval,
   type NativeAgents,
 } from './native-agents';
-import type { ModelSettings, ProviderLease } from './provider';
+import {
+  captureModelSettings,
+  type ModelSettings,
+  type ProviderLease,
+} from './provider';
 import {
   prepareUserVerification,
   type PreparedUserVerification,
@@ -4433,6 +4438,20 @@ export class Session<OutputT = string, Context = unknown> {
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
     if (
+      msg.type === 'response_fact' &&
+      msg.thread_id === id &&
+      msg.turn_id === turnId
+    ) {
+      const record = projectResponseFactRecord(msg);
+      if (record)
+        this.observations.append({
+          type: 'response_fact',
+          turnId,
+          submissionId,
+          record,
+        });
+    }
+    if (
       msg.type === 'agent_message_content_delta' &&
       msg.thread_id === id &&
       typeof msg.item_id === 'string' &&
@@ -4963,6 +4982,21 @@ export class Session<OutputT = string, Context = unknown> {
       this.observeTokenCount(event, run.id!, this.submissionIds.get(run)!)
     )
       run.usage = msg.info ?? null;
+    if (
+      kind === 'response_fact' &&
+      eventTurn === run.id &&
+      msg.thread_id === this.id &&
+      msg.turn_id === run.id
+    ) {
+      const record = projectResponseFactRecord(msg);
+      if (record)
+        this.observations.append({
+          type: 'response_fact',
+          turnId: run.id!,
+          submissionId: this.submissionIds.get(run)!,
+          record,
+        });
+    }
     if (
       kind === 'agent_message_content_delta' &&
       eventTurn === run.id &&
@@ -6577,10 +6611,12 @@ export class Session<OutputT = string, Context = unknown> {
       admission = new FunctionAdmission(this.options.maxFunctionConcurrency);
       this.functionAdmissions.set(owner, admission);
     }
+    // Private sentinel stays within this invocation; it is not a public error.
+    const admissionEnded = Symbol();
     const execute = async () => {
       if (!this.current(owner)) return;
       admission?.check();
-      this.#native._check_python_tool(encodeReceipt(msg));
+      if (!this.#native._check_python_tool(encodeReceipt(msg))) return;
       const submission = root
         ? this.#turnFor(owner)
         : await this.childSubmission(owner);
@@ -6588,7 +6624,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (!root) {
         if (!this.current(owner)) return;
         admission?.check();
-        this.#native._check_python_tool(encodeReceipt(msg));
+        if (!this.#native._check_python_tool(encodeReceipt(msg))) return;
       }
       const context = {
         traceContext: nativeTraceContext(
@@ -6645,14 +6681,18 @@ export class Session<OutputT = string, Context = unknown> {
           () => {
             if (!this.current(owner))
               throw new NativeError('Tool invocation is no longer active');
-            this.#native._check_python_tool(encodeReceipt(msg));
+            if (!this.#native._check_python_tool(encodeReceipt(msg)))
+              throw admissionEnded;
           },
         );
         if (!this.current(owner)) {
           status = 'cancelled';
           return;
         }
-        this.#native._check_python_tool(encodeReceipt(msg));
+        if (!this.#native._check_python_tool(encodeReceipt(msg))) {
+          status = 'cancelled';
+          return;
+        }
         const accepted = await this.#native._respond_python_tool(
           encodeReceipt({
             request: msg,
@@ -6665,6 +6705,10 @@ export class Session<OutputT = string, Context = unknown> {
             : 'failed'
           : 'cancelled';
       } catch (error) {
+        if (error === admissionEnded) {
+          status = 'cancelled';
+          return;
+        }
         if (admission) {
           owner.failure ??= error;
           admission.seal(error);
@@ -10082,15 +10126,51 @@ export class Session<OutputT = string, Context = unknown> {
 }
 
 function modelOverrides(model?: string, settings?: ModelSettings): JsonObject {
+  const selected = captureModelSettings(settings);
   const overrides: JsonObject = {};
-  if (model !== undefined) overrides.model = model;
-  if (settings?.reasoningEffort !== undefined)
-    overrides.effort = settings.reasoningEffort;
-  if (settings?.reasoningSummary !== undefined)
-    overrides.summary = settings.reasoningSummary;
-  if (settings?.serviceTier !== undefined)
-    overrides.service_tier = settings.serviceTier;
-  if (settings?.toolChoice !== undefined)
-    overrides.tool_choice = settings.toolChoice;
+  if (selected.invocationTimeoutMs !== undefined)
+    overrides.invocation_timeout_ms = selected.invocationTimeoutMs;
+  const controls: JsonObject = {};
+  if (model !== undefined) {
+    if (typeof model !== 'string' || !model.trim())
+      throw new TypeError('model must be a nonempty string');
+    overrides.model = model;
+  }
+  if (selected.reasoningEffort !== undefined)
+    overrides.effort = selected.reasoningEffort;
+  if (selected.reasoningSummary !== undefined)
+    overrides.summary = selected.reasoningSummary;
+  if (selected.serviceTier !== undefined)
+    overrides.service_tier = selected.serviceTier;
+  const names = {
+    maxOutputTokens: 'max_output_tokens',
+    temperature: 'temperature',
+    topP: 'top_p',
+    topLogprobs: 'top_logprobs',
+    parallelToolCalls: 'parallel_tool_calls',
+    verbosity: 'verbosity',
+    metadata: 'metadata',
+    store: 'store',
+    promptCacheRetention: 'prompt_cache_retention',
+    promptCacheTtl: 'prompt_cache_ttl',
+  } as const;
+  for (const [key, wire] of Object.entries(names)) {
+    const value = selected[key as keyof typeof names];
+    if (value !== undefined) controls[wire] = value;
+  }
+  if (selected.toolChoice !== undefined) {
+    const choice = selected.toolChoice;
+    if (typeof choice === 'object' && choice !== null) {
+      overrides.tool_choice = 'required';
+      controls.named_tool_choice = {
+        name: choice.name,
+        namespace: choice.namespace ?? null,
+      };
+    } else {
+      overrides.tool_choice = choice ?? 'auto';
+      controls.named_tool_choice = null;
+    }
+  }
+  if (Object.keys(controls).length) overrides.request_controls = controls;
   return overrides;
 }
