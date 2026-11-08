@@ -163,7 +163,7 @@ export function captureProfileRuntimes(
       handoffs: { ...profile.handoffs },
       transform_context: false,
       before_compact: false,
-      before_complete: false,
+      before_complete: declaration.beforeComplete !== undefined,
       selecting_steps: false,
       output_fingerprint: output.identity.fingerprint,
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),

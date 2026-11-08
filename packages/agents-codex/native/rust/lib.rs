@@ -10,12 +10,14 @@ use opentelemetry::trace::TraceContextExt as _;
 mod agent_profiles;
 mod application_instructions;
 mod auth;
+mod auxiliary_decisions;
 mod canonical_rules;
 mod checkpoint;
 mod commands;
 mod config;
 mod context;
 mod custom_storage;
+mod decisions;
 mod engine;
 mod environment;
 mod extensions;
@@ -499,16 +501,9 @@ impl Engine {
         let cancelled = request.cancelled.clone();
         let work = async {
             let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
-            let (status, headers, body) = sentinel_stream_dispatch(
-                &inner,
-                &provider_id,
-                &headers,
-                body.into(),
-                &ticket,
-                "responses",
-                None,
-            )
-            .await?;
+            let (status, headers, body) =
+                sentinel_stream_dispatch(&inner, &provider_id, &headers, body.into(), &ticket)
+                    .await?;
             Ok(NativeModelResponse {
                 inner: RuntimeOwned::new(Arc::new(tokio::sync::Mutex::new(body))),
                 cancelled: cancelled.clone(),
@@ -2474,6 +2469,68 @@ impl NativeThread {
         .await
     }
 
+    #[napi(js_name = "_capture_decision")]
+    pub async fn _capture_decision(
+        &self,
+        request_json: String,
+    ) -> napi::Result<auxiliary_decisions::NativeDecisionCall> {
+        auxiliary_decisions::capture(self.current()?, request_json).await
+    }
+
+    #[napi(js_name = "_check_completion")]
+    pub fn _check_completion(&self, response_json: String) -> napi::Result<bool> {
+        let response: python_tools::CompletionReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Completion callback requires a managed Session"))?;
+        let Some(owner) =
+            tools.exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+        else {
+            return Ok(false);
+        };
+        owner.check_completion(&response).map_err(input_error)
+    }
+    #[napi(js_name = "_reply_completion")]
+    pub fn _reply_completion(&self, response_json: String) -> napi::Result<()> {
+        let response: python_tools::CompletionReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Completion callback requires a managed Session"))?;
+        let owner = tools
+            .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+            .ok_or_else(|| input_error("Expired completion owner"))?;
+        owner.reply_completion(response).map_err(input_error)
+    }
+    #[napi(js_name = "_stop_completion")]
+    pub fn _stop_completion(&self, response_json: String) -> napi::Result<bool> {
+        let response: python_tools::CompletionReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Completion callback requires a managed Session"))?;
+        let Some(owner) =
+            tools.exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+        else {
+            return Ok(false);
+        };
+        owner.stop_completion(&response).map_err(input_error)
+    }
+
     #[napi(js_name = "_check_step")]
     pub fn _check_step(&self, response_json: String) -> napi::Result<bool> {
         let response: python_tools::StepReply =
@@ -4008,16 +4065,9 @@ async fn direct_sentinel_stream(
     // errors so Core keeps its existing auth recovery and retry classification.
     let unmatched = || reject(http::StatusCode::UNAUTHORIZED);
     let invalid = || reject(http::StatusCode::BAD_GATEWAY);
-    let endpoint = if request.url.ends_with("/decisions") {
-        "decisions"
-    } else {
-        "responses"
-    };
-    // Decisions carries its body limit through to the physical transport.
-    // Responses does not supply limits; reject unsupported options explicitly.
-    if request.timeout.is_some()
-        || (endpoint != "decisions" && request.response_body_limit_bytes.is_some())
-    {
+    // Current ResponsesOptions never supplies these transport limits. Reject a
+    // future incompatible caller explicitly rather than silently dropping limits.
+    if request.timeout.is_some() || request.response_body_limit_bytes.is_some() {
         return Err(invalid());
     }
     if request.url != expected_url {
@@ -4030,11 +4080,10 @@ async fn direct_sentinel_stream(
         .clone()
         .ok_or_else(unmatched)?;
     let prefix = format!("{}/p-", binding.0.trim_end_matches('/'));
-    let suffix = format!("/{endpoint}");
     let encoded = request
         .url
         .strip_prefix(&prefix)
-        .and_then(|path| path.strip_suffix(&suffix))
+        .and_then(|path| path.strip_suffix("/responses"))
         .filter(|encoded| {
             !encoded.is_empty()
                 && encoded
@@ -4108,13 +4157,7 @@ async fn direct_sentinel_stream(
     let mut metadata = metadata.as_object().cloned().ok_or_else(invalid)?;
     metadata.remove("sdk_sentinel_thread");
     metadata.remove("sdk_sentinel_nonce");
-    if endpoint == "decisions" {
-        body.as_object_mut()
-            .ok_or_else(invalid)?
-            .remove("client_metadata");
-    } else {
-        body["client_metadata"] = serde_json::Value::Object(metadata);
-    }
+    body["client_metadata"] = serde_json::Value::Object(metadata);
     native_interception::sentinel_restore_schemas(inner, provider_id, &ticket, &mut body)
         .await
         .map_err(|_| invalid())?;
@@ -4138,17 +4181,10 @@ async fn direct_sentinel_stream(
     // authoritative for provider/grant/Host resolution.
     let headers = serde_json::to_string(&headers).map_err(|_| invalid())?;
     let body = serde_json::to_vec(&body).map_err(|_| invalid())?;
-    let (status, headers, body) = sentinel_stream_dispatch(
-        inner,
-        provider_id,
-        &headers,
-        body.into(),
-        &ticket,
-        endpoint,
-        request.response_body_limit_bytes,
-    )
-    .await
-    .map_err(|_| invalid())?;
+    let (status, headers, body) =
+        sentinel_stream_dispatch(inner, provider_id, &headers, body.into(), &ticket)
+            .await
+            .map_err(|_| invalid())?;
     let headers = sentinel_response_headers(headers).map_err(|_| invalid())?;
     match body {
         NativeModelBody::HttpError(text) => {
@@ -4180,7 +4216,6 @@ async fn direct_sentinel_stream(
                 })
                 .boxed(),
         }),
-        NativeModelBody::Failed(error) => Err(error),
         NativeModelBody::Closed => Ok(codex_client::StreamResponse {
             status,
             headers,
@@ -4246,8 +4281,6 @@ async fn sentinel_stream_dispatch(
     headers: &str,
     body: bytes::Bytes,
     ticket: &serde_json::Value,
-    endpoint: &str,
-    response_body_limit_bytes: Option<usize>,
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
@@ -4255,9 +4288,8 @@ async fn sentinel_stream_dispatch(
         .map_err(native_error)?;
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let mut request = provider
-        .build_request("POST".parse().map_err(native_error)?, endpoint)
+        .build_request("POST".parse().map_err(native_error)?, "responses")
         .with_raw_body(body);
-    request.response_body_limit_bytes = response_body_limit_bytes;
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
     let result = match request.into_prepared() {
         Ok(request) => {
@@ -4297,11 +4329,6 @@ async fn sentinel_stream_dispatch(
             body,
             ..
         }) => NativeModelBody::http_error(status, headers, body)?,
-        Err(error) if endpoint == "decisions" => (
-            http::StatusCode::OK,
-            http::HeaderMap::new(),
-            NativeModelBody::Failed(error),
-        ),
         Err(error) => {
             native_interception::sentinel_failed(
                 inner,
@@ -4348,7 +4375,6 @@ struct NativeModelRoute {
 // Closing first retires that owner's pending send/read, then acquires the mutex.
 enum NativeModelBody {
     Streaming(ByteStream),
-    Failed(TransportError),
     HttpError(Option<String>),
     Closed,
 }
@@ -4456,12 +4482,6 @@ impl NativeModelResponse {
                 NativeModelBody::HttpError(text) => {
                     if let Some(text) = text.take() {
                         return Ok(Some(napi::bindgen_prelude::Buffer::from(text.into_bytes())));
-                    }
-                }
-                NativeModelBody::Failed(_) => {
-                    let failed = std::mem::replace(&mut *body, NativeModelBody::Closed);
-                    if let NativeModelBody::Failed(error) = failed {
-                        return Err(native_error(error));
                     }
                 }
                 NativeModelBody::Closed => {}

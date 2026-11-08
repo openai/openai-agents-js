@@ -206,6 +206,8 @@ impl ThreadInstructionsProvider for ThreadInstructions {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThreadOptions {
+    #[serde(rename = "_before_complete")]
+    before_complete: bool,
     #[serde(rename = "_agent_profiles")]
     pub(crate) agent_profiles: Option<crate::agent_profiles::OpeningProfiles>,
     #[serde(rename = "_sdk_resume_thread_id")]
@@ -345,6 +347,11 @@ impl ThreadOptions {
             !self.native_agent_before_step || self.native_agent_roles.is_some(),
             "Child step selection requires NativeAgents roles"
         );
+        if self.before_complete {
+            options
+                .thread_extension_init
+                .insert(crate::python_tools::CompletionCallback);
+        }
         if self.native_agent_before_step {
             options
                 .thread_extension_init

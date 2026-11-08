@@ -184,7 +184,6 @@ async fn direct_http_exact_negative_receipts_never_open_upstream() {
         "turn",
         "cancel",
         "ticket",
-        "response limit",
     ] {
         let (mut request, guard) = fixture.issue();
         match case {
@@ -200,7 +199,6 @@ async fn direct_http_exact_negative_receipts_never_open_upstream() {
                 );
             }
             "provider" => request.url = fixture.url.replace("ZGlyZWN0", "b3RoZXI"),
-            "response limit" => request.response_body_limit_bytes = Some(64 * 1024 * 1024),
             "model" => edit_body(&mut request, |body| body["model"] = json!("wrong-model")),
             "nonce" => edit_body(&mut request, |body| {
                 body["client_metadata"]["sdk_sentinel_nonce"] = json!("stale-nonce")

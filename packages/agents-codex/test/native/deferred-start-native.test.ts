@@ -9,6 +9,8 @@ import {
   manualTool,
   webSearch,
   type ActionRequested,
+  type BeforeComplete,
+  type DecisionProvider,
   type Session,
 } from '../../src';
 import {
@@ -36,7 +38,7 @@ class FactoryAgent extends Agent {
   holdRestore?: ReturnType<typeof gate>;
   openingDefaults?: Pick<
     NonNullable<Parameters<Agent['session']>[0]>,
-    'provider' | 'model' | 'modelSettings'
+    'provider' | 'model' | 'modelSettings' | 'decisions'
   >;
   failRestore = false;
   #calls = 0;
@@ -67,6 +69,9 @@ async function nextAction(session: Session<unknown>): Promise<ActionRequested> {
 async function fixture(
   options: {
     pending?: boolean;
+    twoStarts?: boolean;
+    decisions?: DecisionProvider;
+    beforeComplete?: BeforeComplete<undefined>;
     promptedOverride?: boolean;
     laterPlain?: boolean;
     envKey?: boolean;
@@ -89,6 +94,9 @@ async function fixture(
   });
   const responses = [
     [call('job', { id: 'one' }, { callId: 'job-call' })],
+    ...(options.twoStarts
+      ? [[call('job', { id: 'two' }, { callId: 'job-call-two' })]]
+      : []),
     [
       message(
         options.repair
@@ -208,6 +216,8 @@ async function fixture(
   await defaultProvider?.close();
   const agent = new FactoryAgent({
     instructions: 'Use the original job declaration, then answer.',
+    decisions: options.decisions,
+    beforeComplete: options.beforeComplete,
     model: options.perOpening === 'undefined' ? undefined : 'gpt-5',
     modelSettings:
       options.perOpening === 'overrides'
@@ -367,6 +377,51 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(f.agent.receivers).toEqual([f.agent, f.agent]);
       f.model.assertExhausted();
     }, 20_000);
+
+    it('retains a decision override selected on only the first of two deferred starts', async () => {
+      const original: DecisionProvider = {
+        getDecision: vi.fn(async () => ({ value: { response: false } })),
+      };
+      const override: DecisionProvider = {
+        getDecision: vi.fn(async () => ({ value: { response: true } })),
+      };
+      await using f = await fixture({
+        twoStarts: true,
+        decisions: original,
+        beforeComplete: async (context) => {
+          expect(
+            await context.decide('Was the selected provider retained?', {
+              input: context.text!,
+            }),
+          ).toBe(true);
+        },
+      });
+      f.agent.openingDefaults = { decisions: override };
+      await f.jobs.start(
+        f.session,
+        f.request,
+        {},
+        async ({ session, outcome }) => {
+          if (outcome.status !== 'continued')
+            throw new Error('Expected first continuation');
+          const first = outcome.turn.wait().catch((error) => error);
+          const second = await nextAction(session);
+          expect(second.callId).toBe('job-call-two');
+          f.agent.openingDefaults = undefined;
+          await f.jobs.start(session, second, {}, async ({ outcome: next }) => {
+            if (next.status !== 'continued')
+              throw new Error('Expected second continuation');
+            expect((await next.turn.wait()).finalOutput).toBe('done');
+          });
+          expect(await first).toBeInstanceOf(InteractionRequired);
+        },
+      );
+      expect(original.getDecision).not.toHaveBeenCalled();
+      expect(override.getDecision).toHaveBeenCalledTimes(1);
+      expect(f.agent.factoryCalls).toBe(3);
+      expect(f.backend.start).toHaveBeenCalledTimes(2);
+      f.model.assertExhausted();
+    }, 30000);
 
     it('closes the borrowed Session and preserves an application callback error', async () => {
       await using f = await fixture({ pending: true });

@@ -1,4 +1,11 @@
-import type { DecisionsPolicy } from './inference-api';
+import {
+  bindDecide,
+  decisionBinding,
+  type BoundDecide,
+  type DecisionProvider,
+  type DecisionMetadata,
+} from './decisions';
+import { ContinueTurn, type BeforeComplete } from './completion';
 import { isBackgroundToolResponse } from './background-result';
 import {
   allocatedProfileCatalogs,
@@ -264,8 +271,9 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
-  /** @internal Captured native Decisions configuration; never restored from state. */
-  decisionsApi?: DecisionsPolicy;
+  decisions?: DecisionProvider;
+  decisionsOverride?: DecisionProvider;
+  beforeComplete?: BeforeComplete<any>;
   maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
   /** @internal Captured opening scope; never stored in SessionState. */
@@ -321,6 +329,7 @@ export interface ManualCheckpointEntry {
 export type OneShotOptions = {
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
+  beforeStep?: OperationOptions<any>['beforeStep'];
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
@@ -382,6 +391,7 @@ export interface PrepareRequestContext<Context = unknown> extends Omit<
   readonly recoveryAttempt: number;
 }
 export interface BeforeStepContext<Context = unknown> {
+  readonly decide: BoundDecide;
   readonly context: Context;
   readonly submission: Turn<unknown>;
   readonly stepIndex: number;
@@ -1023,10 +1033,6 @@ export class Session<OutputT = string, Context = unknown> {
   async realtime(
     options: NativeRealtimeOptions = {},
   ): Promise<NativeRealtimeSession> {
-    if (this.options.decisionsApi)
-      throw new TypeError(
-        'Decisions does not support native Realtime; open a Responses Session',
-      );
     this.checkCallbackOperation('open Realtime on');
     // A rejected startup cannot return its owner as a cleanup retry handle.
     // Keep it installed until this explicit retry joins its retained cleanup.
@@ -1500,6 +1506,20 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly repairTurns: RepairTurnWire[];
   private readonly repairItems: RepairItemWire[];
   private repairReceiptsIncomplete = false;
+  private readonly decisionCalls = new Set<Promise<unknown>>();
+  private readonly decisionCompletions = new Map<
+    string,
+    {
+      native: NativeThread;
+      owner: NativeTurn | ChildCallbackOwner;
+      turn: string;
+      thread: string;
+      incarnation?: string;
+      delivered: boolean;
+      resolve(): void;
+      reject(error: unknown): void;
+    }
+  >();
   private readonly completedResults = new WeakMap<
     NativeRunResult,
     Completed<unknown>
@@ -3233,7 +3253,11 @@ export class Session<OutputT = string, Context = unknown> {
       undefined,
       false,
       this.captureSelection(
-        { maxModelSteps, prepareRequest: this.oneShot?.prepareRequest },
+        {
+          maxModelSteps,
+          prepareRequest: this.oneShot?.prepareRequest,
+          beforeStep: this.oneShot?.beforeStep,
+        },
         this.defaultOutput,
         budget,
       ),
@@ -4318,8 +4342,6 @@ export class Session<OutputT = string, Context = unknown> {
     output = this.defaultOutput,
     outputOverride = false,
   ): NativeTurn {
-    if (this.options.decisionsApi && output.identity.mode === 'prompted')
-      throw new TypeError('Decisions supports only plain or native output');
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
     const run = new NativeTurn(() => this.assertCanWait(run));
@@ -4956,6 +4978,330 @@ export class Session<OutputT = string, Context = unknown> {
     }
     throw error;
   }
+  private decisionScope(
+    owner: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+    signal: AbortSignal,
+    check: () => void,
+  ) {
+    const native = this.#native;
+    const producer = this.childObservationProducer;
+    const msg = event.msg;
+    const profile = this.messageProfile(msg);
+    const provider =
+      this.options.decisionsOverride ??
+      (profile
+        ? this.profileRuntimes.get(profile.profile_id)!.profile.declaration
+            .decisions
+        : undefined) ??
+      this.options.decisions;
+    let accepting = true;
+    const pending = new Set<Promise<unknown>>();
+    const assertActive = () => {
+      signal.throwIfAborted();
+      if (!this.isOpen || this.#native !== native || !this.current(owner))
+        throw new NativeError('Decision callback is no longer active');
+      check();
+    };
+    const make = (effectiveSignal: AbortSignal): BoundDecide =>
+      bindDecide({
+        provider,
+        signal: effectiveSignal,
+        admit: () => {
+          if (!accepting)
+            throw new NativeError('Decision callback is no longer active');
+          assertActive();
+        },
+        assertActive,
+        own: <T>(work: () => Promise<T>): Promise<T> => {
+          let value: T;
+          let failure: { error: unknown } | undefined;
+          const joined = this.trackOwnedCallback(owner, async () => {
+            try {
+              value = await work();
+            } catch (error) {
+              failure = { error };
+            }
+          });
+          const call = joined.then(() => {
+            if (failure) throw failure.error;
+            return value!;
+          });
+          pending.add(call);
+          this.decisionCalls.add(call);
+          void call
+            .catch(() => {})
+            .finally(() => {
+              pending.delete(call);
+              this.decisionCalls.delete(call);
+            });
+          return call;
+        },
+        record: async () => {},
+        capture: async () => {
+          const authority =
+            msg._sdk_python_tool === undefined
+              ? encode({
+                  ...msg,
+                  ...(owner instanceof NativeTurn
+                    ? {}
+                    : { instance: owner.incarnation }),
+                })
+              : encodeReceipt(msg);
+          const call = await native._capture_decision(authority);
+          assertActive();
+          const turn = owner instanceof NativeTurn ? owner.id! : owner.turnId;
+          const thread = owner instanceof NativeTurn ? this.id : owner.childId;
+          if (call.turn_id !== turn || call.thread_id !== thread)
+            throw new NativeError(
+              'Decision capture belongs to another callback',
+            );
+          return async (metadata: DecisionMetadata) => {
+            const drained = Promise.withResolvers<void>();
+            void drained.promise.catch(() => {});
+            const waiter = {
+              native,
+              owner,
+              turn: call.turn_id,
+              thread: call.thread_id,
+              incarnation:
+                owner instanceof NativeTurn ? undefined : owner.incarnation,
+              delivered: false,
+              resolve: () => drained.resolve(),
+              reject: drained.reject,
+            };
+            this.decisionCompletions.set(call.completion_id, waiter);
+            if (producer.eventReaderEnded || this.#native !== native)
+              drained.reject(
+                new NativeError('Decision accounting reader closed'),
+              );
+            const usage = metadata.usage;
+            const payload = {
+              usage: usage
+                ? {
+                    input_tokens: usage.inputTokens,
+                    cached_input_tokens: usage.cachedInputTokens,
+                    cache_write_input_tokens: usage.cacheWriteInputTokens,
+                    output_tokens: usage.outputTokens,
+                    reasoning_output_tokens: usage.reasoningOutputTokens,
+                    total_tokens: usage.totalTokens,
+                  }
+                : null,
+              request_id: metadata.requestId ?? null,
+              model: metadata.model ?? null,
+            };
+            const encoded = JSON.stringify(payload, (_key, value: unknown) =>
+              typeof value === 'bigint'
+                ? JSON.rawJSON(value.toString())
+                : value,
+            );
+            const committed = call.commit(encoded).catch((error) => {
+              drained.reject(error);
+              throw error;
+            });
+            try {
+              const [written, read] = await Promise.allSettled([
+                committed,
+                drained.promise,
+              ]);
+              if (read.status === 'rejected') throw read.reason;
+              if (written.status === 'rejected') throw written.reason;
+              if (written.value !== null) throw new NativeError(written.value);
+            } finally {
+              this.decisionCompletions.delete(call.completion_id);
+            }
+          };
+        },
+      });
+    return {
+      decide: make(signal),
+      [decisionBinding]: make,
+      join: async () => {
+        accepting = false;
+        await Promise.allSettled([...pending]);
+      },
+    };
+  }
+
+  private async joinDecisionCalls(): Promise<void> {
+    while (this.decisionCalls.size)
+      await Promise.allSettled([...this.decisionCalls]);
+  }
+
+  private consumeDecisionUsage(
+    event: NativeEvent,
+    native: NativeThread,
+  ): boolean {
+    if (event.msg.type !== 'token_count') return false;
+    for (const waiter of this.decisionCompletions.values()) {
+      if (
+        waiter.native !== native ||
+        event.id !== waiter.turn ||
+        (event.subagent_id ?? this.id) !== waiter.thread ||
+        event.subagent_incarnation !== waiter.incarnation
+      )
+        continue;
+      const snapshot = apiRateLimits(event.msg.api_rate_limits);
+      if (snapshot) this.apiRateLimitState.snapshot = snapshot;
+      if (waiter.owner instanceof NativeTurn) {
+        if (
+          this.observeTokenCount(
+            event,
+            waiter.turn,
+            this.submissionIds.get(waiter.owner)!,
+          )
+        )
+          waiter.owner.usage = event.msg.info ?? null;
+      } else {
+        this.observeTokenCount(
+          event,
+          waiter.turn,
+          `child:${waiter.thread}:${waiter.incarnation}:${waiter.turn}`,
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private consumeDecisionCompletion(
+    event: NativeEvent,
+    native: NativeThread,
+  ): boolean {
+    if (
+      event.msg.type !== 'raw_response_completed' ||
+      typeof event.msg.response_id !== 'string'
+    )
+      return false;
+    const waiter = this.decisionCompletions.get(event.msg.response_id);
+    if (!waiter || waiter.native !== native) return false;
+    if (waiter.delivered) return true;
+    waiter.delivered = true;
+    try {
+      if (
+        event.id !== waiter.turn ||
+        (event.subagent_id ?? this.id) !== waiter.thread ||
+        event.subagent_incarnation !== waiter.incarnation
+      )
+        throw new NativeError(
+          'Decision completion belongs to another callback',
+        );
+      if (waiter.owner instanceof NativeTurn) {
+        const raw = event.msg.token_usage;
+        const usage =
+          raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+            ? raw
+            : undefined;
+        if (usage) waiter.owner.addUsage(usage);
+        waiter.owner.selection?.budget?.observe(usage);
+      }
+      waiter.resolve();
+    } catch (error) {
+      waiter.reject(error);
+    }
+    return true;
+  }
+
+  private completeCallback(
+    owner: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+  ): Promise<void> {
+    const delivery = this.callbackEvents.get(event);
+    if (delivery) delivery.buffered = true;
+    return this.trackOwnedCallback(
+      owner,
+      () =>
+        this.ownCallbackDelivery(event, owner, async (signal, delivery) => {
+          const native = delivery?.native ?? this.#native;
+          const msg = event.msg;
+          const profile = this.messageProfile(msg);
+          const callback = profile
+            ? this.profileRuntimes.get(profile.profile_id)!.profile.declaration
+                .beforeComplete
+            : this.options.beforeComplete;
+          const receipt = {
+            thread: msg.thread,
+            instance:
+              owner instanceof NativeTurn
+                ? (msg.instance ?? null)
+                : owner.incarnation,
+            turn_id: msg.turn_id,
+            request_id: msg.request_id,
+            generation: msg.generation,
+          };
+          const nonce = encode(receipt);
+          const check = () => {
+            if (!native._check_completion(nonce))
+              throw new NativeError('Completion callback is no longer active');
+          };
+          const scope = this.decisionScope(owner, event, signal, check);
+
+          let replied = false;
+          const abort = () => {
+            if (!replied) {
+              replied = true;
+              try {
+                native._reply_completion(
+                  encode({
+                    ...receipt,
+                    instructions: null,
+                    error: true,
+                  }),
+                );
+              } catch {
+                // Cancellation may already have retired this exact completion receipt.
+              }
+            }
+          };
+          signal.addEventListener('abort', abort, { once: true });
+          try {
+            check();
+            signal.throwIfAborted();
+            if (!callback)
+              throw new NativeError(
+                'Completion callback has no application owner',
+              );
+            const result = await callback(
+              Object.freeze({
+                context: this.options.context,
+                text: msg.text as string | null,
+                sessionId: this.id,
+                turnId: msg.turn_id as string,
+                subagentId: owner instanceof NativeTurn ? null : owner.childId,
+                model: msg.model as string,
+                continuationCount: msg.continuation_count as number,
+                signal,
+                decide: scope.decide,
+              }),
+            );
+            await scope.join();
+            check();
+            signal.throwIfAborted();
+            if (result !== undefined && !(result instanceof ContinueTurn))
+              throw new TypeError(
+                'beforeComplete must return ContinueTurn or undefined',
+              );
+            native._reply_completion(
+              encode({
+                ...receipt,
+                instructions: result?.instructions ?? null,
+              }),
+            );
+            replied = true;
+          } catch (error) {
+            abort();
+            throw error;
+          } finally {
+            await scope.join();
+            signal.removeEventListener('abort', abort);
+          }
+        }),
+      typeof event.msg.tracing_context === 'string'
+        ? event.msg.tracing_context
+        : undefined,
+    );
+  }
+
   private async ownCallbackDelivery(
     event: NativeEvent,
     owner: NativeTurn | ChildCallbackOwner,
@@ -5006,7 +5352,10 @@ export class Session<OutputT = string, Context = unknown> {
     let batchIndex = 0;
     let delivery: NativeCallbackDelivery | undefined;
     try {
-      while (this.isOpen && this.#native === native) {
+      while (
+        (this.isOpen || this.decisionCalls.size > 0) &&
+        this.#native === native
+      ) {
         if (delivery && !delivery.claimed && !delivery.buffered)
           this.releaseCallbackDelivery(delivery);
         delivery = undefined;
@@ -5037,7 +5386,7 @@ export class Session<OutputT = string, Context = unknown> {
           if (this.manualSuspending || this.replacingNative === native) return;
           throw error;
         }
-        if (!this.isOpen || this.#native !== native) return;
+        if (this.#native !== native) return;
         if (event.msg.type === '_sdk_callback_cancel') {
           const wire = encodeReceipt(
             nativeCallbackReceipt.parse(event.msg.receipt),
@@ -5046,6 +5395,12 @@ export class Session<OutputT = string, Context = unknown> {
           if (cancelled?.native === native)
             this.retireCallbackDelivery(cancelled);
           continue;
+        }
+        if (this.consumeDecisionUsage(event, native)) continue;
+        if (this.consumeDecisionCompletion(event, native)) continue;
+        if (!this.isOpen) {
+          if (this.decisionCalls.size > 0) continue;
+          return;
         }
         if (this.realtimeOwner?._ingest(event)) continue;
         const msg = event.msg;
@@ -5209,6 +5564,9 @@ export class Session<OutputT = string, Context = unknown> {
           if (pending.native === native && !pending.claimed)
             this.releaseCallbackDelivery(pending);
       } finally {
+        for (const waiter of this.decisionCompletions.values())
+          if (waiter.native === native)
+            waiter.reject(new NativeError('Decision accounting reader closed'));
         this.realtimeOwner?._readerClosed();
         // Release callbacks waiting for this reader before auxiliary readers
         // join their callback work during replacement, suspension, or close.
@@ -5500,6 +5858,11 @@ export class Session<OutputT = string, Context = unknown> {
       )
     ) {
       this.childCallbacks.end(id, incarnation, turnId);
+      return;
+    }
+    if (msg.type === '_sdk_before_complete') {
+      if (this.current(owner))
+        void this.completeCallback(owner, event).catch(() => {});
       return;
     }
     if (msg.type === '_sdk_select_step') {
@@ -5812,6 +6175,11 @@ export class Session<OutputT = string, Context = unknown> {
       void this.trackNativeQuestion(run, event).catch(() => {});
       return;
     }
+    if (kind === '_sdk_before_complete') {
+      if (msg.turn_id === run.id)
+        void this.completeCallback(run, event).catch(() => {});
+      return;
+    }
     if (kind === '_sdk_prepare_request') {
       if (msg.turn_id !== run.id) return;
       this.track(run, this.prepareRequest(run, event));
@@ -6105,25 +6473,41 @@ export class Session<OutputT = string, Context = unknown> {
           signal.throwIfAborted();
           if (this.graphStops.size)
             throw new TurnAborted('Request preparation stopped');
-          const returned = selection.prepareRequest({
-            context: this.options.context as Context,
-            submission: this.#turnFor(this.rootRun(run)),
-            preparationIndex: selection.preparationIndex++,
-            recoveryAttempt: msg.recovery_attempt as number,
-            signal,
-            request: preparedRequestFromNative(msg.data),
-          });
-          const replacement =
-            returned &&
-            typeof (returned as Promise<PreparedRequestData>).then ===
-              'function'
-              ? await returned
-              : returned;
-          // Capture immediately after settlement, before cancellation/owner checks or another await.
-          const captured =
-            replacement === undefined
-              ? undefined
-              : capturePreparedRequest(replacement);
+          const assertActive = () => {
+            signal.throwIfAborted();
+            if (
+              !this.current(run) ||
+              this.sourceCatalog(msg, msg.generation as string) !==
+                sourceCatalog
+            )
+              throw new NativeError('Request preparation is no longer active');
+          };
+          const scope = this.decisionScope(run, event, signal, assertActive);
+          let captured: ReturnType<typeof capturePreparedRequest> | undefined;
+          try {
+            const returned = selection.prepareRequest({
+              decide: scope.decide,
+              context: this.options.context as Context,
+              submission: this.#turnFor(this.rootRun(run)),
+              preparationIndex: selection.preparationIndex++,
+              recoveryAttempt: msg.recovery_attempt as number,
+              signal,
+              request: preparedRequestFromNative(msg.data),
+            });
+            const replacement =
+              returned &&
+              typeof (returned as Promise<PreparedRequestData>).then ===
+                'function'
+                ? await returned
+                : (returned as PreparedRequestData | undefined);
+            // Capture mutable application data before joining admitted helper work.
+            captured =
+              replacement === undefined
+                ? undefined
+                : capturePreparedRequest(replacement);
+          } finally {
+            await scope.join();
+          }
           signal.throwIfAborted();
           if (
             !this.current(run) ||
@@ -6236,19 +6620,27 @@ export class Session<OutputT = string, Context = unknown> {
           assertActive();
           selection.budget?.check(assertActive);
           const stepIndex = selection.stepIndex++;
-          const selected = await selection.beforeStep?.({
-            context: this.options.context as Context,
-            submission: this.#turnFor(this.rootRun(run)),
-            stepIndex,
-            signal,
-          });
+          const scope = this.decisionScope(run, event, signal, assertActive);
+          let names: ReturnType<typeof this.selectedStepNames>;
+          try {
+            const selected = await selection.beforeStep?.({
+              decide: scope.decide,
+              context: this.options.context as Context,
+              submission: this.#turnFor(this.rootRun(run)),
+              stepIndex,
+              signal,
+            });
+            names = this.selectedStepNames(
+              event,
+              selected,
+              this.profileOperationNames(selection, event, sourceCatalog),
+              sourceCatalog,
+            );
+          } finally {
+            await scope.join();
+          }
           assertActive();
-          const names = this.selectedStepNames(
-            event,
-            selected,
-            this.profileOperationNames(selection, event, sourceCatalog),
-            sourceCatalog,
-          );
+          selection.budget?.check(assertActive);
           signal.throwIfAborted();
           reply(names);
           selection.budget?.charge();
@@ -6361,7 +6753,12 @@ export class Session<OutputT = string, Context = unknown> {
         original,
         owner.observationProducer,
       );
+      const scope = this.decisionScope(owner, event, signal, () => {
+        if (!native._check_step(encode(receipt)))
+          throw new NativeError('Child step selection is no longer active');
+      });
       const context = Object.freeze({
+        decide: scope.decide,
         context: this.options.context as Context,
         submission,
         child: Object.freeze({
@@ -6392,15 +6789,21 @@ export class Session<OutputT = string, Context = unknown> {
       }
       signal.throwIfAborted();
       capturedSelection.stepIndex++;
-      const selected = await withNativeCallbackContext(
-        typeof event.msg.tracing_context === 'string'
-          ? event.msg.tracing_context
-          : undefined,
-        () => beforeStep(context),
-        signal,
-        (traceId, workflowSpanId) =>
-          this.workflowForTrace(traceId, workflowSpanId),
-      );
+      let names: ReturnType<typeof this.selectedStepNames>;
+      try {
+        const selected = await withNativeCallbackContext(
+          typeof event.msg.tracing_context === 'string'
+            ? event.msg.tracing_context
+            : undefined,
+          () => beforeStep(context),
+          signal,
+          (traceId, workflowSpanId) =>
+            this.workflowForTrace(traceId, workflowSpanId),
+        );
+        names = this.selectedStepNames(event, selected);
+      } finally {
+        await scope.join();
+      }
       signal.throwIfAborted();
       if (
         !this.current(owner) ||
@@ -6425,7 +6828,7 @@ export class Session<OutputT = string, Context = unknown> {
       } catch (error) {
         this.callbackAuthorityFailed(delivery, error);
       }
-      reply(this.selectedStepNames(event, selected));
+      reply(names);
     } catch (error) {
       reply(null);
       throw error;
@@ -7532,7 +7935,10 @@ export class Session<OutputT = string, Context = unknown> {
         if (!this.current(owner)) return;
         check();
       }
+      const scope = this.decisionScope(owner, event, signal, check);
       const context = {
+        decide: scope.decide,
+        [decisionBinding]: scope[decisionBinding],
         traceContext: nativeTraceContext(
           msg._sdk_trace_context as TraceContextHeaders | null | undefined,
         ),
@@ -7628,6 +8034,7 @@ export class Session<OutputT = string, Context = unknown> {
         }
         throw error;
       } finally {
+        await scope.join();
         const finalStatus = signal.aborted ? 'cancelled' : status;
         if (finalStatus !== undefined)
           getCurrentSpan()?.end({
@@ -8162,10 +8569,6 @@ export class Session<OutputT = string, Context = unknown> {
   async update(options: SessionUpdate<Context> = {}): Promise<void> {
     this.checkCallbackOperation('update');
     this.idle('update');
-    if (this.options.decisionsApi && options.model !== undefined)
-      throw new TypeError(
-        'Decisions Sessions cannot change model; open a new Session',
-      );
     if (options.agent !== undefined) {
       if (
         options.model !== undefined ||
@@ -8227,13 +8630,6 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (options.tools !== undefined) {
       const next = splitToolDeclarations(options.tools);
-      if (
-        this.options.decisionsApi &&
-        next.tools.some((tool) => tool.kind === 'manual' || tool.deferLoading)
-      )
-        throw new TypeError(
-          'Decisions supports only ordinary eager function tools',
-        );
       if (
         this.options.customStore &&
         next.tools.some((tool) => tool.kind === 'manual')
@@ -9015,14 +9411,6 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   async compact(options?: SuppliedCompactionOptions): Promise<void> {
-    if (
-      this.options.decisionsApi &&
-      !this.options.decisionsApi.fallbackModel &&
-      options === undefined
-    )
-      throw new TypeError(
-        'Decisions compaction requires an explicit fallback model',
-      );
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
       throw new TypeError(
@@ -9346,8 +9734,6 @@ export class Session<OutputT = string, Context = unknown> {
 
   /** Copy settled root history into an independently owned portable state. */
   async fork(): Promise<SessionState> {
-    if (this.options.decisionsApi)
-      throw new TypeError('Decisions does not support portable state');
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before fork');
     this.requireCompleteRepairReceipts();
@@ -9656,8 +10042,6 @@ export class Session<OutputT = string, Context = unknown> {
     return pending;
   }
   async saveState(): Promise<SessionState> {
-    if (this.options.decisionsApi)
-      throw new TypeError('Decisions does not support portable state');
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
@@ -9686,8 +10070,6 @@ export class Session<OutputT = string, Context = unknown> {
     return snapshot;
   }
   async suspend(): Promise<SessionState> {
-    if (this.options.decisionsApi)
-      throw new TypeError('Decisions does not support portable state');
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before suspend');
     if (this.nativeQuestions.size)
@@ -10661,13 +11043,41 @@ export class Session<OutputT = string, Context = unknown> {
                       },
                     )
                   : this.options.nativeAgents && collaboration
-                    ? await applyNativeAgentsApproval(
-                        this.options.nativeAgents,
-                        this.options.context,
-                        submission,
-                        request!,
-                        signal,
-                      )
+                    ? await (async () => {
+                        const scope = this.decisionScope(
+                          owner,
+                          {
+                            id: request!.turn_id as string,
+                            msg: {
+                              ...(raw as JsonObject),
+                              type: '_sdk_native_interception',
+                            },
+                          },
+                          signal,
+                          () => {
+                            if (
+                              !active() ||
+                              reservation.cancelled ||
+                              !native._check_native_interception(notice.nonce)
+                            )
+                              throw new NativeError(
+                                'Native approval callback is no longer active',
+                              );
+                          },
+                        );
+                        try {
+                          return await applyNativeAgentsApproval(
+                            this.options.nativeAgents!,
+                            this.options.context,
+                            submission,
+                            request!,
+                            signal,
+                            scope.decide,
+                          );
+                        } finally {
+                          await scope.join();
+                        }
+                      })()
                     : this.environment instanceof Environment &&
                         hasExecutorPolicy(this.environment)
                       ? await applyExecutorPolicy(
@@ -10971,8 +11381,9 @@ export class Session<OutputT = string, Context = unknown> {
         this.clearManualCalls(run);
         run.controller.abort(closed);
         try {
-          // Stop native sampling before joining callbacks whose results may
-          // already have been accepted. Keep the engine until cleanup finishes.
+          // Sampling was stopped at close entry. Drain admitted decision receipts
+          // before shutting down their event reader.
+          await this.joinDecisionCalls();
           acknowledgmentFailure =
             (await this.closeNative()) ?? acknowledgmentFailure;
         } finally {
@@ -11031,6 +11442,7 @@ export class Session<OutputT = string, Context = unknown> {
         phase = 'carrier';
       }
       if (phase === 'native') {
+        await this.joinDecisionCalls();
         try {
           await this.discardForkCopy();
         } catch (error) {

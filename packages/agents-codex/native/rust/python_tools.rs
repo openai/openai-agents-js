@@ -202,15 +202,18 @@ pub struct PythonTools {
     instance: Option<String>,
     pub(crate) inherit_children: bool,
     child_before_step: bool,
+    before_complete_enabled: bool,
     manual: Mutex<ManualLedger>,
     selection: Mutex<Option<ActiveSelection>>,
     step_replies: Mutex<HashMap<u64, PendingStep>>,
+    completion_replies: Mutex<HashMap<u64, PendingCompletion>>,
     prepared: Mutex<Option<Arc<prepared_requests::Owner>>>,
 }
 
 // The family inbox transports requests; reply authority stays with each issuer.
 enum FamilyRequest {
     Step(Weak<PythonTools>, u64, Value),
+    Completion(Weak<PythonTools>, u64, Value),
     Prepared(Weak<prepared_requests::Owner>, u64, Value),
     Call(Weak<PythonTools>, PendingKey, Value),
     Callback(Value),
@@ -413,7 +416,8 @@ impl PythonTools {
         };
         let mut replies = owner.step_replies.lock().expect("Step replies poisoned");
         let Some(pending) = replies.get_mut(&id) else {
-            return false;
+            drop(replies);
+            return owner.completion_callback_operation(id, receipt, operation);
         };
         let Some(callback) = pending
             .callback
@@ -481,6 +485,7 @@ impl PythonTools {
         }
     }
     async fn finish_step_callbacks(&self, turn: Option<&str>, cancel: bool) {
+        self.finish_completion_callbacks(turn, cancel).await;
         let callbacks: Vec<_> = {
             let mut replies = self.step_replies.lock().expect("Step replies poisoned");
             replies
@@ -1104,6 +1109,10 @@ impl PythonTools {
                     .config
                     .features
                     .enabled(Feature::MultiAgentV2DynamicTools),
+            before_complete_enabled: startup
+                .thread_extension_init
+                .get::<CompletionCallback>()
+                .is_some(),
             child_before_step: startup
                 .thread_extension_init
                 .get::<ChildStepSelection>()
@@ -1111,6 +1120,7 @@ impl PythonTools {
             manual: Mutex::new(ManualLedger::default()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
+            completion_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
         };
         let seed = Arc::new(tools.prepare(0, specs)?);
@@ -1189,9 +1199,11 @@ impl PythonTools {
             instance: Some(instance),
             inherit_children: parent.inherit_children,
             child_before_step: parent.child_before_step,
+            before_complete_enabled: parent.before_complete_enabled,
             manual: Mutex::new(parent.child_manual_ledger()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
+            completion_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
         };
         // Validate the inherited catalog against this child's current ceiling.
@@ -1453,6 +1465,26 @@ impl PythonTools {
         loop {
             match receiver.recv().await {
                 Some(FamilyRequest::Callback(request)) => return request,
+                Some(FamilyRequest::Completion(owner, id, request)) => {
+                    if owner.upgrade().is_some_and(|owner| {
+                        if owner.instance.is_some()
+                            && !request["msg"]["thread"].as_str().is_some_and(|thread| {
+                                self.exact_owner("", thread, &owner.instance)
+                                    .is_some_and(|current| Arc::ptr_eq(&current, &owner))
+                            })
+                        {
+                            return false;
+                        }
+                        owner
+                            .completion_replies
+                            .lock()
+                            .expect("Completion replies poisoned")
+                            .get(&id)
+                            .is_some_and(|pending| owner.completion_live(pending))
+                    }) {
+                        return request;
+                    }
+                }
                 Some(FamilyRequest::Prepared(owner, id, request)) => {
                     if owner.upgrade().is_some_and(|owner| owner.queued(id)) {
                         return request;
@@ -1954,6 +1986,17 @@ impl Drop for StepWait {
 
 impl PythonTools {
     fn retire_selection(&self, turn: &str) {
+        let ids: Vec<_> = self
+            .completion_replies
+            .lock()
+            .expect("Completion replies poisoned")
+            .iter()
+            .filter(|(_, pending)| pending.turn == turn)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.retire_completion(id);
+        }
         self.retire_preparation(Some(turn));
         let mut active = self
             .selection
@@ -3390,9 +3433,11 @@ mod pending_tests {
             instance: None,
             inherit_children: true,
             child_before_step: false,
+            before_complete_enabled: false,
             manual: Mutex::default(),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
+            completion_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
         });
         let specs = vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
@@ -4821,3 +4866,273 @@ mod declaration_validation_tests {
 #[cfg(test)]
 #[path = "web_search_tests.rs"]
 mod web_search_tests;
+
+/// Private startup marker; profile callbacks use their captured catalog instead.
+pub(crate) struct CompletionCallback;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompletionReply {
+    pub(crate) thread: String,
+    pub(crate) instance: Option<String>,
+    pub(crate) turn_id: String,
+    pub(crate) generation: String,
+    pub(crate) request_id: String,
+    pub(crate) instructions: Option<String>,
+    #[serde(default)]
+    pub(crate) error: bool,
+}
+struct PendingCompletion {
+    thread: String,
+    turn: String,
+    generation: Arc<Generation>,
+    stop: Arc<crate::native_interception::CapturedTurnStop>,
+    callback: Arc<CallbackRelease>,
+    reply: Option<oneshot::Sender<std::result::Result<Option<String>, ()>>>,
+}
+struct CompletionWait {
+    tools: Arc<PythonTools>,
+    id: u64,
+}
+impl Drop for CompletionWait {
+    fn drop(&mut self) {
+        self.tools.retire_completion(self.id);
+    }
+}
+impl PythonTools {
+    fn completion_live(&self, pending: &PendingCompletion) -> bool {
+        pending
+            .reply
+            .as_ref()
+            .is_some_and(|reply| !reply.is_closed())
+            && pending.stop.admitted()
+            && self.admits_generation(&pending.generation)
+    }
+    fn completion_matches(&self, pending: &PendingCompletion, response: &CompletionReply) -> bool {
+        pending.thread == response.thread
+            && self.instance == response.instance
+            && pending.turn == response.turn_id
+            && pending.generation.id.to_string() == response.generation
+            && self.completion_live(pending)
+    }
+    pub(crate) fn check_completion(&self, response: &CompletionReply) -> Result<bool> {
+        let id = response.request_id.parse::<u64>()?;
+        Ok(self
+            .completion_replies
+            .lock()
+            .expect("Completion replies poisoned")
+            .get(&id)
+            .is_some_and(|pending| self.completion_matches(pending, response)))
+    }
+    pub(crate) fn reply_completion(&self, response: CompletionReply) -> Result<()> {
+        let id = response.request_id.parse::<u64>()?;
+        let mut replies = self
+            .completion_replies
+            .lock()
+            .expect("Completion replies poisoned");
+        let pending = replies.get_mut(&id).context("Expired completion owner")?;
+        ensure!(
+            self.completion_matches(pending, &response),
+            "Expired completion owner"
+        );
+        let reply = pending.reply.take().context("Expired completion owner")?;
+        let result = if response.error {
+            Err(())
+        } else {
+            Ok(response.instructions)
+        };
+        reply
+            .send(result)
+            .map_err(|_| anyhow::anyhow!("Completion callback cancelled"))
+    }
+    pub(crate) fn stop_completion(&self, response: &CompletionReply) -> Result<bool> {
+        let id = response.request_id.parse::<u64>()?;
+        let stop = {
+            let mut replies = self
+                .completion_replies
+                .lock()
+                .expect("Completion replies poisoned");
+            let Some(pending) = replies
+                .get_mut(&id)
+                .filter(|pending| self.completion_matches(pending, response))
+            else {
+                return Ok(false);
+            };
+            if let Some(reply) = pending.reply.take() {
+                let _ = reply.send(Err(()));
+            }
+            self.cancel_step_callback(&pending.turn, &pending.callback);
+            pending.stop.clone()
+        };
+        stop.stop();
+        Ok(true)
+    }
+    fn completion_callback_operation(&self, id: u64, receipt: &Value, operation: &str) -> bool {
+        let replies = self
+            .completion_replies
+            .lock()
+            .expect("Completion replies poisoned");
+        let Some(pending) = replies
+            .get(&id)
+            .filter(|pending| pending.callback.receipt == *receipt)
+        else {
+            return false;
+        };
+        let callback = &pending.callback;
+        match operation {
+            "enter" => {
+                self.completion_live(pending)
+                    && !callback.cancelled.load(Ordering::Acquire)
+                    && !callback.released.load(Ordering::Acquire)
+                    && callback
+                        .entered
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+            }
+            "cancelled" => callback.cancelled.load(Ordering::Acquire) || !pending.stop.admitted(),
+            "release" => callback.release(),
+            _ => false,
+        }
+    }
+    fn retire_completion(&self, id: u64) {
+        let mut replies = self
+            .completion_replies
+            .lock()
+            .expect("Completion replies poisoned");
+        if let Some(pending) = replies.get_mut(&id) {
+            pending.reply.take();
+            self.cancel_step_callback(&pending.turn, &pending.callback);
+            if pending.callback.released.load(Ordering::Acquire) {
+                replies.remove(&id);
+            }
+        }
+    }
+    async fn finish_completion_callbacks(&self, turn: Option<&str>, cancel: bool) {
+        let callbacks: Vec<_> = {
+            let mut replies = self
+                .completion_replies
+                .lock()
+                .expect("Completion replies poisoned");
+            replies
+                .iter_mut()
+                .filter(|(_, pending)| turn.is_none_or(|turn| pending.turn == turn))
+                .map(|(id, pending)| {
+                    if cancel {
+                        pending.reply.take();
+                        self.cancel_step_callback(&pending.turn, &pending.callback);
+                    }
+                    if !pending.callback.entered.load(Ordering::Acquire) {
+                        pending.callback.release();
+                    }
+                    (*id, pending.callback.clone())
+                })
+                .collect()
+        };
+        for (id, callback) in callbacks {
+            callback.wait().await;
+            self.completion_replies
+                .lock()
+                .expect("Completion replies poisoned")
+                .remove(&id);
+        }
+    }
+    pub(crate) async fn before_complete(
+        self: &Arc<Self>,
+        input: codex_extension_api::TurnCompletionInput<'_>,
+    ) -> Result<Option<String>> {
+        let catalog = self.source_catalog(Some(input.step_store))?;
+        if !catalog
+            .as_ref()
+            .map_or(self.before_complete_enabled, |catalog| {
+                catalog.before_complete
+            })
+        {
+            return Ok(None);
+        }
+        let generation = self.generation_for_step(Some(input.step_store))?;
+        let profile = self.source_profile(Some(input.step_store))?;
+        let stop = crate::native_interception::capture_completion_stop(
+            input.thread_store,
+            input.turn_store,
+        )
+        .context("Completion owner unavailable")?;
+        let id = self
+            .family
+            .next_step
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .map_err(|_| anyhow::anyhow!("Completion nonce exhausted"))?;
+        let mut receipt = json!({"kind":"preparation","thread":input.thread_store.level_id(),"id":id.to_string()});
+        if let Some(instance) = &self.instance {
+            receipt["instance"] = json!(instance);
+        }
+        let callback = CallbackRelease::new(receipt.clone());
+        let (reply, receive) = oneshot::channel();
+        self.completion_replies
+            .lock()
+            .expect("Completion replies poisoned")
+            .insert(
+                id,
+                PendingCompletion {
+                    thread: input.thread_store.level_id().to_owned(),
+                    turn: input.turn_id.to_owned(),
+                    generation: generation.clone(),
+                    stop: stop.clone(),
+                    callback: callback.clone(),
+                    reply: Some(reply),
+                },
+            );
+        let _wait = CompletionWait {
+            tools: self.clone(),
+            id,
+        };
+        let tracing = if self.instance.is_some() {
+            input
+                .turn_store
+                .get::<codex_otel::sdk_trace::CapturedContext>()
+                .and_then(|captured| captured.context.clone())
+        } else {
+            codex_otel::sdk_trace::ContextLease::capture().map(Arc::new)
+        };
+        let mut request = json!({"id":input.turn_id,"msg":{
+            "type":"_sdk_before_complete","turn_id":input.turn_id,"thread":input.thread_store.level_id(),
+            "instance":self.instance,"request_id":id.to_string(),"step_id":id.to_string(),"generation":generation.id.to_string(),
+            "model":input.model,"text":input.last_assistant_message,"continuation_count":input.continuation_count,"_sdk_callback":receipt,
+        }});
+        if let Some(profile) = profile {
+            request["msg"]["profile_id"] = json!(profile.profile_id);
+            request["msg"]["profile_epoch"] = json!(profile.epoch);
+        }
+        if let Some(context) = &tracing {
+            request["msg"]["tracing_context"] = json!(context.token());
+        }
+        if let Some(instance) = &self.instance {
+            request["subagent_id"] = json!(input.thread_store.level_id());
+            request["subagent_incarnation"] = json!(instance);
+            request["subagent_managed_tools"] = json!(true);
+        }
+        self.family
+            .requests
+            .send(FamilyRequest::Completion(Arc::downgrade(self), id, request))
+            .map_err(|_| anyhow::anyhow!("Completion callback reader closed"))?;
+        let received = receive.await.context("Completion callback cancelled")?;
+        {
+            let replies = self
+                .completion_replies
+                .lock()
+                .expect("Completion replies poisoned");
+            if replies
+                .get(&id)
+                .is_some_and(|pending| pending.reply.is_none())
+                && !callback.entered.load(Ordering::Acquire)
+            {
+                callback.release();
+            }
+        }
+        callback.wait().await;
+        ensure!(
+            stop.admitted() && self.admits_generation(&generation),
+            "Expired completion owner"
+        );
+        received.map_err(|_| anyhow::anyhow!("Completion callback failed"))
+    }
+}

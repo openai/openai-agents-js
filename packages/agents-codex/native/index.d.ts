@@ -213,6 +213,10 @@ export class NativeThread {
   ): Promise<string>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
+  _capture_decision(requestJson: string): Promise<_DecisionCall>;
+  _check_completion(responseJson: string): boolean;
+  _reply_completion(responseJson: string): void;
+  _stop_completion(responseJson: string): boolean;
   _check_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
   _replace_tools(
@@ -389,6 +393,8 @@ export function _embedded_commands(): string;
 export const CODEX_REVISION: string;
 
 declare const binding: {
+  _decision_questions: typeof _decision_questions;
+  _decision_result: typeof _decision_result;
   _agent_profiles_fingerprint: typeof _agent_profiles_fingerprint;
   _agent_profiles_restore_source: typeof _agent_profiles_restore_source;
   _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
@@ -470,4 +476,21 @@ export class _NativeRealtimeAdapterRequest {
   private constructor();
   readonly event_json: string;
   complete(success: boolean): boolean;
+}
+
+export declare function _decision_questions(
+  schemaJson: string,
+  question: string,
+): string;
+export declare function _decision_result(
+  schemaJson: string,
+  question: string,
+  answersJson: string,
+): string;
+export declare class _DecisionCall {
+  private constructor();
+  readonly completion_id: string;
+  readonly thread_id: string;
+  readonly turn_id: string;
+  commit(metadataJson: string): Promise<string | null>;
 }

@@ -31,7 +31,7 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
 }
 
 /**
- * A lazy native API connection. Close sessions before closing their provider.
+ * A lazy native Responses connection. Close sessions before closing their provider.
  * Ordinary API-key HTTP clients may retain default/custom trust and ambient proxy
  * state until close. Construct a new provider to force fresh physical clients.
  */
@@ -69,14 +69,6 @@ export class NativeProvider {
   }
   get supportsWebsockets(): boolean | undefined {
     return this.#options.supportsWebsockets;
-  }
-
-  /** @internal Decisions use the native API-key transport. */
-  _assertDecisionsSupported(): void {
-    if (this.#options.chatGPT)
-      throw new TypeError(
-        'Decisions does not support ChatGPT login credentials',
-      );
   }
 
   /** @internal Reserve synchronously after declaration validation, before opening resources. */

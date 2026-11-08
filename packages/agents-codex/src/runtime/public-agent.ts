@@ -1,9 +1,10 @@
 import {
-  captureInferenceApi,
-  captureDecisionsPolicy,
-  type InferenceApi,
-  type DecisionsPolicy,
-} from './inference-api';
+  bindDecide,
+  captureDecisionProvider,
+  type DecisionProvider,
+  type BoundDecide,
+} from './decisions';
+import type { BeforeComplete } from './completion';
 import {
   captureProfileRuntimes,
   profileRoster,
@@ -88,27 +89,15 @@ import type {
 export type AgentOptions<Context = undefined, Output = string> = {
   instructions: string;
   name?: string;
-  /** Model ID; omission uses gpt-6-luna for Decisions or the native Responses default. */
   model?: string;
-  /** Default inference API; each run or Session can override it.
-   * Native handoffs and Realtime require a Responses opening.
-   */
-  api?: InferenceApi;
-  /**
-   * Explicit generative model for unfillable or uncertain Decisions routes.
-   * Model-based context compaction, explicit or automatic, also requires this
-   * fallback. Without it, a Decisions session fails when model-based compaction
-   * is needed. Provider failures and refusals do not trigger fallback.
-   * Responses ignores this policy.
-   */
-  fallbackModel?: string;
-  /** Minimum selected-route probability for Decisions, between zero and one; ignored by Responses. */
-  minRouteProbability?: number;
+  /** Default decision provider, independent of the generative model. */
+  decisions?: DecisionProvider;
+  /** Check successful candidates before output validation; feedback continues the same turn. */
+  beforeComplete?: BeforeComplete<Context>;
   modelSettings?: ModelSettings;
   provider?: NativeProvider;
   tools?: readonly Tool<Context>[];
   /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
-   * The opening and all handoff targets must use Responses.
    * Restore verifies graph/schema provenance and binds fresh caller-supplied tools.
    * An operation ceiling retains its original source Agent; cross-Agent object
    * identity is evaluated against those fresh declarations, not saved runtime grants.
@@ -122,6 +111,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Replace the decision capability for this entire Session, including handoffs. */
+  decisions?: DecisionProvider;
   /**
    * Limit automatic managed functions, including borrowed MCP callbacks, per root
    * or child turn through cleanup and reply settlement. Omission leaves admission
@@ -142,8 +133,6 @@ export interface SessionBaseOptions<Context = undefined> {
   provider?: NativeProvider;
   /** Override the Agent model for a new conversation; omit when restoring state. */
   model?: string;
-  /** Override the Agent API default; changing API kind without a model uses the new API default. */
-  api?: InferenceApi;
   /** Merge defined keys over Agent settings; null serviceTier clears its override. */
   modelSettings?: ModelSettings;
   environment?: Environment<Context> | EnvironmentSource<Context>;
@@ -180,6 +169,8 @@ export interface RunOptions<Context = undefined> extends Omit<
    * Manual tools require onInteraction because an edited run cannot save an active checkpoint.
    */
   prepareRequest?: import('./session').OperationOptions<Context>['prepareRequest'];
+  /** Select tools for each model step of a new run. */
+  beforeStep?: import('./session').OperationOptions<Context>['beforeStep'];
   returnState?: boolean;
 }
 
@@ -196,8 +187,6 @@ interface CapturedOpening {
   readonly instructionFiles: readonly InstructionFileReceipt[];
   readonly name?: string;
   readonly model?: string;
-  readonly api: InferenceApi;
-  readonly decisionsPolicy: DecisionsPolicy;
   readonly settings?: ModelSettings;
   readonly programmaticToolCalling: boolean;
   readonly declarations: ReturnType<typeof splitToolDeclarations>;
@@ -208,14 +197,16 @@ interface CapturedOpening {
   readonly context: unknown;
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
+  readonly decisions?: DecisionProvider;
+  readonly decisionsOverride?: DecisionProvider;
+  readonly beforeComplete?: BeforeComplete<any>;
   readonly maxFunctionConcurrency?: number;
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
   [ownedRun]?: OneShotOptions & {
-    agentApi: InferenceApi;
-    agentModel?: string;
-    decisionsPolicy: DecisionsPolicy;
+    decisions?: DecisionProvider;
+    beforeComplete?: BeforeComplete<Context>;
   };
   [deferredOpening]?: {
     readonly opening: CapturedOpening;
@@ -300,9 +291,18 @@ export class Agent<Context = undefined, Output = string> {
   instructions: string;
   name?: string;
   model?: string;
-  api: InferenceApi;
-  fallbackModel?: string;
-  minRouteProbability?: number;
+  decisions?: DecisionProvider;
+  beforeComplete?: BeforeComplete<Context>;
+  readonly decide: BoundDecide = ((
+    question: string,
+    options: Parameters<BoundDecide>[1],
+  ) =>
+    bindDecide({
+      provider: captureDecisionProvider(this.decisions),
+      assertActive() {},
+      own: (work) => work(),
+      record: async () => {},
+    })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   provider: NativeProvider;
   outputType: AgentOptions<Context, Output>['outputType'];
@@ -318,10 +318,13 @@ export class Agent<Context = undefined, Output = string> {
     this.instructions = options.instructions;
     this.name = options.name;
     this.model = options.model;
-    this.api = captureInferenceApi(options.api);
-    this.fallbackModel = options.fallbackModel;
-    this.minRouteProbability = options.minRouteProbability;
-    captureDecisionsPolicy(this);
+    this.decisions = captureDecisionProvider(options.decisions);
+    if (
+      options.beforeComplete !== undefined &&
+      typeof options.beforeComplete !== 'function'
+    )
+      throw new TypeError('beforeComplete must be callable');
+    this.beforeComplete = options.beforeComplete;
     this.modelSettings = options.modelSettings && { ...options.modelSettings };
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
@@ -496,6 +499,11 @@ export class Agent<Context = undefined, Output = string> {
     // Validate input before acquiring a provider or touching the filesystem.
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
+    const beforeStep = options.beforeStep;
+    if (beforeStep !== undefined && typeof beforeStep !== 'function')
+      throw new TypeError('beforeStep must be callable');
+    if (beforeStep !== undefined && input == null)
+      throw new TypeError('A resumed turn cannot add beforeStep');
     if (input === null && maxModelSteps !== undefined)
       throw new TypeError(
         'Cannot replace the model step budget when resuming a run',
@@ -504,12 +512,6 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
-    const inheritedApi = captureInferenceApi(this.api);
-    const api = captureInferenceApi(
-      options.api === undefined ? inheritedApi : options.api,
-    );
-    if (options.returnState && api !== 'responses')
-      throw new TypeError('Decisions does not support returnState');
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
@@ -527,17 +529,17 @@ export class Agent<Context = undefined, Output = string> {
       signal: options.signal,
       provider: options.provider,
       model: options.model,
-      api,
+      decisions: captureDecisionProvider(options.decisions),
       modelSettings: options.modelSettings,
       [outputSelection]: (options as OwnedSessionOptions<Context>)[
         outputSelection
       ],
       [ownedRun]: {
-        agentApi: inheritedApi,
-        agentModel: this.model,
-        decisionsPolicy: captureDecisionsPolicy(this),
+        decisions: captureDecisionProvider(this.decisions),
+        beforeComplete: this.beforeComplete,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
+        beforeStep,
       },
     };
     const session = await factory.apply(this, [
@@ -563,6 +565,22 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
+    const decisions = captureDecisionProvider(
+      opening ? opening.decisions : owned ? owned.decisions : this.decisions,
+    );
+    const decisionsOverride = captureDecisionProvider(
+      options.decisions === undefined
+        ? opening?.decisionsOverride
+        : options.decisions,
+    );
+    const beforeComplete = opening
+      ? opening.beforeComplete
+      : owned
+        ? owned.beforeComplete
+        : this.beforeComplete;
+    if (beforeComplete !== undefined && typeof beforeComplete !== 'function')
+      throw new TypeError('beforeComplete must be callable');
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -584,7 +602,6 @@ export class Agent<Context = undefined, Output = string> {
     const {
       provider: openingProvider,
       model: openingModel,
-      api: openingApi,
       modelSettings: openingSettings,
       state: suppliedState,
     } = options;
@@ -611,24 +628,7 @@ export class Agent<Context = undefined, Output = string> {
     const provider = opening
       ? opening.provider
       : (openingProvider ?? this.provider);
-    const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
-    const inheritedApi =
-      opening?.api ?? owned?.agentApi ?? captureInferenceApi(this.api);
-    const api = captureInferenceApi(
-      openingApi === undefined ? inheritedApi : openingApi,
-    );
-    const model = opening
-      ? opening.model
-      : (openingModel ??
-        (api === inheritedApi
-          ? owned
-            ? owned.agentModel
-            : this.model
-          : undefined) ??
-        (api === 'decisions' ? 'gpt-6-luna' : undefined));
-    const declaredPolicy =
-      opening?.decisionsPolicy ?? owned?.decisionsPolicy ?? this;
-    const decisionsPolicy = captureDecisionsPolicy(declaredPolicy);
+    const model = opening ? opening.model : (openingModel ?? this.model);
     let settings = opening
       ? opening.settings
       : this.modelSettings && { ...this.modelSettings };
@@ -732,14 +732,13 @@ export class Agent<Context = undefined, Output = string> {
               instructions: baseInstructions,
               name,
               model,
-              api,
-              fallbackModel: decisionsPolicy.fallbackModel,
-              minRouteProbability: decisionsPolicy.minRouteProbability,
               modelSettings: settings,
               provider,
               outputType: outputType as OutputSpec<Output> | undefined,
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
+              decisions,
+              beforeComplete,
               programmaticToolCalling,
             } as AgentOptions<Context, Output>),
           )
@@ -759,9 +758,8 @@ export class Agent<Context = undefined, Output = string> {
           'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
         );
       if (
-        api === 'responses' &&
         (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
-          false
+        false
       )
         throw new TypeError(
           'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
@@ -782,38 +780,6 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(
           'prepareRequest supports only direct root eager function and ordinary MCP tools',
         );
-    }
-    if (api !== 'responses') {
-      if (profiles)
-        throw new TypeError(
-          'Decisions does not support handoffs; use a Responses opening and Responses targets',
-        );
-      if (typeof model !== 'string' || !model.trim())
-        throw new TypeError('The Decisions API requires a non-empty model');
-      provider._assertDecisionsSupported();
-      if (suppliedState != null || resume !== undefined || persistent)
-        throw new TypeError(
-          'Decisions does not support checkpoint restore or persistent storage',
-        );
-      if (
-        environmentInput !== undefined ||
-        projectGuidance ||
-        programmaticToolCalling ||
-        declarations.webSearch ||
-        declarations.hostedTools.length > 0 ||
-        declarations.nativeAgents ||
-        declarations.nativeGoals ||
-        declarations.checklist ||
-        declarations.mcp.length > 0 ||
-        declarations.tools.some(
-          (tool) => tool.kind === 'manual' || tool.deferLoading,
-        )
-      )
-        throw new TypeError(
-          'Decisions supports only ordinary eager function tools without an Environment',
-        );
-      if (output.identity.mode === 'prompted')
-        throw new TypeError('Decisions supports only plain or native output');
     }
     const { instructions, files } =
       !opening && options.instructionFiles !== undefined
@@ -1145,10 +1111,7 @@ export class Agent<Context = undefined, Output = string> {
       const setup: SessionSetup = {
         name: name ?? '',
         instructions,
-        model:
-          api === 'responses'
-            ? model
-            : (decisionsPolicy.fallbackModel ?? model),
+        model,
         tools: declarations.tools,
         apiKey: lease.apiKey,
         applicationAppsJson,
@@ -1158,24 +1121,6 @@ export class Agent<Context = undefined, Output = string> {
           'model_providers.native_agent': {
             ...(lease.config['model_providers.native_agent'] as JsonObject),
             supports_standalone_web_search: search?.route === 'standalone',
-            ...(api !== 'responses'
-              ? {
-                  supports_websockets: false,
-                  stream_max_retries: 0,
-                  decision_model: {
-                    model: model!,
-                    ...(decisionsPolicy.fallbackModel === undefined
-                      ? {}
-                      : { fallback_model: decisionsPolicy.fallbackModel }),
-                    ...(decisionsPolicy.minRouteProbability === undefined
-                      ? {}
-                      : {
-                          min_route_probability:
-                            decisionsPolicy.minRouteProbability,
-                        }),
-                  },
-                }
-              : {}),
           },
         },
         runtime: {
@@ -1218,6 +1163,7 @@ export class Agent<Context = undefined, Output = string> {
                 },
               }
             : {}),
+          _before_complete: beforeComplete !== undefined,
           _hosted_tools: hostedToolSpecs(declarations.hostedTools),
           ...(projectGuidance ? { _canonical_rules: true } : {}),
           ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
@@ -1248,8 +1194,10 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
-        decisionsApi: api === 'responses' ? undefined : decisionsPolicy,
         maxFunctionConcurrency,
+        decisions,
+        decisionsOverride,
+        beforeComplete,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
         localStorage: persistent,
@@ -1269,8 +1217,7 @@ export class Agent<Context = undefined, Output = string> {
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
         checklist: declarations.checklist,
-        websocketsAllowed:
-          api === 'responses' ? lease.websocketsAllowed : false,
+        websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
         environmentOwner,
         openCorrection: async (
@@ -1299,29 +1246,30 @@ export class Agent<Context = undefined, Output = string> {
           )) as CoreSession<string>;
         },
       };
-      const captured: CapturedOpening =
-        opening ??
-        Object.freeze({
-          agent: this,
-          profiles,
-          factory,
-          instructions,
-          instructionFiles: files,
-          name,
-          model,
-          api,
-          decisionsPolicy,
-          settings,
-          programmaticToolCalling,
-          declarations,
-          output,
-          outputType,
-          provider,
-          apiKey: lease.apiKey,
-          context,
-          onInteraction: options.onInteraction,
-          maxFunctionConcurrency,
-        });
+      const captured: CapturedOpening = opening
+        ? Object.freeze({ ...opening, decisions, decisionsOverride })
+        : Object.freeze({
+            agent: this,
+            profiles,
+            decisions,
+            decisionsOverride,
+            beforeComplete,
+            factory,
+            instructions,
+            instructionFiles: files,
+            name,
+            model,
+            settings,
+            programmaticToolCalling,
+            declarations,
+            output,
+            outputType,
+            provider,
+            apiKey: lease.apiKey,
+            context,
+            onInteraction: options.onInteraction,
+            maxFunctionConcurrency,
+          });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
         session.deferredReopen = async (
@@ -1416,13 +1364,6 @@ export function captureAgentProfiles<Context, Output>(
   const profiles: CapturedAgentProfile<Context, Output>[] = [];
   for (const agent of agents) {
     const source = agent === root ? rootDeclaration : agent;
-    if (
-      (agent !== root || source.handoffs.length > 0) &&
-      captureInferenceApi(source.api) === 'decisions'
-    )
-      throw new TypeError(
-        'Decisions does not support handoffs; use a Responses opening and Responses targets',
-      );
     const plain = splitToolDeclarations(source.tools).tools;
     const capturedTools = captureTools(plain).tools;
     const replacements = new Map(
@@ -1436,9 +1377,8 @@ export function captureAgentProfiles<Context, Output>(
       instructions: source.instructions,
       name: source.name,
       model: source.model,
-      api: source.api,
-      fallbackModel: source.fallbackModel,
-      minRouteProbability: source.minRouteProbability,
+      decisions: source.decisions,
+      beforeComplete: source.beforeComplete,
       modelSettings: source.modelSettings,
       provider: captureProvider ? rootDeclaration.provider : undefined,
       outputType,

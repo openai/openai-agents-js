@@ -556,7 +556,74 @@ pub(crate) struct CapturedTurnStop {
     settlement: Option<Arc<crate::turn_settlement::Turn>>,
     sessions: Mutex<Vec<Arc<Session>>>,
 }
+pub(crate) fn capture_completion_stop(
+    thread_store: &ExtensionData,
+    turn_store: &ExtensionData,
+) -> Option<Arc<CapturedTurnStop>> {
+    let control = thread_store.get::<Control>()?;
+    let owner = turn_store.get::<DirectTurn>()?;
+    owner.core_task.as_ref()?;
+    let captured = Arc::new(CapturedTurnStop {
+        control,
+        settlement: owner.settlement(),
+        owner: Some(owner),
+        sessions: Mutex::new(Vec::new()),
+    });
+    captured.admitted().then_some(captured)
+}
+
 impl CapturedTurnStop {
+    pub(crate) fn decision_ids(&self) -> Option<(&str, &str)> {
+        let owner = self.owner.as_ref()?;
+        Some((&self.control.id, &owner.id))
+    }
+
+    pub(crate) fn decision_registered(&self, store: &ExtensionData) -> bool {
+        store
+            .get::<Control>()
+            .is_some_and(|control| Arc::ptr_eq(&control, &self.control))
+    }
+
+    pub(crate) fn decision_pending(&self, nonce: u64) -> bool {
+        let Some(owner) = self.owner.as_ref() else {
+            return false;
+        };
+        if !self.admitted() || !self.control.can_enter(nonce) {
+            return false;
+        }
+        let state = self
+            .control
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        state.pending.get(&nonce).is_some_and(|pending| {
+            pending
+                .control
+                .upgrade()
+                .is_some_and(|issuer| Arc::ptr_eq(&issuer, &self.control))
+                && pending
+                    .owner
+                    .as_ref()
+                    .is_some_and(|original| Arc::ptr_eq(original, owner))
+        })
+    }
+
+    pub(crate) fn admitted(&self) -> bool {
+        self.owner.as_ref().is_some_and(|owner| {
+            !self.control.stopped.is_cancelled()
+                && !owner.cancelled.is_cancelled()
+                && !owner.policy_stopped.load(Ordering::Acquire)
+                && self
+                    .control
+                    .direct_turn
+                    .lock()
+                    .expect("interception turn poisoned")
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, owner))
+        })
+    }
+
     pub(crate) fn local_exec_cancel_confirmed(&self) -> bool {
         self.settlement
             .as_ref()
@@ -1470,6 +1537,28 @@ impl Control {
         self.next_wire()
             .await
             .map(|wire| serde_json::from_str(&wire).unwrap())
+    }
+
+    pub(crate) fn capture_decision_owner(&self, nonce: u64) -> Option<CapturedTurnStop> {
+        if !self.can_enter(nonce) {
+            return None;
+        }
+        let (control, owner) = {
+            let state = self
+                .channel
+                .state
+                .lock()
+                .expect("interception control poisoned");
+            let pending = state.pending.get(&nonce)?;
+            (pending.control.upgrade()?, pending.owner.clone()?)
+        };
+        let captured = CapturedTurnStop {
+            control,
+            settlement: owner.settlement(),
+            owner: Some(owner),
+            sessions: Mutex::new(Vec::new()),
+        };
+        captured.decision_pending(nonce).then_some(captured)
     }
 
     pub fn can_enter(&self, nonce: u64) -> bool {
@@ -2813,6 +2902,21 @@ impl ThreadLifecycleContributor<Config> for Boundary {
 }
 
 impl TurnLifecycleContributor for Boundary {
+    fn before_turn_complete<'a>(
+        &'a self,
+        input: codex_extension_api::TurnCompletionInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+        Box::pin(async move {
+            let Some(tools) = input.thread_store.get::<crate::python_tools::PythonTools>() else {
+                return Ok(None);
+            };
+            tools
+                .before_complete(input)
+                .await
+                .map_err(|_| "Completion callback failed".to_owned())
+        })
+    }
+
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(control) = input.thread_store.get::<Control>() {
@@ -2925,74 +3029,6 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
-    fn restore_decision_request<'a>(
-        &'a self,
-        request: &'a mut Value,
-        admission: Option<&'a Arc<dyn ModelToolAdmission>>,
-    ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            let restore = async {
-                let engine = self
-                    .engine
-                    .get()
-                    .and_then(Weak::upgrade)
-                    .context("Native engine ended")?;
-                let admission = admission.context("Missing Decisions request owner")?;
-                let control = sentinel_control(&engine, admission.thread_id())?;
-                let owner = admission
-                    .turn_store()
-                    .get::<DirectTurn>()
-                    .context("Native turn ended")?;
-                let thread = engine
-                    .manager
-                    .get_thread(codex_protocol::ThreadId::from_string(
-                        admission.thread_id(),
-                    )?)
-                    .await?;
-                let current = thread
-                    .current_turn_extension_data::<DirectTurn>(&owner.id)
-                    .await
-                    .context("Native turn ended")?;
-                let native_control = thread
-                    .thread_extension_data()
-                    .get::<Control>()
-                    .context("Native thread ended")?;
-                anyhow::ensure!(
-                    Arc::ptr_eq(&current, &owner) && Arc::ptr_eq(&native_control, &control),
-                    "Native Decisions owner changed"
-                );
-                let state = control
-                    .channel
-                    .state
-                    .lock()
-                    .expect("interception control poisoned");
-                let turn = control
-                    .direct_turn
-                    .lock()
-                    .expect("interception turn poisoned");
-                anyhow::ensure!(
-                    !control.stopped.is_cancelled()
-                        && !owner.cancelled.is_cancelled()
-                        && !state.revoked
-                        && !state.mcp_poisoned
-                        && turn
-                            .as_ref()
-                            .is_some_and(|current| Arc::ptr_eq(current, &owner)),
-                    "Native Decisions request retired"
-                );
-                if let Some(tools) = thread
-                    .thread_extension_data()
-                    .get::<crate::python_tools::PythonTools>()
-                {
-                    tools.restore_schema_request(request)?;
-                }
-                Ok::<(), anyhow::Error>(())
-            }
-            .await;
-            restore.map_err(|_| "Native Decisions schema owner is unavailable".into())
-        })
-    }
-
     fn admit_tools_only_call(
         &self,
         input: codex_extension_api::ToolsOnlyCallInput,
@@ -3265,43 +3301,6 @@ impl SentinelRequest {
 }
 
 impl ModelResponseInterceptor for SentinelRequest {
-    fn admit_request(&self) -> Result<(), String> {
-        let state = self
-            .control
-            .channel
-            .state
-            .lock()
-            .expect("interception control poisoned");
-        let turn = self
-            .control
-            .direct_turn
-            .lock()
-            .expect("interception turn poisoned");
-        let request = self
-            .control
-            .sentinel_request
-            .lock()
-            .expect("sentinel request poisoned");
-        if state.revoked
-            || state.mcp_poisoned
-            || self.control.stopped.is_cancelled()
-            || !request
-                .request
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &self.ticket))
-            || (self.ticket.kind == ModelRequestKind::Generation
-                && !self.ticket.owner.as_ref().is_some_and(|owner| {
-                    !owner.cancelled.is_cancelled()
-                        && turn
-                            .as_ref()
-                            .is_some_and(|current| Arc::ptr_eq(current, owner))
-                }))
-        {
-            return Err("Native request retired".into());
-        }
-        Ok(())
-    }
-
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
@@ -3712,9 +3711,6 @@ pub(crate) fn sentinel_failed(
 struct RevokedRequest;
 
 impl ModelResponseInterceptor for RevokedRequest {
-    fn admit_request(&self) -> Result<(), String> {
-        Err("Native request retired".into())
-    }
     fn intercept(self: Box<Self>, upstream: ModelResponseStream) -> ModelResponseStream {
         drop(upstream);
         Box::pin(futures_util::stream::once(async { Err(rejected()) }))
@@ -4086,31 +4082,6 @@ fn valid_stdin_arguments(arguments: &str) -> bool {
 }
 
 impl ModelResponseInterceptor for DirectRequest {
-    fn admit_request(&self) -> Result<(), String> {
-        let state = self
-            .control
-            .channel
-            .state
-            .lock()
-            .expect("interception control poisoned");
-        let turn = self
-            .control
-            .direct_turn
-            .lock()
-            .expect("interception turn poisoned");
-        if state.revoked
-            || state.mcp_poisoned
-            || self.control.stopped.is_cancelled()
-            || self.owner.cancelled.is_cancelled()
-            || !turn
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &self.owner))
-        {
-            return Err("Native request retired".into());
-        }
-        Ok(())
-    }
-
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
@@ -7431,6 +7402,47 @@ mod tests {
             assert_eq!(control.channel.bytes.available_permits(), BUDGET);
             assert!(control.channel.state.lock().unwrap().pending.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn decision_authority_requires_original_live_policy_owner() {
+        let thread = ExtensionData::new("root");
+        let control = thread.get_or_init(|| Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        let request = direct_request(control.clone(), "turn");
+        *control.direct_turn.lock().unwrap() = Some(request.owner.clone());
+        let token = CancellationToken::new();
+        let item = serde_json::from_value(
+            json!({"type":"function_call","call_id":"call","name":"lookup","arguments":"{}"}),
+        )
+        .unwrap();
+        let mut pending = Box::pin(request.admit_tools_only(item, &token));
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        let nonce = control.next().await.unwrap()["nonce"].as_u64().unwrap();
+        assert!(control.handoff(nonce));
+        let captured = control
+            .capture_decision_owner(nonce)
+            .expect("live callback");
+        assert_eq!(captured.decision_ids(), Some(("root", "turn")));
+        assert!(captured.decision_registered(&thread));
+        assert!(captured.decision_pending(nonce));
+        assert!(!captured.decision_pending(nonce + 1));
+        let other = ExtensionData::new("root");
+        other.get_or_init(|| Control::new("root".into(), true));
+        assert!(!captured.decision_registered(&other));
+        // Reusing the same public turn ID does not transfer the old nonce.
+        let successor = direct_request(control.clone(), "turn");
+        *control.direct_turn.lock().unwrap() = Some(successor.owner.clone());
+        assert!(control.can_enter(nonce));
+        assert!(!captured.decision_pending(nonce));
+        assert!(control.capture_decision_owner(nonce).is_none());
+        *control.direct_turn.lock().unwrap() = Some(request.owner.clone());
+        request.owner.cancelled.cancel();
+        assert!(!captured.decision_pending(nonce));
+        assert!(control.capture_decision_owner(nonce).is_none());
+        token.cancel();
+        assert!(control.release(nonce));
+        assert!(pending.await.is_err());
     }
 
     #[tokio::test]

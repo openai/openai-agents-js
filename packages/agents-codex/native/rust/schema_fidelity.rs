@@ -377,7 +377,7 @@ impl Receipts {
 }
 
 impl PythonTools {
-    /// Called only after native request ownership has been validated.
+    /// Called only after the existing provider carrier admits the native request.
     pub(crate) fn restore_schema_request(&self, request: &mut Value) -> Result<()> {
         self.schema_receipts.restore(request)
     }

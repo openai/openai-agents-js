@@ -61,8 +61,8 @@ export type ModelRequestDispatching = SubmissionEvent &
     reasoningEffort: string | number | bigint | null;
     reasoningSummary: string | null;
     serviceTier: string | null;
-    wire: 'responses' | 'responses_lite' | 'decisions';
-    transport: 'http_sse' | 'websocket' | 'http_json';
+    wire: 'responses' | 'responses_lite';
+    transport: 'http_sse' | 'websocket';
   }>;
 
 /** Best-effort link to a retained terminal occurrence. Retirement can drop a

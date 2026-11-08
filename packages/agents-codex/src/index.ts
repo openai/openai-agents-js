@@ -1,3 +1,5 @@
+export { ContinueTurn } from './runtime/completion';
+export type { CompletionContext, BeforeComplete } from './runtime/completion';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
 export { Agent, Runner } from './runtime/public-agent';
@@ -10,7 +12,20 @@ export type {
   RunOptions,
 } from './runtime/public-agent';
 export { RunCleanupError } from './runtime/native-error';
-export type { InferenceApi } from './runtime/inference-api';
+export { decide, DecisionError } from './runtime/decisions';
+export type {
+  DecisionInput,
+  DecisionChoice,
+  DecisionRequest,
+  DecisionResponse,
+  DecisionProvider,
+  DecisionMetadata,
+  DecisionOptions,
+  BoundDecisionOptions,
+  BoundDecide,
+} from './runtime/decisions';
+export { OpenAIDecisions } from './runtime/openai-decisions';
+export type { OpenAIDecisionsOptions } from './runtime/openai-decisions';
 export { NativeProvider } from './runtime/provider';
 export { CapabilityError } from './runtime/capabilities';
 export type {
