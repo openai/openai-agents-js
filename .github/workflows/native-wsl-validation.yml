@@ -46,6 +46,8 @@ jobs:
               $failure = [Exception]::new('WSL command failed.')
               $failure.Data['native_exit_code'] = $code
               $failure.Data['stage'] = $Stage
+              $check = [regex]::Match($output, '(?m)^probe-check=(script_start|linux_tools|package_index|package_install|create_probe_user|nonroot_tools|wsl_directory|interop_environment|interop_socket|init_binary|powershell_path|powershell_binary|powershell_execution|powershell_marker|alias_namespace|fresh_proc|no_proc|distro_environment|wsl_path|wsl_binary|root_execution|root_marker|wslg_directory|wslg_identity)\r?$')
+              if ($check.Success) { $failure.Data['check'] = $check.Groups[1].Value }
               $failure.Data['error_codes'] = @([regex]::Matches($output, '(?:Wsl/[A-Za-z0-9_/-]+|HCS_E_[A-Z0-9_]+|0x[0-9A-Fa-f]{8})') | ForEach-Object { $_.Value } | Select-Object -Unique)
               throw $failure
             }
@@ -61,6 +63,9 @@ jobs:
               if ($_.Exception.Data.Contains('stage')) {
                 $report.capabilities[$Name].stage = $_.Exception.Data['stage']
               }
+              if ($_.Exception.Data.Contains('check')) {
+                $report.capabilities[$Name].check = $_.Exception.Data['check']
+              }
               if ($_.Exception.Data.Contains('native_exit_code')) {
                 $report.capabilities[$Name].native_exit_code = $_.Exception.Data['native_exit_code']
                 $report.capabilities[$Name].error_codes = $_.Exception.Data['error_codes']
@@ -69,8 +74,23 @@ jobs:
             Save-Report
             Write-Host "$Name`: $($report.capabilities[$Name].status)"
           }
-          function Invoke-Linux([string] $Stage, [string] $Script) {
-            Invoke-Wsl -Stage $Stage -Arguments @('-d', 'Ubuntu-24.04', '-u', 'wslprobe', '--', '/bin/bash', '-c', "set -euo pipefail`n$Script") | Out-Null
+          function Invoke-Linux([string] $Stage, [string] $Script, [string] $User = 'wslprobe') {
+            $directory = Join-Path $env:RUNNER_TEMP ("native-wsl-script-" + [guid]::NewGuid().ToString('N'))
+            [System.IO.Directory]::CreateDirectory($directory) | Out-Null
+            try {
+              $path = Join-Path $directory 'probe.sh'
+              $preamble = @'
+          set -euo pipefail
+          check=script_start
+          trap 'printf "probe-check=%s\n" "$check" >&2' ERR
+          '@
+              $body = ("$preamble`n$Script`n").Replace("`r`n", "`n").Replace("`r", "`n")
+              [System.IO.File]::WriteAllText($path, $body, [System.Text.UTF8Encoding]::new($false))
+              $linuxPath = Invoke-Wsl -Stage "$($Stage)_path" -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--', 'wslpath', '-u', $path)
+              Invoke-Wsl -Stage $Stage -Arguments @('-d', 'Ubuntu-24.04', '-u', $User, '--', '/bin/bash', $linuxPath) | Out-Null
+            } finally {
+              Remove-Item -LiteralPath $directory -Recurse -Force
+            }
           }
           Save-Report
           Test-Capability 'wsl2_launch' {
@@ -107,30 +127,41 @@ jobs:
               $failure.Data['stage'] = 'verify_wsl2'
               throw $failure
             }
-            Invoke-Wsl -Stage 'launch_linux' -Arguments @('-d', 'Ubuntu-24.04', '-u', 'root', '--', '/bin/sh', '-c', 'test "$(uname -s)" = Linux') | Out-Null
+            Invoke-Linux -Stage 'launch_linux' -User root -Script 'test "$(uname -s)" = Linux'
           }
           if ($report.capabilities.wsl2_launch.status -eq 'passed') {
             Test-Capability 'linux_tools' {
-              Invoke-Wsl -Stage 'install_linux_tools' -Arguments @('-d', 'Ubuntu-24.04', '-u', 'root', '--', '/bin/bash', '-c', @'
-          set -euo pipefail
+              Invoke-Linux -Stage 'install_linux_tools' -User root -Script @'
+          check=linux_tools
           export DEBIAN_FRONTEND=noninteractive
+          check=package_index
           apt-get update >/dev/null
+          check=package_install
           apt-get install --yes --no-install-recommends bubblewrap util-linux bash coreutils >/dev/null
+          check=create_probe_user
           useradd --create-home --shell /bin/bash wslprobe
-          '@) | Out-Null
-              Invoke-Linux -Stage 'nonroot_tools' -Script 'test "$(id -u)" -ne 0; test -x /usr/bin/unshare; test -x /usr/bin/mount; test -x /usr/bin/bwrap'
+          '@
+              Invoke-Linux -Stage 'nonroot_tools' -Script 'check=nonroot_tools; test "$(id -u)" -ne 0; test -x /usr/bin/unshare; test -x /usr/bin/mount; test -x /usr/bin/bwrap'
             }
           }
           if ($report.capabilities.linux_tools.status -eq 'passed') {
             # Use the real WSL-provided socket and Windows executable paths.
             $interop = @'
+          check=wsl_directory
           test -d /run/WSL
+          check=interop_environment
           test -n "${WSL_INTEROP:-}"
+          check=interop_socket
           test -S "$WSL_INTEROP"
+          check=init_binary
           test -x /init
+          check=powershell_path
           ps="$(wslpath -u 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe')"
+          check=powershell_binary
           test -x "$ps"
+          check=powershell_execution
           baseline="$(timeout 20s "$ps" -NoProfile -NonInteractive -Command 'Write-Output interop-baseline-ok' | tr -d '\r')"
+          check=powershell_marker
           test "$baseline" = interop-baseline-ok
           '@
             Test-Capability 'windows_interop' { Invoke-Linux -Stage 'windows_interop' -Script $interop }
@@ -138,6 +169,7 @@ jobs:
               Invoke-Linux -Stage 'interop_bind_alias' -Script ($interop + "`n" + @'
           alias_dir="$(mktemp -d)"
           trap 'rmdir "$alias_dir"' EXIT
+          check=alias_namespace
           unshare --user --map-root-user --mount --propagation private -- /bin/bash -c '
             set -euo pipefail
             mount --bind /run/WSL "$1"
@@ -153,25 +185,35 @@ jobs:
             Test-Capability 'no_proc_prerequisites' {
               Invoke-Linux -Stage 'no_proc_prerequisites' -Script ($interop + "`n" + @'
           # Check namespace and procfs support, without claiming an SDK assertion ran.
+          check=fresh_proc
           bwrap --ro-bind / / --dev /dev --unshare-pid --proc /proc -- /bin/sh -c 'test -r /proc/self/status'
+          check=no_proc
           bwrap --ro-bind / / --dev /dev --unshare-pid --tmpfs /proc -- /bin/sh -c 'test ! -e /proc/1'
           '@)
             }
             Test-Capability 'root_reentry' {
               Invoke-Linux -Stage 'root_reentry' -Script @'
+          check=wsl_directory
           test -d /run/WSL
+          check=distro_environment
           test -n "${WSL_DISTRO_NAME:-}"
           test "$WSL_DISTRO_NAME" = Ubuntu-24.04
+          check=wsl_path
           wsl="$(wslpath -u 'C:\Windows\System32\wsl.exe')"
+          check=wsl_binary
           test -x "$wsl"
+          check=root_execution
           root_uid="$(timeout 20s "$wsl" -d "$WSL_DISTRO_NAME" -u root -- /usr/bin/id -u | tr -d '\r')"
+          check=root_marker
           test "$root_uid" = 0
           '@
             }
             Test-Capability 'wslg_duplicate_root' {
               Invoke-Linux -Stage 'wslg_duplicate_root' -Script @'
+          check=wslg_directory
           test -d /mnt/wslg/distro
           test ! -L /mnt/wslg/distro
+          check=wslg_identity
           root_identity="$(stat -c '%d:%i' /)"
           alias_identity="$(stat -c '%d:%i' /mnt/wslg/distro)"
           test "$root_identity" = "$alias_identity"
