@@ -20,8 +20,11 @@ const bytes = await downloadNativeBundle({
 assert.ok(bytes, 'Current-run native transfer is unavailable');
 const platform = process.platform + '-' + process.arch;
 const products = ['native/codex.node', 'native/build-receipt.json', 'bin'];
-if (platform === 'linux-x64' || platform === 'darwin-arm64')
-  products.push('native/test-bin/exec-server-fixture');
+if (['linux-x64', 'darwin-arm64', 'win32-x64'].includes(platform))
+  products.push(
+    'native/test-bin/exec-server-fixture' +
+      (process.platform === 'win32' ? '.exe' : ''),
+  );
 execFileSync('tar', ['-xzf', '-', '-C', 'packages/agents-codex', ...products], {
   input: bytes,
   stdio: ['pipe', 'inherit', 'inherit'],
