@@ -111,11 +111,11 @@ A Session opened with `NativeAgents` keeps its instructions and model/settings f
 
 ### Select tools before a child step
 
-Use the optional `NativeAgents.beforeStep` hook to select tools before a child's model step. Its result uses the existing `ToolSelector` contract or `undefined`. Its `ChildBeforeStepContext` has the same preparation fields as `BeforeStepContext`, with `child: ChildInvocation` and `submission: ChildTurn`. Use `submission` to observe and wait for the original child Turn, `context` for application data, `stepIndex` for its preparation index, and `signal` for cancellation. Keep application policy tied to that child incarnation rather than looking up a later child with the same ID.
+Use the optional `NativeAgents.beforeStep` hook to select tools before a child's model step. Its result uses the existing `ToolSelector` contract or `undefined`. Its `ChildBeforeStepContext` has the same preparation fields as `BeforeStepContext`, with `child: ChildInvocation` and `submission: ChildTurn`. Capture `submission` for application code to observe and wait for that exact child Turn outside the callback. The child cannot proceed until `beforeStep` returns, so waiting for it inside the callback rejects. Use `context` for application data, `stepIndex` for its preparation index, and `signal` for cancellation. Keep application policy tied to that child incarnation rather than looking up a later child with the same ID.
 
 Select from the child's admitted tools within its existing collaboration approval. Return `undefined` for the child's defaults or `[]` to select no tools. Narrowing later steps leaves issued work in place.
 
-Each child Turn starts at `stepIndex: 0` and runs the captured hook independently. Respect its callback signal when waiting. Keep callbacks in current application configuration. The [child example](../native-children.ts) exports `oneToolStepPerChildTurn` to keep tools for the first preparation only.
+Each child Turn starts at `stepIndex: 0` and runs the captured hook independently. External asynchronous policy work may run inside the hook; respect its callback signal while waiting for that work. Keep callbacks in current application configuration. The [child example](../native-children.ts) exports `oneToolStepPerChildTurn` to keep tools for the first preparation only.
 
 ## Managed executor network policy
 

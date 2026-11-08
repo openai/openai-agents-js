@@ -30,7 +30,10 @@ export interface OpenAISpeechProviderOptions {
     OpenAI.Audio.SpeechCreateParams,
     'speed' | 'instructions'
   >;
-  /** Maximum wait for a transcription protocol acknowledgement, in milliseconds. */
+  /**
+   * Maximum wait for a transcription connection or protocol acknowledgement.
+   * Must be positive and at most 2147483647 milliseconds; fractions are supported.
+   */
   timeoutMs?: number;
 }
 
@@ -41,9 +44,11 @@ export class OpenAISpeechProvider implements SpeechProvider {
   constructor(options: OpenAISpeechProviderOptions = {}) {
     if (
       options.timeoutMs !== undefined &&
-      (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
+      (!Number.isFinite(options.timeoutMs) ||
+        options.timeoutMs <= 0 ||
+        options.timeoutMs > 2_147_483_647)
     )
-      throw new TypeError('timeoutMs must be positive');
+      throw new TypeError('timeoutMs must be positive and at most 2147483647');
     if (
       options.client &&
       (options.apiKey !== undefined || options.baseURL !== undefined)

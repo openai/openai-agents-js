@@ -77,13 +77,12 @@ import type {
   OneShotOptions,
 } from './session';
 
-export interface AgentOptions<Context = undefined, Output = string> {
+export type AgentOptions<Context = undefined, Output = string> = {
   instructions: string;
   name?: string;
   model?: string;
   modelSettings?: ModelSettings;
   provider?: NativeProvider;
-  outputType?: OutputSpec<Output>;
   tools?: readonly Tool<Context>[];
   /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
    * Restore verifies graph/schema provenance and binds fresh caller-supplied tools.
@@ -94,7 +93,9 @@ export interface AgentOptions<Context = undefined, Output = string> {
     Agent<Context, Output> | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling?: boolean;
-}
+} & (string extends Output
+  ? { outputType?: OutputSpec<Output> }
+  : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
   /** Answer live requests for this Session lifetime. Omission leaves replies to application readers. */
@@ -212,7 +213,10 @@ export interface AgentOutput<Context = undefined, Output = string> {
   ): Promise<Completed<Output>>;
 }
 
-/** One owned native conversation. Use submit for new input and active-turn steering. */
+/**
+ * One owned native conversation. submit starts independent root work and rejects
+ * while busy. Use enqueue to queue work, or the captured Turn to steer active work.
+ */
 export type Session<Output = string, Context = any> = Pick<
   CoreSession<Output, Context>,
   | 'id'
@@ -259,7 +263,7 @@ export class Agent<Context = undefined, Output = string> {
   model?: string;
   modelSettings?: ModelSettings;
   provider: NativeProvider;
-  outputType?: OutputSpec<Output>;
+  outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
   handoffs: readonly (
     Agent<Context, Output> | (() => Agent<Context, Output>)
@@ -718,7 +722,7 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError('NativeGoals requires explicit local storage');
     if (suppliedState != null && (persistent || resume !== undefined))
       throw new TypeError(
-        'Portable state cannot be combined with local storage or resume',
+        'Portable state cannot be combined with persistent storage or resume',
       );
     if (stateResult && !stateResult.success) throw stateResult.error;
     const state = stateResult?.data;
@@ -727,11 +731,11 @@ export class Agent<Context = undefined, Output = string> {
       (!persistent || typeof resume !== 'string' || !resume)
     )
       throw new TypeError(
-        'resume requires local storage and a nonempty native Session ID',
+        'resume requires the original storage backend and a nonempty native Session ID',
       );
     if (persistent && (declarations.mcp.length || programmaticToolCalling))
       throw new TypeError(
-        'Local storage supports current managed tools without MCP or Code Mode',
+        'Persistent storage supports current managed tools without MCP or Code Mode',
       );
     const nativeAgents = declarations.nativeAgents;
     if (
@@ -804,7 +808,7 @@ export class Agent<Context = undefined, Output = string> {
         ? graph!.profiles.get(restoredSource.profile_id)!.output
         : output);
     if (persistent && output.repair)
-      throw new TypeError('Local storage does not support output repair');
+      throw new TypeError('Persistent storage does not support output repair');
     assertOutputState(state, activeOutput.identity);
     if (
       (activeOutput.prompt || activeOutput.schema != null) &&

@@ -1,5 +1,6 @@
 import {
   Agent,
+  NativeProvider,
   TraceContext,
   tool,
   type TraceContextHeaders,
@@ -9,7 +10,9 @@ import { z } from 'zod';
 // The application owns ingress instrumentation and passes only W3C headers.
 // Configure native telemetry before calling this function to export native spans.
 export async function runWithTrace(headers: TraceContextHeaders) {
+  await using provider = new NativeProvider();
   const specialist = new Agent({
+    provider,
     instructions: 'Answer the supplied question.',
   });
   const delegate = tool({
@@ -26,6 +29,7 @@ export async function runWithTrace(headers: TraceContextHeaders) {
     },
   });
   const agent = new Agent({
+    provider,
     instructions: 'Use ask_specialist to answer the question.',
     tools: [delegate],
   });

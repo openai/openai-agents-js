@@ -8,6 +8,61 @@ import {
   type ThreadHistory,
 } from '../../src/runtime/history';
 describe('native history projection', () => {
+  it.each([undefined, 'provider-call', 'command-call'])(
+    'keeps model arguments and execution evidence with provider ID %s',
+    (providerId) => {
+      const result = projectHistory(
+        [
+          {
+            type: 'event_msg',
+            payload: { type: 'task_started', turn_id: 'turn' },
+          },
+          {
+            type: 'response_item',
+            payload: {
+              type: 'function_call',
+              call_id: 'command-call',
+              name: 'exec_command',
+              arguments: '{"cmd":"ls"}',
+              ...(providerId ? { id: providerId } : {}),
+            },
+          },
+          ...['item_started', 'item_completed'].map((type) => ({
+            type: 'event_msg',
+            payload: {
+              type,
+              turn_id: 'turn',
+              item: {
+                type: 'CommandExecution',
+                id: 'command-call',
+                command: ['ls'],
+                status: 'completed',
+                aggregated_output: 'README.md',
+                exit_code: 0,
+              },
+            },
+          })),
+        ],
+        'root',
+      );
+      expect(result.items).toHaveLength(2);
+      expect(new Set(result.items.map((item) => item.id)).size).toBe(2);
+      expect(result.items[0]).toMatchObject({
+        type: 'function_call',
+        name: 'exec_command',
+        arguments: '{"cmd":"ls"}',
+        callId: 'command-call',
+      });
+      expect(result.items[1]).toMatchObject({
+        type: 'command_execution',
+        command: 'ls',
+        output: 'README.md',
+        callId: 'command-call',
+        status: 'completed',
+      });
+    },
+  );
+
   it('keeps original text parts and opaque annotations alongside visible text', () => {
     const content: JsonObject[] = [
       {
@@ -461,6 +516,9 @@ describe('accepted user input history', () => {
       nativeUser('n1', 't1', 'first'),
       nativeUser('n2', 't1', 'second'),
     ];
+    expect(
+      projectHistory(records.slice(0, -1), 'root').items.map((item) => item.id),
+    ).toEqual(['n1', 'r2']);
     expect(
       projectHistory(records, 'root').items.map((item) => item.id),
     ).toEqual(['n1', 'n2']);

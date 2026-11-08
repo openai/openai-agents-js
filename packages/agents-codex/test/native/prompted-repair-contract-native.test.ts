@@ -213,7 +213,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             provider,
             outputType: { mode: 'prompted', schema: report, maxRetries: 1 },
           }).session({ storage }),
-        ).rejects.toThrow('Local storage');
+        ).rejects.toThrow('Persistent storage');
         expect(acquire).not.toHaveBeenCalled();
         expect(server.requests).toHaveLength(0);
         await using session = await new Agent({
@@ -233,10 +233,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         };
         await expect(
           session.submit('positive override', { outputType: positive }),
-        ).rejects.toThrow('Local storage');
+        ).rejects.toThrow('Persistent storage');
         await expect(
           session.enqueue('positive queued override', { outputType: positive }),
-        ).rejects.toThrow('Local storage');
+        ).rejects.toThrow('Persistent storage');
         expect(server.requests).toHaveLength(0);
         const zero = await session.submit('explicit zero', {
           outputType: {

@@ -23,6 +23,31 @@ afterEach(async () => {
 });
 
 describe('fileSessionStore', () => {
+  it('retains only unfinished release ownership across repeated leases', async () => {
+    const store = fileSessionStore(directory);
+    const originalSet = Map.prototype.set;
+    let retainedSize: (() => number) | undefined;
+    const spy = vi.spyOn(Map.prototype, 'set').mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key,
+      value,
+    ) {
+      if (typeof key === 'string' && key.startsWith('["retention",'))
+        retainedSize = () => this.size;
+      return originalSet.call(this, key, value);
+    });
+    try {
+      for (let index = 0; index < 100; index++) {
+        const fence = await store.acquire('retention');
+        await store.release('retention', fence);
+      }
+      expect(retainedSize).toBeDefined();
+      expect(retainedSize!()).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('persists opaque snapshots and revisions across adapter instances', async () => {
     const first = fileSessionStore(directory);
     const fence = await first.acquire('thread-1');
@@ -65,7 +90,7 @@ describe('fileSessionStore', () => {
     await expect(
       first.commit('thread', oldFence, 'old', 0, '{}'),
     ).rejects.toThrow('fence');
-    await expect(first.release('thread', oldFence)).rejects.toThrow('fence');
+    await first.release('thread', oldFence);
     await second.commit('thread', fence, 'new', 0, '{}');
     await second.release('thread', fence);
   });
@@ -210,6 +235,37 @@ describe('fileSessionStore', () => {
     await successor.release('thread', nextFence);
   });
 
+  it('retries a failed close after unlock without touching a successor', async () => {
+    const store = fileSessionStore(directory);
+    const fence = await store.acquire('thread');
+    const failure = Object.assign(new Error('directory close failed'), {
+      code: 'EINTR',
+    });
+    const actual =
+      await vi.importActual<typeof import('node:fs/promises')>(
+        'node:fs/promises',
+      );
+    vi.mocked(fs.open).mockImplementation(async (...args) => {
+      const handle = await actual.open(...args);
+      if (args[0] === join(directory, 'thread.lock')) {
+        const close = handle.close.bind(handle);
+        vi.spyOn(handle, 'close').mockImplementationOnce(async () => {
+          await close();
+          throw failure;
+        });
+        vi.mocked(fs.open).mockImplementation(actual.open);
+      }
+      return handle;
+    });
+    await expect(store.release('thread', fence)).rejects.toBe(failure);
+    const successor = fileSessionStore(directory);
+    const nextFence = await successor.acquire('thread');
+    await expect(store.release('thread', fence)).resolves.toBeUndefined();
+    await successor.commit('thread', nextFence, 'successor', 0, 'still owned');
+    expect(await successor.read('thread', nextFence)).toBe('still owned');
+    await successor.release('thread', nextFence);
+  });
+
   it('retries a lost release acknowledgement without deleting a successor lock', async () => {
     const store = fileSessionStore(directory);
     const fence = await store.acquire('thread');
@@ -221,9 +277,7 @@ describe('fileSessionStore', () => {
     const successor = fileSessionStore(directory);
     const nextFence = await successor.acquire('thread');
     await store.release('thread', fence);
-    await expect(store.release('thread', 'never-issued')).rejects.toThrow(
-      'fence',
-    );
+    await store.release('thread', 'never-issued');
     await successor.commit(
       'thread',
       nextFence,

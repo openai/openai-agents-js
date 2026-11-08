@@ -230,6 +230,17 @@ function matchesDraftHash(output: string | null, sha256: string): boolean {
 }
 
 export async function superviseArtifact(options: WorkerOptions) {
+  const startupTimeoutMs = options.startupMs ?? 30_000;
+  const turnTimeoutMs = options.turnMs ?? 30_000;
+  for (const [name, value] of [
+    ['startupMs', startupTimeoutMs],
+    ['turnMs', turnTimeoutMs],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 0 || value > 2_147_483_647)
+      throw new RangeError(
+        `${name} must be an integer from 0 through 2147483647.`,
+      );
+  }
   const { task, reports } = options;
   await mkdir(options.directory, { recursive: true, mode: 0o700 });
   const directory = await realpath(options.directory);
@@ -251,7 +262,7 @@ export async function superviseArtifact(options: WorkerOptions) {
   };
   const previous = await readWorkerSnapshot(directory);
   const startup = performance.now();
-  const opening = AbortSignal.timeout(options.startupMs ?? 30_000);
+  const opening = AbortSignal.timeout(startupTimeoutMs);
   const recordStartupFailure = async (error: unknown): Promise<never> => {
     // Admission guarantees the previous worker has exited.
     if (previous?.state === 'working') {
@@ -342,7 +353,7 @@ export async function superviseArtifact(options: WorkerOptions) {
     await atomicWrite(path.snapshot, JSON.stringify(started), true);
 
     const submitted = performance.now();
-    const deadline = AbortSignal.timeout(options.turnMs ?? 30_000);
+    const deadline = AbortSignal.timeout(turnTimeoutMs);
     const taskWithVerification =
       task +
       `\n\nAfter saving draft.md, run ${verifyDraftCommand} as a standalone exec_command without a terminal.`;

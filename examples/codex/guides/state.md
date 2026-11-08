@@ -64,6 +64,8 @@ This encoding applies to response, turn, and thread usage, including retained co
 
 ## Save or suspend a session
 
+Persistent storage (`LocalStorage` or `CustomStorage`) cannot export portable state with `saveState()`, `suspend()`, or `fork()`. Retain `Session.id` and reopen with the same storage backend and current application bindings.
+
 `saveState()` exports idle conversation state. `suspend()` seals a supported pending manual boundary and exports its continuation. Restore with `agent.session({ state })`, supplying current trusted declarations. Snapshots contain conversation data. They contain neither running JavaScript nor a workspace backup. Python checkpoint interchange is not supported.
 
 Opening a checkpoint with a local executor or strict WSS Environment requires the matching saved executor policy digest. New Environments default to `writePolicy: 'strict'`; saved policies retain their original mode. For a legacy checkpoint without that digest, restore with a WSS Environment that explicitly sets `writePolicy: 'legacy'`, omits `writableRoots`, and matches the saved `network` setting. For an idle legacy checkpoint with no network policy, you can also omit the Environment. To use a local executor or strict WSS policy instead, open a new Session without this checkpoint. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.

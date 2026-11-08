@@ -1608,3 +1608,16 @@ it('streams float32 input through the same bounded PCM encoder without modifying
     },
   );
 });
+
+it('rejects overflowing speech timers before constructing a client', () => {
+  expect(() => new OpenAISpeechProvider({ timeoutMs: 2_147_483_648 })).toThrow(
+    '2147483647',
+  );
+  expect(
+    () =>
+      new OpenAISpeechProvider({
+        apiKey: 'synthetic',
+        timeoutMs: 2_147_483_647,
+      }),
+  ).not.toThrow();
+});
