@@ -795,12 +795,15 @@ export class InteractionRequired extends NativeError {
   }
 }
 
-const toolInvocation = new AsyncLocalStorage<{
+interface ToolInvocationScope {
   session: Session<any, any>;
   run?: NativeTurn;
   child?: ChildCallbackOwner;
   active: boolean;
-}>();
+  realtimeAdapter?: object;
+  parent?: ToolInvocationScope;
+}
+const toolInvocation = new AsyncLocalStorage<ToolInvocationScope>();
 
 function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
   if (!run.toolCleanupErrors.length) return primary;
@@ -3358,12 +3361,36 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /** @internal Reuse the existing Session callback scope for owned voice policies. */
-  async _runVoiceCallback<T>(callback: () => T | Promise<T>): Promise<T> {
-    const scope = { session: this, active: true };
+  async _runVoiceCallback<T>(
+    callback: () => T | Promise<T>,
+    realtimeAdapter?: object,
+  ): Promise<T> {
+    const scope = {
+      session: this,
+      active: true,
+      realtimeAdapter,
+      parent: toolInvocation.getStore(),
+    };
     try {
       return await toolInvocation.run(scope, callback);
     } finally {
       scope.active = false;
+    }
+  }
+
+  /** @internal Adapter callbacks cannot wait on their own ordered I/O. */
+  _checkVoiceAdapterOperation(owner: object, operation: string): void {
+    let scope = toolInvocation.getStore();
+    while (scope) {
+      if (
+        scope.active &&
+        scope.session === this &&
+        scope.realtimeAdapter === owner
+      )
+        throw new NativeError(
+          `A Realtime adapter callback cannot ${operation}`,
+        );
+      scope = scope.parent;
     }
   }
 
@@ -5484,7 +5511,12 @@ export class Session<OutputT = string, Context = unknown> {
     this.childCallbacks.track(
       owner,
       async () => {
-        const scope = { session: this, child: owner, active: true };
+        const scope = {
+          session: this,
+          child: owner,
+          active: true,
+          parent: toolInvocation.getStore(),
+        };
         try {
           await toolInvocation.run(scope, () =>
             this.handleChildRequest(owner, event),
@@ -6502,7 +6534,12 @@ export class Session<OutputT = string, Context = unknown> {
     signal: AbortSignal = run.controller.signal,
     tracingContext?: string,
   ): Promise<void> {
-    const scope = { session: this, run, active: true };
+    const scope = {
+      session: this,
+      run,
+      active: true,
+      parent: toolInvocation.getStore(),
+    };
     const tracing = run.tracing ?? run.issuedTracing;
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
@@ -10039,7 +10076,12 @@ export class Session<OutputT = string, Context = unknown> {
       this.childCallbacks.track(
         owner,
         async () => {
-          const scope = { session: this, child: owner, active: true };
+          const scope = {
+            session: this,
+            child: owner,
+            active: true,
+            parent: toolInvocation.getStore(),
+          };
           try {
             await toolInvocation.run(scope, () =>
               withNativeCallbackContext(
@@ -10919,7 +10961,11 @@ export class Session<OutputT = string, Context = unknown> {
           if (!this.environmentDisposalFinished) {
             try {
               await this.options.environmentOwner?.dispose(async (dispose) => {
-                const scope = { session: this, active: true };
+                const scope = {
+                  session: this,
+                  active: true,
+                  parent: toolInvocation.getStore(),
+                };
                 try {
                   await toolInvocation.run(scope, dispose);
                 } finally {

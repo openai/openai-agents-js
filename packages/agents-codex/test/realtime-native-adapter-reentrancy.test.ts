@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { Agent, NativeProvider } from '../src';
 import type { NativeRealtimeAdapter } from '../src/runtime/realtime-adapter';
 import { ModelServer, message } from './native/fixtures/model-server';
@@ -175,6 +175,160 @@ nativeIt(
         'usable after blocked close',
       );
       await session.close();
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt.each(['update', 'approval'] as const)(
+  'rejects adapter %s self-I/O before publication and keeps issued approval retryable',
+  async (operation) => {
+    const model = new ModelServer([[message('usable after adapter controls')]]);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Listen.',
+        provider,
+      }).session();
+      const incoming = new Incoming();
+      const accepted: Record<string, any> = {};
+      const frames: Record<string, any>[] = [];
+      const errors: unknown[] = [];
+      const rejected = Promise.withResolvers<void>();
+      const nestedText = Promise.withResolvers<void>();
+      let request: import('../src/runtime/realtime').NativeRealtimeHostedMcpApprovalRequest;
+      const control = () =>
+        operation === 'update'
+          ? voice.update({ instructions: 'Nested must not publish' })
+          : voice.approveHostedMcp(request, { approve: true });
+      const adapter: NativeRealtimeAdapter = {
+        async connect(context) {
+          accepted.model = context.model;
+          return {
+            incoming,
+            async send(raw) {
+              const frame = JSON.parse(raw);
+              frames.push(frame);
+              if (frame.type === 'session.update') {
+                merge(accepted, frame.session);
+                incoming.push({
+                  type: 'session.updated',
+                  session: {
+                    ...structuredClone(accepted),
+                    id: 'adapter-controls',
+                  },
+                });
+              } else if (frame.item?.type === 'message') {
+                const text = frame.item.content[0].text;
+                if (text === 'nested admission') nestedText.resolve();
+                else if (text === 'outer') {
+                  await voice.sendText('nested admission');
+                  try {
+                    // The copied inner scope is inactive before control runs;
+                    // its still-active adapter ancestor must remain authoritative.
+                    const proceed = Promise.withResolvers<void>();
+                    let pending!: Promise<void>;
+                    await session._runVoiceCallback(() => {
+                      pending = proceed.promise.then(control);
+                    });
+                    proceed.resolve();
+                    await pending;
+                  } catch (error) {
+                    errors.push(error);
+                  }
+                  rejected.resolve();
+                }
+              }
+            },
+            async close() {
+              await incoming.return();
+            },
+          };
+        },
+      };
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        adapter,
+        settings: {
+          hostedMcpTools: [
+            {
+              serverLabel: 'docs',
+              serverUrl: 'https://mcp.example.test/server',
+              allowedTools: ['search'],
+              requireApproval: 'always',
+            },
+          ],
+        },
+      });
+      const events = voice.events();
+      try {
+        const item = {
+          type: 'mcp_approval_request',
+          id: 'approval-item',
+          server_label: 'docs',
+          name: 'search',
+          arguments: '{}',
+        };
+        incoming.push({
+          type: 'response.created',
+          response: { id: 'hosted-response' },
+        });
+        incoming.push({
+          type: 'response.output_item.added',
+          response_id: 'hosted-response',
+          output_index: 0,
+          item,
+        });
+        incoming.push({ type: 'conversation.item.done', item });
+        incoming.push({
+          type: 'response.done',
+          response: { id: 'hosted-response', output: [item] },
+        });
+        for (;;) {
+          const result = await events.next();
+          if (result.done) throw new Error('Approval event stream ended');
+          const event = result.value;
+          if (event?.type === 'hosted_mcp_approval_requested') {
+            request = event;
+            break;
+          }
+        }
+        await voice.sendText('outer');
+        await vi.waitFor(() => expect(errors).toHaveLength(1), {
+          timeout: 2000,
+        });
+        await rejected.promise;
+        expect(String(errors[0])).toContain('Realtime adapter callback cannot');
+        await nestedText.promise;
+        expect(
+          frames.filter((frame) => frame.type === 'session.update'),
+        ).toHaveLength(1);
+        expect(
+          frames.some((frame) => frame.item?.type === 'mcp_approval_response'),
+        ).toBe(false);
+        await session._runVoiceCallback(async () => {
+          await voice.update({ instructions: 'Ordinary callback update' });
+          await voice.approveHostedMcp(request, { approve: true });
+        });
+        expect(
+          frames.filter((frame) => frame.type === 'session.update'),
+        ).toHaveLength(2);
+        expect(
+          frames.filter(
+            (frame) => frame.item?.type === 'mcp_approval_response',
+          ),
+        ).toHaveLength(1);
+      } finally {
+        await voice.close();
+        await events.return(undefined);
+      }
+      expect(
+        (await (await session.submit('Verify caller reuse.')).wait())
+          .finalOutput,
+      ).toBe('usable after adapter controls');
+      model.assertExhausted();
     } finally {
       await ModelServer.closeAll();
     }

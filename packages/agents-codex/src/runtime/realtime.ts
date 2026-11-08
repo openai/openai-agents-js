@@ -474,7 +474,9 @@ class NativeRealtimeOwner {
             this.adapterSource,
             handle,
             (callback) =>
-              this.#context(() => this.session._runVoiceCallback(callback)),
+              this.#context(() =>
+                this.session._runVoiceCallback(callback, this),
+              ),
           );
           this.preparation = this.adapterBridge.prepare(
             { generation: this.#generation, ...prepareParams },
@@ -563,19 +565,33 @@ class NativeRealtimeOwner {
         ? this.failure.error
         : new Error('Native Realtime session is not open');
   }
-  /** Change supplied provider settings only; omitted fields retain their current values. */
+  /**
+   * Change supplied provider settings only; omitted fields retain their current values.
+   * Call this outside this session's adapter callbacks.
+   */
   async update(update: NativeRealtimeSessionUpdate): Promise<void> {
     this.checkLive();
+    this.session._checkVoiceAdapterOperation(
+      this,
+      'update its own Realtime session',
+    );
     await this.call('update', {
       update: serializeRealtimeSessionUpdate(update),
     });
   }
-  /** Decide only an original issued request; clones, cross-owner objects and replay fail. */
+  /**
+   * Decide only an original issued request; clones, cross-owner objects and replay fail.
+   * Call this outside this session's adapter callbacks.
+   */
   async approveHostedMcp(
     request: NativeRealtimeHostedMcpApprovalRequest,
     decision: { readonly approve: boolean; readonly reason?: string },
   ): Promise<void> {
     this.checkLive();
+    this.session._checkVoiceAdapterOperation(
+      this,
+      'approve hosted MCP in its own Realtime session',
+    );
     const id = this.hostedApprovals.get(request);
     if (!id)
       throw new TypeError(
