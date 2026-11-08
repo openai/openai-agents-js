@@ -18,13 +18,14 @@ export async function handleAuthenticatedCall(
     signal,
     realtimeOptions: { model: 'gpt-realtime' },
     onEvent(event) {
-      if (event.type === 'tool_batch_error') console.error(event.error);
+      if (event.type === 'tool_batch_error')
+        console.error('Twilio voice tool batch failed');
     },
   });
 }
 ```
 
-The bridge uses mono G.711 μ-law at 8 kHz, which Twilio Media Streams require. It fills gaps in incoming media timestamps with silence and skips overlapping samples. After 750 ms without media during detected speech, it sends one second of silence to let voice activity detection finish the utterance. Set `inputAudioInactivityTimeoutMs` to change that interval, or `null` to disable it.
+The bridge uses mono G.711 μ-law at 8 kHz, which Twilio Media Streams require. It requires automatic VAD response creation and rejects `turnDetection: null` or `createResponse: false` because it relies on VAD to finish turns and request replies. It fills gaps in incoming media timestamps with silence and skips overlapping samples. After 750 ms without media during detected speech, it sends one second of silence to let voice activity detection finish the utterance. Set `inputAudioInactivityTimeoutMs` to change that interval, or `null` to disable it.
 
 Twilio playback marks determine how much audio the caller has heard. An interruption clears queued audio and reports that playback position to the native conversation. Marks acknowledged after a clear cannot advance the old response. Audio from the next response waits until the current response finishes playback or is interrupted.
 

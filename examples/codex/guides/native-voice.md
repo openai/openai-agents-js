@@ -167,6 +167,8 @@ A function can return `backgroundResult(value)` to publish its accepted result w
 
 Realtime speech itself streams before completion. Optional `outputGuardrails` check text and can interrupt the exact response, but some audio may already have played. Report actual playback with `reportPlayback()`. On `playback_interrupted`, discard queued audio for `retiredResponseIds`. This differs from the accepted-final-text rule for native backend delegation.
 
+Report playback progress while audio plays. When playback bookkeeping reaches its limit, it can release older completed content that has finished playing or was interrupted. Playback reports for released content are no longer accepted.
+
 ## Separate transcription and synthesis
 
 Run [voice.ts](../voice.ts) for a PCM file → native Session → PCM file pipeline. Supply raw mono PCM16 at 24 kHz without a WAV header:

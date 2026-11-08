@@ -48,6 +48,7 @@ async function connect(
     media: Media,
     options: NativeRealtimeOptions,
   ) => Promise<NativeRealtimeSession>,
+  beforeBridge?: (socket: WebSocket) => void,
 ) {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');
@@ -68,6 +69,7 @@ async function connect(
       open ? open(media, options) : (media as unknown as NativeRealtimeSession),
     ),
   };
+  beforeBridge?.(socket);
   const running = bridgeTwilioVoice({
     socket,
     session,
@@ -291,6 +293,60 @@ describe('native Twilio media bridge', () => {
     ).rejects.toThrow('requires g711_ulaw');
     expect(session.realtime).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    null,
+    { type: 'server_vad', createResponse: false },
+    { type: 'semantic_vad', createResponse: false },
+  ] as const)(
+    'rejects unsupported manual turn detection %j before acquiring the call',
+    async (turnDetection) => {
+      let checkSocket!: () => void;
+      const { socket, session, running } = await connect(
+        { realtimeOptions: { settings: { turnDetection } } },
+        async () => {
+          throw new Error('Unexpected native admission');
+        },
+        (socket) => {
+          const on = vi.spyOn(socket, 'on');
+          const close = vi.spyOn(socket, 'close');
+          checkSocket = () => {
+            expect(on).not.toHaveBeenCalled();
+            expect(close).not.toHaveBeenCalled();
+          };
+        },
+      );
+      await expect(running).rejects.toThrow(
+        'Twilio requires automatic VAD response creation',
+      );
+      expect(session.realtime).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      checkSocket();
+    },
+  );
+
+  it.each([
+    { type: 'server_vad' },
+    { type: 'server_vad', createResponse: true },
+    { type: 'semantic_vad' },
+    { type: 'semantic_vad', createResponse: true },
+  ] as const)(
+    'retains supported automatic turn detection %j',
+    async (turnDetection) => {
+      const { client, session, media, running } = await connect({
+        realtimeOptions: { settings: { turnDetection } },
+      });
+      expect(session.realtime).toHaveBeenCalledOnce();
+      expect(session.realtime.mock.calls[0][0].settings).toMatchObject({
+        turnDetection,
+        inputFormat: 'g711_ulaw',
+        outputFormat: 'g711_ulaw',
+      });
+      client.close();
+      await running;
+      expect(media.close).toHaveBeenCalledOnce();
+    },
+  );
 
   it('retains and closes admission that finishes after cancellation', async () => {
     const pending = Promise.withResolvers<NativeRealtimeSession>();

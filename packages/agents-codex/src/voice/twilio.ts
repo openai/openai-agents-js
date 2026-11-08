@@ -69,6 +69,9 @@ export async function bridgeTwilioVoice({
     if (format !== undefined && format !== 'g711_ulaw')
       throw new TypeError('Twilio requires g711_ulaw input and output');
   }
+  const turnDetection = realtimeOptions.settings?.turnDetection;
+  if (turnDetection === null || turnDetection?.createResponse === false)
+    throw new TypeError('Twilio requires automatic VAD response creation');
   if (
     inputAudioInactivityTimeoutMs !== null &&
     (!Number.isSafeInteger(inputAudioInactivityTimeoutMs) ||

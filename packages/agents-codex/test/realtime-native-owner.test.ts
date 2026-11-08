@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { expect, it, vi } from 'vitest';
+import { NativeRealtimePlayback } from '../src/runtime/realtime-playback';
 import {
   createNativeRealtimeOwner,
   type NativeRealtimeOptions,
@@ -2203,3 +2204,159 @@ it.each(['', '   ', null, 1])(
     await peer.owner.close();
   },
 );
+
+it.each([true, false])(
+  'reclaims completed played audio across a long-lived owner (done first: %s)',
+  async (doneFirst) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const events = peer.owner.events();
+    await events.next();
+    try {
+      for (let i = 0; i < 1030; i++) {
+        const position = {
+          responseId: `response-${i}`,
+          itemId: `item-${i}`,
+          contentIndex: 0,
+          audioEndMs: 20,
+        };
+        peer.payload({
+          AudioOut: {
+            data: Buffer.alloc(160).toString('base64'),
+            sample_rate: 8000,
+            num_channels: 1,
+            format: 'g711_ulaw',
+            response_id: position.responseId,
+            item_id: position.itemId,
+            content_index: 0,
+          },
+        });
+        expect((await events.next()).value).toMatchObject({
+          type: 'audio',
+          responseId: position.responseId,
+        });
+        if (!doneFirst) peer.owner.reportPlayback(position);
+        peer.payload({
+          ResponseDone: {
+            response_id: position.responseId,
+            function_call_ids: [],
+          },
+        });
+        expect((await events.next()).value).toMatchObject({
+          type: 'response',
+          status: 'done',
+        });
+        if (doneFirst) peer.owner.reportPlayback(position);
+      }
+      await peer.owner.sendText('still live');
+    } finally {
+      await peer.owner.close();
+    }
+  },
+);
+function receivedPlayback(responseId: string) {
+  return {
+    responseId,
+    itemId: `item-${responseId}`,
+    contentIndex: 0,
+    sampleRate: 8000,
+    channels: 1,
+    format: 'g711_ulaw' as const,
+    data: new Uint8Array(160),
+  };
+}
+function playedPlayback(responseId: string, audioEndMs = 20) {
+  return {
+    responseId,
+    itemId: `item-${responseId}`,
+    contentIndex: 0,
+    audioEndMs,
+  };
+}
+it('retains delayed playback and streaming audio while reclaiming only eligible completed content', () => {
+  const playback = new NativeRealtimePlayback(2);
+  playback.observe(receivedPlayback('delayed'));
+  playback.complete('delayed');
+  playback.observe(receivedPlayback('streaming'));
+  playback.report(playedPlayback('streaming'));
+  expect(() => playback.observe(receivedPlayback('next'))).toThrow('capacity');
+  playback.report(playedPlayback('delayed', 10));
+  expect(() => playback.report(playedPlayback('delayed', 9))).toThrow(
+    'backwards',
+  );
+  expect(() => playback.observe(receivedPlayback('next'))).toThrow('capacity');
+  playback.report(playedPlayback('delayed'));
+  playback.observe(receivedPlayback('next'));
+  expect(() => playback.report(playedPlayback('delayed'))).toThrow('identify');
+  playback.observe(receivedPlayback('streaming'));
+  expect(() => playback.report(playedPlayback('streaming', 41))).toThrow(
+    'exceeds',
+  );
+  playback.report(playedPlayback('streaming', 40));
+});
+it('reclaims only authoritatively retired playback sources even when unplayed', () => {
+  const playback = new NativeRealtimePlayback(2);
+  playback.observe(receivedPlayback('retired'));
+  playback.observe(receivedPlayback('live'));
+  playback.retire(new Set(['retired']));
+  playback.report(playedPlayback('retired', 10));
+  playback.observe(receivedPlayback('next'));
+  expect(() => playback.report(playedPlayback('retired'))).toThrow('identify');
+  playback.report(playedPlayback('live', 10));
+  expect(() => playback.observe(receivedPlayback('overflow'))).toThrow(
+    'capacity',
+  );
+});
+
+it('reclaims unplayed owner audio only after the exact native retirement receipt', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  try {
+    for (let i = 0; i < 1024; i++) {
+      peer.payload({
+        AudioOut: {
+          data: Buffer.alloc(160).toString('base64'),
+          sample_rate: 8000,
+          num_channels: 1,
+          format: 'g711_ulaw',
+          response_id: 'retired-source',
+          item_id: `item-${i}`,
+          content_index: 0,
+        },
+      });
+      expect((await events.next()).value).toMatchObject({ type: 'audio' });
+    }
+    await peer.owner.interrupt('retired-source');
+    expect((await events.next()).value).toMatchObject({
+      type: 'playback_interrupted',
+      retiredResponseIds: ['retired-source'],
+    });
+    const position = {
+      responseId: 'retired-source',
+      itemId: 'item-0',
+      contentIndex: 0,
+      audioEndMs: 10,
+    };
+    peer.owner.reportPlayback(position);
+    peer.payload({
+      AudioOut: {
+        data: Buffer.alloc(160).toString('base64'),
+        sample_rate: 8000,
+        num_channels: 1,
+        format: 'g711_ulaw',
+        response_id: 'live-source',
+        item_id: 'live-item',
+        content_index: 0,
+      },
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: 'audio',
+      responseId: 'live-source',
+    });
+    expect(() => peer.owner.reportPlayback(position)).toThrow('identify');
+  } finally {
+    await peer.owner.close();
+  }
+});

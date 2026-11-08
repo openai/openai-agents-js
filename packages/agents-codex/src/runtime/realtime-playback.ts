@@ -29,6 +29,9 @@ export class NativeRealtimePlayback {
   private readonly items = new Map<
     string,
     {
+      responseId: string;
+      completed: boolean;
+      retired: boolean;
       samples: number;
       rate: number;
       channels: number;
@@ -58,8 +61,23 @@ export class NativeRealtimePlayback {
       throw new Error('Native Realtime output has invalid audio framing');
     const key = this.key(responseId, itemId, contentIndex);
     const previous = this.items.get(key);
-    if (!previous && this.items.size >= this.limit)
-      throw new Error('Native Realtime playback item capacity exceeded');
+    if (!previous && this.items.size >= this.limit) {
+      // Retain recent completed positions for late playback and guardrails.
+      // Receiving all currently available audio does not mean it has finished.
+      for (const [oldKey, item] of this.items) {
+        if (
+          item.retired ||
+          (item.completed &&
+            item.played?.audioEndMs ===
+              Math.floor((item.samples * 1000) / item.rate))
+        ) {
+          this.items.delete(oldKey);
+          break;
+        }
+      }
+      if (this.items.size >= this.limit)
+        throw new Error('Native Realtime playback item capacity exceeded');
+    }
     if (
       previous &&
       (previous.rate !== sampleRate ||
@@ -73,12 +91,23 @@ export class NativeRealtimePlayback {
     if (!Number.isSafeInteger(samples))
       throw new Error('Native Realtime playback sample capacity exceeded');
     this.items.set(key, {
+      responseId,
+      completed: previous?.completed ?? false,
+      retired: previous?.retired ?? false,
       samples,
       rate: sampleRate,
       channels,
       format,
       played: previous?.played,
     });
+  }
+  complete(responseId: string): void {
+    for (const item of this.items.values())
+      if (item.responseId === responseId) item.completed = true;
+  }
+  retire(responseIds: ReadonlySet<string>): void {
+    for (const item of this.items.values())
+      if (responseIds.has(item.responseId)) item.retired = true;
   }
   report(
     position: NativeRealtimePlaybackPosition,

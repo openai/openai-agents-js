@@ -1274,6 +1274,8 @@ class NativeRealtimeOwner {
     ) {
       const responseId =
         typeof value.response_id === 'string' ? value.response_id : undefined;
+      if (responseId && name !== 'ResponseCreated')
+        this.playback.complete(responseId);
       if (name === 'ResponseDone') this.startFunctionBatch(value);
       if (name === 'ResponseCreated') this.responseId = responseId;
       else if (!responseId || responseId === this.responseId)
@@ -1688,6 +1690,7 @@ class NativeRealtimeOwner {
           throw new Error('Native Realtime retired response capacity exceeded');
         this.retiredResponses.add(id);
       }
+      this.playback.retire(retired);
       for (const record of this.functions.values())
         if (record.responseId !== undefined && retired.has(record.responseId))
           record.retired = true;
