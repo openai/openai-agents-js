@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@openai/agents-core": "workspace:*",
-    "openai": "^7.45.1"
+    "openai": "^7.53.0"
   },
   "scripts": {
     "prebuild": "node ../../scripts/embedMeta.mts",

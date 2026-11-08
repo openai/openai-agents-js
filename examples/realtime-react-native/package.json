@@ -13,18 +13,18 @@
   },
   "dependencies": {
     "@openai/agents-realtime": "workspace:*",
-    "expo": "~58.0.21",
-    "expo-dev-client": "~58.0.17",
+    "expo": "~58.0.22",
+    "expo-dev-client": "~58.0.18",
     "expo-device": "~58.0.5",
     "expo-status-bar": "~58.0.4",
-    "react": "19.3.0",
+    "react": "19.3.1",
     "react-native": "0.88.1",
     "react-native-webrtc": "124.0.8",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@config-plugins/react-native-webrtc": "15.0.2",
-    "@types/react": "~19.2.18",
+    "@types/react": "~19.3.0",
     "typescript": "~5.9.2"
   },
   "overrides": {

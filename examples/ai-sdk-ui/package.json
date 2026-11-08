@@ -2,7 +2,7 @@
   "private": true,
   "name": "ai-sdk-ui",
   "dependencies": {
-    "@ai-sdk/react": "^4.0.162",
+    "@ai-sdk/react": "^4.0.163",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openai/agents-openai": "workspace:*",
