@@ -37,6 +37,8 @@ jobs:
             $report | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $reportPath
           }
           function Invoke-Wsl([string] $Stage, [string[]] $Arguments) {
+            # Windows-generated here-strings must reach Linux shells with LF endings.
+            $Arguments = @($Arguments | ForEach-Object { $_.Replace("`r`n", "`n").Replace("`r", "`n") })
             $output = & wsl.exe @Arguments 2>&1 | Out-String
             $code = $LASTEXITCODE
             $output = $output.Replace("`0", '').Trim()
