@@ -98,6 +98,7 @@ import {
   type TurnObservationScope,
 } from './observation';
 import { managedCallInfo } from './call-metadata';
+import { FunctionAdmission } from './function-admission';
 import {
   nativeAgentsPolicyRules,
   applyNativeAgentsApproval,
@@ -243,6 +244,7 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
@@ -1089,6 +1091,10 @@ export class Session<OutputT = string, Context = unknown> {
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
   private readonly childCallbacks = new ChildCallbacks();
+  private readonly functionAdmissions = new WeakMap<
+    NativeTurn | ChildCallbackOwner,
+    FunctionAdmission
+  >();
   private readonly childSelections = new WeakMap<
     ChildCallbackOwner,
     OperationSelection
@@ -6301,8 +6307,14 @@ export class Session<OutputT = string, Context = unknown> {
     if (tool.kind === 'manual') return;
     if (typeof msg.callId !== 'string')
       throw new NativeError('Native tool invocation has no call identity');
+    let admission = this.functionAdmissions.get(owner);
+    if (!admission && this.options.maxFunctionConcurrency !== undefined) {
+      admission = new FunctionAdmission(this.options.maxFunctionConcurrency);
+      this.functionAdmissions.set(owner, admission);
+    }
     const execute = async () => {
       if (!this.current(owner)) return;
+      admission?.check();
       this.#native._check_python_tool(encodeReceipt(msg));
       const submission = root
         ? this.#turnFor(owner)
@@ -6310,6 +6322,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (!submission) return;
       if (!root) {
         if (!this.current(owner)) return;
+        admission?.check();
         this.#native._check_python_tool(encodeReceipt(msg));
       }
       const context = {
@@ -6350,6 +6363,7 @@ export class Session<OutputT = string, Context = unknown> {
           context,
           (error) => {
             owner.failure ??= error;
+            admission?.seal(error);
             if (root)
               toolInvocation.exit(() => {
                 void this.#cancel(owner).catch((cause) =>
@@ -6385,6 +6399,12 @@ export class Session<OutputT = string, Context = unknown> {
             ? 'completed'
             : 'failed'
           : 'cancelled';
+      } catch (error) {
+        if (admission) {
+          owner.failure ??= error;
+          admission.seal(error);
+        }
+        throw error;
       } finally {
         const finalStatus = owner.controller.signal.aborted
           ? 'cancelled'
@@ -6407,29 +6427,42 @@ export class Session<OutputT = string, Context = unknown> {
         this.observeToolEnd(owner, identity, finalStatus ?? 'failed');
       }
     };
-    if (root)
-      await this.invokeTool(
-        owner,
-        JSON.stringify([
-          event.subagent_id,
-          event.subagent_instance_id,
-          msg.callId,
-        ]),
-        execute,
-        typeof msg.tracing_context === 'string'
-          ? msg.tracing_context
-          : undefined,
-      );
-    else
-      await withNativeCallbackContext(
-        typeof msg.tracing_context === 'string'
-          ? msg.tracing_context
-          : undefined,
-        execute,
-        owner.controller.signal,
-        (traceId, workflowSpanId) =>
-          this.workflowForTrace(traceId, workflowSpanId),
-      );
+    const release = admission
+      ? await admission.acquire(owner.controller.signal)
+      : undefined;
+    try {
+      if (root)
+        await this.invokeTool(
+          owner,
+          JSON.stringify([
+            event.subagent_id,
+            event.subagent_instance_id,
+            msg.callId,
+          ]),
+          execute,
+          typeof msg.tracing_context === 'string'
+            ? msg.tracing_context
+            : undefined,
+        );
+      else
+        await withNativeCallbackContext(
+          typeof msg.tracing_context === 'string'
+            ? msg.tracing_context
+            : undefined,
+          execute,
+          owner.controller.signal,
+          (traceId, workflowSpanId) =>
+            this.workflowForTrace(traceId, workflowSpanId),
+        );
+    } catch (error) {
+      if (admission) {
+        owner.failure ??= error;
+        admission.seal(error);
+      }
+      throw error;
+    } finally {
+      release?.();
+    }
   }
 
   private async childNativeTurn(

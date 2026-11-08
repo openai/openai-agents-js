@@ -6,6 +6,7 @@ export const nativeInputPaths = [
   'packages/agents-codex/native',
   'packages/agents-codex/scripts',
   'packages/agents-codex/bin',
+  'packages/agents-codex/licenses/hyper/LICENSE',
   // An ancestor workspace can supply Cargo's lockfile, dependencies and profiles.
   ':(glob)**/Cargo.toml',
   ':(glob)**/Cargo.lock',

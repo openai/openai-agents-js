@@ -14,6 +14,33 @@ The default `timeoutBehavior: 'raise_exception'` fails the owning turn with `Too
 
 Both modes abort the callback signal at the deadline and wait for entered callback work and cleanup to settle. A callback that ignores cancellation can therefore delay completion. Result mode runs its formatter after cleanup, using the parent tool context. Timeout results bypass the normal `result` schema and `after` hook, as local tool denial does. Formatter errors propagate normally. Parent cancellation or expired invocation authority prevents publication. With no `callbackTimeout`, the policy and formatter are inactive. A timeout never rolls back effects or makes a retry safe. See [the scripted callback timeout example](../tool-timeout-policy.ts).
 
+### Function namespaces
+
+With the current [source build](building.md), set `namespace` and optional `namespaceDescription` on `tool()`:
+
+```ts
+import { tool } from '@openai/agents';
+import { z } from 'zod';
+
+const lookup = tool({
+  name: 'lookup',
+  namespace: 'crm',
+  namespaceDescription: 'Customer records',
+  parameters: z.object({ id: z.string() }),
+  execute: ({ id }) => ({ id, source: 'crm' }),
+});
+```
+
+Add `lookup` to the Agent's tools. Two namespaces can contain functions with the same short name. The SDK rejects duplicate namespace/name pairs when opening a Session and captures each declaration for dispatch. Use `toolRef('lookup', 'crm')` to select this function in `beforeStep`. Omit `namespace` for the default function namespace. These fields do not namespace `manualTool()` declarations.
+
+### Function admission
+
+Pass `maxFunctionConcurrency` to `agent.session()` or `agent.run()` to limit automatic managed functions per root or child turn. For example, `await agent.session({ maxFunctionConcurrency: 2 })` admits at most two at a time. The value must be a positive integer; omission adds no host admission limit.
+
+The slot covers argument validation, `before`, `execute`, result validation, `after`, callback cleanup and native reply settlement. Queued calls have not started their body timeout. Cancellation removes queued work, and a fatal callback failure prevents queued functions from starting. A failed `ToolOutput` remains ordinary output. Each child turn has its own limit, so a parent function can await a child's work. Borrowed SDK MCP functions consume slots; native MCP calls, manual replies and builtins do not.
+
+This source build admits automatic calls independently even when no manual tools are declared. Earlier JS native builds serialized automatic-only catalogs but allowed parallel dispatch when a manual tool was present. Set `maxFunctionConcurrency: 1` for explicit serialization. The cap does not promise model call order, roll back effects or provide a cross-Session quota. Classic execution is unchanged.
+
 ### Tool discovery
 
 Set `deferLoading: true` on `tool()`, `manualTool()`, `deferredTool()`, or a native MCP declaration. Direct-mode models with native tool search can discover the selected schemas. Other models receive the schemas directly.

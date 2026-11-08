@@ -168,6 +168,61 @@ test('native publication precedes all SDK execution, including other platforms a
   }
 });
 
+test('Hyper license bytes invalidate native inputs without Cargo fallback', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'agents-native-license-'));
+  onTestFinished(() => rmSync(repo, { recursive: true, force: true }));
+  const native = join(repo, 'packages/agents-codex/native');
+  const license = join(repo, 'packages/agents-codex/licenses/hyper/LICENSE');
+  mkdirSync(native, { recursive: true });
+  mkdirSync(dirname(license), { recursive: true });
+  writeFileSync(join(native, 'lib.rs'), '// unchanged native source\n');
+  writeFileSync(license, 'first notice\n');
+  const git = (...args) =>
+    execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const commit = () => {
+    git('add', '.');
+    git(
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-qm',
+      'license input fixture',
+    );
+  };
+  git('init', '-q');
+  commit();
+  const module = new URL('./native-bundle-inputs.mjs', import.meta.url).href;
+  const snapshot = () =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `import { nativeInputs, nativeComparisonPaths } from ${JSON.stringify(module)};
+process.stdout.write(JSON.stringify({
+  hash: nativeInputs(), paths: nativeComparisonPaths()
+}));`,
+        ],
+        { cwd: repo, encoding: 'utf8' },
+      ),
+    );
+  const before = snapshot();
+  expect(before.paths).not.toEqual(['.']);
+  writeFileSync(license, 'replacement notice\n');
+  commit();
+  expect(git('diff', '--name-only', 'HEAD^', 'HEAD')).toBe(
+    'packages/agents-codex/licenses/hyper/LICENSE',
+  );
+  const after = snapshot();
+  expect(after.paths).toEqual(before.paths);
+  expect(after.hash).not.toBe(before.hash);
+});
+
 // Run the real CLI, Git fingerprint and selective extraction; replace only transport.
 test('preflight stages verified opaque archives and current-run transfers pin exact bytes', () => {
   const temp = mkdtempSync(join(tmpdir(), 'agents-native-reuse-'));
