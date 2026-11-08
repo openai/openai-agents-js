@@ -5,13 +5,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use codex_config::McpServerConfig;
 use codex_core_api::{Config, SessionSource, ThreadManager};
 use codex_extension_api::{
-    ExtensionFuture, McpToolResultInput, McpToolSource, ThreadLifecycleContributor,
-    ThreadStartInput, ThreadStopInput, ToolLifecycleContributor, ToolLifecycleFuture,
-    TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
+    ExtensionData, ExtensionFuture, McpToolRequestMetadataInput, McpToolResultInput, McpToolSource,
+    ThreadLifecycleContributor, ThreadStartInput, ThreadStopInput, ToolLifecycleContributor,
+    ToolLifecycleFuture, TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
 };
 use codex_protocol::mcp::CallToolResult;
 use serde::{Deserialize, Serialize};
@@ -29,8 +29,22 @@ const MAX_BYTES: usize = 128 * 1024 * 1024;
 struct Notice<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tracing_context: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cell_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_tool_call_id: Option<&'a str>,
     nonce: u64,
     generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_epoch: Option<u64>,
     thread_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     incarnation: Option<&'a str>,
@@ -42,7 +56,8 @@ struct Notice<'a> {
     callable_namespace: &'a str,
     callable_name: &'a str,
     arguments: &'a Value,
-    result: &'a CallToolResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<&'a CallToolResult>,
 }
 
 struct Counter {
@@ -103,11 +118,34 @@ pub(crate) fn validated(reply: &str) -> Option<CallToolResult> {
     })
 }
 
+#[derive(Debug)]
+enum AcceptedReply {
+    Result(CallToolResult),
+    Metadata(serde_json::Map<String, Value>),
+}
+
+fn validated_metadata(reply: &str) -> Option<serde_json::Map<String, Value>> {
+    if reply.len() > MAX_REPLY {
+        return None;
+    }
+    let value: Value = serde_json::from_str(reply).ok()?;
+    let map = match value {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(map) => map,
+        _ => return None,
+    };
+    map.keys()
+        .all(|key| !codex_extension_api::is_reserved_mcp_request_metadata_key(key))
+        .then_some(map)
+}
+
 struct Pending {
     turn_id: String,
     call_id: String,
     deadline: Instant,
-    sender: Option<oneshot::Sender<Option<CallToolResult>>>,
+    metadata: bool,
+    is_cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    sender: Option<oneshot::Sender<Option<AcceptedReply>>>,
 }
 
 // Retaining a transport payload must not retain its native thread or reply
@@ -141,6 +179,8 @@ pub(crate) struct Selection {
     #[serde(default)]
     pub(crate) pre_policy: HashMap<String, Vec<String>>,
     servers: HashMap<String, HashMap<String, f64>>,
+    #[serde(default)]
+    metadata_servers: HashMap<String, Vec<String>>,
 }
 
 impl Selection {
@@ -181,8 +221,83 @@ impl Selection {
                 "Native MCP result timeout must be in (0, 3600] seconds"
             );
         }
+        for (name, tools) in &self.metadata_servers {
+            ensure!(
+                requested.get(name).is_some_and(|server| {
+                    !crate::mcp_roster::enterprise(server)
+                        && server.enabled
+                        && tools.iter().all(|tool| {
+                            server
+                                .enabled_tools
+                                .as_ref()
+                                .is_some_and(|names| names.contains(tool))
+                        })
+                }),
+                "MCP metadata policy must select admitted ordinary raw tool names"
+            );
+        }
         Ok(())
     }
+}
+
+// A graph step owns its result policy even if another profile becomes active.
+// None preserves the legacy non-graph global editor and selected roster path.
+fn source_profile(
+    thread: &ExtensionData,
+    step: Option<&ExtensionData>,
+) -> Result<Option<codex_extension_api::AgentProfileReceipt>> {
+    if let Some(source) =
+        step.and_then(|step| step.get::<crate::native_interception::ProfileMcpSource>())
+    {
+        return Ok(source.receipt.clone());
+    }
+    match thread.get::<crate::python_tools::PythonTools>() {
+        Some(tools) => tools.source_profile(step),
+        None => Ok(step
+            .and_then(|step| step.get::<codex_extension_api::CapturedAgentProfile>())
+            .map(|profile| profile.receipt.clone())),
+    }
+}
+
+fn source_selection(
+    thread: &ExtensionData,
+    step: Option<&ExtensionData>,
+) -> Result<(bool, Option<Arc<Selection>>)> {
+    if let Some(source) =
+        step.and_then(|step| step.get::<crate::native_interception::ProfileMcpSource>())
+    {
+        ensure!(
+            source.policy.is_some(),
+            "Missing captured MCP callback policy"
+        );
+        let selection = if source.receipt.is_none() {
+            source.result_selection.clone()
+        } else {
+            step.and_then(|step| step.get::<Selection>())
+        };
+        ensure!(
+            source.receipt.is_none() || selection.is_some(),
+            "Missing captured Agent MCP result selection"
+        );
+        return Ok((true, selection));
+    }
+    if source_profile(thread, step)?.is_some() {
+        return Ok((
+            true,
+            Some(
+                step.and_then(|step| step.get::<Selection>())
+                    .context("Missing captured Agent MCP result selection")?,
+            ),
+        ));
+    }
+    Ok((false, None))
+}
+
+fn inherits_result_source(inherits_tools: bool, spawning_step: Option<&ExtensionData>) -> bool {
+    inherits_tools
+        || spawning_step
+            .and_then(|step| step.get::<crate::native_interception::ProfileMcpSource>())
+            .is_some_and(|source| source.policy.is_some())
 }
 
 struct State {
@@ -199,7 +314,7 @@ struct State {
 }
 
 impl State {
-    fn retire(&mut self, nonce: u64) -> Option<oneshot::Sender<Option<CallToolResult>>> {
+    fn retire(&mut self, nonce: u64) -> Option<oneshot::Sender<Option<AcceptedReply>>> {
         let item = self.pending.get_mut(&nonce)?;
         let sender = item.sender.take();
         let mut routes = self.routes.lock().expect("MCP routes poisoned");
@@ -262,9 +377,32 @@ impl McpResultControl {
         Ok(())
     }
 
-    pub(crate) fn owns_result(&self, server: &str, tool: &str, configured: bool) -> bool {
+    pub(crate) fn capture_source_selection(&self) -> Option<Selection> {
+        self.state
+            .lock()
+            .expect("MCP result control poisoned")
+            .selection
+            .clone()
+    }
+
+    pub(crate) fn owns_result(
+        &self,
+        thread: &ExtensionData,
+        step: Option<&ExtensionData>,
+        server: &str,
+        tool: &str,
+        configured: bool,
+    ) -> bool {
+        let (source_bound, captured) = match source_selection(thread, step) {
+            Ok(value) => value,
+            Err(_) => return true,
+        };
         let state = self.state.lock().expect("MCP result control poisoned");
-        match &state.selection {
+        match captured.as_deref().or_else(|| {
+            (!source_bound)
+                .then_some(state.selection.as_ref())
+                .flatten()
+        }) {
             Some(selection) => {
                 configured
                     && selection
@@ -272,7 +410,7 @@ impl McpResultControl {
                         .get(server)
                         .is_some_and(|tools| tools.contains_key(tool))
             }
-            None => state.timeout.is_some(),
+            None => !source_bound && state.timeout.is_some(),
         }
     }
 
@@ -367,6 +505,7 @@ impl McpResultControl {
         !state.revoked
             && state.pending.get(&nonce).is_some_and(|item| {
                 item.sender.is_some()
+                    && item.is_cancelled.as_ref().is_none_or(|probe| !probe())
                     && item.turn_id == turn_id
                     && item.call_id == call_id
                     && Instant::now() < item.deadline
@@ -460,7 +599,7 @@ impl McpResultControl {
         state: &mut State,
         notice: &Notice<'_>,
         deadline: Instant,
-    ) -> Option<oneshot::Receiver<Option<CallToolResult>>> {
+    ) -> Option<oneshot::Receiver<Option<AcceptedReply>>> {
         self.enqueue_with_context(state, notice, deadline, None)
     }
 
@@ -470,7 +609,7 @@ impl McpResultControl {
         notice: &Notice<'_>,
         deadline: Instant,
         tracing: Option<codex_otel::sdk_trace::ContextLease>,
-    ) -> Option<oneshot::Receiver<Option<CallToolResult>>> {
+    ) -> Option<oneshot::Receiver<Option<AcceptedReply>>> {
         if state.revoked || state.pending.len() >= MAX_PENDING {
             return None;
         }
@@ -493,6 +632,8 @@ impl McpResultControl {
                 turn_id: notice.turn_id.to_owned(),
                 call_id: notice.call_id.to_owned(),
                 deadline,
+                metadata: notice.phase == Some("metadata"),
+                is_cancelled: None,
                 sender: Some(tx),
             },
         );
@@ -607,6 +748,7 @@ impl McpResultControl {
         if state.revoked
             || !state.pending.get(&nonce).is_some_and(|p| {
                 p.sender.is_some()
+                    && p.is_cancelled.as_ref().is_none_or(|probe| !probe())
                     && p.turn_id == turn_id
                     && p.call_id == call_id
                     && Instant::now() < p.deadline
@@ -615,8 +757,14 @@ impl McpResultControl {
             return false;
         }
         let deadline = state.pending[&nonce].deadline;
+        let metadata = state.pending[&nonce].metadata;
         let sender = state.retire(nonce).expect("checked owner");
-        let edited = validated(reply).filter(|_| Instant::now() < deadline);
+        let edited = if metadata {
+            validated_metadata(reply).map(AcceptedReply::Metadata)
+        } else {
+            validated(reply).map(AcceptedReply::Result)
+        };
+        let edited = edited.filter(|_| Instant::now() < deadline);
         let accepted = edited.is_some();
         let delivered = sender.send(edited).is_ok();
         accepted && delivered
@@ -688,10 +836,13 @@ impl ThreadLifecycleContributor<Config> for McpResultContributor {
                 .thread_store
                 .get::<crate::native_interception::Control>()
                 && let Some(parent) = control.inherited_parent(&self.0).await
-                && let Some(tools) = parent
-                    .thread_extension_data()
-                    .get::<crate::python_tools::PythonTools>()
-                && tools.inherits_children()
+                && inherits_result_source(
+                    parent
+                        .thread_extension_data()
+                        .get::<crate::python_tools::PythonTools>()
+                        .is_some_and(|tools| tools.inherits_children()),
+                    input.spawning_step_store,
+                )
                 && let Some(parent_control) =
                     parent.thread_extension_data().get::<McpResultControl>()
             {
@@ -712,6 +863,14 @@ impl ThreadLifecycleContributor<Config> for McpResultContributor {
                 input
                     .thread_store
                     .get_or_init(|| McpResultControl::new(id, root));
+            }
+            if let (Some(issuer), Some(results)) = (
+                input
+                    .thread_store
+                    .get::<crate::native_interception::Control>(),
+                input.thread_store.get::<McpResultControl>(),
+            ) {
+                issuer.bind_mcp_results(&results);
             }
         })
     }
@@ -756,16 +915,171 @@ impl TurnLifecycleContributor for McpResultContributor {
 }
 
 impl ToolLifecycleContributor for McpResultContributor {
+    fn on_mcp_tool_request_metadata<'a>(
+        &'a self,
+        input: McpToolRequestMetadataInput<'a>,
+    ) -> ExtensionFuture<'a, Result<Option<serde_json::Map<String, Value>>, ()>> {
+        Box::pin(async move {
+            let Some(control) = input.thread_store.get::<McpResultControl>() else {
+                return Ok(None);
+            };
+            let (source_bound, captured) =
+                source_selection(input.thread_store, input.step_store).map_err(|_| ())?;
+            let selection = captured.or_else(|| {
+                (!source_bound)
+                    .then(|| control.capture_source_selection().map(Arc::new))
+                    .flatten()
+            });
+            let Some(selection) = selection else {
+                return Ok(None);
+            };
+            let profile = source_profile(input.thread_store, input.step_store).map_err(|_| ())?;
+            let tool = input.mcp_tool.tool_info();
+            if !selection
+                .metadata_servers
+                .get(&tool.server_name)
+                .is_some_and(|names| names.iter().any(|name| name == tool.tool.name.as_ref()))
+            {
+                return Ok(None);
+            }
+            // A configured declaration owns failure too; never fall through to an unedited send.
+            if !matches!(input.mcp_tool.source(), McpToolSource::Config) {
+                return Err(());
+            }
+            if (input.is_cancelled)() {
+                return Err(());
+            }
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let (nonce, rx) = {
+                let mut state = control.state.lock().expect("MCP result control poisoned");
+                let results = state
+                    .unresolved
+                    .entry(input.turn_id.to_owned())
+                    .or_default();
+                results.count = results.count.saturating_add(1);
+                let nonce = control
+                    .channel
+                    .next_nonce
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |nonce| {
+                        nonce.checked_add(1)
+                    })
+                    .map_err(|_| {})?;
+                let (route, cell_id, runtime_id) = match &input.source {
+                    codex_tools::ToolCallSource::Direct => ("direct", None, None),
+                    codex_tools::ToolCallSource::CodeMode {
+                        cell_id,
+                        runtime_tool_call_id,
+                    } => (
+                        "code",
+                        Some(cell_id.as_str()),
+                        Some(runtime_tool_call_id.as_str()),
+                    ),
+                };
+                let tracing = codex_otel::sdk_trace::ContextLease::capture();
+                let token = tracing.as_ref().map(|context| context.token().to_owned());
+                let notice = Notice {
+                    phase: Some("metadata"),
+                    model: Some(input.model),
+                    route: Some(route),
+                    cell_id,
+                    runtime_tool_call_id: runtime_id,
+                    tracing_context: token.as_deref(),
+                    nonce,
+                    generation: selection.generation,
+                    profile_id: profile.as_ref().map(|source| source.profile_id.as_str()),
+                    profile_epoch: profile.as_ref().map(|source| source.epoch),
+                    thread_id: &control.id,
+                    incarnation: control.instance.as_deref(),
+                    turn_id: input.turn_id,
+                    call_id: input.call_id,
+                    source: "config",
+                    server_name: &tool.server_name,
+                    tool_name: &tool.tool.name,
+                    callable_namespace: &tool.callable_namespace,
+                    callable_name: &tool.callable_name,
+                    arguments: input.arguments,
+                    result: None,
+                };
+                let Some(rx) = control.enqueue_with_context(&mut state, &notice, deadline, tracing)
+                else {
+                    return Err(());
+                };
+                state
+                    .pending
+                    .get_mut(&nonce)
+                    .expect("enqueued metadata")
+                    .is_cancelled = Some(Arc::clone(&input.is_cancelled));
+                (nonce, rx)
+            };
+            let mut reservation = Reservation {
+                control,
+                nonce,
+                turn_id: input.turn_id,
+            };
+            let reply = tokio::time::timeout_at(deadline, rx)
+                .await
+                .map_err(|_| ())?;
+            let Ok(Some(AcceptedReply::Metadata(metadata))) = reply else {
+                return Err(());
+            };
+            let mut accepted = None;
+            crate::native_interception::publish_mcp_metadata(
+                input.thread_store,
+                input.turn_store,
+                matches!(input.source, codex_tools::ToolCallSource::CodeMode { .. }),
+                &input.is_cancelled,
+                || {
+                    let mut state = reservation
+                        .control
+                        .state
+                        .lock()
+                        .expect("MCP result control poisoned");
+                    if !state.revoked {
+                        if let Some(results) = state.unresolved.get_mut(input.turn_id) {
+                            results.count -= 1;
+                            if results.count == 0 {
+                                state.unresolved.remove(input.turn_id);
+                            }
+                        }
+                        accepted = Some(metadata);
+                    }
+                },
+            );
+            accepted.map(Some).ok_or(())
+        })
+    }
+
     fn on_mcp_tool_result<'a>(&'a self, input: McpToolResultInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
             let Some(control) = input.thread_store.get::<McpResultControl>() else {
                 return;
             };
+            let (source_bound, captured) =
+                match source_selection(input.thread_store, input.step_store) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        *input.result = withheld();
+                        let mut state = control.state.lock().expect("MCP result control poisoned");
+                        let result = state
+                            .unresolved
+                            .entry(input.turn_id.to_owned())
+                            .or_default();
+                        result.count = result.count.saturating_add(1);
+                        return;
+                    }
+                };
+            let profile = source_profile(input.thread_store, input.step_store)
+                .ok()
+                .flatten();
             let peer_failed = input.result.is_error == Some(true);
             let (deadline, nonce, rx) = {
                 let mut state = control.state.lock().expect("MCP result control poisoned");
                 let tool = input.mcp_tool.tool_info();
-                let (generation, timeout) = match &state.selection {
+                let (generation, timeout) = match captured.as_deref().or_else(|| {
+                    (!source_bound)
+                        .then_some(state.selection.as_ref())
+                        .flatten()
+                }) {
                     Some(selection) => (
                         selection.generation,
                         matches!(input.mcp_tool.source(), McpToolSource::Config)
@@ -775,7 +1089,7 @@ impl ToolLifecycleContributor for McpResultContributor {
                             .copied()
                             .map(Duration::from_secs_f64),
                     ),
-                    None => (0, state.timeout),
+                    None => (0, if source_bound { None } else { state.timeout }),
                 };
                 let Some(timeout) = timeout else {
                     return; // Unselected calls have no queue or editor.
@@ -810,9 +1124,16 @@ impl ToolLifecycleContributor for McpResultContributor {
                 let tracing = codex_otel::sdk_trace::ContextLease::capture();
                 let tracing_token = tracing.as_ref().map(|context| context.token().to_owned());
                 let notice = Notice {
+                    phase: None,
+                    model: None,
+                    route: None,
+                    cell_id: None,
+                    runtime_tool_call_id: None,
                     tracing_context: tracing_token.as_deref(),
                     nonce,
                     generation,
+                    profile_id: profile.as_ref().map(|source| source.profile_id.as_str()),
+                    profile_epoch: profile.as_ref().map(|source| source.epoch),
                     thread_id: &control.id,
                     incarnation: control.instance.as_deref(),
                     turn_id: input.turn_id,
@@ -823,7 +1144,7 @@ impl ToolLifecycleContributor for McpResultContributor {
                     callable_namespace: &tool.callable_namespace,
                     callable_name: &tool.callable_name,
                     arguments: input.arguments,
-                    result: &original,
+                    result: Some(&original),
                 };
                 let Some(rx) = control.enqueue_with_context(&mut state, &notice, deadline, tracing)
                 else {
@@ -836,7 +1157,9 @@ impl ToolLifecycleContributor for McpResultContributor {
                 nonce,
                 turn_id: input.turn_id,
             };
-            if let Ok(Ok(Some(edited))) = tokio::time::timeout_at(deadline, rx).await {
+            if let Ok(Ok(Some(AcceptedReply::Result(edited)))) =
+                tokio::time::timeout_at(deadline, rx).await
+            {
                 reservation.assign_result(input.result, edited, peer_failed);
             }
         })
@@ -847,6 +1170,140 @@ impl ToolLifecycleContributor for McpResultContributor {
 mod tests {
     use super::*;
 
+    #[test]
+    fn exact_spawning_source_routes_results_without_sdk_tool_inheritance() {
+        assert!(!inherits_result_source(false, None));
+        assert!(inherits_result_source(true, None));
+        let source = ExtensionData::new("actual-spawning-step");
+        source.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
+            receipt: Some(codex_extension_api::AgentProfileReceipt {
+                profile_id: "b".into(),
+                epoch: 1,
+            }),
+            policy: Some(Arc::new(
+                crate::native_interception::ProfileMcpPolicy::default(),
+            )),
+        });
+        assert!(inherits_result_source(false, Some(&source)));
+        let invalid = ExtensionData::new("missing-policy");
+        invalid.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
+            receipt: None,
+            policy: None,
+        });
+        assert!(!inherits_result_source(false, Some(&invalid)));
+    }
+
+    #[test]
+    fn mono_source_freezes_selected_and_unselected_result_policy_for_children() {
+        let control = Arc::new(McpResultControl::new("root".into(), true));
+        let issuer = crate::native_interception::Control::new("root".into(), true);
+        issuer.bind_mcp_results(&control);
+        let unselected = issuer.capture_mcp_source();
+        control.publish_selection(
+            serde_json::from_value(json!({
+                "generation": 7, "servers": {"vault": {"record": 0.25}}
+            }))
+            .unwrap(),
+        );
+        let selected = issuer.capture_mcp_source();
+        control.publish_selection(
+            serde_json::from_value(json!({"generation": 8, "servers": {}})).unwrap(),
+        );
+        for (source, expected) in [(unselected, None), (selected, Some(7))] {
+            // Thread/step inheritance clones the exact captured source, including None.
+            let child_thread = ExtensionData::new("child");
+            child_thread.insert(source.clone());
+            let child_step = ExtensionData::new("child-first-step");
+            child_step.insert(
+                (*child_thread
+                    .get::<crate::native_interception::ProfileMcpSource>()
+                    .unwrap())
+                .clone(),
+            );
+            let (bound, actual) = source_selection(&child_thread, Some(&child_step)).unwrap();
+            assert!(bound);
+            assert_eq!(
+                actual.as_ref().map(|selection| selection.generation),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn captured_unselected_mono_source_cannot_inherit_newer_result_policy() {
+        let control = McpResultControl::new("root".into(), true);
+        let thread = ExtensionData::new("root");
+        let step = ExtensionData::new("captured-A");
+        assert!(control.capture_source_selection().is_none());
+        step.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
+            receipt: None,
+            policy: Some(Arc::new(
+                crate::native_interception::ProfileMcpPolicy::default(),
+            )),
+        });
+        control.publish_selection(
+            serde_json::from_value(json!({
+                "generation": 7, "servers": {"vault": {"record": 0.25}}
+            }))
+            .unwrap(),
+        );
+
+        assert!(!control.owns_result(&thread, Some(&step), "vault", "record", true));
+        assert!(control.owns_result(&thread, None, "vault", "record", true));
+    }
+
+    #[test]
+    fn captured_child_result_policy_keeps_exact_receipt_without_python_tools() {
+        let control = McpResultControl::new("child".into(), false);
+        let thread = ExtensionData::new("child");
+        let step = ExtensionData::new("actual-parent-source");
+        let receipt = codex_extension_api::AgentProfileReceipt {
+            profile_id: "agent_B".into(),
+            epoch: 3,
+        };
+        step.insert(crate::native_interception::ProfileMcpSource {
+            result_selection: None,
+            receipt: Some(receipt.clone()),
+            policy: Some(Arc::new(
+                crate::native_interception::ProfileMcpPolicy::default(),
+            )),
+        });
+        step.insert(
+            serde_json::from_value::<Selection>(json!({
+                "generation": 5, "servers": {"vault": {"record": 0.25}}
+            }))
+            .unwrap(),
+        );
+        control.publish_selection(
+            serde_json::from_value(json!({
+                "generation": 8, "servers": {}
+            }))
+            .unwrap(),
+        );
+
+        assert!(control.owns_result(&thread, Some(&step), "vault", "record", true));
+        assert_eq!(source_profile(&thread, Some(&step)).unwrap(), Some(receipt));
+        assert_eq!(
+            source_selection(&thread, Some(&step))
+                .unwrap()
+                .1
+                .unwrap()
+                .generation,
+            5
+        );
+        let missing_selection = ExtensionData::new("missing-source");
+        missing_selection.insert(
+            (*step
+                .get::<crate::native_interception::ProfileMcpSource>()
+                .unwrap())
+            .clone(),
+        );
+        assert!(source_selection(&thread, Some(&missing_selection)).is_err());
+    }
+
     fn notice<'a>(
         nonce: u64,
         turn: &'a str,
@@ -854,9 +1311,16 @@ mod tests {
         result: &'a CallToolResult,
     ) -> Notice<'a> {
         Notice {
+            phase: None,
+            model: None,
+            route: None,
+            cell_id: None,
+            runtime_tool_call_id: None,
             tracing_context: None,
             nonce,
             generation: 0,
+            profile_id: None,
+            profile_epoch: None,
             thread_id: "root",
             incarnation: None,
             turn_id: turn,
@@ -867,7 +1331,7 @@ mod tests {
             callable_namespace: "mcp__vault",
             callable_name: "record",
             arguments,
-            result,
+            result: Some(result),
         }
     }
 
@@ -1188,6 +1652,8 @@ mod tests {
                     call_id: "old-call".into(),
                     deadline: Instant::now() + Duration::from_secs(30),
                     sender: Some(old_sender),
+                    metadata: false,
+                    is_cancelled: None,
                 },
             );
             state.pending.insert(
@@ -1197,6 +1663,8 @@ mod tests {
                     call_id: "new-call".into(),
                     deadline: Instant::now() + Duration::from_secs(30),
                     sender: Some(new_sender),
+                    metadata: false,
+                    is_cancelled: None,
                 },
             );
         }
@@ -1219,7 +1687,9 @@ mod tests {
             "new-call",
             r#"{"content":[{"type":"text","text":"safe edited result"}],"isError":false}"#,
         ));
-        let edited = new_receiver.await.unwrap().unwrap();
+        let AcceptedReply::Result(edited) = new_receiver.await.unwrap().unwrap() else {
+            panic!("expected result reply")
+        };
         let mut raw_result = withheld();
         new.assign_result(&mut raw_result, edited, false);
         assert_eq!(

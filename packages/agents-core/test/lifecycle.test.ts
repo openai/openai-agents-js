@@ -107,3 +107,36 @@ describe('AgentHooks and RunHooks', () => {
     expect(runHandoff).toHaveBeenCalledWith(context, agent, agent);
   });
 });
+
+it('keeps run-tool observations assignable without erasing context or agent types', () => {
+  type Context = { accountId: string };
+  const hooks = new RunHooks<Context>();
+  const context = { runId: 'ctx' } as unknown as RunContext<Context>;
+  const agent = { name: 'Observer' } as Agent<Context>;
+  const original = { name: 'observed' } as Tool<Context>;
+  const toolCall = { id: 'call_observation' } as protocol.ToolCallItem;
+  const seen: unknown[][] = [];
+  hooks.on('agent_tool_start', (ctx, current, observed, details) => {
+    expectTypeOf(ctx).toEqualTypeOf<RunContext<Context>>();
+    expectTypeOf(current).toEqualTypeOf<Agent<Context>>();
+    expectTypeOf(observed).toEqualTypeOf<Tool<any>>();
+    const legacyObservation: Tool = observed;
+    seen.push([ctx, current, legacyObservation, details]);
+  });
+  hooks.on('agent_tool_end', (ctx, current, observed, result, details) => {
+    expectTypeOf(ctx).toEqualTypeOf<RunContext<Context>>();
+    expectTypeOf(current).toEqualTypeOf<Agent<Context>>();
+    expectTypeOf(observed).toEqualTypeOf<Tool<any>>();
+    const legacyObservation: Tool = observed;
+    seen.push([ctx, current, legacyObservation, result, details]);
+  });
+  const details = { toolCall };
+  hooks.emit('agent_tool_start', context, agent, original, details);
+  hooks.emit('agent_tool_end', context, agent, original, 'done', details);
+  expect(seen).toEqual([
+    [context, agent, original, details],
+    [context, agent, original, 'done', details],
+  ]);
+  expect(seen[0]![2]).toBe(original);
+  expect(seen[1]![2]).toBe(original);
+});

@@ -3000,6 +3000,7 @@ describe('tool.invoke', () => {
   });
 
   it('uses timeoutErrorFunction when timeoutBehavior is error_as_result', async () => {
+    const execution = Promise.withResolvers<void>();
     const timeoutErrorFunction = vi.fn((_ctx, error: ToolTimeoutError) => {
       return `timeout:${error.toolName}:${error.timeoutMs}`;
     });
@@ -3010,19 +3011,23 @@ describe('tool.invoke', () => {
       timeoutMs: 5,
       timeoutErrorFunction,
       execute: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await execution.promise;
         return 'done';
       },
     });
 
-    const result = await invokeFunctionTool({
-      tool: t,
-      runContext: new RunContext(),
-      input: '{}',
-    });
+    try {
+      const result = await invokeFunctionTool({
+        tool: t,
+        runContext: new RunContext(),
+        input: '{}',
+      });
 
-    expect(result).toBe('timeout:slow:5');
-    expect(timeoutErrorFunction).toHaveBeenCalledTimes(1);
+      expect(result).toBe('timeout:slow:5');
+      expect(timeoutErrorFunction).toHaveBeenCalledTimes(1);
+    } finally {
+      execution.resolve();
+    }
   });
 
   it('raises ToolTimeoutError when timeoutBehavior is raise_exception', async () => {

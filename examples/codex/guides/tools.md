@@ -1,10 +1,14 @@
 # Tools and input
 
-Pass text or an inline image to the agent. Use this guide to declare tools, choose which tools a turn can call, and inspect tool arguments and results.
+Pass text, images, or files to the agent. Use this guide to declare tools, choose which tools a turn can call, and inspect tool arguments and results.
 
 ## Input, tools, and output
 
-Input is a string or a Responses-shaped user message. For images, send an inline base64 `input_image` part alongside any `input_text`. This route does not accept remote image URLs, file IDs, local paths, or nondefault image detail.
+Input is a string or a Responses-shaped user message. The current [source build](building.md) accepts `input_image` with exactly one `image_url` (HTTPS or an inline data URL) or `file_id`, plus optional `detail: 'auto' | 'low' | 'high' | 'original'`. An `input_file` has exactly one `file_id`, `file_data` (base64), or `file_url` (HTTPS), plus optional `filename`.
+
+The current provider route and issuing model must support the reference. Unsupported references and known lossy inline image-detail combinations reject before publication. Capture copies the descriptors without reading a local file or uploading it. Use provider file IDs, URLs, or bytes that your application supplies; a host path is not a file reference. Saved history preserves these descriptors and IDs.
+
+Tools can return `ToolOutput.image({ fileId: 'file-example', detail: 'high' })` or `ToolOutput.file({ file_id: 'file-example', filename: 'report.pdf' })`. Mixed results use the existing `new ToolOutput([...])` constructor with `inputText`, `inputImage`, and `inputFile` content items.
 
 ### Function tools
 
@@ -13,6 +17,34 @@ Input is a string or a Responses-shaped user message. For images, send an inline
 The default `timeoutBehavior: 'raise_exception'` fails the owning turn with `ToolTimeoutError`. The error exposes `toolName` and `timeoutSeconds`. Set `timeoutBehavior: 'error_as_result'` to let the model receive a failed textual tool result and continue. An optional `timeoutErrorFunction(context, error)` returns a string or a promise of a string. Without a formatter, the failure text names the tool and reports its callback timeout.
 
 Both modes abort the callback signal at the deadline and wait for entered callback work and cleanup to settle. A callback that ignores cancellation can therefore delay completion. Result mode runs its formatter after cleanup, using the parent tool context. Timeout results bypass the normal `result` schema and `after` hook, as local tool denial does. Formatter errors propagate normally. Parent cancellation or expired invocation authority prevents publication. With no `callbackTimeout`, the policy and formatter are inactive. A timeout never rolls back effects or makes a retry safe. See [the scripted callback timeout example](../tool-timeout-policy.ts).
+
+### Finish a turn from a function tool
+
+Set `finishTurn: true` when declaring an automatic function tool:
+
+```ts
+import { Agent, NativeProvider, tool } from '@openai/agents';
+import { z } from 'zod';
+
+await using provider = new NativeProvider();
+const finish = tool({
+  name: 'finish',
+  parameters: z.object({ summary: z.string() }),
+  finishTurn: true,
+  execute: ({ summary }) => summary,
+});
+const agent = new Agent({
+  provider,
+  instructions: 'Call finish with the final summary.',
+  tools: [finish],
+});
+const result = await agent.run('Report that the task is ready.');
+console.log(result.finalOutput, result.toolCall);
+```
+
+The flag defaults to false and is captured with the declaration. Only a successful direct function call can finish this way; a call from code-mode remains ordinary tool output. After sibling direct calls settle, native completion uses call order and publishes only after strict persistence succeeds. `Completed.toolCall` identifies the call that supplied the result. Child results remain plain text with optional call details.
+
+Terminal output must contain exactly one text item. A structured Agent output schema parses that text as JSON through the existing validation path, once. Invalid output fails the turn without a model repair request; media and multiple content items reject rather than being dropped or joined. `manualTool()` has no `finishTurn` option. See [manual tool requests](#manual-tool-requests) for its reply flow.
 
 ### Function namespaces
 

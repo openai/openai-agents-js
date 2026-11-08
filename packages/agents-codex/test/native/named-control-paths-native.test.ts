@@ -131,6 +131,8 @@ it('forces only a currently admitted MCP leaf and executes it through native MCP
       name: 'docs',
       url: `http://127.0.0.1:${address.port}`,
       tools: ['search', 'excluded'],
+      approvalMode: 'preapproved',
+      approval: () => true,
     });
     const target = remote.tool('search');
     const model = new ModelServer([
@@ -224,26 +226,36 @@ it('preserves native structured-output validation with a named leaf', async () =
   model.assertExhausted();
 }, 30_000);
 
-it('rejects a named leaf that removes required Code Mode helpers', async () => {
+it('narrows mixed Code Mode to an admitted direct named tool', async () => {
+  let effects = 0;
   const selected = tool({
     name: 'selected',
     parameters: z.object({}),
     execute: () => {
-      throw new Error('Missing helper profile executed');
+      effects++;
+      return 'selected';
     },
   });
-  const model = new ModelServer([]);
+  const model = new ModelServer([
+    [call('selected', {}, { callId: 'mixed-named' })],
+    [message('finished')],
+  ]);
   await using provider = await providerFor(model);
-  await expect(
-    new Agent({
-      model: 'fixture-unlisted-named',
-      instructions: 'Select.',
-      tools: [selected],
-      provider,
-      programmaticToolCalling: true,
-      modelSettings: { toolChoice: toolRef('selected') },
-    }).run('helper conflict'),
-  ).rejects.toThrow(/named tool choice/i);
-  expect(model.requests).toEqual([]);
+  const result = await new Agent({
+    model: 'fixture-unlisted-named',
+    instructions: 'Select.',
+    tools: [selected],
+    provider,
+    programmaticToolCalling: true,
+    modelSettings: { toolChoice: toolRef('selected') },
+  }).run('named mixed-mode target');
+  expect(result.finalOutput).toBe('finished');
+  expect(effects).toBe(1);
+  for (const request of model.requests) {
+    expect(request.tool_choice).toBe('required');
+    expect(request.tools).toEqual([
+      expect.objectContaining({ type: 'function', name: 'selected' }),
+    ]);
+  }
   model.assertExhausted();
 }, 30_000);

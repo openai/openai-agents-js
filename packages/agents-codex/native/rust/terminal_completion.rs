@@ -552,7 +552,7 @@ mod tests {
             .unwrap();
         assert_eq!(tools.current_specs().unwrap(), specs);
         assert_eq!(tools.snapshot().terminal_slots, HashSet::from([0]));
-        let child = PythonTools::descendant(&tools, "child".into(), Arc::default()).unwrap();
+        let child = PythonTools::descendant(&tools, "child".into(), Arc::default(), None).unwrap();
         assert_eq!(child.snapshot().terminal_slots, HashSet::from([0]));
         assert!(
             tools

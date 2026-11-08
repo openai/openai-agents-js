@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from './config';
+import type { JsonObject } from './binding';
 import type { ToolRef } from './tools';
 import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
@@ -544,4 +545,58 @@ function captureProviderRouting(options: NativeProviderOptions) {
   )
     config.http_headers = Object.freeze(headers);
   return { options: copied, config: Object.freeze(config) };
+}
+
+/** @internal Shared projection for Session updates and captured Agent profiles. */
+export function modelOverrides(
+  model?: string,
+  settings?: ModelSettings,
+): JsonObject {
+  const selected = captureModelSettings(settings);
+  const overrides: JsonObject = {};
+  if (selected.invocationTimeoutMs !== undefined)
+    overrides.invocation_timeout_ms = selected.invocationTimeoutMs;
+  const controls: JsonObject = {};
+  if (model !== undefined) {
+    if (typeof model !== 'string' || !model.trim())
+      throw new TypeError('model must be a nonempty string');
+    overrides.model = model;
+  }
+  if (selected.reasoningEffort !== undefined)
+    overrides.effort = selected.reasoningEffort;
+  if (selected.reasoningSummary !== undefined)
+    overrides.summary = selected.reasoningSummary;
+  if (selected.serviceTier !== undefined)
+    overrides.service_tier = selected.serviceTier;
+  const names = {
+    maxOutputTokens: 'max_output_tokens',
+    temperature: 'temperature',
+    topP: 'top_p',
+    topLogprobs: 'top_logprobs',
+    parallelToolCalls: 'parallel_tool_calls',
+    verbosity: 'verbosity',
+    metadata: 'metadata',
+    store: 'store',
+    promptCacheRetention: 'prompt_cache_retention',
+    promptCacheTtl: 'prompt_cache_ttl',
+  } as const;
+  for (const [key, wire] of Object.entries(names)) {
+    const value = selected[key as keyof typeof names];
+    if (value !== undefined) controls[wire] = value;
+  }
+  if (selected.toolChoice !== undefined) {
+    const choice = selected.toolChoice;
+    if (typeof choice === 'object' && choice !== null) {
+      overrides.tool_choice = 'required';
+      controls.named_tool_choice = {
+        name: choice.name,
+        namespace: choice.namespace ?? null,
+      };
+    } else {
+      overrides.tool_choice = choice ?? 'auto';
+      controls.named_tool_choice = null;
+    }
+  }
+  if (Object.keys(controls).length) overrides.request_controls = controls;
+  return overrides;
 }

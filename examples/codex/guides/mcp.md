@@ -168,3 +168,22 @@ The profile records managed calls and their results. Denial fails the turn befor
 Configure `onToolStart` and `onToolEnd` in the SDK `MCPServer` options before materializing tools. `selectMcpTools` captures one callback per phase and accepts a separate per-call `approval` callback. Approval must return `true` before start or invocation. Start observes detached arguments; end observes the normalized MCP envelope before projection or serialization. Returned values never replace arguments or results.
 
 Callbacks must settle or cooperate with their signal. Joined cleanup can remain pending for an uncooperative callback; cancellation fences later dispatch/output after the callback settles. End failure cannot undo a completed effect and does not replay the call. Core-owned `HttpMCP`/`StdioMCP` policies and passive events retain their existing timing. See the [complete observer example](../mcp-observers.ts).
+
+## Per-call request metadata
+
+With the current source build, an ordinary `HttpMCP` or `StdioMCP` can supply a trusted `requestMetadata` callback:
+
+```ts
+import { HttpMCP } from '@openai/agents';
+
+const catalog = new HttpMCP({
+  name: 'catalog',
+  url: 'https://mcp.example.com',
+  tools: ['lookup'],
+  requestMetadata: ({ toolName }) => ({ audit_operation: toolName }),
+});
+```
+
+The callback sees the captured call identity, submission, application context, server/tool names and effective arguments after approval, before native file-reference substitution. Return a JSON object; `null` or `undefined` supplies an empty object. Framework/private metadata keys remain reserved. The result becomes that MCP `tools/call` request's `_meta`; it does not grant tool approval or change arguments. Resource-only declarations make no tool call.
+
+The SDK captures the callback with its source declaration and checks the exact invocation again before dispatch. Cancellation or a replaced owner fences later publication. Metadata values do not become model input or saved callback state. Configure callbacks through current declarations when restoring. Apps and hosted-verification declarations do not accept this option. Use [HTTP headers](#configure-http-headers) for transport headers.

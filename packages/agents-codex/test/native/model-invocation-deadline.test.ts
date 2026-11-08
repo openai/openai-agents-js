@@ -286,8 +286,7 @@ it('expiry denies queued validators and waits for the entered callback', async (
     addon.NativeThread.prototype,
     '_check_python_tool',
   ).mockImplementation(function (this: NativeThread, raw) {
-    const value = JSON.parse(raw) as { callId: string };
-    requests.set(value.callId, { thread: this, raw });
+    requests.set(raw, { thread: this, raw });
     return original.call(this, raw);
   });
   const server = new ModelServer(
@@ -337,33 +336,37 @@ it('expiry denies queued validators and waits for the entered callback', async (
   // Hold provider terminal, not merely callback cleanup: the clock must still be active.
   // ModelServer's final output hook is below a second marker item for that purpose.
   const result = track((await session.submit('two calls')).wait());
+  let enteredValue: number;
   try {
     await body.entered.promise;
-    await vi.waitFor(() => expect(requests.has('call-0')).toBe(true));
+    enteredValue = effects[0]!;
+    expect([0, 1]).toContain(enteredValue);
+    await vi.waitFor(() => expect(requests.size).toBeGreaterThan(0));
     await vi.waitFor(
       () => {
-        const captured = requests.get('call-0')!;
-        expect(original.call(captured.thread, captured.raw)).toBe(false);
+        for (const captured of requests.values()) {
+          expect(original.call(captured.thread, captured.raw)).toBe(false);
+        }
       },
       { timeout: 10_000 },
     );
-    expect(validated).toEqual([0]);
-    expect(hooks).toEqual([0]);
-    expect(effects).toEqual([0]);
+    expect(validated).toEqual([enteredValue!]);
+    expect(hooks).toEqual([enteredValue!]);
+    expect(effects).toEqual([enteredValue!]);
     expect(result.done()).toBe(false);
   } finally {
     body.release.resolve();
     terminal.release.resolve();
   }
   await expectDeadline(result);
-  expect(validated).toEqual([0]);
-  expect(effects).toEqual([0]);
+  expect(validated).toEqual([enteredValue!]);
+  expect(effects).toEqual([enteredValue!]);
   // A settled owner can accept a new turn; its old clock and cap are retired.
   await session.update({ modelSettings: { invocationTimeoutMs: null } });
   const next = await (await session.submit('again')).wait();
   expect(next.finalOutput).toBe('reused');
-  expect(validated).toEqual([0, 2]);
-  expect(effects).toEqual([0, 2]);
+  expect(validated).toEqual([enteredValue!, 2]);
+  expect(effects).toEqual([enteredValue!, 2]);
   expect(server.requests).toHaveLength(3);
 });
 
@@ -726,7 +729,7 @@ it('expires an actual WS response read without HTTP fallback', async () => {
 it('preserves a prior non-retryable provider failure', async () => {
   const server = new ModelServer([
     {
-      status: 401,
+      status: 400,
       body: JSON.stringify({
         error: {
           message: 'synthetic credentials rejected',
@@ -863,4 +866,58 @@ it('starts the clock after initial user-history durability, before model transpo
     history.release.resolve();
     transport.release.resolve();
   }
+});
+
+it('keeps the first invocation clock through second-attempt preparation', async () => {
+  const preparation = gate();
+  let attempts = 0;
+  const server = new ModelServer([
+    {
+      status: 429,
+      headers: { 'retry-after': '0' },
+      body: JSON.stringify({ error: { message: 'retry', code: 'rate_limit' } }),
+    },
+    [message('must-not-dispatch-after-preparation')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.1-codex',
+    instructions: 'Answer.',
+    provider,
+    tools: [
+      tool({
+        name: 'unused',
+        parameters: z.object({}),
+        execute: () => {
+          throw new Error('No tool was requested');
+        },
+      }),
+    ],
+    modelSettings: { invocationTimeoutMs: MODEL_MS },
+  }).session();
+  const turn = await session.submit('one', {
+    prepareRequest: async () => {
+      attempts += 1;
+      if (attempts === 2) {
+        preparation.entered.resolve();
+        await preparation.release.promise;
+      }
+      return undefined;
+    },
+  });
+  const result = track(turn.wait());
+  try {
+    await Promise.race([
+      preparation.entered.promise,
+      result.outcome.then(({ error }) => {
+        throw error ?? new Error('Invocation ended before second preparation');
+      }),
+    ]);
+    await delay(MODEL_MS + 300);
+  } finally {
+    preparation.release.resolve();
+  }
+  await expectDeadline(result);
+  expect(attempts).toBe(2);
+  expect(server.requests).toHaveLength(1);
 });

@@ -302,6 +302,7 @@ it.each([{ resume: 'existing' }, { state: {} }])(
 it.each([
   { file_id: 'file-seed', filename: 'report.pdf' },
   { file_data: 'data:text/plain;base64,YQ==', filename: 'note.txt' },
+  { file_data: 'data:text/plain;base64,YQ==', filename: '' },
   { file_url: 'https://example.invalid/report.pdf', filename: 'report.pdf' },
 ])(
   'retains opaque file seed source %j across portable restore',

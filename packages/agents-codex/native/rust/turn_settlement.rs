@@ -1,5 +1,6 @@
 //! Track exact native turn admission and bounded retries after raw terminal delivery.
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -833,8 +834,72 @@ pub(crate) async fn start<'a>(
     state: &'a crate::engine::ThreadState,
     mutation: &mut Option<MutexGuard<'a, ()>>,
     request: TurnInputRequest,
-    mut init: ExtensionDataInit,
+    init: ExtensionDataInit,
 ) -> anyhow::Result<StartIfIdleSubmission> {
+    start_with(state, mutation, init, |init| {
+        state
+            .thread
+            .start_turn_if_idle(WithTurnExtensionData::new(request.clone(), init))
+    })
+    .await
+}
+
+pub(crate) async fn start_realtime<'a>(
+    state: &'a crate::engine::ThreadState,
+    mutation: &mut Option<MutexGuard<'a, ()>>,
+    generation: String,
+    response_id: String,
+    call_ids: Vec<String>,
+    trace: Option<codex_protocol::protocol::W3cTraceContext>,
+    init: ExtensionDataInit,
+) -> anyhow::Result<StartIfIdleSubmission> {
+    start_with(state, mutation, init, |init| {
+        let generation = generation.clone();
+        let response_id = response_id.clone();
+        let call_ids = call_ids.clone();
+        let trace = trace.clone();
+        async move {
+            Ok(
+                match state
+                    .thread
+                    .start_realtime_tools_if_idle(
+                        generation,
+                        response_id,
+                        call_ids,
+                        WithTurnExtensionData::new(
+                            codex_protocol::protocol::ThreadSettingsOverrides::default(),
+                            init,
+                        ),
+                        trace,
+                    )
+                    .await?
+                {
+                    TurnInputSubmission::Started { turn_id } => {
+                        StartIfIdleSubmission::Started { turn_id }
+                    }
+                    TurnInputSubmission::NotSubmitted { reason } => {
+                        StartIfIdleSubmission::NotSubmitted { reason }
+                    }
+                    TurnInputSubmission::Steered { .. } => {
+                        unreachable!("Realtime tools cannot steer")
+                    }
+                },
+            )
+        }
+    })
+    .await
+}
+
+async fn start_with<'a, F, Fut>(
+    state: &'a crate::engine::ThreadState,
+    mutation: &mut Option<MutexGuard<'a, ()>>,
+    mut init: ExtensionDataInit,
+    submit: F,
+) -> anyhow::Result<StartIfIdleSubmission>
+where
+    F: Fn(ExtensionDataInit) -> Fut,
+    Fut: Future<Output = codex_protocol::error::Result<StartIfIdleSubmission>>,
+{
     let settlement = state
         .thread
         .thread_extension_data()
@@ -845,10 +910,7 @@ pub(crate) async fn start<'a>(
     let expected = settlement.completed();
     let seed = Arc::new(Seed::default());
     init.insert(seed.clone());
-    let mut result = state
-        .thread
-        .start_turn_if_idle(WithTurnExtensionData::new(request.clone(), init.clone()))
-        .await?;
+    let mut result = submit(init.clone()).await?;
     let deadline = Instant::now() + SETTLEMENT_GRACE;
     loop {
         if let StartIfIdleSubmission::Started { turn_id } = &result {
@@ -883,10 +945,7 @@ pub(crate) async fn start<'a>(
         {
             return Ok(result);
         }
-        result = state
-            .thread
-            .start_turn_if_idle(WithTurnExtensionData::new(request.clone(), init.clone()))
-            .await?;
+        result = submit(init.clone()).await?;
     }
 }
 

@@ -40,6 +40,23 @@ The disposal scope closes the Session before its provider. The provider can serv
 
 Use `turn.wait()` to follow the captured turn and preserve its result type. `session.wait()` remains a shortcut for default-output roots.
 
+### Seed settled conversation history
+
+On a fresh Session, pass ordered user/assistant messages through `initialMessages`:
+
+```ts
+await using session = await agent.session({
+  initialMessages: [
+    { role: 'user', content: 'Use UTC for times.' },
+    { role: 'assistant', content: 'I will use UTC.' },
+  ],
+});
+const turn = await session.submit('What time zone are we using?');
+console.log((await turn.wait()).finalOutput);
+```
+
+Opening validates and records the entire batch without requesting a model response. User messages can include the [image and file parts](tools.md#input-tools-and-output) accepted by ordinary input; assistant messages contain settled text. Tool history and other roles reject. `agent.run()` accepts the same option. Choose either initial history or `state`/resume; they cannot be combined. Restore retains the recorded items without seeding them again.
+
 ### Choose a cancellation lifetime
 
 Use the signal or control that owns the work you want to stop:

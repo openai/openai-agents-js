@@ -37,7 +37,11 @@ impl Provider {
         Self::start_scripted(None, Some(Arc::new(items))).await
     }
     async fn start_scripted(
-        hold: Option<(usize, Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>)>,
+        hold: Option<(
+            usize,
+            Arc<tokio::sync::Semaphore>,
+            Arc<tokio::sync::Semaphore>,
+        )>,
         items: Option<Arc<Vec<Value>>>,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -262,17 +266,27 @@ async fn native_local_json_rejects_unsupported_authority_and_keeps_checkpoints_i
     let work = tempfile::tempdir().unwrap();
     let mut ephemeral = runtime(work.path(), profile.path());
     ephemeral["ephemeral"] = json!(true);
-    let error = create_engine(provider.config().to_string(), ephemeral.to_string(), None, None)
-        .await
-        .err()
-        .unwrap();
+    let error = create_engine(
+        provider.config().to_string(),
+        ephemeral.to_string(),
+        None,
+        None,
+    )
+    .await
+    .err()
+    .unwrap();
     assert!(error.reason.contains("persistent"), "{}", error.reason);
     let mut conflicting = runtime(work.path(), profile.path());
     conflicting["native_goal_store"] = json!(work.path());
-    let error = create_engine(provider.config().to_string(), conflicting.to_string(), None, None)
-        .await
-        .err()
-        .unwrap();
+    let error = create_engine(
+        provider.config().to_string(),
+        conflicting.to_string(),
+        None,
+        None,
+    )
+    .await
+    .err()
+    .unwrap();
     assert!(error.reason.contains("must agree"), "{}", error.reason);
     let mut agents = provider.config();
     agents["agents.enabled"] = json!(true);

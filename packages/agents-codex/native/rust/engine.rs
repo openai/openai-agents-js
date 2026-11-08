@@ -711,10 +711,21 @@ impl EngineState {
                 local_resume_admission = Some(admission);
             } else {
                 if instructions.managed() {
-                    if let Some(accepted) = crate::application_instructions::validate(
-                        &history.history,
-                        &instructions.text()?.unwrap_or_default(),
-                    )? {
+                    let accepted = if let Some(opening) = startup
+                        .thread_extension_init
+                        .get::<crate::agent_profiles::OpeningProfiles>(
+                    ) {
+                        Some(crate::agent_profiles::validate_restored(
+                            &opening,
+                            &history.history,
+                        )?)
+                    } else {
+                        crate::application_instructions::validate(
+                            &history.history,
+                            &instructions.text()?.unwrap_or_default(),
+                        )?
+                    };
+                    if let Some(accepted) = accepted {
                         instructions.confirm(accepted)?;
                     }
                 }
@@ -829,17 +840,25 @@ impl EngineState {
             && instructions.accepted().is_none()
         {
             let current = instructions.text()?.unwrap_or_default();
+            let opening = startup
+                .thread_extension_init
+                .get::<crate::agent_profiles::OpeningProfiles>();
+            let validate = |history: &[RolloutItem]| {
+                if let Some(opening) = &opening {
+                    crate::agent_profiles::validate_restored(opening, history).map(Some)
+                } else {
+                    crate::application_instructions::validate(history, &current)
+                }
+            };
             let accepted = match &startup.initial_history {
-                InitialHistory::Resumed(history) => {
-                    crate::application_instructions::validate(&history.history, &current)?
-                }
-                InitialHistory::Forked(history) => {
-                    crate::application_instructions::validate(history, &current)?
-                }
+                InitialHistory::Resumed(history) => validate(&history.history)?,
+                InitialHistory::Forked(history) => validate(history)?,
                 _ => None,
             };
             if let Some(accepted) = accepted {
-                if let InitialHistory::Forked(history) = &mut startup.initial_history {
+                if opening.is_none()
+                    && let InitialHistory::Forked(history) = &mut startup.initial_history
+                {
                     let root = history.iter().find_map(|row| match row {
                         RolloutItem::SessionMeta(header) => Some(header.meta.id),
                         _ => None,
@@ -910,7 +929,12 @@ impl EngineState {
             let _mutation = state.mutations.lock().await;
             if let Some(item) = initial_receipt {
                 crate::application_instructions::publish_item(&state.thread, item).await?;
-            } else {
+            } else if state
+                .thread
+                .thread_extension_data()
+                .get::<crate::agent_profiles::OpeningProfiles>()
+                .is_none()
+            {
                 crate::application_instructions::publish_if_ready(&state.thread, false).await?;
             }
         }
@@ -1034,15 +1058,25 @@ impl EngineState {
         );
         let mut metadata = crate::checkpoint::ForkMetadata::capture(&captured, source.id)?;
         source.check_fork_liveness().await?;
-        let specs = source
-            .thread
-            .thread_extension_data()
-            .get::<crate::python_tools::PythonTools>()
-            .context("fork requires current managed tools")?
-            .current_specs()?;
+        let specs = if let Some(specs) = crate::agent_profiles::active_specs(&source.thread).await?
+        {
+            specs
+        } else {
+            source
+                .thread
+                .thread_extension_data()
+                .get::<crate::python_tools::PythonTools>()
+                .context("fork requires current managed tools")?
+                .current_specs()?
+        };
+        let (profiles, files) = crate::agent_profiles::opening(&source.thread)
+            .map(|(profiles, files)| (Some(profiles), files))
+            .unwrap_or_default();
         let options: options::ThreadOptions = serde_json::from_value(serde_json::json!({
             "_managed_instructions": source.instructions.managed(),
             "instructions": source.instructions.text()?,
+            "_agent_profiles": profiles,
+            "_sdk_instruction_files": files,
         }))?;
         let (mut startup, instructions) = self.build_startup(options).await?;
         if let Some(accepted) = source.instructions.accepted() {
@@ -1618,7 +1652,7 @@ impl EngineState {
             // The caller separately owns and rechecks publication authority.
             for image in low_images {
                 codex_core::validate_inline_image_detail(
-                    image,
+                    &codex_protocol::models::ImageReference::from((*image).clone()),
                     Some(ImageDetail::Low),
                     media.inline_data_url_low_detail_supported,
                 )
@@ -1675,8 +1709,12 @@ impl EngineState {
             .unwrap_or_default();
         let low_supported = codex_core::inline_data_url_low_detail_supported(&config, &info);
         for image in low_images {
-            codex_core::validate_inline_image_detail(image, Some(ImageDetail::Low), low_supported)
-                .map_err(anyhow::Error::msg)?;
+            codex_core::validate_inline_image_detail(
+                &codex_protocol::models::ImageReference::from((*image).clone()),
+                Some(ImageDetail::Low),
+                low_supported,
+            )
+            .map_err(anyhow::Error::msg)?;
         }
         for file in files {
             file.validate_for_model(profile, &info)
@@ -2410,12 +2448,24 @@ async fn read_child(
     ((id, reader.instance), event, terminal_error, question)
 }
 
+fn retired_realtime_output(event: &Event) -> bool {
+    matches!(&event.msg, EventMsg::RealtimeConversationRealtime(realtime)
+        if realtime.payload.is_output_retired())
+}
+
 fn native_event(
     source: Option<(ThreadId, u64)>,
     event: &Event,
 ) -> anyhow::Result<serde_json::Value> {
     let mut value = serde_json::to_value(event)?;
     crate::usage::event_to_wire(&mut value["msg"])?;
+    if let EventMsg::RealtimeConversationRealtime(realtime) = &event.msg
+        && let codex_protocol::protocol::RealtimeEvent::HandoffRequested(handoff) =
+            &realtime.payload
+        && let Some(input) = codex_core::prepare_realtime_delegation_input(handoff)
+    {
+        value["msg"]["_sdk_native_input"] = serde_json::json!(input);
+    }
     if let Some((id, instance)) = source {
         value["subagent_id"] = serde_json::json!(id);
         value["subagent_instance_id"] = serde_json::json!(instance);
@@ -3300,6 +3350,9 @@ impl ThreadState {
                 return graph_event(event);
             }
             if let Some((source, event)) = events.pending.pop_front() {
+                if retired_realtime_output(&event) {
+                    continue;
+                }
                 return self.child_event(source, event, None, None);
             }
             if let Some(prefix) = &events.publication_prefix {
@@ -3410,6 +3463,7 @@ impl ThreadState {
                     events.native_dequeued.store(false, Ordering::Release);
                     events.native = Some(next_native_event(self.thread.clone(), events.native_dequeued.clone()));
                     let (event, question) = event?;
+                    if retired_realtime_output(&event) { continue; }
                     if let Some(tools) = &python_tools {
                         tools.observe_manual_event(&event);
                     }
@@ -3441,6 +3495,7 @@ impl ThreadState {
                     if let Some(prefix) = &mut events.publication_prefix {
                         prefix.consume_child(source)?;
                     }
+                    if retired_realtime_output(&event) { continue; }
                     return self.child_event(source, event, error, question);
                 },
                 Some(event) = graph.recv(), if !bounded => {
@@ -3461,6 +3516,7 @@ impl ThreadState {
                             .context("Native publication extension prefix was exhausted")?;
                     }
                     let (target, event) = event?;
+                    if retired_realtime_output(&event) { continue; }
                     if target.is_empty() || target == self.id.to_string() {
                         return self.root_event(event, None);
                     }

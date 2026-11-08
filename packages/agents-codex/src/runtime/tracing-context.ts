@@ -57,7 +57,12 @@ export class TraceSpan {
     this.native.release_trace_context(token);
   }
   end(
-    outcome: { status?: 'ok' | 'error' | 'cancelled'; category?: string } = {},
+    outcome: {
+      status?: 'ok' | 'error' | 'cancelled';
+      category?: string;
+      /** Optional payload; native privacy restrictions and size limits apply. */
+      data?: Readonly<Record<string, import('./binding').JsonValue>>;
+    } = {},
   ): void {
     if (this.ended) return;
     this.native.end_trace_span(
@@ -65,7 +70,7 @@ export class TraceSpan {
       JSON.stringify({
         status: outcome.status ?? 'ok',
         category: outcome.category ?? null,
-        data: {},
+        data: outcome.data ?? {},
       }),
     );
     this.ended = true;

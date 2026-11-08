@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { createServer, type IncomingHttpHeaders } from 'node:http';
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+} from 'node:http';
+import type { Duplex } from 'node:stream';
 import type { JsonObject, JsonValue } from '../../../src/runtime/binding';
 import type { NativeConfig } from '../../../src/runtime/config';
 
@@ -140,6 +145,13 @@ export class ModelServer {
       this.server.listen(0, '127.0.0.1', resolve);
     });
     servers.push(this);
+  }
+
+  /** Attach an independent provider WebSocket protocol to the same test origin. */
+  onUpgrade(
+    listener: (request: IncomingMessage, socket: Duplex, head: Buffer) => void,
+  ): void {
+    this.server.on('upgrade', listener);
   }
 
   async config(): Promise<NativeConfig> {

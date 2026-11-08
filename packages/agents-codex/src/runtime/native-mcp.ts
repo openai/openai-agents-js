@@ -13,6 +13,11 @@ export const nativeMcpResultInfoSchema = z.object({
   callable_namespace: z.string(),
   callable_name: z.string(),
   arguments: jsonObject,
-  result: losslessJsonObjectSchema,
+  result: losslessJsonObjectSchema.optional(),
+  phase: z.literal('metadata').optional(),
+  route: z.enum(['direct', 'code']).optional(),
+  model: z.string().optional(),
+  cell_id: z.string().optional(),
+  runtime_tool_call_id: z.string().optional(),
 });
 export type NativeMcpResultInfo = z.infer<typeof nativeMcpResultInfoSchema>;
