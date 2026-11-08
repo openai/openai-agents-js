@@ -16,90 +16,147 @@ Changing a v0 root import to a v1 root import changes the runtime. Port declarat
 
 Classic is available and is not deprecated now. The lifecycle plan is to deprecate classic in a future v1 minor release and remove it in v2. No date is set. Prefer a direct native migration so you avoid an intermediate import migration and a second runtime migration.
 
-## Preflight: port, redesign, or keep the workflow
+## 1. Install a matching build
 
-Choose a destination for each complete workflow before changing imports:
+Use Node.js 24 and follow the [installation requirements](installation.md#requirements). Build the SDK and examples from the same committed checkout using [Build from source](building.md#build-from-source). For an external application, use that checkout's [five-package bundle](building.md#build-a-local-bundle-for-an-application). Keep its source commit, build record, and lockfile together. The older four-package preview starter belongs with its included example.
 
-| Decision | Check |
-| --- | --- |
-| Port to native | Required tools, output validation, Responses provider, Node.js 24 host, and native helper assets are available. Port declarations and execution together. |
-| Redesign before porting | Dynamic instructions, guardrails, approval ownership, handoffs, next-turn routing, or external effects need an application-owned native equivalent. Record and test that equivalent first. |
-| Stay on v0 or use classic temporarily | A required custom Model, Realtime integration, active conversation, or durable state still depends on its current runtime. Keep that workflow and its state there until the native path is validated. |
+## 2. Port one read-only lookup
 
-Build the SDK and examples from the same clean, committed source checkout using [Build from source](building.md#build-from-source). For an external application, use that checkout's [five-package bundle](building.md#build-a-local-bundle-for-an-application). Its producer requires committed source; record the source commit and keep its build record. The older four-package preview starter belongs with its included example, not the current-source migration code.
+The [small example](../migration/README.md) looks up an order for the current customer and returns a typed answer. It has one Agent and one read-only tool. Compare the complete [released-v0 implementation](../migration/v0/app.mts) with the complete [native implementation](../migration/native.ts). The example's offline checks exercise the real released v0 SDK and the current native runtime with scripted model responses.
 
-The [tested order-support migration](../migration/README.md) provides explicit released-v0, current-classic, and native implementations. It covers typed context and output, permitted and denied effects, application-owned routing, two-turn history, actual v0 state continued on classic, and a fresh native conversation with native checkpoint restore. Run its released-v0 qualification separately so a workspace import cannot silently substitute the native runtime.
+The snippets below make live model requests when you run them; they need `OPENAI_API_KEY`. Use the [offline checks](../migration/README.md#check-the-lookup-offline) to try the example without a model key.
 
-## 1. Record the workflow's behavior
-
-Before editing, run the application's existing checks and save representative inputs and expected outcomes. Inventory:
-
-- Agents, dynamic instructions, application context, and custom Model or ModelProvider implementations.
-- Function schemas, hosted tools, MCP servers, tool approvals, guardrails, handoffs, and Agent tools.
-- Streaming consumers, cancellation, deadlines, retries, errors, tracing, and resource cleanup.
-- Session stores, serialized RunState, pending approvals, and external effects whose outcomes must survive a restart.
-
-For each item, choose a native equivalent or record the application change it needs. Preserve business behavior, permissions, and validation requirements. Matching method names alone does not establish equivalent behavior.
-
-Check Node.js 24, platform support, the native addon, and helper assets using the [installation requirements](installation.md#requirements). Install Zod 4 for native function schemas. Keep credentials in the server environment. Verify that the selected provider supports Responses and that the selected model supports the tools and output mode you need.
-
-## 2. Port one complete workflow
-
-In v0, a Runner owns execution:
+Both implementations receive this application context and return the same fields:
 
 ```ts
-import { Agent, Runner, tool } from '@openai/agents';
+interface SupportContext {
+  customerId: string;
+  orders: readonly {
+    customerId: string;
+    orderId: string;
+    status: string;
+    tracking: string;
+  }[];
+}
+
+const context: SupportContext = {
+  customerId: 'CUSTOMER-7',
+  orders: [
+    {
+      customerId: 'CUSTOMER-7',
+      orderId: 'ORDER-42',
+      status: 'shipped',
+      tracking: 'TRACK-42',
+    },
+  ],
+};
+```
+
+Application context stays outside model-visible input. The tool checks customer ownership and returns only the order fields that the model needs.
+
+### Before: released v0
+
+The following declarations use `@openai/agents@0.21.0`. Combine them with the context above in a separate ES module. The [v0 application](../migration/v0/app.mts) packages this code as a function so tests can supply a scripted Model. Keep v0 imports outside the native workspace.
+
+```ts
+import { Agent, Runner, tool, type RunContext } from '@openai/agents';
 import { z } from 'zod';
 
-const greeting = tool({
-  name: 'greeting',
-  description: 'Greet someone by name.',
-  parameters: z.object({ name: z.string() }),
-  execute: ({ name }) => `Hello, ${name}!`,
+const answerSchema = z.object({
+  orderId: z.string(),
+  status: z.string(),
+  tracking: z.string(),
 });
-const agent = new Agent({
-  name: 'Assistant',
-  instructions: 'Use greeting, then repeat its result.',
-  tools: [greeting],
+const lookupOrder = tool({
+  name: 'lookup_order',
+  description: 'Read an order owned by the current customer.',
+  parameters: z.object({ orderId: z.string() }),
+  execute: ({ orderId }, run?: RunContext<SupportContext>) => {
+    const order = run!.context.orders.find(
+      (order) =>
+        order.orderId === orderId &&
+        order.customerId === run!.context.customerId,
+    );
+    if (!order) throw new Error('Order is unavailable to this customer');
+    return {
+      orderId: order.orderId,
+      status: order.status,
+      tracking: order.tracking,
+    };
+  },
 });
-const result = await new Runner().run(agent, 'Greet Ada.');
+const agent = new Agent<SupportContext, typeof answerSchema>({
+  name: 'Order support',
+  instructions:
+    'Look up ORDER-42 and return its orderId, status, and tracking.',
+  tools: [lookupOrder],
+  outputType: answerSchema,
+});
+const result = await new Runner().run(agent, 'Where is ORDER-42?', { context });
 console.log(result.finalOutput);
 ```
 
-For native v1, declare native tools and run the native Agent directly. Run these examples in an ES module with top-level await, or put the calls inside an async function. The native example needs a matching build and `OPENAI_API_KEY` for a live run:
+### After: native v1
+
+Port declarations and execution together. Native tools receive `ToolContext`; native structured output uses a strict schema and an output mode. Run the Agent directly, with the same context above:
 
 ```ts
-import { Agent, NativeProvider, tool } from '@openai/agents';
+import { Agent, NativeProvider, tool, type ToolContext } from '@openai/agents';
 import { z } from 'zod';
 
 await using provider = new NativeProvider();
-const greeting = tool({
-  name: 'greeting',
-  description: 'Greet someone by name.',
-  parameters: z.strictObject({ name: z.string() }),
-  execute: ({ name }) => `Hello, ${name}!`,
+const answerSchema = z.strictObject({
+  orderId: z.string(),
+  status: z.string(),
+  tracking: z.string(),
 });
-const agent = new Agent({
-  name: 'Assistant',
-  instructions: 'Use greeting, then repeat its result.',
-  tools: [greeting],
+const lookupOrder = tool({
+  name: 'lookup_order',
+  description: 'Read an order owned by the current customer.',
+  parameters: z.strictObject({ orderId: z.string() }),
+  execute: ({ orderId }, { context }: ToolContext<SupportContext>) => {
+    const order = context.orders.find(
+      (order) =>
+        order.orderId === orderId && order.customerId === context.customerId,
+    );
+    if (!order) throw new Error('Order is unavailable to this customer');
+    return {
+      orderId: order.orderId,
+      status: order.status,
+      tracking: order.tracking,
+    };
+  },
+});
+const agent = new Agent<SupportContext, z.infer<typeof answerSchema>>({
+  name: 'Order support',
   provider,
+  model: 'gpt-4.1-mini',
+  instructions:
+    'Look up ORDER-42 and return its orderId, status, and tracking.',
+  tools: [lookupOrder],
+  outputType: { mode: 'native', schema: answerSchema },
 });
-const result = await agent.run('Greet Ada.');
+const result = await agent.run('Where is ORDER-42?', { context });
 console.log(result.finalOutput);
 ```
 
-`agent.run()` closes its Session before returning. The explicitly supplied provider is shared configuration and has its own lifetime; this example disposes it after the run. For a conversation, open a Session, await each submission, and keep its Turn:
+Use an ES module with top-level await, or place the calls in an async function. A live run needs `OPENAI_API_KEY`. The expected answer contains `ORDER-42`, `shipped`, and `TRACK-42`; model output can vary. The [offline checks](../migration/README.md#check-the-lookup-offline) validate the typed answer and customer-scoped tool result without a model key.
+
+`agent.run()` closes its Session before returning. The supplied provider has a separate lifetime; `await using` disposes it after the run. For multiple user turns, use one live Session and wait for each Turn. See [Agents and sessions](sessions.md).
+
+### Optional: change imports before porting
+
+If a concrete dependency blocks the direct port, first change the v0 imports to classic:
 
 ```ts
-await using session = await agent.session();
-const first = await session.submit('Greet Ada.');
-console.log((await first.wait()).finalOutput);
-const second = await session.submit('Now greet Grace.');
-console.log((await second.wait()).finalOutput);
+import { Agent, Runner, tool, type RunContext } from '@openai/agents/classic';
 ```
 
-This fragment reuses the native Agent and provider above. Keep it inside the provider's lifetime. Close all its Sessions before disposing the provider. Reusing an Agent alone does not preserve conversation history. See [Agents and sessions](sessions.md).
+Keep the v0 declarations and Runner calls. The [small classic example](../migration/classic.ts) exercises this intermediate step. When the dependency is ready, apply the same native port above. Classic is not required for the direct migration.
+
+## 3. Check the application contracts
+
+For the small lookup, verify the answer fields, lookup arguments, customer ownership, and cleanup. Add checks for the application's other contracts before porting a larger workflow. Keep a workflow on v0 or classic while a required custom Model, Realtime integration, active conversation, or durable state depends on that runtime.
 
 ### Port the contracts that affect behavior
 
@@ -122,7 +179,7 @@ Use the guides for [tools](tools.md), [output](output.md), [interactions](intera
 
 Independent integrations remain available. For example, native `selectMcpTools` can expose a selected classic MCP client through native tools; it does not run a classic Agent or convert its state. See [selected MCP clients](mcp.md#materialize-a-borrowed-sdk-mcp-namespace). The [sandbox environment](storage-mounts.md) also has its own connection and ownership contract. Realtime workflows can continue through the [classic Realtime imports](../../../packages/agents/CLASSIC.md#retained-classic-apis) while you assess their destination separately.
 
-## 3. Choose where existing conversations finish
+### Keep existing conversations on their runtime
 
 Keep active v0 or v1 classic runs, pending approvals, and serialized RunState on their original runtime until they settle. Keep the original Agent and tool graph needed to resume them. Native `SessionState` cannot restore a classic RunState, and changing imports does not convert a classic Session store.
 
@@ -132,7 +189,7 @@ Choose native [state and storage](state.md) for new work. Test checkpoint restor
 
 ## 4. Validate and cut over
 
-A frontier coding agent can confidently carry out this migration using the instructions here, the application's source, and concrete validation. Give the agent a complete workflow and acceptance criteria. Review the resulting changes and evidence before routing production work to the new runtime.
+Give a coding agent one complete workflow, the application's source, and acceptance criteria. Review its changes and validation evidence before routing production work to the new runtime.
 
 Use this prompt in your application checkout:
 
@@ -170,14 +227,8 @@ Before cutover, verify the following with representative application cases:
 
 Start native traffic only after these checks pass. If you roll back, route new work to the tested prior v0 or v1 classic deployment, as appropriate. Leave native conversations with a worker that understands their native state. A code rollback does not convert native checkpoints into classic RunState.
 
-## Use classic for a staged migration
+## Optional advanced example
 
-When a concrete dependency blocks the direct port, move that workflow's imports together:
+The [stateful order-support example](../migration/advanced/README.md) adds permitted and denied notifications, application-owned routing, two-turn history, actual released-v0 state continued on classic, reviewed-fact cutover, and native checkpoint restore. These scenarios are independent of the read-only walkthrough. Its checks preserve the runtime and state boundaries described above.
 
-```ts
-import { Agent, Runner, tool } from '@openai/agents/classic';
-```
-
-Use `@openai/agents/classic/realtime` for retained Realtime APIs, with the corresponding classic testing, sandbox, and utility subpaths where needed. Continue using the classic Runner and its original contracts. Verify saved state with the installed build and keep classic objects out of native execution. The [classic guide](../../../packages/agents/CLASSIC.md) lists the retained imports and branch-specific additions.
-
-Record why classic is needed and what will unblock the native port. Each independent workflow can move when its native implementation and validation are complete; importing classic does not switch other workflows away from native.
+For retained Realtime APIs, use `@openai/agents/classic/realtime`. The [classic guide](../../../packages/agents/CLASSIC.md) lists the corresponding testing, sandbox, and utility imports. Record what blocks the native port and keep each workflow's objects and state with its runtime.

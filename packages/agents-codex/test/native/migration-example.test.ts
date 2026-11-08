@@ -12,19 +12,76 @@ import {
   applicationContext,
   reviewedFacts,
   routeSupport,
-} from '../../../../examples/codex/migration/business';
+} from '../../../../examples/codex/migration/advanced/business';
 import {
   classicSupport,
   continueClassic,
   runClassicExample,
-} from '../../../../examples/codex/migration/classic';
+} from '../../../../examples/codex/migration/advanced/classic';
 import {
   startNativeFromReviewedFacts,
   runNativeExample,
-} from '../../../../examples/codex/migration/native';
+} from '../../../../examples/codex/migration/advanced/native';
+
+import { runClassicLookup } from '../../../../examples/codex/migration/classic';
+import { runNativeLookup } from '../../../../examples/codex/migration/native';
 
 const lookup = { orderId: 'ORDER-42' };
 const final = JSON.stringify(answer);
+
+// Use a conflicting order first so the lookup must consult typed customer context.
+const lookupContext = {
+  customerId: 'CUSTOMER-7',
+  orders: [
+    {
+      customerId: 'CUSTOMER-8',
+      orderId: 'ORDER-42',
+      status: 'private',
+      tracking: 'PRIVATE',
+    },
+    {
+      customerId: 'CUSTOMER-7',
+      orderId: 'ORDER-42',
+      status: 'shipped',
+      tracking: 'TRACK-42',
+    },
+  ],
+};
+const lookupAnswer = {
+  orderId: 'ORDER-42',
+  status: 'shipped',
+  tracking: 'TRACK-42',
+};
+
+it('the optional classic import step preserves the read-only typed lookup', async () => {
+  const model = new ScriptedModel([
+    [functionCall('lookup_order', lookup, { callId: 'lookup' })],
+    [assistantMessage(JSON.stringify(lookupAnswer))],
+  ]);
+  expect(await runClassicLookup(model, lookupContext)).toEqual(lookupAnswer);
+  expect(JSON.stringify(model.calls[1].request.input)).toContain('TRACK-42');
+  expect(JSON.stringify(model.calls[1].request.input)).not.toContain('PRIVATE');
+  model.assertComplete();
+});
+
+it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
+  'the native walkthrough reads only the current customer order and returns typed output',
+  async () => {
+    await withScriptedResponses(
+      [
+        [toolCall('lookup_order', lookup, { callId: 'lookup' })],
+        [text(JSON.stringify(lookupAnswer))],
+      ],
+      async (peer) => {
+        expect(await runNativeLookup(peer.provider, lookupContext)).toEqual(
+          lookupAnswer,
+        );
+        expect(JSON.parse(peer.toolOutput('lookup')!)).toEqual(lookupAnswer);
+        expect(JSON.stringify(peer.requests)).not.toContain('PRIVATE');
+      },
+    );
+  },
+);
 
 it('keeps next-turn routing in the application', () => {
   expect(routeSupport('shipping')).toBe('order-support');

@@ -5,7 +5,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node app.mts"
+    "test": "node test.mts"
   },
   "dependencies": {
     "@openai/agents": "0.21.0",
