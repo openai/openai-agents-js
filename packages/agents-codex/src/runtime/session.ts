@@ -1053,7 +1053,10 @@ export class Session<OutputT = string, Context = unknown> {
   /**
    * Build the call-accept request body for an inbound SIP call using the captured
    * Agent instructions, tools, and handoffs. Send it to the Realtime calls accept
-   * endpoint, then attach with `realtime({ transport: { type: 'sip', callId } })`.
+   * endpoint, then attach with
+   * `realtime({ ...options, transport: { type: 'sip', callId } })` using the same
+   * model, voice, instructions, settings, and tool selection. The builder saves
+   * no configuration for a later attachment.
    * This prepares Session-owned MCP tools just as connecting does, but does not
    * connect media or resolve voice credentials.
    */
