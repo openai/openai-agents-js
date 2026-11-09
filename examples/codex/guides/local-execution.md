@@ -16,13 +16,14 @@ Commands start with a system `PATH` and a fresh environment rather than inheriti
 
 ## Inspect a read-only workspace
 
-This option is available in current source builds and is intended for a forthcoming preview. The older `0.22.0-alpha.2` preview referenced above does not include it.
+This option is available in current source builds. The `0.22.0-alpha.2` release does not include it.
 
-Set `readOnly: true` to let native commands read the workspace while denying changes to its files. Select command tools explicitly; the default tool list is empty. Replace `/jobs/worker/work` with an existing absolute workspace outside the SDK installation. Configure your model-provider credentials before running this example, which makes a model call.
+Set `readOnly: true` to let native commands read the workspace while denying changes to its files. Select command tools explicitly; the default tool list is empty. Replace `/jobs/worker/work` with an existing absolute workspace outside the SDK installation. That workspace must contain the `README.md` file you want summarized. Configure your model-provider credentials before running this example, which makes a model call.
 
 ```typescript
-import { Agent, Environment } from '@openai/agents';
+import { Agent, Environment, NativeProvider } from '@openai/agents';
 
+await using provider = new NativeProvider();
 const environment = Environment.local({
   cwd: '/jobs/worker/work',
   tools: ['exec_command'],
@@ -31,11 +32,14 @@ const environment = Environment.local({
 const agent = new Agent({
   model: 'gpt-5.5',
   instructions: 'Summarize the assigned workspace.',
+  provider,
 });
 await using session = await agent.session({ environment });
 const turn = await session.submit('Read README.md and summarize it.');
 console.log((await turn.wait()).finalOutput);
 ```
+
+The disposal scope closes the Session before its provider.
 
 This option keeps the selected read and network scope. It rejects `apply_patch`, `NativeAgents`, `writePolicy: 'legacy'`, and nonempty `writableRoots`. An empty root list remains valid and cannot remove the read-only ceiling. Restore requires the same read-only mode and applied executor policy. Use a separate ordinary strict Environment for work that needs to edit files.
 

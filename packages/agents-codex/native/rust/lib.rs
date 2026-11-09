@@ -2576,6 +2576,27 @@ impl NativeThread {
             .map_err(input_error)
     }
 
+    #[napi(js_name = "_stop_step")]
+    pub fn _stop_step(&self, response_json: String) -> napi::Result<bool> {
+        let response: python_tools::StepReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Step selection requires a managed Session"))?;
+        let Some(owner) =
+            tools.exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+        else {
+            return Ok(false);
+        };
+        let thread = response.thread.clone();
+        owner.stop_step(&thread, response).map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_child_step")]
     pub fn _reply_child_step(&self, response_json: String) -> napi::Result<bool> {
         let response: python_tools::StepReply =
