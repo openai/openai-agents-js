@@ -382,7 +382,9 @@ export class ObservationBuffer {
       throw new RangeError(
         'after must be a sequence between zero and the current event',
       );
-    after = Math.max(after, scope?.after ?? 0);
+    // Bounded readers preserve their Session-global loss notification.
+    if (this.options.retention === 'all')
+      after = Math.max(after, scope?.after ?? 0);
     let index = this.options.retention === 'all' ? after : 0;
     let closed = false;
     let reading = false;

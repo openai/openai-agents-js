@@ -135,6 +135,30 @@ it.each(['root', 'child'])(
   },
 );
 
+it.each(['bounded', 'all'] as const)(
+  'keeps bounded global loss while scoping all-retention loss in %s mode',
+  async (retention) => {
+    const buffer = new ObservationBuffer('gap-window', { retention });
+    buffer.gap();
+    const scope = {
+      after: buffer.currentSequence,
+      includes: () => false,
+      phase: () => 'ended' as const,
+    };
+    const prior = await Array.fromAsync(buffer.events({}, scope));
+    expect(prior.map((event) => event.type)).toEqual(
+      retention === 'bounded' ? ['gap'] : [],
+    );
+    buffer.gap();
+    const late = await Array.fromAsync(buffer.events({}, scope));
+    expect(late).toHaveLength(1);
+    expect(late[0]).toMatchObject({ type: 'gap', sequence: 2 });
+    expect(await Array.fromAsync(buffer.events({ after: 2 }, scope))).toEqual(
+      [],
+    );
+  },
+);
+
 it('replays a retained source gap through native Turn.events', async () => {
   const server = new ModelServer([[message('done')]]);
   const config = await server.config();
@@ -202,7 +226,7 @@ it('forwards a repair source gap through public parent Turn.events', async () =>
 });
 
 it.each(['bounded', 'all'] as const)(
-  'scopes source gaps to Turn admission in %s mode',
+  'preserves the raw Turn gap contract in %s mode',
   async (observationRetention) => {
     const server = new ModelServer([[message('first')], [message('second')]]);
     const config = await server.config();
@@ -227,7 +251,7 @@ it.each(['bounded', 'all'] as const)(
       (await Array.fromAsync(second.events())).some(
         (event) => event.type === 'gap',
       ),
-    ).toBe(false);
+    ).toBe(observationRetention === 'bounded');
     expect(
       (await Array.fromAsync(first.events())).some(
         (event) => event.type === 'gap',
