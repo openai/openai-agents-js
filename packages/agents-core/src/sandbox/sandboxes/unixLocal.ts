@@ -134,6 +134,17 @@ export interface UnixLocalSandboxClientOptions extends SandboxClientOptions {
    */
   fileIOProtection?: LocalFileIOProtection;
   workspaceBaseDir?: string;
+  /**
+   * Trusted host paths for resuming saved state. Obtain these values from your
+   * application's trusted configuration, never from the saved state itself.
+   * Without a workspace binding, a bound snapshot restores into a fresh workspace.
+   */
+  resumeAuthority?: {
+    workspaceRootPath?: string;
+    /** Whether the SDK may remove the bound workspace on close. Defaults to false. */
+    workspaceRootOwned?: boolean;
+    localSnapshotPath?: string;
+  };
   snapshot?: LocalSandboxSnapshotSpec;
   defaultShell?: string;
   exposedPorts?: number[];
@@ -150,6 +161,29 @@ export interface UnixLocalSandboxSessionState extends SandboxSessionState {
   snapshotFingerprint?: string | null;
   snapshotFingerprintVersion?: string | null;
   configuredExposedPorts?: number[];
+}
+
+type LocalStateAuthority = {
+  workspaceRootPath: string;
+  workspaceRootOwned: boolean;
+  localSnapshotPath?: string;
+  snapshotSpec: LocalSandboxSnapshotSpec | null;
+};
+
+// Only SDK creation and authorized resume/serialization establish provenance.
+// Parsing saved state (including RunState) must never populate this map.
+const localStateAuthorities = new WeakMap<object, LocalStateAuthority>();
+
+function rememberLocalStateAuthority(
+  state: UnixLocalSandboxSessionState,
+): void {
+  localStateAuthorities.set(state, {
+    workspaceRootPath: state.workspaceRootPath,
+    workspaceRootOwned: state.workspaceRootOwned,
+    localSnapshotPath:
+      state.snapshot?.type === 'local' ? state.snapshot.path : undefined,
+    snapshotSpec: state.snapshotSpec ? { ...state.snapshotSpec } : null,
+  });
 }
 
 type ActiveProcess = {
@@ -188,6 +222,7 @@ export class UnixLocalSandboxSession<
   private stopPromise?: Promise<void>;
   private fileOperationGeneration = 0;
   private readonly hostFiles: UnixLocalFiles | null;
+  private readonly workspaceCleanupPath?: string;
 
   private get files(): UnixLocalFiles {
     if (!this.hostFiles) {
@@ -214,6 +249,11 @@ export class UnixLocalSandboxSession<
         ? null
         : (args[preparedFileIO] ?? new UnixLocalFiles(args.fileIOProtection));
     this.state = args.state;
+    // Low-level session construction is an explicit trusted host operation.
+    // Keep cleanup independent of subsequent changes to the public state object.
+    this.workspaceCleanupPath = args.state.workspaceRootOwned
+      ? args.state.workspaceRootPath
+      : undefined;
     this.defaultShell = args.defaultShell;
     this.setArchiveLimits(args.archiveLimits);
     this.captureFilesystemRoots();
@@ -640,8 +680,8 @@ export class UnixLocalSandboxSession<
     await this.hostFiles?.close();
     await this.stop();
 
-    if (this.state.workspaceRootOwned) {
-      await rm(this.state.workspaceRootPath, { recursive: true, force: true });
+    if (this.workspaceCleanupPath) {
+      await rm(this.workspaceCleanupPath, { recursive: true, force: true });
     }
   }
 
@@ -1271,20 +1311,24 @@ export class UnixLocalSandboxClient implements SandboxClient<
       resolvedOptions.exposedPorts,
     );
 
-    return new UnixLocalSandboxSession({
+    const session = new UnixLocalSandboxSession({
       [preparedFileIO]: files,
       state: {
         manifest,
         workspaceRootPath,
         workspaceRootOwned: true,
         environment,
-        snapshotSpec: resolvedOptions.snapshot ?? null,
+        snapshotSpec: resolvedOptions.snapshot
+          ? { ...resolvedOptions.snapshot }
+          : null,
         snapshot: null,
         configuredExposedPorts,
       },
       defaultShell: resolvedOptions.defaultShell,
       archiveLimits: resolvedOptions.archiveLimits,
     });
+    rememberLocalStateAuthority(session.state);
+    return session;
   }
 
   async resume(
@@ -1299,13 +1343,24 @@ export class UnixLocalSandboxClient implements SandboxClient<
       options.archiveLimits === undefined
         ? this.options.archiveLimits
         : options.archiveLimits;
-    const currentOptions = (getRunStateSessionTrustedConfig(state)
-      ?.clientOptions ?? options.clientOptions) as
-      UnixLocalSandboxClientOptions | undefined;
+    const trustedConfig = getRunStateSessionTrustedConfig(state);
+    const currentOptions = (trustedConfig?.clientOptions ??
+      options.clientOptions) as UnixLocalSandboxClientOptions | undefined;
+    const resolvedOptions = { ...this.options, ...currentOptions };
+    const authorizedState = this.authorizeState(
+      state,
+      resolvedOptions,
+      trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined,
+    );
     const files = new UnixLocalFiles(
       currentOptions?.fileIOProtection ?? this.options.fileIOProtection,
     );
-    const restoredState = await this.restoreIfNeeded(state, archiveLimits);
+    const restoredState = await this.restoreIfNeeded(
+      authorizedState,
+      archiveLimits,
+      resolvedOptions.workspaceBaseDir,
+    );
+    rememberLocalStateAuthority(restoredState);
     return new UnixLocalSandboxSession({
       [preparedFileIO]: files,
       state: restoredState,
@@ -1318,16 +1373,39 @@ export class UnixLocalSandboxClient implements SandboxClient<
     state: UnixLocalSandboxSessionState,
   ): Promise<Record<string, unknown>> {
     assertSandboxSessionStateUsable(state);
-    const stateGeneration = captureSandboxStateGeneration(state);
+    const inputState = state;
+    const stateGeneration = captureSandboxStateGeneration(inputState);
+    state = this.authorizeState(
+      state,
+      this.options,
+      localStateAuthorities.get(state)?.snapshotSpec ?? undefined,
+    );
+    if (!state.workspaceRootPath) {
+      throw new UserError(
+        'UnixLocal serialization requires a trusted workspace binding. Resume the snapshot first.',
+      );
+    }
     assertUnixLocalHostPathGrantsUnsupported(state.manifest);
-    const snapshotSpec = state.snapshotSpec ?? this.options.snapshot ?? null;
+    const snapshotSpec = state.snapshotSpec ?? null;
     const snapshot = await persistLocalSnapshot(
       'UnixLocalSandboxClient',
       state,
       snapshotSpec,
-      (capture) => withUnixLocalFileAccess(state, capture),
+      (capture) => withUnixLocalFileAccess(inputState, capture),
     );
+    assertSandboxStateGenerationUnchanged(inputState, stateGeneration);
     state.snapshotSpec = snapshotSpec;
+    rememberLocalStateAuthority(state);
+    if (inputState !== state) {
+      Object.assign(inputState, {
+        workspaceRootOwned: state.workspaceRootOwned,
+        snapshotSpec,
+        snapshot,
+        snapshotFingerprint: state.snapshotFingerprint,
+        snapshotFingerprintVersion: state.snapshotFingerprintVersion,
+      });
+      rememberLocalStateAuthority(inputState);
+    }
 
     const serialized = {
       ...serializeMountCredentialRedactionMetadata(state),
@@ -1342,7 +1420,6 @@ export class UnixLocalSandboxClient implements SandboxClient<
       configuredExposedPorts: state.configuredExposedPorts ?? [],
       exposedPorts: state.exposedPorts ?? null,
     };
-    assertSandboxStateGenerationUnchanged(state, stateGeneration);
     return serialized;
   }
 
@@ -1358,8 +1435,12 @@ export class UnixLocalSandboxClient implements SandboxClient<
   private async restoreIfNeeded(
     state: UnixLocalSandboxSessionState,
     archiveLimits?: SandboxArchiveLimits | null,
+    workspaceBaseDir = this.options.workspaceBaseDir,
   ): Promise<UnixLocalSandboxSessionState> {
-    if (await pathExists(state.workspaceRootPath)) {
+    if (
+      state.workspaceRootPath &&
+      (await pathExists(state.workspaceRootPath))
+    ) {
       if (await canReuseLocalSnapshotWorkspace(state)) {
         return state;
       }
@@ -1380,18 +1461,71 @@ export class UnixLocalSandboxClient implements SandboxClient<
     }
 
     const workspaceRootPath = await mkdtemp(
-      join(this.options.workspaceBaseDir ?? tmpdir(), 'openai-agents-sandbox-'),
+      join(workspaceBaseDir ?? tmpdir(), 'openai-agents-sandbox-'),
     );
 
-    return await restoreSnapshotAndMounts(
-      {
-        ...state,
+    try {
+      return await restoreSnapshotAndMounts(
+        {
+          ...state,
+          workspaceRootPath,
+          workspaceRootOwned: true,
+        },
         workspaceRootPath,
-        workspaceRootOwned: true,
-      },
-      workspaceRootPath,
-      archiveLimits,
-    );
+        archiveLimits,
+      );
+    } catch (error) {
+      await rm(workspaceRootPath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private authorizeState(
+    state: UnixLocalSandboxSessionState,
+    options: UnixLocalSandboxClientOptions,
+    snapshotSpec?: LocalSandboxSnapshotSpec,
+  ): UnixLocalSandboxSessionState {
+    const liveAuthority = localStateAuthorities.get(state);
+    const authority = liveAuthority ?? options.resumeAuthority;
+    if (
+      authority?.workspaceRootPath !== undefined &&
+      authority.workspaceRootPath !== state.workspaceRootPath
+    ) {
+      throw new UserError(
+        'UnixLocal saved workspace path does not match the trusted resumeAuthority.',
+      );
+    }
+    if (
+      state.snapshot?.type === 'local' &&
+      (authority?.localSnapshotPath === undefined ||
+        state.snapshot.path !== authority.localSnapshotPath)
+    ) {
+      throw new UserError(
+        'UnixLocal local snapshot requires a matching trusted resumeAuthority.localSnapshotPath.',
+      );
+    }
+    const policy =
+      snapshotSpec ?? options.snapshot ?? liveAuthority?.snapshotSpec ?? null;
+    if (
+      !authority?.workspaceRootPath &&
+      !(state.snapshot?.type === 'local' && authority?.localSnapshotPath) &&
+      !(state.snapshot?.type === 'remote' && policy?.type === 'remote')
+    ) {
+      throw new UserError(
+        'UnixLocal saved state requires trusted resumeAuthority host paths or a configured remote snapshot store.',
+      );
+    }
+    if (liveAuthority) {
+      state.workspaceRootOwned = liveAuthority.workspaceRootOwned;
+      state.snapshotSpec = policy ? { ...policy } : null;
+      return state;
+    }
+    return {
+      ...state,
+      workspaceRootPath: authority?.workspaceRootPath ?? '',
+      workspaceRootOwned: authority?.workspaceRootOwned ?? false,
+      snapshotSpec: policy ? { ...policy } : null,
+    };
   }
 }
 
