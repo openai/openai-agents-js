@@ -17,6 +17,7 @@ import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
 import {
   attachModelFailureUsage,
   getModelVisibleSessionItems,
+  hasCompleteApprovalGroups,
   logModelAndToolActionWarning,
 } from '@openai/agents-core/utils/internal';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
@@ -123,7 +124,8 @@ export type OpenAIResponsesCompactionSessionOptions = {
  * This session is intended to be passed to `run()` so the runner can automatically supply the
  * latest `responseId` and invoke compaction after each completed turn is persisted.
  * Automatic compaction skips history that is not fully covered by the latest successful model
- * input and response. Explicit manual compaction remains caller-controlled.
+ * input and response. It also waits for function call results and hosted MCP approval responses
+ * before compacting those groups. Explicit manual compaction remains caller-controlled.
  *
  * To debug compaction decisions, enable the `debug` logger for
  * `openai-agents:openai:compaction` (for example, `DEBUG=openai-agents:openai:compaction`).
@@ -244,6 +246,11 @@ export class OpenAIResponsesCompactionSession
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
       this.lastStore = args.store;
+    }
+    // Manual compaction still needs the response ID and store setting of a paused turn.
+    if (automaticInput && !hasCompleteApprovalGroups(automaticInput)) {
+      logger.debug('skip: stored history has an incomplete approval group');
+      return null;
     }
     const requestedMode = args.compactionMode ?? this.compactionMode;
     const resolvedMode = resolveCompactionMode({

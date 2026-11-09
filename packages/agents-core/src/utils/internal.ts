@@ -1,5 +1,8 @@
 export { getFunctionToolApprovalInput } from './functionToolApproval';
-export { getModelVisibleSessionItems } from '../runner/sessionItems';
+export {
+  getModelVisibleSessionItems,
+  hasCompleteApprovalGroups,
+} from '../runner/sessionItems';
 export { formatInlineData, getInlineMediaType } from './inlineData';
 export {
   attachModelFailureUsage,
