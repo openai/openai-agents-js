@@ -32,10 +32,13 @@ export type ScriptedItem =
       call_id: string;
       input: string;
     }>;
-export type ScriptedResponse =
+export type ScriptedResult =
   | readonly ScriptedItem[]
   | Readonly<{
       items: readonly ScriptedItem[];
+      /** Extra raw SSE events for wire-level fixture scenarios. */
+      events?: readonly JsonObject[];
+      responseId?: string;
       /** Provider-reported usage; omission leaves it unknown. */
       usage?: JsonObject;
       /** Additional HTTP metadata. Framing headers remain SDK-owned. */
@@ -48,18 +51,32 @@ export type ScriptedResponse =
       headers?: Readonly<Record<string, string>>;
     }>;
 
+/** Dynamic responders receive a detached request body, never credentials. */
+export type ScriptedResponse =
+  | ScriptedResult
+  | ((
+      request: Readonly<JsonObject>,
+    ) => ScriptedResult | Promise<ScriptedResult>);
+
 /** A callback-scoped native provider with detached request-body readback. */
 export interface ScriptedResponses {
   readonly provider: NativeProvider;
   readonly requests: readonly Readonly<JsonObject>[];
   toolOutput(callId: string): string | undefined;
   assertExhausted(): void;
+  /** Append responses for subsequent requests, including from dynamic responders. */
+  append(...responses: ScriptedResponse[]): void;
+  /** Discard queued responses while preserving recorded request history. */
+  clear(): void;
 }
-export function text(value: string): ScriptedItem {
+export function text(
+  value: string,
+  options: { itemId?: string } = {},
+): ScriptedItem {
   return {
     type: 'message',
     role: 'assistant',
-    id: randomUUID(),
+    id: options.itemId ?? randomUUID(),
     content: [{ type: 'output_text', text: value }],
   };
 }
@@ -163,6 +180,8 @@ const responseSchema = z.union([
   z
     .object({
       items: z.array(itemSchema),
+      events: z.array(jsonObject).optional(),
+      responseId: z.string().optional(),
       usage: jsonObject.optional(),
       headers: headersSchema.optional(),
     })
@@ -196,7 +215,7 @@ class Peer implements ScriptedResponses {
     this.handlers.add(handler);
     void handler.then(() => this.handlers.delete(handler));
   });
-  constructor(private readonly responses: readonly ScriptedResponse[]) {
+  constructor(private responses: ScriptedResponse[]) {
     this.server.on('connection', (socket) => {
       this.sockets.add(socket);
       socket.once('close', () => this.sockets.delete(socket));
@@ -265,6 +284,13 @@ class Peer implements ScriptedResponses {
         message: `Scripted responses: ${remaining} remaining, ${this.unexpected} unexpected requests, ${this.failures} internal failures`,
       });
   }
+  append(...responses: ScriptedResponse[]): void {
+    this.responses.push(...responses.map(captureResponse));
+  }
+  clear(): void {
+    this.responses = [];
+    this.next = 0;
+  }
   private reject(response: ServerResponse): void {
     response
       .writeHead(400, { 'content-type': 'application/json' })
@@ -309,13 +335,17 @@ class Peer implements ScriptedResponses {
         return;
       }
       this.bodies.push(body);
-      const selected = this.responses[this.next];
-      if (selected === undefined) {
+      const script = this.responses[this.next];
+      if (script === undefined) {
         this.unexpected++;
         this.reject(response);
         return;
       }
       this.next++;
+      const selected =
+        typeof script === 'function'
+          ? responseSchema.parse(await script(structuredClone(body)))
+          : script;
       if ('kind' in selected) {
         const error = selected;
         response
@@ -326,9 +356,13 @@ class Peer implements ScriptedResponses {
           .end(JSON.stringify(error.body));
         return;
       }
-      const id = randomUUID();
+      const id =
+        'responseId' in selected
+          ? (selected.responseId ?? randomUUID())
+          : randomUUID();
       const envelope: {
         items: readonly ScriptedItem[];
+        events?: readonly JsonObject[];
         usage?: JsonObject;
         headers?: Readonly<Record<string, string>>;
       } = 'items' in selected ? selected : { items: selected };
@@ -343,6 +377,7 @@ class Peer implements ScriptedResponses {
           output_index,
           item,
         })),
+        ...(envelope.events ?? []),
         {
           type: 'response.completed',
           response: {
@@ -405,6 +440,14 @@ class Peer implements ScriptedResponses {
     return this.closing;
   }
 }
+function captureResponse(response: ScriptedResponse): ScriptedResponse {
+  if (typeof response === 'function') return response;
+  try {
+    return responseSchema.parse(response);
+  } catch {
+    throw new TypeError('Invalid scripted response');
+  }
+}
 /**
  * Serve prescribed Responses events through the real native loop. Close borrowed
  * Sessions before returning. Keep direct/bypassed loopback proxy routing stable
@@ -418,13 +461,7 @@ export async function withScriptedResponses<T>(
   if (!Array.isArray(responses)) {
     throw new TypeError('Scripted responses must be an array');
   }
-  const captured = Array.from(responses, (response, index) => {
-    try {
-      return responseSchema.parse(response);
-    } catch {
-      throw new TypeError(`Invalid scripted response at index ${index}`);
-    }
-  });
+  const captured = Array.from(responses, captureResponse);
   const peer = new Peer(captured);
   let result: T;
   try {

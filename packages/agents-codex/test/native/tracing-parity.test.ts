@@ -173,3 +173,23 @@ for (const transport of ['http', 'grpc'] as const) {
     }
   }, 60_000);
 }
+
+it('qualifies native capture controls, OpenAI export and dynamic fixtures', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agents-native-capture-'));
+  try {
+    const result = await execute(
+      process.execPath,
+      ['--import', 'tsx', join(fixtures, 'tracing-capture-controls-child.ts')],
+      {
+        timeout: 50_000,
+        maxBuffer: 2_097_152,
+        env: { ...process.env, CODEX_HOME: join(directory, 'home') },
+      },
+    );
+    expect(result.stdout).toContain(
+      'PASS native capture controls and dynamic fixtures',
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60_000);

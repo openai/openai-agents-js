@@ -1,3 +1,7 @@
+export {
+  OpenAITraceExporter,
+  ConsoleTraceProcessor,
+} from './openai-trace-exporter';
 import {
   inTraceProcessor,
   suppressTracing,
@@ -15,6 +19,8 @@ export {
   withSpan,
   getCurrentTrace,
   getCurrentSpan,
+  setTracingDisabled,
+  setSensitiveDataLoggingEnabled,
 } from './tracing-context';
 type Native = Awaited<ReturnType<typeof binding>>;
 

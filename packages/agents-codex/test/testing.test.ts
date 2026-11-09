@@ -52,3 +52,46 @@ it('refuses response framing overrides before starting a scripted scope', async 
   ).rejects.toThrow('Invalid scripted response');
   expect(entered).toBe(false);
 });
+
+it('supports dynamic responders, queue mutation and explicit raw-event identifiers', async () => {
+  await withScriptedResponses([[text('discard')]], async (peer) => {
+    peer.clear();
+    peer.append(async (request) => {
+      expect(request.input).toBe('synthetic');
+      peer.append({
+        items: [],
+        responseId: 'resp_raw_fixture',
+        events: [
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'message',
+              role: 'assistant',
+              id: 'msg_raw_fixture',
+              content: [{ type: 'output_text', text: 'raw answer' }],
+            },
+          },
+        ],
+      });
+      return {
+        items: [text('dynamic answer', { itemId: 'msg_dynamic_fixture' })],
+        responseId: 'resp_dynamic_fixture',
+      };
+    });
+    const first = await fetch(`${peer.provider.baseUrl}/responses`, {
+      method: 'POST',
+      body: JSON.stringify({ input: 'synthetic' }),
+    });
+    const firstText = await first.text();
+    expect(firstText).toContain('resp_dynamic_fixture');
+    expect(firstText).toContain('msg_dynamic_fixture');
+    const second = await fetch(`${peer.provider.baseUrl}/responses`, {
+      method: 'POST',
+      body: JSON.stringify({ input: 'next synthetic' }),
+    });
+    const secondText = await second.text();
+    expect(secondText).toContain('resp_raw_fixture');
+    expect(secondText).toContain('raw answer');
+    expect(peer.requests).toHaveLength(2);
+  });
+});
