@@ -17,7 +17,7 @@ import {
   UnixLocalSandboxSession,
 } from '../../src/sandbox/local';
 import { serializeSandboxRuntimeState } from '../../src/sandbox/runtime/sessionSerialization';
-import * as snapshots from '../../src/sandbox/sandboxes/shared/localSnapshots';
+import * as workspaceArchive from '../../src/sandbox/sandboxes/shared/workspaceArchive';
 import { UNIX_LOCAL_FILE_WORKER } from '../../src/sandbox/sandboxes/shared/unixLocalFileWorker';
 
 vi.mock('node:child_process', async (importOriginal) => ({
@@ -136,14 +136,15 @@ describe.skipIf(process.platform === 'win32')(
       const released = new Promise<void>((resolve) => {
         release = resolve;
       });
-      const capture = snapshots.createWorkspaceArchive;
-      vi.spyOn(snapshots, 'createWorkspaceArchive').mockImplementationOnce(
-        async (...args) => {
-          entered();
-          await released;
-          return capture(...args);
-        },
-      );
+      const capture = workspaceArchive.createWorkspaceArchive;
+      vi.spyOn(
+        workspaceArchive,
+        'createWorkspaceArchive',
+      ).mockImplementationOnce(async (...args) => {
+        entered();
+        await released;
+        return capture(...args);
+      });
       const pending = session.persistWorkspace();
       await capturing;
       const update = session.createEditor().updateFile({
