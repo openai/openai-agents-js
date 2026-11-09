@@ -875,6 +875,7 @@ for (const location of ['host', 'environment'] as const) {
   );
 }
 
+// Windows uses legacy write policy for transport coverage, not strict isolation.
 it.each(['none', 'complete', 'partial'] as const)(
   'keeps host MCP separate from the selected remote executor with %s ambient Noise',
   async (noise) => {
@@ -918,6 +919,9 @@ it.each(['none', 'complete', 'partial'] as const)(
           headers: executor.headers,
           tools: ['exec_command'],
           approval: () => true,
+          ...(process.platform === 'win32'
+            ? { writePolicy: 'legacy' as const }
+            : {}),
         }),
       });
       sessions.push(session);
