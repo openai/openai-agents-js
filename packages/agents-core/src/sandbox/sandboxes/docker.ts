@@ -1501,6 +1501,25 @@ export class DockerSandboxClient implements SandboxClient<
     };
   }
 
+  private resolveSnapshotPolicy(
+    state: DockerSandboxSessionState,
+    override?: LocalSandboxSnapshotSpec,
+  ): LocalSandboxSnapshotSpec | null {
+    if (override !== undefined) return override;
+    const captured = getRemoteSnapshotPolicyAuthority(state);
+    if (captured !== undefined) return captured;
+    if (this.options.snapshot !== undefined) return this.options.snapshot;
+    // Only unconfigured explicit local checkpoints retain persisted save policy.
+    if (
+      !isRunStateSessionState(state) &&
+      state.snapshot?.type !== 'remote' &&
+      state.snapshotSpec?.type !== 'remote'
+    ) {
+      return state.snapshotSpec ?? null;
+    }
+    return null;
+  }
+
   async create(
     args?: SandboxClientCreateArgs<DockerSandboxClientOptions> | Manifest,
     manifestOptions?: DockerSandboxClientOptions,
@@ -1642,15 +1661,11 @@ export class DockerSandboxClient implements SandboxClient<
           ? this.options.snapshot.store
           : undefined,
     );
-    const snapshotPolicy =
+    const snapshotPolicy = this.resolveSnapshotPolicy(
+      state,
       (trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined) ??
-      clientOptions?.snapshot ??
-      getRemoteSnapshotPolicyAuthority(state) ??
-      (state.snapshotSpec?.type !== 'remote'
-        ? state.snapshotSpec
-        : undefined) ??
-      this.options.snapshot ??
-      null;
+        clientOptions?.snapshot,
+    );
     this.validateSessionStateForResume(
       {
         source: trustedConfig ? 'runState' : 'explicit',
@@ -1855,13 +1870,7 @@ export class DockerSandboxClient implements SandboxClient<
       state.environment,
     );
     const stateGeneration = captureSandboxStateGeneration(state);
-    const snapshotSpec =
-      getRemoteSnapshotPolicyAuthority(state) ??
-      (state.snapshotSpec?.type !== 'remote'
-        ? state.snapshotSpec
-        : undefined) ??
-      this.options.snapshot ??
-      null;
+    const snapshotSpec = this.resolveSnapshotPolicy(state);
     attachDockerSnapshotExcludedPaths(state);
     const snapshot = await persistLocalSnapshot(
       'DockerSandboxClient',

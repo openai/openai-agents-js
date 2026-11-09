@@ -408,7 +408,92 @@ describe('DockerSandboxClient unit behavior', () => {
       );
     });
 
-    it.each(['remote', 'noop'] as const)(
+    it.each(
+      ['serialize', 'resume', 'runState'].flatMap((flow) =>
+        ['local', 'noop'].map((type) => ({ flow, type })),
+      ),
+    )(
+      'keeps constructor remote policy during $flow with a persisted $type policy',
+      async ({ flow, type }) => {
+        const client = new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          snapshot: { type: 'remote', id: 'trusted-save-request', store },
+          resumeAuthority: { remoteSnapshotId: 'saved-1' },
+        });
+        const session = await client.create(new Manifest());
+        const saved = JSON.parse(
+          JSON.stringify(await client.serializeSessionState(session.state)),
+        );
+        const forgedBaseDir = join(rootDir, 'forged-save-target');
+        await mkdir(forgedBaseDir);
+        saved.snapshotSpec =
+          type === 'local'
+            ? { type, baseDir: forgedBaseDir }
+            : { type: 'noop' };
+        let state = await client.deserializeSessionState(saved);
+        if (flow === 'runState') {
+          state = markRunStateSessionState(state, {
+            clientOptions: {
+              workspaceBaseDir: rootDir,
+              resumeAuthority: { remoteSnapshotId: 'saved-1' },
+            },
+          });
+        }
+        if (flow !== 'serialize') state = (await client.resume(state)).state;
+        vi.mocked(store.save).mockClear();
+
+        const serialized = await client.serializeSessionState(state);
+
+        expect(saved.snapshot.id).toBe('saved-1');
+        expect({
+          snapshot: serialized.snapshot,
+          destinationFiles: await readdir(forgedBaseDir),
+          savedIds: vi.mocked(store.save).mock.calls.map(([args]) => args.id),
+          deletedIds: vi
+            .mocked(store.delete)
+            .mock.calls.map(([args]) => args.id),
+        }).toMatchObject({
+          snapshot: { type: 'remote', id: 'saved-2' },
+          destinationFiles: [],
+          savedIds: ['trusted-save-request'],
+          deletedIds: ['saved-1'],
+        });
+      },
+    );
+
+    it.each(['serialize', 'resume', 'sdkCopy'] as const)(
+      'preserves captured default local policy during %s after public policy changes',
+      async (flow) => {
+        const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+        const session = await client.create(new Manifest());
+        const forgedBaseDir = join(rootDir, 'forged-save-target');
+        await mkdir(forgedBaseDir);
+        session.state.snapshotSpec = {
+          type: 'local',
+          baseDir: forgedBaseDir,
+        };
+        const state =
+          flow === 'resume'
+            ? (await client.resume(session.state)).state
+            : flow === 'sdkCopy'
+              ? rebindPersistedPathGrants(session.state, new Manifest())
+              : session.state;
+
+        vi.stubEnv(
+          'OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR',
+          join(rootDir, 'trusted-default-snapshots'),
+        );
+        try {
+          await client.serializeSessionState(state);
+          expect(state.snapshot?.type).toBe('local');
+          expect(await readdir(forgedBaseDir)).toEqual([]);
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      },
+    );
+
+    it.each(['remote', 'local', 'noop'] as const)(
       'preserves the trusted per-create %s policy after live state changes',
       async (type) => {
         const client = new DockerSandboxClient({
@@ -420,7 +505,9 @@ describe('DockerSandboxClient unit behavior', () => {
           snapshot:
             type === 'remote'
               ? { type, id: 'create-save-request', store }
-              : new NoopSnapshotSpec(),
+              : type === 'local'
+                ? { type, baseDir: join(rootDir, 'trusted-create-snapshots') }
+                : new NoopSnapshotSpec(),
         });
         session.state.snapshotSpec = {
           type: 'remote',
@@ -436,12 +523,19 @@ describe('DockerSandboxClient unit behavior', () => {
           );
         } else {
           expect(store.save).not.toHaveBeenCalled();
-          expect(serialized.snapshot).toBeNull();
+          if (type === 'local') {
+            expect(serialized.snapshot).toMatchObject({ type: 'local' });
+            expect(
+              await readdir(join(rootDir, 'trusted-create-snapshots')),
+            ).toHaveLength(1);
+          } else {
+            expect(serialized.snapshot).toBeNull();
+          }
         }
       },
     );
 
-    it.each(['remote', 'noop'] as const)(
+    it.each(['remote', 'local', 'noop'] as const)(
       'preserves the trusted per-resume %s policy over persisted save fields',
       async (type) => {
         const client = new DockerSandboxClient({
@@ -465,7 +559,9 @@ describe('DockerSandboxClient unit behavior', () => {
             snapshot:
               type === 'remote'
                 ? { type, id: 'resume-save-request', store }
-                : new NoopSnapshotSpec(),
+                : type === 'local'
+                  ? { type, baseDir: join(rootDir, 'trusted-resume-snapshots') }
+                  : new NoopSnapshotSpec(),
           },
         });
         vi.mocked(store.save).mockClear();
@@ -479,7 +575,14 @@ describe('DockerSandboxClient unit behavior', () => {
           );
         } else {
           expect(store.save).not.toHaveBeenCalled();
-          expect(saved.snapshot).toBeNull();
+          if (type === 'local') {
+            expect(saved.snapshot).toMatchObject({ type: 'local' });
+            expect(
+              await readdir(join(rootDir, 'trusted-resume-snapshots')),
+            ).toHaveLength(1);
+          } else {
+            expect(saved.snapshot).toBeNull();
+          }
           expect(store.delete).toHaveBeenCalledWith({ id: 'saved-1' });
         }
       },
