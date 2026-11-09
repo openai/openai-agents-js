@@ -1,5 +1,37 @@
 # @openai/agents
 
+## 0.22.0
+
+### Patch Changes
+
+- 50f6b68: fix: refresh compatible SDK, toolchain, and example dependencies
+- 35b24d7: Update Zod to 4.6.6 while preserving saved guardrail checkpoints with omitted metadata.
+- Updated dependencies [50f6b68]
+- Updated dependencies [9b33d73]
+- Updated dependencies [c1fd369]
+- Updated dependencies [409df96]
+- Updated dependencies [52fcb57]
+- Updated dependencies [9dd24c0]
+- Updated dependencies [c1764e7]
+- Updated dependencies [55e0e5d]
+- Updated dependencies [7589b9c]
+- Updated dependencies [1da8e24]
+- Updated dependencies [56e5365]
+- Updated dependencies [3fdc610]
+- Updated dependencies [a6cc47e]
+- Updated dependencies [919553c]
+- Updated dependencies [6da8df7]
+- Updated dependencies [870954a]
+- Updated dependencies [d9277fb]
+- Updated dependencies [ef68227]
+- Updated dependencies [be4f1f9]
+- Updated dependencies [85e7d05]
+- Updated dependencies [2bb5fbf]
+- Updated dependencies [35b24d7]
+  - @openai/agents-core@0.22.0
+  - @openai/agents-openai@0.22.0
+  - @openai/agents-realtime@0.22.0
+
 ## 0.21.0
 
 ### Patch Changes

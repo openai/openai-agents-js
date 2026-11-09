@@ -1,5 +1,28 @@
 # @openai/agents-core
 
+## 0.22.0
+
+### Minor Changes
+
+- be4f1f9: fix: Preserve bounded JSON usage metadata and reuse OpenAI wire types; breaking types require narrowing usage details, Realtime image content, nullable MCP descriptions, unknown schemas/tracing metadata, and optional transcription breakdowns; saved states retain schema 1.23 when compatible and use 1.24 for richer metadata or newer nested runs.
+
+### Patch Changes
+
+- 50f6b68: fix: refresh compatible SDK, toolchain, and example dependencies
+- 9b33d73: fix: materialize resources added to running Docker sessions inside the container with the sandbox user's permissions and enforce resource copy limits.
+- c1fd369: feat: Expose MCP discovery annotations on converted function tools for application use.
+- 409df96: fix(session): defer automatic Responses compaction for pending tool approvals
+- 52fcb57: fix: allow sandbox clients to prepare manifest environments in their execution context (#2077).
+- c1764e7: fix(agents-core): Resume guarded terminal tool runs after a nested approval.
+- 7589b9c: fix(sandbox): validate workspace archives before replacing existing files
+- 56e5365: fix(openai): Default reasoning effort to `none` for function tools and handoffs on the OpenAI Chat Completions API with `gpt-6-sol` and `gpt-6-luna`, matching openai/openai-agents-python#5420.
+- 3fdc610: fix: remove retry advice from the default tool error message (openai/openai-agents-python#5632)
+- a6cc47e: feat(tracing): Expose offered Chat Completions tool definitions on generation spans when sensitive data capture is enabled. Custom processors and custom export destinations can inspect the definitions. Hosted OpenAI trace exports omit them.
+- 6da8df7: feat(core): allow source agents to recover from handoff invocation errors (openai/openai-agents-python#5418)
+- ef68227: fix: Reject unfinished official Chat Completions streams and describe missing stream completion (openai/openai-agents-python#5211, openai/openai-agents-python#5457).
+- 85e7d05: fix: preserve edited files during case-only moves in the UnixLocal sandbox
+- 35b24d7: Update Zod to 4.6.6 while preserving saved guardrail checkpoints with omitted metadata.
+
 ## 0.21.0
 
 ### Minor Changes
