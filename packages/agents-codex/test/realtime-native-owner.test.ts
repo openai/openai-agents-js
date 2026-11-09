@@ -437,6 +437,129 @@ it.each(['submit', 'wait', 'cancel'] as const)(
   },
 );
 
+it('bounds retained canonical history even when every event is drained', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  const text = 'x'.repeat(128 * 1024);
+  for (let index = 0; index < 15; index++) {
+    peer.payload({
+      HistoryItemCompleted: {
+        id: `history-${index}`,
+        realtime_session_id: 'session',
+        type: 'transcript_segment',
+        text,
+      },
+    });
+    expect((await events.next()).value).toMatchObject({ type: 'history' });
+  }
+  peer.payload({
+    HistoryItemCompleted: {
+      id: 'history-0',
+      realtime_session_id: 'session',
+      type: 'transcript_segment',
+      text: '',
+    },
+  });
+  await events.next();
+  peer.payload({
+    HistoryItemCompleted: {
+      id: 'within-freed-capacity',
+      realtime_session_id: 'session',
+      type: 'transcript_segment',
+      text,
+    },
+  });
+  await events.next();
+  const accepted = peer.owner.history;
+  peer.payload({
+    HistoryItemCompleted: {
+      id: 'over-capacity',
+      realtime_session_id: 'session',
+      type: 'transcript_segment',
+      text,
+    },
+  });
+  await expect(events.next()).rejects.toThrow('history capacity');
+  expect(peer.owner.history).toEqual(accepted);
+  await peer.owner.close();
+});
+
+it.each(['text', 'realtime_session_id'] as const)(
+  'sizes retained history %s in constant time, including empty deltas',
+  async (field) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const events = peer.owner.events();
+    await events.next();
+    const retained = 'x'.repeat(256 * 1024);
+    const item = {
+      id: 'history',
+      realtime_session_id: 'session',
+      type: 'transcript_segment',
+      text: '',
+    };
+    item[field] = retained;
+    const byteLength = vi.spyOn(Buffer, 'byteLength');
+    try {
+      peer.payload({ HistoryItemStarted: item });
+      await events.next();
+      for (let index = 0; index < 1025; index++) {
+        peer.payload({
+          HistoryTranscriptDelta: { item_id: item.id, delta: '' },
+        });
+        expect((await events.next()).value).toMatchObject({
+          type: 'history',
+          item: { text: item.text },
+        });
+      }
+      expect(byteLength.mock.calls.some(([value]) => value === retained)).toBe(
+        false,
+      );
+      expect(peer.owner.history[0].text).toBe(item.text);
+    } finally {
+      byteLength.mockRestore();
+      await peer.owner.close();
+    }
+  },
+);
+
+it('bounds nonempty history prefix work across completed replacements', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  const item = {
+    id: 'history',
+    realtime_session_id: 'session',
+    type: 'transcript_segment',
+    text: '',
+  };
+  const delta = 'x'.repeat(256);
+  peer.payload({ HistoryItemStarted: item });
+  await events.next();
+  for (let index = 0; index < 1447; index++) {
+    if (index === 700) {
+      peer.payload({
+        HistoryItemCompleted: { ...item, text: peer.owner.history[0].text },
+      });
+      await events.next();
+    }
+    peer.payload({ HistoryTranscriptDelta: { item_id: item.id, delta } });
+    const event = (await events.next()).value;
+    expect(event).toMatchObject({ type: 'history' });
+    if (event?.type === 'history')
+      expect(event.item.text?.length).toBe((index + 1) * delta.length);
+  }
+  peer.payload({ HistoryTranscriptDelta: { item_id: item.id, delta } });
+  await expect(events.next()).rejects.toThrow(
+    'history transcript work capacity',
+  );
+  expect(peer.owner.history[0].text?.length).toBe(1447 * delta.length);
+  await peer.owner.close();
+});
+
 it('joins canonical history tail before normal close and drops queued audio', async () => {
   const peer = fixture();
   await peer.owner._start();

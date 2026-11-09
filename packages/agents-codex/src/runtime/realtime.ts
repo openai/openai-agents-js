@@ -244,6 +244,15 @@ const USER_INPUT_PARTS_LIMIT = 1024;
 const INPUT_QUEUE_COUNT_LIMIT = 128;
 const INPUT_QUEUE_BYTES_LIMIT = 8 * 1024 * 1024;
 const AUDIO_LIMIT = 2 * 1024 * 1024;
+const HISTORY_LIMIT = 8 * 1024 * 1024;
+const HISTORY_TRANSCRIPT_WORK_LIMIT = 256 * 1024 * 1024;
+
+function historyAllocationBytes(item: NativeRealtimeHistoryItem): number {
+  let bytes = 256;
+  for (const value of Object.values(item))
+    if (typeof value === 'string') bytes += value.length * 4;
+  return bytes;
+}
 const HANDOFF_LIMIT = 1024;
 const PENDING_LIMIT = 16;
 const MAX_HOSTED_MCP_TOOLS = 1024;
@@ -383,6 +392,8 @@ class NativeRealtimeOwner {
   private readonly seen = new Set<string>();
   private readonly delegations = new Map<string, Delegation>();
   private readonly canonical = new Map<string, NativeRealtimeHistoryItem>();
+  private historyBytes = 0;
+  private historyTranscriptWork = 0;
   private readonly functions = new Map<
     string,
     {
@@ -1125,7 +1136,7 @@ class NativeRealtimeOwner {
     if (event.type === 'hosted_mcp_call_completed' && event.error !== undefined)
       bytes += jsonAllocationBytes(event.error, AUDIO_LIMIT - bytes);
     for (const value of Object.values(fields))
-      if (typeof value === 'string') bytes += Buffer.byteLength(value);
+      if (typeof value === 'string') bytes += value.length * 4;
     return bytes;
   }
   private emit(event: NativeRealtimeEvent): void {
@@ -1558,6 +1569,14 @@ class NativeRealtimeOwner {
         presentation: value.presentation?.type,
         presentationIndex: value.presentation?.index,
       });
+      const old = this.canonical.get(item.id);
+      const bytes =
+        this.historyBytes +
+        historyAllocationBytes(item) -
+        (old ? historyAllocationBytes(old) : 0);
+      if (bytes > HISTORY_LIMIT)
+        throw new Error('Native Realtime history capacity exceeded');
+      this.historyBytes = bytes;
       this.canonical.set(item.id, item);
       this.emit({
         type: 'history',
@@ -1568,6 +1587,22 @@ class NativeRealtimeOwner {
       const old = this.canonical.get(value.item_id);
       if (!old)
         throw new Error('Native Realtime history delta has no canonical item');
+      const priorLength = old.text?.length ?? 0;
+      const work =
+        priorLength && value.delta.length
+          ? priorLength + value.delta.length
+          : 0;
+      const bytes = this.historyBytes + value.delta.length * 4;
+      if (bytes > HISTORY_LIMIT)
+        throw new Error('Native Realtime history capacity exceeded');
+      // Bound prefix construction independently of event queue consumption.
+      // Empty operands do not copy a prefix; replacements never reset work.
+      if (this.historyTranscriptWork + work > HISTORY_TRANSCRIPT_WORK_LIMIT)
+        throw new Error(
+          'Native Realtime history transcript work capacity exceeded',
+        );
+      this.historyTranscriptWork += work;
+      this.historyBytes = bytes;
       const item = Object.freeze({
         ...old,
         text: (old.text ?? '') + value.delta,
