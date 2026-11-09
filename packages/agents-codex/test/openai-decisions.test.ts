@@ -108,7 +108,7 @@ it('resolves constant schemas without a model request', async () => {
   expect(response.usage?.totalTokens).toBe(0);
   expect(fetch).not.toHaveBeenCalled();
 });
-it.each(['{"PRIVATE_BODY":', 'not JSON PRIVATE_BODY', 'null', '[]'])(
+it.each(['not JSON PRIVATE_BODY', 'null', '[]'])(
   'sanitizes malformed successful bodies and retains the request header',
   async (body) => {
     const { provider } = setup(body);

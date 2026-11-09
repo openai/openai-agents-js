@@ -908,6 +908,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
+      ai:
+        specifier: 6.0.277
+        version: 6.0.277(zod@4.3.5)
     optionalDependencies:
       '@a2a-js/sdk':
         specifier: 1.0.1

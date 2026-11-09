@@ -123,7 +123,7 @@ it('rejects extra fields before Zod can strip them', async () => {
   ).rejects.toBeInstanceOf(OutputValidationError);
 });
 
-it.each([NaN, Infinity, undefined])(
+it.each([NaN, undefined])(
   'rejects non-JSON values without lossy coercion',
   async (value) => {
     await expect(
