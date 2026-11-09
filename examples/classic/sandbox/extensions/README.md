@@ -22,6 +22,8 @@ Before switching, preserve any data you need from existing Runloop sandboxes. Ru
 
 ## Common setup
 
+Follow the [classic example setup](../../README.md) to install dependencies and build the SDK. Run the commands below from the repository root.
+
 All scripts require `OPENAI_API_KEY` because they call the model through the normal `Runner` path.
 
 These scripts read credentials from the current shell environment. They do not load `.env` or `.env.local` automatically, so if you keep secrets in a local env file, load that file into your shell before running an example:

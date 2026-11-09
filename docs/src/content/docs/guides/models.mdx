@@ -53,6 +53,10 @@ Second, set a default model for a `Runner` instance. Agents without their own mo
   title="Set a default model for a Runner"
 />
 
+To select one model for every agent in the run, including handoff targets with their own models, set `modelOverride` on the `Runner`. It accepts a model name or a `Model` instance and takes precedence over both Agent models and the Runner's `model` default. Explicit Agent model settings still take precedence over Runner settings.
+
+An `agent.asTool()` call creates a separate nested Runner and does not inherit this override. Set `runConfig.modelOverride` on that agent tool when the child should use an override too. See [Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools) for nested run configuration.
+
 #### GPT-5.x models
 
 When you use any GPT-5.x model such as [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol) in this way, the SDK applies default `modelSettings`. These settings suit most use cases. To adjust the reasoning effort for the default model, pass your own `modelSettings`:

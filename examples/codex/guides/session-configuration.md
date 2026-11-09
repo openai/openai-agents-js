@@ -18,7 +18,7 @@ Context, environment, opening overrides, and native model requirements still nee
 
 ### Capture provider routing and buffered JSON
 
-Provider options accept `headers`, `queryParams`, and `envHeaders` maps, plus `organization` and `project`. `envHeaders` maps header names to environment-variable names. The descriptor copies maps and resolves those environment values at construction; missing or empty values stay omitted. Create a new provider to refresh them. Native authentication, protocol and private-hop headers remain reserved, and configured routing does not follow redirects.
+With the current [source build](building.md), provider options accept `headers`, `queryParams`, and `envHeaders` maps, plus `organization` and `project`. `envHeaders` maps header names to environment-variable names. The descriptor copies maps and resolves those environment values at construction; missing or empty values stay omitted. Create a new provider to refresh them. Native authentication, protocol and private-hop headers remain reserved, and configured routing does not follow redirects.
 
 `responseMode: 'buffered'` selects complete Responses JSON over API-key HTTP. Set `supportsWebsockets: false` for this route. The JSON reader enforces a 64 MiB body limit and structural limits through the selected transport. The default `responseMode: 'streaming'` preserves the existing SSE/WebSocket route. Buffered responses still feed the ordinary session, tool and event lifecycle.
 
@@ -34,7 +34,7 @@ For JavaScript clients and custom model loops, see [classic model configuration]
 
 Pass `provider`, `model`, or `modelSettings` to `agent.session(...)` or `agent.run(...)` to configure one conversation.
 
-Native `modelSettings` accepts these fields:
+Native `modelSettings` accepts the following fields in the current [source build](building.md). `invocationTimeoutMs`, `topLogprobs`, `store`, `promptCacheRetention`, and `promptCacheTtl` are not included in `0.22.0-alpha.2`:
 
 | Field | Value and behavior |
 | --- | --- |
@@ -83,6 +83,53 @@ The [session configuration example](../session-configuration.ts) creates two pri
 ## Prepare one model request
 
 In `0.22.0-alpha.2`, use `prepareRequest` to edit detached sampling instructions, input, and tool presentation. Return the edited request to apply it. Read [Prepare a native model request](request-preparation.md) for the HTTP, model, tool, compaction, and restore constraints before adding a callback.
+
+## Control model context and completion
+
+The current [source build](building.md) adds three Agent callbacks. These callbacks are not included in `0.22.0-alpha.2`. Declare them on the Agent before opening a Session:
+
+| Callback | Return value and effect |
+| --- | --- |
+| `transformContext` | Return replacement Responses input items for the next request, or `undefined` to keep the original items. It changes sampled input without rewriting canonical history or granting tool authority. |
+| `beforeComplete` | Return `undefined` to accept a proposed completion, `{ action: 'continue', instructions }` to continue the same Turn with nonempty feedback, or `{ action: 'stop' }` to stop the root or child Turn that proposed the completion. |
+| `beforeCompact` | Return a nonempty summary to replace native summarization, or `undefined` to let the native model summarize. The accepted summary becomes canonical history. |
+
+All three receive application `context`, `sessionId`, `turnId`, the model, and a cooperative cancellation `signal`. Child callbacks also receive `subagentId`. `transformContext` receives detached `items`, `requestId`, and `purpose`: `turn`, `compaction`, or `output_repair`. Return a new or edited item list to apply an edit; mutations followed by `undefined` are discarded. Transport retries reuse the captured replacement.
+
+`beforeCompact` also receives detached `items`, `requestId`, and `automatic`, which identifies automatic rather than explicit compaction. Use these items to produce the returned summary; editing them without returning a summary does not change history.
+
+`beforeComplete` receives proposed `text` and `continuationCount`, which starts at zero. Natural text proposals precede output-schema conversion. A [`finishTurn` function](tools.md#finish-a-turn-from-a-function-tool) instead supplies `text: null`, its detached validated `finalOutput`, and `toolCall`. Editing that proposal does not change the accepted value. Already streamed text remains visible, and a stop cannot undo completed tool effects. Continued work retains the operation's model-step budget.
+
+Save the following as `completion-policy.mts` and run `pnpm exec tsx completion-policy.mts` from the source checkout. It uses local scripted responses and needs no API key. The callback rejects the first proposal, requests one continuation, and accepts the second:
+
+```ts
+import assert from 'node:assert/strict';
+import { Agent } from '@openai/agents';
+import { text, withScriptedResponses } from '@openai/agents/testing';
+
+await withScriptedResponses(
+  [[text('First draft.')], [text('Final answer.')]],
+  async (peer) => {
+    const agent = new Agent({
+      instructions: 'Answer clearly.',
+      provider: peer.provider,
+      beforeComplete: ({ continuationCount }) => {
+        if (continuationCount === 0)
+          return { action: 'continue', instructions: 'Revise the draft.' };
+      },
+    });
+    const result = await agent.run('Answer the question.', {
+      maxModelSteps: 2,
+    });
+    assert.equal(result.finalOutput, 'Final answer.');
+    assert.equal(peer.requests.length, 2);
+  },
+);
+```
+
+Callbacks are captured at opening. Restore binds current callbacks from your supplied Agent declarations; checkpoints do not contain callback code. Cancellation and close wait for entered callbacks, so honor their signals and finish their cleanup. Do not call mutating methods on the owning Session from these callbacks.
+
+Use `transformContext` to replace request input across native model work. Use [`prepareRequest`](request-preparation.md) when you also need to edit tool presentation or request instructions within its narrower supported root HTTP profile. Neither callback replaces tool selection, argument validation, or approval policy.
 
 ## Override opening tools
 

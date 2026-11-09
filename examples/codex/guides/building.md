@@ -23,6 +23,18 @@ The native source pin lives in `packages/agents-codex/native/CODEX_REVISION`. Th
 
 To try the build, set `OPENAI_API_KEY` and run `pnpm exec tsx examples/codex/basic.ts` from the repository root. The [greeting example](../basic.ts) asks the model to call a local tool and prints the final answer.
 
+## Rebuild after updating the checkout
+
+Repeat the source-build sequence after pulling changes. The native source pin can stay the same while the SDK's patches change, so an older prepared tree or binary may no longer match the checkout.
+
+If preparation reports that the reviewed source marker differs, it leaves the existing tree in place. Preserve any local edits before replacing it:
+
+1. Move the generated `packages/agents-codex/native/.upstream/reviewed-codex` and `reviewed-rust-sdk` directories to a backup location outside the checkout, if they exist.
+2. Run `pnpm native:prepare` to create the trees for the current checkout.
+3. Run `pnpm native:build` and `pnpm build` to rebuild the runtime and SDK packages together.
+
+Keep the backup until you have reviewed any source edits you need to retain. Do not edit the source marker to bypass the check.
+
 ## Run the native tests
 
 Build the executor test fixture before running the suite. The Linux tests need these host capabilities.
