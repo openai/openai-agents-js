@@ -320,15 +320,31 @@ export class OpenAITracingExporter implements TracingExporter {
         continue;
       }
 
-      const payloadItems = groupedItems
-        .map((entry) => entry.toJSON())
-        .filter((item) => !!item)
-        .map((item) =>
-          isRecord(item)
-            ? sanitizePayloadItemForTracesIngest(item, hosted)
-            : item,
+      const encodedItems: string[] = [];
+      let skipped = 0;
+      for (const entry of groupedItems) {
+        try {
+          const item = entry.toJSON();
+          if (item) {
+            const prepared = isRecord(item)
+              ? sanitizePayloadItemForTracesIngest(item, hosted)
+              : item;
+            encodedItems.push(JSON.stringify(prepared));
+          }
+        } catch {
+          skipped++;
+        }
+      }
+
+      if (skipped > 0) {
+        logger.warn(
+          `[non-fatal] Tracing: skipped ${skipped} of ${groupedItems.length} items during serialization.`,
         );
-      const payload = { data: payloadItems };
+        if (encodedItems.length === 0) {
+          continue;
+        }
+      }
+      const body = `{"data":[${encodedItems.join(',')}]}`;
 
       let attempts = 0;
       let delay = this.#options.baseDelay;
@@ -344,12 +360,12 @@ export class OpenAITracingExporter implements TracingExporter {
               'OpenAI-Beta': 'traces=v1',
               ...HEADERS,
             },
-            body: JSON.stringify(payload),
+            body,
             signal,
           });
 
           if (response.ok) {
-            logger.debug(`Exported ${payload.data.length} items`);
+            logger.debug(`Exported ${encodedItems.length} items`);
             break;
           }
 

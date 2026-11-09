@@ -2,7 +2,13 @@ import { _tracingFieldProcessingTestUtils } from '../src/tracingFieldProcessing'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OpenAITracingExporter } from '../src/openaiTracingExporter';
 import { HEADERS } from '../src/defaults';
-import { BatchTraceProcessor, createCustomSpan } from '@openai/agents-core';
+import {
+  BatchTraceProcessor,
+  createCustomSpan,
+  MultiTracingProcessor,
+  Span,
+  Trace,
+} from '@openai/agents-core';
 import logger from '../src/logger';
 
 describe('OpenAITracingExporter', () => {
@@ -1164,6 +1170,68 @@ describe('OpenAITracingExporter', () => {
         maxDelay: 5000,
         ...options,
       });
+
+    it('retries the same valid items when custom span data cannot be encoded', async () => {
+      const metadata = { version: 1 };
+      const first = new Trace({ name: 'first', metadata });
+      const last = new Trace({ name: 'last' });
+      const data: Record<string, unknown> = {};
+      data.self = data;
+      const span = new Span(
+        {
+          traceId: first.traceId,
+          data: { type: 'custom', name: 'cycle', data },
+        },
+        new MultiTracingProcessor(),
+      );
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          metadata.version = 2;
+          return Promise.resolve(new Response(null, { status: 503 }));
+        })
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const exported = makeExporter().export([first, span, last]);
+      await vi.runAllTimersAsync();
+      await exported;
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const body = fetchMock.mock.calls[0][1].body;
+      expect(JSON.parse(body).data).toEqual([
+        expect.objectContaining({
+          id: first.traceId,
+          metadata: { version: 1 },
+        }),
+        expect.objectContaining({ id: last.traceId }),
+      ]);
+      expect(fetchMock.mock.calls[1][1].body).toBe(body);
+      expect(span.spanData.data.self).toBe(data);
+    });
+
+    it('skips an unencodable key group without delaying the next request', async () => {
+      const metadata = { requestId: BigInt(42) };
+      const invalid = new Trace({ metadata, tracingApiKey: 'first-key' });
+      const valid = new Trace({ name: 'next', tracingApiKey: 'next-key' });
+      const fetchMock = vi.fn().mockResolvedValue(new Response(null));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const start = Date.now();
+      const exported = makeExporter().export([invalid, valid]);
+      await vi.runAllTimersAsync();
+      await exported;
+
+      expect(Date.now()).toBe(start);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const { headers, body } = fetchMock.mock.calls[0][1];
+      expect(headers.Authorization).toBe('Bearer next-key');
+      expect(JSON.parse(body).data).toEqual([valid.toJSON()]);
+      expect(invalid.metadata).toBe(metadata);
+      expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+        '[non-fatal] Tracing: skipped 1 of 1 items during serialization.',
+      );
+    });
 
     it.each([
       [408, undefined],
