@@ -361,3 +361,8 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+
+export type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageCounters,
+} from './runtime/realtime-usage';

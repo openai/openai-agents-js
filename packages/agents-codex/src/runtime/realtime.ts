@@ -1,4 +1,10 @@
 import {
+  addRealtimeUsage,
+  reportedRealtimeUsage,
+  type NativeRealtimeUsage,
+  type NativeRealtimeUsageCounters,
+} from './realtime-usage';
+import {
   NativeRealtimeGuardrails,
   type NativeRealtimeOutputGuardrail,
   type NativeRealtimeGuardrailEvent,
@@ -168,6 +174,7 @@ export type NativeRealtimeEvent =
       type: 'response';
       status: 'created' | 'done' | 'cancelled';
       responseId?: string;
+      usage?: NativeRealtimeUsage;
     }
   | {
       type: 'delegation';
@@ -569,6 +576,13 @@ class NativeRealtimeOwner {
   /** @internal Allow a later public opening to retry failed startup cleanup. */
   get _startupFailed(): boolean {
     return this.startupFailed;
+  }
+  private usageTotals?: NativeRealtimeUsageCounters;
+  /** Reported speech-model counters for this owner; excludes backend thread usage. */
+  get usage(): NativeRealtimeUsage | undefined {
+    return this.usageTotals === undefined
+      ? undefined
+      : (structuredClone(this.usageTotals) as NativeRealtimeUsage);
   }
   get history(): readonly NativeRealtimeHistoryItem[] {
     return Object.freeze(
@@ -1135,6 +1149,8 @@ class NativeRealtimeOwner {
       );
     if (event.type === 'hosted_mcp_call_completed' && event.error !== undefined)
       bytes += jsonAllocationBytes(event.error, AUDIO_LIMIT - bytes);
+    if (event.type === 'response' && event.usage !== undefined)
+      bytes += jsonAllocationBytes(event.usage, AUDIO_LIMIT - bytes);
     for (const value of Object.values(fields))
       if (typeof value === 'string') bytes += value.length * 4;
     return bytes;
@@ -1484,8 +1500,19 @@ class NativeRealtimeOwner {
       if (name === 'ResponseCreated') this.responseId = responseId;
       else if (!responseId || responseId === this.responseId)
         this.responseId = undefined;
+      let reportedUsage: NativeRealtimeUsage | undefined;
+      if (
+        name === 'ResponseDone' &&
+        value.usage !== undefined &&
+        value.usage !== null
+      ) {
+        const reported = reportedRealtimeUsage(value.usage);
+        this.usageTotals = addRealtimeUsage(this.usageTotals ?? {}, reported);
+        reportedUsage = structuredClone(reported) as NativeRealtimeUsage;
+      }
       this.emit({
         type: 'response',
+        usage: reportedUsage,
         status:
           name === 'ResponseCreated'
             ? 'created'

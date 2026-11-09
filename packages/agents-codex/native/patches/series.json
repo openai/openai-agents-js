@@ -379,7 +379,15 @@
     {
       "path": "0097-provider-owned-request-validation.patch",
       "sha256": "43ee308eaad0e9a518ecb1e8c00b80c7ab8151197e6b3c75635a50d1a9d1d495"
+    },
+    {
+      "path": "0150-native-realtime-canonical-startup.patch",
+      "sha256": "214aa39eb9e2eed63fee553fff1a425066cbcebc37bd9ac7d3c2bb35c9852ea8"
+    },
+    {
+      "path": "0151-native-realtime-response-usage.patch",
+      "sha256": "cd078f600aafb1078014ec3005198de0637d2f66c7a45c2a3ca35f1d054dd4af"
     }
   ],
-  "result_tree": "c7782675ee2dd7a63db79dee741e4c677b573c0f"
+  "result_tree": "8fa82250cb4b56d46df9645d4d466cecd975d57c"
 }

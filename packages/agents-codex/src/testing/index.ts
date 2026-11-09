@@ -446,3 +446,10 @@ export async function withScriptedResponses<T>(
   peer.assertExhausted();
   return result;
 }
+
+export { ScriptedRealtimeAdapter } from './realtime';
+export type {
+  RealtimeFrame,
+  RealtimeStep,
+  RealtimeConnectCall,
+} from './realtime';
