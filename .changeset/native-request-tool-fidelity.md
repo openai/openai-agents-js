@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-Add native request extensions, provider retry controls, and hosted-tool option forwarding.
+feat: add native model backends, request and retry controls, and hosted-tool options.
