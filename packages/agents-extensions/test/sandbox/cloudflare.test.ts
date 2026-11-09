@@ -442,6 +442,13 @@ describe('CloudflareSandboxClient', () => {
     await expect(session.pathExists('README.md', 'root')).resolves.toBe(true);
     await expect(session.directoryExists('.', 'root')).resolves.toBe(true);
 
+    for (const [url, init] of vi.mocked(global.fetch).mock.calls) {
+      if (String(url).endsWith('/exec')) {
+        const { argv } = JSON.parse(String(init?.body)) as { argv: string[] };
+        expect(argv.slice(0, 2)).toEqual(['/bin/sh', '-c']);
+        expect(argv[2]).not.toContain('sh -lc');
+      }
+    }
     expect(
       vi
         .mocked(global.fetch)

@@ -27,20 +27,22 @@ export type RemoteRunAsCommandRunner = (
 export function sandboxUserShellCommand(
   command: string,
   user?: string,
+  options: { login?: boolean } = {},
 ): string {
   if (!user) {
     return command;
   }
+  const shell = options.login === false ? '/bin/sh -c' : 'sh -lc';
   return [
     `target_user=${shellQuote(user)}`,
     'current_uid="$(id -u)"',
     'current_user="$(id -un 2>/dev/null || id -u)"',
     'if [ "$current_uid" = "$target_user" ] || [ "$current_user" = "$target_user" ]; then',
-    `  sh -lc ${shellQuote(command)}`,
+    `  ${shell} ${shellQuote(command)}`,
     'elif [ "$current_uid" -eq 0 ]; then',
     `  su -s /bin/sh "$target_user" -c ${shellQuote(command)}`,
     'else',
-    `  sudo -n -u "$target_user" -- sh -lc ${shellQuote(command)}`,
+    `  sudo -n -u "$target_user" -- ${shell} ${shellQuote(command)}`,
     'fi',
   ].join('\n');
 }

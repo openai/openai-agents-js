@@ -1194,15 +1194,18 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
-    const result = await this.execShell(
-      command,
-      options.workdir,
-      undefined,
-      options.environment,
-    );
+    const result = await this.sandbox.runCommand({
+      cmd: '/bin/sh',
+      args: [
+        options.kind === 'exec' || options.kind === 'running' ? '-lc' : '-c',
+        command,
+      ],
+      cwd: options.workdir,
+      env: options.environment ?? this.state.environment,
+    });
     return {
-      status: result.exitCode,
-      stdout: result.output,
+      status: result.exitCode ?? 1,
+      stdout: await result.output('both'),
       stderr: '',
     };
   }
@@ -1225,25 +1228,6 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
         content,
       },
     ]);
-  }
-
-  private async execShell(
-    command: string,
-    cwd: string,
-    sudo: boolean | undefined,
-    environment: Record<string, string> = this.state.environment,
-  ): Promise<{ exitCode: number; output: string }> {
-    const result = await this.sandbox.runCommand({
-      cmd: '/bin/sh',
-      args: ['-lc', command],
-      cwd,
-      env: environment,
-      ...(sudo ? { sudo: true } : {}),
-    });
-    return {
-      exitCode: result.exitCode ?? 1,
-      output: await result.output('both'),
-    };
   }
 
   private async replaceSandboxFromSnapshot(
