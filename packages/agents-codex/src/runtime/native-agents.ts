@@ -99,6 +99,7 @@ export interface NativeAgentsOptions<Context = unknown> {
   /**
    * Select tools independently before each native child's model preparation.
    * Returning undefined keeps that child's defaults; [] selects no tools.
+   * Return { action: 'stop' } to stop only that child's owning turn.
    * Each original child Turn starts its own stepIndex at zero.
    */
   beforeStep?: (

@@ -16,6 +16,11 @@ import { NativeError } from './native-error';
 export interface NativeProviderOptions {
   baseUrl?: string;
   apiKey?: string;
+  /**
+   * Set true to allow WebSockets on every streaming call. When omitted, eligible
+   * stateless Agent.run calls use HTTP; other calls allow WebSockets only when
+   * baseUrl is omitted.
+   */
   supportsWebsockets?: boolean;
   /** Read one complete Responses JSON body over API-key HTTP. */
   responseMode?: 'streaming' | 'buffered';
@@ -27,6 +32,10 @@ export interface NativeProviderOptions {
   project?: string;
   /** Explicit personal Apps credentials; never used for Model requests or refreshed. */
   chatGPT?: ChatGPTAuth;
+  /** Failed HTTP request retries. Native default: 4; native cap: 100; zero disables. */
+  requestMaxRetries?: number;
+  /** Dropped response stream reconnections. Native default: 5; native cap: 100; zero disables. */
+  streamMaxRetries?: number;
 }
 
 interface PrivateRuntimeSlot {
@@ -98,6 +107,11 @@ export class NativeProvider {
       throw new TypeError(
         'buffered Responses requires HTTP without WebSockets',
       );
+    for (const key of ['requestMaxRetries', 'streamMaxRetries'] as const) {
+      const value = options[key];
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+        throw new TypeError(`${key} must be a non-negative safe integer`);
+    }
     const routing = captureProviderRouting(options);
     this.#routing = routing.config;
     const captured = { ...options, ...routing.options };
@@ -173,21 +187,22 @@ export class NativeProvider {
       pendingIdle.idle = undefined;
     }
     const options = this.#options;
-    const websocketsAllowed =
-      options.responseMode !== 'buffered' &&
-      (options.supportsWebsockets ?? options.baseUrl === undefined);
     const apiKey = captured
       ? captured.apiKey
       : (options.apiKey ?? process.env.OPENAI_API_KEY);
-    const eligible =
+    const privateCandidate =
       privateRun &&
       this.constructor === NativeProvider &&
       !options.chatGPT &&
       apiKey !== undefined &&
       apiKey.length > 0 &&
       (options.apiKey === undefined || apiKey === options.apiKey) &&
+      options.responseMode !== 'buffered';
+    const websocketsAllowed =
       options.responseMode !== 'buffered' &&
-      !websocketsAllowed;
+      (options.supportsWebsockets ??
+        (options.baseUrl === undefined && !privateCandidate));
+    const eligible = privateCandidate && !websocketsAllowed;
     const slot = eligible ? (this.#runtime ??= {}) : undefined;
     const reserved =
       slot !== undefined &&
@@ -312,6 +327,12 @@ export class NativeProvider {
           requires_openai_auth: true,
           supports_websockets: websocketsAllowed,
           ...this.#routing,
+          ...(options.requestMaxRetries === undefined
+            ? {}
+            : { request_max_retries: options.requestMaxRetries }),
+          ...(options.streamMaxRetries === undefined
+            ? {}
+            : { stream_max_retries: options.streamMaxRetries }),
         },
       },
       async open() {

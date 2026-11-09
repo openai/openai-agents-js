@@ -145,6 +145,8 @@ A pending manual checkpoint stores the remaining steps. Resume with `agent.run(n
 
 `beforeStep` receives the issued Turn, application context, zero-based `stepIndex`, and an AbortSignal. Return a subset of the tools selected for the root. Return `undefined` to allow that full set for the step. Selection limits eligibility and leaves tool choice to the model.
 
+Return `{ action: 'stop' }` when an application policy no longer permits another model step. The SDK stops the owning turn before its pending model request; waiting for that turn rejects with `NativeError`. Earlier tool effects remain. A `NativeAgents.beforeStep` callback can return the same decision to stop its child turn without stopping the parent or siblings.
+
 The [create-then-read application recipe](../operation-selection.ts) uses four checks.
 
 1. `beforeStep` filters the tools published to the model.

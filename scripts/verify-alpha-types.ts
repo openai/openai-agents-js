@@ -9,6 +9,14 @@ import * as facadeTasks from '@openai/agents/experimental/mcp-tasks';
 import * as runtimeTasks from '@openai/agents-codex/experimental/mcp-tasks';
 import * as facadeA2A from '@openai/agents/a2a';
 import * as runtimeA2A from '@openai/agents-codex/a2a';
+import * as facadeMemory from '@openai/agents/memory';
+import * as runtimeMemory from '@openai/agents-codex/memory';
+import * as facadeArtifacts from '@openai/agents/artifacts';
+import * as runtimeArtifacts from '@openai/agents-codex/artifacts';
+import * as facadeUI from '@openai/agents/ui';
+import * as runtimeUI from '@openai/agents-codex/ui';
+import * as facadeMcpApps from '@openai/agents/mcp-apps';
+import * as runtimeMcpApps from '@openai/agents-codex/mcp-apps';
 import {
   ScriptedModel,
   modelResponse,
@@ -30,6 +38,14 @@ const tasks: typeof facadeTasks = runtimeTasks;
 const reverseTasks: typeof runtimeTasks = facadeTasks;
 const a2a: typeof facadeA2A = runtimeA2A;
 const reverseA2A: typeof runtimeA2A = facadeA2A;
+const memory: typeof facadeMemory = runtimeMemory;
+const reverseMemory: typeof runtimeMemory = facadeMemory;
+const artifacts: typeof facadeArtifacts = runtimeArtifacts;
+const reverseArtifacts: typeof runtimeArtifacts = facadeArtifacts;
+const ui: typeof facadeUI = runtimeUI;
+const reverseUI: typeof runtimeUI = facadeUI;
+const mcpApps: typeof facadeMcpApps = runtimeMcpApps;
+const reverseMcpApps: typeof runtimeMcpApps = facadeMcpApps;
 void [
   facadeAgent,
   testing,
@@ -40,6 +56,14 @@ void [
   reverseTasks,
   a2a,
   reverseA2A,
+  memory,
+  reverseMemory,
+  artifacts,
+  reverseArtifacts,
+  ui,
+  reverseUI,
+  mcpApps,
+  reverseMcpApps,
 ];
 
 const greeting = tool({

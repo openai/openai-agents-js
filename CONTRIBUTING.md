@@ -16,15 +16,15 @@ This repository is a pnpm-managed monorepo that contains several packages:
 
 - `packages/agents-core`: Core abstractions and runtime for building agent workflows.
 - `packages/agents-openai`: OpenAI SDK bindings and concrete implementations.
-- `packages/agents` provides the public SDK imports and initializes classic agents.
-- `packages/agents-codex` contains the embedded Codex runtime, native helpers, and Codex examples.
+- `packages/agents` provides public imports for the native, classic, and Realtime APIs.
+- `packages/agents-codex` contains the embedded Codex runtime and native helpers. See `examples/codex` for examples that use this runtime.
 - `packages/agents-realtime`: Realtime bindings and implementations.
 - `packages/agents-extensions`: Extensions for additional workflows.
 
 The repository also contains these directories:
 
 - `docs/`: Documentation site (Astro).
-- `examples/`: Example projects that show basic usage.
+- `examples/`: Native and classic SDK examples.
 - `scripts/`: Automation scripts, such as the metadata script.
 - `helpers/`: Shared utilities for tests and examples.
 
@@ -54,10 +54,12 @@ pnpm -r build-check
 pnpm test
 ```
 
-To run the example app or docs site, use these commands:
+Run either command from the repository root.
 
-- `pnpm examples:basic` to start the basic example
-- `pnpm docs:dev` to serve the documentation locally
+- Set `OPENAI_API_KEY`, then run `pnpm examples:basic` to try a classic agent handoff.
+- Run `pnpm docs:dev` to serve the documentation locally.
+
+To run the native examples, follow the [native source-build guide](examples/codex/guides/building.md).
 
 ## Development workflow
 
@@ -155,10 +157,10 @@ Release workflows and publishing configuration require code-owner coverage and r
 
 ## Submitting a pull request
 
-These steps are for repository collaborators.
+These steps are for repository collaborators. Use `feat/codex-harness` as the base branch for the native SDK checkout described above.
 
 1. Fork the repository and create a branch with a descriptive name (e.g., `fix/missing-error`, `feat/new-tool`).
-2. Ensure your branch is up to date with `main`.
+2. Bring your branch up to date with the base branch.
 3. Make your changes, add or update tests, and ensure that the following succeeds:
    ```bash
    pnpm build && pnpm -r build-check && pnpm test && pnpm lint
@@ -166,14 +168,14 @@ These steps are for repository collaborators.
 4. If you changed files under `packages/`, generate a changeset (`pnpm changeset`).
 5. Make sure you have [Trufflehog](https://github.com/trufflesecurity/trufflehog) installed to ensure no secrets are accidentally committed.
 6. Commit your changes using Conventional Commits (e.g., `feat:`, `fix:`, `docs:`).
-7. Push your branch to your fork and open a pull request against the `main` branch.
+7. Push your branch to your fork and open a pull request against the base branch.
 8. In the pull request description, link any related issues and summarize your changes.
 
 ### Review process
 
 - All pull requests require at least one approving review from a maintainer.
 - Automated checks (build, test, docs) must pass before merging.
-- We use squash merging; each pull request results in a single commit on `main`.
+- We squash each pull request into one commit on the base branch.
 
 ## Releasing
 

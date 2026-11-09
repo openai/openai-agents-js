@@ -73,6 +73,67 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private Engine fresh-root reuse',
   () => {
+    it('uses HTTP for default private runs and reuses isolated native roots', async () => {
+      const model = new ModelServer([
+        [message('default HTTP answer 1')],
+        [message('default HTTP answer 2')],
+      ]);
+      const fixture = await model.config();
+      const fixtureUrl = (
+        fixture['model_providers.fixture'] as { base_url: string }
+      ).base_url;
+      let upgrades = 0;
+      model.onUpgrade((_request, socket) => {
+        upgrades++;
+        socket.destroy();
+      });
+      await using provider = new NativeProvider({
+        apiKey: 'synthetic-default',
+      });
+      expect(provider.baseUrl).toBeUndefined();
+      expect(provider.supportsWebsockets).toBeUndefined();
+      const acquire = provider._acquire;
+      // Route only to the local fixture after the real default transport choice.
+      vi.spyOn(provider, '_acquire').mockImplementation(function (
+        this: NativeProvider,
+        ...args
+      ) {
+        const lease = acquire.apply(this, args);
+        expect(lease.websocketsAllowed).toBe(false);
+        const config = lease.config['model_providers.native_agent'] as {
+          base_url: string;
+          supports_websockets: boolean;
+        };
+        expect(config.supports_websockets).toBe(false);
+        expect(config.base_url).toBe('https://api.openai.com/v1');
+        config.base_url = fixtureUrl;
+        return lease;
+      });
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Answer.',
+      });
+      const rows = await starts();
+      expect((await agent.run('first default HTTP marker')).finalOutput).toBe(
+        'default HTTP answer 1',
+      );
+      expect((await agent.run('second default HTTP marker')).finalOutput).toBe(
+        'default HTTP answer 2',
+      );
+      expect(rows.map((row) => row.kind)).toEqual(['ordinary', 'private']);
+      expect(rows[0].engine).toBe(rows[1].engine);
+      expect(rows[0].root).toBeTruthy();
+      expect(rows[1].root).toBeTruthy();
+      expect(rows[0].root).not.toBe(rows[1].root);
+      expect(upgrades).toBe(0);
+      const input = JSON.stringify(model.requests[1].input);
+      expect(input).toContain('second default HTTP marker');
+      expect(input).not.toContain('first default HTTP marker');
+      expect(input).not.toContain('default HTTP answer 1');
+      model.assertExhausted();
+    }, 30_000);
+
     it.each([false, true])(
       'keeps explicit initial messages on fresh seeded roots (empty=%s)',
       async (empty) => {

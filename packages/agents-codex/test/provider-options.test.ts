@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { NativeProvider } from '../src/runtime/provider';
 
 describe('NativeProvider option capture', () => {
@@ -42,5 +42,68 @@ describe('NativeProvider option capture', () => {
 
   it.each(['baseUrl', 'apiKey'])('continues rejecting an empty %s', (key) => {
     expect(() => new NativeProvider({ [key]: '' })).toThrow(TypeError);
+  });
+
+  it.each([
+    ['private default', {}, true, false, true],
+    ['explicit Session or excluded run', {}, false, true, false],
+    ['explicit WebSockets', { supportsWebsockets: true }, true, true, false],
+    ['explicit HTTP', { supportsWebsockets: false }, true, false, true],
+    [
+      'custom base URL',
+      { baseUrl: 'http://127.0.0.1:1/v1' },
+      true,
+      false,
+      true,
+    ],
+    [
+      'buffered response',
+      { responseMode: 'buffered' as const },
+      true,
+      false,
+      false,
+    ],
+  ] as const)(
+    'selects effective transport for %s',
+    async (_name, options, privateRun, allowed, reusable) => {
+      const provider = new NativeProvider({
+        apiKey: 'synthetic-key',
+        ...options,
+      });
+      const lease = provider._acquire(undefined, privateRun);
+      try {
+        expect(lease.websocketsAllowed).toBe(allowed);
+        expect(lease.config['model_providers.native_agent']).toMatchObject({
+          supports_websockets: allowed,
+        });
+        expect(lease.privateRuntime !== undefined).toBe(reusable);
+      } finally {
+        await lease.release();
+        await provider.close();
+      }
+    },
+  );
+
+  it('keeps the default WS choice when private candidacy is excluded', async () => {
+    vi.stubEnv('OPENAI_API_KEY', undefined);
+    class DerivedProvider extends NativeProvider {}
+    const providers = [
+      new NativeProvider(),
+      new DerivedProvider({ apiKey: 'synthetic-key' }),
+    ];
+    try {
+      for (const provider of providers) {
+        const lease = provider._acquire(undefined, true);
+        try {
+          expect(lease.websocketsAllowed).toBe(true);
+          expect(lease.privateRuntime).toBeUndefined();
+        } finally {
+          await lease.release();
+        }
+      }
+    } finally {
+      await Promise.all(providers.map((provider) => provider.close()));
+      vi.unstubAllEnvs();
+    }
   });
 });
