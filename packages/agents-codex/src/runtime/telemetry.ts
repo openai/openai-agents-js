@@ -362,18 +362,23 @@ async function route(
               routes.set(id, events);
             }
           }
-          for (const [id, events] of routes) {
-            const processor = processors.get(id);
-            if (typeof processor?.onEvents === 'function') {
-              try {
-                await suppressTracing(() =>
-                  processor.onEvents!(Object.freeze(events)),
-                );
-              } catch {
-                failures += events.length;
-              }
-            } else {
-              for (const event of events) {
+          for (const event of batch.events as TraceEvent[]) {
+            for (const id of event.processor_ids) {
+              const events = routes.get(id);
+              if (!events) continue;
+              const processor = processors.get(id);
+              if (typeof processor?.onEvents === 'function') {
+                // Deliver each batch at its first event's position. Ordinary
+                // processors retain event-by-event registration order.
+                routes.delete(id);
+                try {
+                  await suppressTracing(() =>
+                    processor.onEvents!(Object.freeze(events)),
+                  );
+                } catch {
+                  failures += events.length;
+                }
+              } else {
                 try {
                   await suppressTracing(() => processor?.onEvent(event));
                 } catch {
