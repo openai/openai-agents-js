@@ -2574,3 +2574,155 @@ nativeIt(
   },
   15000,
 );
+
+nativeIt.each([false, true])(
+  'retains intermediate mono voice declarations without widening graph admission (graph=%s)',
+  async (graph) => {
+    const first = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'A',
+    });
+    const intermediate = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'B',
+    });
+    const current = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'C',
+    });
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'intermediate-workflow' })],
+      [message('C complete.')],
+    ]);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [first],
+        ...(graph
+          ? {
+              handoffs: [
+                new Agent({ name: 'Other', instructions: 'Other profile.' }),
+              ],
+            }
+          : {}),
+        provider,
+      }).session();
+      await session.update({ tools: [intermediate] });
+      const workflow = new NativeSessionVoiceWorkflow(session, [intermediate]);
+      await session.update({ tools: [current] });
+      const output = (async () => {
+        const values: string[] = [];
+        for await (const text of workflow.run('Use lookup.')) values.push(text);
+        return values;
+      })();
+      if (graph) {
+        await expect(output).rejects.toThrow(/not admitted/);
+        expect(model.requests).toHaveLength(0);
+      } else {
+        expect(await output).toEqual(['C complete.']);
+        model.assertExhausted();
+      }
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each([false, true])(
+  'retains intermediate mono Realtime declarations through updates and reopening (graph=%s)',
+  async (graph) => {
+    const first = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'A',
+    });
+    const intermediate = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'B',
+    });
+    const current = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'C',
+    });
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [first],
+        ...(graph
+          ? {
+              handoffs: [
+                new Agent({ name: 'Other', instructions: 'Other profile.' }),
+              ],
+            }
+          : {}),
+        provider,
+      }).session();
+      await session.update({ tools: [intermediate] });
+      let voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [intermediate],
+      });
+      try {
+        const start = peer.frames.length;
+        await session.update({ tools: [current] });
+        const updated = await peer.frame(
+          (frame) => frame.type === 'session.update',
+          start,
+        );
+        expect(
+          updated.session.tools.some((spec: Frame) => spec.name === 'lookup'),
+        ).toBe(!graph);
+        if (!graph) {
+          peer.call('lookup', {}, 'intermediate-active');
+          expect(
+            (
+              await peer.frame(
+                (frame) => frame.item?.call_id === 'intermediate-active',
+              )
+            ).item.output,
+          ).toBe('C');
+        }
+        await voice.close();
+        if (graph) {
+          await expect(
+            session.realtime({
+              model: 'fixture-realtime',
+              tools: [intermediate],
+            }),
+          ).rejects.toThrow(/not admitted/);
+        } else {
+          voice = await session.realtime({
+            model: 'fixture-realtime',
+            tools: [intermediate],
+          });
+          peer.call('lookup', {}, 'intermediate-reopened');
+          expect(
+            (
+              await peer.frame(
+                (frame) => frame.item?.call_id === 'intermediate-reopened',
+              )
+            ).item.output,
+          ).toBe('C');
+        }
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);

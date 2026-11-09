@@ -1135,10 +1135,19 @@ export class Session<OutputT = string, Context = unknown> {
     catalog: ToolCatalog,
     declarationCatalog: ToolCatalog,
   ): SessionTool | undefined {
-    const admitted = declarationCatalog.tools.find(
+    let admitted = declarationCatalog.tools.find(
       (candidate) =>
         toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
     );
+    if (!admitted && !this.options.agentGraph && catalog === this.catalog) {
+      const identity = toolIdentity(tool);
+      if (
+        this.admittedDeclarations
+          .get(JSON.stringify([identity.namespace, identity.name]))
+          ?.has(toolDeclarationIdentity(tool))
+      )
+        admitted = tool;
+    }
     const captured = catalog.tools.find((candidate) => {
       if (toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool))
         return true;
