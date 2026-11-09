@@ -309,8 +309,14 @@ jobs:
           architecture: ${{ matrix.arch == 'ia32' && 'x86' || matrix.arch }}
           cache: 'pnpm'
       - name: Install dependencies
-        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch != 'ia32' }}
         run: pnpm install --frozen-lockfile --cpu=${{ matrix.arch }}
+      - name: Install both Windows installer and ia32 runtime binaries
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch == 'ia32' }}
+        run: |
+          node -e "const fs = require('node:fs'); const file = 'pnpm-workspace.yaml'; const text = fs.readFileSync(file, 'utf8'); if (/^[ \t]*supportedArchitectures:/m.test(text)) throw new Error('Unexpected existing supportedArchitectures'); fs.appendFileSync(file, '\nsupportedArchitectures:\n  cpu:\n    - x64\n    - ia32\n');"
+          pnpm config get supportedArchitectures --json
+          pnpm install --frozen-lockfile
       - name: Verify native runtime architecture
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm exec node -e "require('node:assert/strict').equal(process.platform + '/' + process.arch, '${{ matrix.target }}')"

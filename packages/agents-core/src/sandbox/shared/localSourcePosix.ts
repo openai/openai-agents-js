@@ -50,10 +50,11 @@ const close = libc.func('int close(int fd)');
 const read = libc.func(
   'intptr_t read(int fd, _Out_ uint8_t *buffer, size_t size)',
 );
-const fdopendir = libc.func('void *fdopendir(int fd)');
-const closedir = libc.func('int closedir(void *directory)');
-// Darwin x64 retains legacy inode32 symbols alongside the current inode64 ABI.
+// Darwin x64 retains legacy inode32 symbols. The stream constructor, reader and
+// metadata functions must all select the current inode64 ABI.
 const inodeSuffix = darwin && process.arch === 'x64' ? '$INODE64' : '';
+const fdopendir = libc.func(`fdopendir${inodeSuffix}`, 'void *', ['int']);
+const closedir = libc.func('int closedir(void *directory)');
 const readdir = darwin
   ? libc.func(`readdir${inodeSuffix}`, 'void *', ['void *'])
   : (() => {
