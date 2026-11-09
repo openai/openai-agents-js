@@ -1,3 +1,4 @@
+import { crc32, deflateSync } from 'node:zlib';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
@@ -8,6 +9,30 @@ import { ModelServer } from './native/fixtures/model-server';
 type Frame = Record<string, any>;
 const PNG_IMAGE =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==';
+
+// One-bit grayscale keeps fixture construction near 2 MiB even when decoded
+// dimensions would require more than the native 64 MiB RGBA budget.
+function solidPngImage(side: number): string {
+  const chunk = (name: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(name), data]);
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(data.length);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc32(body));
+    return Buffer.concat([size, body, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(side, 0);
+  header.writeUInt32BE(side, 4);
+  header[8] = 1;
+  const scanlines = Buffer.alloc((Math.ceil(side / 8) + 1) * side);
+  return `data:image/png;base64,${Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(scanlines)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]).toString('base64')}`;
+}
 
 // Only the independent provider protocol is scripted; public Session, binding,
 // native configuration, reconciliation, and generation ownership execute normally.
@@ -831,4 +856,220 @@ nativeIt(
     }
   },
   20000,
+);
+
+nativeIt.each([4097, 4096])(
+  'bounds decompressed image dimensions before history writes (side=%s)',
+  async (side) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Keep the original until replacement is valid.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const original = userItem(
+          'original',
+          'Preserve this on preflight failure.',
+        );
+        await observe(peer, seen, original);
+        peer.retrievals.set('original', original);
+        const image = {
+          id: 'replacement-image',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_image', image_url: solidPngImage(side) }],
+        };
+        const after = peer.frames.length;
+        const updating = voice.updateHistory([image]);
+        void updating.catch(() => {});
+        if (side > 4096) {
+          await expect(updating).rejects.toThrow();
+          expect(
+            peer.frames
+              .slice(after)
+              .filter((frame) =>
+                [
+                  'conversation.item.delete',
+                  'conversation.item.create',
+                ].includes(frame.type),
+              ),
+          ).toEqual([]);
+        } else {
+          expect(
+            (await peer.frame('conversation.item.delete', after)).item_id,
+          ).toBe(original.id);
+          peer.send({
+            type: 'conversation.item.deleted',
+            item_id: original.id,
+          });
+          expect(
+            (await peer.frame('conversation.item.create', after)).item,
+          ).toEqual(image);
+          peer.send({
+            type: 'conversation.item.added',
+            item: image,
+            previous_item_id: null,
+          });
+          await updating;
+        }
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each(['missing', 'empty'] as const)(
+  'quarantines the physical read after a %s-ID malformed retrieval until its matching late receipt drains',
+  async (malformed) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Keep retrieval ownership exact.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const original = userItem('live-read', 'Original item.');
+        await observe(peer, seen, original);
+        let after = peer.frames.length;
+        const first = voice.retrieveConversationItem('live-read');
+        void first.catch(() => {});
+        expect(
+          (await peer.frame('conversation.item.retrieve', after)).item_id,
+        ).toBe('live-read');
+        peer.send({
+          type: 'conversation.item.retrieved',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Malformed first receipt.' }],
+            ...(malformed === 'empty' ? { id: '' } : {}),
+          },
+        });
+        await expect(first).rejects.toThrow();
+        after = peer.frames.length;
+        await expect(
+          voice.retrieveConversationItem('live-read'),
+        ).rejects.toThrow();
+        expect(peer.frames.slice(after)).toEqual([]);
+        peer.send({
+          type: 'conversation.item.retrieved',
+          item: userItem('live-read', 'Late first payload.'),
+        });
+        await voice.update({ toolChoice: 'none' });
+        after = peer.frames.length;
+        const second = voice.retrieveConversationItem('live-read');
+        void second.catch(() => {});
+        expect(
+          (await peer.frame('conversation.item.retrieve', after)).item_id,
+        ).toBe('live-read');
+        const fresh = userItem('live-read', 'Fresh second payload.');
+        peer.send({ type: 'conversation.item.retrieved', item: fresh });
+        await expect(second).resolves.toEqual(fresh);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  25000,
+);
+
+nativeIt(
+  'ignores a tombstoned malformed Added before parsing while an unrelated physical read is pending',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Keep retrieval ownership exact.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        await observe(
+          peer,
+          seen,
+          userItem('live-read', 'Read this live item.'),
+        );
+        peer.send({ type: 'conversation.item.deleted', item_id: 'root' });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item_deleted' &&
+                event.itemId === 'root',
+            ),
+          ).toBe(true),
+        );
+        const after = peer.frames.length;
+        let settled = false;
+        const pending = voice
+          .retrieveConversationItem('live-read')
+          .finally(() => {
+            settled = true;
+          });
+        void pending.catch(() => {});
+        expect(
+          (await peer.frame('conversation.item.retrieve', after)).item_id,
+        ).toBe('live-read');
+        peer.send({
+          type: 'conversation.item.added',
+          item: userItem('root', 'Malformed reserved ID, already tombstoned.'),
+          previous_item_id: null,
+        });
+        await voice.update({ toolChoice: 'none' });
+        expect(settled).toBe(false);
+        const result = userItem(
+          'live-read',
+          'The original pending host receives this payload.',
+        );
+        peer.send({ type: 'conversation.item.retrieved', item: result });
+        await expect(pending).resolves.toEqual(result);
+        expect(
+          peer.frames
+            .slice(after)
+            .filter((frame) => frame.type === 'conversation.item.retrieve'),
+        ).toHaveLength(1);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  25000,
 );
