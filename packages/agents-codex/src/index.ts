@@ -361,3 +361,11 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+
+export { ChatCompletionsModel } from './runtime/models';
+export type {
+  NativeModel,
+  ModelProvider,
+  ModelRequest,
+  ModelResponse,
+} from './runtime/models';

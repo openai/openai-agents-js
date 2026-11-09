@@ -819,6 +819,10 @@ export class Agent<Context = undefined, Output = string> {
         'Persistent storage supports current managed tools without MCP or Code Mode',
       );
     const nativeAgents = declarations.nativeAgents;
+    if (nativeAgents && provider.modelBackend)
+      throw new TypeError(
+        'modelBackend does not yet support native child agents',
+      );
     if (nativeAgents && provider.responseMode === 'buffered')
       throw new TypeError(
         'Native child agents are not supported in buffered mode',
@@ -1161,6 +1165,7 @@ export class Agent<Context = undefined, Output = string> {
               }
             : {}),
           _context_callbacks: {
+            model_producer: provider.modelBackend !== undefined,
             before_compact:
               beforeCompact !== undefined ||
               (completedGraph?.roster.some(
@@ -1213,6 +1218,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        modelBackend: provider.modelBackend,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         parentTrace: captureTraceContext(options.parentTrace),

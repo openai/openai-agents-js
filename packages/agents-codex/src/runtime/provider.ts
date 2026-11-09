@@ -2,12 +2,14 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from './config';
+import type { NativeModel, ModelProvider } from './models';
 import { copyJsonValue, type JsonObject } from './binding';
 import type { ToolRef } from './tools';
 import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
 
 export interface NativeProviderOptions {
+  modelBackend?: NativeModel | ModelProvider;
   /** Native retry budgets; Core caps each at 100. Zero disables retries. */
   requestMaxRetries?: number;
   streamMaxRetries?: number;
@@ -66,6 +68,22 @@ export class NativeProvider {
   }>;
 
   constructor(options: NativeProviderOptions = {}) {
+    if (options.modelBackend !== undefined) {
+      if (
+        !options.modelBackend ||
+        ((!('complete' in options.modelBackend) ||
+          typeof options.modelBackend.complete !== 'function') &&
+          (!('getModel' in options.modelBackend) ||
+            typeof options.modelBackend.getModel !== 'function'))
+      )
+        throw new TypeError(
+          'modelBackend must implement complete(request) or getModel(modelName)',
+        );
+      if (options.supportsWebsockets === true || options.chatGPT !== undefined)
+        throw new TypeError(
+          'modelBackend requires HTTP mode without ChatGPT authentication',
+        );
+    }
     for (const key of [
       'requestMaxRetries',
       'streamMaxRetries',
@@ -109,6 +127,9 @@ export class NativeProvider {
     });
   }
 
+  get modelBackend(): NativeModel | ModelProvider | undefined {
+    return this.#options.modelBackend;
+  }
   get baseUrl(): string | undefined {
     return this.#options.baseUrl;
   }
@@ -129,6 +150,7 @@ export class NativeProvider {
     this.#leases.add(token);
     const options = this.#options;
     const websocketsAllowed =
+      options.modelBackend === undefined &&
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ?? options.baseUrl === undefined);
     let home: string | undefined;
@@ -156,9 +178,12 @@ export class NativeProvider {
         return (this.#httpTransports ??= create(engine));
       },
       chatGPT: options.chatGPT,
-      apiKey: captured
-        ? captured.apiKey
-        : (options.apiKey ?? process.env.OPENAI_API_KEY),
+      apiKey:
+        options.modelBackend !== undefined
+          ? 'native-model-producer'
+          : captured
+            ? captured.apiKey
+            : (options.apiKey ?? process.env.OPENAI_API_KEY),
       config: {
         model_provider: 'native_agent',
         'model_providers.native_agent': {

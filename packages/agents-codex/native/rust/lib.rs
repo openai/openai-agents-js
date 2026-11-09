@@ -2628,6 +2628,26 @@ impl NativeThread {
         owner.reply_step(&thread, response).map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_model_producer")]
+    pub fn _reply_model_producer(&self, response_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::context_callbacks::ModelProducerReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner.reply_model_producer(response).map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_compaction")]
     pub fn _reply_compaction(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;

@@ -1,4 +1,9 @@
 import {
+  captureModelResponse,
+  type NativeModel,
+  type ModelProvider,
+} from './models';
+import {
   captureCompletionDecision,
   type BeforeComplete,
   type BeforeCompact,
@@ -282,6 +287,7 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  modelBackend?: NativeModel | ModelProvider;
   beforeComplete?: BeforeComplete<any>;
   beforeCompact?: BeforeCompact<any>;
   transformContext?: ContextTransform<any>;
@@ -5662,6 +5668,7 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     if (
+      msg.type === '_sdk_model_produce' ||
       msg.type === '_sdk_before_compact' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
@@ -5995,6 +6002,7 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     if (
+      kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
@@ -6574,6 +6582,7 @@ export class Session<OutputT = string, Context = unknown> {
           };
           const contextEdit = msg.type === '_sdk_transform_context';
           const compact = msg.type === '_sdk_before_compact';
+          const produce = msg.type === '_sdk_model_produce';
           const sourceCatalog = this.sourceCatalog(
             msg,
             z.string().parse(msg.generation),
@@ -6587,7 +6596,8 @@ export class Session<OutputT = string, Context = unknown> {
             const data = contextEdit
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
-            if (compact) sourceNative._reply_compaction(data);
+            if (produce) sourceNative._reply_model_producer(data);
+            else if (compact) sourceNative._reply_compaction(data);
             else if (contextEdit) sourceNative._reply_model_context(data);
             else sourceNative._reply_natural_completion(data);
             replied = true;
@@ -6624,7 +6634,23 @@ export class Session<OutputT = string, Context = unknown> {
               model: z.string().parse(msg.model),
               signal,
             };
-            if (compact) {
+            if (produce) {
+              if (!this.options.modelBackend)
+                throw new NativeError(
+                  'Native model producer has no application backend',
+                );
+              const backend =
+                'complete' in this.options.modelBackend
+                  ? this.options.modelBackend
+                  : this.options.modelBackend.getModel(base.model);
+              const returned = await backend.complete({
+                ...base,
+                body: losslessJsonObjectSchema.parse(msg.data),
+              });
+              const data = captureModelResponse(returned);
+              check();
+              reply({ data });
+            } else if (compact) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
               const returned = beforeCompact?.(
                 Object.freeze({

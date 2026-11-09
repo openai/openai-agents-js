@@ -387,7 +387,11 @@
     {
       "path": "0101-native-request-extensions.patch",
       "sha256": "fc28e524a2b71b3501d232cad8a2a3e420f8463f719c2415b89ab853b9beaa68"
+    },
+    {
+      "path": "0102-native-model-producer.patch",
+      "sha256": "65519ed8b6e669fd17c2f80aea75f0e0ccb0af25715e5f38f1b9492ee063b68d"
     }
   ],
-  "result_tree": "e331be29f9327ccc6a2d21c8ff93d0726fdfa62a"
+  "result_tree": "fc17c6acf417c675122961dbc4b7d6f210634e99"
 }

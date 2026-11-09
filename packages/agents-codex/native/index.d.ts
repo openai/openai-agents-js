@@ -216,6 +216,7 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_model_producer(response_json: string): void;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _reply_compaction(response_json: string): void;
