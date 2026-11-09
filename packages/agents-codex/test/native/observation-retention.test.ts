@@ -294,3 +294,180 @@ it('visits retained array entries linearly for independent replay cursors', asyn
   ).toHaveLength(3);
   expect(reads).toBeLessThanOrEqual(12);
 });
+
+it.each(['bounded', 'all'] as const)(
+  'anchors a pre-opened queued reader to dispatch in %s retention',
+  async (retention) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const server = new ModelServer([
+      async () => {
+        entered.resolve();
+        await release.promise;
+        return [message('first')];
+      },
+      [message('second')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-admission-gap',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+    }).session({ observationRetention: retention });
+    try {
+      const first = await session.submit('first');
+      await entered.promise;
+      const second = await session.enqueue('second');
+      const reader = second.events();
+      let delivered = false;
+      const reading = reader.next().then((event) => {
+        delivered = true;
+        return event;
+      });
+      const buffer = (session as unknown as { observations: ObservationBuffer })
+        .observations;
+      buffer.gap();
+      const earlierGap = buffer.currentSequence;
+      await Promise.resolve();
+      if (retention === 'all') expect(delivered).toBe(false);
+      release.resolve();
+      await first.wait();
+      await second.wait();
+      buffer.gap();
+      const laterGap = buffer.currentSequence;
+      const initial = await reading;
+      expect(initial.done).toBe(false);
+      const events = [initial.value!, ...(await Array.fromAsync(reader))];
+      expect(
+        events.some(
+          (event) => event.type === 'gap' && event.sequence === earlierGap,
+        ),
+      ).toBe(retention === 'bounded');
+      expect(
+        events.some(
+          (event) => event.type === 'gap' && event.sequence === laterGap,
+        ),
+      ).toBe(true);
+      expect(await Array.fromAsync(second.events({ after: laterGap }))).toEqual(
+        [],
+      );
+      server.assertExhausted();
+    } finally {
+      release.resolve();
+    }
+  },
+);
+
+it.each(['cancel', 'close'] as const)(
+  'ends a not-admitted all-retention reader on %s',
+  async (mode) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const server = new ModelServer([
+      async () => {
+        entered.resolve();
+        await release.promise;
+        return [message('first')];
+      },
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-withdrawal-gap',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+    }).session({ observationRetention: 'all' });
+    try {
+      const first = await session.submit('first');
+      await entered.promise;
+      const queued = await session.enqueue('never admitted');
+      const reading = queued.events().next();
+      (
+        session as unknown as { observations: ObservationBuffer }
+      ).observations.gap();
+      if (mode === 'cancel') await queued.cancel();
+      else {
+        const closing = session.close();
+        release.resolve();
+        await closing;
+      }
+      expect(await reading).toMatchObject({ done: true });
+      expect(queued.turnId).toBeNull();
+      if (mode === 'cancel') {
+        release.resolve();
+        await first.wait();
+      }
+      expect(server.requests).toHaveLength(1);
+    } finally {
+      release.resolve();
+    }
+  },
+);
+
+it('refreshes a waiting all-retention cursor from its live admission scope', async () => {
+  const buffer = new ObservationBuffer('queued-scope', { retention: 'all' });
+  let after = -1;
+  let ended = false;
+  const reader = buffer.events(
+    {},
+    {
+      get after() {
+        return after;
+      },
+      includes: () => false,
+      phase: () => (ended ? 'ended' : 'open'),
+    },
+  );
+  let delivered = false;
+  const reading = reader.next().then((value) => {
+    delivered = true;
+    return value;
+  });
+  buffer.gap();
+  await Promise.resolve();
+  expect(delivered).toBe(false);
+  after = buffer.currentSequence;
+  buffer.notify();
+  buffer.gap();
+  expect(await reading).toMatchObject({
+    done: false,
+    value: { type: 'gap', sequence: 2 },
+  });
+  ended = true;
+  expect(await reader.next()).toMatchObject({ done: true });
+});
+
+it.each(['withdraw', 'close'] as const)(
+  'wakes a not-admitted all-retention buffer reader on %s',
+  async (mode) => {
+    const buffer = new ObservationBuffer('queued-end', { retention: 'all' });
+    let ended = false;
+    const reading = buffer
+      .events(
+        {},
+        {
+          after: -1,
+          includes: () => false,
+          phase: () => (ended ? 'ended' : 'open'),
+        },
+      )
+      .next();
+    buffer.gap();
+    if (mode === 'withdraw') {
+      ended = true;
+      buffer.notify();
+    } else buffer.finish('closed');
+    expect(await reading).toMatchObject({ done: true });
+  },
+);

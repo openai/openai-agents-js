@@ -3240,7 +3240,9 @@ export class Session<OutputT = string, Context = unknown> {
 
   private rootObservationScope(root: NativeTurn): TurnObservationScope {
     return {
-      after: submissions.get(root)!.observationAfter,
+      get after() {
+        return submissions.get(root)!.observationAfter;
+      },
       includes: (event) => {
         if (!('submissionId' in event)) return false;
         for (const run of this.rootSteps(root))
@@ -3409,6 +3411,7 @@ export class Session<OutputT = string, Context = unknown> {
     run.selection = selection;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
+    submissions.get(run)!.observationAfter = -1;
     this.pendingRoots.push({ run, parts });
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
@@ -4543,6 +4546,8 @@ export class Session<OutputT = string, Context = unknown> {
   ): void {
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
+    submissions.get(run)!.observationAfter = this.observations.currentSequence;
+    this.observations.notify();
     // Own synchronous bridge errors through the same admission failure path.
     let submission: Promise<string>;
     try {

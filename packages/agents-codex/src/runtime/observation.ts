@@ -152,6 +152,7 @@ export type ObservedEvent = Observation | ManualToolRequest;
 /** Publication belongs to the producer, independently of result consumption. */
 export type ObservationPhase = 'open' | 'finishing' | 'ended';
 export type TurnObservationScope = {
+  /** Negative until a queued root dispatches; readers consult the live value. */
   after?: number;
   includes: (event: Observation) => boolean;
   phase: () => ObservationPhase;
@@ -382,9 +383,6 @@ export class ObservationBuffer {
       throw new RangeError(
         'after must be a sequence between zero and the current event',
       );
-    // Bounded readers preserve their Session-global loss notification.
-    if (this.options.retention === 'all')
-      after = Math.max(after, scope?.after ?? 0);
     let index = this.options.retention === 'all' ? after : 0;
     let closed = false;
     let reading = false;
@@ -404,6 +402,16 @@ export class ObservationBuffer {
         try {
           while (!closed) {
             const changed = this.changed.promise;
+            if (this.options.retention === 'all' && scope) {
+              const floor = scope.after ?? 0;
+              if (floor < 0) {
+                if (scope.phase() === 'ended' || this.closed) break;
+                await changed;
+                continue;
+              }
+              after = Math.max(after, floor);
+              index = Math.max(index, after);
+            }
             if (seen) {
               for (const request of this.options.pendingManual?.() ?? []) {
                 if (!seen.has(request)) {
