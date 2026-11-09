@@ -618,3 +618,110 @@ nativeIt(
   },
   20000,
 );
+
+nativeIt(
+  'records external message deletion and stops retrieving its retired provider ID while keeping the owner live',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Keep the canonical audit.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const item = userItem(
+          'externally-deleted',
+          'The provider will delete this message.',
+        );
+        await observe(peer, seen, item);
+        const priorAuditIds = voice.history.map((entry) => entry.id);
+        peer.send({ type: 'conversation.item.deleted', item_id: item.id });
+        await vi.waitFor(() => {
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item_deleted' &&
+                event.itemId === item.id,
+            ),
+          ).toBe(true);
+          expect(
+            voice.history.some(
+              (entry) =>
+                entry.kind === 'provider_item_deleted' &&
+                entry.providerItemId === item.id,
+            ),
+          ).toBe(true);
+        });
+        expect(
+          voice.history
+            .filter((entry) => priorAuditIds.includes(entry.id))
+            .map((entry) => entry.id),
+        ).toEqual(priorAuditIds);
+        const afterDeletion = peer.frames.length;
+        await expect(voice.retrieveConversationHistory()).resolves.toEqual([]);
+        await expect(
+          voice.retrieveConversationItem('externally-deleted'),
+        ).rejects.toThrow();
+        expect(peer.frames.slice(afterDeletion)).toEqual([]);
+        const pendingItem = userItem(
+          'externally-deleted-before-create-ack',
+          'Delete this while its create acknowledgement is pending.',
+        );
+        const updating = voice.updateHistory([pendingItem]);
+        void updating.catch(() => {});
+        const pendingCreate = await peer.frame(
+          'conversation.item.create',
+          afterDeletion,
+        );
+        expect(pendingCreate.item).toEqual(pendingItem);
+        peer.send({
+          type: 'conversation.item.deleted',
+          item_id: pendingItem.id,
+        });
+        await expect(updating).rejects.toThrow();
+        peer.send({
+          type: 'conversation.item.added',
+          item: pendingItem,
+          previous_item_id: null,
+        });
+        // The configuration acknowledgement follows the late create receipt on
+        // the provider socket, so completion establishes a public processing barrier.
+        await voice.update({ toolChoice: 'none' });
+        const afterDrain = peer.frames.length;
+        await expect(voice.retrieveConversationHistory()).resolves.toEqual([]);
+        await expect(
+          voice.retrieveConversationItem(
+            'externally-deleted-before-create-ack',
+          ),
+        ).rejects.toThrow();
+        await expect(voice.updateHistory([])).resolves.toBeUndefined();
+        expect(peer.frames.slice(afterDrain)).toEqual([]);
+        await voice.sendMessage('The connection remains usable.', {
+          triggerResponse: false,
+        });
+        const created = await peer.frame(
+          'conversation.item.create',
+          afterDrain,
+        );
+        expect(created.item.content).toEqual([
+          { type: 'input_text', text: 'The connection remains usable.' },
+        ]);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
