@@ -114,7 +114,7 @@ const statusSchema = z.number().int().min(400).max(599);
 export function httpError(
   status: number,
   body: JsonObject = errorBody,
-): ScriptedResponse {
+): ScriptedResult {
   try {
     return {
       kind: 'httpError',
