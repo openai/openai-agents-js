@@ -124,7 +124,10 @@ export class ChatCompletionsModel implements NativeModel {
               ? raw.output
               : JSON.stringify(raw.output),
         });
-      } else if (raw.type !== 'reasoning')
+      } else if (
+        raw.type !== 'reasoning' &&
+        raw.type !== 'configuration_update'
+      )
         throw new TypeError(
           'ChatCompletionsModel received an unsupported native input item',
         );
@@ -153,10 +156,35 @@ export class ChatCompletionsModel implements NativeModel {
         'tool_choice',
         'metadata',
         'store',
+        'frequency_penalty',
+        'presence_penalty',
       ]
         .filter((key) => key in request.body)
         .map((key) => [key, request.body[key]]),
     );
+    const text = (request.body.text ?? {}) as JsonObject;
+    const format = (text.format ?? {}) as JsonObject;
+    if (format.type === 'json_schema') {
+      const { type: _type, ...jsonSchema } = format;
+      options.response_format = {
+        type: 'json_schema',
+        json_schema: jsonSchema,
+      };
+    }
+    const reasoning = (request.body.reasoning ?? {}) as JsonObject;
+    if (reasoning.effort != null) options.reasoning_effort = reasoning.effort;
+    if ('top_logprobs' in request.body) {
+      options.logprobs = true;
+      options.top_logprobs = request.body.top_logprobs;
+    }
+    if (
+      ['prompt', 'truncation', 'context_management'].some(
+        (key) => key in request.body,
+      )
+    )
+      throw new TypeError(
+        'Responses-only request controls require a Responses provider or custom NativeModel',
+      );
     if ('max_output_tokens' in request.body)
       options.max_completion_tokens = request.body.max_output_tokens;
     if (tools.length) options.tools = tools;
