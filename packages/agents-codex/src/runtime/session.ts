@@ -1130,6 +1130,49 @@ export class Session<OutputT = string, Context = unknown> {
     await this.mutate(() => this.promoteMcp(undefined));
   }
 
+  private capturedVoiceTool(
+    tool: SessionTool,
+    catalog: ToolCatalog,
+    declarationCatalog: ToolCatalog,
+  ): SessionTool | undefined {
+    const admitted = declarationCatalog.tools.find(
+      (candidate) =>
+        toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
+    );
+    const captured = catalog.tools.find((candidate) => {
+      if (toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool))
+        return true;
+      if (!admitted) return false;
+      const original = toolIdentity(admitted);
+      const current = toolIdentity(candidate);
+      return (
+        original.name === current.name &&
+        original.namespace === current.namespace
+      );
+    });
+    return captured;
+  }
+
+  /** @internal Normalize voice declarations immediately before strict submission. */
+  _voiceFunctionTools(tools: readonly ToolSelector[]): readonly ToolSelector[] {
+    const declarationCatalog = this.options.agentGraph
+      ? this.profileRuntimes.get(this.profileCurrent!.profile_id)!.catalog
+      : this.openingCatalog;
+    return tools.map((tool) => {
+      if (tool.kind === 'tool_ref' || tool.kind === 'manual') return tool;
+      const captured = this.capturedVoiceTool(
+        tool,
+        this.catalog,
+        declarationCatalog,
+      );
+      if (!captured || captured.kind === 'manual')
+        throw new TypeError(
+          'Voice tool was not admitted in the current Agent catalog',
+        );
+      return captured;
+    });
+  }
+
   /** @internal Select only sealed captured functions; Core rechecks its atomic source catalog. */
   async _realtimeFunctionTools(
     tools: readonly FunctionTool<any>[],
@@ -1188,23 +1231,11 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TypeError(
           'Realtime tools must be captured function declarations',
         );
-      const admitted = declarationCatalog.tools.find(
-        (candidate) =>
-          toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
+      const captured = this.capturedVoiceTool(
+        tool,
+        catalog,
+        declarationCatalog,
       );
-      const captured = catalog.tools.find((candidate) => {
-        if (
-          toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool)
-        )
-          return true;
-        if (!admitted) return false;
-        const original = toolIdentity(admitted);
-        const current = toolIdentity(candidate);
-        return (
-          original.name === current.name &&
-          original.namespace === current.namespace
-        );
-      });
       if (!captured || captured.kind === 'manual') {
         if (allowMissing) continue;
         throw new TypeError(

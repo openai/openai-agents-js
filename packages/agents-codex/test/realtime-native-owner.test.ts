@@ -52,6 +52,7 @@ function fixture(
         _signal?: AbortSignal,
       ) => admit(),
     ),
+    _voiceFunctionTools: vi.fn((tools: readonly unknown[]) => tools),
     _prepareRealtimeMcp: vi.fn(async () => {}),
     _realtimeFunctionTools: vi.fn(async (_tools: readonly unknown[]) => ({
       tools: [],

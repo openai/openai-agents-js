@@ -358,8 +358,8 @@
     },
     {
       "path": "0095-bound-hosted-mcp-catalogs.patch",
-      "sha256": "415f4914715d2943c2921a3e4c019adf0805d4cb2c3f92ac97e57fb1f6d4d69c"
+      "sha256": "2d4bec4d35bc81d8c5e42c5e7e9b1fbd9d8c49e3fd808edae6a1fe7de0bb5833"
     }
   ],
-  "result_tree": "171b48641a6a34d0d94edcc47cf76e48bc3ba8c6"
+  "result_tree": "bc34b1de40de68cb30e7b485f3c12eb727b47f71"
 }

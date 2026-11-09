@@ -12,6 +12,7 @@ import {
   type MCPResultContext,
 } from '../src';
 import { ModelServer, call, message } from './native/fixtures/model-server';
+import { NativeSessionVoiceWorkflow } from '../src/voice';
 import type {
   NativeRealtimeEvent,
   NativeRealtimeHostedMcpApprovalRequest,
@@ -2432,6 +2433,142 @@ nativeIt(
       }
     } finally {
       await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each([false, true])(
+  'retains an original background selector after same-profile replacement (graph=%s)',
+  async (graph) => {
+    let originalEffects = 0;
+    let replacementEffects = 0;
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        originalEffects++;
+        return 'original';
+      },
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        replacementEffects++;
+        return 'replacement';
+      },
+    });
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'backend-lookup' })],
+      [message('Replacement complete.')],
+    ]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      const other = new Agent({
+        name: 'Other',
+        instructions: 'Other profile.',
+      });
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [original],
+        ...(graph ? { handoffs: [other] } : {}),
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [original],
+      });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      void reading.catch(() => {});
+      try {
+        await session.update({ tools: [replacement] });
+        peer.call(
+          'background_agent',
+          { input_transcript: 'Use lookup.' },
+          'same-profile-background',
+        );
+        await vi.waitFor(
+          () =>
+            expect(
+              seen.some(
+                (event) =>
+                  event.type === 'delegation' &&
+                  event.handoffId === 'same-profile-background' &&
+                  event.status !== 'started',
+              ),
+            ).toBe(true),
+          { timeout: 5000 },
+        );
+        expect(
+          seen.find(
+            (event) =>
+              event.type === 'delegation' &&
+              event.handoffId === 'same-profile-background' &&
+              event.status !== 'started',
+          ),
+        ).toMatchObject({ status: 'completed' });
+        expect(originalEffects).toBe(0);
+        expect(replacementEffects).toBe(1);
+        expect(model.requests).toHaveLength(2);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'uses original graph selectors in a standalone voice workflow after replacement',
+  async () => {
+    let replacementEffects = 0;
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'original',
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        replacementEffects++;
+        return 'replacement';
+      },
+    });
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'standalone-lookup' })],
+      [message('Standalone replacement complete.')],
+    ]);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [original],
+        handoffs: [
+          new Agent({ name: 'Other', instructions: 'Other profile.' }),
+        ],
+        provider,
+      }).session();
+      const workflow = new NativeSessionVoiceWorkflow(session, [original]);
+      await session.update({ tools: [replacement] });
+      const output: string[] = [];
+      for await (const text of workflow.run('Use lookup.')) output.push(text);
+      expect(output).toEqual(['Standalone replacement complete.']);
+      expect(replacementEffects).toBe(1);
+      model.assertExhausted();
+    } finally {
       await ModelServer.closeAll();
     }
   },

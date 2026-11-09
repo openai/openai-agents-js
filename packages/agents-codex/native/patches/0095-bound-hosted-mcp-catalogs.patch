@@ -164,15 +164,18 @@ index 42714609dc49ac5aa8bf8fc3074889e7999db60e..14f647d87a06a9a85239f21740b4b56f
                      c.source.id.len()
                          + c.id.len()
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
-index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..af974da2cebb736943abde9aeaec10d5ba7b62b8 100644
+index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..b4dbad830c8600f962b60d1f1f0f916cd2fb7ee0 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
-@@ -88,7 +88,17 @@ impl QueuedWireMessage {
+@@ -88,7 +88,20 @@ impl QueuedWireMessage {
          message: Result<Message, WsError>,
          budget: Option<Arc<tokio::sync::Semaphore>>,
      ) -> Result<Self, ()> {
 -        let bytes = message.as_ref().map_or(0, |message| message.len());
 +        let mut bytes = message.as_ref().map_or(0, |message| message.len());
++        if budget.is_some() && bytes > SDK_WIRE_BYTES_CAPACITY {
++            return Err(());
++        }
 +        if budget.is_some()
 +            && let Ok(Message::Text(text)) = &message
 +            && let Ok(value @ serde_json::Value::Object(_)) = serde_json::from_str(text)
@@ -186,7 +189,7 @@ index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..af974da2cebb736943abde9aeaec10d5
          let permit = budget
              .map(|budget| {
                  let bytes = u32::try_from(bytes).map_err(|_| ())?;
-@@ -110,9 +120,14 @@ impl QueuedWireMessage {
+@@ -110,9 +123,14 @@ impl QueuedWireMessage {
          budget: Option<Arc<tokio::sync::Semaphore>>,
      ) -> Result<(), ()> {
          if !events.is_empty() {
@@ -204,7 +207,7 @@ index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..af974da2cebb736943abde9aeaec10d5
              }
              if let Some(budget) = budget {
                  let extra = budget
-@@ -4250,6 +4265,78 @@ mod tests {
+@@ -4250,6 +4268,78 @@ mod tests {
          connection.close().await.expect("close");
          server.await.expect("server task");
      }
@@ -283,7 +286,7 @@ index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..af974da2cebb736943abde9aeaec10d5
      #[tokio::test]
      async fn sdk_wire_byte_permits_release_on_receive_and_discard() {
          let budget = Arc::new(tokio::sync::Semaphore::new(8));
-@@ -4918,7 +5005,86 @@ mod tests {
+@@ -4918,7 +5008,86 @@ mod tests {
          server.await.unwrap();
      }
      #[test]
@@ -371,7 +374,7 @@ index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..af974da2cebb736943abde9aeaec10d5
          use super::super::readiness::SessionReadiness;
          let contract = serde_json::json!({"tools":[{"type":"mcp","server_label":"docs","server_url":"https://example.test"}]});
          let (observer, _) = SessionReadiness::channel(Some(contract.clone()), true);
-@@ -4931,13 +5097,13 @@ mod tests {
+@@ -4931,13 +5100,13 @@ mod tests {
          );
          assert!(observer.configuration().accepted().is_ok());
          assert!(!observer.mismatched());
@@ -387,7 +390,7 @@ index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..af974da2cebb736943abde9aeaec10d5
              let text=serde_json::json!({"type":"response.output_item.added","response_id":response,"item":{"type":"mcp_approval_request","id":format!("approval-{index}"),"server_label":"docs","name":"search","arguments":""}}).to_string();
              observer.observe_frame(&text, true);
              drop(
-@@ -4947,7 +5113,7 @@ mod tests {
+@@ -4947,7 +5116,7 @@ mod tests {
          }
          let mut queued = Vec::new();
          let mut rejected = false;
