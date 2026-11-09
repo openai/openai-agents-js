@@ -3,7 +3,13 @@ import { createServer } from 'node:http';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { Agent, NativeProvider, telemetry, tool } from '../../../src';
+import {
+  Agent,
+  DecisionError,
+  NativeProvider,
+  telemetry,
+  tool,
+} from '../../../src';
 import { binding } from '../../../src/runtime/binding';
 import { ModelServer, call, message } from './model-server';
 
@@ -16,10 +22,25 @@ async function main() {
   const late = 'Configure telemetry before creating any Codex clients';
   if (
     mode === 'completion-decisions' ||
-    mode === 'completion-decisions-disabled'
+    mode === 'completion-decisions-disabled' ||
+    mode === 'completion-decisions-unknown' ||
+    mode === 'completion-decisions-refusal'
   ) {
-    await telemetry.configure();
-    const server = new ModelServer([[message('4')]]);
+    const events: telemetry.TraceEvent[] = [];
+    await telemetry.configure({
+      traceProcessors: [
+        {
+          onEvent(event) {
+            events.push(event);
+          },
+        },
+      ],
+    });
+    const server = new ModelServer([[message('4')]], {
+      input_tokens: 4,
+      output_tokens: 1,
+      total_tokens: 5,
+    });
     const config = await server.config();
     const provider = new NativeProvider({
       baseUrl: (config['model_providers.fixture'] as { base_url: string })
@@ -36,34 +57,55 @@ async function main() {
         decisions: {
           async getDecision() {
             decisions++;
+            if (mode === 'completion-decisions-refusal')
+              throw new DecisionError('refusal', {
+                usage: {
+                  inputTokens: 7,
+                  cachedInputTokens: 0,
+                  cacheWriteInputTokens: 0,
+                  outputTokens: 3,
+                  reasoningOutputTokens: 0,
+                  totalTokens: 10,
+                },
+              });
             return {
-              value: { response: true },
-              usage: {
-                inputTokens: 7,
-                cachedInputTokens: 0,
-                cacheWriteInputTokens: 0,
-                outputTokens: 3,
-                reasoningOutputTokens: 0,
-                totalTokens: 10,
-              },
+              value: true,
+              ...(mode === 'completion-decisions-unknown'
+                ? {}
+                : {
+                    usage: {
+                      inputTokens: 7,
+                      cachedInputTokens: 0,
+                      cacheWriteInputTokens: 0,
+                      outputTokens: 3,
+                      reasoningOutputTokens: 0,
+                      totalTokens: 10,
+                    },
+                  }),
+              requestId: 'request-without-payload',
+              model: 'decision-model',
             };
           },
         },
         async beforeComplete(context) {
           hooks++;
-          assert.equal(
-            await context.decide('Ready?', { input: context.text! }),
-            true,
-          );
+          const decision = context.decide('PRIVATE_DECISION_QUESTION', {
+            input: 'PRIVATE_DECISION_INPUT',
+          });
+          if (mode === 'completion-decisions-refusal')
+            await assert.rejects(decision, DecisionError);
+          else assert.equal(await decision, true);
         },
       });
       const session = await agent.session({
         tracing: { disabled: mode === 'completion-decisions-disabled' },
       });
       try {
-        const result = await (await session.submit('What is 2 + 2?')).wait();
+        const result = await (
+          await session.submit('What is 2 + 2?', { budget: { maxTokens: 5 } })
+        ).wait();
         assert.equal(result.finalOutput, '4');
-        assert.equal(result.threadUsage?.totalTokenUsage.totalTokens, 10);
+        assert.equal(result.threadUsage?.totalTokenUsage.totalTokens, 5);
         assert.equal(hooks, 1);
         assert.equal(decisions, 1);
         server.assertExhausted();
@@ -73,7 +115,39 @@ async function main() {
     } finally {
       await provider.close();
       await ModelServer.closeAll();
+      await telemetry.forceFlush();
       await telemetry.shutdown();
+    }
+    const usageSpans = events.filter(
+      (event) => event.name === 'decision.usage' && event.lifecycle === 'start',
+    );
+    const decisionsSpans = events.filter(
+      (event) => event.name === 'decision' && event.lifecycle === 'start',
+    );
+    if (mode === 'completion-decisions-disabled') {
+      assert.equal(usageSpans.length, 0);
+      assert.equal(decisionsSpans.length, 0);
+    } else {
+      assert.equal(usageSpans.length, 1);
+      assert.equal(decisionsSpans.length, 1);
+      assert.equal(usageSpans[0]!.parent_span_id, decisionsSpans[0]!.span_id);
+      const metadata = usageSpans[0]!.attributes;
+      assert.equal(
+        JSON.parse(String(metadata['sdk.metadata.usage_known'])),
+        mode !== 'completion-decisions-unknown',
+      );
+      assert.equal(
+        metadata['sdk.metadata.outcome'],
+        mode === 'completion-decisions-refusal' ? 'refusal' : 'completed',
+      );
+      if (mode === 'completion-decisions-unknown')
+        assert.equal(metadata['sdk.metadata.total_tokens'], undefined);
+      else
+        assert.equal(
+          JSON.parse(String(metadata['sdk.metadata.total_tokens'])),
+          10,
+        );
+      assert(!JSON.stringify(usageSpans).includes('PRIVATE_DECISION_'));
     }
   } else if (mode === 'lifecycle') {
     await assert.rejects(

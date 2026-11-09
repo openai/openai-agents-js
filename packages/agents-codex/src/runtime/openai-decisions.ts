@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import type { DecisionCreateParams } from 'openai/resources/decisions';
 import { binding, type JsonObject } from './binding';
 import { parseTokenCount, type TokenUsage } from './run-events';
 import {
@@ -9,27 +10,28 @@ import {
   type DecisionResponse,
 } from './decisions';
 
+type CreateDecision = OpenAI['decisions']['create'];
+
 /** OpenAI transport settings live on the ordinary OpenAI client. */
 export interface OpenAIDecisionsOptions {
-  client?: OpenAI;
-  /** Used only when the requested schema cannot be expressed as bounded questions. */
-  fallbackModel?: string;
+  // The public generated method shape accepts both module graphs and compatible
+  // SDK versions without requiring the OpenAI class's private identity.
+  client?: {
+    decisions: {
+      create(
+        body: Parameters<CreateDecision>[0],
+        options?: Pick<NonNullable<Parameters<CreateDecision>[1]>, 'signal'>,
+      ): Pick<ReturnType<CreateDecision>, 'asResponse'>;
+    };
+  };
 }
 
-/** One explicit Decisions request, or one preselected Responses schema fallback. */
+/** One explicit bounded Decisions request through the generated client. */
 export class OpenAIDecisions implements DecisionProvider {
-  private client: OpenAI | undefined;
-  readonly fallbackModel: string | undefined;
+  private client: OpenAIDecisionsOptions['client'];
 
   constructor(options: OpenAIDecisionsOptions = {}) {
-    if (
-      options.fallbackModel !== undefined &&
-      (typeof options.fallbackModel !== 'string' ||
-        !options.fallbackModel.trim())
-    )
-      throw new TypeError('fallbackModel must be a non-empty string');
     this.client = options.client;
-    this.fallbackModel = options.fallbackModel;
   }
 
   async getDecision(
@@ -43,13 +45,11 @@ export class OpenAIDecisions implements DecisionProvider {
       native._decision_questions(schema, request.question),
     ) as {
       supported: boolean;
-      questions: JsonObject[];
+      questions: DecisionCreateParams['questions'];
     };
-    if (!compiled.supported && this.fallbackModel === undefined)
-      throw new TypeError(
-        'Unsupported Decisions output schema; configure fallbackModel explicitly',
-      );
-    if (compiled.supported && compiled.questions.length === 0) {
+    if (!compiled.supported)
+      throw new TypeError('Unsupported Decisions output schema');
+    if (compiled.questions.length === 0) {
       return {
         value: JSON.parse(
           native._decision_result(schema, request.question, '[]'),
@@ -57,45 +57,30 @@ export class OpenAIDecisions implements DecisionProvider {
         usage: zeroUsage,
       };
     }
-    const fallback = !compiled.supported;
     const client = (this.client ??= new OpenAI());
-    const { data, response } = await client
-      .post<JsonObject>(fallback ? '/responses' : '/decisions', {
-        signal,
-        body: fallback
-          ? {
-              model: this.fallbackModel,
-              instructions: request.question,
-              input: request.input,
-              stream: false,
-              store: false,
-              text: {
-                format: {
-                  type: 'json_schema',
-                  name: 'decision',
-                  strict: true,
-                  schema: request.outputSchema,
-                },
-              },
-            }
-          : {
-              model: 'gpt-6-luna',
-              input: request.input,
-              questions: compiled.questions,
-            },
-      })
-      .withResponse();
-    const body =
-      data !== null && typeof data === 'object' && !Array.isArray(data)
-        ? data
-        : {};
-    const metadata = captureDecisionMetadata({
-      usage: providerUsage(body.usage),
-      requestId: response.headers.get('x-request-id') ?? undefined,
-      model: typeof body.model === 'string' ? body.model : undefined,
-    });
+    const response = await client.decisions
+      .create(
+        {
+          model: 'gpt-6-luna',
+          input: request.input as DecisionCreateParams['input'],
+          questions: compiled.questions,
+        },
+        { signal },
+      )
+      .asResponse();
+    const requestId = response.headers.get('x-request-id') ?? undefined;
+    let metadata = captureDecisionMetadata({ requestId });
     try {
-      if (fallback) return { value: responseValue(body), ...metadata };
+      const raw: unknown = await response.json();
+      signal?.throwIfAborted();
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw))
+        throw new DecisionError('invalid_response');
+      const body = raw as JsonObject;
+      metadata = captureDecisionMetadata({
+        usage: providerUsage(body.usage),
+        requestId,
+        model: typeof body.model === 'string' ? body.model : undefined,
+      });
       return {
         value: JSON.parse(
           native._decision_result(
@@ -107,6 +92,7 @@ export class OpenAIDecisions implements DecisionProvider {
         ...metadata,
       };
     } catch (error) {
+      signal?.throwIfAborted();
       const refusal =
         error instanceof DecisionError
           ? error.reason === 'refusal'
@@ -168,23 +154,4 @@ function providerUsage(raw: unknown): TokenUsage | undefined {
   } catch {
     return;
   }
-}
-
-function responseValue(data: JsonObject): unknown {
-  if (data.status !== 'completed' || !Array.isArray(data.output))
-    throw new Error('Invalid response');
-  let text = '';
-  for (const item of data.output) {
-    if (item === null || typeof item !== 'object' || Array.isArray(item))
-      continue;
-    if (item.type !== 'message' || !Array.isArray(item.content)) continue;
-    for (const part of item.content) {
-      if (part === null || typeof part !== 'object' || Array.isArray(part))
-        continue;
-      if (part.type === 'refusal') throw new DecisionError('refusal');
-      if (part.type === 'output_text' && typeof part.text === 'string')
-        text += part.text;
-    }
-  }
-  return JSON.parse(text);
 }

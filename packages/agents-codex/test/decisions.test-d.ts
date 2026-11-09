@@ -52,3 +52,10 @@ const continueDecision: agents.CompletionDecision = {
 const stopDecision: agents.CompletionDecision = { action: 'stop' };
 void continueDecision;
 void stopDecision;
+
+// @ts-expect-error Decisions defaults belong to Agent configuration.
+agent.run('Answer.', { decisions: new agents.OpenAIDecisions() });
+// @ts-expect-error A Session captures its Agent's decision provider.
+agent.session({ decisions: new agents.OpenAIDecisions() });
+// @ts-expect-error The bounded provider does not select a generative fallback.
+new agents.OpenAIDecisions({ fallbackModel: 'generative-model' });

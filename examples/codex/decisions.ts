@@ -1,15 +1,8 @@
-import OpenAI from 'openai';
 import { Agent, OpenAIDecisions } from '@openai/agents';
 
 const request =
   process.argv[2] ?? 'How can I update the payment method on my account?';
-const decisions = new OpenAIDecisions({
-  client: new OpenAI(),
-  // Free-form schemas use Responses only when this fallback is explicitly configured.
-  ...(process.env.DECISIONS_FALLBACK_MODEL
-    ? { fallbackModel: process.env.DECISIONS_FALLBACK_MODEL }
-    : {}),
-});
+const decisions = new OpenAIDecisions();
 const support = new Agent({
   ...(process.env.SUPPORT_MODEL ? { model: process.env.SUPPORT_MODEL } : {}),
   instructions: 'Help the customer. Give them a concrete next step.',
@@ -31,4 +24,3 @@ const support = new Agent({
 });
 const result = await support.run(request);
 console.log(result.finalOutput);
-console.log(result.threadUsage?.totalTokenUsage);

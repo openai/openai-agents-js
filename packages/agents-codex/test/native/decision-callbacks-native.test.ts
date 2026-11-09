@@ -5,8 +5,8 @@ import {
   Agent,
   Environment,
   NativeAgents,
-  NativeProvider,
   NativeRole,
+  NativeProvider,
   OpenAIDecisions,
   TurnAborted,
   tool,
@@ -51,7 +51,7 @@ async function providerFor(server: ModelServer) {
 function decisionProvider(value = true): DecisionProvider {
   return {
     getDecision: vi.fn(async () => ({
-      value: { response: value },
+      value,
       usage,
       requestId: 'physical-decision',
       model: 'resolved-decision',
@@ -123,8 +123,7 @@ nativeIt(
       session: string;
       count: number;
     }[] = [];
-    const rootProvider = decisionProvider(false);
-    const override = decisionProvider(true);
+    const rootProvider = decisionProvider(true);
     let previous: BoundDecide | undefined;
     const applicationContext = { owner: 'original context' };
     const server = new ModelServer(
@@ -173,7 +172,6 @@ nativeIt(
     });
     const result = await agent.run('Return a report.', {
       context: applicationContext,
-      decisions: override,
     });
     expect(result.finalOutput).toEqual({ label: 'accepted' });
     expect(checked.map((value) => value.text)).toEqual([
@@ -184,9 +182,8 @@ nativeIt(
     expect(checked.map((value) => value.count)).toEqual([0, 0, 1]);
     expect(new Set(checked.map((value) => value.turn)).size).toBe(1);
     expect(new Set(checked.map((value) => value.session)).size).toBe(1);
-    expect(rootProvider.getDecision).not.toHaveBeenCalled();
-    expect(override.getDecision).toHaveBeenCalledTimes(3);
-    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(58);
+    expect(rootProvider.getDecision).toHaveBeenCalledTimes(3);
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(28);
     expect(result.repairAttempts).toHaveLength(1);
     expect(result.repairAttempts[0].usage?.totalTokens).toBe(14);
     server.assertExhausted();
@@ -281,7 +278,7 @@ nativeIt(
 );
 
 nativeIt(
-  'closes a repaired decision provider after abort and retains its root usage once',
+  'joins a repaired decision provider after cancellation without charging Agent usage',
   async () => {
     const entered = Promise.withResolvers<void>();
     const aborted = Promise.withResolvers<void>();
@@ -297,7 +294,7 @@ nativeIt(
         await aborted.promise;
         await release.promise;
         return {
-          value: { response: true },
+          value: true,
           usage,
           requestId: 'late-repaired-check',
         };
@@ -350,7 +347,7 @@ nativeIt(
       await closing;
       await expect(result).rejects.toThrow();
       await observation;
-      expect(usageEvents.at(-1)).toBe(24);
+      expect(usageEvents.at(-1)).toBe(14);
       expect(decisions.getDecision).toHaveBeenCalledTimes(1);
       expect(server.requests).toHaveLength(2);
       server.assertExhausted();
@@ -639,65 +636,6 @@ nativeIt(
 );
 
 nativeIt.each([false, true] as const)(
-  'keeps Decisions upstream request identity separate from body response identity (%s)',
-  async (withRequestId) => {
-    const server = new ModelServer(
-      [
-        [message('candidate')],
-        (request) => {
-          const response = decisionReply(request, 0.75);
-          if (!withRequestId)
-            delete (response.headers as Record<string, string>)['x-request-id'];
-          return response;
-        },
-      ],
-      [wireUsage(14)],
-    );
-    const config = await server.config();
-    const baseURL = (config['model_providers.fixture'] as { base_url: string })
-      .base_url;
-    await using provider = await providerFor(server);
-    await using session = await new Agent({
-      instructions: 'Answer.',
-      model: 'gpt-5.5',
-      provider,
-      decisions: new OpenAIDecisions({
-        client: new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
-      }),
-      beforeComplete: async (context) => {
-        expect(await context.decide('Ready?', { input: context.text! })).toBe(
-          true,
-        );
-      },
-    }).session();
-    const result = await (await session.submit('Answer.')).wait();
-    expect(result.finalOutput).toBe('candidate');
-    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(24);
-    const turns = [];
-    for await (const turn of session.turns()) turns.push(turn);
-    expect(turns).toHaveLength(1);
-    const responses = turns[0].responses ?? [];
-    expect(responses).toHaveLength(2);
-    const ordinary = responses.find((row) => row.responseId === 'response-1')!;
-    const decision = responses.find((row) => row !== ordinary)!;
-    expect(ordinary.responseId).toBe('response-1');
-    expect(ordinary).not.toHaveProperty('upstreamRequestId');
-    expect(decision.responseId).toBeNull();
-    if (withRequestId)
-      expect(decision).toHaveProperty('upstreamRequestId', 'decision-http');
-    else expect(decision).not.toHaveProperty('upstreamRequestId');
-    expect(decision.usage).toMatchObject({
-      inputTokens: 7,
-      outputTokens: 3,
-      totalTokens: 10,
-    });
-    expect(new Set(responses.map((row) => row.id)).size).toBe(2);
-    server.assertExhausted();
-  },
-  30000,
-);
-
-nativeIt.each([false, true] as const)(
   'checks repaired output using the active profile and explicit override (%s)',
   async (outputOverride) => {
     const rootDecision = decisionProvider(false),
@@ -780,7 +718,7 @@ nativeIt.each([false, true] as const)(
     expect(checked).toHaveLength(2);
     expect(rootDecision.getDecision).not.toHaveBeenCalled();
     expect(targetDecision.getDecision).toHaveBeenCalledTimes(2);
-    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(48);
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(28);
     expect(result.repairAttempts).toHaveLength(1);
     server.assertExhausted();
   },
@@ -826,7 +764,7 @@ nativeIt(
 );
 
 nativeIt.each([false, true] as const)(
-  'decides a mixed boolean/string choice without fallback (%s)',
+  'preserves mixed boolean/string choices through the real Decisions compiler (%s)',
   async (selected) => {
     const paths: string[] = [];
     const server = new ModelServer([
@@ -886,7 +824,7 @@ nativeIt.each([false, true] as const)(
 );
 
 nativeIt(
-  'continues one turn through completion decisions with native accounting and the real shared compiler',
+  'continues through completion decisions while keeping Agent usage separate',
   async () => {
     const paths: string[] = [],
       counts: number[] = [],
@@ -948,66 +886,11 @@ nativeIt(
       '/v1/responses',
       '/v1/decisions',
     ]);
-    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(48);
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(28);
     expect(result.threadUsage?.lastTokenUsage.totalTokens).toBe(14);
     await expect(retained!('Expired?', { input: 'Explicit.' })).rejects.toThrow(
       /no longer active|abort/i,
     );
-    server.assertExhausted();
-  },
-  30000,
-);
-
-nativeIt.each(['root', 'target', 'opening'] as const)(
-  'keeps provider precedence across an active handoff (%s)',
-  async (mode) => {
-    const root = decisionProvider(false),
-      target = decisionProvider(true),
-      opening = decisionProvider(true);
-    const server = new ModelServer(
-      [[call('transfer_to_b', {}, { callId: 'handoff' })], [message('done')]],
-      [wireUsage(14), wireUsage(14)],
-    );
-    await using provider = await providerFor(server);
-    const destination = new Agent({
-      name: 'B',
-      instructions: 'Finish.',
-      ...(mode !== 'root' ? { decisions: target } : {}),
-    });
-    const agent = new Agent({
-      model: 'gpt-5.5',
-      name: 'A',
-      instructions: 'Transfer.',
-      provider,
-      decisions: root,
-      handoffs: [destination],
-    });
-    const observed: boolean[] = [];
-    const result = await agent.run('Handle this.', {
-      ...(mode === 'opening' ? { decisions: opening } : {}),
-      beforeStep: async (context) => {
-        observed.push(
-          await context.decide('Ready?', { input: 'Explicit input only.' }),
-        );
-        return undefined;
-      },
-    });
-    expect(result.finalOutput).toBe('done');
-    expect(observed).toEqual(
-      mode === 'root'
-        ? [false, false]
-        : mode === 'target'
-          ? [false, true]
-          : [true, true],
-    );
-    expect(root.getDecision).toHaveBeenCalledTimes(
-      mode === 'opening' ? 0 : mode === 'target' ? 1 : 2,
-    );
-    expect(target.getDecision).toHaveBeenCalledTimes(mode === 'target' ? 1 : 0);
-    expect(opening.getDecision).toHaveBeenCalledTimes(
-      mode === 'opening' ? 2 : 0,
-    );
-    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(48);
     server.assertExhausted();
   },
   30000,
@@ -1053,123 +936,228 @@ nativeIt(
 );
 
 nativeIt(
-  'charges completion decisions before the next root budget gate',
+  'returns a typed Agent-bound value through the actual shared compiler with one physical request',
   async () => {
-    const decisions = decisionProvider();
-    const server = new ModelServer([[message('candidate')]], [wireUsage(14)]);
-    await using provider = await providerFor(server);
-    const agent = new Agent({
-      provider,
-      model: 'gpt-5.5',
-      instructions: 'Answer.',
-      decisions,
-      beforeComplete: async (context) => {
-        await context.decide('Ready?', { input: context.text! });
-        return { action: 'continue', instructions: 'Try again.' };
-      },
+    const server = new ModelServer([(request) => decisionReply(request, 0.75)]);
+    const config = await server.config();
+    const baseURL = (config['model_providers.fixture'] as { base_url: string })
+      .base_url;
+    const decisions = new OpenAIDecisions({
+      client: new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
     });
     await expect(
-      agent.run('Go.', { budget: { maxTokens: 24 } }),
-    ).rejects.toMatchObject({ code: 'run_budget_exceeded' });
-    expect(decisions.getDecision).toHaveBeenCalledTimes(1);
+      new Agent({ instructions: 'Answer.', decisions }).decide('Ready?', {
+        input: 'Explicit input.',
+        outputType: z.strictObject({ ready: z.boolean() }),
+      }),
+    ).resolves.toEqual({ ready: true });
     expect(server.requests).toHaveLength(1);
+    server.assertExhausted();
   },
   30000,
 );
 
-nativeIt.each(['turn', 'session'] as const)(
-  'joins %s cancellation with completed decision accounting and expires the callback helper',
-  async (mode) => {
-    const entered = Promise.withResolvers<void>(),
-      aborted = Promise.withResolvers<void>(),
-      release = Promise.withResolvers<void>();
-    let retained: BoundDecide | undefined;
-    const decisions: DecisionProvider = {
-      getDecision: vi.fn(async (_request, { signal }) => {
-        signal!.addEventListener('abort', () => aborted.resolve(), {
-          once: true,
-        });
-        entered.resolve();
-        await release.promise;
-        return {
-          value: { response: true },
-          usage,
-          requestId: 'cancelled-decision',
-        };
-      }),
-    };
-    const server = new ModelServer([[message('unexpected')]]);
+nativeIt(
+  'replies to a failing completion callback and rejects its original turn',
+  async () => {
+    const server = new ModelServer([[message('candidate')]], [wireUsage(14)]);
     await using provider = await providerFor(server);
-    await using session = await new Agent({
-      provider,
+    const agent = new Agent({
       model: 'gpt-5.5',
+      provider,
       instructions: 'Answer.',
-      decisions,
-    }).session();
-    const turn = await session.submit('Go.', {
-      beforeStep: async (context) => {
-        retained = context.decide;
-        await context.decide('Ready?', { input: 'Explicit.' });
-        return undefined;
+      beforeComplete: () => {
+        throw new Error('Synthetic completion failure');
       },
     });
-    const result = turn.wait();
-    const usageEvents: unknown[] = [];
-    const observation = (async () => {
-      for await (const event of turn.events())
-        if (event.type === 'usage_updated' && event.usage)
-          usageEvents.push(event.usage.totalTokenUsage.totalTokens);
-    })();
-    void observation.catch(() => {});
-    void result.catch(() => {});
-    void entered.promise.catch(() => {});
-    void aborted.promise.catch(() => {});
-    const watchdog = setTimeout(() => {
-      const error = new Error('Decision cancellation fixture did not complete');
-      entered.reject(error);
-      aborted.reject(error);
-      release.resolve();
-    }, 20000);
-    try {
-      await Promise.race([
-        entered.promise,
-        result.then(() => {
-          throw new Error('Turn completed before decision admission');
-        }),
-      ]);
-      let stopped = false;
-      const stopping = (mode === 'turn' ? turn.cancel() : session.close()).then(
-        () => {
-          stopped = true;
-        },
-      );
-      await aborted.promise;
-      expect(stopped).toBe(false);
-      release.resolve();
-      await stopping;
-      await expect(result).rejects.toThrow();
-      await observation;
-      expect(usageEvents.at(-1)).toBe(10);
-      await expect(
-        retained!('Expired?', { input: 'Explicit.' }),
-      ).rejects.toThrow();
-      expect(decisions.getDecision).toHaveBeenCalledTimes(1);
-      expect(server.requests).toHaveLength(0);
-    } finally {
-      clearTimeout(watchdog);
-      release.resolve();
-    }
+    await expect(agent.run('Go.')).rejects.toThrow(
+      'Synthetic completion failure',
+    );
+    server.assertExhausted();
   },
-  40000,
+  15000,
 );
 
 nativeIt(
-  'keeps a native child decision on the child usage ledger and out of the root budget',
+  'binds terminal completion decisions to the proposal without changing Agent usage',
+  async () => {
+    const decisions = decisionProvider();
+    const server = new ModelServer(
+      [[call('finish', {}, { callId: 'terminal-decision' })]],
+      [wireUsage(14)],
+    );
+    await using provider = await providerFor(server);
+    let retained: BoundDecide | undefined;
+    const result = await new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Finish with the report.',
+      decisions,
+      outputType: z.object({ ready: z.boolean() }),
+      tools: [
+        tool({
+          name: 'finish',
+          parameters: z.object({}),
+          finishTurn: true,
+          execute: () => ({ ready: true }),
+        }),
+      ],
+      beforeComplete: async (context) => {
+        expect(context.text).toBeNull();
+        expect(context.toolCall?.callId).toBe('terminal-decision');
+        retained = context.decide;
+        expect(
+          await context.decide('Ready?', {
+            input: JSON.stringify(context.finalOutput),
+          }),
+        ).toBe(true);
+      },
+    }).run('Finish.');
+    expect(result.finalOutput).toEqual({ ready: true });
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(14);
+    expect(decisions.getDecision).toHaveBeenCalledTimes(1);
+    await expect(retained!('Expired?', { input: 'Explicit.' })).rejects.toThrow(
+      /no longer|abort/i,
+    );
+    server.assertExhausted();
+  },
+  30000,
+);
+
+nativeIt(
+  'keeps a yielded tool decision live after the actual native root terminal',
+  async () => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const decisions = decisionProvider(true);
+    let retained: BoundDecide | undefined;
+    let toolFinished = false,
+      terminalObserved = false;
+    const server = new ModelServer([
+      [
+        {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'yielded-cell',
+          input:
+            'const pending = tools.check({}); yield_control(); text(await pending);',
+        },
+      ],
+      async () => {
+        await entered.promise;
+        return [message('root finished')];
+      },
+    ]);
+    const native = await binding();
+    const next = native.NativeThread.prototype._next_session_events;
+    let rootId = '';
+    const spy = vi
+      .spyOn(native.NativeThread.prototype, '_next_session_events')
+      .mockImplementation(async function (this: NativeThread) {
+        const batch = await next.call(this);
+        if (
+          this.id === rootId &&
+          batch.some((wire) => {
+            const event = JSON.parse(wire);
+            return ['task_complete', 'turn_complete'].includes(event.msg?.type);
+          })
+        ) {
+          terminalObserved = true;
+          release.resolve();
+        }
+        return batch;
+      });
+    await using provider = await providerFor(server);
+    const session = await new Agent({
+      instructions: 'Check then finish.',
+      model: 'gpt-5.5',
+      provider,
+      decisions,
+      programmaticToolCalling: true,
+      tools: [
+        tool({
+          name: 'check',
+          parameters: z.object({}),
+          async execute(_, context) {
+            retained = context.decide;
+            entered.resolve();
+            await release.promise;
+            expect(terminalObserved).toBe(true);
+            expect(await context.decide('Ready?', { input: 'Explicit.' })).toBe(
+              true,
+            );
+            toolFinished = true;
+            return 'tool finished normally';
+          },
+        }),
+      ],
+    }).session();
+    rootId = session.id;
+    try {
+      const result = await (await session.submit('Check.')).wait();
+      expect(result.finalOutput).toBe('root finished');
+      expect(toolFinished).toBe(true);
+      expect(decisions.getDecision).toHaveBeenCalledTimes(1);
+      await expect(
+        retained!('Expired?', { input: 'Explicit.' }),
+      ).rejects.toThrow(/no longer|abort/i);
+      server.assertExhausted();
+    } finally {
+      release.resolve();
+      await session.close();
+      spy.mockRestore();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'captures a synchronous terminal completion decision before queued mutation without Decisions configured',
+  async () => {
+    const server = new ModelServer([
+      [call('finish', {}, { callId: 'finish' })],
+      [message('final answer')],
+    ]);
+    await using provider = await providerFor(server);
+    const result = await new Agent({
+      instructions: 'Answer.',
+      provider,
+      tools: [
+        tool({
+          name: 'finish',
+          parameters: z.object({}),
+          finishTurn: true,
+          execute: () => 7,
+        }),
+      ],
+      beforeComplete(context) {
+        if (context.toolCall) {
+          const decision = {
+            action: 'continue' as const,
+            instructions: 'ORIGINAL_TERMINAL_INSTRUCTION',
+          };
+          queueMicrotask(() => {
+            decision.instructions = 'MUTATED_TERMINAL_INSTRUCTION';
+          });
+          return decision;
+        }
+      },
+    }).run('Finish.');
+    expect(result.finalOutput).toBe('final answer');
+    const input = JSON.stringify(server.requests[1]!.input);
+    expect(input).toContain('ORIGINAL_TERMINAL_INSTRUCTION');
+    expect(input).not.toContain('MUTATED_TERMINAL_INSTRUCTION');
+    server.assertExhausted();
+  },
+);
+
+nativeIt(
+  'binds decision helpers to native approval and child completion callbacks',
   async () => {
     const executor = await startPublicExecutor();
     const approvalDecisions = decisionProvider();
     vi.mocked(approvalDecisions.getDecision).mockResolvedValue({
-      value: { response: true },
+      value: true,
       usage: { ...usage, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
       requestId: 'approval-check',
     });
@@ -1286,7 +1274,7 @@ nativeIt(
       expect(children).toHaveLength(1);
       const child = await children[0].turn!.wait();
       expect(child.finalOutput).toBe('Child candidate.');
-      expect(child.threadUsage?.totalTokenUsage.totalTokens).toBe(17);
+      expect(child.threadUsage?.totalTokenUsage.totalTokens).toBe(7);
       expect(child.threadUsage?.lastTokenUsage.totalTokens).toBe(7);
       expect(approvalDecisions.getDecision).toHaveBeenCalledTimes(1);
       server.assertExhausted();
@@ -1343,178 +1331,7 @@ nativeIt(
     expect(effects).toEqual([true]);
     expect(inherited.getDecision).toHaveBeenCalledTimes(2);
     expect(override.getDecision).toHaveBeenCalledTimes(1);
-    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(58);
-    server.assertExhausted();
-  },
-  30000,
-);
-
-nativeIt(
-  'returns a typed Agent-bound value through the actual shared compiler with one physical request',
-  async () => {
-    const server = new ModelServer([(request) => decisionReply(request, 0.75)]);
-    const config = await server.config();
-    const baseURL = (config['model_providers.fixture'] as { base_url: string })
-      .base_url;
-    const decisions = new OpenAIDecisions({
-      client: new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
-    });
-    await expect(
-      new Agent({ instructions: 'Answer.', decisions }).decide('Ready?', {
-        input: 'Explicit input.',
-        outputType: z.strictObject({ ready: z.boolean() }),
-      }),
-    ).resolves.toEqual({ ready: true });
-    expect(server.requests).toHaveLength(1);
-    server.assertExhausted();
-  },
-  30000,
-);
-
-nativeIt(
-  'stops before HTTP when a beforeStep decision reaches the token budget',
-  async () => {
-    const decisions = decisionProvider();
-    const server = new ModelServer([[message('unexpected')]]);
-    await using provider = await providerFor(server);
-    const agent = new Agent({
-      provider,
-      model: 'gpt-5.5',
-      instructions: 'Answer.',
-      decisions,
-    });
-    await expect(
-      agent.run('Go.', {
-        beforeStep: async (context) => {
-          await context.decide('Ready?', { input: 'Explicit.' });
-          return undefined;
-        },
-        budget: { maxRequests: 1, maxTokens: 10 },
-      }),
-    ).rejects.toMatchObject({ code: 'run_budget_exceeded' });
-    expect(decisions.getDecision).toHaveBeenCalledTimes(1);
-    expect(server.requests).toHaveLength(0);
-  },
-  30000,
-);
-
-nativeIt.each(['final', 'continue'] as const)(
-  'preserves admitted preparation and checks auxiliary usage at the next gate (%s)',
-  async (mode) => {
-    const decisions = decisionProvider();
-    let effects = 0;
-    const server = new ModelServer(
-      [
-        [
-          mode === 'final'
-            ? message('done')
-            : call('step', {}, { callId: 'step' }),
-        ],
-      ],
-      [wireUsage(14)],
-    );
-    await using provider = await providerFor(server);
-    const agent = new Agent({
-      provider,
-      model: 'gpt-5.5',
-      instructions: 'Answer.',
-      decisions,
-      tools: [
-        tool({
-          name: 'step',
-          parameters: z.object({}),
-          execute: () => ++effects,
-        }),
-      ],
-    });
-    const result = agent.run('Go.', {
-      prepareRequest: async (context) => {
-        await context.decide('Ready?', { input: 'Explicit.' });
-        return undefined;
-      },
-      budget:
-        mode === 'final'
-          ? { maxRequests: 1, maxTokens: 10 }
-          : { maxRequests: 2, maxTokens: 24 },
-    });
-    if (mode === 'final') {
-      const completed = await result;
-      expect(completed.finalOutput).toBe('done');
-      expect(completed.threadUsage?.totalTokenUsage.totalTokens).toBe(24);
-    } else {
-      await expect(result).rejects.toMatchObject({
-        code: 'run_budget_exceeded',
-      });
-      expect(effects).toBe(1);
-    }
-    expect(decisions.getDecision).toHaveBeenCalledTimes(1);
-    server.assertExhausted();
-  },
-  30000,
-);
-
-nativeIt(
-  'replies to a failing completion callback and rejects its original turn',
-  async () => {
-    const server = new ModelServer([[message('candidate')]], [wireUsage(14)]);
-    await using provider = await providerFor(server);
-    const agent = new Agent({
-      model: 'gpt-5.5',
-      provider,
-      instructions: 'Answer.',
-      beforeComplete: () => {
-        throw new Error('Synthetic completion failure');
-      },
-    });
-    await expect(agent.run('Go.')).rejects.toThrow(
-      'Synthetic completion failure',
-    );
-    server.assertExhausted();
-  },
-  15000,
-);
-
-nativeIt(
-  'binds terminal completion decisions to the exact proposal and accounts once',
-  async () => {
-    const decisions = decisionProvider();
-    const server = new ModelServer(
-      [[call('finish', {}, { callId: 'terminal-decision' })]],
-      [wireUsage(14)],
-    );
-    await using provider = await providerFor(server);
-    let retained: BoundDecide | undefined;
-    const result = await new Agent({
-      provider,
-      model: 'gpt-5.5',
-      instructions: 'Finish with the report.',
-      decisions,
-      outputType: z.object({ ready: z.boolean() }),
-      tools: [
-        tool({
-          name: 'finish',
-          parameters: z.object({}),
-          finishTurn: true,
-          execute: () => ({ ready: true }),
-        }),
-      ],
-      beforeComplete: async (context) => {
-        expect(context.text).toBeNull();
-        expect(context.toolCall?.callId).toBe('terminal-decision');
-        retained = context.decide;
-        expect(
-          await context.decide('Ready?', {
-            input: JSON.stringify(context.finalOutput),
-          }),
-        ).toBe(true);
-      },
-    }).run('Finish.');
-    expect(result.finalOutput).toEqual({ ready: true });
-    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(24);
-    expect(decisions.getDecision).toHaveBeenCalledTimes(1);
-    await expect(retained!('Expired?', { input: 'Explicit.' })).rejects.toThrow(
-      /no longer|abort/i,
-    );
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(28);
     server.assertExhausted();
   },
   30000,

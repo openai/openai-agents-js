@@ -227,7 +227,6 @@ export class NativeThread {
   ): Promise<string>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
-  _capture_decision(requestJson: string): Promise<_DecisionCall>;
   _reply_compaction(response_json: string): void;
   _reply_model_context(response_json: string): void;
   _reply_natural_completion(response_json: string): void;
@@ -510,10 +509,3 @@ export declare function _decision_result(
   question: string,
   answersJson: string,
 ): string;
-export declare class _DecisionCall {
-  private constructor();
-  readonly completion_id: string;
-  readonly thread_id: string;
-  readonly turn_id: string;
-  commit(metadataJson: string): Promise<string | null>;
-}

@@ -10,7 +10,6 @@ use opentelemetry::trace::TraceContextExt as _;
 mod agent_profiles;
 mod application_instructions;
 mod auth;
-mod auxiliary_decisions;
 mod canonical_rules;
 mod checkpoint;
 mod commands;
@@ -2549,14 +2548,6 @@ impl NativeThread {
         })
         .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
-    }
-
-    #[napi(js_name = "_capture_decision")]
-    pub async fn _capture_decision(
-        &self,
-        request_json: String,
-    ) -> napi::Result<auxiliary_decisions::NativeDecisionCall> {
-        auxiliary_decisions::capture(self.current()?, request_json).await
     }
 
     #[napi(js_name = "_check_step")]

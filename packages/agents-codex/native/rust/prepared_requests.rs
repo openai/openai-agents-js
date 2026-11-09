@@ -278,41 +278,6 @@ impl PythonTools {
             .send(response.data)
             .map_err(|_| anyhow::anyhow!("Expired prepared request reply"))
     }
-    pub(crate) fn check_prepared_authority(
-        &self,
-        thread: &str,
-        turn: &str,
-        generation: &str,
-        request_id: &str,
-    ) -> Result<bool> {
-        let owner = self
-            .prepared
-            .lock()
-            .expect("prepared owner poisoned")
-            .clone();
-        let Some(owner) = owner else {
-            return Ok(false);
-        };
-        if self.instance.is_some()
-            || owner.thread != thread
-            || owner.turn != turn
-            || owner.check().is_err()
-        {
-            return Ok(false);
-        }
-        let id: u64 = request_id.parse()?;
-        Ok(owner
-            .replies
-            .lock()
-            .expect("prepared replies poisoned")
-            .get(&id)
-            .is_some_and(|pending| {
-                !pending.sender.is_closed()
-                    && pending.generation.id.to_string() == generation
-                    && self.admits_generation(&pending.generation)
-            }))
-    }
-
     pub(crate) fn check_prepared_checkpoint(&self) -> Result<()> {
         ensure!(
             self.prepared
@@ -390,54 +355,6 @@ mod tests {
     fn reply(event: &Value) -> Reply {
         serde_json::from_value(json!({ "thread":"root", "turn_id":"turn", "generation":"0", "request_id":event["msg"]["request_id"], "failed":false,"data":null })).unwrap()
     }
-    #[tokio::test]
-    async fn decision_authority_rejects_mismatched_and_consumed_prepared_receipts() {
-        let (tools, turn, owner) = fixture();
-        let contributor = Contributor;
-        let mut prepare = contributor.prepare_request(input(turn));
-        assert!(futures_util::poll!(&mut prepare).is_pending());
-        let event = tools.next_request().await;
-        let id = event["msg"]["request_id"].as_str().unwrap();
-        assert!(
-            tools
-                .check_prepared_authority("root", "turn", "0", id)
-                .unwrap()
-        );
-        assert!(
-            !tools
-                .check_prepared_authority("other", "turn", "0", id)
-                .unwrap()
-        );
-        assert!(
-            !tools
-                .check_prepared_authority("root", "other", "0", id)
-                .unwrap()
-        );
-        assert!(
-            !tools
-                .check_prepared_authority("root", "turn", "1", id)
-                .unwrap()
-        );
-        assert!(
-            !tools
-                .check_prepared_authority("root", "turn", "0", "999999")
-                .unwrap()
-        );
-        tools.reply_prepared("root", reply(&event)).unwrap();
-        assert!(
-            !tools
-                .check_prepared_authority("root", "turn", "0", id)
-                .unwrap()
-        );
-        let _ = prepare.await.unwrap();
-        owner.retire();
-        assert!(
-            !tools
-                .check_prepared_authority("root", "turn", "0", id)
-                .unwrap()
-        );
-    }
-
     #[tokio::test]
     async fn no_edit_retains_dispatch_admission_and_reply_is_one_shot() {
         let (tools, turn, owner) = fixture();

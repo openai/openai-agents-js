@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import * as agents from '@openai/agents';
 import * as codex from '../src';
@@ -9,259 +9,183 @@ import {
   type DecisionProvider,
   type DecisionRequest,
 } from '../src';
-import { bindDecide } from '../src/runtime/decisions';
-import type { TokenUsage } from '../src/runtime/run-events';
 
-const usage: TokenUsage = {
-  inputTokens: 7,
-  cachedInputTokens: 2,
-  cacheWriteInputTokens: 0,
-  outputTokens: 3,
-  reasoningOutputTokens: 0,
-  totalTokens: 10,
-};
 function provider(value: unknown): DecisionProvider {
-  return {
-    getDecision: vi.fn(async () => ({
-      value,
-      usage,
-      requestId: 'request-1',
-      model: 'resolved',
-    })),
-  };
+  return { getDecision: vi.fn(async () => ({ value })) };
 }
 
-describe('provider-agnostic decisions', () => {
-  it('returns a boolean through the existing native-output wrapper', async () => {
-    const selected = provider({ response: true });
-    const result = new Agent({ instructions: 'Answer.' }).decide(
-      'Is this ready?',
-      {
-        provider: selected,
-        input: 'Ready.',
-      },
-    );
-    expectTypeOf(result).toEqualTypeOf<Promise<boolean>>();
-    await expect(result).resolves.toBe(true);
-    expect(selected.getDecision).toHaveBeenCalledWith(
-      expect.objectContaining({
-        question: 'Is this ready?',
-        input: 'Ready.',
-        outputSchema: expect.objectContaining({
-          properties: expect.objectContaining({
-            response: expect.objectContaining({ type: 'boolean' }),
-          }),
-        }),
-      }),
-      { signal: undefined },
-    );
-  });
+it('gives providers the direct boolean schema and accepts a boolean value', async () => {
+  const selected = provider(true);
+  const result = new Agent({
+    instructions: 'Answer.',
+    decisions: selected,
+  }).decide('Ready?', { input: 'Explicit.' });
+  expectTypeOf(result).toEqualTypeOf<Promise<boolean>>();
+  await expect(result).resolves.toBe(true);
+  expect(selected.getDecision).toHaveBeenCalledWith(
+    expect.objectContaining({
+      outputSchema: expect.objectContaining({ type: 'boolean' }),
+    }),
+    { signal: undefined },
+  );
+  expect(
+    vi.mocked(selected.getDecision).mock.calls[0]![0].outputSchema,
+  ).not.toHaveProperty('properties.response');
+});
 
-  it('preserves distinct scalar choices and their inferred type', async () => {
-    const result = new Agent({ instructions: 'Answer.' }).decide('Choose.', {
-      provider: provider({ response: false }),
-      input: 'Text.',
+it.each([false, 'false', 0, null] as const)(
+  'preserves the scalar choice %s',
+  async (value) => {
+    const result = new Agent({
+      instructions: 'Answer.',
+      decisions: provider(value),
+    }).decide('Choose.', {
+      input: 'Explicit.',
       choices: [false, 'false', 0, null] as const,
     });
     expectTypeOf(result).toEqualTypeOf<Promise<false | 'false' | 0 | null>>();
-    await expect(result).resolves.toBe(false);
-  });
+    await expect(result).resolves.toBe(value);
+  },
+);
 
-  it('validates typed records without an internal wrapper in provider output', async () => {
-    const result = new Agent({ instructions: 'Answer.' }).decide('Classify.', {
-      provider: provider({ category: 'support' }),
-      input: [],
-      outputType: z.strictObject({ category: z.enum(['sales', 'support']) }),
-    });
-    expectTypeOf(result).toEqualTypeOf<
-      Promise<{ category: 'sales' | 'support' }>
-    >();
-    await expect(result).resolves.toEqual({ category: 'support' });
-  });
+it('validates raw values before application transforms', async () => {
+  const schema = z.object({ value: z.string().min(1).transform(Number) });
+  const result = new Agent({
+    instructions: 'Answer.',
+    decisions: provider({ value: '7' }),
+  }).decide('Parse.', { input: 'Explicit.', outputType: schema });
+  expectTypeOf(result).toEqualTypeOf<Promise<{ value: number }>>();
+  await expect(result).resolves.toEqual({ value: 7 });
+});
 
-  it('captures explicit messages before the provider suspends', async () => {
-    const entered = Promise.withResolvers<void>(),
-      release = Promise.withResolvers<void>();
-    let request: DecisionRequest | undefined;
-    const selected: DecisionProvider = {
-      getDecision: async (captured) => {
-        request = captured;
-        entered.resolve();
-        await release.promise;
-        return { value: { response: true } };
-      },
-    };
-    const input = [{ role: 'user', content: 'original' }];
-    const result = new Agent({ instructions: 'Answer.' }).decide('Ready?', {
-      provider: selected,
-      input,
-    });
-    await entered.promise;
-    input[0].content = 'later';
-    release.resolve();
-    await result;
-    expect(request!.input).toEqual([{ role: 'user', content: 'original' }]);
-  });
-
-  it('records known completion metadata before validation failure', async () => {
-    const record = vi.fn(async () => {});
-    const bound = bindDecide({
-      provider: provider({ response: 'invalid' }),
-      assertActive() {},
-      own: (work) => work(),
-      record,
-    });
-    await expect(bound('Ready?', { input: 'Text.' })).rejects.toBeInstanceOf(
-      OutputValidationError,
-    );
-    expect(record).toHaveBeenCalledExactlyOnceWith({
-      usage,
-      requestId: 'request-1',
-      model: 'resolved',
-    });
-  });
-
-  it('retains completed refusal metadata and leaves transport failures unrecorded', async () => {
-    const record = vi.fn(async () => {});
-    const refusal = new DecisionError('refusal', {
-      usage,
-      requestId: 'request-refusal',
-    });
-    const selected: DecisionProvider = {
-      getDecision: vi.fn(async () => {
-        throw refusal;
-      }),
-    };
-    const bound = bindDecide({
-      provider: selected,
-      assertActive() {},
-      own: (work) => work(),
-      record,
-    });
-    await expect(bound('Ready?', { input: 'Text.' })).rejects.toBe(refusal);
-    expect(record).toHaveBeenCalledTimes(1);
-    const network = new Error('Synthetic transport failure');
-    vi.mocked(selected.getDecision).mockRejectedValueOnce(network);
-    await expect(bound('Ready?', { input: 'Text.' })).rejects.toBe(network);
-    expect(record).toHaveBeenCalledTimes(1);
-  });
-
-  it('permits a per-call provider override without changing the default', async () => {
-    const original = provider({ response: false }),
-      override = provider({ response: true });
-    const bound = bindDecide({
-      provider: original,
-      assertActive() {},
-      own: (work) => work(),
-      record: async () => {},
-    });
+it.each(['yes', 1, null, { response: true }])(
+  'rejects invalid raw boolean output %s',
+  async (value) => {
     await expect(
-      bound('Ready?', { provider: override, input: 'Text.' }),
-    ).resolves.toBe(true);
-    await expect(bound('Ready?', { input: 'Text.' })).resolves.toBe(false);
-  });
+      new Agent({ instructions: 'Answer.', decisions: provider(value) }).decide(
+        'Approve?',
+        { input: 'Explicit.' },
+      ),
+    ).rejects.toBeInstanceOf(OutputValidationError);
+  },
+);
 
-  it('does not expose response data in errors and treats invalid usage as unknown', async () => {
-    const selected: DecisionProvider = {
-      getDecision: async () => ({
-        value: { response: NaN, private: 'PRIVATE_RESPONSE' },
-        usage: { ...usage, totalTokens: 99 },
-      }),
-    };
-    const failure = await new Agent({ instructions: 'Answer.' })
-      .decide('Ready?', {
-        provider: selected,
-        input: 'Text.',
-      })
-      .catch((error) => error);
-    expect(failure).toBeInstanceOf(DecisionError);
-    expect(failure.usage).toBeUndefined();
-    expect(String(failure)).not.toContain('PRIVATE_RESPONSE');
-    expect(JSON.stringify(failure)).not.toContain('PRIVATE_RESPONSE');
-  });
-});
-
-it('rejects non-finite provider values before they can coerce to valid null output', async () => {
-  await expect(
-    new Agent({ instructions: 'Answer.' }).decide('Null?', {
-      provider: provider({ response: NaN }),
-      input: 'Explicit.',
-      outputType: z.null(),
-    }),
-  ).rejects.toMatchObject({ reason: 'invalid_response', usage });
-});
-
-it('binds Agent.decide without opening a generative session and requires a configured provider', async () => {
-  const configured = provider({ response: true });
-  const agent = new Agent({ instructions: 'Answer.', decisions: configured });
-  const session = vi.spyOn(agent, 'session');
-  await expect(agent.decide('Ready?', { input: 'Explicit.' })).resolves.toBe(
-    true,
-  );
-  expect(session).not.toHaveBeenCalled();
-  agent.decisions = undefined;
-  await expect(agent.decide('Ready?', { input: 'Explicit.' })).rejects.toThrow(
-    'provider is required',
-  );
-  await expect(
-    agent.decide('Ready?', { input: 'Explicit.', provider: configured }),
-  ).resolves.toBe(true);
-});
-
-it('retains refusal metadata when accounting also fails', async () => {
-  const primary = new DecisionError('refusal', {
-    usage,
-    requestId: 'refused-request',
-    model: 'resolved',
-  });
-  const accounting = new Error('Synthetic accounting failure');
-  const bound = bindDecide({
-    provider: {
-      getDecision: async () => {
-        throw primary;
+it('does not fabricate a required approval from a Zod default', async () => {
+  let advertised: DecisionRequest | undefined;
+  const agent = new Agent({
+    instructions: 'Answer.',
+    decisions: {
+      async getDecision(request) {
+        advertised = request;
+        return { value: {} };
       },
     },
-    assertActive() {},
-    own: (work) => work(),
-    record: async () => {
-      throw accounting;
-    },
   });
-  const failure = await bound('Ready?', { input: 'Explicit.' }).catch(
-    (error) => error,
-  );
-  expect(failure).toBeInstanceOf(AggregateError);
-  expect(failure.cause).toBe(primary);
-  expect(failure.errors).toEqual([primary, accounting]);
-  expect(failure.errors[0]).toMatchObject({
-    usage,
-    requestId: 'refused-request',
-    model: 'resolved',
-  });
-});
-it('propagates a lone accounting failure unchanged after successful inference', async () => {
-  const accounting = new Error('Synthetic accounting failure');
-  const record = vi.fn(async () => {
-    throw accounting;
-  });
-  const bound = bindDecide({
-    provider: provider({ response: true }),
-    assertActive() {},
-    own: (work) => work(),
-    record,
-  });
-  await expect(bound('Ready?', { input: 'Explicit.' })).rejects.toBe(
-    accounting,
-  );
-  expect(record).toHaveBeenCalledExactlyOnceWith({
-    usage,
-    requestId: 'request-1',
-    model: 'resolved',
+  await expect(
+    agent.decide('Approve?', {
+      input: 'Explicit.',
+      outputType: z.object({ allow: z.boolean().default(true) }),
+    }),
+  ).rejects.toBeInstanceOf(OutputValidationError);
+  expect(advertised?.outputSchema.required).toEqual(['allow']);
+  expect(advertised?.outputSchema.properties).toEqual({
+    allow: { type: 'boolean' },
   });
 });
 
-it('exposes decisions only through Agents and callback contexts', () => {
+it('keeps validation independent when a provider adapts its schema copy', async () => {
+  const agent = new Agent({
+    instructions: 'Answer.',
+    decisions: {
+      async getDecision(request) {
+        request.outputSchema.required = [];
+        return { value: {} };
+      },
+    },
+  });
+  await expect(
+    agent.decide('Approve?', {
+      input: 'Explicit.',
+      outputType: z.object({ allow: z.boolean().default(true) }),
+    }),
+  ).rejects.toBeInstanceOf(OutputValidationError);
+});
+
+it('rejects extra fields before Zod can strip them', async () => {
+  await expect(
+    new Agent({
+      instructions: 'Answer.',
+      decisions: provider({ allow: true, injected: true }),
+    }).decide('Approve?', {
+      input: 'Explicit.',
+      outputType: z.object({ allow: z.boolean() }),
+    }),
+  ).rejects.toBeInstanceOf(OutputValidationError);
+});
+
+it.each([NaN, Infinity, undefined])(
+  'rejects non-JSON values without lossy coercion',
+  async (value) => {
+    await expect(
+      new Agent({ instructions: 'Answer.', decisions: provider(value) }).decide(
+        'Value?',
+        { input: 'Explicit.', outputType: z.null() },
+      ),
+    ).rejects.toBeInstanceOf(DecisionError);
+  },
+);
+
+it('captures explicit input and keeps per-call providers separate from Agent defaults', async () => {
+  const initial = [{ role: 'user', content: 'ORIGINAL_INPUT' }];
+  const configured = provider(true),
+    override = provider(false);
+  const agent = new Agent({ instructions: 'Answer.', decisions: configured });
+  const pending = agent.decide('Ready?', { input: initial });
+  initial[0]!.content = 'MUTATED_INPUT';
+  await expect(pending).resolves.toBe(true);
+  expect(vi.mocked(configured.getDecision).mock.calls[0]![0].input).toEqual([
+    { role: 'user', content: 'ORIGINAL_INPUT' },
+  ]);
+  await expect(
+    agent.decide('Ready?', { input: 'Explicit.', provider: override }),
+  ).resolves.toBe(false);
+  expect(agent.decisions).toBe(configured);
+});
+
+it('requires a provider and explicit input, and propagates an already-aborted signal', async () => {
+  await expect(
+    new Agent({ instructions: 'Answer.' }).decide('Ready?', {
+      input: 'Explicit.',
+    }),
+  ).rejects.toThrow('decision provider');
+  const selected = provider(true);
+  const agent = new Agent({ instructions: 'Answer.', decisions: selected });
+  const reason = new Error('application cancelled');
+  await expect(
+    agent.decide('Ready?', {
+      input: 'Explicit.',
+      signal: AbortSignal.abort(reason),
+    }),
+  ).rejects.toBe(reason);
+  expect(selected.getDecision).not.toHaveBeenCalled();
+});
+
+it('exposes decisions only through Agents and existing callback contexts', () => {
   expect(agents).not.toHaveProperty('decide');
   expect(codex).not.toHaveProperty('decide');
   expect(new agents.OpenAIDecisions()).not.toHaveProperty('decide');
+});
+
+it('validates local recursive references against raw application JSON', async () => {
+  type Node = { next: Node | null };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({ next: node.nullable() }),
+  );
+  const agent = new Agent({
+    instructions: 'Answer.',
+    decisions: provider({ next: { next: null } }),
+  });
+  await expect(
+    agent.decide('Link.', { input: 'Explicit.', outputType: node }),
+  ).resolves.toEqual({ next: { next: null } });
 });

@@ -1,10 +1,7 @@
-import { createServer, type Server } from 'node:http';
 import OpenAI from 'openai';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import { afterEach, expect, it, vi } from 'vitest';
 import { Agent, OpenAIDecisions, DecisionError } from '../src';
 
-// Transport tests isolate the shared native compiler; native callback tests use the real compiler.
 const compiler = vi.hoisted(() => ({
   _decision_questions: vi.fn(),
   _decision_result: vi.fn(),
@@ -13,86 +10,73 @@ vi.mock('../src/runtime/binding', async (original) => ({
   ...(await original<typeof import('../src/runtime/binding')>()),
   binding: async () => compiler,
 }));
-const servers: Server[] = [];
-const requests: { path: string; body: Record<string, unknown> }[] = [];
-const usage = { input_tokens: 7, output_tokens: 3, total_tokens: 10 };
-async function endpoint(body: unknown) {
-  const server = createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    requests.push({
-      path: request.url!,
-      body: JSON.parse(Buffer.concat(chunks).toString()),
-    });
-    response.writeHead(200, {
-      'content-type': 'application/json',
-      'x-request-id': 'physical-request',
-    });
-    response.end(JSON.stringify(body));
-  });
-  servers.push(server);
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  if (!address || typeof address === 'string')
-    throw new Error('Missing fixture address');
-  return new OpenAI({
-    apiKey: 'synthetic',
-    baseURL: `http://127.0.0.1:${address.port}/v1`,
-    maxRetries: 0,
-  });
-}
-beforeEach(() => {
-  requests.length = 0;
-  compiler._decision_questions.mockReset().mockReturnValue(
+afterEach(() => {
+  compiler._decision_questions.mockReset();
+  compiler._decision_result.mockReset();
+});
+function setup(
+  body: string,
+  headers: Record<string, string> = {},
+  status = 200,
+) {
+  const fetch = vi.fn(
+    async () =>
+      new Response(body, {
+        status,
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': 'physical-request',
+          ...headers,
+        },
+      }),
+  );
+  const client = new OpenAI({ apiKey: 'synthetic', maxRetries: 0, fetch });
+  compiler._decision_questions.mockReturnValue(
     JSON.stringify({
       supported: true,
-      questions: [{ name: 'field_1', type: 'boolean', question: 'Ready?' }],
+      questions: [{ name: 'ready', type: 'predicate', instructions: 'Ready?' }],
     }),
   );
-  compiler._decision_result
-    .mockReset()
-    .mockReturnValue(JSON.stringify({ response: true }));
-});
-afterEach(async () => {
-  await Promise.all(
-    servers.splice(0).map(
-      (server) =>
-        new Promise<void>((resolve, reject) => {
-          server.close((error) => (error ? reject(error) : resolve()));
-          server.closeAllConnections();
-        }),
-    ),
+  compiler._decision_result.mockReturnValue('true');
+  return { client, fetch, provider: new OpenAIDecisions({ client }) };
+}
+const request = {
+  question: 'Ready?',
+  input: 'Explicit.',
+  outputSchema: { type: 'boolean' },
+};
+const usage = { input_tokens: 7, output_tokens: 3, total_tokens: 10 };
+it('uses generated Decisions create and captures normalized metadata', async () => {
+  const { provider, fetch, client } = setup(
+    JSON.stringify({
+      answers: [{ name: 'ready', type: 'predicate', probability: 1 }],
+      usage,
+      model: 'resolved',
+    }),
   );
-});
-it('sends one Decisions request and normalizes completed metadata', async () => {
-  const client = await endpoint({
-    answers: [{ name: 'field_1' }],
-    usage,
-    model: 'resolved-decision-model',
-  });
-  const provider = new OpenAIDecisions({ client });
-  const response = await provider.getDecision(
-    {
-      question: 'Ready?',
-      input: 'Explicit input.',
-      outputSchema: { type: 'boolean' },
-    },
-    {},
-  );
-  expect(response.value).toEqual({ response: true });
-  expect(requests).toEqual([
-    {
-      path: '/v1/decisions',
-      body: {
+  const create = client.decisions.create.bind(client.decisions);
+  const calls: Parameters<typeof create>[] = [];
+  client.decisions.create = (...args) => {
+    calls.push(args);
+    return create(...args);
+  };
+  const response = await provider.getDecision(request, {});
+  expect(calls).toEqual([
+    [
+      {
         model: 'gpt-6-luna',
-        input: 'Explicit input.',
-        questions: [{ name: 'field_1', type: 'boolean', question: 'Ready?' }],
+        input: 'Explicit.',
+        questions: [
+          { name: 'ready', type: 'predicate', instructions: 'Ready?' },
+        ],
       },
-    },
+      { signal: undefined },
+    ],
   ]);
-  expect(response).toMatchObject({
+  expect(response).toEqual({
+    value: true,
     requestId: 'physical-request',
-    model: 'resolved-decision-model',
+    model: 'resolved',
     usage: {
       inputTokens: 7,
       cachedInputTokens: 0,
@@ -102,198 +86,132 @@ it('sends one Decisions request and normalizes completed metadata', async () => 
       totalTokens: 10,
     },
   });
+  expect(fetch).toHaveBeenCalledTimes(1);
 });
-it('resolves constant-only output locally with known zero usage', async () => {
-  compiler._decision_questions.mockReturnValue(
-    JSON.stringify({ supported: true, questions: [] }),
-  );
-  const provider = new OpenAIDecisions({ client: await endpoint(null) });
-  const response = await provider.getDecision(
-    { question: 'Ready?', input: 'Explicit.', outputSchema: { const: true } },
-    {},
-  );
-  expect(response.usage?.totalTokens).toBe(0);
-  expect(requests).toHaveLength(0);
-  expect(compiler._decision_result).toHaveBeenCalledWith(
-    JSON.stringify({ const: true }),
-    'Ready?',
-    '[]',
-  );
-});
-it('rejects unsupported schemas before dispatch without explicit fallback', async () => {
+it('rejects unsupported schemas locally without another transport', async () => {
+  const { provider, fetch } = setup('{}');
   compiler._decision_questions.mockReturnValue(
     JSON.stringify({ supported: false, questions: [] }),
   );
-  const provider = new OpenAIDecisions({ client: await endpoint(null) });
-  await expect(
-    new Agent({ instructions: 'Answer.', decisions: provider }).decide(
-      'Summarize.',
-      {
-        input: 'Explicit.',
-        outputType: z.string(),
-      },
-    ),
-  ).rejects.toBeInstanceOf(TypeError);
-  expect(requests).toHaveLength(0);
+  await expect(provider.getDecision(request, {})).rejects.toThrow(
+    'Unsupported Decisions output schema',
+  );
+  expect(fetch).not.toHaveBeenCalled();
 });
-it.each(['completed', 'incomplete', undefined])(
-  'selects explicit Responses fallback before inference and checks completion status=%s',
-  async (status) => {
-    compiler._decision_questions.mockReturnValue(
-      JSON.stringify({ supported: false, questions: [] }),
+it('resolves constant schemas without a model request', async () => {
+  const { provider, fetch } = setup('{}');
+  compiler._decision_questions.mockReturnValue(
+    JSON.stringify({ supported: true, questions: [] }),
+  );
+  const response = await provider.getDecision(request, {});
+  expect(response.value).toBe(true);
+  expect(response.usage?.totalTokens).toBe(0);
+  expect(fetch).not.toHaveBeenCalled();
+});
+it.each(['{"PRIVATE_BODY":', 'not JSON PRIVATE_BODY', 'null', '[]'])(
+  'sanitizes malformed successful bodies and retains the request header',
+  async (body) => {
+    const { provider } = setup(body);
+    const error = await provider
+      .getDecision(request, {})
+      .catch((error) => error);
+    expect(error).toBeInstanceOf(DecisionError);
+    expect(error.reason).toBe('invalid_response');
+    expect(error.requestId).toBe('physical-request');
+    expect(error.cause).toBeUndefined();
+    expect(error.message + error.stack + JSON.stringify(error)).not.toContain(
+      'PRIVATE_BODY',
     );
-    const provider = new OpenAIDecisions({
-      client: await endpoint({
-        status,
-        usage,
-        model: 'resolved-fallback',
-        output: [
-          {
-            type: 'message',
-            content: [{ type: 'output_text', text: '{"response":"summary"}' }],
-          },
-        ],
-      }),
-      fallbackModel: 'generative-alias',
-    });
-    const result = new Agent({
-      instructions: 'Answer.',
-      decisions: provider,
-    }).decide('Summarize.', {
-      input: [{ role: 'user', content: 'Original input.' }],
-      outputType: z.string(),
-    });
-    if (status === 'completed') await expect(result).resolves.toBe('summary');
-    else
-      await expect(result).rejects.toMatchObject({
-        reason: 'invalid_response',
-        requestId: 'physical-request',
-        model: 'resolved-fallback',
-        usage: { totalTokens: 10 },
-      });
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
-      path: '/v1/responses',
-      body: {
-        model: 'generative-alias',
-        instructions: 'Summarize.',
-        input: [{ role: 'user', content: 'Original input.' }],
-        stream: false,
-        text: { format: { type: 'json_schema', strict: true } },
-      },
-    });
-    expect(compiler._decision_result).not.toHaveBeenCalled();
   },
 );
-it.each(['Decisions refused a question', 'invalid Decisions answer'])(
-  'retains known completion metadata without fallback on %s',
+it.each(['Decisions refused a question', 'PRIVATE_ANSWER_DETAILS'])(
+  'sanitizes answer interpretation and preserves completed usage',
   async (message) => {
+    const { provider } = setup(JSON.stringify({ answers: [], usage }));
     compiler._decision_result.mockImplementation(() => {
       throw new Error(message);
     });
-    const provider = new OpenAIDecisions({
-      client: await endpoint({ answers: [], usage, model: 'resolved' }),
-      fallbackModel: 'generative-alias',
-    });
-    const failure = await new Agent({
-      instructions: 'Answer.',
-      decisions: provider,
-    })
-      .decide('Ready?', { input: 'PRIVATE_INPUT' })
+    const error = await provider
+      .getDecision(request, {})
       .catch((error) => error);
-    expect(failure).toBeInstanceOf(DecisionError);
-    expect(failure).toMatchObject({
-      reason: message.startsWith('Decisions refused')
-        ? 'refusal'
-        : 'invalid_response',
-      requestId: 'physical-request',
-      model: 'resolved',
-      usage: { totalTokens: 10 },
-    });
-    expect(String(failure)).not.toContain('PRIVATE_INPUT');
-    expect(requests.map((request) => request.path)).toEqual(['/v1/decisions']);
+    expect(error).toBeInstanceOf(DecisionError);
+    expect(error.reason).toBe(
+      message.startsWith('Decisions refused') ? 'refusal' : 'invalid_response',
+    );
+    expect(error.usage?.totalTokens).toBe(10);
+    expect(error.requestId).toBe('physical-request');
+    expect(error.message).not.toContain('PRIVATE_ANSWER_DETAILS');
+    expect(error.cause).toBeUndefined();
   },
 );
-it('reports a malformed completed body safely with its request receipt', async () => {
-  compiler._decision_result.mockImplementation(() => {
-    throw new Error('invalid Decisions answer');
-  });
-  const provider = new OpenAIDecisions({ client: await endpoint(null) });
+it('keeps body-read cancellation distinct from malformed JSON', async () => {
+  const controller = new AbortController(),
+    reason = new Error('application cancelled');
+  const { provider, client } = setup('{}');
+  vi.spyOn(client.decisions, 'create').mockReturnValue({
+    asResponse: async () => ({
+      headers: new Headers({ 'x-request-id': 'physical-request' }),
+      json: async () => {
+        controller.abort(reason);
+        throw reason;
+      },
+    }),
+  } as unknown as ReturnType<typeof client.decisions.create>);
+  await expect(
+    provider.getDecision(request, { signal: controller.signal }),
+  ).rejects.toBe(reason);
+});
+it('uses direct scalar provider values through Agent.decide', async () => {
+  const { provider } = setup(JSON.stringify({ answers: [] }));
   await expect(
     new Agent({ instructions: 'Answer.', decisions: provider }).decide(
       'Ready?',
       { input: 'Explicit.' },
     ),
-  ).rejects.toMatchObject({
-    reason: 'invalid_response',
-    requestId: 'physical-request',
-  });
+  ).resolves.toBe(true);
 });
 
-const usageContainerCases: { label: string; raw: unknown; known: boolean }[] = [
-  ...['input_tokens_details', 'output_tokens_details'].flatMap((field) =>
-    ['', 'invalid', false, true, 0, 1, [], [{}]].map((details) => ({
-      label: `${field}=${JSON.stringify(details)}`,
-      raw: { ...usage, [field]: details },
-      known: false,
-    })),
-  ),
-  ...[
-    ['input_tokens_details', 'cached_tokens'],
-    ['input_tokens_details', 'cache_write_tokens'],
-    ['output_tokens_details', 'reasoning_tokens'],
-  ].map(([field, counter]) => ({
-    label: `${field}.${counter}=null`,
-    raw: { ...usage, [field]: { [counter]: null } },
-    known: false,
-  })),
-  { label: 'top-level usage array', raw: [], known: false },
-  ...[undefined, null].flatMap((input) =>
-    [undefined, null].map((output) => ({
-      label: `accepted input=${input}, output=${output}`,
-      raw: {
-        ...usage,
-        input_tokens_details: input,
-        output_tokens_details: output,
-      },
-      known: true,
-    })),
-  ),
+it.each([
+  { label: 'missing', raw: undefined, total: undefined },
   {
-    label: 'empty detail objects',
-    raw: { ...usage, input_tokens_details: {}, output_tokens_details: {} },
-    known: true,
+    label: 'zero',
+    raw: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    total: 0,
   },
-];
-it.each(usageContainerCases)(
-  'preserves a valid decision while validating usage containers: $label',
-  async ({ raw, known }) => {
-    const provider = new OpenAIDecisions({
-      client: await endpoint({ answers: [], usage: raw, model: 'resolved' }),
-    });
-    const response = await provider.getDecision(
-      {
-        question: 'Ready?',
-        input: 'Explicit.',
-        outputSchema: { type: 'boolean' },
-      },
-      {},
-    );
-    expect(response).toMatchObject({
-      value: { response: true },
-      requestId: 'physical-request',
-      model: 'resolved',
-    });
-    if (known)
-      expect(response.usage).toEqual({
-        inputTokens: 7,
-        cachedInputTokens: 0,
-        cacheWriteInputTokens: 0,
-        outputTokens: 3,
-        reasoningOutputTokens: 0,
-        totalTokens: 10,
-      });
-    else expect(response.usage).toBeUndefined();
-    expect(requests.map((request) => request.path)).toEqual(['/v1/decisions']);
+  {
+    label: 'inconsistent',
+    raw: { ...usage, total_tokens: 11 },
+    total: undefined,
   },
-);
+  {
+    label: 'invalid nested count',
+    raw: { ...usage, input_tokens_details: { cached_tokens: 8 } },
+    total: undefined,
+  },
+  {
+    label: 'lossless large count',
+    raw: {
+      input_tokens: '9007199254740993',
+      output_tokens: 0,
+      total_tokens: '9007199254740993',
+    },
+    total: 9007199254740993n,
+  },
+])('keeps $label provider usage distinct', async ({ raw, total }) => {
+  const { provider } = setup(JSON.stringify({ answers: [], usage: raw }));
+  expect((await provider.getDecision(request, {})).usage?.totalTokens).toBe(
+    total,
+  );
+});
+it('preserves generated client transport errors', async () => {
+  const { provider } = setup(
+    JSON.stringify({ error: { message: 'rate limited' } }),
+    {},
+    429,
+  );
+  const error = await provider.getDecision(request, {}).catch((error) => error);
+  expect(error).toBeInstanceOf(OpenAI.APIError);
+  expect(error).not.toBeInstanceOf(DecisionError);
+  expect(error.status).toBe(429);
+  expect(error.requestID).toBe('physical-request');
+});

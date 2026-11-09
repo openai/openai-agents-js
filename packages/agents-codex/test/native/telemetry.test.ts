@@ -7,6 +7,8 @@ const exec = promisify(execFile);
 for (const mode of [
   'completion-decisions',
   'completion-decisions-disabled',
+  'completion-decisions-unknown',
+  'completion-decisions-refusal',
   'lifecycle',
   'preclaim',
   'late',

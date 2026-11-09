@@ -1,6 +1,6 @@
 # Make typed decisions
 
-Use `agent.decide()` or `ctx.decide()` for a boolean, a choice, or a structured value. A decision provider sends the request. The SDK validates the result as it validates Agent output. Configure the provider on an Agent or override it for one bound call.
+Use `agent.decide()` or `ctx.decide()` for a boolean, a choice, or a structured value. A decision provider sends the request. The SDK validates raw JSON before applying the requested output type. Configure the provider on an Agent or override it for one bound call.
 
 Decisions support is not in the latest published preview. [Build the matching source](building.md) and set `OPENAI_API_KEY` before running these examples.
 
@@ -62,22 +62,24 @@ const result = await agent.run('Why does my Wi-Fi keep disconnecting?');
 console.log(result.finalOutput);
 ```
 
-Before-step, request-preparation, function-tool, native-agent approval, and completion callback contexts inherit the captured provider through `ctx.decide()`. Await the call in its live callback. Saved contexts cannot use an expired callback's authority. Completed usage contributes to the owning turn; child usage stays with the child. Run budgets check limits before admitting a root model step. An admitted request may finish after reaching a limit. Decision calls do not add root request admissions. Cancellation signals propagate to providers, and the Session joins started work. The helper does not append its question or answer to the conversation.
+Before-step, request-preparation, function-tool, native-agent approval, and completion callbacks inherit the captured Agent provider through `ctx.decide()`. Await each decision in its callback. A yielded tool can still decide after the root turn completes while its own callback remains live. Once the callback returns, its saved helper expires. Cancellation signals propagate to the provider. The helper does not add its question or answer to the conversation.
 
 `beforeComplete` receives proposed text before output validation. Returning `undefined` accepts it. Returning `{ action: 'continue', instructions }` adds feedback to the conversation and continues the same turn. Returning `{ action: 'stop' }` stops the issuing turn. The hook also receives terminal tool proposals through `finalOutput` and `toolCall`. When prompted output needs repair, the original hook checks each repaired candidate with its original context. Already streamed text remains visible and recorded. The callback does not run after a provider error or cancellation. Bound continuations with a count check or a run budget.
 
 ## Replace the provider
 
-Any object implementing `DecisionProvider.getDecision(request, { signal })` can replace `OpenAIDecisions`. It receives a `DecisionRequest` with `question`, `input`, and `outputSchema`, and returns a `DecisionResponse` with `value` and optional `usage`, `requestId`, and `model`. Return JSON matching the supplied schema; scalar outputs use the schema's `response` wrapper. The SDK validates and unwraps that value for the caller. Honor the supplied abort signal and settle all work before returning.
+Any object implementing `DecisionProvider.getDecision(request, { signal })` can replace `OpenAIDecisions`. It receives `question`, explicit `input`, and `outputSchema`, and returns `value` with optional `usage`, `requestId`, and `model`. Return the JSON value described by the schema: a boolean schema needs `true` or `false` directly.
 
-Use the same provider through `agent.decide(...)` or callback helpers. `agent.decide()` does not open a run or use history. `OpenAIDecisions` implements the provider protocol; the Agent and its callback contexts expose the typed decision methods.
+The SDK closes object schemas: all declared fields are required, defaults are removed, and extra properties are disallowed. It validates the returned JSON against that schema before applying Zod transforms or defaults. Honor the supplied abort signal and finish the provider's work before returning.
 
-An explicit `decisions` on `agent.run()` or `agent.session()` overrides the Agent default for that whole opening. Otherwise a handoff target's explicit provider takes precedence over the root Agent default. A helper's `provider` overrides either for one call. Provider selection is captured when opening starts and stays fixed for that Session. Provider objects and credentials are not serialized into saved state.
+Use the provider through `agent.decide(...)` or callback helpers. `agent.decide()` does not open a run or use history. Agent defaults are captured when opening starts and stay fixed for that Session. A handoff target can define its own default. A helper's `provider` option selects a provider for one call. Provider objects and credentials are not serialized into saved state.
 
-## Choose an explicit generative fallback
+## Use the bounded backend
 
-Free-form text and other unbounded schemas need a generative request. Configure `new OpenAIDecisions({ fallbackModel: ... })` to send the whole unsupported schema through Responses. The provider chooses the API before inference. It does not first make a Decisions request or retry a low-confidence answer. Ordinary transport retries follow the supplied OpenAI client's settings. Pass that client as `new OpenAIDecisions({ client })` to reuse its connection options.
+`OpenAIDecisions` supports bounded output schemas. It rejects unsupported schemas locally, before sending a request. Use ordinary Agent model calls for generative work. To reuse OpenAI connection options, pass `new OpenAIDecisions({ client })` with an OpenAI client from `openai` version 7.30.0 or later. Ordinary transport retries follow that client's settings.
 
 ## Handle errors and usage
 
-A refusal, malformed service answer, or non-JSON provider value raises `DecisionError`. Its `reason` is `refusal` or `invalid_response`; it retains trustworthy usage and request metadata without retaining the response body. Bound helpers record completed usage before raising. Valid JSON that fails the requested output type raises the existing `OutputValidationError`, as Agent output does. Both failures remain available if recording a completed error also fails. Missing or invalid usage stays unknown. Transport errors keep the OpenAI client's exception types. If a schema is unsupported and no fallback is configured, the call fails before any request.
+A refusal, malformed service answer, or non-JSON provider value raises `DecisionError`. Its `reason` is `refusal` or `invalid_response`. It retains trustworthy usage and request metadata without retaining the response body. Malformed successful HTTP responses also preserve the request ID. Valid JSON that fails the advertised schema raises the existing `OutputValidationError`; Zod parsing runs only after that validation. Transport errors keep the OpenAI client's exception types.
+
+When tracing is active, each call has a `decision` span. A separate `decision.usage` child span records completed usage and request metadata without the question, input, schema, or value. Missing or invalid usage stays unknown. Decisions usage does not change the root turn's token totals or consume its model-step budget. The decision still follows its callback's lifetime and cancellation signal.

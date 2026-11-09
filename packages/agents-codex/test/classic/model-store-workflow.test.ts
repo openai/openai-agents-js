@@ -1,4 +1,3 @@
-import OpenAI from 'openai';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -68,11 +67,8 @@ describe('public classic Model and persistent Session workflow', () => {
       const session = () =>
         new OpenAIConversationsSession({
           conversationId: fixture.conversationId,
-          client: new OpenAI({
-            apiKey: 'fixture-key',
-            baseURL: fixture.baseURL,
-            maxRetries: 0,
-          }),
+          apiKey: 'fixture-key',
+          baseURL: fixture.baseURL,
         });
       const agent = new Agent<typeof context>({
         name: 'classic-store',

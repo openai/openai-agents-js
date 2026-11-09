@@ -133,8 +133,6 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
-  /** Replace the decision capability for this entire Session, including handoffs. */
-  decisions?: DecisionProvider;
   /**
    * Seed settled user messages and assistant text without starting a model turn.
    * Requires a fresh opening without state or resume, including for []. Core
@@ -228,7 +226,6 @@ interface CapturedOpening {
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
   readonly decisions?: DecisionProvider;
-  readonly decisionsOverride?: DecisionProvider;
   readonly maxFunctionConcurrency?: number;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
@@ -335,8 +332,6 @@ export class Agent<Context = undefined, Output = string> {
     bindDecide({
       provider: captureDecisionProvider(this.decisions),
       assertActive() {},
-      own: (work) => work(),
-      record: async () => {},
     })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
@@ -599,7 +594,6 @@ export class Agent<Context = undefined, Output = string> {
       signal: options.signal,
       provider: options.provider,
       model: options.model,
-      decisions: captureDecisionProvider(options.decisions),
       modelSettings: options.modelSettings,
       [outputSelection]: (options as OwnedSessionOptions<Context>)[
         outputSelection
@@ -657,11 +651,6 @@ export class Agent<Context = undefined, Output = string> {
     const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
-    );
-    const decisionsOverride = captureDecisionProvider(
-      options.decisions === undefined
-        ? opening?.decisionsOverride
-        : options.decisions,
     );
     const beforeComplete = opening
       ? opening.beforeComplete
@@ -1328,7 +1317,6 @@ export class Agent<Context = undefined, Output = string> {
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         decisions,
-        decisionsOverride,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
         localStorage: persistent,
@@ -1391,12 +1379,11 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const captured: CapturedOpening = opening
-        ? Object.freeze({ ...opening, decisions, decisionsOverride })
+        ? Object.freeze({ ...opening, decisions })
         : Object.freeze({
             agent: this,
             profiles,
             decisions,
-            decisionsOverride,
             beforeComplete,
             factory,
             instructions,
