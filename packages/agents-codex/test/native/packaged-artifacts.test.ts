@@ -1,0 +1,301 @@
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, expect, it } from 'vitest';
+import { z } from 'zod';
+import { Agent, tool } from '../../src';
+import { jsonArtifactTool } from '../../src/artifacts';
+import { text, toolCall, withScriptedResponses } from '../../src/testing';
+
+const directories: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    directories
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true })),
+  );
+});
+async function directory(): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), 'agents-artifacts-test-'));
+  directories.push(path);
+  return path;
+}
+const schema = z.strictObject({ title: z.string().min(1) });
+
+it('repairs malformed and invalid JSON in the same native session before publishing', async () => {
+  const root = await directory();
+  const path = join(root, 'report.json');
+  const previous = '{"title":"Previous"}\n';
+  await writeFile(path, previous, 'utf8');
+  await withScriptedResponses(
+    [
+      [toolCall('report', { json: '{' }, { callId: 'bad-json' })],
+      [toolCall('inspect_previous', {}, { callId: 'after-json' })],
+      [toolCall('report', { json: '{"title":""}' }, { callId: 'bad-schema' })],
+      [toolCall('inspect_previous', {}, { callId: 'after-schema' })],
+      [
+        toolCall(
+          'report',
+          { json: '{"title":"Corrected café"}' },
+          { callId: 'corrected' },
+        ),
+      ],
+      [text('Published')],
+    ],
+    async (peer) => {
+      const agent = new Agent({
+        provider: peer.provider,
+        instructions: 'Publish the report, repairing rejected JSON.',
+        tools: [
+          jsonArtifactTool({ name: 'report', path, schema }),
+          tool({
+            name: 'inspect_previous',
+            parameters: z.strictObject({}),
+            execute: () => readFile(path, 'utf8'),
+          }),
+        ],
+      });
+      await using session = await agent.session();
+      const turn = await session.submit('Publish the report.');
+      expect((await turn.wait()).finalOutput).toBe('Published');
+      const turnIds = new Set<string>();
+      let calls = 0;
+      for await (const item of session.items()) {
+        if (item.type === 'function_call') {
+          turnIds.add(item.turnId);
+          calls++;
+        }
+      }
+      expect(turnIds).toEqual(new Set([turn.turnId]));
+      expect(calls).toBe(5);
+      expect(peer.toolOutput('bad-json')).toContain(
+        'Artifact report.json: JSON syntax check failed',
+      );
+      expect(peer.toolOutput('bad-schema')).toContain(
+        'Artifact report.json: schema check failed: title:',
+      );
+      expect(peer.toolOutput('after-json')).toBe(previous);
+      expect(peer.toolOutput('after-schema')).toBe(previous);
+      expect(peer.toolOutput('corrected')).toContain(
+        'Published validated JSON artifact report',
+      );
+      expect(JSON.stringify(peer.requests[1])).toContain(
+        'JSON syntax check failed',
+      );
+      expect(JSON.stringify(peer.requests[3])).toContain('schema check failed');
+    },
+  );
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
+    title: 'Corrected café',
+  });
+  expect(await readdir(root)).toEqual(['report.json']);
+}, 30_000);
+
+it('bounds schema diagnostics and preserves the previous artifact', async () => {
+  const root = await directory();
+  const path = join(root, 'report.json');
+  await writeFile(path, 'previous', 'utf8');
+  await withScriptedResponses(
+    [
+      [
+        toolCall(
+          'report',
+          { json: JSON.stringify({ titles: Array(40).fill('bad') }) },
+          { callId: 'bad' },
+        ),
+      ],
+      [text('Rejected')],
+    ],
+    async (peer) => {
+      const agent = new Agent({
+        instructions: 'Publish the requested JSON artifact.',
+        provider: peer.provider,
+        tools: [
+          jsonArtifactTool({
+            name: 'report',
+            path,
+            schema: z.strictObject({ titles: z.array(z.number()) }),
+          }),
+        ],
+      });
+      await agent.run('Try the report.');
+      expect(peer.toolOutput('bad')).toContain('schema check failed');
+      expect(peer.toolOutput('bad')!.length).toBeLessThan(2048);
+    },
+  );
+  expect(await readFile(path, 'utf8')).toBe('previous');
+  expect(await readdir(root)).toEqual(['report.json']);
+}, 30_000);
+
+it.each([
+  ...[
+    { label: 'nested undefined', value: { nested: { missing: undefined } } },
+    { label: 'nested function', value: { nested: { callback: () => null } } },
+    { label: 'nested symbol', value: { nested: { token: Symbol('token') } } },
+    { label: 'nested array undefined', value: { nested: [undefined] } },
+    { label: 'bigint', value: 1n },
+    { label: 'Date', value: new Date('2026-01-01T00:00:00Z') },
+    { label: 'toJSON', value: { toJSON: () => ({ changed: true }) } },
+    { label: 'sparse array', value: Array(1) },
+    {
+      label: 'cycle',
+      value: (() => {
+        const value: unknown[] = [];
+        value.push(value);
+        return value;
+      })(),
+    },
+  ].map(({ label, value }) => ({
+    schema: z
+      .string()
+      .transform((candidate) =>
+        candidate === 'corrected' ? { title: 'Corrected' } : value,
+      ),
+    invalid: JSON.stringify(label),
+    valid: '"corrected"',
+    expected: { title: 'Corrected' },
+    problem: 'JSON value check failed',
+  })),
+  { schema: z.unknown(), invalid: '1e400', valid: '1.25', expected: 1.25 },
+  {
+    schema: z.strictObject({ amount: z.unknown() }),
+    invalid: '{"amount":-1e400}',
+    valid: '{"amount":1.25}',
+    expected: { amount: 1.25 },
+  },
+  {
+    schema: z.array(z.unknown()),
+    invalid: '[1e400]',
+    valid: '[1.25]',
+    expected: [1.25],
+  },
+  {
+    schema: z.string().transform(Number),
+    invalid: '"1e400"',
+    valid: '"1.25"',
+    expected: 1.25,
+  },
+  {
+    schema: z.record(z.string(), z.number()),
+    invalid: '{"\\ud800":"bad"}',
+    valid: '{"amount":1.25}',
+    expected: { amount: 1.25 },
+    problem: 'schema check failed',
+  },
+  {
+    schema: z.record(z.string(), z.number()),
+    invalid: JSON.stringify({ ['a'.repeat(159) + '🦦']: 'bad' }),
+    valid: '{"amount":1.25}',
+    expected: { amount: 1.25 },
+    problem: 'schema check failed',
+  },
+])(
+  'repairs rejected $invalid in the same native session before publishing',
+  async ({
+    schema,
+    invalid,
+    valid,
+    expected,
+    problem = 'JSON value check failed',
+  }) => {
+    const root = await directory();
+    const path = join(root, 'report.json');
+    const previous = '{"retained":true}\n';
+    await writeFile(path, previous, 'utf8');
+    await withScriptedResponses(
+      [
+        [toolCall('report', { json: invalid }, { callId: 'invalid-value' })],
+        [toolCall('inspect_previous', {}, { callId: 'previous' })],
+        [toolCall('report', { json: valid }, { callId: 'corrected' })],
+        [text('Published')],
+      ],
+      async (peer) => {
+        const agent = new Agent({
+          provider: peer.provider,
+          instructions: 'Publish the report, repairing rejected values.',
+          tools: [
+            jsonArtifactTool({ name: 'report', path, schema }),
+            tool({
+              name: 'inspect_previous',
+              parameters: z.strictObject({}),
+              execute: () => readFile(path, 'utf8'),
+            }),
+          ],
+        });
+        await using session = await agent.session();
+        const turn = await session.submit('Publish the report.');
+        expect((await turn.wait()).finalOutput).toBe('Published');
+        const turnIds = new Set<string>();
+        let calls = 0;
+        for await (const item of session.items()) {
+          if (item.type === 'function_call') {
+            turnIds.add(item.turnId);
+            calls++;
+          }
+        }
+        expect(calls).toBe(3);
+        expect(turnIds).toEqual(new Set([turn.turnId]));
+        const feedback = peer.toolOutput('invalid-value') ?? '';
+        expect(feedback).toContain(problem);
+        expect(feedback.length).toBeLessThan(2048);
+        expect(feedback.isWellFormed()).toBe(true);
+        expect(JSON.stringify(peer.requests[1])).toContain(problem);
+        expect(peer.toolOutput('previous')).toBe(previous);
+        expect(peer.toolOutput('corrected')).toContain(
+          'Published validated JSON artifact report',
+        );
+      },
+    );
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(expected);
+    expect(await readdir(root)).toEqual(['report.json']);
+  },
+  30_000,
+);
+
+it('fails on I/O errors without asking the model to repair valid JSON', async () => {
+  const root = await directory();
+  const path = join(root, 'missing', 'report.json');
+  await withScriptedResponses(
+    [[toolCall('report', { json: '{"title":"Valid"}' }, { callId: 'valid' })]],
+    async (peer) => {
+      const agent = new Agent({
+        instructions: 'Publish the requested JSON artifact.',
+        provider: peer.provider,
+        tools: [jsonArtifactTool({ name: 'report', path, schema })],
+      });
+      await expect(agent.run('Publish the report.')).rejects.toThrow(/ENOENT/);
+      expect(peer.requests).toHaveLength(1);
+    },
+  );
+  expect(await readdir(root)).toEqual([]);
+}, 30_000);
+
+it('fails on unexpected schema exceptions without changing the artifact', async () => {
+  const root = await directory();
+  const path = join(root, 'report.json');
+  await writeFile(path, 'previous', 'utf8');
+  await withScriptedResponses(
+    [[toolCall('report', { json: '"candidate"' }, { callId: 'candidate' })]],
+    async (peer) => {
+      const agent = new Agent({
+        provider: peer.provider,
+        instructions: 'Publish the requested JSON artifact.',
+        tools: [
+          jsonArtifactTool({
+            name: 'report',
+            path,
+            schema: z.string().transform(async () => {
+              throw new Error('Unexpected schema failure');
+            }),
+          }),
+        ],
+      });
+      await expect(agent.run('Publish the report.')).rejects.toThrow(
+        'Unexpected schema failure',
+      );
+      expect(peer.requests).toHaveLength(1);
+    },
+  );
+  expect(await readFile(path, 'utf8')).toBe('previous');
+  expect(await readdir(root)).toEqual(['report.json']);
+}, 30_000);

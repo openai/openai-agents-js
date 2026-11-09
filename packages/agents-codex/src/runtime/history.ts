@@ -22,6 +22,8 @@ import {
 import {
   jsonObject,
   jsonValue,
+  losslessJsonObjectSchema,
+  losslessJsonValueSchema,
   type JsonObject,
   type JsonValue,
 } from './binding';
@@ -30,9 +32,9 @@ export const threadHistorySchema = z.array(
   z
     .object({
       type: z.string(),
-      payload: jsonObject,
+      payload: losslessJsonObjectSchema,
     })
-    .catchall(jsonValue),
+    .catchall(losslessJsonValueSchema),
 );
 export type ThreadHistory = z.infer<typeof threadHistorySchema>;
 

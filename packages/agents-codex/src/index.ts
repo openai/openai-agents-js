@@ -198,6 +198,7 @@ export type {
 export type {
   OperationOptions,
   BeforeStepContext,
+  StepDecision,
   PrepareRequestContext,
 } from './runtime/session';
 
@@ -311,6 +312,7 @@ export type {
 export type {
   NativeRealtimeSession,
   NativeRealtimeOptions,
+  NativeRealtimeSipConfigOptions,
   NativeRealtimeEvent,
   NativeRealtimeHistoryItem,
   NativeRealtimeHostedMcpApprovalRequest,

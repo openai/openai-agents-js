@@ -1,8 +1,128 @@
 import { afterEach, expect, it } from 'vitest';
-import { Agent, NativeProvider } from '../../src';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  Agent,
+  NativeError,
+  NativeProvider,
+  fileSessionStore,
+  type SessionStore,
+} from '../../src';
 import { ModelServer, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
+
+it('retires after a durable history checkpoint is accepted but its flush fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'history-uncertain-'));
+  const durable = fileSessionStore(directory);
+  let armed = false;
+  let acceptedCheckpoint = false;
+  const storage: SessionStore = {
+    acquire: (...args) => durable.acquire(...args),
+    read: (...args) => durable.read(...args),
+    release: (...args) => durable.release(...args),
+    commit: async (...args) => {
+      await durable.commit(...args);
+      if (
+        armed &&
+        JSON.parse(args[4]).mutations.some(
+          (mutation: {
+            operation: string;
+            items?: Record<string, unknown>[];
+          }) =>
+            mutation.operation === 'append' &&
+            mutation.items?.some(
+              (item) =>
+                item.type === 'compacted' &&
+                JSON.stringify(item).includes('committed replacement'),
+            ),
+        )
+      )
+        acceptedCheckpoint = true;
+    },
+    flush: async (...args) => {
+      if (armed && acceptedCheckpoint) {
+        armed = false;
+        throw new Error('synthetic flush failure after committed checkpoint');
+      }
+      await durable.flush?.(...args);
+    },
+  };
+  try {
+    const server = new ModelServer([[message('restored replacement')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-uncertain',
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+    });
+    const session = await agent.session({
+      storage,
+      initialMessages: [{ role: 'user', content: 'original history' }],
+    });
+    const identity = session.id;
+    let stale;
+    let before;
+    try {
+      before = await session.historySnapshot();
+      armed = true;
+      await expect(
+        session.transactHistory({
+          expectedRevision: before.revision,
+          keep: 0,
+          items: [
+            {
+              type: 'message',
+              id: 'replacement',
+              role: 'user',
+              content: [{ type: 'input_text', text: 'committed replacement' }],
+            },
+          ],
+        }),
+      ).rejects.toThrow(/flush|persistence|commit/i);
+      expect(acceptedCheckpoint).toBe(true);
+      try {
+        stale = await session.historySnapshot();
+      } catch {
+        stale = undefined;
+      }
+      if (stale === undefined)
+        await expect(session.submit('must not execute')).rejects.toThrow();
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      // The failed backend barrier remains a reported close error even after
+      // its writer is released. Restore below must acquire a fresh owner.
+      await session.close().catch((error) => {
+        expect(error).toBeInstanceOf(NativeError);
+        expect(error.message).toContain('canonical storage');
+      });
+    }
+    const restored = await agent.session({ storage, resume: identity });
+    try {
+      const current = await restored.historySnapshot();
+      expect(JSON.stringify(current.items)).toContain('committed replacement');
+      expect(JSON.stringify(current.items)).not.toContain('original history');
+      expect(current.revision).not.toBe(before!.revision);
+      expect(
+        (await (await restored.submit('continue')).wait()).finalOutput,
+      ).toBe('restored replacement');
+    } finally {
+      await restored.close();
+    }
+    expect(
+      stale,
+      'durable replacement failed but old live history remained usable',
+    ).toBeUndefined();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it('atomically replaces canonical history and restores it into the next native request', async () => {
   const server = new ModelServer([[message('continued')]]);

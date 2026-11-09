@@ -5,6 +5,7 @@ import {
   type ChildBeforeStepContext,
   type ChildTurn,
   type ChildCompleted,
+  type StepDecision,
 } from '@openai/agents';
 import {
   Agent,
@@ -70,6 +71,11 @@ export async function operationSelectionContracts() {
     beforeStep: async ({ stepIndex }) =>
       stepIndex === 0 ? [contextual] : undefined,
   });
+  const stop: StepDecision<typeof context> = { action: 'stop' };
+  void session.submit('stop', { beforeStep: () => stop });
+  void session.submit('stop asynchronously', {
+    beforeStep: async () => ({ action: 'stop' }),
+  });
   // @ts-expect-error Selected function declarations must accept the Session context.
   void session.submit('wrong context', { tools: [incompatible] });
   // @ts-expect-error Synchronous preparation cannot select an incompatible context.
@@ -88,6 +94,7 @@ export async function operationSelectionContracts() {
 
 // Child selectors expose only controls supported by the exact child Turn.
 export function childSelectionContracts() {
+  new NativeAgents({ beforeStep: () => ({ action: 'stop' }) });
   return new NativeAgents<{ enabled: boolean }>({
     async beforeStep(step) {
       expectTypeOf(step).toEqualTypeOf<
@@ -106,7 +113,7 @@ export function childSelectionContracts() {
       void step.submission.steer('detail');
       // @ts-expect-error Exact steering is a root Turn control.
       void step.submission.steerExact('detail');
-      return step.context.enabled ? undefined : [];
+      return step.context.enabled ? undefined : { action: 'stop' };
     },
   });
 }

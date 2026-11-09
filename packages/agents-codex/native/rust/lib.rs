@@ -2018,6 +2018,7 @@ impl NativeThread {
         // Preparation reserves the immutable config/declaration source while
         // every SDK publication uses this same native mutation lane.
         let _source_mutation = if operation == "realtime_conversation_prepare_sdk"
+            || operation == "realtime_conversation_config_sdk"
             || (operation == "realtime_conversation_update_sdk"
                 && params
                     .get("profile")
@@ -2031,6 +2032,10 @@ impl NativeThread {
             "realtime_tool_selection_sdk"
             | "realtime_conversation_start_sdk"
             | "realtime_conversation_prepare_sdk"
+            | "realtime_conversation_config_sdk"
+            | "realtime_conversation_update_history_sdk"
+            | "realtime_conversation_retrieve_item_sdk"
+            | "realtime_conversation_retrieve_history_sdk"
             | "realtime_conversation_activate_sdk"
             | "realtime_conversation_update_sdk"
             | "realtime_conversation_audio_sdk"
@@ -2057,7 +2062,9 @@ impl NativeThread {
                 serde_json::to_value(subagents::list(&inner).await.map_err(native_error)?)
                     .map_err(native_error)?
             }
-            "list_mcp_resources"
+            "call_mcp_app_tool"
+            | "mcp_app_tool_metadata"
+            | "list_mcp_resources"
             | "list_mcp_resource_templates"
             | "read_mcp_resource"
             | "list_mcp_prompts"
@@ -2102,6 +2109,72 @@ impl NativeThread {
                     .clone();
                 let request = async {
                     match operation.as_str() {
+                        "call_mcp_app_tool" | "mcp_app_tool_metadata" => {
+                            #[derive(serde::Deserialize)]
+                            #[serde(deny_unknown_fields)]
+                            struct ToolParams {
+                                name: String,
+                                arguments: serde_json::Map<String, Value>,
+                            }
+                            let params: ToolParams =
+                                serde_json::from_value(request.params).map_err(input_error)?;
+                            if !selected.is_local_environment()
+                                || !selected
+                                    .enabled_tools
+                                    .as_ref()
+                                    .is_some_and(|names| names.contains(&params.name))
+                                || selected
+                                    .disabled_tools
+                                    .as_ref()
+                                    .is_some_and(|names| names.contains(&params.name))
+                                || !selected.tools.get(&params.name).is_some_and(|tool| {
+                                    matches!(
+                                        tool.approval_mode,
+                                        Some(codex_config::AppToolApproval::Approve)
+                                    )
+                                })
+                            {
+                                return Err(input_error(
+                                    "MCP App actions require an explicitly selected preapproved ordinary local tool",
+                                ));
+                            }
+                            if operation == "mcp_app_tool_metadata" {
+                                let (_, snapshot) = inner
+                                    .thread
+                                    .mcp_server_status_snapshot(
+                                        &request.server,
+                                        codex_mcp::McpSnapshotDetail::ToolsAndAuthOnly,
+                                    )
+                                    .await
+                                    .map_err(|_| {
+                                        input_error("MCP App tool metadata is unavailable")
+                                    })?;
+                                if snapshot.tools_errors.contains_key(&request.server) {
+                                    return Err(input_error(
+                                        "MCP App tool metadata is unavailable",
+                                    ));
+                                }
+                                let tool = snapshot
+                                    .tools_by_server
+                                    .get(&request.server)
+                                    .and_then(|tools| tools.get(&params.name))
+                                    .ok_or_else(|| {
+                                        input_error("MCP App originating tool is unavailable")
+                                    })?;
+                                return Ok(tool.meta.clone().unwrap_or(Value::Null));
+                            }
+                            let result = inner
+                                .thread
+                                .call_mcp_tool(
+                                    &request.server,
+                                    &params.name,
+                                    Some(Value::Object(params.arguments)),
+                                    None,
+                                )
+                                .await
+                                .map_err(|error| native_error(format!("{error:#}")))?;
+                            serde_json::to_value(result).map_err(native_error)
+                        }
                         "read_mcp_resource" => inner
                             .thread
                             .read_mcp_resource(
@@ -2570,6 +2643,27 @@ impl NativeThread {
         owner
             .check_step(&response.thread, &response)
             .map_err(input_error)
+    }
+
+    #[napi(js_name = "_stop_step")]
+    pub fn _stop_step(&self, response_json: String) -> napi::Result<bool> {
+        let response: python_tools::StepReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Step selection requires a managed Session"))?;
+        let Some(owner) =
+            tools.exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+        else {
+            return Ok(false);
+        };
+        let thread = response.thread.clone();
+        owner.stop_step(&thread, response).map_err(input_error)
     }
 
     #[napi(js_name = "_reply_child_step")]
