@@ -8318,17 +8318,22 @@ export class Session<OutputT = string, Context = unknown> {
         return;
       }
       for (const server of next.mcp) {
-        if (
-          !this.hasOperationMcp &&
-          !(server instanceof HttpMCP && server.activation === 'operation')
-        )
-          continue;
         const opening = this.openingMcpTools.find(
           (original) => original.name === server.name,
         );
         if (
           !opening ||
-          server.tools.some((raw) => !opening.tools.includes(raw)) ||
+          server.tools.some((raw) => !opening.tools.includes(raw))
+        )
+          throw new TypeError(
+            'Updated MCP raw identities and activation must match Session opening',
+          );
+        if (
+          !this.hasOperationMcp &&
+          !(server instanceof HttpMCP && server.activation === 'operation')
+        )
+          continue;
+        if (
           (opening instanceof HttpMCP &&
             opening.activation === 'operation' &&
             !(server instanceof HttpMCP)) ||

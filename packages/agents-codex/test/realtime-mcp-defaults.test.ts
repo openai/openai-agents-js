@@ -1,16 +1,19 @@
 import { expect, it, vi } from 'vitest';
 import { Session } from '../src/runtime/session';
-import { HttpMCP } from '../src/runtime/mcp';
+import { HttpMCP, StdioMCP } from '../src/runtime/mcp';
 import { captureTools } from '../src/runtime/tools';
 import type { Engine, NativeThread } from '../src/runtime/binding';
 
-function fixture() {
+function fixture(
+  activation: 'session' | 'operation' = 'operation',
+  openingTools = ['lookup', 'other'],
+) {
   const descriptor = (tools: string[]) =>
     new HttpMCP({
       name: 'records',
       url: 'http://127.0.0.1/mcp',
       tools,
-      activation: 'operation',
+      activation,
     });
   const publish = vi.fn(async (raw: string, policies: string) => {
     const servers = JSON.parse(raw);
@@ -50,7 +53,7 @@ function fixture() {
     {} as Engine,
     native as unknown as NativeThread,
     captureTools([]),
-    { mcpTools: [descriptor(['lookup', 'other'])] },
+    { mcpTools: [descriptor(openingTools)] },
     {},
   );
   return { session, publish, descriptor };
@@ -81,5 +84,87 @@ it('voice promotion keeps cleared MCP defaults disabled', async () => {
   await session.update({ tools: [] });
   publish.mockClear();
   await session._prepareRealtimeMcp();
+  expect(publish).not.toHaveBeenCalled();
+});
+
+it.each(['session', 'operation'] as const)(
+  'rejects a different raw MCP name with the same projection (%s activation)',
+  async (activation) => {
+    const { session, publish, descriptor } = fixture(activation, [
+      'find-record',
+    ]);
+    await expect(
+      session.update({ tools: [descriptor(['find_record'])] }),
+    ).rejects.toThrow('Updated MCP raw identities');
+    expect(publish).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['session', 'operation'] as const)(
+  'retains opening raw names after narrowing the default selection (%s activation)',
+  async (activation) => {
+    const { session, publish, descriptor } = fixture(activation, [
+      'find-record',
+      'other',
+    ]);
+    await session.update({ tools: [descriptor(['other'])] });
+    await session.update({ tools: [descriptor(['find-record'])] });
+    expect(
+      JSON.parse(publish.mock.calls.at(-1)![0]).records.enabled_tools,
+    ).toEqual(['find-record']);
+  },
+);
+
+it.each(['session', 'operation'] as const)(
+  'retains activation restrictions on same-name replacements (%s activation)',
+  async (activation) => {
+    const { session, publish } = fixture(activation);
+    await expect(
+      session.update({
+        tools: [
+          new HttpMCP({
+            name: 'records',
+            url: 'http://127.0.0.1/replacement',
+            tools: ['lookup'],
+            activation: activation === 'session' ? 'operation' : 'session',
+          }),
+        ],
+      }),
+    ).rejects.toThrow('activation must match');
+    expect(publish).not.toHaveBeenCalled();
+  },
+);
+
+it('allows eager same-name transport replacement without adding operation-only restrictions', async () => {
+  const { session, publish } = fixture('session');
+  await session.update({
+    tools: [
+      new StdioMCP({
+        name: 'records',
+        command: '/synthetic/mcp',
+        tools: ['lookup'],
+        location: 'host',
+      }),
+    ],
+  });
+  expect(JSON.parse(publish.mock.calls[0][0]).records.command).toBe(
+    '/synthetic/mcp',
+  );
+});
+
+it('rejects replacing an operation MCP binding with a stdio binding', async () => {
+  const { session, publish } = fixture();
+  await expect(
+    session.update({
+      tools: [
+        new StdioMCP({
+          name: 'records',
+          command: '/synthetic/mcp',
+          tools: ['lookup'],
+          location: 'host',
+        }),
+      ],
+    }),
+  ).rejects.toThrow('activation must match');
   expect(publish).not.toHaveBeenCalled();
 });

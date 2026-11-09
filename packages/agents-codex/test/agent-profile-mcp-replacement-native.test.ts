@@ -7,7 +7,7 @@ import { ModelServer, call, message } from './native/fixtures/model-server';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 
-async function peer() {
+async function peer(toolNames = ['lookup']) {
   const effects: unknown[] = [];
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -26,17 +26,15 @@ async function peer() {
       };
     else if (rpc.method === 'tools/list')
       result = {
-        tools: [
-          {
-            name: 'lookup',
-            description: 'Read a record.',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-              additionalProperties: false,
-            },
+        tools: toolNames.map((name) => ({
+          name,
+          description: 'Read a record.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
           },
-        ],
+        })),
       };
     else if (rpc.method === 'tools/call') {
       effects.push(rpc.params);
@@ -298,3 +296,65 @@ for (const phase of ['before', 'approval'] as const) {
     20000,
   );
 }
+
+nativeIt.each(['session', 'operation'] as const)(
+  'preserves raw MCP selection and permits same-name endpoint replacement (%s activation)',
+  async (activation) => {
+    const original = await peer(['find-record', 'find_record']);
+    const replacement = await peer(['find-record', 'find_record']);
+    const model = new ModelServer([
+      [
+        call(
+          'find_record',
+          {},
+          { callId: 'raw-name-call', namespace: 'mcp__records' },
+        ),
+      ],
+      [message('completed')],
+    ]);
+    const descriptor = (url: string, raw = 'find-record') =>
+      new HttpMCP({
+        name: 'records',
+        url,
+        tools: [raw],
+        activation,
+        approvalMode: 'preapproved',
+      });
+    try {
+      const config = await model.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-raw-name-replacement',
+        supportsWebsockets: false,
+      });
+      await using session = await new Agent({
+        instructions: 'Read the selected record.',
+        provider,
+        tools: [descriptor(original.url)],
+      }).session();
+      await expect(
+        session.update({
+          tools: [descriptor(replacement.url, 'find_record')],
+        }),
+      ).rejects.toThrow('Updated MCP raw identities');
+      expect(model.requests).toHaveLength(0);
+      expect(original.effects).toHaveLength(0);
+      expect(replacement.effects).toHaveLength(0);
+      await session.update({ tools: [descriptor(replacement.url)] });
+      expect((await (await session.submit('Read.')).wait()).finalOutput).toBe(
+        'completed',
+      );
+      expect(original.effects).toHaveLength(0);
+      expect(replacement.effects).toEqual([
+        expect.objectContaining({ name: 'find-record' }),
+      ]);
+      model.assertExhausted();
+    } finally {
+      await original.close();
+      await replacement.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
