@@ -13,6 +13,8 @@ type ViewTurn<T> = Pick<
 > & { wait(): Promise<Pick<Completed<T>, 'finalOutput'>> };
 type ViewSession = Pick<Session, 'id' | 'items'>;
 type Frame = Record<string, unknown>;
+type ShownText = { text: string; trailingHighSurrogate: boolean };
+const utf8 = new TextEncoder();
 const stopped = (error: unknown): boolean =>
   error instanceof NativeError && error.name === 'TurnAborted';
 const detached = new Error('UI reader detached');
@@ -61,12 +63,13 @@ async function completeDisplay(
   childId: string | null,
   turns: ReadonlySet<string>,
   last: string,
-  shown: ReadonlyMap<string, string>,
+  shown: ReadonlyMap<string, ShownText>,
   plain: boolean,
   output: unknown,
   signal: AbortSignal,
 ): Promise<boolean> {
-  const recorded = new Map<string, string>();
+  const recorded = new Map<string, { text: string; bytes: number }>();
+  let recordedBytes = 0;
   let candidate: string | undefined;
   let fallback: string | undefined;
   const items = session.items({ subagentId: childId ?? undefined });
@@ -88,15 +91,10 @@ async function completeDisplay(
           item.content
             .map((part) => (part.type === 'input_image' ? '' : part.text))
             .join('');
-        recorded.set(item.id, text);
-        if (
-          recorded.size > 256 ||
-          [...recorded.values()].reduce(
-            (n, value) => n + new TextEncoder().encode(value).length,
-            0,
-          ) > 1_048_576
-        )
-          return false;
+        const bytes = utf8.encode(text).length;
+        recordedBytes += bytes - (recorded.get(item.id)?.bytes ?? 0);
+        recorded.set(item.id, { text, bytes });
+        if (recorded.size > 256 || recordedBytes > 1_048_576) return false;
         if (item.turnId !== last) continue;
         if (item.phase === 'final_answer') candidate = item.id;
         else if (item.phase === null) {
@@ -113,33 +111,40 @@ async function completeDisplay(
     if (signal.aborted) void closing.catch(() => {});
     else await localWait(closing, signal);
   }
-  for (const [id, text] of shown) if (recorded.get(id) !== text) return false;
+  for (const [id, value] of shown)
+    if (recorded.get(id)?.text !== value.text) return false;
   if (!plain) return true;
-  if (output === '' && [...shown.values()].every((text) => text === ''))
+  if (output === '' && [...shown.values()].every((value) => value.text === ''))
     return true;
   const id = candidate ?? fallback;
   if (!id || !shown.has(id)) return false;
-  const text = shown.get(id)!;
+  const text = shown.get(id)!.text;
   return text === output || (output === '' && nativeBlank(text));
 }
 
 function remember(
-  shown: Map<string, string>,
+  shown: Map<string, ShownText>,
   id: string,
   delta: string,
-): boolean {
-  // Bound view state independently of native history.
-  const total = [...shown.values()].reduce(
-    (n, text) => n + new TextEncoder().encode(text).length,
-    0,
-  );
-  if (
-    (!shown.has(id) && shown.size >= 256) ||
-    total + new TextEncoder().encode(delta).length > 1_048_576
-  )
-    return false;
-  shown.set(id, (shown.get(id) ?? '') + delta);
-  return true;
+  totalBytes: number,
+): number | undefined {
+  const previous = shown.get(id);
+  const first = delta.charCodeAt(0);
+  // A pair split across deltas replaces two three-byte surrogate replacements
+  // with one four-byte scalar. Other item IDs and empty deltas cannot pair.
+  const paired =
+    previous?.trailingHighSurrogate && first >= 0xdc00 && first <= 0xdfff;
+  const nextBytes = totalBytes + utf8.encode(delta).length - (paired ? 2 : 0);
+  if ((!previous && shown.size >= 256) || nextBytes > 1_048_576)
+    return undefined;
+  const last = delta.charCodeAt(delta.length - 1);
+  shown.set(id, {
+    text: (previous?.text ?? '') + delta,
+    trailingHighSurrogate: delta.length
+      ? last >= 0xd800 && last <= 0xdbff
+      : (previous?.trailingHighSurrogate ?? false),
+  });
+  return nextBytes;
 }
 
 /** Closing a response releases only its local reader. */
@@ -302,7 +307,8 @@ function createVercelResponse(
   return responseStream(
     events,
     async function* (signal) {
-      const shown = new Map<string, string>();
+      const shown = new Map<string, ShownText>();
+      let shownBytes = 0;
       let started: string | undefined;
       let gap = false;
       let lost = false;
@@ -334,10 +340,17 @@ function createVercelResponse(
           }
           if (event.type === 'output_text_delta') {
             const opened = shown.has(event.itemId);
-            if (!remember(shown, event.itemId, event.delta)) {
+            const nextBytes = remember(
+              shown,
+              event.itemId,
+              event.delta,
+              shownBytes,
+            );
+            if (nextBytes === undefined) {
               lost = true;
               break;
             }
+            shownBytes = nextBytes;
             if (!opened) yield { type: 'text-start', id: event.itemId };
             yield { type: 'text-delta', id: event.itemId, delta: event.delta };
           } else if (

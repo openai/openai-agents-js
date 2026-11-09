@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { URL } from 'node:url';
 import { chromium } from 'playwright';
 const url = process.argv[2];
 if (!url)
@@ -13,6 +14,14 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage();
   const errors = [];
+  let actionRequests = 0;
+  page.on('request', (request) => {
+    if (
+      request.method() === 'POST' &&
+      new URL(request.url()).pathname === '/api/action'
+    )
+      actionRequests++;
+  });
   page.setDefaultTimeout(12000);
   page.on('console', (message) => {
     if (message.type() === 'error') console.error(message.text());
@@ -74,21 +83,35 @@ try {
   assert.equal(badOrigin.status, 403);
   assert.match(await badOrigin.text(), /Unexpected action origin/);
   // A distinct window cannot send tools/call through this iframe's transport.
-  await page.evaluate(() =>
-    window.postMessage(
-      {
-        jsonrpc: '2.0',
-        id: 999,
-        method: 'tools/call',
-        params: { name: 'increment', arguments: { amount: 100 } },
-      },
-      '*',
-    ),
+  const actionsBeforeForeignMessage = actionRequests;
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const received = (event) => {
+          if (event.source === window && event.data?.id === 999) {
+            window.removeEventListener('message', received);
+            resolve();
+          }
+        };
+        window.addEventListener('message', received);
+        window.postMessage(
+          {
+            jsonrpc: '2.0',
+            id: 999,
+            method: 'tools/call',
+            params: { name: 'increment', arguments: { amount: 1 } },
+          },
+          '*',
+        );
+      }),
   );
-  await page.waitForTimeout(100);
-  assert.equal(await frame.locator('#count').innerText(), '2');
   await frame.getByRole('button', { name: 'Increment', exact: true }).click();
   await frame.locator('#count').filter({ hasText: /^3$/ }).waitFor();
+  assert.equal(
+    actionRequests - actionsBeforeForeignMessage,
+    1,
+    'Only the subsequent iframe action may reach /api/action',
+  );
   console.log(
     JSON.stringify({
       text: 'Counter opened.',

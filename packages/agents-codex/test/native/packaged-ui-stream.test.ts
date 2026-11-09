@@ -210,14 +210,18 @@ it('disconnect releases the public reader without stopping its native turn', asy
   expect((await turn.wait()).finalOutput).toBe('old answer');
 });
 
-const start: Observation = {
+const start: Extract<Observation, { type: 'turn_started' }> = {
   type: 'turn_started',
   sessionId: 's',
   submissionId: 'submission',
   turnId: 't',
   sequence: 1,
 };
-function fixture(observations: Observation[], items: SessionItem[] = []) {
+function fixture(
+  observations: Observation[],
+  items: SessionItem[] = [],
+  finalOutput = '',
+) {
   return {
     turn: {
       sessionId: 's',
@@ -229,7 +233,7 @@ function fixture(observations: Observation[], items: SessionItem[] = []) {
           yield* observations;
         })(),
       async wait() {
-        return { finalOutput: '' };
+        return { finalOutput };
       },
     },
     session: {
@@ -329,3 +333,205 @@ it('bounds streamed text without cancelling the underlying turn', async () => {
   ]);
   expect(await turn.wait()).toEqual({ finalOutput: '' });
 });
+
+function displayedMessage(
+  id: string,
+  text: string,
+  phase: 'final_answer' | null = null,
+): SessionItem {
+  return {
+    id,
+    turnId: 't',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    phase,
+    content: [{ type: 'output_text', text }],
+  };
+}
+
+function textFixture(
+  deltas: readonly (readonly [string, string])[],
+  items: SessionItem[],
+  output: string,
+) {
+  return fixture(
+    [
+      start,
+      ...deltas.map(([itemId, delta], index): Observation => ({
+        ...start,
+        type: 'output_text_delta',
+        itemId,
+        delta,
+        sequence: index + 2,
+      })),
+    ],
+    items,
+    output,
+  );
+}
+
+function shownText(values: any[], id: string): string {
+  return values
+    .filter((value) => value.type === 'text-delta' && value.id === id)
+    .map((value) => value.delta)
+    .join('');
+}
+
+it('preserves many small interleaved ASCII and Unicode deltas through canonical settlement', async () => {
+  const left = 'a'.repeat(64),
+    right = '🙂'.repeat(16);
+  const deltas = Array.from(
+    { length: 3200 },
+    () =>
+      [
+        ['left', left],
+        ['right', right],
+      ] as const,
+  ).flat();
+  const leftText = left.repeat(3200),
+    rightText = right.repeat(3200);
+  const { turn, session } = textFixture(
+    deltas,
+    [
+      displayedMessage('left', leftText),
+      displayedMessage('right', rightText, 'final_answer'),
+    ],
+    rightText,
+  );
+  const values = await frames(vercelResponse(turn, session));
+  expect(shownText(values, 'left')).toBe(leftText);
+  expect(shownText(values, 'right')).toBe(rightText);
+  expect(values.slice(-2)).toEqual([{ type: 'finish' }, '[DONE]']);
+});
+
+it.each([false, true])(
+  'counts a split Unicode pair across empty and interleaved deltas at the byte cap (extra=%s)',
+  async (extra) => {
+    const filler = 'x'.repeat(1_048_576 - 4);
+    const deltas: [string, string][] = [
+      ['unicode', '\ud83d'],
+      ['filler', filler],
+      ['unicode', ''],
+      ['unicode', '\ude42'],
+      ...(extra ? [['filler', 'x'] as [string, string]] : []),
+    ];
+    const { turn, session } = textFixture(
+      deltas,
+      [
+        displayedMessage('filler', filler),
+        displayedMessage('unicode', '🙂', 'final_answer'),
+      ],
+      '🙂',
+    );
+    const values = await frames(vercelResponse(turn, session));
+    expect(shownText(values, 'unicode')).toBe('🙂');
+    expect(shownText(values, 'filler')).toBe(filler);
+    expect(values.slice(-2)).toEqual([
+      extra
+        ? { type: 'error', errorText: 'resync_required' }
+        : { type: 'finish' },
+      '[DONE]',
+    ]);
+    expect(await turn.wait()).toEqual({ finalOutput: '🙂' });
+  },
+);
+
+it.each([false, true])(
+  'counts unpaired surrogates in different items separately (extra=%s)',
+  async (extra) => {
+    const filler = 'x'.repeat(1_048_576 - 6);
+    const { turn, session } = textFixture(
+      [
+        ['high', '\ud83d'],
+        ['low', '\ude42'],
+        ['filler', filler],
+        ...(extra ? [['filler', 'x'] as const] : []),
+      ],
+      [
+        displayedMessage('high', '\ud83d'),
+        displayedMessage('low', '\ude42'),
+        displayedMessage('filler', filler, 'final_answer'),
+      ],
+      filler,
+    );
+    const values = await frames(vercelResponse(turn, session));
+    expect(shownText(values, 'high')).toBe('\ud83d');
+    expect(shownText(values, 'low')).toBe('\ude42');
+    expect(shownText(values, 'filler')).toBe(filler);
+    expect(values.slice(-2)).toEqual([
+      extra
+        ? { type: 'error', errorText: 'resync_required' }
+        : { type: 'finish' },
+      '[DONE]',
+    ]);
+  },
+);
+
+it.each([256, 257])(
+  'retains at most 256 distinct empty text parts (count=%i)',
+  async (count) => {
+    const ids = Array.from({ length: count }, (_, index) => `part-${index}`);
+    const { turn, session } = textFixture(
+      ids.map((id) => [id, '']),
+      ids.map((id) => displayedMessage(id, '')),
+      '',
+    );
+    const values = await frames(vercelResponse(turn, session));
+    expect(values.filter((value) => value.type === 'text-start')).toHaveLength(
+      256,
+    );
+    expect(values.filter((value) => value.type === 'text-end')).toHaveLength(
+      256,
+    );
+    expect(values.slice(-2)).toEqual([
+      count === 256
+        ? { type: 'finish' }
+        : { type: 'error', errorText: 'resync_required' },
+      '[DONE]',
+    ]);
+  },
+);
+
+it('accounts for the latest canonical text when a retained message ID is replaced', async () => {
+  const other = 'y'.repeat(700 * 1024);
+  const { turn, session } = textFixture(
+    [
+      ['other', other],
+      ['answer', 'Final.'],
+    ],
+    [
+      displayedMessage('answer', 'x'.repeat(700 * 1024)),
+      displayedMessage('answer', 'Final.'),
+      displayedMessage('other', other),
+      displayedMessage('answer', 'Final.', 'final_answer'),
+    ],
+    'Final.',
+  );
+  const values = await frames(vercelResponse(turn, session));
+  expect(shownText(values, 'answer')).toBe('Final.');
+  expect(values.slice(-2)).toEqual([{ type: 'finish' }, '[DONE]']);
+});
+
+it.each([false, true])(
+  'bounds aggregate canonical text independently of streamed text (extra=%s)',
+  async (extra) => {
+    const filler = 'x'.repeat(1_048_576 - 2 + (extra ? 1 : 0));
+    const { turn, session } = textFixture(
+      [['answer', 'ok']],
+      [
+        displayedMessage('not-shown', filler),
+        displayedMessage('answer', 'ok', 'final_answer'),
+      ],
+      'ok',
+    );
+    const values = await frames(vercelResponse(turn, session));
+    expect(shownText(values, 'answer')).toBe('ok');
+    expect(values.slice(-2)).toEqual([
+      extra
+        ? { type: 'error', errorText: 'resync_required' }
+        : { type: 'finish' },
+      '[DONE]',
+    ]);
+  },
+);
