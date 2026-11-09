@@ -455,4 +455,5 @@ export type {
   RealtimeFrame,
   RealtimeStep,
   RealtimeConnectCall,
+  RealtimeScenario,
 } from './realtime';
