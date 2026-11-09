@@ -23,6 +23,7 @@ import {
 } from '../../../utils/base64';
 import {
   copyTrustedMountCredentialRebindProvenance,
+  copySandboxStateRuntimeAuthority,
   recordPersistedMountTopology,
   recordPendingMountCredentialPaths,
   redactMountCredentialsForPersistence,
@@ -79,6 +80,7 @@ export function rebindPersistedPathGrants<TState extends SandboxSessionState>(
   // Native host paths are runtime authority. Only the current manifest may
   // reintroduce them after persisted session state has been deserialized.
   const reboundState: SandboxSessionState = { ...state };
+  copySandboxStateRuntimeAuthority(state, reboundState);
   if (options.replaceWithTrustedManifest && trustedManifest) {
     reboundState.manifest = cloneManifest(trustedManifest);
     copyTrustedMountCredentialRebindProvenance(

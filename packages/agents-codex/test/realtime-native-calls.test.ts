@@ -2,7 +2,8 @@ import { once } from 'node:events';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
-import { Agent, NativeProvider } from '../src';
+import { z } from 'zod';
+import { Agent, NativeProvider, tool } from '../src';
 
 type Frame = Record<string, any>;
 const OFFER = 'v=0\r\ns=synthetic-browser-offer\r\n';
@@ -207,8 +208,67 @@ nativeIt.each(['webrtc', 'sip'] as const)(
   30000,
 );
 
+nativeIt(
+  'attaches SIP using the same explicit options used to build acceptance without mutating the accepted call',
+  async () => {
+    const peer = await callPeer();
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: peer.baseUrl,
+        apiKey: 'synthetic-native-call-key',
+        supportsWebsockets: false,
+      });
+      const lookup = tool({
+        name: 'lookup',
+        parameters: z.object({ key: z.string() }),
+        execute: ({ key }) => key,
+      });
+      await using session = await new Agent({
+        instructions: 'Default captured instructions.',
+        tools: [lookup],
+        provider,
+      }).session();
+      const options = {
+        model: 'fixture-realtime',
+        voice: 'marin',
+        instructions: 'Explicit accepted call instructions.',
+        tools: [lookup],
+        settings: {
+          turnDetection: null,
+          transcription: null,
+          outputSpeed: 1.1,
+        },
+      };
+      const accepted = await session.buildRealtimeSipConfig(options);
+      expect(accepted.instructions).toBe(options.instructions);
+      expect(accepted.tools).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'lookup' })]),
+      );
+      peer.sessions.set('rtc_external_sip', structuredClone(accepted));
+      const voice = await session.realtime({
+        ...options,
+        transport: { type: 'sip', callId: 'rtc_external_sip' },
+      });
+      expect(voice.callId).toBe('rtc_external_sip');
+      await voice.close();
+      await Promise.all(peer.closed);
+      expect(peer.sessions.get('rtc_external_sip')).toEqual(accepted);
+      expect(peer.sidebands).toEqual(['rtc_external_sip']);
+      expect(
+        peer.frames.filter((frame) => frame.type === 'session.update'),
+      ).toEqual([]);
+      expect(peer.offers).toEqual([]);
+      expect(peer.hangups).toEqual([]);
+      expect(peer.failures).toEqual([]);
+    } finally {
+      await peer.close();
+    }
+  },
+  30000,
+);
+
 nativeIt.each(['model', 'voice', 'instructions'] as const)(
-  'rejects a SIP %s override before credentials and preserves Session reuse',
+  'rejects a mismatched accepted SIP %s during readiness without mutating or hanging up the call',
   async (field) => {
     const peer = await callPeer();
     try {
@@ -217,51 +277,53 @@ nativeIt.each(['model', 'voice', 'instructions'] as const)(
         apiKey: 'synthetic-native-call-key',
         supportsWebsockets: false,
       });
-      const agent = new Agent({
-        instructions: 'Preserve the caller profile.',
-        model: 'gpt-5.5',
+      await using session = await new Agent({
+        instructions: 'Default captured instructions.',
         provider,
-      });
-      await using session = await agent.session();
+      }).session();
+      const options = {
+        model: 'fixture-realtime',
+        voice: 'marin',
+        instructions: 'Explicit accepted call instructions.',
+        tools: [],
+        settings: { turnDetection: null, transcription: null },
+      };
+      const accepted = await session.buildRealtimeSipConfig(options);
+      const mismatch: Frame = structuredClone(accepted);
+      if (field === 'voice') mismatch.audio.output.voice = 'cedar';
+      else mismatch[field] = `mismatched-${field}`;
+      peer.sessions.set('rtc_external_sip', mismatch);
       let credentialCalls = 0;
       await expect(
         session.realtime({
+          ...options,
           transport: { type: 'sip', callId: 'rtc_external_sip' },
-          [field]: field === 'voice' ? 'marin' : 'initial-call-override',
           apiKey: () => {
             credentialCalls++;
             return 'synthetic-native-call-key';
           },
         }),
       ).rejects.toThrow();
-      expect(credentialCalls).toBe(0);
-      expect(peer.headers).toEqual([]);
+      expect(credentialCalls).toBe(1);
+      await Promise.all(peer.closed);
+      expect(peer.sidebands).toEqual(['rtc_external_sip']);
+      expect(
+        peer.frames.filter((frame) => frame.type === 'session.update'),
+      ).toEqual([]);
       expect(peer.offers).toEqual([]);
-      expect(peer.sidebands).toEqual([]);
-      expect(await session.getActiveAgent()).toBe(agent);
-
-      const settings = { outputVoice: 'marin' };
-      const warmup = await session.realtime({
-        transport: { type: 'webrtc', offerSdp: OFFER },
-        settings,
-      });
-      await warmup.close();
-      expect(peer.sessions.get('rtc_native_1')!.audio.output.voice).toBe(
-        'marin',
-      );
-      peer.sessions.set(
-        'rtc_external_sip',
-        structuredClone(peer.sessions.get('rtc_native_1')!),
-      );
+      expect(peer.hangups).toEqual([]);
+      peer.sessions.set('rtc_external_sip', structuredClone(accepted));
       const voice = await session.realtime({
+        ...options,
         transport: { type: 'sip', callId: 'rtc_external_sip' },
-        settings,
       });
       expect(voice.callId).toBe('rtc_external_sip');
       await voice.close();
       await Promise.all(peer.closed);
-      expect(peer.sidebands).toEqual(['rtc_native_1', 'rtc_external_sip']);
-      expect(peer.hangups).toEqual(['rtc_native_1']);
+      expect(
+        peer.frames.filter((frame) => frame.type === 'session.update'),
+      ).toEqual([]);
+      expect(peer.hangups).toEqual([]);
       expect(peer.failures).toEqual([]);
     } finally {
       await peer.close();

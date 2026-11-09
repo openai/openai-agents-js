@@ -16,14 +16,16 @@ import { NativeError } from './native-error';
 
 export interface NativeProviderOptions {
   modelBackend?: NativeModel | ModelProvider;
-  /** Native retry budgets; Core caps each at 100. Zero disables retries. */
-  requestMaxRetries?: number;
-  streamMaxRetries?: number;
   /** Native phase timeouts in integer milliseconds; zero expires immediately. */
   streamIdleTimeoutMs?: number;
   websocketConnectTimeoutMs?: number;
   baseUrl?: string;
   apiKey?: string;
+  /**
+   * Set true to allow WebSockets on every streaming call. When omitted, eligible
+   * stateless Agent.run calls use HTTP; other calls allow WebSockets only when
+   * baseUrl is omitted.
+   */
   supportsWebsockets?: boolean;
   /** Read one complete Responses JSON body over API-key HTTP. */
   responseMode?: 'streaming' | 'buffered';
@@ -35,6 +37,10 @@ export interface NativeProviderOptions {
   project?: string;
   /** Explicit personal Apps credentials; never used for Model requests or refreshed. */
   chatGPT?: ChatGPTAuth;
+  /** Failed HTTP request retries. Native default: 4; native cap: 100; zero disables. */
+  requestMaxRetries?: number;
+  /** Dropped response stream reconnections. Native default: 5; native cap: 100; zero disables. */
+  streamMaxRetries?: number;
 }
 
 interface PrivateRuntimeSlot {
@@ -210,17 +216,13 @@ export class NativeProvider {
       pendingIdle.idle = undefined;
     }
     const options = this.#options;
-    const websocketsAllowed =
-      options.modelBackend === undefined &&
-      options.responseMode !== 'buffered' &&
-      (options.supportsWebsockets ?? options.baseUrl === undefined);
     const apiKey =
       options.modelBackend !== undefined
         ? 'native-model-producer'
         : captured
           ? captured.apiKey
           : (options.apiKey ?? process.env.OPENAI_API_KEY);
-    const eligible =
+    const privateCandidate =
       privateRun &&
       this.constructor === NativeProvider &&
       !options.chatGPT &&
@@ -229,8 +231,13 @@ export class NativeProvider {
       (options.modelBackend !== undefined ||
         options.apiKey === undefined ||
         apiKey === options.apiKey) &&
+      options.responseMode !== 'buffered';
+    const websocketsAllowed =
+      options.modelBackend === undefined &&
       options.responseMode !== 'buffered' &&
-      !websocketsAllowed;
+      (options.supportsWebsockets ??
+        (options.baseUrl === undefined && !privateCandidate));
+    const eligible = privateCandidate && !websocketsAllowed;
     const slot = eligible ? (this.#runtime ??= {}) : undefined;
     const reserved =
       slot !== undefined &&

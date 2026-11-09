@@ -2225,6 +2225,42 @@ impl PythonTools {
             .is_some_and(|pending| self.step_matches(owner, response, active.as_ref(), pending)))
     }
 
+    pub(crate) fn stop_step(&self, owner: &str, response: StepReply) -> Result<bool> {
+        let id = response.request_id.parse::<u64>()?;
+        // Capture is inert and must not hold preparation locks while inspecting
+        // the original turn's existing cancellation and cleanup ownership.
+        let Ok(stop) = self.context_stop(&response.turn_id) else {
+            return Ok(false);
+        };
+        let pending = {
+            let active = self
+                .selection
+                .lock()
+                .expect("JavaScript selection poisoned");
+            let mut replies = self
+                .step_replies
+                .lock()
+                .expect("JavaScript step replies poisoned");
+            if !replies.get(&id).is_some_and(|pending| {
+                pending.reply.is_selection()
+                    && self.step_matches(owner, &response, active.as_ref(), pending)
+            }) {
+                return Ok(false);
+            }
+            take_pending_step(&mut replies, id).expect("checked step reply")
+        };
+        let context_callbacks::PreparationReply::Selection(reply) = pending.reply else {
+            unreachable!()
+        };
+        // Claim the live preparation before cancellation can drop its receiver.
+        // Native still joins the admitted callback before settling this turn.
+        if reply.send(None).is_err() {
+            return Ok(false);
+        }
+        stop.stop();
+        Ok(true)
+    }
+
     pub(crate) fn reply_child_step(&self, owner: &str, response: StepReply) -> Result<bool> {
         ensure!(
             self.instance.is_some(),

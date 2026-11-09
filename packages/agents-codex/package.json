@@ -97,6 +97,46 @@
         "types": "./dist/voice/twilio.d.ts",
         "default": "./dist/voice/twilio.js"
       }
+    },
+    "./memory": {
+      "import": {
+        "types": "./dist/memory/index.d.mts",
+        "default": "./dist/memory/index.mjs"
+      },
+      "require": {
+        "types": "./dist/memory/index.d.ts",
+        "default": "./dist/memory/index.js"
+      }
+    },
+    "./artifacts": {
+      "import": {
+        "types": "./dist/artifacts/index.d.mts",
+        "default": "./dist/artifacts/index.mjs"
+      },
+      "require": {
+        "types": "./dist/artifacts/index.d.ts",
+        "default": "./dist/artifacts/index.js"
+      }
+    },
+    "./ui": {
+      "import": {
+        "types": "./dist/ui/index.d.mts",
+        "default": "./dist/ui/index.mjs"
+      },
+      "require": {
+        "types": "./dist/ui/index.d.ts",
+        "default": "./dist/ui/index.js"
+      }
+    },
+    "./mcp-apps": {
+      "import": {
+        "types": "./dist/mcp-apps/index.d.mts",
+        "default": "./dist/mcp-apps/index.mjs"
+      },
+      "require": {
+        "types": "./dist/mcp-apps/index.d.ts",
+        "default": "./dist/mcp-apps/index.js"
+      }
     }
   },
   "scripts": {
@@ -129,7 +169,8 @@
   "devDependencies": {
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "@types/ws": "^8.18.2"
+    "@types/ws": "^8.18.2",
+    "ai": "6.0.277"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
@@ -176,6 +217,18 @@
       ],
       "voice/twilio": [
         "dist/voice/twilio.d.ts"
+      ],
+      "memory": [
+        "dist/memory/index.d.ts"
+      ],
+      "artifacts": [
+        "dist/artifacts/index.d.ts"
+      ],
+      "ui": [
+        "dist/ui/index.d.ts"
+      ],
+      "mcp-apps": [
+        "dist/mcp-apps/index.d.ts"
       ]
     }
   },

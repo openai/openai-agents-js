@@ -179,6 +179,20 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: Qualify native browser interactions, audio, and MCP Apps
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+          OPENAI_AGENTS_BROWSER_TESTS: '1'
+        run: |
+          npm ci --prefix examples/codex/mcp-ui --ignore-scripts
+          npm run build --prefix examples/codex/mcp-ui
+          node node_modules/playwright/cli.js install chromium
+          node examples/codex/mcp-ui/node_modules/playwright/cli.js install chromium
+          env -u OPENAI_API_KEY node node_modules/vitest/vitest.mjs run --pool=forks \
+            --project @openai/agents-codex \
+            packages/agents-codex/test/native/browser-interaction-audio.test.ts \
+            packages/agents-codex/test/native/mcp-ui-browser.test.ts --maxWorkers 1
       - name: Qualify checkpoint compatibility on macOS and Windows
         if: runner.os == 'macOS' || runner.os == 'Windows'
         env:

@@ -26,7 +26,11 @@ With the current [source build](building.md), provider options accept `headers`,
 
 Your application owns the provider, including the default provider created by `new Agent(...)` when you omit `provider`. That default is available as `agent.provider`. Closing a Session or completing `agent.run()` releases that Session's resources. The provider remains available for later Sessions, including its reusable HTTP connections.
 
-Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
+With the current [source build](building.md), a shared `NativeProvider` can reuse an idle engine for an eligible `agent.run()` call. Reuse requires an API key and streaming HTTP. Set `supportsWebsockets: false` to use HTTP with the default endpoint.
+
+Reuse is unavailable for runs with tools, structured output, initial messages, restored state, or a custom environment. Each eligible run starts a fresh conversation with its own instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
+
+Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. This also releases any retained native engine and HTTP connections. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
 
 For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#check-application-compatibility).
 
@@ -141,7 +145,16 @@ See [the tenant tools example](../opening-tools.ts) for two Sessions with separa
 
 ## Connection retries and errors
 
-`NativeProvider` uses the native client's request and stream recovery limits and backoff. Its public options do not expose retry budgets. Classic Model retry settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md). The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. Native retry limits do not set a total operation timeout or cap server-requested delays.
+`NativeProvider` exposes `requestMaxRetries` for failed HTTP requests and `streamMaxRetries` for dropped response streams. Omitted values use the native defaults: four request retries and five stream reconnections. Set either value to zero to disable that recovery path. Values must be nonnegative safe integers; the native client caps each limit at 100.
+
+```ts
+const provider = new NativeProvider({
+  requestMaxRetries: 2,
+  streamMaxRetries: 0,
+});
+```
+
+The native client owns retry classification and backoff. These options do not rerun a whole Turn or replay completed tool effects. Classic Model retry settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md). The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. Native retry limits do not set a total operation timeout or cap server-requested delays.
 
 Use `turn.cancel()` to stop an active Turn and join its cleanup, including while it waits to retry. If a request fails, inspect the error before deciding whether to submit more work.
 

@@ -279,6 +279,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'items'
   | 'turns'
   | 'rateLimits'
+  | 'buildRealtimeSipConfig'
   | 'realtime'
   | 'getActiveAgent'
   | 'goal'

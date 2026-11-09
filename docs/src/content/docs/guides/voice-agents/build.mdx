@@ -210,7 +210,7 @@ At the Realtime API level, later `session.update` calls can still change tools a
 
 #### Background results
 
-While a tool executes, the agent cannot process new user requests. Instruct the agent to announce the tool call or say a phrase before execution so the user knows to wait.
+For a slow tool, instruct the agent to announce the tool call so the user knows the result is pending.
 
 If a function tool should finish without immediately triggering another model response, return `backgroundResult(output)` from `@openai/agents/realtime`. This sends the tool output back to the session while leaving response triggering under your control.
 
@@ -256,10 +256,7 @@ To also run local function-tool input guardrails before `tool_approval_requested
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
-<Aside type="note">
-  While the voice agent is waiting for approval for the tool call, the agent
-  will not be able to process new requests from the user.
-</Aside>
+While a tool runs or waits for approval, `session.sendMessage()` still forwards input to the transport. If your app requires an approval decision before the next message, pause input in your UI.
 
 ### Guardrails
 

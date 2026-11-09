@@ -9,6 +9,7 @@ import {
   Agent,
   ChatCompletionsModel,
   NativeProvider,
+  NativeError,
   ToolOutput,
   tool,
   type ModelRequest,
@@ -961,3 +962,117 @@ it.each([
   },
   20_000,
 );
+
+it('stops before custom model production and preserves the same Session continuation', async () => {
+  const produced: ModelRequest[] = [];
+  await using provider = new NativeProvider({
+    modelBackend: {
+      complete(request): ModelResponse {
+        produced.push(request);
+        return {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'healthy continuation' }],
+            },
+          ],
+        };
+      },
+    },
+  });
+  await using session = await new Agent({
+    model: 'gpt-5.2',
+    instructions: 'Answer.',
+    provider,
+  }).session();
+  const stopped = await session.submit('Stop before production.', {
+    beforeStep: () => ({ action: 'stop' }),
+  });
+  await expect(stopped.wait()).rejects.toBeInstanceOf(NativeError);
+  expect(produced).toHaveLength(0);
+  expect(
+    (await (await session.submit('Continue independently.')).wait())
+      .finalOutput,
+  ).toBe('healthy continuation');
+  expect(produced).toHaveLength(1);
+}, 20_000);
+
+it('preserves custom model production across supplied and model-based compaction', async () => {
+  const produced: ModelRequest[] = [];
+  await using provider = new NativeProvider({
+    modelBackend: {
+      complete(request): ModelResponse {
+        produced.push(request);
+        return {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                { type: 'output_text', text: 'native summary or answer' },
+              ],
+            },
+          ],
+        };
+      },
+    },
+  });
+  await using session = await new Agent({
+    model: 'gpt-5.2',
+    instructions: 'Answer.',
+    provider,
+  }).session();
+  expect((await (await session.submit('First.')).wait()).finalOutput).toBe(
+    'native summary or answer',
+  );
+  await session.compact({ summary: 'Application supplied summary.' });
+  expect(
+    (await (await session.submit('After supplied summary.')).wait())
+      .finalOutput,
+  ).toBe('native summary or answer');
+  const before = produced.length;
+  await session.compact();
+  expect(produced.length).toBeGreaterThan(before);
+  expect(
+    (await (await session.submit('After native summary.')).wait()).finalOutput,
+  ).toBe('native summary or answer');
+}, 20_000);
+
+it('does not start backend completion when synchronous model resolution aborts the run', async () => {
+  const controller = new AbortController();
+  const effects: string[] = [];
+  let resolved = 0;
+  await using provider = new NativeProvider({
+    modelBackend: {
+      getModel() {
+        resolved++;
+        controller.abort(new Error('resolution cancelled'));
+        return {
+          complete(): ModelResponse {
+            effects.push('started');
+            return {
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'must not start' }],
+                },
+              ],
+            };
+          },
+        };
+      },
+    },
+  });
+  const agent = new Agent({
+    model: 'gpt-5.2',
+    instructions: 'Answer.',
+    provider,
+  });
+  await expect(
+    agent.run('Cancel in resolution.', { signal: controller.signal }),
+  ).rejects.toThrow();
+  expect(resolved).toBe(1);
+  expect(effects).toEqual([]);
+}, 20_000);
