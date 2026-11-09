@@ -17,9 +17,23 @@ vi.mock('../src/runtime/tracing-context', async (original) => ({
   },
 }));
 import { bindDecide, DecisionError } from '../src/runtime/decisions';
+import { OutputValidationError } from '../src/runtime/output';
 
-it('retains a completed refusal if usage tracing also fails', async () => {
-  const refusal = new DecisionError('refusal');
+it('returns a validated success if optional usage tracing fails', async () => {
+  const decide = bindDecide({
+    provider: {
+      async getDecision() {
+        return { value: true };
+      },
+    },
+    assertActive() {},
+  });
+  await expect(decide('Ready?', { input: 'Explicit.' })).resolves.toBe(true);
+});
+it('preserves the exact completed refusal if optional usage tracing fails', async () => {
+  const refusal = new DecisionError('refusal', {
+    requestId: 'completed-refusal',
+  });
   const decide = bindDecide({
     provider: {
       async getDecision() {
@@ -28,10 +42,34 @@ it('retains a completed refusal if usage tracing also fails', async () => {
     },
     assertActive() {},
   });
-  const error = await decide('Ready?', { input: 'Explicit.' }).catch(
-    (error) => error,
+  await expect(decide('Ready?', { input: 'Explicit.' })).rejects.toBe(refusal);
+});
+it('still rejects wrong-schema output after optional usage tracing fails', async () => {
+  const decide = bindDecide({
+    provider: {
+      async getDecision() {
+        return { value: 'yes' };
+      },
+    },
+    assertActive() {},
+  });
+  await expect(decide('Ready?', { input: 'Explicit.' })).rejects.toBeInstanceOf(
+    OutputValidationError,
   );
-  expect(error).toBeInstanceOf(AggregateError);
-  expect(error.errors).toEqual([refusal, tracing.failure]);
-  expect(error.cause).toBe(refusal);
+});
+it('still preserves cancellation after optional usage tracing fails', async () => {
+  const controller = new AbortController(),
+    reason = new Error('application cancelled');
+  const decide = bindDecide({
+    provider: {
+      async getDecision() {
+        controller.abort(reason);
+        return { value: true };
+      },
+    },
+    assertActive() {},
+  });
+  await expect(
+    decide('Ready?', { input: 'Explicit.', signal: controller.signal }),
+  ).rejects.toBe(reason);
 });

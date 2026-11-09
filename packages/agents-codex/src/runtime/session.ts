@@ -399,15 +399,26 @@ export interface OperationOptions<Context = unknown> {
   /**
    * Select a subset of the operation ceiling before each model preparation.
    * Returning undefined uses that ceiling. Indices start at zero.
+   * Return { action: 'stop' } to stop this turn before its pending model request.
+   * Earlier tool effects remain; the stop does not accept a final answer.
    * An exhausted step limit or run budget blocks this callback.
    */
   beforeStep?: (
     context: BeforeStepContext<Context>,
-  ) =>
-    | readonly ToolSelector<Context>[]
-    | undefined
-    | Promise<readonly ToolSelector<Context>[] | undefined>;
+  ) => StepDecision<Context> | Promise<StepDecision<Context>>;
 }
+/** Keep the operation tools, select a subset, or stop the exact owning turn. */
+export type StepDecision<Context = unknown> =
+  readonly ToolSelector<Context>[] | { readonly action: 'stop' } | undefined;
+
+function isStepStop<Context>(
+  decision: StepDecision<Context>,
+): decision is { readonly action: 'stop' } {
+  return (
+    decision !== undefined && 'action' in decision && decision.action === 'stop'
+  );
+}
+
 export interface PrepareRequestContext<Context = unknown> extends Omit<
   BeforeStepContext<Context>,
   'stepIndex'
@@ -7061,7 +7072,8 @@ export class Session<OutputT = string, Context = unknown> {
           selection.budget?.check(assertActive);
           const stepIndex = selection.stepIndex++;
           const scope = this.decisionScope(event.msg, signal);
-          let names: ReturnType<typeof this.selectedStepNames>;
+          let names: ReturnType<typeof this.selectedStepNames> = [];
+          let stopped = false;
           try {
             const selected = await selection.beforeStep?.({
               decide: scope.decide,
@@ -7070,16 +7082,23 @@ export class Session<OutputT = string, Context = unknown> {
               stepIndex,
               signal,
             });
-            names = this.selectedStepNames(
-              event,
-              selected,
-              this.profileOperationNames(selection, event, sourceCatalog),
-              sourceCatalog,
-            );
+            if (isStepStop(selected)) stopped = true;
+            else
+              names = this.selectedStepNames(
+                event,
+                selected,
+                this.profileOperationNames(selection, event, sourceCatalog),
+                sourceCatalog,
+              );
           } finally {
             scope.close();
           }
           assertActive();
+          if (stopped) {
+            if (native._stop_step(nonce)) replied = true;
+            else reply(null);
+            return;
+          }
           selection.budget?.check(assertActive);
           signal.throwIfAborted();
           reply(names);
@@ -7222,7 +7241,8 @@ export class Session<OutputT = string, Context = unknown> {
       }
       signal.throwIfAborted();
       capturedSelection.stepIndex++;
-      let names: ReturnType<typeof this.selectedStepNames>;
+      let names: ReturnType<typeof this.selectedStepNames> = [];
+      let stopped = false;
       try {
         const selected = await withNativeCallbackContext(
           typeof event.msg.tracing_context === 'string'
@@ -7232,7 +7252,8 @@ export class Session<OutputT = string, Context = unknown> {
           signal,
           workflowForTrace,
         );
-        names = this.selectedStepNames(event, selected);
+        if (isStepStop(selected)) stopped = true;
+        else names = this.selectedStepNames(event, selected);
       } finally {
         scope.close();
       }
@@ -7259,6 +7280,11 @@ export class Session<OutputT = string, Context = unknown> {
         }
       } catch (error) {
         this.callbackAuthorityFailed(delivery, error);
+      }
+      if (stopped) {
+        if (native._stop_step(encode(receipt))) replied = true;
+        else reply(null);
+        return;
       }
       reply(names);
     } catch (error) {
@@ -7308,9 +7334,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   private selectedStepNames(
     event: NativeEvent,
-    selected: Awaited<
-      ReturnType<NonNullable<OperationOptions<Context>['beforeStep']>>
-    >,
+    selected: readonly ToolSelector<Context>[] | undefined,
     defaults?: readonly ReturnType<typeof toolIdentity>[],
     sourceCatalog?: ToolCatalog,
   ): readonly ReturnType<typeof toolIdentity>[] {

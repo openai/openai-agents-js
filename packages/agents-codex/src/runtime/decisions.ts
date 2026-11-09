@@ -307,7 +307,11 @@ async function recordDecisionUsage(
     // eslint-disable-next-line no-control-regex -- Trace identities must exclude controls.
     if (value !== undefined && !/[\u0000-\u001f\u007f]/.test(value))
       data[key] = Array.from(value).slice(0, 256).join('');
-  await withSpan({ name: 'decision.usage', metadata: data }, () => {});
+  try {
+    await withSpan({ name: 'decision.usage', metadata: data }, () => {});
+  } catch {
+    // Optional usage telemetry must not change the decision's result or error.
+  }
 }
 
 async function performDecision(
@@ -324,20 +328,11 @@ async function performDecision(
     try {
       response = await invoke(request, { signal });
     } catch (error) {
-      if (error instanceof DecisionError) {
-        try {
-          await recordDecisionUsage(
-            captureDecisionMetadata(error),
-            error.reason === 'refusal' ? 'refusal' : 'invalid_response',
-          );
-        } catch (tracingError) {
-          throw new AggregateError(
-            [error, tracingError],
-            'Decision and usage tracing both failed',
-            { cause: error },
-          );
-        }
-      }
+      if (error instanceof DecisionError)
+        await recordDecisionUsage(
+          captureDecisionMetadata(error),
+          error.reason === 'refusal' ? 'refusal' : 'invalid_response',
+        );
       throw error;
     }
     const metadata = captureDecisionMetadata(response ?? {});

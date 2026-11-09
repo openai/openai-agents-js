@@ -10,7 +10,7 @@ Use Node.js 24. Follow the [installation guide](examples/codex/guides/installati
 
 ## Example
 
-After installing the SDK in your application, set `OPENAI_API_KEY` in the server environment. Install Zod 4 with `npm install zod@4` and save the following file as `greeting.ts`.
+After [adding the SDK packages to your application](examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application), set `OPENAI_API_KEY` in the server environment. The installation guide's manifest includes Zod 4, which the example uses for the tool's parameters. Save the following file as `greeting.ts`.
 
 ```ts
 import { Agent, NativeProvider, tool } from '@openai/agents';
@@ -58,7 +58,7 @@ These guides describe the current source checkout, which can include features ad
 | Prepare model requests or inspect traces | [Request preparation](examples/codex/guides/request-preparation.md), [request metadata](examples/codex/guides/request-metadata.md), and [telemetry](examples/codex/guides/telemetry.md) |
 | Connect an MCP server or a remote workspace | [MCP tools](examples/codex/guides/mcp.md) and [remote executors](examples/codex/guides/executors.md) |
 | Restore a conversation or handle a pending request | [Session history and state](examples/codex/guides/state.md) and [native interactions](examples/codex/guides/interactions.md) |
-| Supervise a worker or connect a remote Agent | [Supervised workers](examples/codex/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md). Run repository examples from a matching [source checkout](examples/codex/guides/building.md). |
+| Supervise a worker or connect a remote Agent | [Supervised workers](examples/codex/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md) |
 
 The [native SDK overview](packages/agents-codex/README.md) shows a minimal run. The [native guide index](packages/agents-codex/NATIVE.md) links to individual API topics.
 
