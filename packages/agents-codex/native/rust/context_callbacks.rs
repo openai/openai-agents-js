@@ -636,29 +636,89 @@ pub(crate) struct ModelProducerReply {
     failed: bool,
 }
 impl PythonTools {
-    pub(crate) fn produces_model_response(&self) -> bool { self.context_callbacks.model_producer }
-    pub(crate) async fn produce_model_response(self: &Arc<Self>, mut request: Value, admission: Arc<dyn codex_extension_api::ModelToolAdmission>) -> Result<codex_extension_api::ModelResponseStream> {
-        use futures_util::StreamExt;
+    pub(crate) fn produces_model_response(&self) -> bool {
+        self.context_callbacks.model_producer
+    }
+    pub(crate) async fn produce_model_response(
+        self: &Arc<Self>,
+        mut request: Value,
+        admission: Arc<dyn codex_extension_api::ModelToolAdmission>,
+    ) -> Result<codex_extension_api::ModelResponseStream> {
         use codex_extension_api::ResponseEvent;
+        use futures_util::StreamExt;
         self.restore_schema_request(&mut request)?;
         let turn = admission.turn_store().level_id();
-        let cancellation = self.context_stop(turn)?.callback_cancellation().context("Expired native model producer")?;
-        let reply = self.exchange_context(admission.step_store(), admission.thread_id(), turn, cancellation,
-            json!({"type":"_sdk_model_produce", "model":request["model"], "data":request}), PreparationReply::Model).await?;
-        ensure!(!reply.response_id.trim().is_empty(), "Native model response requires an identifier");
-        let mut events = vec![Ok(ResponseEvent::Created { response_id: Some(reply.response_id.clone()) })];
-        events.extend(reply.output.into_iter().map(|item| Ok(ResponseEvent::OutputItemDone(item))));
-        events.push(Ok(ResponseEvent::Completed { response_id: reply.response_id, token_usage: reply.usage, usage_metadata: None, end_turn: None }));
+        let cancellation = self
+            .context_stop(turn)?
+            .callback_cancellation()
+            .context("Expired native model producer")?;
+        let reply = self
+            .exchange_context(
+                admission.step_store(),
+                admission.thread_id(),
+                turn,
+                cancellation,
+                json!({"type":"_sdk_model_produce", "model":request["model"], "data":request}),
+                PreparationReply::Model,
+            )
+            .await?;
+        ensure!(
+            !reply.response_id.trim().is_empty(),
+            "Native model response requires an identifier"
+        );
+        let mut events = vec![Ok(ResponseEvent::Created {
+            response_id: Some(reply.response_id.clone()),
+        })];
+        events.extend(
+            reply
+                .output
+                .into_iter()
+                .map(|item| Ok(ResponseEvent::OutputItemDone(item))),
+        );
+        events.push(Ok(ResponseEvent::Completed {
+            response_id: reply.response_id,
+            token_usage: reply.usage,
+            usage_metadata: None,
+            end_turn: None,
+        }));
         Ok(futures_util::stream::iter(events).boxed())
     }
     pub(crate) fn reply_model_producer(&self, response: ModelProducerReply) -> Result<()> {
-        ensure!(!(response.failed && response.data.is_some()), "Conflicting model producer reply");
-        let active = self.selection.lock().expect("JavaScript selection poisoned");
-        let mut replies = self.step_replies.lock().expect("JavaScript step replies poisoned");
+        ensure!(
+            !(response.failed && response.data.is_some()),
+            "Conflicting model producer reply"
+        );
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self
+            .step_replies
+            .lock()
+            .expect("JavaScript step replies poisoned");
         let id = crate::native_id(&response.owner.request_id)?;
-        ensure!(replies.get(&id).is_some_and(|pending| self.step_matches(&response.owner.thread, &response.owner, active.as_ref(), pending) && matches!(pending.reply, PreparationReply::Model(_))), "Expired model producer reply");
+        ensure!(
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.owner.thread,
+                &response.owner,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::Model(_)
+            )),
+            "Expired model producer reply"
+        );
         let pending = take_pending_step(&mut replies, id).expect("checked model producer reply");
-        let PreparationReply::Model(reply) = pending.reply else { unreachable!() };
-        reply.send(if response.failed { Err(()) } else { response.data.ok_or(()) }).map_err(|_| anyhow::anyhow!("Expired model producer reply"))
+        let PreparationReply::Model(reply) = pending.reply else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                response.data.ok_or(())
+            })
+            .map_err(|_| anyhow::anyhow!("Expired model producer reply"))
     }
 }

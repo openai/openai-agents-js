@@ -318,7 +318,9 @@ pub fn build(
     builder.model_request_contributor(Arc::new(
         crate::python_tools::prepared_requests::Contributor,
     ));
-    builder.model_request_contributor(Arc::new(crate::native_interception::ModelProducerBoundary(interception.clone())));
+    builder.model_request_contributor(Arc::new(crate::native_interception::ModelProducerBoundary(
+        interception.clone(),
+    )));
     builder.model_request_contributor(recovery);
     builder.model_request_contributor(Arc::new(crate::response_integrity::Contributor(
         interception.clone(),

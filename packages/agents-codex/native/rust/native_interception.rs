@@ -9241,19 +9241,32 @@ pub(crate) struct ModelProducerBoundary(pub(crate) Arc<Boundary>);
 impl ModelRequestContributor for ModelProducerBoundary {
     fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>> {
         let tools = self.0.context_tools(input.thread_id)?;
-        if !tools.produces_model_response() { return None; }
+        if !tools.produces_model_response() {
+            return None;
+        }
         Some(Box::new(ModelProducerRequest(tools)))
     }
 }
 struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>);
 impl ModelResponseInterceptor for ModelProducerRequest {
-    fn produces_response(&self) -> bool { true }
-    fn produce_response<'a>(&'a self, request: Value, admission: Option<Arc<dyn ModelToolAdmission>>) -> Option<futures_util::future::BoxFuture<'a, Result<ModelResponseStream, String>>> {
+    fn produces_response(&self) -> bool {
+        true
+    }
+    fn produce_response<'a>(
+        &'a self,
+        request: Value,
+        admission: Option<Arc<dyn ModelToolAdmission>>,
+    ) -> Option<futures_util::future::BoxFuture<'a, Result<ModelResponseStream, String>>> {
         let tools = self.0.clone();
         Some(Box::pin(async move {
             let admission = admission.ok_or("Native model producer requires request admission")?;
-            tools.produce_model_response(request, admission).await.map_err(|_| "Native model producer failed or was cancelled".to_owned())
+            tools
+                .produce_model_response(request, admission)
+                .await
+                .map_err(|_| "Native model producer failed or was cancelled".to_owned())
         }))
     }
-    fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream { stream }
+    fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream {
+        stream
+    }
 }
