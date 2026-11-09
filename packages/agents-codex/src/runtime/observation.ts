@@ -152,6 +152,7 @@ export type ObservedEvent = Observation | ManualToolRequest;
 /** Publication belongs to the producer, independently of result consumption. */
 export type ObservationPhase = 'open' | 'finishing' | 'ended';
 export type TurnObservationScope = {
+  after?: number;
   includes: (event: Observation) => boolean;
   phase: () => ObservationPhase;
 };
@@ -220,6 +221,11 @@ export class ObservationBuffer {
       pendingManual?: () => Iterable<ManualToolRequest>;
     } = {},
   ) {}
+
+  /** @internal Sequence captured by existing turn owners at admission. */
+  get currentSequence(): number {
+    return this.sequence;
+  }
 
   /** Wake readers when requests or their producers change. */
   notify(): void {
@@ -376,6 +382,8 @@ export class ObservationBuffer {
       throw new RangeError(
         'after must be a sequence between zero and the current event',
       );
+    after = Math.max(after, scope?.after ?? 0);
+    let index = this.options.retention === 'all' ? after : 0;
     let closed = false;
     let reading = false;
     const seen = scope ? undefined : new WeakSet<ManualToolRequest>();
@@ -416,7 +424,9 @@ export class ObservationBuffer {
                 }),
               };
             }
-            for (const { event } of this.records) {
+            if (this.options.retention !== 'all') index = 0;
+            while (index < this.records.length) {
+              const { event } = this.records[index++];
               if (event.sequence <= after) continue;
               after = event.sequence;
               if (event.type === 'gap' || !scope || scope.includes(event))

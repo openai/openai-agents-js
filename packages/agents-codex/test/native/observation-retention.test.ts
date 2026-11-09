@@ -200,3 +200,73 @@ it('forwards a repair source gap through public parent Turn.events', async () =>
   expect(await Array.fromAsync(turn.events())).toEqual(events);
   server.assertExhausted();
 });
+
+it.each(['bounded', 'all'] as const)(
+  'scopes source gaps to Turn admission in %s mode',
+  async (observationRetention) => {
+    const server = new ModelServer([[message('first')], [message('second')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'fixture',
+    });
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+    }).session({ observationRetention });
+    const first = await session.submit('first');
+    await first.wait();
+    const buffer = (session as unknown as { observations: ObservationBuffer })
+      .observations;
+    buffer.gap();
+    const second = await session.submit('second');
+    await second.wait();
+    expect(
+      (await Array.fromAsync(second.events())).some(
+        (event) => event.type === 'gap',
+      ),
+    ).toBe(false);
+    expect(
+      (await Array.fromAsync(first.events())).some(
+        (event) => event.type === 'gap',
+      ),
+    ).toBe(true);
+    buffer.gap();
+    const events = await Array.fromAsync(second.events());
+    const gaps = events.filter((event) => event.type === 'gap');
+    expect(gaps.length).toBeGreaterThan(0);
+    expect(
+      await Array.fromAsync(second.events({ after: gaps.at(-1)!.sequence })),
+    ).toEqual([]);
+    server.assertExhausted();
+  },
+);
+
+it('visits retained array entries linearly for independent replay cursors', async () => {
+  const buffer = new ObservationBuffer('linear', { retention: 'all' });
+  const count = 4096;
+  for (let i = 0; i < count; i++)
+    buffer.append({ type: 'warning', message: String(i) });
+  buffer.finish('closed');
+  let reads = 0;
+  const records = Reflect.get(buffer, 'records') as unknown[];
+  Reflect.set(
+    buffer,
+    'records',
+    new Proxy(records, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    }),
+  );
+  expect(await Array.fromAsync(buffer.events())).toHaveLength(count + 1);
+  expect(reads).toBeLessThanOrEqual(3 * (count + 1) + 3);
+  reads = 0;
+  expect(
+    await Array.fromAsync(buffer.events({ after: count - 2 })),
+  ).toHaveLength(3);
+  expect(reads).toBeLessThanOrEqual(12);
+});
