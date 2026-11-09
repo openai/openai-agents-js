@@ -830,6 +830,17 @@ function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
   );
 }
 
+interface CompletionInspection {
+  readonly candidate: (text: string) => Promise<ContinueTurn | undefined>;
+  readonly signal: AbortSignal;
+  readonly check: () => void;
+}
+
+type RepairedOutput =
+  | { readonly type: 'validated'; readonly output: unknown }
+  | { readonly type: 'continue'; readonly continuation: ContinueTurn }
+  | { readonly type: 'stopped' };
+
 interface OutputRepair {
   completion: Promise<void>;
   finished: boolean;
@@ -860,6 +871,7 @@ const submissions = new WeakMap<
     retirement?: Promise<never>;
     tracingAdmissionFailed?: boolean;
     repair?: OutputRepair;
+    repairAttemptsUsed?: number;
   }
 >();
 
@@ -4541,6 +4553,26 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private startOutputRepair(run: NativeTurn, output: string): void {
+    void this.runOutputRepair(run, output, submissions.get(run)!.output).then(
+      (result) => {
+        if (result.type === 'validated')
+          this.decodedOutputs.set(run, result.output);
+        this.finish(run, run.failure, output);
+      },
+      (error: unknown) => {
+        const repair = submissions.get(run)!.repair!;
+        if (!repair.session && !repair.opening?.failedOpeningCleanup)
+          this.finish(run, run.failure ?? error, output);
+      },
+    );
+  }
+
+  private runOutputRepair(
+    run: NativeTurn,
+    output: string,
+    prepared: PreparedOutput,
+    inspect?: CompletionInspection,
+  ): Promise<RepairedOutput> {
     const submission = submissions.get(run)!;
     const repair: OutputRepair = {
       completion: Promise.resolve(),
@@ -4550,23 +4582,23 @@ export class Session<OutputT = string, Context = unknown> {
     for (const stop of this.graphStops)
       if (stop.run === run) this.stopCorrection(repair, stop.options.mode);
     const abort = () => this.stopCorrection(repair, 'force');
-    run.controller.signal.addEventListener('abort', abort, { once: true });
+    const signal = inspect?.signal ?? run.controller.signal;
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    let result: RepairedOutput;
     repair.completion = Promise.resolve().then(async () => {
       let failure: unknown;
       try {
-        this.decodedOutputs.set(
-          run,
-          await (run.tracing
-            ? run.tracing.run('host.output_repair', 'validation', () =>
-                this.repairOutput(run, repair, output),
-              )
-            : this.repairOutput(run, repair, output)),
-        );
+        const correct = () =>
+          this.repairOutput(run, repair, output, prepared, inspect);
+        result = await (run.tracing
+          ? run.tracing.run('host.output_repair', 'validation', correct)
+          : correct());
       } catch (error) {
         failure = run.failure ?? error;
       } finally {
         repair.finished = true;
-        run.controller.signal.removeEventListener('abort', abort);
+        signal.removeEventListener('abort', abort);
       }
       if (repair.session || repair.opening?.failedOpeningCleanup) {
         // A failed close retains its exact Session for the parent's next close.
@@ -4575,30 +4607,39 @@ export class Session<OutputT = string, Context = unknown> {
         this.retire(error);
         throw error;
       }
-      this.finish(run, run.failure ?? failure, output);
+      if (failure !== undefined) throw failure;
     });
     repair.completion.catch(() => {});
+    return repair.completion.then(() => result!);
   }
 
   private async repairOutput(
     run: NativeTurn,
     repair: OutputRepair,
     text: string,
-  ): Promise<unknown> {
-    const prepared = submissions.get(run)!.output;
+    prepared: PreparedOutput,
+    inspect?: CompletionInspection,
+  ): Promise<RepairedOutput> {
+    const submission = submissions.get(run)!;
     const check = (opening = false) => {
+      inspect?.signal.throwIfAborted();
+      inspect?.check();
       if (run.failure !== undefined) throw run.failure;
       if (
         !this.owns(run) ||
         run.controller.signal.aborted ||
-        repair.stop === 'force' ||
-        (opening && repair.stop === 'graceful')
+        repair.stop === 'force'
       )
         throw new TurnAborted('Output repair stopped');
+      if (opening && repair.stop === 'graceful') {
+        if (inspect) return false;
+        throw new TurnAborted('Output repair stopped');
+      }
+      return true;
     };
-    check(true);
+    if (!check(true)) return { type: 'stopped' };
     const history = await this.#readHistory();
-    check(true);
+    if (!check(true)) return { type: 'stopped' };
     const settingsEvent = history
       .toReversed()
       .find(
@@ -4633,8 +4674,9 @@ export class Session<OutputT = string, Context = unknown> {
     if (!open)
       throw new NativeError('This Session does not support output repair');
     let issues: OutputValidationError['issues'] = [];
-    for (let index = 0; index < prepared.repair!.maxRetries; index++) {
-      check(true);
+    while ((submission.repairAttemptsUsed ?? 0) < prepared.repair!.maxRetries) {
+      if (!check(true)) return { type: 'stopped' };
+      submission.repairAttemptsUsed = (submission.repairAttemptsUsed ?? 0) + 1;
       repair.session = await open(
         accepted.data.model,
         settings,
@@ -4653,27 +4695,30 @@ export class Session<OutputT = string, Context = unknown> {
         this.submissionIds.get(run)!,
       );
       let possiblyAdmitted = false;
+      let stoppedBeforeAdmission = false;
       let result: NativeRunResult | undefined;
       let failure: unknown;
       try {
-        check(true);
-        // startTurn checks the live Session before invoking native admission.
-        repair.run = correction.startTurn(
-          JSON.stringify({
-            schema: prepared.repair!.schema,
-            invalid_output: text,
-          }),
-          true,
-          correction.defaultOutput,
-          false,
-          correction.captureSelection(
-            undefined,
+        stoppedBeforeAdmission = !check(true);
+        if (!stoppedBeforeAdmission) {
+          // startTurn checks the live Session before invoking native admission.
+          repair.run = correction.startTurn(
+            JSON.stringify({
+              schema: prepared.repair!.schema,
+              invalid_output: text,
+            }),
+            true,
             correction.defaultOutput,
-            run.selection?.budget,
-          ),
-        );
-        possiblyAdmitted = true;
-        result = await repair.run.wait();
+            false,
+            correction.captureSelection(
+              undefined,
+              correction.defaultOutput,
+              run.selection?.budget,
+            ),
+          );
+          possiblyAdmitted = true;
+          result = await repair.run.wait();
+        }
       } catch (error) {
         failure = error;
         if (
@@ -4732,14 +4777,22 @@ export class Session<OutputT = string, Context = unknown> {
       }
       check();
       if (failure !== undefined) throw failure;
+      if (stoppedBeforeAdmission) return { type: 'stopped' };
       text = result!.finalOutput;
+      const continuation = await inspect?.candidate(text);
+      check();
+      if (continuation) {
+        if (!check(true)) return { type: 'stopped' };
+        return { type: 'continue', continuation };
+      }
       try {
-        return prepared.parse!(text);
+        return { type: 'validated', output: prepared.parse!(text) };
       } catch (error) {
         if (!(error instanceof OutputValidationError)) throw error;
         issues = error.issues;
       }
     }
+    if (!check(true)) return { type: 'stopped' };
     throw new OutputValidationError(text, issues);
   }
 
@@ -5253,7 +5306,6 @@ export class Session<OutputT = string, Context = unknown> {
             if (!native._check_completion(nonce))
               throw new NativeError('Completion callback is no longer active');
           };
-          const scope = this.decisionScope(owner, event, signal, check);
 
           let replied = false;
           const abort = () => {
@@ -5280,26 +5332,78 @@ export class Session<OutputT = string, Context = unknown> {
               throw new NativeError(
                 'Completion callback has no application owner',
               );
-            const result = await callback(
-              Object.freeze({
-                context: this.options.context,
-                text: msg.text as string | null,
-                sessionId: this.id,
-                turnId: msg.turn_id as string,
-                subagentId: owner instanceof NativeTurn ? null : owner.childId,
-                model: msg.model as string,
-                continuationCount: msg.continuation_count as number,
-                signal,
-                decide: scope.decide,
-              }),
-            );
-            await scope.join();
+            const invoke = async (text: string | null) => {
+              const scope = this.decisionScope(owner, event, signal, check);
+              try {
+                const result = await callback(
+                  Object.freeze({
+                    context: this.options.context,
+                    text,
+                    sessionId: this.id,
+                    turnId: msg.turn_id as string,
+                    subagentId:
+                      owner instanceof NativeTurn ? null : owner.childId,
+                    model: msg.model as string,
+                    continuationCount: msg.continuation_count as number,
+                    signal,
+                    decide: scope.decide,
+                  }),
+                );
+                await scope.join();
+                check();
+                signal.throwIfAborted();
+                if (result !== undefined && !(result instanceof ContinueTurn))
+                  throw new TypeError(
+                    'beforeComplete must return ContinueTurn or undefined',
+                  );
+                return result instanceof ContinueTurn ? result : undefined;
+              } finally {
+                await scope.join();
+              }
+            };
+            if (owner instanceof NativeTurn) this.decodedOutputs.delete(owner);
+            const text = msg.text as string | null;
+            let result = await invoke(text);
+            if (owner instanceof NativeTurn && result === undefined) {
+              const submission = submissions.get(owner)!;
+              const prepared =
+                profile &&
+                !submission.outputOverride &&
+                !submission.realtimeTools
+                  ? this.profileRuntimes.get(profile.profile_id)!.output
+                  : submission.output;
+              if (!submission.compaction && prepared.repair) {
+                try {
+                  this.decodedOutputs.set(owner, prepared.parse!(text ?? ''));
+                } catch (error) {
+                  if (!(error instanceof OutputValidationError)) throw error;
+                  const repaired = await this.runOutputRepair(
+                    owner,
+                    text ?? '',
+                    prepared,
+                    { candidate: invoke, signal, check },
+                  );
+                  if (repaired.type === 'stopped') {
+                    replied = true;
+                    if (native._stop_completion(nonce)) {
+                      const stopped = new TurnAborted(
+                        'Turn stopped gracefully',
+                      );
+                      owner.failure ??= stopped;
+                      owner.controller.abort(stopped);
+                    }
+                    return;
+                  }
+                  if (repaired.type === 'continue')
+                    result = repaired.continuation;
+                  else this.decodedOutputs.set(owner, repaired.output);
+                }
+              }
+            }
+            if (owner instanceof NativeTurn && result !== undefined)
+              this.decodedOutputs.delete(owner);
             check();
             signal.throwIfAborted();
-            if (result !== undefined && !(result instanceof ContinueTurn))
-              throw new TypeError(
-                'beforeComplete must return ContinueTurn or undefined',
-              );
             native._reply_completion(
               encode({
                 ...receipt,
@@ -5308,10 +5412,10 @@ export class Session<OutputT = string, Context = unknown> {
             );
             replied = true;
           } catch (error) {
+            if (owner instanceof NativeTurn) this.decodedOutputs.delete(owner);
             abort();
             throw error;
           } finally {
-            await scope.join();
             signal.removeEventListener('abort', abort);
           }
         }),
@@ -11335,6 +11439,13 @@ export class Session<OutputT = string, Context = unknown> {
     done.promise.catch(() => {});
     void (async () => {
       if (repair) {
+        // A repaired completion hook may await auxiliary work until revoked.
+        // Keep the native reader alive below while that work commits its usage.
+        run?.controller.abort(
+          state.kind === 'retired'
+            ? state.cause
+            : new TurnAborted('Session closed'),
+        );
         const failure = await repair.completion.then(
           () => undefined,
           (error: unknown) => error,

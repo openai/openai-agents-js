@@ -11,7 +11,10 @@ export class ContinueTurn {
   }
 }
 
-/** A successful native completion candidate, before final output conversion. */
+/**
+ * A candidate checked by the original turn's completion hook before output conversion.
+ * Prompted-output corrections return to this same owner with their repaired raw text.
+ */
 export interface CompletionContext<Context = unknown> {
   readonly context: Context;
   readonly text: string | null;
@@ -21,10 +24,15 @@ export interface CompletionContext<Context = unknown> {
   readonly model: string;
   readonly continuationCount: number;
   readonly signal: AbortSignal;
+  /** Available only until this hook invocation settles. */
   readonly decide: BoundDecide;
 }
 
-/** Undefined accepts; feedback continues; throwing fails the original turn. */
+/**
+ * Undefined accepts; feedback continues; throwing fails the original turn.
+ * Each repaired candidate is checked before conversion; ContinueTurn resumes
+ * the original turn rather than the internal formatting Agent.
+ */
 export type BeforeComplete<Context = unknown> = (
   context: CompletionContext<Context>,
 ) => void | ContinueTurn | Promise<void | ContinueTurn>;

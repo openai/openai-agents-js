@@ -14,7 +14,11 @@ import {
   type DecisionProvider,
   type TokenUsage,
 } from '../../src';
-import type { JsonObject } from '../../src/runtime/binding';
+import {
+  binding,
+  type JsonObject,
+  type NativeThread,
+} from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -76,6 +80,686 @@ function decisionReply(request: JsonObject, probability: number) {
     }),
   };
 }
+
+nativeIt(
+  'checks repaired prompted output through the original completion hook',
+  async () => {
+    const checked: string[] = [];
+    const server = new ModelServer([
+      [message('invalid JSON')],
+      [message('{"label":"unchecked"}')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 1,
+      },
+      beforeComplete(context) {
+        checked.push(context.text!);
+        if (context.text!.includes('unchecked'))
+          throw new Error('Rejected repaired candidate');
+      },
+    });
+    await expect(agent.run('Return the report.')).rejects.toThrow(
+      'Rejected repaired candidate',
+    );
+    expect(checked).toEqual(['invalid JSON', '{"label":"unchecked"}']);
+    server.assertExhausted();
+  },
+  30000,
+);
+
+nativeIt(
+  'continues the original turn after a repaired proposal and expires prior helpers',
+  async () => {
+    const checked: {
+      text: string | null;
+      turn: string;
+      session: string;
+      count: number;
+    }[] = [];
+    const rootProvider = decisionProvider(false);
+    const override = decisionProvider(true);
+    let previous: BoundDecide | undefined;
+    const applicationContext = { owner: 'original context' };
+    const server = new ModelServer(
+      [
+        [message('invalid JSON')],
+        [message('{"label":"blocked"}')],
+        [message('{"label":"accepted"}')],
+      ],
+      [wireUsage(14), wireUsage(14), wireUsage(14)],
+    );
+    await using provider = await providerFor(server);
+    const agent = new Agent<{ owner: string }, { label: string }>({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      decisions: rootProvider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 1,
+      },
+      beforeComplete: async (context) => {
+        expect(context.context).toBe(applicationContext);
+        expect(context.model).toBe('gpt-5.5');
+        expect(context.subagentId).toBeNull();
+        if (previous)
+          await expect(
+            previous('Expired?', { input: 'Explicit input.' }),
+          ).rejects.toThrow(/no longer|abort/i);
+        previous = context.decide;
+        checked.push({
+          text: context.text,
+          turn: context.turnId,
+          session: context.sessionId,
+          count: context.continuationCount,
+        });
+        expect(
+          await context.decide('Approved?', { input: context.text! }),
+        ).toBe(true);
+        if (context.text!.includes('blocked'))
+          return new ContinueTurn('Produce an accepted report.');
+      },
+    });
+    const result = await agent.run('Return a report.', {
+      context: applicationContext,
+      decisions: override,
+    });
+    expect(result.finalOutput).toEqual({ label: 'accepted' });
+    expect(checked.map((value) => value.text)).toEqual([
+      'invalid JSON',
+      '{"label":"blocked"}',
+      '{"label":"accepted"}',
+    ]);
+    expect(checked.map((value) => value.count)).toEqual([0, 0, 1]);
+    expect(new Set(checked.map((value) => value.turn)).size).toBe(1);
+    expect(new Set(checked.map((value) => value.session)).size).toBe(1);
+    expect(rootProvider.getDecision).not.toHaveBeenCalled();
+    expect(override.getDecision).toHaveBeenCalledTimes(3);
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(58);
+    expect(result.repairAttempts).toHaveLength(1);
+    expect(result.repairAttempts[0].usage?.totalTokens).toBe(14);
+    server.assertExhausted();
+  },
+  30000,
+);
+
+nativeIt.each(['missing', 'blank'] as const)(
+  'checks a repaired %s completion candidate',
+  async (kind) => {
+    const checked: (string | null)[] = [];
+    const server = new ModelServer([
+      [message('')],
+      [message('{"label":"accepted"}')],
+    ]);
+    const native = await binding();
+    const next = native.NativeThread.prototype._next_session_events;
+    const spy =
+      kind === 'missing'
+        ? vi
+            .spyOn(native.NativeThread.prototype, '_next_session_events')
+            .mockImplementation(async function (this: NativeThread) {
+              return (await next.call(this)).map((wire) => {
+                const event = JSON.parse(wire);
+                if (event.msg.type === '_sdk_before_complete')
+                  event.msg.text = null;
+                return JSON.stringify(event);
+              });
+            })
+        : undefined;
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 1,
+      },
+      beforeComplete: (context) => {
+        checked.push(context.text);
+      },
+    });
+    try {
+      const result = await agent.run('Return the report.');
+      expect(result.finalOutput).toEqual({ label: 'accepted' });
+      expect(checked).toHaveLength(2);
+      expect([null, '']).toContain(checked[0]);
+      expect(checked[1]).toBe('{"label":"accepted"}');
+      server.assertExhausted();
+    } finally {
+      spy?.mockRestore();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'checks each malformed correction before the next repair',
+  async () => {
+    const checked: (string | null)[] = [];
+    const server = new ModelServer([
+      [message('initial invalid')],
+      [message('still invalid')],
+      [message('{"label":"accepted"}')],
+    ]);
+    await using provider = await providerFor(server);
+    const result = await new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 2,
+      },
+      beforeComplete: (context) => {
+        checked.push(context.text);
+      },
+    }).run('Return the report.');
+    expect(checked).toEqual([
+      'initial invalid',
+      'still invalid',
+      '{"label":"accepted"}',
+    ]);
+    expect(result.finalOutput).toEqual({ label: 'accepted' });
+    expect(result.repairAttempts).toHaveLength(2);
+    server.assertExhausted();
+  },
+  30000,
+);
+
+nativeIt(
+  'closes a repaired decision provider after abort and retains its root usage once',
+  async () => {
+    const entered = Promise.withResolvers<void>();
+    const aborted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const decisions: DecisionProvider = {
+      getDecision: vi.fn(async (_request, { signal }) => {
+        if (signal!.aborted) aborted.resolve();
+        else
+          signal!.addEventListener('abort', () => aborted.resolve(), {
+            once: true,
+          });
+        entered.resolve();
+        await aborted.promise;
+        await release.promise;
+        return {
+          value: { response: true },
+          usage,
+          requestId: 'late-repaired-check',
+        };
+      }),
+    };
+    const server = new ModelServer(
+      [[message('initial invalid')], [message('{"label":"accepted"}')]],
+      [wireUsage(14), wireUsage(14)],
+    );
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      decisions,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 1,
+      },
+      beforeComplete: async (context) => {
+        if (context.text?.includes('accepted'))
+          await context.decide('Approved?', { input: context.text });
+      },
+    }).session();
+    const turn = await session.submit('Return the report.');
+    const result = turn.wait();
+    void result.catch(() => {});
+    const usageEvents: TokenUsage['totalTokens'][] = [];
+    const observation = (async () => {
+      for await (const event of turn.events())
+        if (event.type === 'usage_updated' && event.usage)
+          usageEvents.push(event.usage.totalTokenUsage.totalTokens);
+    })();
+    void observation.catch(() => {});
+    const watchdog = setTimeout(() => {
+      entered.reject(new Error('Repaired decision was not entered'));
+      aborted.reject(new Error('Repaired decision was not aborted'));
+      release.resolve();
+    }, 20000);
+    try {
+      await entered.promise;
+      let closed = false;
+      const closing = session.close().then(() => {
+        closed = true;
+      });
+      await aborted.promise;
+      expect(closed).toBe(false);
+      release.resolve();
+      await closing;
+      await expect(result).rejects.toThrow();
+      await observation;
+      expect(usageEvents.at(-1)).toBe(24);
+      expect(decisions.getDecision).toHaveBeenCalledTimes(1);
+      expect(server.requests).toHaveLength(2);
+      server.assertExhausted();
+    } finally {
+      clearTimeout(watchdog);
+      release.resolve();
+    }
+  },
+  40000,
+);
+
+nativeIt.each([
+  ['force', 'correction'],
+  ['force', 'repaired hook'],
+  ['graceful', 'correction'],
+  ['graceful', 'repaired hook'],
+] as const)(
+  'joins %s cancellation during a %s without another model admission',
+  async (mode, stage) => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const server = new ModelServer([
+      [message('initial invalid')],
+      async () => {
+        if (stage === 'correction') {
+          entered.resolve();
+          await release.promise;
+        }
+        return [message('{"label":"blocked"}')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 2,
+      },
+      beforeComplete: async (context) => {
+        if (context.text?.includes('blocked')) {
+          if (stage === 'repaired hook') {
+            entered.resolve();
+            await release.promise;
+          }
+          return new ContinueTurn('Try another report.');
+        }
+      },
+    }).session();
+    const turn = await session.submit('Return the report.');
+    const result = turn.wait();
+    void result.catch(() => {});
+    const watchdog = setTimeout(() => {
+      entered.reject(new Error('Repair cancellation stage was not entered'));
+      release.resolve();
+    }, 20000);
+    try {
+      await entered.promise;
+      const stopping = turn.cancel({ mode });
+      release.resolve();
+      await stopping;
+      const error = await result.catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toMatch(
+        /completion callback failed|Output repair stopped/i,
+      );
+      expect(server.requests).toHaveLength(2);
+      server.assertExhausted();
+    } finally {
+      clearTimeout(watchdog);
+      release.resolve();
+    }
+  },
+  40000,
+);
+
+nativeIt(
+  'revokes the exact completion delivery and joins its pending correction',
+  async () => {
+    const native = await binding();
+    const prototype = native.NativeThread.prototype;
+    const next = prototype._next_session_events;
+    const reply = prototype._reply_completion;
+    const close = prototype._close_report;
+    const correcting = Promise.withResolvers<void>();
+    const releaseServer = Promise.withResolvers<void>();
+    const injected = Promise.withResolvers<string>();
+    const correctionClosed = Promise.withResolvers<void>();
+    void correctionClosed.promise.catch(() => {});
+    const root: { id?: string } = {};
+    let completion: { id: string; msg: JsonObject } | undefined;
+    let pendingRead: Promise<string[]> | undefined;
+    let injectedOnce = false,
+      revoked = false,
+      holdReply = true;
+    let deferredReply: { thread: NativeThread; wire: string } | undefined;
+    // Preserve the one physical reader when injecting a delivery-only cancellation.
+    const readSpy = vi
+      .spyOn(prototype, '_next_session_events')
+      .mockImplementation(function (this: NativeThread) {
+        const read = () =>
+          next.call(this).then((batch) => {
+            for (const wire of batch) {
+              const event = JSON.parse(wire) as { id: string; msg: JsonObject };
+              if (
+                this.id === root.id &&
+                event.msg.type === '_sdk_before_complete'
+              )
+                completion = event;
+            }
+            return batch;
+          });
+        if (this.id !== root.id) return read();
+        pendingRead ??= read();
+        const current = pendingRead;
+        const physical = current.then((batch) => {
+          if (pendingRead === current) pendingRead = undefined;
+          return batch;
+        });
+        return injectedOnce
+          ? physical
+          : Promise.race([
+              physical,
+              injected.promise.then((wire) => {
+                injectedOnce = true;
+                return [wire];
+              }),
+            ]);
+      });
+    const replySpy = vi
+      .spyOn(prototype, '_reply_completion')
+      .mockImplementation(function (this: NativeThread, wire) {
+        // Keep the original native task alive: its cancellation cannot mask whether
+        // the delivery's own signal stops the separate correction task.
+        if (this.id === root.id && revoked && holdReply)
+          deferredReply = { thread: this, wire };
+        else reply.call(this, wire);
+      });
+    const closeSpy = vi
+      .spyOn(prototype, '_close_report')
+      .mockImplementation(async function (this: NativeThread) {
+        const result = await close.call(this);
+        if (revoked && this.id !== root.id) correctionClosed.resolve();
+        return result;
+      });
+    const server = new ModelServer([
+      [message('initial invalid')],
+      async () => {
+        correcting.resolve();
+        await releaseServer.promise;
+        return [message('{"label":"unchecked"}')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    const checked: (string | null)[] = [];
+    await using session = await new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 2,
+      },
+      beforeComplete(context) {
+        checked.push(context.text);
+      },
+    }).session();
+    root.id = session.id;
+    const turn = await session.submit('Return the report.');
+    const result = turn.wait();
+    void result.catch(() => {});
+    const watchdog = setTimeout(() => {
+      correcting.reject(new Error('Correction was not entered'));
+      correctionClosed.reject(
+        new Error('Delivery cancellation did not close correction'),
+      );
+      releaseServer.resolve();
+    }, 20000);
+    try {
+      await correcting.promise;
+      expect(completion).toBeDefined();
+      revoked = true;
+      injected.resolve(
+        JSON.stringify({
+          id: completion!.id,
+          msg: {
+            type: '_sdk_callback_cancel',
+            receipt: completion!.msg._sdk_callback,
+          },
+        }),
+      );
+      await correctionClosed.promise;
+      expect(deferredReply).toBeDefined();
+      expect(checked).toEqual(['initial invalid']);
+      expect(server.requests).toHaveLength(2);
+      holdReply = false;
+      reply.call(deferredReply!.thread, deferredReply!.wire);
+      deferredReply = undefined;
+      await expect(result).rejects.toThrow();
+      server.assertExhausted();
+    } finally {
+      clearTimeout(watchdog);
+      holdReply = false;
+      if (deferredReply) {
+        try {
+          reply.call(deferredReply.thread, deferredReply.wire);
+        } catch {
+          // Native cancellation may already have retired this exact receipt.
+        }
+      }
+      releaseServer.resolve();
+      await session.close();
+      readSpy.mockRestore();
+      replySpy.mockRestore();
+      closeSpy.mockRestore();
+    }
+  },
+  40000,
+);
+
+nativeIt(
+  'closes an opened correction after graceful stop before repair admission',
+  async () => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const server = new ModelServer([[message('initial invalid')]]);
+    await using provider = await providerFor(server);
+    const acquire = provider._acquire.bind(provider);
+    let acquisitions = 0;
+    const correctionReleased = vi.fn<() => Promise<void>>();
+    const spy = vi
+      .spyOn(provider, '_acquire')
+      .mockImplementation((captured) => {
+        const lease = acquire(captured);
+        if (++acquisitions !== 2) return lease;
+        const open = lease.open.bind(lease);
+        correctionReleased.mockImplementation(lease.release);
+        lease.release = correctionReleased;
+        lease.open = async () => {
+          entered.resolve();
+          await release.promise;
+          return open();
+        };
+        return lease;
+      });
+    await using session = await new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 1,
+      },
+      beforeComplete: () => {},
+    }).session();
+    const turn = await session.submit('Return the report.');
+    const result = turn.wait();
+    void result.catch(() => {});
+    const watchdog = setTimeout(() => {
+      entered.reject(new Error('Correction opening was not entered'));
+      release.resolve();
+    }, 20000);
+    try {
+      await entered.promise;
+      const stopping = turn.cancel({ mode: 'graceful' });
+      expect(correctionReleased).not.toHaveBeenCalled();
+      release.resolve();
+      await stopping;
+      await expect(result).rejects.toThrow(/stopped|interrupt|cancel/i);
+      expect(correctionReleased).toHaveBeenCalledTimes(1);
+      expect(server.requests).toHaveLength(1);
+      server.assertExhausted();
+    } finally {
+      clearTimeout(watchdog);
+      release.resolve();
+      spy.mockRestore();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([false, true] as const)(
+  'checks repaired output using the active profile and explicit override (%s)',
+  async (outputOverride) => {
+    const rootDecision = decisionProvider(false),
+      targetDecision = decisionProvider(true);
+    const checked: string[] = [];
+    const server = new ModelServer(
+      [
+        [call('transfer_to_b', {}, { callId: 'handoff' })],
+        [message('target invalid')],
+        (request) => {
+          const input = JSON.stringify(request.input);
+          expect(input).toContain(
+            outputOverride ? 'override_value' : 'target_value',
+          );
+          expect(input).not.toContain('Root-only instructions.');
+          return [
+            message(
+              JSON.stringify(
+                outputOverride
+                  ? { override_value: 'accepted' }
+                  : { target_value: 'accepted' },
+              ),
+            ),
+          ];
+        },
+      ],
+      [wireUsage(14), wireUsage(14), wireUsage(14)],
+    );
+    await using provider = await providerFor(server);
+    const destination = new Agent({
+      name: 'B',
+      instructions: 'Return the target report.',
+      model: 'gpt-5.5',
+      provider,
+      decisions: targetDecision,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ target_value: z.string() }),
+        maxRetries: 1,
+      },
+      beforeComplete: async (context) => {
+        checked.push(context.text!);
+        expect(
+          await context.decide('Approved?', { input: context.text! }),
+        ).toBe(true);
+      },
+    });
+    const agent = new Agent({
+      instructions: 'Root-only instructions.',
+      model: 'gpt-5.5',
+      provider,
+      decisions: rootDecision,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ target_value: z.string() }),
+        maxRetries: 0,
+      },
+      beforeComplete: () => {
+        throw new Error('Wrong completion owner');
+      },
+      handoffs: [destination],
+    });
+    await using session = await agent.session();
+    const result = outputOverride
+      ? await (
+          await session.submit('Return a report.', {
+            outputType: {
+              mode: 'prompted',
+              schema: z.object({ override_value: z.string() }),
+              maxRetries: 1,
+            },
+          })
+        ).wait()
+      : await (await session.submit('Return a report.')).wait();
+    expect(result.finalOutput).toEqual(
+      outputOverride
+        ? { override_value: 'accepted' }
+        : { target_value: 'accepted' },
+    );
+    expect(checked).toHaveLength(2);
+    expect(rootDecision.getDecision).not.toHaveBeenCalled();
+    expect(targetDecision.getDecision).toHaveBeenCalledTimes(2);
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(48);
+    expect(result.repairAttempts).toHaveLength(1);
+    server.assertExhausted();
+  },
+  30000,
+);
+
+nativeIt(
+  'bounds formatting repair across original completion continuations',
+  async () => {
+    const checked: string[] = [];
+    const server = new ModelServer([
+      [message('initial invalid')],
+      [message('{"label":"blocked"}')],
+      [message('next invalid')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Return the report.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string() }),
+        maxRetries: 1,
+      },
+      beforeComplete: (context) => {
+        checked.push(context.text!);
+        if (context.text!.includes('blocked'))
+          return new ContinueTurn('Try another report.');
+      },
+    });
+    await expect(agent.run('Return the report.')).rejects.toThrow(
+      /output|valid|JSON/i,
+    );
+    expect(checked).toEqual([
+      'initial invalid',
+      '{"label":"blocked"}',
+      'next invalid',
+    ]);
+    server.assertExhausted();
+  },
+  30000,
+);
 
 nativeIt.each([false, true] as const)(
   'decides a mixed boolean/string choice without fallback (%s)',
@@ -455,7 +1139,7 @@ nativeIt(
         ];
       if (count === 2)
         return [call('wait_for_child', {}, { callId: 'join-child' })];
-      return [message('Root finished.')];
+      return [message('{"label":"Root finished."}')];
     };
     const server = new ModelServer(
       Array.from({ length: 4 }, () => reply),
@@ -471,6 +1155,11 @@ nativeIt(
         provider,
         model: 'gpt-5.5',
         instructions: 'Use research.',
+        outputType: {
+          mode: 'prompted',
+          schema: z.object({ label: z.string() }),
+          maxRetries: 1,
+        },
         decisions: decisionProvider(),
         beforeComplete: async (context) => {
           if (context.subagentId !== null) {
@@ -519,7 +1208,7 @@ nativeIt(
       const result = await (
         await session.submit('Use research.', { budget: { maxTokens: 29 } })
       ).wait();
-      expect(result.finalOutput).toBe('Root finished.');
+      expect(result.finalOutput).toEqual({ label: 'Root finished.' });
       expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(42);
       const children = [];
       for await (const child of session.subagents()) children.push(child);
