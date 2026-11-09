@@ -123,7 +123,7 @@ export {
 } from './runtime/executor-decisions';
 export type { ExecutorPolicyDecision } from './runtime/executor-decisions';
 export { Environment } from './runtime/environment';
-export type { NetworkPolicy } from './runtime/network-policy';
+export { NetworkPolicy } from './runtime/network-policy';
 export type {
   EnvironmentSource,
   EnvironmentLease,
