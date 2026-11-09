@@ -352,14 +352,32 @@ describe('OpenAIResponsesCompactionSession', () => {
     });
   });
 
-  it('rejects non-OpenAI model names', () => {
-    expect(() => {
-      new OpenAIResponsesCompactionSession({
-        client: {} as any,
-        model: 'yet-another-model',
-      });
-    }).toThrow(/Unsupported model/);
+  it.each([
+    'openai/gpt-4.1',
+    'gateway/openai/o3',
+    'openai/ft:gpt-4.1:org:proj:id',
+  ])('forwards the full compaction model ID %s', async (model) => {
+    const compact = vi.fn().mockResolvedValue({ output: [] });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      model,
+    });
+
+    await session.runCompaction({ compactionMode: 'input', force: true });
+    expect(compact).toHaveBeenCalledExactlyOnceWith({ model, input: [] });
   });
+
+  it.each(['yet-another-model', 'anthropic/claude-3', 'openai/'])(
+    'rejects unsupported compaction model ID %s',
+    (model) => {
+      expect(() => {
+        new OpenAIResponsesCompactionSession({
+          client: {} as any,
+          model,
+        });
+      }).toThrow(/Unsupported model/);
+    },
+  );
 
   it('rejects whitespace-only model names', () => {
     expect(() => {
