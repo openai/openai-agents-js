@@ -29,6 +29,7 @@ async function main() {
     entered = resolve;
   });
   const observed: TraceEvent[] = [];
+  let sawMixedBatch = false;
   let phase = false;
   let groups = 0;
   let configured = false;
@@ -44,6 +45,9 @@ async function main() {
           onEvent() {},
           async onEvents(events: readonly TraceEvent[]) {
             observed.push(...events);
+            sawMixedBatch ||=
+              events.some((event) => event.name === 'old-after-loss') &&
+              events.some((event) => event.name === 'post-loss-fresh-root');
             if (
               phase &&
               events.some((event) => event.name.startsWith('burst-')) &&
@@ -88,15 +92,6 @@ async function main() {
     await blocked;
     // The pump captured a watermark and acknowledged its first lossy batch.
     // Queue a fresh root while older records still occupy the native queue.
-    end(start('post-loss-fresh-root'));
-    release();
-    for (
-      let index = 0;
-      index < 300 &&
-      !records.some((row) => row.workflow_name === 'post-loss-fresh-root');
-      index++
-    )
-      await new Promise((resolve) => setTimeout(resolve, 10));
     const oldChild = JSON.parse(
       native.start_trace_span(
         JSON.stringify({
@@ -108,9 +103,12 @@ async function main() {
     ).handle;
     end(oldChild);
     end(roots[0]);
+    end(start('post-loss-fresh-root'));
+    release();
     const result = await telemetry.forceFlush({ timeoutMs: 15000 });
     assert.ok(result.droppedRecords > 0);
     assert.equal(result.status, 'partial');
+    assert.ok(sawMixedBatch);
     assert.ok(!records.some((row) => row.span_data?.name === 'old-after-loss'));
     const fresh = records.filter(
       (row) => row.workflow_name === 'post-loss-fresh-root',

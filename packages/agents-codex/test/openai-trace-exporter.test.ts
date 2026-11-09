@@ -324,6 +324,61 @@ it('retains active descendants during completed trace churn and bounds active ad
   }
 });
 
+it.each([200, 503])(
+  'delivers admitted traces from a mixed batch after loss (HTTP %i)',
+  async (status) => {
+    const requests: Record<string, any>[][] = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString()).data);
+      response.writeHead(status).end();
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('collector missing');
+    try {
+      const exporter = new OpenAITraceExporter({
+        apiKey: 'synthetic',
+        endpoint: `http://127.0.0.1:${address.port}/ingest`,
+        maxRetries: 1,
+      });
+      exporter._onNativeTraceLoss();
+      const fresh = {
+        ...event,
+        trace_id: 'c'.repeat(32),
+        span_id: 'd'.repeat(16),
+        name: 'fresh-workflow',
+      };
+      await expect(
+        exporter.onEvents([event, { ...fresh, lifecycle: 'start' }, fresh]),
+      ).rejects.toThrow(
+        status === 200
+          ? 'Native trace root descriptor is unavailable'
+          : 'Native OpenAI trace export failed; Native trace root descriptor is unavailable',
+      );
+      expect(requests).toHaveLength(status === 200 ? 1 : 2);
+      for (const request of requests) {
+        expect(request).toHaveLength(2);
+        expect(request[0]).toMatchObject({
+          id: `trace_${fresh.trace_id}`,
+          workflow_name: 'fresh-workflow',
+        });
+        expect(request[1]).toMatchObject({
+          trace_id: `trace_${fresh.trace_id}`,
+          span_data: { name: 'fresh-workflow' },
+        });
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+);
+
 it.each([false, true])(
   'accounts for later completions in a failed batch (unknown child=%s)',
   async (rejectedChild) => {
@@ -367,14 +422,19 @@ it.each([false, true])(
           overflow,
         ]),
       ).rejects.toThrow(rejectedChild ? 'descriptor' : 'capacity');
-      expect(requests).toHaveLength(1);
+      expect(requests).toHaveLength(2);
+      expect(requests.at(-1)![0]).toMatchObject({
+        workflow_name: 'overflow-root',
+      });
       await exporter.onEvent({
         ...overflow,
         lifecycle: 'end',
         name: 'renamed-end',
       });
+      expect(requests.at(-1)).toHaveLength(1);
       expect(requests.at(-1)![0]).toMatchObject({
-        workflow_name: 'overflow-root',
+        object: 'trace.span',
+        span_data: { name: 'renamed-end' },
       });
       exporter.setApiKey('synthetic-rotated');
       await exporter.onEvent({ ...roots[1], lifecycle: 'end' });

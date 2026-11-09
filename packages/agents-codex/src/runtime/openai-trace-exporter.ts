@@ -133,6 +133,7 @@ export class OpenAITraceExporter implements TraceProcessor {
     const revision = this.#credentialRevision;
     const headers = { ...this.#headers };
     const states = new Map<string, TraceState>();
+    const admitted: TraceEvent[] = [];
     let admissionError: string | undefined;
     for (const event of events) {
       const traceId = `trace_${event.trace_id}`;
@@ -168,10 +169,10 @@ export class OpenAITraceExporter implements TraceProcessor {
       this.#traces.delete(traceId);
       this.#traces.set(traceId, state);
       states.set(traceId, state);
+      admitted.push(event);
     }
-    // Failed native batches are acknowledged too. Account for every admitted
-    // completion before rejecting, so an unavailable root cannot strand capacity.
-    if (admissionError) throw new Error(admissionError);
+    // Failed native batches are acknowledged too. Deliver admitted records
+    // before reporting rejected ones, so one unavailable root cannot lose others.
     const pending = [...states]
       .filter(([, state]) => state.deliveredTo !== revision)
       .map(([traceId, state]) => ({
@@ -182,7 +183,7 @@ export class OpenAITraceExporter implements TraceProcessor {
     const records: Record<string, unknown>[] = pending.map(
       (item) => item.descriptor,
     );
-    for (const event of events) {
+    for (const event of admitted) {
       if (event.lifecycle === 'end')
         records.push({
           object: 'trace.span',
@@ -205,9 +206,13 @@ export class OpenAITraceExporter implements TraceProcessor {
               : null,
         });
     }
-    if (!records.length) return;
+    if (!records.length) {
+      if (admissionError) throw new Error(admissionError);
+      return;
+    }
     const body = JSON.stringify({ data: records });
     const signal = AbortSignal.timeout(this.#timeoutMs);
+    let delivered = false;
     for (
       let attempt = 0;
       attempt <= this.#maxRetries && !signal.aborted;
@@ -233,7 +238,8 @@ export class OpenAITraceExporter implements TraceProcessor {
                 item.state.deliveredTo = revision;
             }
           }
-          return;
+          delivered = true;
+          break;
         }
         retry = response.status >= 500;
       } catch {
@@ -241,8 +247,13 @@ export class OpenAITraceExporter implements TraceProcessor {
       }
       if (!retry) break;
     }
-    // Do not expose endpoints, credentials, request bodies or response bodies.
-    throw new Error('Native OpenAI trace export failed');
+    if (!delivered) {
+      // Do not expose endpoints, credentials, request bodies or response bodies.
+      throw new Error(
+        `Native OpenAI trace export failed${admissionError ? `; ${admissionError}` : ''}`,
+      );
+    }
+    if (admissionError) throw new Error(admissionError);
   }
 }
 
