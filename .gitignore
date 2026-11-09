@@ -157,3 +157,7 @@ bundled/
 
 .pnpm-store/
 .vercel/
+
+# Generated portable native control facade artifacts.
+packages/agents/native/*.wasm
+packages/agents/native/portable-build-receipt.json

@@ -79,6 +79,15 @@ function sourcePathForExport(
   ) {
     distTarget = './dist/a2a/index.mjs';
   }
+  if (
+    ['@openai/agents', '@openai/agents-codex'].includes(
+      workspacePackage.name,
+    ) &&
+    exportPath === './voice/control.wasm' &&
+    distTarget === './native/codex-realtime-control.wasm'
+  ) {
+    return resolve(workspacePackage.root, 'native/codex-realtime-control.wasm');
+  }
   if (!distTarget.startsWith('./dist/')) {
     throw new Error(
       `Package export ${workspacePackage.name}${exportPath.slice(1)} does not point into dist: ${distTarget}`,

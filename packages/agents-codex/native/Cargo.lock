@@ -1769,6 +1769,7 @@ dependencies = [
  "codex-client",
  "codex-http-client",
  "codex-protocol",
+ "codex-realtime-control",
  "codex-utils-rustls-provider",
  "codex-websocket-client",
  "eventsource-stream",
@@ -2171,6 +2172,7 @@ dependencies = [
  "codex-plugin",
  "codex-prompts",
  "codex-protocol",
+ "codex-realtime-control",
  "codex-response-debug-context",
  "codex-rmcp-client",
  "codex-rollout",
@@ -3156,6 +3158,15 @@ dependencies = [
  "ts-rs",
  "uuid",
  "wildmatch",
+]
+
+[[package]]
+name = "codex-realtime-control"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

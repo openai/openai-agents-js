@@ -192,7 +192,18 @@
         "types": "./dist/voice/twilio.d.ts",
         "default": "./dist/voice/twilio.js"
       }
-    }
+    },
+    "./voice/portable": {
+      "import": {
+        "types": "./dist/voice/portable.d.mts",
+        "default": "./dist/voice/portable.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/portable.d.ts",
+        "default": "./dist/voice/portable.js"
+      }
+    },
+    "./voice/control.wasm": "./native/codex-realtime-control.wasm"
   },
   "scripts": {
     "prebuild": "node ../../scripts/embedMeta.mts",
@@ -222,7 +233,9 @@
   },
   "files": [
     "dist",
-    "CLASSIC.md"
+    "CLASSIC.md",
+    "native/codex-realtime-control.wasm",
+    "native/portable-build-receipt.json"
   ],
   "typesVersions": {
     "*": {
@@ -285,6 +298,9 @@
       ],
       "voice/twilio": [
         "dist/voice/twilio.d.ts"
+      ],
+      "voice/portable": [
+        "dist/voice/portable.d.ts"
       ]
     }
   }

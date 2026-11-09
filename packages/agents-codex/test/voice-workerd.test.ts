@@ -28,7 +28,7 @@ describe('workerd native voice relay socket', () => {
     ];
     expect(url.href).toBe('https://voice.example/relay');
     expect(init.method).toBe('GET');
-    expect(init.redirect).toBe('error');
+    expect(init.redirect).toBe('manual');
     expect(init.signal).toBe(controller.signal);
     const headers = new Headers(init.headers);
     expect(headers.get('Authorization')).toBe('Bearer synthetic-app-token');

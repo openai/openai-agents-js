@@ -213,3 +213,47 @@ describe('native-backed browser voice media', () => {
     expect(mic.track.stop).not.toHaveBeenCalled();
   });
 });
+
+it('uses injected peer/media factories without browser global shims', async () => {
+  vi.stubGlobal('RTCPeerConnection', undefined);
+  vi.stubGlobal('navigator', undefined);
+  const mic = microphone();
+  const peer = new Peer();
+  const remote = vi.fn();
+  const media = new NativeVoiceWebRTC({
+    createPeerConnection: async () => peer as unknown as RTCPeerConnection,
+    getUserMedia: async () => mic.stream,
+    onRemoteStream: remote,
+  });
+  try {
+    await media.connect({ exchangeSdp: async () => 'answer' });
+    peer.ontrack!({ streams: [mic.stream] });
+    expect(remote).toHaveBeenCalledWith(mic.stream);
+    media.setMuted(true);
+    expect(mic.track.enabled).toBe(false);
+    media.close();
+    expect(peer.close).toHaveBeenCalledOnce();
+    expect(mic.track.stop).toHaveBeenCalledOnce();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('closes a customized peer returned after connection cancellation', async () => {
+  const mic = microphone();
+  const peer = new Peer();
+  const customized = deferred<RTCPeerConnection>();
+  const media = new NativeVoiceWebRTC({
+    mediaStream: mic.stream,
+    createPeerConnection: () => customized.promise,
+  });
+  const connecting = media.connect({ exchangeSdp: async () => 'answer' });
+  const rejected = expect(connecting).rejects.toThrow('closed');
+  await Promise.resolve();
+  media.close();
+  await rejected;
+  customized.resolve(peer as unknown as RTCPeerConnection);
+  await vi.waitFor(() => expect(peer.close).toHaveBeenCalledOnce());
+  expect(peer.createDataChannel).not.toHaveBeenCalled();
+  expect(mic.track.stop).not.toHaveBeenCalled();
+});

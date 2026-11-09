@@ -1,3 +1,9 @@
+import {
+  NativeVoiceControl,
+  PortableVoiceSession,
+  type PortableVoiceOptions,
+} from './portable';
+
 export interface VoiceWebSocketOptions {
   /** Application-hosted native voice relay, using ws or wss. */
   url: string;
@@ -24,7 +30,7 @@ export async function openVoiceWebSocket({
     method: 'GET',
     headers: requestHeaders,
     signal,
-    redirect: 'error',
+    redirect: 'manual',
   });
   const socket = (
     response as Response & { webSocket?: WebSocket & { accept(): void } }
@@ -54,6 +60,85 @@ export async function openVoiceWebSocket({
       socket.close();
     } catch {
       /* Preserve the opening error. */
+    }
+    throw error;
+  }
+}
+
+/** Provider-connected Worker control. The Rust module executes inside the Worker. */
+export async function connectPortableVoiceWorker(options: {
+  control: NativeVoiceControl;
+  apiKey: string;
+  agent: PortableVoiceOptions;
+  url?: string;
+  signal?: AbortSignal;
+}): Promise<PortableVoiceSession> {
+  options.signal?.throwIfAborted();
+  const endpoint = new URL(options.url ?? 'https://api.openai.com/v1/realtime');
+  if (endpoint.protocol !== 'https:')
+    throw new TypeError('Provider WebSocket URL must use https.');
+  endpoint.searchParams.set('model', options.agent.model);
+  const response = await fetch(endpoint, {
+    headers: {
+      Authorization: `Bearer ${options.apiKey}`,
+      Upgrade: 'websocket',
+    },
+    signal: options.signal,
+    redirect: 'manual',
+  });
+  const socket = (
+    response as Response & { webSocket?: WebSocket & { accept(): void } }
+  ).webSocket;
+  if (!socket) {
+    await response.body?.cancel();
+    throw new Error(`Provider WebSocket upgrade failed (${response.status}).`);
+  }
+  let session: PortableVoiceSession | undefined;
+  const abort = () =>
+    session?.fail(
+      options.signal?.reason ?? new Error('Voice connection aborted.'),
+    );
+  try {
+    session = new PortableVoiceSession(
+      options.control,
+      {
+        send(frame) {
+          socket.send(frame);
+        },
+        close() {
+          options.signal?.removeEventListener('abort', abort);
+          socket.close();
+        },
+      },
+      options.agent,
+    );
+    const owner = session;
+    socket.addEventListener('message', ({ data }: MessageEvent) => {
+      try {
+        if (typeof data !== 'string')
+          throw new Error('Provider voice frames must be text.');
+        owner.receive(JSON.parse(data));
+      } catch (error) {
+        owner.fail(error);
+      }
+    });
+    socket.addEventListener('error', () =>
+      owner.fail(new Error('Provider voice WebSocket failed.')),
+    );
+    socket.addEventListener('close', () =>
+      owner.fail(new Error('Provider voice WebSocket closed.')),
+    );
+    options.signal?.addEventListener('abort', abort, { once: true });
+    options.signal?.throwIfAborted();
+    socket.accept();
+    await session.start();
+    return session;
+  } catch (error) {
+    try {
+      if (session) await session.close();
+      else socket.close();
+    } catch {
+      // Preserve the opening error while releasing the acquired socket.
     }
     throw error;
   }

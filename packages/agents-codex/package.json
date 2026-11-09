@@ -97,7 +97,18 @@
         "types": "./dist/voice/twilio.d.ts",
         "default": "./dist/voice/twilio.js"
       }
-    }
+    },
+    "./voice/portable": {
+      "import": {
+        "types": "./dist/voice/portable.d.mts",
+        "default": "./dist/voice/portable.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/portable.d.ts",
+        "default": "./dist/voice/portable.js"
+      }
+    },
+    "./voice/control.wasm": "./native/codex-realtime-control.wasm"
   },
   "scripts": {
     "prebuild": "node ../../scripts/embedMeta.mts",
@@ -106,7 +117,8 @@
     "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json",
     "native:prepare": "node scripts/native.mjs prepare",
     "native:build": "node scripts/native.mjs build",
-    "native:audit": "node scripts/native.mjs audit"
+    "native:audit": "node scripts/native.mjs audit",
+    "native:portable": "node ../../scripts/build-portable-realtime.mjs"
   },
   "dependencies": {
     "@openai/agents-core": "workspace:*",
@@ -149,7 +161,10 @@
     "MCP_TASKS.md",
     "experimental",
     "a2a",
-    "A2A.md"
+    "A2A.md",
+    "native/codex-realtime-control.wasm",
+    "native/portable-build-receipt.json",
+    "PORTABLE_CONTROL.md"
   ],
   "typesVersions": {
     "*": {
@@ -176,6 +191,9 @@
       ],
       "voice/twilio": [
         "dist/voice/twilio.d.ts"
+      ],
+      "voice/portable": [
+        "dist/voice/portable.d.ts"
       ]
     }
   },
