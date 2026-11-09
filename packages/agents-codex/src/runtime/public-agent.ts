@@ -245,6 +245,7 @@ export class Agent<Context = undefined, Output = string> {
   static readonly #canonicalOpening = Object.freeze({
     prototype: this.prototype,
     session: this.prototype.session,
+    sessionPrototype: Object.getPrototypeOf(this.prototype.session),
     prepare: this.prototype.prepare,
     outputTypeFor: this.prototype.outputTypeFor,
     functionPrototype: Function.prototype,
@@ -256,8 +257,11 @@ export class Agent<Context = undefined, Output = string> {
     if (
       Object.getPrototypeOf(this) !== canonical.prototype ||
       factory !== canonical.session ||
-      Object.getPrototypeOf(canonical.session) !==
+      Object.getPrototypeOf(canonical.session) !== canonical.sessionPrototype ||
+      Object.getPrototypeOf(canonical.sessionPrototype) !==
         canonical.functionPrototype ||
+      Object.getOwnPropertyDescriptor(canonical.sessionPrototype, 'apply') !==
+        undefined ||
       Object.getOwnPropertyDescriptor(canonical.session, 'apply') !==
         undefined ||
       Object.getOwnPropertyDescriptor(canonical.functionPrototype, 'apply')

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Agent, NativeProvider, tool } from '../../src';
 import { binding, type NativeThread } from '../../src/runtime/binding';
 import { ObservationBuffer } from '../../src/runtime/observation';
+import { decodeRequestMetadata } from '../../src/runtime/request-metadata';
 import type { Completed } from '../../src/runtime/session';
 import { ModelServer, message, call } from './fixtures/model-server';
 
@@ -165,6 +166,22 @@ async function replay(result: Completed) {
   }))
     second.push(event);
   expect(second).toEqual(first);
+  for (let index = 0; index < first.length; index++) {
+    const event = first[index]!;
+    expect(Number.isInteger(event.sequence)).toBe(true);
+    expect(event.sequence).toBeGreaterThan(
+      index === 0 ? 0 : first[index - 1]!.sequence,
+    );
+    if (index + 1 < first.length) {
+      const suffix = [];
+      for await (const remaining of result.turn.events({
+        after: event.sequence,
+        includeExecutionDetails: true,
+      }))
+        suffix.push(remaining);
+      expect(suffix).toEqual(first.slice(index + 1));
+    }
+  }
   const last = first.at(-1);
   if (last) {
     const tail = [];
@@ -220,6 +237,20 @@ it.each([
   'preserves exact completed replay and usage: $name',
   async ({ chunks }) => {
     const reads = await observeReads();
+    type Published = NonNullable<ReturnType<ObservationBuffer['append']>>;
+    const publications: Published[] = [];
+    let publicationOverflow = false;
+    const append = ObservationBuffer.prototype.append;
+    vi.spyOn(ObservationBuffer.prototype, 'append').mockImplementation(
+      function (this: ObservationBuffer, value) {
+        const event = append.call(this, value);
+        if (event) {
+          if (publications.length === 128) publicationOverflow = true;
+          else publications.push(event);
+        }
+        return event;
+      },
+    );
     const server = new ModelServer([response(chunks), response(chunks)]);
     await using provider = await providerFor(server);
     const ordinary = new Agent({
@@ -241,7 +272,125 @@ it.each([
     expect(candidate.finalOutput).toBe(reference.finalOutput);
     expect(candidate.threadUsage).toEqual(reference.threadUsage);
     const candidateReplay = await replay(candidate);
-    expect(identities(candidateReplay)).toEqual(identities(expectedReplay));
+    function checkPublicationReplay(
+      result: Completed,
+      actual: typeof candidateReplay,
+    ) {
+      expect(publicationOverflow).toBe(false);
+      expect(actual.length).toBeGreaterThan(0);
+      const sessionId = actual[0]!.sessionId;
+      const published = publications.filter(
+        (event) => event.sessionId === sessionId,
+      );
+      expect(published.map((event) => event.sequence)).toEqual(
+        published.map((_, index) => index + 1),
+      );
+      expect(published.at(-1)?.type).toBe('session_ended');
+      const starts = published.filter((event) => event.type === 'turn_started');
+      expect(starts).toHaveLength(1);
+      const submissionId = starts[0]!.submissionId;
+      expect(starts[0]!.turnId).toBe(result.turn.turnId);
+      const scoped = published.filter(
+        (event) =>
+          'submissionId' in event && event.submissionId === submissionId,
+      );
+      const deltas = scoped.filter(
+        (event) => event.type === 'output_text_delta',
+      );
+      // This checks the giant payload before retention can discard it.
+      expect(deltas.map((event) => event.delta).join('')).toBe(chunks.join(''));
+      const metadata = scoped.filter(
+        (event) =>
+          event.type === 'model_request_dispatching' ||
+          event.type === 'model_response_linked',
+      );
+      const wireMetadata = reads.rows
+        .flat()
+        .map((raw) => JSON.parse(raw))
+        .filter(
+          (event) =>
+            event.msg?.type === '_sdk_request_metadata' &&
+            event.id === result.turn.turnId &&
+            event.msg.observation?.thread_id === sessionId,
+        );
+      // This admitted fixture has one dispatch and one retained response. Require
+      // their actual bridge delivery and exact publication, even if later evicted.
+      expect(wireMetadata.map((event) => event.msg.observation.type)).toEqual([
+        'model_request_dispatching',
+        'model_response_linked',
+      ]);
+      expect(
+        metadata.map(
+          ({ sequence: _sequence, sessionId: _sessionId, ...event }) => event,
+        ),
+      ).toEqual(
+        wireMetadata.map((event) =>
+          decodeRequestMetadata(event.msg.observation, event.msg.submission_id),
+        ),
+      );
+      expect(metadata).toHaveLength(2);
+      expect(metadata[1]!.requestId).toBe(metadata[0]!.requestId);
+      expect(
+        metadata.every(
+          (event) =>
+            event.threadId === sessionId &&
+            event.turnId === result.turn.turnId &&
+            event.submissionId === submissionId,
+        ),
+      ).toBe(true);
+      // Only scalar fixture observations occur here; richer item budgets have
+      // their existing retention tests. Fail if that fixture assumption changes.
+      const kinds = new Set([
+        'turn_started',
+        'warning',
+        'model_request_dispatching',
+        'model_response_linked',
+        'output_text_delta',
+        'usage_updated',
+        'turn_finished',
+        'session_ended',
+      ]);
+      expect(published.every((event) => kinds.has(event.type))).toBe(true);
+      const oversized = (event: Published) =>
+        event.type === 'output_text_delta' && event.delta.length > 65_536;
+      expect(published.filter(oversized)).toHaveLength(
+        chunks[0]!.length > 65_536 ? 1 : 0,
+      );
+      const retained = published.slice(published.findLastIndex(oversized) + 1);
+      expect(retained.length).toBeLessThanOrEqual(256);
+      // These plain fixture records have no custom serialization. JSON includes
+      // every scalar string plus keys/escaping, so this conservative bound proves
+      // no further size eviction without copying the buffer's size calculation.
+      expect(JSON.stringify(retained).length).toBeLessThanOrEqual(65_536);
+      const oldest = retained[0]?.sequence ?? published.at(-1)!.sequence + 1;
+      const expected = [
+        ...(oldest > 1
+          ? [{ type: 'gap', sessionId, firstSequence: 1, sequence: oldest - 1 }]
+          : []),
+        ...retained.filter(
+          (event) =>
+            'submissionId' in event && event.submissionId === submissionId,
+        ),
+      ];
+      // Keep the exact gap and every surviving metadata/payload/cursor field.
+      expect(actual).toEqual(expected);
+      // The Core text/lifecycle channel and the metadata channel each retain
+      // their own order; neither promises a cross-channel total order.
+      const semantic = scoped.filter(
+        (event) =>
+          event.type !== 'model_request_dispatching' &&
+          event.type !== 'model_response_linked',
+      );
+      return {
+        semantic: semantic.map(({ sequence: _sequence, ...event }) => event),
+        sampling: metadata
+          .filter((event) => event.type === 'model_request_dispatching')
+          .map(({ sequence: _sequence, ...event }) => event),
+      };
+    }
+    expect(
+      identities(checkPublicationReplay(candidate, candidateReplay)),
+    ).toEqual(identities(checkPublicationReplay(reference, expectedReplay)));
     if (chunks[0]!.length > 65_536)
       expect(candidateReplay.some((event) => event.type === 'gap')).toBe(true);
     server.assertExhausted();
@@ -600,4 +749,37 @@ it('leaves a public retained Session on the ordinary reader', async () => {
   server.assertExhausted();
   await session.close();
   reads.assertJoined();
+}, 30_000);
+
+it('preserves an observable async-factory prototype apply override on the ordinary path', async () => {
+  const reads = await observeReads();
+  const server = new ModelServer([[message('answer')]]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  });
+  const prototype = Object.getPrototypeOf(Agent.prototype.session);
+  const previous = Object.getOwnPropertyDescriptor(prototype, 'apply');
+  const originalApply = Function.prototype.apply;
+  let applyCalls = 0;
+  try {
+    expect(previous).toBeUndefined();
+    Object.defineProperty(prototype, 'apply', {
+      configurable: true,
+      value: function (this: unknown, receiver: unknown, args: unknown[]) {
+        applyCalls++;
+        return Reflect.apply(originalApply, this, [receiver, args]);
+      },
+    });
+    expect((await agent.run('Answer.')).finalOutput).toBe('answer');
+    expect(applyCalls).toBeGreaterThan(0);
+    expect(reads.calls).toHaveLength(0);
+    server.assertExhausted();
+    reads.assertJoined();
+  } finally {
+    if (previous) Object.defineProperty(prototype, 'apply', previous);
+    else Reflect.deleteProperty(prototype, 'apply');
+  }
 }, 30_000);
