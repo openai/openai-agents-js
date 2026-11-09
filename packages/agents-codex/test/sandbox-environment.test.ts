@@ -817,16 +817,16 @@ it.each([
     await owner.dispose();
     expect(f.resource.close).not.toHaveBeenCalled();
     f.connect.mockClear();
-    await expect(
-      acquireEnvironment(
+    await expect(async () => {
+      await acquireEnvironment(
         sandboxEnvironment({
           ...f,
           client,
           session: f.resource,
           manifest: new Manifest({ root: '/different-authority' }),
         }),
-      ),
-    ).rejects.toThrow();
+      );
+    }).rejects.toThrow();
     expect(f.connect).not.toHaveBeenCalled();
   },
 );
