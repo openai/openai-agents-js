@@ -10,7 +10,8 @@ import {
   decode,
   encode,
   jsonValue,
-  jsonObject,
+  losslessJsonObjectSchema,
+  losslessJsonValueSchema,
   type JsonValue,
   type JsonObject,
 } from './binding';
@@ -204,7 +205,7 @@ export function createNamespacedFunctionTool<Context>(options: {
       admit: () => void,
     ) {
       admit();
-      const parsed = jsonObject.parse(args);
+      const parsed = losslessJsonObjectSchema.parse(args);
       const result = await invokeWithTimeout(
         (signal) =>
           execute(parsed, { ...context, signal }, () => {
@@ -467,7 +468,10 @@ export function outputOf(value: unknown): ToolResponse {
     contentItems: [
       {
         type: 'inputText',
-        text: typeof value === 'string' ? value : encode(value),
+        text:
+          typeof value === 'string'
+            ? value
+            : JSON.stringify(losslessJsonValueSchema.parse(value)),
       },
     ],
   };

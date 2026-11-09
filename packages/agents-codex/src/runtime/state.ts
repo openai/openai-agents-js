@@ -213,7 +213,7 @@ const childStateSchema = z.discriminatedUnion('status', [
     parent_thread_id: z.string(),
     closed_at: z.null().optional(),
     metadata: jsonObject,
-    history: z.array(jsonObject),
+    history: z.array(losslessJsonObjectSchema),
     memory_mode: z.enum(['enabled', 'disabled']).nullable().optional(),
     checklist: checklistSchema.nullable().optional(),
     goal: goalSnapshotSchema.nullable().optional(),
@@ -225,7 +225,7 @@ const childStateSchema = z.discriminatedUnion('status', [
     parent_thread_id: z.string(),
     closed_at: z.number().nonnegative().nullable().optional(),
     metadata: jsonObject,
-    history: z.array(jsonObject),
+    history: z.array(losslessJsonObjectSchema),
     memory_mode: z.enum(['enabled', 'disabled']).nullable().optional(),
     checklist: checklistSchema.nullable().optional(),
     goal: goalSnapshotSchema.nullable().optional(),
@@ -240,7 +240,7 @@ const rootState = {
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
-  history: z.array(jsonObject),
+  history: z.array(losslessJsonObjectSchema),
   pending_actions: z.array(jsonObject).default([]),
   recovery: z
     .object({

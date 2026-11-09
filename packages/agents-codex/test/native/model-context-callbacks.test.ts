@@ -755,3 +755,106 @@ nativeIt(
     expect(model.requests).toHaveLength(2);
   },
 );
+
+nativeIt(
+  'preserves literal JSON through terminal acceptance and its detached proposal',
+  async () => {
+    const model = new ModelServer([
+      [call('finish_literal', {}, { callId: 'literal-terminal' })],
+    ]);
+    const value = () =>
+      JSON.parse(
+        '{"key":"kept","__proto__":{"literalTop":true},"nested":{"__proto__":{"literalNested":true}}}',
+      ) as JsonObject;
+    let validations = 0;
+    const schema = z.object({ payload: z.unknown() }).transform((value) => {
+      validations++;
+      return value;
+    });
+    await using provider = await providerFor(model);
+    await using session = await new Agent({
+      instructions: 'Finish once.',
+      model: 'gpt-5',
+      provider,
+      outputType: { mode: 'prompted', schema },
+      tools: [
+        tool({
+          name: 'finish_literal',
+          parameters: z.object({}),
+          finishTurn: true,
+          execute: () => JSON.stringify({ payload: value() }),
+        }),
+      ],
+      beforeComplete: (context) => {
+        const proposal = context.finalOutput as { payload: JsonObject };
+        expect(Object.hasOwn(proposal.payload, '__proto__')).toBe(true);
+        expect(
+          Object.hasOwn(proposal.payload.nested as JsonObject, '__proto__'),
+        ).toBe(true);
+        expect(proposal.payload).toEqual(value());
+        expect(Object.getPrototypeOf(proposal.payload)).toBe(Object.prototype);
+        proposal.payload.key = 'changed detached proposal';
+      },
+    }).session();
+    const result = await (await session.submit('finish')).wait();
+    expect(result.finalOutput.payload).toEqual(value());
+    expect(
+      Object.hasOwn(result.finalOutput.payload as object, '__proto__'),
+    ).toBe(true);
+    expect(validations).toBe(1);
+    expect(Object.prototype).not.toHaveProperty('literalTop');
+    expect(Object.prototype).not.toHaveProperty('literalNested');
+    expect(JSON.stringify((await session.saveState()).history)).toContain(
+      'literalTop',
+    );
+  },
+);
+
+nativeIt(
+  'preserves literal JSON keys in a request-only tool presentation',
+  async () => {
+    const model = new ModelServer([[message('done')]]);
+    const parameters = JSON.parse(
+      '{"type":"object","properties":{"__proto__":{"type":"string"}}}',
+    ) as JsonObject;
+    await using provider = await providerFor(model);
+    await using session = await new Agent({
+      instructions: 'Test request projection.',
+      provider,
+      transformContext: ({ items }) => [
+        ...items,
+        {
+          type: 'additional_tools',
+          role: 'developer',
+          tools: [
+            {
+              type: 'function',
+              name: 'presentation_only',
+              description: 'Request-only schema data.',
+              parameters,
+              strict: false,
+            },
+          ],
+        },
+      ],
+    }).session();
+    expect((await (await session.submit('one')).wait()).finalOutput).toBe(
+      'done',
+    );
+    const projected = (model.requests[0]!.input as JsonObject[]).find(
+      (item) =>
+        item.type === 'additional_tools' &&
+        JSON.stringify(item).includes('presentation_only'),
+    );
+    expect(projected).toBeDefined();
+    const definition = (projected!.tools as JsonObject[])[0]!;
+    const properties = (definition.parameters as JsonObject)
+      .properties as JsonObject;
+    expect(Object.hasOwn(properties, '__proto__')).toBe(true);
+    expect(properties['__proto__']).toEqual({ type: 'string' });
+    expect(Object.getPrototypeOf(properties)).toBe(Object.prototype);
+    expect(JSON.stringify((await session.saveState()).history)).not.toContain(
+      'presentation_only',
+    );
+  },
+);

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import {
   decode,
-  encode,
+  losslessJsonValueSchema,
   jsonObject,
   type JsonObject,
   type JsonValue,
@@ -258,11 +258,13 @@ export function parseToolCompletion(
       text = items[0].text;
     }
     const candidate = output.wrapped
-      ? encode({ response: JSON.parse(text) })
+      ? JSON.stringify(
+          losslessJsonValueSchema.parse({ response: JSON.parse(text) }),
+        )
       : text;
     const value = output.parse ? output.parse(candidate) : text;
-    // encode validates representability. Serialization never repeats output validation.
-    return { value, json: JSON.parse(encode(value)) as JsonValue };
+    // Validate JSON data without repeating the captured output validator.
+    return { value, json: losslessJsonValueSchema.parse(value) };
   } catch (error) {
     if (error instanceof OutputValidationError) throw error;
     throw new OutputValidationError(text, outputValidationIssues(error));

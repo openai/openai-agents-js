@@ -1052,6 +1052,8 @@ async fn competing_native_turn_retires_the_old_retry() {
         let fixture = Fixture::held().await;
         let retry = fixture.retry().await;
         let mutation = fixture.state.mutations.lock().await;
+        // Retire the accepted parent publication while the mutex keeps the old retry parked.
+        fixture.release();
         // Core interruption can remove the old empty slot. The following
         // acknowledged settings operation orders this test after that command.
         fixture.state.thread.submit(Op::Interrupt).await.unwrap();
@@ -1280,7 +1282,8 @@ async fn publication_waits_for_real_dequeued_error(status: u16) {
             );
             assert_eq!(
                 error["_sdk_provider_error"],
-                json!({"status_code":422,"code":"held_error","request_id":"withheld-child-422"}),
+                json!({"status_code":422,"code":"held_error","request_id":"withheld-child-422",
+                    "retryable":true,"retry_after_ms":null}),
                 "child_requests={requests} terminal={terminal}"
             );
         } else {
@@ -1295,8 +1298,9 @@ async fn publication_waits_for_real_dequeued_error(status: u16) {
                 std::str::from_utf8(HELD_ERROR_BODY).unwrap(),
                 "terminal={terminal}"
             );
-            assert!(
-                error.get("_sdk_provider_error").is_none(),
+            assert_eq!(
+                error["_sdk_provider_error"],
+                json!({"retryable":false,"retry_after_ms":null}),
                 "terminal={terminal}"
             );
         }

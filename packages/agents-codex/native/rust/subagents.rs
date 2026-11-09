@@ -1157,7 +1157,7 @@ mod terminal_error_tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&success.wait_with_usage().await.unwrap())
                 .unwrap(),
-            json!({"final_output":"answer","usage":null})
+            json!({"final_output":"answer","usage":null,"tool_completion":null})
         );
         assert!(success.terminal_error().is_none());
         let retired = turn("retired");

@@ -1,4 +1,4 @@
-import type { NativeThread } from '../../src/runtime/binding';
+import type { NativeThread, JsonObject } from '../../src/runtime/binding';
 import { inspect } from 'node:util';
 import { z } from 'zod';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -44,6 +44,7 @@ async function setup(
     environment: Environment;
     responses: ConstructorParameters<typeof ModelServer>[0];
   },
+  metadataArguments?: JsonObject,
 ) {
   const roster = join(directory, 'roster.json'),
     calls = join(directory, 'calls.jsonl'),
@@ -103,13 +104,14 @@ async function setup(
         type: 'custom_tool_call',
         name: 'exec',
         call_id: 'metadata-call',
-        input: 'text(await tools.mcp__fixture__lookup({key:"original"}));',
+        input: metadataArguments
+          ? `text(await tools.mcp__fixture__lookup(JSON.parse(${JSON.stringify(JSON.stringify(metadataArguments))})));`
+          : 'text(await tools.mcp__fixture__lookup({key:"original"}));',
       }
-    : call(
-        'lookup',
-        { key: 'original' },
-        { callId: 'metadata-call', namespace: 'mcp__fixture' },
-      );
+    : call('lookup', metadataArguments ?? { key: 'original' }, {
+        callId: 'metadata-call',
+        namespace: 'mcp__fixture',
+      });
   const model = new ModelServer(
     family?.responses ?? [
       ...(profile === 'destination'
@@ -231,6 +233,53 @@ it.each([
           2,
         ),
       );
+  },
+  20_000,
+);
+
+it.each([false, true])(
+  'preserves literal prototype keys in effective metadata arguments code=%s',
+  async (inCode) => {
+    const arguments_ = JSON.parse(
+      '{"key":"original","__proto__":{"metadataTop":true},"nested":{"__proto__":{"metadataNested":true},"constructor":{"prototype":"data"}}}',
+    ) as JsonObject;
+    const contexts: MCPMetadataContext[] = [];
+    const { session, model, calls } = await setup(
+      (ctx) => {
+        contexts.push(ctx);
+        return { 'app/argument-digest': JSON.stringify(ctx.arguments) };
+      },
+      inCode,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      arguments_,
+    );
+    expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect(contexts).toHaveLength(1);
+    const actual = await records(calls);
+    expect(actual).toHaveLength(1);
+    const captured = contexts[0].arguments;
+    expect(Object.hasOwn(captured, '__proto__')).toBe(true);
+    expect(Object.hasOwn(captured.nested as JsonObject, '__proto__')).toBe(
+      true,
+    );
+    expect(captured).toEqual(arguments_);
+    expect(actual[0].arguments).toEqual(arguments_);
+    expect(actual[0]._meta['app/argument-digest']).toBe(
+      JSON.stringify(actual[0].arguments),
+    );
+    expect(Object.getPrototypeOf(captured)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(captured.nested)).toBe(Object.prototype);
+    expect(Object.prototype).not.toHaveProperty('metadataTop');
+    expect(Object.prototype).not.toHaveProperty('metadataNested');
+    expect(model.requests).toHaveLength(2);
+    expect(JSON.stringify(model.requests)).not.toContain('app/argument-digest');
+    model.assertExhausted();
   },
   20_000,
 );
