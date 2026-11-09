@@ -2,6 +2,10 @@
 
 #![recursion_limit = "256"]
 
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+#[global_allocator]
+static ADDON_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use codex_otel::sdk_trace::FutureExt as _;
 use napi::bindgen_prelude::Either;
 use napi_derive::napi;
