@@ -1,0 +1,495 @@
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
+index 42714609dc49ac5aa8bf8fc3074889e7999db60e..14f647d87a06a9a85239f21740b4b56f45cdf9e2 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
+@@ -8,6 +8,90 @@ use serde_json::{Value, json};
+ use std::collections::VecDeque;
+ use std::sync::Arc;
+ 
++// Allocation policy, not a provider protocol catalog limit.
++pub(super) const MAX_HOSTED_MCP_TOOLS: usize = 1024;
++
++fn charge(bytes: &mut usize, additional: usize) -> Result<(), ObserveError> {
++    *bytes = bytes.saturating_add(additional);
++    if *bytes > super::methods::SDK_WIRE_BYTES_CAPACITY {
++        return Err(ObserveError::Capacity);
++    }
++    Ok(())
++}
++
++pub(super) fn json_bytes(value: &Value, bytes: &mut usize, depth: usize) -> Result<(), ObserveError> {
++    // Bound container/scalar/key allocations without serializing or cloning.
++    if depth > 128 {
++        return Err(ObserveError::Capacity);
++    }
++    charge(bytes, 256)?;
++    match value {
++        Value::String(text) => charge(bytes, text.len().saturating_mul(4))?,
++        Value::Array(values) => {
++            for value in values {
++                json_bytes(value, bytes, depth + 1)?;
++            }
++        }
++        Value::Object(values) => {
++            for (key, value) in values {
++                charge(bytes, 128usize.saturating_add(key.len().saturating_mul(4)))?;
++                json_bytes(value, bytes, depth + 1)?;
++            }
++        }
++        _ => {}
++    }
++    Ok(())
++}
++
++fn catalog_bytes(item_id: &str, label: &str) -> Result<usize, ObserveError> {
++    let mut bytes = 512;
++    charge(&mut bytes, item_id.len().saturating_mul(4))?;
++    charge(&mut bytes, label.len().saturating_mul(4))?;
++    Ok(bytes)
++}
++
++fn listed_tool_bytes(
++    name: &str,
++    description: Option<&str>,
++    schema: &Value,
++    bytes: &mut usize,
++) -> Result<(), ObserveError> {
++    charge(bytes, 256)?;
++    charge(bytes, name.len().saturating_mul(4))?;
++    charge(bytes, description.map_or(0, str::len).saturating_mul(4))?;
++    json_bytes(schema, bytes, 0)
++}
++
++pub(super) fn event_bytes(event: &RealtimeEvent) -> Result<usize, ObserveError> {
++    if let RealtimeEvent::HostedMcpToolsListed(catalog) = event {
++        if catalog.tools.len() > MAX_HOSTED_MCP_TOOLS {
++            return Err(ObserveError::Capacity);
++        }
++        let mut bytes = catalog_bytes(&catalog.item_id, &catalog.server_label)?;
++        for tool in &catalog.tools {
++            listed_tool_bytes(
++                &tool.name,
++                tool.description.as_deref(),
++                &tool.input_schema,
++                &mut bytes,
++            )?;
++        }
++        Ok(bytes)
++    } else {
++        // Admit structured errors before serializing, and retain their allocation
++        // charge in the same queue permits as the serialized event.
++        let mut bytes = 0;
++        if let RealtimeEvent::HostedMcpCallCompleted(call) = event {
++            if let Some(error) = &call.error {
++                json_bytes(error, &mut bytes, 0)?;
++            }
++        }
++        let encoded = serde_json::to_vec(event).map_err(|_| ObserveError::Invalid)?;
++        charge(&mut bytes, encoded.len())?;
++        Ok(bytes)
++    }
++}
++
+ #[derive(Default)]
+ pub(super) struct HostedMcpState {
+     records: Vec<Record>,
+@@ -156,6 +240,7 @@ impl HostedMcpState {
+         };
+         let mut candidates = Vec::new();
+         let mut observations = Vec::new();
++        let mut catalog_export_bytes = 0;
+         for item in items {
+             let item_kind = match kind {
+                 "response.function_call_arguments.done" => "function_call",
+@@ -169,10 +254,30 @@ impl HostedMcpState {
+                     && let Some(label) = item["server_label"].as_str()
+                     && config.hosted_declaration(label).is_some()
+                 {
+-                    let tools = item["tools"]
++                    let raw_tools = item["tools"]
+                         .as_array()
+-                        .into_iter()
+-                        .flatten()
++                        .map(Vec::as_slice)
++                        .unwrap_or_default();
++                    if raw_tools.len() > MAX_HOSTED_MCP_TOOLS {
++                        return Err(ObserveError::Capacity);
++                    }
++                    let mut allocation =
++                        catalog_bytes(item["id"].as_str().unwrap_or_default(), label)?;
++                    for tool in raw_tools {
++                        if let (Some(name), Some(schema)) =
++                            (tool["name"].as_str(), tool.get("input_schema"))
++                        {
++                            listed_tool_bytes(
++                                name,
++                                tool["description"].as_str(),
++                                schema,
++                                &mut allocation,
++                            )?;
++                        }
++                    }
++                    charge(&mut catalog_export_bytes, allocation)?;
++                    let tools = raw_tools
++                        .iter()
+                         .filter_map(|tool| {
+                             Some(RealtimeHostedMcpListedTool {
+                                 name: tool["name"].as_str()?.to_owned(),
+@@ -363,10 +468,7 @@ impl HostedMcpState {
+         }
+         let mut bytes = self.bytes();
+         let mut count = self.records.len();
+-        let mut exported_bytes = observations
+-            .iter()
+-            .map(|event| serde_json::to_vec(event).map_or(usize::MAX, |value| value.len()))
+-            .sum::<usize>();
++        let mut exported_bytes = catalog_export_bytes;
+         for c in &candidates {
+             if let Some(old) = self.records.iter().find(|r| r.item_id == c.id) {
+                 bytes = bytes
+@@ -411,11 +513,10 @@ impl HostedMcpState {
+                     .profile_receipt()
+                     .map_or(0, |receipt| receipt.profile_id.len());
+                 let output_bytes = c.item["output"].as_str().map_or(0, str::len);
+-                let error_bytes = c
+-                    .item
+-                    .get("error")
+-                    .filter(|e| !e.is_null())
+-                    .map_or(0, |e| e.to_string().len());
++                let mut error_bytes = 0;
++                if let Some(error) = c.item.get("error").filter(|e| !e.is_null()) {
++                    json_bytes(error, &mut error_bytes, 0)?;
++                }
+                 exported_bytes = exported_bytes.saturating_add(
+                     c.source.id.len()
+                         + c.id.len()
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..b4dbad830c8600f962b60d1f1f0f916cd2fb7ee0 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+@@ -88,7 +88,20 @@ impl QueuedWireMessage {
+         message: Result<Message, WsError>,
+         budget: Option<Arc<tokio::sync::Semaphore>>,
+     ) -> Result<Self, ()> {
+-        let bytes = message.as_ref().map_or(0, |message| message.len());
++        let mut bytes = message.as_ref().map_or(0, |message| message.len());
++        if budget.is_some() && bytes > SDK_WIRE_BYTES_CAPACITY {
++            return Err(());
++        }
++        if budget.is_some()
++            && let Ok(Message::Text(text)) = &message
++            && let Ok(value @ serde_json::Value::Object(_)) = serde_json::from_str(text)
++        {
++            // Admit decoded expansion before readiness or event parsing can copy
++            // structured fields. Keep this charge with the existing wire permit.
++            let mut allocation = 0;
++            super::hosted_mcp::json_bytes(&value, &mut allocation, 0).map_err(|_| ())?;
++            bytes = bytes.checked_add(allocation).ok_or(())?;
++        }
+         let permit = budget
+             .map(|budget| {
+                 let bytes = u32::try_from(bytes).map_err(|_| ())?;
+@@ -110,9 +123,14 @@ impl QueuedWireMessage {
+         budget: Option<Arc<tokio::sync::Semaphore>>,
+     ) -> Result<(), ()> {
+         if !events.is_empty() {
+-            let bytes = serde_json::to_vec(&events).map_err(|_| ())?.len();
+-            if bytes > SDK_WIRE_BYTES_CAPACITY {
+-                return Err(());
++            let mut bytes = events.len().saturating_add(1);
++            for event in &events {
++                bytes = bytes
++                    .checked_add(super::hosted_mcp::event_bytes(event).map_err(|_| ())?)
++                    .ok_or(())?;
++                if bytes > SDK_WIRE_BYTES_CAPACITY {
++                    return Err(());
++                }
+             }
+             if let Some(budget) = budget {
+                 let extra = budget
+@@ -4250,6 +4268,78 @@ mod tests {
+         connection.close().await.expect("close");
+         server.await.expect("server task");
+     }
++    #[test]
++    fn sdk_wire_structured_frames_are_admitted_before_event_conversion() {
++        let dense = serde_json::json!({"nodes": vec![serde_json::json!({}); 33_000]});
++        for frame in [
++            serde_json::json!({"type":"conversation.item.added", "item":dense}),
++            serde_json::json!({"type":"conversation.item.created", "item":dense}),
++            serde_json::json!({"type":"error", "error":dense}),
++            serde_json::json!({"type":"response.done", "response":{"output":dense["nodes"]}}),
++        ] {
++            let text = frame.to_string();
++            assert!(text.len() < SDK_WIRE_BYTES_CAPACITY);
++            let budget = Arc::new(tokio::sync::Semaphore::new(SDK_WIRE_BYTES_CAPACITY));
++            assert!(
++                QueuedWireMessage::new(
++                    Ok(Message::Text(text.clone().into())),
++                    Some(Arc::clone(&budget)),
++                )
++                .is_err()
++            );
++            assert_eq!(budget.available_permits(), SDK_WIRE_BYTES_CAPACITY);
++            assert!(QueuedWireMessage::new(Ok(Message::Text(text.into())), None).is_ok());
++        }
++    }
++
++    #[test]
++    fn sdk_wire_structural_charges_share_capacity_until_drop() {
++        let text = serde_json::json!({
++            "type":"conversation.item.added",
++            "item":{"id":"item", "extension":vec![serde_json::json!({}); 12_000]},
++        })
++        .to_string();
++        let budget = Arc::new(tokio::sync::Semaphore::new(SDK_WIRE_BYTES_CAPACITY));
++        let make = || {
++            QueuedWireMessage::new(
++                Ok(Message::Text(text.clone().into())),
++                Some(Arc::clone(&budget)),
++            )
++        };
++        let first = make().unwrap();
++        let second = make().unwrap();
++        assert!(make().is_err());
++        drop(first);
++        let replacement = make().unwrap();
++        drop((second, replacement));
++        assert_eq!(budget.available_permits(), SDK_WIRE_BYTES_CAPACITY);
++    }
++
++    #[test]
++    fn sdk_wire_bounded_items_preserve_the_full_event_payload() {
++        let item = serde_json::json!({
++            "id":"item", "type":"message", "role":"user",
++            "content":[{"type":"input_text", "text":"hello"}],
++            "extension":{"nested":[{}, {"value":true}]},
++        });
++        for kind in ["conversation.item.added", "conversation.item.created"] {
++            let text = serde_json::json!({"type":kind, "item":item}).to_string();
++            let budget = Arc::new(tokio::sync::Semaphore::new(SDK_WIRE_BYTES_CAPACITY));
++            let queued = QueuedWireMessage::new(
++                Ok(Message::Text(text.clone().into())),
++                Some(Arc::clone(&budget)),
++            )
++            .unwrap();
++            assert!(budget.available_permits() < SDK_WIRE_BYTES_CAPACITY - text.len());
++            assert_eq!(
++                parse_realtime_event(&text, RealtimeEventParser::RealtimeV2),
++                Some(RealtimeEvent::ConversationItemAdded(item.clone())),
++            );
++            drop(queued);
++            assert_eq!(budget.available_permits(), SDK_WIRE_BYTES_CAPACITY);
++        }
++    }
++
+     #[tokio::test]
+     async fn sdk_wire_byte_permits_release_on_receive_and_discard() {
+         let budget = Arc::new(tokio::sync::Semaphore::new(8));
+@@ -4918,7 +5008,86 @@ mod tests {
+         server.await.unwrap();
+     }
+     #[test]
+-    fn four_tiny_final_frames_charge_derived_identity_to_shared_queue_bytes() {
++    fn hosted_catalog_structures_share_queue_permits_and_release_on_drop() {
++        use codex_protocol::protocol::{RealtimeHostedMcpListedTool, RealtimeHostedMcpToolsListed};
++        let event = RealtimeEvent::HostedMcpToolsListed(RealtimeHostedMcpToolsListed {
++            item_id: "catalog".into(),
++            server_label: "docs".into(),
++            tools: vec![
++                RealtimeHostedMcpListedTool {
++                    name: "x".into(),
++                    description: None,
++                    input_schema: serde_json::json!({}),
++                };
++                1024
++            ],
++        });
++        let budget = Arc::new(tokio::sync::Semaphore::new(SDK_WIRE_BYTES_CAPACITY));
++        let mut queued = Vec::new();
++        let mut rejected = false;
++        for _ in 0..17 {
++            let mut message =
++                QueuedWireMessage::new(Ok(Message::Text("{}".into())), Some(Arc::clone(&budget)))
++                    .unwrap();
++            if message
++                .charge_hosted_events(vec![event.clone()], Some(Arc::clone(&budget)))
++                .is_err()
++            {
++                rejected = true;
++                break;
++            }
++            queued.push(message);
++        }
++        assert!(
++            rejected,
++            "compact catalogs must charge their retained structure"
++        );
++        assert!(queued.len() > 1);
++        assert!(budget.available_permits() < SDK_WIRE_BYTES_CAPACITY);
++        drop(queued);
++        assert_eq!(budget.available_permits(), SDK_WIRE_BYTES_CAPACITY);
++    }
++
++    #[test]
++    fn structured_hosted_errors_share_queue_permits_and_release_on_drop() {
++        use codex_protocol::protocol::RealtimeHostedMcpCallCompleted;
++        let event = RealtimeEvent::HostedMcpCallCompleted(RealtimeHostedMcpCallCompleted {
++            item_id: "call".into(),
++            response_id: "r".into(),
++            server_label: "docs".into(),
++            tool_name: "search".into(),
++            arguments: "{}".into(),
++            output: None,
++            error: Some(serde_json::json!({"details": vec![serde_json::json!({}); 4096]})),
++            profile_receipt: None,
++        });
++        let budget = Arc::new(tokio::sync::Semaphore::new(SDK_WIRE_BYTES_CAPACITY));
++        let mut queued = Vec::new();
++        let mut rejected = false;
++        for _ in 0..10 {
++            let mut message =
++                QueuedWireMessage::new(Ok(Message::Text("{}".into())), Some(Arc::clone(&budget)))
++                    .unwrap();
++            if message
++                .charge_hosted_events(vec![event.clone()], Some(Arc::clone(&budget)))
++                .is_err()
++            {
++                rejected = true;
++                break;
++            }
++            queued.push(message);
++        }
++        assert!(
++            rejected,
++            "compact structured errors must charge retained allocations"
++        );
++        assert!(queued.len() > 1);
++        drop(queued);
++        assert_eq!(budget.available_permits(), SDK_WIRE_BYTES_CAPACITY);
++    }
++
++    #[test]
++    fn eight_tiny_final_frames_charge_derived_identity_to_shared_queue_bytes() {
+         use super::super::readiness::SessionReadiness;
+         let contract = serde_json::json!({"tools":[{"type":"mcp","server_label":"docs","server_url":"https://example.test"}]});
+         let (observer, _) = SessionReadiness::channel(Some(contract.clone()), true);
+@@ -4931,13 +5100,13 @@ mod tests {
+         );
+         assert!(observer.configuration().accepted().is_ok());
+         assert!(!observer.mismatched());
+-        let response = "r".repeat(SDK_WIRE_BYTES_CAPACITY / 3);
++        let response = "r".repeat(SDK_WIRE_BYTES_CAPACITY / 6);
+         observer.observe_frame(
+             &serde_json::json!({"type":"response.created","response":{"id":response}}).to_string(),
+             true,
+         );
+         let budget = Arc::new(tokio::sync::Semaphore::new(SDK_WIRE_BYTES_CAPACITY));
+-        for index in 0..4 {
++        for index in 0..8 {
+             let text=serde_json::json!({"type":"response.output_item.added","response_id":response,"item":{"type":"mcp_approval_request","id":format!("approval-{index}"),"server_label":"docs","name":"search","arguments":""}}).to_string();
+             observer.observe_frame(&text, true);
+             drop(
+@@ -4947,7 +5116,7 @@ mod tests {
+         }
+         let mut queued = Vec::new();
+         let mut rejected = false;
+-        for index in 0..4 {
++        for index in 0..8 {
+             let text=serde_json::json!({"type":"conversation.item.done","item":{"type":"mcp_approval_request","id":format!("approval-{index}"),"server_label":"docs","name":"search","arguments":"{}"}}).to_string();
+             assert!(text.len() < 512);
+             let observation = observer.observe_frame(&text, true);
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+index dc7b32036482d3b2c6ae28b3a746b2d01bfb6aaa..cf974a4fb9a3bf20e494faeeff99a138491ffb1a 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+@@ -2876,6 +2876,47 @@ mod tests {
+             );
+         }
+     }
++    #[test]
++    fn hosted_catalog_rejects_compact_entry_and_schema_expansion() {
++        for tools in [
++            vec![json!({"name":"x","input_schema":{}}); 1025],
++            vec![json!({"name":"x","input_schema":{"anyOf":vec![json!({});33_000]}})],
++            // Count raw entries before filtering malformed tool declarations.
++            vec![json!({}); 1025],
++        ] {
++            let observer = accepted_hosted_observer();
++            let events = hosted_event(
++                &observer,
++                "conversation.item.done",
++                None,
++                json!({"type":"mcp_list_tools","id":"catalog","server_label":"docs","tools":tools}),
++            );
++            assert!(events.is_empty());
++            assert!(observer.mismatched());
++        }
++    }
++
++    #[test]
++    fn hosted_catalog_accepts_bounded_tools_without_changing_schemas() {
++        let observer = accepted_hosted_observer();
++        let schema = json!({"type":"object","properties":{"query":{"type":"string"}}});
++        let tools = vec![json!({"name":"search","input_schema":schema}); 1024];
++        let events = hosted_event(
++            &observer,
++            "conversation.item.done",
++            None,
++            json!({"type":"mcp_list_tools","id":"catalog","server_label":"docs","tools":tools}),
++        );
++        let [codex_protocol::protocol::RealtimeEvent::HostedMcpToolsListed(catalog)] =
++            events.as_slice()
++        else {
++            panic!("bounded catalog must remain observable");
++        };
++        assert_eq!(catalog.tools.len(), 1024);
++        assert_eq!(catalog.tools[0].input_schema, schema);
++        assert!(!observer.mismatched());
++    }
++
+     #[test]
+     fn hosted_export_budget_counts_repeated_retained_response_identity_before_cloning() {
+         let observer = accepted_hosted_observer();
+@@ -2913,6 +2954,41 @@ mod tests {
+         }
+         assert!(observer.mismatched());
+     }
++    #[test]
++    fn hosted_errors_admit_structure_before_copying_from_both_completion_paths() {
++        for sparse in [false, true] {
++            for nodes in [100, 33_000] {
++                let observer = accepted_hosted_observer();
++                created(&observer, "r");
++                hosted_event(
++                    &observer,
++                    "response.output_item.added",
++                    Some("r"),
++                    json!({"type":"mcp_call","id":"call","server_label":"docs","name":"search","arguments":"{}"}),
++                );
++                let error = json!({"details": vec![json!({}); nodes]});
++                let frame = if sparse {
++                    json!({"type":"response.mcp_call.failed","response_id":"r","item_id":"call","error":error})
++                } else {
++                    json!({"type":"response.output_item.done","response_id":"r","item":{"type":"mcp_call","id":"call","server_label":"docs","name":"search","arguments":"{}","error":error}})
++                };
++                let observation = observer.observe_frame(&frame.to_string(), true);
++                if nodes == 100 {
++                    let [codex_protocol::protocol::RealtimeEvent::HostedMcpCallCompleted(call)] =
++                        observation.hosted_mcp_events.as_slice()
++                    else {
++                        panic!("bounded structured error must remain observable");
++                    };
++                    assert_eq!(call.error.as_ref(), Some(&error));
++                    assert!(!observer.mismatched());
++                } else {
++                    assert!(observation.hosted_mcp_events.is_empty());
++                    assert!(observer.mismatched());
++                }
++            }
++        }
++    }
++
+     #[test]
+     fn sparse_hosted_failure_is_terminal_only_for_its_actual_registered_item() {
+         let observer = accepted_hosted_observer();
