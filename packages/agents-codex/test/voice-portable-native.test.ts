@@ -68,6 +68,92 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
+  it.each([
+    undefined,
+    null,
+    17,
+    '',
+    ' ',
+    'sk-synthetic-private',
+    'ek_',
+    ' ek_test',
+    'ek_test\n',
+    'ek_\u0000test',
+  ])(
+    'rejects unsafe browser credentials before control, media or fetch (%j)',
+    async (apiKey) => {
+      const owner = control();
+      const apply = vi.spyOn(owner, 'apply');
+      const getUserMedia = vi.fn(async () => {
+        throw new Error('media acquired');
+      });
+      const createPeerConnection = vi.fn();
+      const fetch = vi.fn();
+      vi.stubGlobal('fetch', fetch);
+      await expect(
+        connectPortableVoiceBrowser({
+          control: owner,
+          apiKey: apiKey as string,
+          agent: { model: 'test', instructions: 'Help.' },
+          media: { getUserMedia, createPeerConnection },
+        }),
+      ).rejects.toThrow(/ephemeral client key|credential/);
+      expect(apply).not.toHaveBeenCalled();
+      expect(getUserMedia).not.toHaveBeenCalled();
+      expect(createPeerConnection).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    { apiKey: '', useInsecureApiKey: true },
+    { apiKey: 'sk_test\n', useInsecureApiKey: true },
+    {
+      apiKey: 'sk-synthetic-private',
+      useInsecureApiKey: 'true' as unknown as boolean,
+    },
+  ])(
+    'keeps malformed credentials and nonboolean opt-in rejected',
+    async (credential) => {
+      const getUserMedia = vi.fn();
+      const fetch = vi.fn();
+      vi.stubGlobal('fetch', fetch);
+      const failure = await connectPortableVoiceBrowser({
+        control: control(),
+        ...credential,
+        agent: { model: 'test', instructions: 'Help.' },
+        media: { getUserMedia },
+      }).catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(TypeError);
+      expect(String(failure)).not.toContain('sk-synthetic-private');
+      expect(getUserMedia).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    { apiKey: 'ek_synthetic-browser', useInsecureApiKey: false },
+    { apiKey: 'sk-synthetic-explicit', useInsecureApiKey: true },
+  ])(
+    'accepts the intended browser credential mode before media acquisition',
+    async (credential) => {
+      const failure = new Error('synthetic media boundary');
+      const getUserMedia = vi.fn(async () => {
+        throw failure;
+      });
+      const fetch = vi.fn();
+      vi.stubGlobal('fetch', fetch);
+      await expect(
+        connectPortableVoiceBrowser({
+          control: control(),
+          ...credential,
+          agent: { model: 'test', instructions: 'Help.' },
+          media: { getUserMedia },
+        }),
+      ).rejects.toBe(failure);
+      expect(getUserMedia).toHaveBeenCalledOnce();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])(
     'preserves browser configuration failure across owned media cleanup (cleanup throws=%s)',
     async (cleanupThrows) => {
@@ -118,22 +204,33 @@ describe.runIf(enabled)('portable Rust control', () => {
         async setRemoteDescription() {},
         close,
       };
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async () => new Response('answer', { status: 200 })),
-      );
-      await expect(
-        connectPortableVoiceBrowser({
-          control: control(),
-          apiKey: 'synthetic',
-          agent: { model: 'test', instructions: 'test' },
-          media: {
-            getUserMedia: async () => stream as unknown as MediaStream,
-            createPeerConnection: async () =>
-              peer as unknown as RTCPeerConnection,
+      const fetch = vi.fn(async () => new Response('answer', { status: 200 }));
+      vi.stubGlobal('fetch', fetch);
+      const options = {
+        control: control(),
+        apiKey: 'ek_synthetic',
+        agent: { model: 'test', instructions: 'test' },
+        media: {
+          getUserMedia: async () => {
+            // Later caller mutation cannot replace the credential already validated.
+            options.apiKey = 'sk-synthetic-late-mutation';
+            return stream as unknown as MediaStream;
           },
+          createPeerConnection: async () =>
+            peer as unknown as RTCPeerConnection,
+        },
+      };
+      await expect(connectPortableVoiceBrowser(options)).rejects.toThrow(
+        'Provider accepted another tool configuration',
+      );
+      expect(fetch).toHaveBeenCalledWith(
+        expect.any(URL),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: 'Bearer ek_synthetic',
+          }),
         }),
-      ).rejects.toThrow('Provider accepted another tool configuration');
+      );
       expect(close).toHaveBeenCalledOnce();
       expect(stop).toHaveBeenCalledOnce();
     },

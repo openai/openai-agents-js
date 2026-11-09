@@ -257,3 +257,51 @@ it('closes a customized peer returned after connection cancellation', async () =
   expect(peer.createDataChannel).not.toHaveBeenCalled();
   expect(mic.track.stop).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+  'retires a microphone ending during delayed peer acquisition (owned=%s)',
+  async (owned) => {
+    const mic = microphone();
+    const peer = new Peer();
+    peer.connectionState = 'connected';
+    const customized = deferred<RTCPeerConnection>();
+    const createPeerConnection = vi.fn(() => customized.promise);
+    const exchange = vi.fn(async () => 'answer');
+    const onError = vi.fn();
+    const media = new NativeVoiceWebRTC({
+      ...(owned
+        ? { getUserMedia: async () => mic.stream }
+        : { mediaStream: mic.stream }),
+      createPeerConnection,
+      onError,
+    });
+    let failure: unknown;
+    const connecting = media
+      .connect({ exchangeSdp: exchange })
+      .catch((error) => {
+        failure = error;
+      });
+    try {
+      await vi.waitFor(() =>
+        expect(createPeerConnection).toHaveBeenCalledOnce(),
+      );
+      mic.track.readyState = 'ended';
+      mic.track.dispatchEvent(new Event('ended'));
+      await vi.waitFor(() =>
+        expect(failure).toEqual(new Error('Voice microphone ended.')),
+      );
+      expect(media.status).toBe('closed');
+      expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+      expect(mic.track.stop).toHaveBeenCalledTimes(owned ? 1 : 0);
+      expect(exchange).not.toHaveBeenCalled();
+      customized.resolve(peer as unknown as RTCPeerConnection);
+      await vi.waitFor(() => expect(peer.close).toHaveBeenCalledOnce());
+      expect(peer.createDataChannel).not.toHaveBeenCalled();
+      expect(peer.addTrack).not.toHaveBeenCalled();
+    } finally {
+      customized.resolve(peer as unknown as RTCPeerConnection);
+      await connecting;
+      media.close();
+    }
+  },
+);

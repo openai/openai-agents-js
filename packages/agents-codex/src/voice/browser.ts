@@ -104,15 +104,6 @@ export class NativeVoiceWebRTC {
     const tracks = stream.getAudioTracks();
     if (tracks.length !== 1 || tracks[0].readyState === 'ended')
       throw new Error('Voice media requires one live microphone audio track.');
-    const peer = await (this.options.createPeerConnection?.() ??
-      new RTCPeerConnection());
-    if (signal.aborted) {
-      peer.close();
-      signal.throwIfAborted();
-    }
-    this.#peer = peer;
-    const channel = peer.createDataChannel('oai-events');
-    this.#channel = channel;
     const fail = (error: Error) => {
       if (signal.aborted) return;
       this.#abort.abort(error);
@@ -125,6 +116,15 @@ export class NativeVoiceWebRTC {
     };
     this.#trackEnded = () => fail(new Error('Voice microphone ended.'));
     tracks[0].addEventListener('ended', this.#trackEnded);
+    const peer = await (this.options.createPeerConnection?.() ??
+      new RTCPeerConnection());
+    if (signal.aborted) {
+      peer.close();
+      signal.throwIfAborted();
+    }
+    this.#peer = peer;
+    const channel = peer.createDataChannel('oai-events');
+    this.#channel = channel;
     channel.onmessage = ({ data }) => {
       if (signal.aborted) return;
       let event: unknown;
@@ -245,12 +245,26 @@ export class NativeVoiceWebRTC {
 export async function connectPortableVoiceBrowser(options: {
   control: NativeVoiceControl;
   apiKey: string;
+  /** Explicitly allow a regular API key in this browser-owned connection. */
+  useInsecureApiKey?: boolean;
   agent: PortableVoiceOptions;
   media: NativeVoiceWebRTCOptions;
   callUrl?: string;
   signal?: AbortSignal;
 }): Promise<{ session: PortableVoiceSession; media: NativeVoiceWebRTC }> {
   options.signal?.throwIfAborted();
+  const apiKey = options.apiKey;
+  if (typeof apiKey !== 'string' || !/^[\x21-\x7e]+$/.test(apiKey))
+    throw new TypeError(
+      'Voice credential must be nonempty text without whitespace or control characters.',
+    );
+  if (
+    (!apiKey.startsWith('ek_') || apiKey.length === 3) &&
+    options.useInsecureApiKey !== true
+  )
+    throw new TypeError(
+      'Browser voice requires an ephemeral client key. To explicitly use a regular API key, set useInsecureApiKey: true.',
+    );
   const endpoint = new URL(
     options.callUrl ?? 'https://api.openai.com/v1/realtime/calls',
   );
@@ -309,7 +323,7 @@ export async function connectPortableVoiceBrowser(options: {
         const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${options.apiKey}`,
+            Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/sdp',
           },
           body: offer,
