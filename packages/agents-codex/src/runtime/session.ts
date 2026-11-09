@@ -7053,6 +7053,8 @@ export class Session<OutputT = string, Context = unknown> {
                       { candidate: invoke, signal, check },
                     );
                     if (repaired.type === 'stopped') {
+                      // Preserve the accepted repair stop before Core settles the callback.
+                      owner.failure ??= new TurnAborted('Turn interrupted');
                       decision = { action: 'stop' };
                     } else if (repaired.type === 'decision') {
                       decision = repaired.decision;

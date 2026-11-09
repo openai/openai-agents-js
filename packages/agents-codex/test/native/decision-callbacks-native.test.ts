@@ -8,6 +8,7 @@ import {
   NativeProvider,
   NativeRole,
   OpenAIDecisions,
+  TurnAborted,
   tool,
   type BoundDecide,
   type DecisionProvider,
@@ -415,6 +416,7 @@ nativeIt.each([
       await stopping;
       const error = await result.catch((error: unknown) => error);
       expect(error).toBeInstanceOf(Error);
+      if (mode === 'graceful') expect(error).toBeInstanceOf(TurnAborted);
       expect((error as Error).message).not.toMatch(
         /completion callback failed|Output repair stopped/i,
       );
@@ -622,6 +624,7 @@ nativeIt(
       expect(correctionReleased).not.toHaveBeenCalled();
       release.resolve();
       await stopping;
+      await expect(result).rejects.toBeInstanceOf(TurnAborted);
       await expect(result).rejects.toThrow(/stopped|interrupt|cancel/i);
       expect(correctionReleased).toHaveBeenCalledTimes(1);
       expect(server.requests).toHaveLength(1);
