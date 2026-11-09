@@ -1,6 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { Session } from '../src/runtime/session';
 import { captureTools } from '../src/runtime/tools';
+import type { NativeRealtimeSipConfigOptions } from '../src/runtime/realtime';
 import type { Engine, NativeThread } from '../src/runtime/binding';
 
 // A native event source, so these exercise the actual sole Session reader and
@@ -184,3 +185,226 @@ it('rejects callback lifecycle reentrancy before mutating or joining its own Rea
   await voice.close();
   await f.session.close();
 });
+
+it('builds SIP acceptance configuration before admission without media admission', async () => {
+  const f = fixture();
+  await f.session._start();
+  const prepareMcp = vi.spyOn(f.session, '_prepareRealtimeMcp');
+  const config = {
+    type: 'realtime',
+    model: 'gpt-realtime',
+    instructions: 'Captured instructions',
+    tools: [{ type: 'function', name: 'handoff_to_support' }],
+  };
+  f.native.call.mockImplementationOnce(async (operation) => {
+    expect(operation).toBe('realtime_conversation_config_sdk');
+    return JSON.stringify(config);
+  });
+  await expect(
+    f.session.buildRealtimeSipConfig({ model: 'gpt-realtime' }),
+  ).resolves.toEqual(config);
+  expect(prepareMcp).toHaveBeenCalledOnce();
+  expect(f.native.call).toHaveBeenCalledOnce();
+  const params = JSON.parse(f.native.call.mock.calls[0][1]);
+  expect(params).not.toHaveProperty('generation');
+  expect(params).toMatchObject({
+    function_tools: null,
+    expected_selection_id: null,
+    hosted_mcp_auto_response: true,
+    params: { model: 'gpt-realtime', client_managed_handoffs: true },
+  });
+  // Building acceptance configuration leaves the Session free to attach sideband.
+  const voice = await f.session.realtime({
+    transport: { type: 'sip', callId: 'incoming-call' },
+  });
+  await voice.close();
+  await f.session.close();
+});
+
+it('uses the same native configuration inputs for SIP acceptance and connection', async () => {
+  const f = fixture();
+  await f.session._start();
+  const options = {
+    model: 'gpt-realtime',
+    instructions: 'Follow the captured Agent.',
+    voice: 'marin',
+    tools: [],
+    settings: { transcription: null, turnDetection: null },
+    automaticallyTriggerResponseForMcpToolCalls: false,
+  };
+  f.native.call.mockResolvedValueOnce('{}');
+  await f.session.buildRealtimeSipConfig(options);
+  const configParams = JSON.parse(f.native.call.mock.calls[0][1]);
+  const voice = await f.session.realtime(options);
+  const prepare = f.native.call.mock.calls.find(
+    ([operation]) => operation === 'realtime_conversation_prepare_sdk',
+  )!;
+  const { generation: _generation, ...prepareParams } = JSON.parse(prepare[1]);
+  expect(configParams).toEqual(prepareParams);
+  expect(configParams.function_tools).toEqual([]);
+  await voice.close();
+  await f.session.close();
+});
+
+it.each([
+  {
+    apiKey: () => {
+      throw new Error('must never resolve');
+    },
+  },
+  { transport: { type: 'sip', callId: 'incoming-call' } },
+  { adapter: { connect() {} } },
+  { model: 123 },
+  { tools: {} },
+  { automaticallyTriggerResponseForMcpToolCalls: 'yes' },
+])(
+  'rejects unsupported SIP builder inputs before native work: %o',
+  async (options) => {
+    const f = fixture();
+    await f.session._start();
+    await expect(
+      f.session.buildRealtimeSipConfig(options as never),
+    ).rejects.toThrow(TypeError);
+    expect(f.native.call).not.toHaveBeenCalled();
+    await f.session.close();
+  },
+);
+
+it('rejects SIP configuration after Session close', async () => {
+  const f = fixture();
+  await f.session._start();
+  await f.session.close();
+  await expect(f.session.buildRealtimeSipConfig()).rejects.toThrow(
+    'open Session',
+  );
+  expect(f.native.call).not.toHaveBeenCalled();
+});
+
+it('reconciles and retrieves provider history without replacing canonical history', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const items = [
+    {
+      id: 'provider-1',
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_audio', audio: 'AQACAA==', transcript: 'hello' },
+      ],
+    },
+  ];
+  const canonical = voice.history;
+  f.native.call.mockResolvedValueOnce('null');
+  await voice.updateHistory(items);
+  const update = f.native.call.mock.calls.at(-1)!;
+  expect(update[0]).toBe('realtime_conversation_update_history_sdk');
+  const params = JSON.parse(update[1]);
+  expect(params.items).toEqual(items);
+  expect(params.generation).toEqual(expect.any(String));
+  f.native.call.mockResolvedValueOnce(JSON.stringify(items[0]));
+  await expect(voice.retrieveConversationItem('provider-1')).resolves.toEqual(
+    items[0],
+  );
+  expect(f.native.call).toHaveBeenLastCalledWith(
+    'realtime_conversation_retrieve_item_sdk',
+    JSON.stringify({ generation: params.generation, item_id: 'provider-1' }),
+  );
+  f.native.call.mockResolvedValueOnce(JSON.stringify(items));
+  await expect(voice.retrieveConversationHistory()).resolves.toEqual(items);
+  expect(f.native.call).toHaveBeenLastCalledWith(
+    'realtime_conversation_retrieve_history_sdk',
+    JSON.stringify({ generation: params.generation }),
+  );
+  expect(voice.history).toEqual(canonical);
+  await voice.close();
+  const calls = f.native.call.mock.calls.length;
+  await expect(voice.retrieveConversationItem('provider-1')).rejects.toThrow();
+  await expect(voice.retrieveConversationHistory()).rejects.toThrow();
+  await expect(voice.updateHistory([])).rejects.toThrow();
+  expect(f.native.call.mock.calls).toHaveLength(calls);
+  await f.session.close();
+});
+
+it('rejects invalid provider history controls before dispatch and preserves native failures', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const calls = f.native.call.mock.calls.length;
+  await expect(voice.updateHistory([null] as never)).rejects.toThrow(TypeError);
+  await expect(voice.retrieveConversationItem(' ')).rejects.toThrow(TypeError);
+  expect(f.native.call.mock.calls).toHaveLength(calls);
+  const failure = new Error('active response cannot reconcile history');
+  f.native.call.mockRejectedValueOnce(failure);
+  await expect(voice.updateHistory([])).rejects.toBe(failure);
+  f.native.call.mockResolvedValueOnce('{}');
+  await expect(voice.retrieveConversationHistory()).rejects.toThrow(
+    'provider history',
+  );
+  await voice.close();
+  await f.session.close();
+});
+
+it.each(['inherited', 'explicit'] as const)(
+  'captures SIP options before awaiting %s tool preparation',
+  async (selection) => {
+    const f = fixture();
+    await f.session._start();
+    const blocked = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const prepareMcp = vi
+      .spyOn(f.session, '_prepareRealtimeMcp')
+      .mockImplementationOnce(async () => {
+        started.resolve();
+        await blocked.promise;
+      });
+    const selectTools = vi
+      .spyOn(f.session, '_realtimeFunctionTools')
+      .mockImplementationOnce(async () => {
+        started.resolve();
+        await blocked.promise;
+        return { tools: [], selectionId: null };
+      });
+    const tools: never[] = [];
+    const settings = { outputSpeed: 1.1 };
+    const options: NativeRealtimeSipConfigOptions = {
+      model: 'captured-model',
+      voice: 'marin',
+      instructions: 'Captured instructions.',
+      settings,
+      ...(selection === 'explicit' ? { tools } : {}),
+      automaticallyTriggerResponseForMcpToolCalls: false,
+    };
+    f.native.call.mockResolvedValueOnce('{}');
+    const pending = f.session.buildRealtimeSipConfig(options);
+    await started.promise;
+    options.model = 'changed-model';
+    options.voice = 'cedar';
+    options.instructions = 'Changed instructions.';
+    options.automaticallyTriggerResponseForMcpToolCalls = true;
+    options.tools = [];
+    tools.push({ name: 'injected' } as never);
+    settings.outputSpeed = 1.7;
+    blocked.resolve();
+    await pending;
+    const params = JSON.parse(f.native.call.mock.calls[0][1]);
+    expect(params).toMatchObject({
+      hosted_mcp_auto_response: false,
+      settings: { output_speed: 1.1 },
+      params: {
+        model: 'captured-model',
+        voice: 'marin',
+        prompt: 'Captured instructions.',
+      },
+    });
+    expect(params.function_tools).toEqual(selection === 'explicit' ? [] : null);
+    if (selection === 'explicit') {
+      expect(selectTools).toHaveBeenCalledWith([]);
+      expect(prepareMcp).not.toHaveBeenCalled();
+    } else {
+      expect(prepareMcp).toHaveBeenCalledOnce();
+      expect(selectTools).not.toHaveBeenCalled();
+    }
+    await f.session.close();
+  },
+);

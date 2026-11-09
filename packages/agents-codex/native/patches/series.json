@@ -379,7 +379,15 @@
     {
       "path": "0097-provider-owned-request-validation.patch",
       "sha256": "43ee308eaad0e9a518ecb1e8c00b80c7ab8151197e6b3c75635a50d1a9d1d495"
+    },
+    {
+      "path": "0096-native-realtime-sip-config.patch",
+      "sha256": "eb75c1e1e790395630f4a46fc107f119e6a1d61b697fccdb3bdb05253d327baa"
+    },
+    {
+      "path": "0097-native-realtime-provider-history.patch",
+      "sha256": "24ed172feb9fa6276c561adf30cc63368a3fd9c31a0fe3b4a3b96a8176e818b0"
     }
   ],
-  "result_tree": "c7782675ee2dd7a63db79dee741e4c677b573c0f"
+  "result_tree": "c19699127f60c3a4c0e10bd907f35a03f1acbc59"
 }

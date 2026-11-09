@@ -81,6 +81,57 @@ export interface NativeRealtimeOptions {
   /** Hosted MCP tool results request a follow-up response by default. */
   automaticallyTriggerResponseForMcpToolCalls?: boolean;
 }
+/** Session configuration for accepting an inbound SIP call before attaching sideband media. */
+export type NativeRealtimeSipConfigOptions = Pick<
+  NativeRealtimeOptions,
+  | 'model'
+  | 'voice'
+  | 'instructions'
+  | 'settings'
+  | 'tools'
+  | 'automaticallyTriggerResponseForMcpToolCalls'
+>;
+
+/** @internal Both connection admission and SIP acceptance use Core's config builder. */
+export function realtimePrepareParams(
+  options: NativeRealtimeSipConfigOptions,
+  transport: JsonObject,
+  settings: JsonObject | null,
+  functionTools: JsonObject[] | null,
+  expectedSelectionId: string | null = null,
+): JsonObject {
+  return {
+    function_tools: functionTools,
+    hosted_mcp_auto_response:
+      options.automaticallyTriggerResponseForMcpToolCalls ?? true,
+    expected_selection_id: expectedSelectionId,
+    settings,
+    params: {
+      client_managed_handoffs: true,
+      delegation_ack_filler: null,
+      flush_transcript_tail_on_session_end: true,
+      codex_responses_as_items: false,
+      codex_response_item_prefix: null,
+      codex_response_handoff_mode: 'thinking',
+      backend_reasoning_status: false,
+      codex_response_handoff_channel_prefixes: null,
+      model: options.model ?? null,
+      output_modality: 'audio',
+      include_startup_context: false,
+      initial_items: [],
+      realtime_start_instructions: null,
+      realtime_end_instructions: null,
+      ...(options.instructions === undefined
+        ? {}
+        : { prompt: options.instructions }),
+      realtime_session_id: null,
+      transport,
+      version: 'v2',
+      voice: options.voice ?? null,
+    },
+  };
+}
+
 export interface NativeRealtimeHistoryItem {
   readonly id: string;
   readonly realtimeSessionId: string;
@@ -210,6 +261,9 @@ type Command =
   | 'input'
   | 'response'
   | 'delete_item'
+  | 'update_history'
+  | 'retrieve_item'
+  | 'retrieve_history'
   | 'text'
   | 'complete'
   | 'fail'
@@ -598,36 +652,13 @@ class NativeRealtimeOwner {
         expectedSelectionId: string | null = null,
       ) => {
         this.checkLive();
-        const prepareParams: JsonObject = {
-          function_tools: functionTools,
-          hosted_mcp_auto_response:
-            this.options.automaticallyTriggerResponseForMcpToolCalls ?? true,
-          expected_selection_id: expectedSelectionId,
-          settings: this.initialSettings,
-          params: {
-            client_managed_handoffs: true,
-            delegation_ack_filler: null,
-            flush_transcript_tail_on_session_end: true,
-            codex_responses_as_items: false,
-            codex_response_item_prefix: null,
-            codex_response_handoff_mode: 'thinking',
-            backend_reasoning_status: false,
-            codex_response_handoff_channel_prefixes: null,
-            model: this.options.model ?? null,
-            output_modality: 'audio',
-            include_startup_context: false,
-            initial_items: [],
-            realtime_start_instructions: null,
-            realtime_end_instructions: null,
-            ...(this.options.instructions === undefined
-              ? {}
-              : { prompt: this.options.instructions }),
-            realtime_session_id: null,
-            transport: this.transport,
-            version: 'v2',
-            voice: this.options.voice ?? null,
-          },
-        };
+        const prepareParams = realtimePrepareParams(
+          this.options,
+          this.transport,
+          this.initialSettings,
+          functionTools,
+          expectedSelectionId,
+        );
         if (this.adapterSource) {
           if (!this.adapterBridge)
             throw new Error('Native adapter binding is unavailable');
@@ -1002,6 +1033,76 @@ class NativeRealtimeOwner {
     await this.enqueueInput(async () => {
       await this.call('response');
     });
+  }
+  /**
+   * Reconcile provider items observed during this connection with the supplied items.
+   * Unobserved items, including SIP items from before attachment, remain outside
+   * this replacement. Core validates the replacement before sending changes and
+   * waits for provider acknowledgements. Only system/user/assistant messages are
+   * editable. Tool, MCP, and approval rows retain exact content and order;
+   * messages cannot move across these rows. A provider failure after some
+   * acknowledgements can leave partial edits; retrieve observed history before
+   * retrying. Canonical audit history, background work, and retained context for
+   * subsequent Session turns remain intact.
+   */
+  async updateHistory(items: readonly JsonObject[]): Promise<void> {
+    this.checkLive();
+    this.session._checkVoiceAdapterOperation(
+      this,
+      'update its own conversation history',
+    );
+    if (
+      !Array.isArray(items) ||
+      items.some(
+        (item) => !item || typeof item !== 'object' || Array.isArray(item),
+      )
+    )
+      throw new TypeError(
+        'Realtime history must be an array of provider items',
+      );
+    const snapshot = copyJsonValue(items) as JsonObject[];
+    await this.enqueueInput(async () => {
+      await this.call('update_history', { items: snapshot });
+    });
+  }
+  /**
+   * Retrieve a known provider item with available media, even if it predates SIP
+   * attachment. Retrieval does not add an unknown ID to observed history ordering.
+   */
+  async retrieveConversationItem(providerItemId: string): Promise<JsonObject> {
+    this.checkLive();
+    this.session._checkVoiceAdapterOperation(
+      this,
+      'retrieve its own conversation item',
+    );
+    if (typeof providerItemId !== 'string' || !providerItemId.trim())
+      throw new TypeError('Realtime provider item ID must be nonempty');
+    const raw = await this.call('retrieve_item', { item_id: providerItemId });
+    const item: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!item || typeof item !== 'object' || Array.isArray(item))
+      throw new Error('Native Realtime retrieval returned no provider item');
+    return item as JsonObject;
+  }
+  /**
+   * Retrieve available media for IDs observed during this connection, in observed
+   * order. This cannot discover SIP items from before attachment and may be large.
+   */
+  async retrieveConversationHistory(): Promise<JsonObject[]> {
+    this.checkLive();
+    this.session._checkVoiceAdapterOperation(
+      this,
+      'retrieve its own conversation history',
+    );
+    const raw = await this.call('retrieve_history');
+    const items: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (
+      !Array.isArray(items) ||
+      items.some(
+        (item) => !item || typeof item !== 'object' || Array.isArray(item),
+      )
+    )
+      throw new Error('Native Realtime retrieval returned no provider history');
+    return items as JsonObject[];
   }
   /** Delete one provider conversation item after native dependency checks and durable ACK. */
   async deleteConversationItem(providerItemId: string): Promise<void> {
@@ -2126,6 +2227,9 @@ export type NativeRealtimeSession = Pick<
   | 'addImage'
   | 'requestResponse'
   | 'deleteConversationItem'
+  | 'updateHistory'
+  | 'retrieveConversationItem'
+  | 'retrieveConversationHistory'
   | 'update'
   | 'approveHostedMcp'
   | 'sendAudio'
