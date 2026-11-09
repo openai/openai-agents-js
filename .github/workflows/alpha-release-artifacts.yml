@@ -100,10 +100,10 @@ jobs:
 
   package:
     name: Package and test (${{ matrix.platform }})
-    # No SDK code starts until every platform has published its native transfer.
+    # Donor runs must publish every native transfer before SDK code starts.
     needs: [select, produce-linux, produce-macos, produce-windows]
     if: >-
-      !cancelled() && needs.select.result == 'success' &&
+      github.event_name != 'pull_request' && !cancelled() && needs.select.result == 'success' &&
       ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
        (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success')) &&
       ((needs.select.outputs.macos_hit == 'true' && needs.produce-macos.result == 'skipped') ||
@@ -114,30 +114,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: linux-x64
+          - &linux_package
+            platform: linux-x64
             runner: ubuntu-24.04
             cargo_jobs: 64
             artifact: ${{ needs.select.outputs.linux_hit == 'true' && needs.select.outputs.linux_artifact || needs.produce-linux.outputs.artifact }}
-          - platform: darwin-arm64
+          - &macos_package
+            platform: darwin-arm64
             runner: macos-15
             cargo_jobs: 5
             artifact: ${{ needs.select.outputs.macos_hit == 'true' && needs.select.outputs.macos_artifact || needs.produce-macos.outputs.artifact }}
-          - platform: win32-x64
+          - &windows_package
+            platform: win32-x64
             runner: windows-2025
             cargo_jobs: 16
             artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
+    runs-on: &package_runner ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
     timeout-minutes: 180
-    defaults:
+    defaults: &package_defaults
       run:
         shell: bash
-    env:
+    env: &package_env
       ALPHA_VERSION: 0.22.0-alpha.2
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}
       CARGO_INCREMENTAL: '0'
-    steps:
+    steps: &package_steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
@@ -292,3 +295,53 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  # PR runs cannot donate native bundles to other runs. Qualify each PR
+  # platform as soon as its own native transfer is ready.
+  package-linux:
+    name: PR package and test (${{ matrix.platform }})
+    needs: [select, produce-linux]
+    if: >-
+      github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
+       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success'))
+    strategy:
+      matrix:
+        include: [*linux_package]
+    runs-on: *package_runner
+    timeout-minutes: 180
+    defaults: *package_defaults
+    env: *package_env
+    steps: *package_steps
+
+  package-macos:
+    name: PR package and test (${{ matrix.platform }})
+    needs: [select, produce-macos]
+    if: >-
+      github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.macos_hit == 'true' && needs.produce-macos.result == 'skipped') ||
+       (needs.select.outputs.macos_hit != 'true' && needs.produce-macos.result == 'success'))
+    strategy:
+      matrix:
+        include: [*macos_package]
+    runs-on: *package_runner
+    timeout-minutes: 180
+    defaults: *package_defaults
+    env: *package_env
+    steps: *package_steps
+
+  package-windows:
+    name: PR package and test (${{ matrix.platform }})
+    needs: [select, produce-windows]
+    if: >-
+      github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.windows_hit == 'true' && needs.produce-windows.result == 'skipped') ||
+       (needs.select.outputs.windows_hit != 'true' && needs.produce-windows.result == 'success'))
+    strategy:
+      matrix:
+        include: [*windows_package]
+    runs-on: *package_runner
+    timeout-minutes: 180
+    defaults: *package_defaults
+    env: *package_env
+    steps: *package_steps
