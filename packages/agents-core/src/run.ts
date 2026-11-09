@@ -1142,6 +1142,17 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
   }
 
+  #captureResponseGuardrailBoundary(
+    state: RunState<any, any>,
+    overwrite: boolean,
+  ): void {
+    captureCurrentResponseToolOutputGuardrailResultStart(
+      state,
+      overwrite,
+      this.#agentHasOutputGuardrail(state._currentAgent),
+    );
+  }
+
   #shouldDeferInterruptedSessionItems(state: RunState<any, any>): boolean {
     return shouldDeferInterruptedSessionItems(
       state,
@@ -1659,7 +1670,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           };
 
           if (isAcceptedResponseCheckpoint(state)) {
-            captureCurrentResponseToolOutputGuardrailResultStart(state, false);
+            this.#captureResponseGuardrailBoundary(state, false);
             await resumeAcceptedModelResponse({
               state,
               runner: this,
@@ -1699,10 +1710,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               await (async () => {
                 let resumedSessionWritePreparation:
                   ResumedSessionWritePreparation | undefined;
-                captureCurrentResponseToolOutputGuardrailResultStart(
-                  state,
-                  false,
-                );
+                this.#captureResponseGuardrailBoundary(state, false);
                 const outcome = await resumeInterruptedTurn({
                   state,
                   runner: this,
@@ -2130,7 +2138,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             markAcceptedResponseProcessingStarted(state);
 
-            captureCurrentResponseToolOutputGuardrailResultStart(state, true);
+            this.#captureResponseGuardrailBoundary(state, true);
             const turnResult = await resolveTurnAfterModelResponse(
               state._currentAgent,
               state._originalInput,
@@ -2727,10 +2735,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         };
 
         if (isAcceptedResponseCheckpoint(result.state)) {
-          captureCurrentResponseToolOutputGuardrailResultStart(
-            result.state,
-            false,
-          );
+          this.#captureResponseGuardrailBoundary(result.state, false);
           await resumeAcceptedModelResponse({
             state: result.state,
             runner: this,
@@ -2773,10 +2778,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const interruptedOutcome = await (async () => {
             let resumedSessionWritePreparation:
               ResumedSessionWritePreparation | undefined;
-            captureCurrentResponseToolOutputGuardrailResultStart(
-              result.state,
-              false,
-            );
+            this.#captureResponseGuardrailBoundary(result.state, false);
             const outcome = await resumeInterruptedTurn({
               state: result.state,
               runner: this,
@@ -3362,10 +3364,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           markAcceptedResponseProcessingStarted(result.state);
 
-          captureCurrentResponseToolOutputGuardrailResultStart(
-            result.state,
-            true,
-          );
+          this.#captureResponseGuardrailBoundary(result.state, true);
           const turnResult = await resolveTurnAfterModelResponse(
             currentAgent,
             result.state._originalInput,
