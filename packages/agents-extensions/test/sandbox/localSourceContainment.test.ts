@@ -1,6 +1,7 @@
 import {
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   symlink,
@@ -129,11 +130,17 @@ test('uploads original local_dir content after its ancestor is replaced during m
   await materializeLocalSourceManifestEntry(
     {
       async mkdir() {
-        await rename(parent, join(root, 'saved'));
+        // Windows permits moving this held directory, but blocks an ancestor
+        // rename while a descendant is open. Both mutations redirect its files.
+        const replaced = process.platform === 'win32' ? source : parent;
+        await rename(replaced, join(root, 'saved'));
         await symlink(
-          outside,
-          parent,
+          process.platform === 'win32' ? join(outside, 'source') : outside,
+          replaced,
           process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        expect(await readFile(join(source, 'input.txt'), 'utf8')).toBe(
+          'OUTSIDE',
         );
       },
       async writeFile(path, content) {

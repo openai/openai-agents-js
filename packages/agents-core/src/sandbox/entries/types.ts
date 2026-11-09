@@ -22,6 +22,11 @@ export type File = EntryBase & {
  * A host file copied with native filesystem protection. Deno applications need
  * local node_modules (nodeModulesDir: "auto" or "manual") and --allow-ffi to
  * load the packaged native dependency.
+ * Linux Node hosts without a compatible native binary (including s390x) need
+ * trusted, accessible /proc/self/fd; otherwise copying fails closed.
+ * This procfs backend requires / and /proc to be root-owned directories that
+ * are not group- or world-writable.
+ * On macOS 11/12, source paths also require readable ancestor directories.
  */
 export type LocalFile = EntryBase & {
   type: 'local_file';

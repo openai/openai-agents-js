@@ -9,6 +9,7 @@ export type LocalSourceContent =
   | { type: 'file'; path: string; content: Uint8Array };
 
 type SourceType = 'local_file' | 'local_dir';
+let posixBackend: Promise<typeof import('./localSourcePosix')> | undefined;
 
 function pathChanged(type: SourceType, path: string): UserError {
   return new UserError(
@@ -50,8 +51,41 @@ async function nativeRoot(
     const { openWindowsSourceRoot } = await import('./localSourceWindows');
     return openWindowsSourceRoot(root, enumerate);
   }
-  const { openPosixSourceRoot } = await import('./localSourcePosix');
-  return openPosixSourceRoot(root);
+  if (process.platform === 'linux' && process.arch === 's390x') {
+    // Koffi has no s390x ABI. Real Node descriptors can instead retain source
+    // authority through trusted, accessible Linux procfs magic links.
+    const { openProcfsSourceRoot } = await import('./localSourceProcfs');
+    return openProcfsSourceRoot(root);
+  }
+  let backend: typeof import('./localSourcePosix');
+  try {
+    // Retain failed initialization too: bundled CommonJS modules must not
+    // retry a partially initialized native backend on a later source.
+    backend = await (posixBackend ??= import('./localSourcePosix'));
+  } catch (nativeError) {
+    if (
+      process.platform !== 'linux' ||
+      process.release.name !== 'node' ||
+      process.versions.bun ||
+      process.versions.deno
+    ) {
+      throw nativeError;
+    }
+    try {
+      const { openProcfsSourceRoot } = await import('./localSourceProcfs');
+      return await openProcfsSourceRoot(root);
+    } catch (procfsError) {
+      throw Object.assign(
+        new AggregateError(
+          [nativeError, procfsError],
+          'Linux Node local sources require a compatible native dependency or trusted, accessible /proc/self/fd (procfs)',
+        ),
+        { code: 'ENOTSUP' },
+      );
+    }
+  }
+  // Source access and containment failures must never select another backend.
+  return backend.openPosixSourceRoot(root);
 }
 
 async function canonicalSourcePath(path: string): Promise<string> {

@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer';
-import { constants } from 'node:fs';
 import koffi from 'koffi';
 import type {
   NativeSourceDirectory,
@@ -7,27 +6,43 @@ import type {
 } from './localSourceTypes';
 
 const darwin = process.platform === 'darwin';
-if (
-  (!darwin && process.platform !== 'linux') ||
-  (process.arch !== 'x64' && process.arch !== 'arm64')
-) {
+
+function nativeOpenFlags() {
+  // These values cross directly into libc. Compatibility shims are not an ABI
+  // authority: Deno 2.3.5 reports Darwin flags even when running on Linux.
+  if (darwin && (process.arch === 'x64' || process.arch === 'arm64')) {
+    return { directory: 0x100000, nofollow: 0x100, nonblock: 0x4 };
+  }
+  if (process.platform === 'linux') {
+    switch (process.arch) {
+      // ARM and PowerPC retain their architecture-specific Linux UAPI bits.
+      case 'arm':
+      case 'arm64':
+      case 'ppc64':
+        return { directory: 0x4000, nofollow: 0x8000, nonblock: 0x800 };
+      // These ABIs use asm-generic/fcntl.h without these flag overrides.
+      case 'x64':
+      case 'ia32':
+      case 'riscv64':
+      case 'loong64':
+        return { directory: 0x10000, nofollow: 0x20000, nonblock: 0x800 };
+    }
+  }
   throw new Error(
     `Native local sources do not support ${process.platform}/${process.arch}`,
   );
 }
 
 const libc = koffi.load(darwin ? '/usr/lib/libSystem.B.dylib' : null);
-// Node, Bun and Deno expose the native platform/architecture flag values.
 // Descriptor operations stay in libc; Deno's Node descriptors are virtual.
 const openFlags = {
-  directory: constants.O_DIRECTORY,
-  nofollow: constants.O_NOFOLLOW,
+  ...nativeOpenFlags(),
   cloexec: darwin ? 0x1000000 : 0x80000,
-  nonblock: constants.O_NONBLOCK,
 };
 const directoryFlags =
   openFlags.directory | openFlags.nofollow | openFlags.cloexec;
-// Retain traverse-only directories without requiring permission to list them.
+// Linux O_PATH and macOS 13+ O_SEARCH do not require directory read access.
+// macOS 11/12 ignore O_SEARCH and require readable ancestor directories.
 const traversalFlags = directoryFlags | (darwin ? 0x40000000 : 0x200000);
 const open = libc.func('int open(const char *path, int flags)');
 const openat = libc.func('int openat(int fd, const char *path, int flags)');
@@ -39,79 +54,216 @@ const fdopendir = libc.func('void *fdopendir(int fd)');
 const closedir = libc.func('int closedir(void *directory)');
 // Darwin x64 retains legacy inode32 symbols alongside the current inode64 ABI.
 const inodeSuffix = darwin && process.arch === 'x64' ? '$INODE64' : '';
-const readdir = libc.func(`void *readdir${inodeSuffix}(void *directory)`);
+const readdir = darwin
+  ? libc.func(`void *readdir${inodeSuffix}(void *directory)`)
+  : (() => {
+      try {
+        // glibc's large-file ABI preserves inode/offset widths on 32-bit CPUs.
+        return libc.func('void *readdir64(void *directory)');
+      } catch {
+        // musl already uses 64-bit inode/offset fields and removed this alias.
+        return libc.func('void *readdir(void *directory)');
+      }
+    })();
 
 const timespec = koffi.struct({ seconds: 'int64_t', nanoseconds: 'int64_t' });
-// These are the native 64-bit libc stat layouts, not Node's descriptor ABI.
-const statType = koffi.struct(
-  darwin
-    ? {
-        device: 'int32_t',
-        mode: 'uint16_t',
-        links: 'uint16_t',
-        inode: 'uint64_t',
-        uid: 'uint32_t',
-        gid: 'uint32_t',
-        rdevice: 'int32_t',
-        atime: timespec,
-        mtime: timespec,
-        ctime: timespec,
-        birthtime: timespec,
-        size: 'int64_t',
-        blocks: 'int64_t',
-        blocksize: 'int32_t',
-        flags: 'uint32_t',
-        generation: 'uint32_t',
-        spare: 'int32_t',
-        reserved: koffi.array('int64_t', 2),
+// Darwin's inode64 layout is shared by both supported CPUs.
+const darwinStatType = koffi.struct({
+  device: 'int32_t',
+  mode: 'uint16_t',
+  links: 'uint16_t',
+  inode: 'uint64_t',
+  uid: 'uint32_t',
+  gid: 'uint32_t',
+  rdevice: 'int32_t',
+  atime: timespec,
+  mtime: timespec,
+  ctime: timespec,
+  birthtime: timespec,
+  size: 'int64_t',
+  blocks: 'int64_t',
+  blocksize: 'int32_t',
+  flags: 'uint32_t',
+  generation: 'uint32_t',
+  spare: 'int32_t',
+  reserved: koffi.array('int64_t', 2),
+});
+
+function bindMetadata(statName: string, statAtName: string, version?: number) {
+  const prefix = version === undefined ? [] : ['int'];
+  const output = koffi.out(koffi.pointer(darwin ? darwinStatType : 'uint8_t'));
+  return {
+    stat: libc.func(statName, 'int', [...prefix, 'int', output]),
+    statAt: libc.func(statAtName, 'int', [
+      ...prefix,
+      'int',
+      'str',
+      output,
+      'int',
+    ]),
+    version,
+  };
+}
+
+const metadata = (() => {
+  if (darwin)
+    return bindMetadata(`fstat${inodeSuffix}`, `fstatat${inodeSuffix}`);
+  const candidates: [string, string, number?][] = [];
+  if (process.arch === 'arm' || process.arch === 'ia32') {
+    // Preserve large timestamps on the 32-bit glibc and musl time64 ABIs.
+    candidates.push(
+      ['__fstat64_time64', '__fstatat64_time64'],
+      ['__fstat_time64', '__fstatat_time64'],
+    );
+  }
+  candidates.push(
+    ['fstat64', 'fstatat64'],
+    // Before glibc 2.33 these public functions were inline versioned calls.
+    [
+      '__fxstat64',
+      '__fxstatat64',
+      process.arch === 'x64'
+        ? 1
+        : process.arch === 'arm' || process.arch === 'ia32'
+          ? 3
+          : 0,
+    ],
+    ['fstat', 'fstatat'],
+  );
+  for (const candidate of candidates) {
+    try {
+      return bindMetadata(...candidate);
+    } catch {
+      // Symbol availability differs between glibc releases and musl.
+    }
+  }
+  throw new Error('Native local sources require POSIX stat functions');
+})();
+
+const statx = (() => {
+  if (darwin) return undefined;
+  try {
+    return libc.func(
+      'int statx(int fd, const char *path, int flags, unsigned int mask, _Out_ uint8_t *buffer)',
+    );
+  } catch {
+    // Available since glibc 2.28 and musl 1.2.5, not our minimum libc floor.
+    return undefined;
+  }
+})();
+
+const statxSyscalls: Partial<Record<NodeJS.Architecture, number>> = {
+  x64: 332,
+  arm64: 291,
+  arm: 397,
+  ia32: 383,
+  ppc64: 383,
+  riscv64: 291,
+  loong64: 291,
+};
+let syscall: ReturnType<typeof libc.func> | undefined;
+
+async function statxMode(
+  fd: number,
+  name: string | undefined,
+  output: Buffer,
+  raw = false,
+): Promise<number> {
+  // AT_EMPTY_PATH binds an already-open file; AT_SYMLINK_NOFOLLOW binds names.
+  // DONT_SYNC is sufficient because the inode's file type cannot change.
+  const flags = 0x100 | 0x4000 | (name === undefined ? 0x1000 : 0);
+  if (!raw && statx) {
+    await invoke(statx, [fd, name ?? '', flags, 1, output], 'statx');
+  } else {
+    // Legacy 32-bit libc can overflow on timestamps beyond 2038 even when the
+    // kernel supports statx. Koffi variadic calls are synchronous, so this
+    // bounded metadata recovery is used only after that overflow, not reads.
+    const number = statxSyscalls[process.arch];
+    if (number === undefined) throw new Error('Unknown Linux statx syscall');
+    syscall ??= libc.func('long syscall(long number, ...)');
+    const result = syscall(
+      number,
+      'long',
+      fd,
+      'str',
+      name ?? '',
+      'long',
+      flags,
+      'unsigned long',
+      1,
+      'void *',
+      output,
+      'long',
+      0,
+    );
+    const errno = koffi.errno();
+    if (result < 0) throw nativeError('statx', errno);
+  }
+  if (((koffi.decode(output, 0, 'uint32_t') as number) & 1) === 0) {
+    throw nativeError('statx mode', koffi.os.errno.EIO);
+  }
+  return koffi.decode(output, 28, 'uint16_t') as number;
+}
+
+async function statMode(fd: number, name?: string): Promise<number> {
+  // Only the mode prefix is decoded. All audited Linux stat64/time64 outputs
+  // fit in 256 bytes (largest: ARM musl time64, 152 bytes). Their mode is at
+  // byte 24 on x64/ppc64le and byte 16 on arm64/arm/ia32/riscv64/loong64.
+  // This avoids depending on libc-specific trailing timestamps and padding.
+  const output: Buffer | { mode?: number } = darwin ? {} : Buffer.alloc(256);
+  if (Buffer.isBuffer(output) && statx) {
+    try {
+      return await statxMode(fd, name, output);
+    } catch (error) {
+      // Match libuv's fallbacks for old kernels, seccomp and DVS filesystems.
+      if (
+        !['EINVAL', 'EPERM', 'ENOSYS', 'EOPNOTSUPP'].includes(
+          (error as NodeJS.ErrnoException).code ?? '',
+        )
+      ) {
+        throw error;
       }
-    : process.arch === 'x64'
-      ? {
-          device: 'uint64_t',
-          inode: 'uint64_t',
-          links: 'uint64_t',
-          mode: 'uint32_t',
-          uid: 'uint32_t',
-          gid: 'uint32_t',
-          padding: 'int32_t',
-          rdevice: 'uint64_t',
-          size: 'int64_t',
-          blocksize: 'int64_t',
-          blocks: 'int64_t',
-          atime: timespec,
-          mtime: timespec,
-          ctime: timespec,
-          reserved: koffi.array('int64_t', 3),
+    }
+  }
+  const args =
+    name === undefined
+      ? [fd, output]
+      : [fd, name, output, darwin ? 0x20 : 0x100];
+  if (metadata.version !== undefined) args.unshift(metadata.version);
+  try {
+    await invoke(
+      name === undefined ? metadata.stat : metadata.statAt,
+      args,
+      name === undefined ? 'fstat' : 'fstatat',
+    );
+  } catch (error) {
+    if (
+      Buffer.isBuffer(output) &&
+      (error as NodeJS.ErrnoException).code === 'EOVERFLOW'
+    ) {
+      try {
+        return await statxMode(fd, name, output, true);
+      } catch (recoveryError) {
+        if (
+          ['EINVAL', 'EPERM', 'ENOSYS', 'EOPNOTSUPP'].includes(
+            (recoveryError as NodeJS.ErrnoException).code ?? '',
+          )
+        ) {
+          throw error;
         }
-      : {
-          device: 'uint64_t',
-          inode: 'uint64_t',
-          mode: 'uint32_t',
-          links: 'uint32_t',
-          uid: 'uint32_t',
-          gid: 'uint32_t',
-          rdevice: 'uint64_t',
-          padding: 'uint64_t',
-          size: 'int64_t',
-          blocksize: 'int32_t',
-          padding2: 'int32_t',
-          blocks: 'int64_t',
-          atime: timespec,
-          mtime: timespec,
-          ctime: timespec,
-          reserved: koffi.array('uint32_t', 2),
-        },
-);
-const fstat = libc.func(`fstat${inodeSuffix}`, 'int', [
-  'int',
-  koffi.out(koffi.pointer(statType)),
-]);
-const fstatat = libc.func(`fstatat${inodeSuffix}`, 'int', [
-  'int',
-  'str',
-  koffi.out(koffi.pointer(statType)),
-  'int',
-]);
+        throw recoveryError;
+      }
+    }
+    throw error;
+  }
+  return Buffer.isBuffer(output)
+    ? (koffi.decode(
+        output,
+        process.arch === 'x64' || process.arch === 'ppc64' ? 24 : 16,
+        'uint32_t',
+      ) as number)
+    : (output.mode ?? 0);
+}
 
 function nativeError(operation: string, errno: number): NodeJS.ErrnoException {
   const code =
@@ -181,17 +333,13 @@ class PosixSourceDirectory implements NativeSourceDirectory {
         // O_DIRECTORY can report ENOTDIR rather than ELOOP for a symlink.
         // This lookup only improves the diagnostic; no failed open is retried.
         if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') {
-          const stat: { mode?: number } = {};
+          let mode: number;
           try {
-            await invoke(
-              fstatat,
-              [this.fd, name, stat, darwin ? 0x20 : 0x100],
-              'fstatat',
-            );
+            mode = await statMode(this.fd, name);
           } catch {
             throw error;
           }
-          if (((stat.mode ?? 0) & 0xf000) === 0xa000) {
+          if ((mode & 0xf000) === 0xa000) {
             throw nativeError('openat directory', koffi.os.errno.ELOOP);
           }
         }
@@ -215,9 +363,7 @@ class PosixSourceDirectory implements NativeSourceDirectory {
     );
     let contents: Uint8Array;
     try {
-      const stat: { mode?: number } = {};
-      await invoke(fstat, [fd, stat], 'fstat');
-      if (((stat.mode ?? 0) & 0xf000) !== 0x8000) {
+      if (((await statMode(fd)) & 0xf000) !== 0x8000) {
         throw Object.assign(new Error('Local source is not a regular file'), {
           code: 'EINVAL',
         });
@@ -294,13 +440,7 @@ class PosixSourceDirectory implements NativeSourceDirectory {
           if (type === 0) {
             // Some filesystems do not supply d_type. This metadata lookup does
             // not follow symlinks, and actual reads still reopen with O_NOFOLLOW.
-            const stat: { mode?: number } = {};
-            await invoke(
-              fstatat,
-              [this.fd, name, stat, darwin ? 0x20 : 0x100],
-              'fstatat',
-            );
-            const mode = (stat.mode ?? 0) & 0xf000;
+            const mode = (await statMode(this.fd, name)) & 0xf000;
             type =
               mode === 0x4000
                 ? 4

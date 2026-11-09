@@ -927,9 +927,6 @@ importers:
       debug:
         specifier: ^4.4.3
         version: 4.4.3(supports-color@10.2.2)
-      koffi:
-        specifier: 3.3.6
-        version: 3.3.6
       openai:
         specifier: ^7.2.0
         version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
@@ -947,6 +944,9 @@ importers:
       '@modelcontextprotocol/client':
         specifier: ^2.0.0
         version: 2.0.0
+      koffi:
+        specifier: 3.3.6
+        version: 3.3.6
 
   packages/agents-extensions:
     dependencies:
@@ -6592,6 +6592,7 @@ packages:
 
   koffi@3.3.6:
     resolution: {integrity: sha512-pPqCZg8o4laLvzxySGEju/T1Fd+eCJTVnJmcH6h1u98HFRoBQ9EokNuBSj3NxIQdzkEPRxPnHKjhBVkLeB+X0g==}
+    optional: true
 
   lan-network@0.2.1:
     resolution: {integrity: sha512-ONPnazC96VKDntab9j9JKwIWhZ4ZUceB4A9Epu4Ssg0hYFmtHZSeQ+n15nIwTFmcBUKtExOer8WTJ4GF9MO64A==}

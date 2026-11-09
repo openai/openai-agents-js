@@ -6,9 +6,10 @@ import {
   rename,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { release, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
 import {
@@ -64,16 +65,32 @@ test('reads ordinary files and nested directories through the host tmpdir', asyn
   );
 });
 
+// Some 32-bit Node builds cannot create this timestamp with fs.utimes. The
+// cross-CPU qualification supplies a precreated future-timestamp file instead.
+test.skipIf(
+  process.platform === 'linux' &&
+    (process.arch === 'arm' || process.arch === 'ia32'),
+)('reads regular files with timestamps beyond 2038', async () => {
+  const { source } = await fixture();
+  const file = join(source, 'input.txt');
+  await utimes(file, 2_200_000_000, 2_200_000_000);
+  expect(Buffer.from(await readLocalSourceFile(file)).toString()).toBe('SAFE');
+});
+
 test('retains both directory names and file authority across ancestor replacement', async () => {
   const { root, parent, source, outside } = await fixture();
   const directory = await openLocalSourceDirectory(source);
   try {
-    await rename(parent, join(root, 'saved'));
+    // Windows blocks renaming an ancestor with an open descendant. Move the
+    // held directory itself, which is still the ancestor of every source file.
+    const replaced = process.platform === 'win32' ? source : parent;
+    await rename(replaced, join(root, 'saved'));
     await symlink(
-      outside,
-      parent,
+      process.platform === 'win32' ? join(outside, 'source') : outside,
+      replaced,
       process.platform === 'win32' ? 'junction' : 'dir',
     );
+    expect(await readFile(join(source, 'input.txt'), 'utf8')).toBe('OUTSIDE');
     expect((await directory.entries()).map((entry) => entry.name)).toEqual([
       'input.txt',
     ]);
@@ -163,16 +180,26 @@ test('closing a directory preserves already-started concurrent file reads', asyn
 });
 
 test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
-  'preserves search-only ancestor permissions',
+  'preserves search-only traversal where the kernel supports retaining it',
   async () => {
     const { parent, source } = await fixture();
     await chmod(parent, 0o111);
     try {
-      expect(
-        Buffer.from(
-          await readLocalSourceFile(join(source, 'input.txt')),
-        ).toString(),
-      ).toBe('SAFE');
+      if (
+        process.platform === 'darwin' &&
+        Number(release().split('.')[0]) < 22
+      ) {
+        // macOS 11/12 lack O_SEARCH and need readable source ancestors.
+        await expect(
+          readLocalSourceFile(join(source, 'input.txt')),
+        ).rejects.toMatchObject({ code: 'EACCES' });
+      } else {
+        expect(
+          Buffer.from(
+            await readLocalSourceFile(join(source, 'input.txt')),
+          ).toString(),
+        ).toBe('SAFE');
+      }
       expect(await readFile(join(source, 'input.txt'), 'utf8')).toBe('SAFE');
     } finally {
       await chmod(parent, 0o700);
