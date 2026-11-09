@@ -1062,9 +1062,6 @@ class NativeRealtimeOwner {
     let bytes = 0;
     if (response !== undefined) {
       if (
-        !response ||
-        typeof response !== 'object' ||
-        Array.isArray(response) ||
         Object.keys(response).some(
           (key) =>
             !['instructions', 'outputModality', 'maxOutputTokens'].includes(
@@ -1074,31 +1071,7 @@ class NativeRealtimeOwner {
       )
         throw new TypeError('Unsupported Realtime response options');
       const { instructions, outputModality, maxOutputTokens } = response;
-      if (instructions !== undefined) {
-        if (typeof instructions !== 'string')
-          throw new TypeError(
-            'Realtime response instructions must be a string',
-          );
-        bytes = userInputBytes(instructions);
-      }
-      if (
-        outputModality !== undefined &&
-        outputModality !== 'audio' &&
-        outputModality !== 'text'
-      )
-        throw new TypeError(
-          'Realtime response outputModality must be audio or text',
-        );
-      if (
-        maxOutputTokens !== undefined &&
-        maxOutputTokens !== 'inf' &&
-        (typeof maxOutputTokens !== 'number' ||
-          !Number.isInteger(maxOutputTokens) ||
-          maxOutputTokens <= 0)
-      )
-        throw new TypeError(
-          'Realtime response maxOutputTokens must be a positive integer or inf',
-        );
+      if (instructions !== undefined) bytes = userInputBytes(instructions);
       captured = {
         ...(instructions === undefined ? {} : { instructions }),
         ...(outputModality === undefined

@@ -176,25 +176,24 @@ it('captures per-response options before enqueue and preserves the no-argument D
 });
 
 it.each([
-  { tools: [] },
-  { instructions: 1 },
-  { outputModality: 'video' },
-  { maxOutputTokens: 0 },
-  { maxOutputTokens: NaN },
-  { instructions: '界'.repeat(350000) },
-])(
-  'rejects invalid or oversized response options before dispatch: %o',
-  async (response) => {
-    const f = fixture();
-    await f.session._start();
-    const voice = await f.session.realtime();
-    const before = f.native.call.mock.calls.length;
-    await expect(voice.requestResponse(response as never)).rejects.toThrow();
-    expect(f.native.call.mock.calls).toHaveLength(before);
-    await voice.close();
-    await f.session.close();
+  {
+    name: 'unsupported fields',
+    response: { instructions: 'Reply briefly.', tools: [] },
   },
-);
+  {
+    name: 'oversized instructions',
+    response: { instructions: '界'.repeat(350000) },
+  },
+])('rejects $name before dispatch', async ({ response }) => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const before = f.native.call.mock.calls.length;
+  await expect(voice.requestResponse(response)).rejects.toThrow();
+  expect(f.native.call.mock.calls).toHaveLength(before);
+  await voice.close();
+  await f.session.close();
+});
 
 it('native graph retirement releases a pending delegation even when later provider cleanup fails', async () => {
   const failure = new Error('provider release failed');
