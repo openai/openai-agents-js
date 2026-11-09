@@ -114,6 +114,7 @@ import {
   createWorkspaceArchive,
   localSnapshotIsRestorable,
   persistLocalSnapshot,
+  withLocalSnapshotPersistence,
   restoreLocalSnapshotToWorkspace,
   restoreWorkspaceArchive,
   serializeLocalSnapshotSpec,
@@ -1394,6 +1395,14 @@ export class UnixLocalSandboxClient implements SandboxClient<
   }
 
   async serializeSessionState(
+    state: UnixLocalSandboxSessionState,
+  ): Promise<Record<string, unknown>> {
+    return await withLocalSnapshotPersistence(state, () =>
+      this.serializeSessionStateExclusive(state),
+    );
+  }
+
+  private async serializeSessionStateExclusive(
     state: UnixLocalSandboxSessionState,
   ): Promise<Record<string, unknown>> {
     assertSandboxSessionStateUsable(state);

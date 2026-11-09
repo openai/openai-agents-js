@@ -625,6 +625,29 @@ it('pins trusted resume policy and cleanup ownership before awaiting', async () 
   }
 });
 
+it('replaces the preceding local snapshot when serialization calls overlap', async () => {
+  const { client, session } = await fixture();
+  const barrier = holdSnapshotRead(
+    join(session.state.workspaceRootPath, 'note.txt'),
+  );
+  const first = client.serializeSessionState(session.state);
+  try {
+    await barrier.entered;
+    const second = client.serializeSessionState(session.state);
+    barrier.release();
+    const [previous, latest] = await Promise.all([first, second]);
+    await expect(
+      stat((previous.snapshot as { path: string }).path),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(session.state.snapshot).toEqual(latest.snapshot);
+    expect(await stat((latest.snapshot as { path: string }).path)).toBeTruthy();
+  } finally {
+    barrier.release();
+    await first.catch(() => {});
+    await session.close();
+  }
+});
+
 function boundSerializationClient(
   workspaceRootPath: string,
   localSnapshotPath: string,

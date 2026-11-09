@@ -50,6 +50,25 @@ const SNAPSHOT_FILE_WRITE_FLAGS =
   constants.O_TRUNC |
   constants.O_NOFOLLOW;
 
+const snapshotPersistenceTails = new WeakMap<object, Promise<unknown>>();
+
+/** Each public state owns a snapshot stream, including its final propagation. */
+export async function withLocalSnapshotPersistence<T>(
+  state: object,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = snapshotPersistenceTails.get(state) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  snapshotPersistenceTails.set(state, current);
+  try {
+    return await current;
+  } finally {
+    if (snapshotPersistenceTails.get(state) === current) {
+      snapshotPersistenceTails.delete(state);
+    }
+  }
+}
+
 export type LocalSnapshotFingerprint = {
   fingerprint: string;
   version: typeof LOCAL_SNAPSHOT_FINGERPRINT_VERSION;
