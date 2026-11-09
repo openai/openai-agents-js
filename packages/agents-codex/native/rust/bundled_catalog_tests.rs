@@ -329,3 +329,240 @@ async fn concurrent_catalog_first_use_returns_independent_owned_results() {
     );
     assert_eq!(provider.request_count(), 0);
 }
+
+fn configured_metadata_fixture(disable_user_input: bool) -> ConfiguredModels {
+    let mut catalog = codex_models_manager::bundled_models_response().unwrap();
+    let model = catalog
+        .models
+        .iter_mut()
+        .find(|model| model.slug == "gpt-5.5")
+        .unwrap();
+    model.experimental_supported_tools.extend([
+        "request_user_input_async".into(),
+        "send_user_message_async".into(),
+        "fixture-retained-tool".into(),
+    ]);
+    ConfiguredModels {
+        inner: Arc::new(codex_models_manager::manager::StaticModelsManager::new(
+            None, catalog,
+        )),
+        bundled_catalog: true,
+        disable_user_input,
+        first_model_info: OnceLock::new(),
+    }
+}
+
+#[tokio::test]
+async fn configured_metadata_slot_preserves_filtered_owned_results() {
+    for disable_user_input in [false, true] {
+        let models = configured_metadata_fixture(disable_user_input);
+        let config = ModelsManagerConfig {
+            base_instructions: Some("fixture instructions".into()),
+            ..Default::default()
+        };
+        let mut expected = models.inner.get_model_info("gpt-5.5", &config).await;
+        if disable_user_input {
+            expected.experimental_supported_tools.retain(|tool| {
+                !matches!(
+                    tool.as_str(),
+                    "request_user_input_async" | "send_user_message_async"
+                )
+            });
+        }
+        let expected = serde_json::to_value(expected).unwrap();
+        let mut first = models.get_model_info("gpt-5.5", &config).await;
+        assert!(!first.used_fallback_model_metadata);
+        assert_eq!(serde_json::to_value(&first).unwrap(), expected);
+        assert_eq!(
+            serde_json::to_value(&models.first_model_info.get().unwrap().info).unwrap(),
+            expected
+        );
+        first.slug = "caller-owned-slug".into();
+        first.experimental_supported_tools.clear();
+        first.model_messages.as_mut().unwrap().instructions_template =
+            Some("caller-owned-instructions".into());
+        let mut cached = models.get_model_info("gpt-5.5", &config).await;
+        assert_eq!(serde_json::to_value(&cached).unwrap(), expected);
+        cached.model_messages = None;
+        assert_eq!(
+            serde_json::to_value(models.get_model_info("gpt-5.5", &config).await).unwrap(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn configured_metadata_slot_keeps_first_exact_model_and_config_key() {
+    let models = configured_metadata_fixture(false);
+    let config = ModelsManagerConfig {
+        personality: Some(codex_protocol::config_types::Personality::None),
+        ..Default::default()
+    };
+    let first = serde_json::to_value(models.get_model_info("gpt-5.5", &config).await).unwrap();
+    let mut variants = Vec::new();
+    let mut changed = config.clone();
+    changed.model_context_window = Some(12345);
+    variants.push(changed);
+    let mut changed = config.clone();
+    changed.model_auto_compact_token_limit = Some(9000);
+    variants.push(changed);
+    let mut changed = config.clone();
+    changed.tool_output_token_limit = Some(1234);
+    variants.push(changed);
+    let mut changed = config.clone();
+    changed.base_instructions = Some(String::new());
+    variants.push(changed);
+    let mut changed = config.clone();
+    changed.personality = Some(codex_protocol::config_types::Personality::Friendly);
+    variants.push(changed);
+    for variant in variants {
+        let expected =
+            serde_json::to_value(models.inner.get_model_info("gpt-5.5", &variant).await).unwrap();
+        assert_ne!(expected, first, "each fixture must change the result");
+        assert_eq!(
+            serde_json::to_value(models.get_model_info("gpt-5.5", &variant).await).unwrap(),
+            expected
+        );
+        assert!(
+            models
+                .first_model_info
+                .get()
+                .unwrap()
+                .matches("gpt-5.5", &config)
+        );
+        assert!(
+            !models
+                .first_model_info
+                .get()
+                .unwrap()
+                .matches("gpt-5.5", &variant)
+        );
+    }
+    for model in ["openai/gpt-5.5", "gpt-5.6-luna"] {
+        let expected =
+            serde_json::to_value(models.inner.get_model_info(model, &config).await).unwrap();
+        assert_ne!(expected, first);
+        assert_eq!(
+            serde_json::to_value(models.get_model_info(model, &config).await).unwrap(),
+            expected
+        );
+        assert!(
+            !models
+                .first_model_info
+                .get()
+                .unwrap()
+                .matches(model, &config)
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(models.get_model_info("gpt-5.5", &config).await).unwrap(),
+        first
+    );
+    assert!(
+        models
+            .first_model_info
+            .get()
+            .unwrap()
+            .matches("gpt-5.5", &config)
+    );
+}
+
+#[tokio::test]
+async fn configured_metadata_slot_keeps_ineligible_and_fallback_requests_uncached() {
+    let models = configured_metadata_fixture(false);
+    let mut config = ModelsManagerConfig {
+        model_catalog: Some(codex_models_manager::bundled_models_response().unwrap()),
+        ..Default::default()
+    };
+    let explicit = models.get_model_info("gpt-5.5", &config).await;
+    assert!(!explicit.used_fallback_model_metadata);
+    assert!(models.first_model_info.get().is_none());
+    config.model_catalog = None;
+    for _ in 0..2 {
+        assert!(
+            models
+                .get_model_info("fixture-unlisted-model", &config)
+                .await
+                .used_fallback_model_metadata
+        );
+        assert!(models.first_model_info.get().is_none());
+    }
+    let known = models.get_model_info("gpt-5.5", &config).await;
+    assert_eq!(
+        serde_json::to_value(known).unwrap(),
+        serde_json::to_value(explicit).unwrap()
+    );
+    assert!(
+        models
+            .first_model_info
+            .get()
+            .unwrap()
+            .matches("gpt-5.5", &config)
+    );
+    config.model_catalog = Some(codex_models_manager::bundled_models_response().unwrap());
+    assert!(
+        !models
+            .first_model_info
+            .get()
+            .unwrap()
+            .matches("gpt-5.5", &config)
+    );
+    let mut unbundled = configured_metadata_fixture(false);
+    unbundled.bundled_catalog = false;
+    config.model_catalog = None;
+    for _ in 0..2 {
+        assert!(
+            !unbundled
+                .get_model_info("gpt-5.5", &config)
+                .await
+                .used_fallback_model_metadata
+        );
+        assert!(unbundled.first_model_info.get().is_none());
+    }
+}
+
+#[tokio::test]
+async fn concurrent_configured_metadata_publication_keeps_independent_results() {
+    let models = configured_metadata_fixture(false);
+    let config = ModelsManagerConfig::default();
+    let barrier = std::sync::Barrier::new(8);
+    let handle = tokio::runtime::Handle::current();
+    let mut results = std::thread::scope(|scope| {
+        let workers = (0..8)
+            .map(|index| {
+                let models = &models;
+                let config = &config;
+                let barrier = &barrier;
+                let handle = &handle;
+                scope.spawn(move || {
+                    let model = if index % 2 == 0 {
+                        "gpt-5.5"
+                    } else {
+                        "gpt-5.6-luna"
+                    };
+                    barrier.wait();
+                    (model, handle.block_on(models.get_model_info(model, config)))
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let winning_model = models.first_model_info.get().unwrap().model.clone();
+    assert!(matches!(winning_model.as_str(), "gpt-5.5" | "gpt-5.6-luna"));
+    for (model, result) in &results {
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::to_value(models.inner.get_model_info(model, &config).await).unwrap()
+        );
+    }
+    results[0].1.slug = "caller-owned-slug".into();
+    results[0].1.model_messages = None;
+    assert_eq!(
+        serde_json::to_value(models.get_model_info(&winning_model, &config).await).unwrap(),
+        serde_json::to_value(models.inner.get_model_info(&winning_model, &config).await).unwrap()
+    );
+    assert_eq!(models.first_model_info.get().unwrap().model, winning_model);
+}

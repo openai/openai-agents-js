@@ -319,6 +319,7 @@ impl EngineState {
                     inner: models,
                     bundled_catalog: injected_bundle,
                     disable_user_input: sdk_user_input_enabled == Some(false),
+                    first_model_info: OnceLock::new(),
                 })
             } else {
                 models
@@ -1727,6 +1728,36 @@ struct ConfiguredModels {
     inner: SharedModelsManager,
     bundled_catalog: bool,
     disable_user_input: bool,
+    first_model_info: OnceLock<ConfiguredModelInfo>,
+}
+
+#[derive(Debug)]
+struct ConfiguredModelInfo {
+    model: String,
+    config: ModelsManagerConfig,
+    info: ModelInfo,
+}
+
+impl ConfiguredModelInfo {
+    fn matches(&self, model: &str, config: &ModelsManagerConfig) -> bool {
+        // Keep additions to the upstream configuration visible to this exact key.
+        let ModelsManagerConfig {
+            model_context_window,
+            model_auto_compact_token_limit,
+            tool_output_token_limit,
+            base_instructions,
+            personality,
+            model_catalog,
+        } = config;
+        self.model == model
+            && self.config.model_catalog.is_none()
+            && model_catalog.is_none()
+            && self.config.model_context_window == *model_context_window
+            && self.config.model_auto_compact_token_limit == *model_auto_compact_token_limit
+            && self.config.tool_output_token_limit == *tool_output_token_limit
+            && &self.config.base_instructions == base_instructions
+            && self.config.personality == *personality
+    }
 }
 
 impl ModelsManager for ConfiguredModels {
@@ -1799,6 +1830,13 @@ impl ModelsManager for ConfiguredModels {
         config: &'a ModelsManagerConfig,
     ) -> ModelsManagerFuture<'a, ModelInfo> {
         Box::pin(async move {
+            let cacheable = self.bundled_catalog && config.model_catalog.is_none();
+            if cacheable
+                && let Some(cached) = self.first_model_info.get()
+                && cached.matches(model, config)
+            {
+                return cached.info.clone();
+            }
             let mut info = self.inner.get_model_info(model, config).await;
             if self.disable_user_input {
                 info.experimental_supported_tools.retain(|tool| {
@@ -1806,6 +1844,15 @@ impl ModelsManager for ConfiguredModels {
                         tool.as_str(),
                         "request_user_input_async" | "send_user_message_async"
                     )
+                });
+            }
+            if cacheable && !info.used_fallback_model_metadata {
+                // Keep the first successful key; other keys stay on the ordinary path.
+                // Only the winning initializer clones, with no await or external work.
+                self.first_model_info.get_or_init(|| ConfiguredModelInfo {
+                    model: model.to_owned(),
+                    config: config.clone(),
+                    info: info.clone(),
                 });
             }
             info
