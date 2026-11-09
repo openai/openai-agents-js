@@ -108,21 +108,31 @@ export class ChatCompletionsModel implements NativeModel {
             'ChatCompletionsModel received unsupported message content',
           );
         });
-        messages.push({ role: raw.role, content });
+        const previous = messages.at(-1);
+        if (raw.role === 'assistant' && previous?.role === 'assistant')
+          previous.content = [
+            ...((previous.content as unknown[]) ?? []),
+            ...content,
+          ];
+        else messages.push({ role: raw.role, content });
       } else if (raw.type === 'function_call') {
         if (raw.namespace != null && raw.namespace !== 'functions')
           throw new TypeError(
             'ChatCompletionsModel supports the default function namespace',
           );
-        messages.push({
-          role: 'assistant',
-          tool_calls: [
-            {
-              id: raw.call_id,
-              type: 'function',
-              function: { name: raw.name, arguments: raw.arguments },
-            },
-          ],
+        let assistant = messages.at(-1);
+        if (assistant?.role !== 'assistant') {
+          assistant = { role: 'assistant', tool_calls: [] };
+          messages.push(assistant);
+        }
+        const calls = (assistant.tool_calls ??= []) as Record<
+          string,
+          unknown
+        >[];
+        calls.push({
+          id: raw.call_id,
+          type: 'function',
+          function: { name: raw.name, arguments: raw.arguments },
         });
       } else if (raw.type === 'function_call_output') {
         messages.push({

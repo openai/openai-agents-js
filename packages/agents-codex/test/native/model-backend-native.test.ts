@@ -75,19 +75,46 @@ it('keeps custom model tool calls, results and continuation in native Core', asy
   expect(seen[0].context).toEqual({ tenant: 'synthetic' });
 }, 20_000);
 
-it.each([undefined, 'fixture-chat-standard'])(
-  'uses an injected OpenAI Chat client with native model %s while Core executes tools',
-  async (nativeModel) => {
+it.each([
+  [undefined, false],
+  ['fixture-chat-standard', false],
+  [undefined, true],
+  ['fixture-chat-standard', true],
+] as const)(
+  'uses an injected OpenAI Chat client with native model %s and parallel=%s while Core executes tools',
+  async (nativeModel, parallel) => {
     const seen: any[] = [];
+    const effects: string[] = [];
     const server = createServer(async (request, response) => {
       const chunks = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const body = JSON.parse(Buffer.concat(chunks).toString());
       seen.push(body);
+      const pending = new Set<string>();
+      for (const message of body.messages) {
+        if (message.role === 'tool') {
+          if (!pending.delete(message.tool_call_id))
+            throw new Error('Unexpected Chat tool result');
+        } else {
+          if (pending.size) {
+            response.writeHead(400, { 'content-type': 'application/json' }).end(
+              JSON.stringify({
+                error: {
+                  message: 'Missing tool outputs before next Chat message',
+                  type: 'invalid_request_error',
+                },
+              }),
+            );
+            return;
+          }
+          for (const call of message.tool_calls ?? []) pending.add(call.id);
+        }
+      }
+      if (pending.size) throw new Error('Missing final Chat tool outputs');
       const message =
         seen.length === 1
           ? {
-              content: null,
+              content: parallel ? 'Calling echo twice.' : null,
               tool_calls: [
                 {
                   type: 'function',
@@ -97,6 +124,18 @@ it.each([undefined, 'fixture-chat-standard'])(
                     arguments: '{"value":"from-tool"}',
                   },
                 },
+                ...(parallel
+                  ? [
+                      {
+                        type: 'function',
+                        id: 'call_echo_two',
+                        function: {
+                          name: 'echo',
+                          arguments: '{"value":"second-tool"}',
+                        },
+                      },
+                    ]
+                  : []),
               ],
             }
           : { content: 'native chat finished' };
@@ -131,7 +170,10 @@ it.each([undefined, 'fixture-chat-standard'])(
         name: 'echo',
         description: 'Echo.',
         parameters: z.object({ value: z.string() }),
-        execute: ({ value }) => value,
+        execute: ({ value }) => {
+          effects.push(value);
+          return value;
+        },
       });
       await using provider = new NativeProvider({
         modelBackend: new ChatCompletionsModel(client, 'chat-model'),
@@ -144,6 +186,22 @@ it.each([undefined, 'fixture-chat-standard'])(
       }).run('Call echo.');
       expect(result.finalOutput).toBe('native chat finished');
       expect(seen).toHaveLength(2);
+      expect(effects.sort()).toEqual(
+        parallel ? ['from-tool', 'second-tool'] : ['from-tool'],
+      );
+      if (parallel) {
+        const assistants = seen[1].messages.filter(
+          (message: any) => message.role === 'assistant',
+        );
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0].tool_calls.map((call: any) => call.id)).toEqual([
+          'call_echo',
+          'call_echo_two',
+        ]);
+        expect(JSON.stringify(assistants[0].content)).toContain(
+          'Calling echo twice.',
+        );
+      }
       expect(seen[0]).toMatchObject({ model: 'chat-model', stream: false });
       expect(
         seen[1].messages.some(
