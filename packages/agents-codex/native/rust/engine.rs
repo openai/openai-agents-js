@@ -921,6 +921,7 @@ impl EngineState {
             engine: self.clone(),
             instructions,
             retained_metadata: OnceLock::new(),
+            session_event_prefix: std::sync::Mutex::new(SessionEventPrefix::default()),
             events: Mutex::new(ThreadEvents {
                 initial: Some(Event {
                     id: String::new(),
@@ -932,6 +933,7 @@ impl EngineState {
                 native: Some(next_native_event(new.thread, native_dequeued.clone())),
                 native_dequeued,
                 session_terminal: None,
+                deferred_session_error: None,
                 root_step: None,
                 children: VecDeque::new(),
                 pending: VecDeque::new(),
@@ -1821,6 +1823,74 @@ impl ModelsManager for ConfiguredModels {
     }
 }
 
+// Separate from ThreadEvents: an in-flight read holds that async mutex while
+// awaiting settlement. JS must be able to take the already-serialized prefix.
+#[derive(Default)]
+struct SessionEventPrefix {
+    rows: Vec<String>,
+    bytes: usize,
+    stopped: bool,
+    active: bool,
+}
+
+impl SessionEventPrefix {
+    fn begin(&mut self) -> anyhow::Result<bool> {
+        ensure!(!self.active, "Session event collector already active");
+        if self.stopped {
+            return Ok(false);
+        }
+        self.active = true;
+        Ok(true)
+    }
+
+    fn stop(&mut self) -> Vec<String> {
+        self.stopped = true;
+        self.take()
+    }
+
+    fn take(&mut self) -> Vec<String> {
+        self.bytes = 0;
+        std::mem::take(&mut self.rows)
+    }
+}
+
+struct SessionEventCollection<'a>(&'a std::sync::Mutex<SessionEventPrefix>);
+
+impl Drop for SessionEventCollection<'_> {
+    fn drop(&mut self) {
+        let mut prefix = self.0.lock().expect("session event prefix poisoned");
+        prefix.active = false;
+        let _ = prefix.take();
+    }
+}
+
+fn owned_passive_root_event(value: &serde_json::Value, thread: &str, turn: &str) -> bool {
+    if value.get("subagent_id").is_some()
+        || value.get("subagent_incarnation").is_some()
+        || value.get("subagent_instance_id").is_some()
+        || value["id"].as_str() != Some(turn)
+    {
+        return false;
+    }
+    let kind = value["msg"]["type"].as_str();
+    if kind == Some("agent_message_content_delta") {
+        return value["msg"]["thread_id"].as_str() == Some(thread)
+            && value["msg"]["turn_id"].as_str() == Some(turn);
+    }
+    matches!(
+        kind,
+        Some(
+            "raw_response_item"
+                | "item_started"
+                | "item_completed"
+                | "user_message"
+                | "_sdk_request_metadata"
+                | "agent_message"
+                | "raw_response_completed"
+        )
+    )
+}
+
 pub struct ThreadState {
     pub(crate) request_metadata: Arc<crate::request_metadata::Queue>,
     pub id: ThreadId,
@@ -1829,6 +1899,7 @@ pub struct ThreadState {
     pub instructions: Arc<options::ThreadInstructions>,
     pub(crate) retained_metadata: OnceLock<crate::checkpoint::ForkMetadata>,
     events: Mutex<ThreadEvents>,
+    session_event_prefix: std::sync::Mutex<SessionEventPrefix>,
     publication_boundaries: mpsc::Sender<String>,
     pub mutations: Arc<Mutex<()>>,
     fork_copy: Arc<Mutex<Option<ForkCopy>>>,
@@ -1899,6 +1970,7 @@ struct ThreadEvents {
     native_dequeued: Arc<AtomicBool>,
     // Retain the dequeued terminal across cancellation of a managed reader.
     session_terminal: Option<(Event, Arc<crate::turn_settlement::Turn>)>,
+    deferred_session_error: Option<anyhow::Error>,
     // Publish this root selector after delivering its already queued Core events.
     root_step: Option<(serde_json::Value, usize)>,
     children: VecDeque<(ThreadId, ChildReader)>,
@@ -2968,6 +3040,123 @@ impl ThreadState {
         Ok(batch)
     }
 
+    /// Take the existing prefix once, without cancelling its sole pending read.
+    pub fn stop_session_event_collection(&self) -> Vec<String> {
+        let mut prefix = self
+            .session_event_prefix
+            .lock()
+            .expect("session event prefix poisoned");
+        prefix.stop()
+    }
+
+    pub async fn next_owned_session_events(
+        self: &Arc<Self>,
+        turn: String,
+        mut model_request_seen: bool,
+    ) -> anyhow::Result<Vec<String>> {
+        ensure!(!turn.is_empty(), "Owned turn identity is empty");
+        {
+            let mut prefix = self
+                .session_event_prefix
+                .lock()
+                .expect("session event prefix poisoned");
+            if !prefix.begin()? {
+                return Ok(Vec::new());
+            }
+        }
+        let _collection = SessionEventCollection(&self.session_event_prefix);
+        let thread = self.id.to_string();
+        loop {
+            {
+                let mut prefix = self
+                    .session_event_prefix
+                    .lock()
+                    .expect("session event prefix poisoned");
+                if prefix.stopped {
+                    return Ok(prefix.take());
+                }
+                // This inner read is now reserved. A concurrent stop can take
+                // the prefix, but this one read remains owned until it settles.
+            }
+            let value = match self.next_session_event().await {
+                Ok(value) => value,
+                Err(error) => {
+                    let retained = !self
+                        .session_event_prefix
+                        .lock()
+                        .expect("session event prefix poisoned")
+                        .rows
+                        .is_empty();
+                    if !retained {
+                        return Err(error);
+                    }
+                    self.events.lock().await.deferred_session_error = Some(error);
+                    return Ok(self
+                        .session_event_prefix
+                        .lock()
+                        .expect("session event prefix poisoned")
+                        .take());
+                }
+            };
+            let raw = match serde_json::to_string(&value) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    let retained = !self
+                        .session_event_prefix
+                        .lock()
+                        .expect("session event prefix poisoned")
+                        .rows
+                        .is_empty();
+                    if !retained {
+                        return Err(error.into());
+                    }
+                    self.events.lock().await.deferred_session_error = Some(error.into());
+                    return Ok(self
+                        .session_event_prefix
+                        .lock()
+                        .expect("session event prefix poisoned")
+                        .take());
+                }
+            };
+            let kind = value
+                .get("msg")
+                .and_then(|m| m.get("type"))
+                .and_then(serde_json::Value::as_str);
+            let dispatch = kind == Some("_sdk_request_metadata")
+                && value["msg"]["observation"]["type"] == "model_request_dispatching";
+            let second_request = dispatch && model_request_seen;
+            model_request_seen |= dispatch;
+            let plain_item = !matches!(kind, Some("item_started" | "item_completed"))
+                || (value["msg"]["thread_id"].as_str() == Some(thread.as_str())
+                    && value["msg"]["turn_id"].as_str() == Some(turn.as_str())
+                    && matches!(
+                        value["msg"]["item"]["type"].as_str(),
+                        Some("UserMessage" | "AgentMessage" | "Reasoning")
+                    ));
+            let plain_envelope = value
+                .as_object()
+                .is_some_and(|row| row.keys().all(|key| key == "id" || key == "msg"));
+            let passive =
+                plain_envelope && plain_item && owned_passive_root_event(&value, &thread, &turn);
+            let mut prefix = self
+                .session_event_prefix
+                .lock()
+                .expect("session event prefix poisoned");
+            let oversized = raw.len() > 65_536 - prefix.bytes;
+            prefix.bytes += raw.len();
+            prefix.rows.push(raw);
+            if prefix.stopped
+                || oversized
+                || !passive
+                || second_request
+                || prefix.rows.len() == 64
+                || prefix.bytes == 65_536
+            {
+                return Ok(prefix.take());
+            }
+        }
+    }
+
     pub async fn next_session_event(self: &Arc<Self>) -> anyhow::Result<serde_json::Value> {
         let python_tools = self
             .thread
@@ -2977,6 +3166,9 @@ impl ThreadState {
         ensure!(!*closing.borrow(), "Codex thread is closed");
         let mut events = self.events.lock().await;
         ensure!(!*closing.borrow(), "Codex thread is closed");
+        if let Some(error) = events.deferred_session_error.take() {
+            return Err(error);
+        }
         if let Some(event) = events.initial.take() {
             return self.root_event(event, None);
         }
@@ -3287,6 +3479,7 @@ impl ThreadState {
             let mut events = self.events.lock().await;
             events.native = None;
             events.session_terminal = None;
+            events.deferred_session_error = None;
             events.root_step = None;
             events.publication_prefix = None;
             events.boundary_requests.close();
@@ -3763,3 +3956,71 @@ mod user_input_policy_tests;
 #[cfg(test)]
 #[path = "bundled_catalog_tests.rs"]
 mod bundled_catalog_tests;
+
+#[cfg(test)]
+mod session_event_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn drain_and_completion_have_exactly_one_prefix_owner() {
+        for drain_first in [false, true] {
+            let mut prefix = SessionEventPrefix {
+                rows: vec!["first".into(), "second".into()],
+                bytes: 11,
+                active: true,
+                ..Default::default()
+            };
+            let first = if drain_first {
+                prefix.stop()
+            } else {
+                prefix.take()
+            };
+            let second = if drain_first {
+                prefix.take()
+            } else {
+                prefix.stop()
+            };
+            assert_eq!(first, ["first", "second"]);
+            assert!(second.is_empty());
+            assert_eq!(prefix.bytes, 0);
+            assert!(prefix.stopped);
+            if drain_first {
+                prefix.rows.push("last in-flight row".into());
+                assert_eq!(prefix.take(), ["last in-flight row"]);
+            }
+        }
+    }
+
+    #[test]
+    fn demand_before_the_async_body_prevents_a_new_inner_read() {
+        let mut prefix = SessionEventPrefix::default();
+        assert!(prefix.stop().is_empty());
+        assert!(!prefix.begin().unwrap());
+        assert!(!prefix.active);
+    }
+
+    #[test]
+    fn public_rate_limit_updates_are_not_passive() {
+        assert!(!owned_passive_root_event(
+            &serde_json::json!({"id":"turn", "msg":{"type":"token_count","api_rate_limits":null}}),
+            "thread",
+            "turn"
+        ));
+    }
+
+    #[test]
+    fn abandoned_collection_releases_its_slot_without_resetting_stop() {
+        let prefix = std::sync::Mutex::new(SessionEventPrefix {
+            rows: vec!["unpublished".into()],
+            bytes: 11,
+            active: true,
+            stopped: true,
+        });
+        drop(SessionEventCollection(&prefix));
+        let prefix = prefix.lock().unwrap();
+        assert!(!prefix.active);
+        assert!(prefix.stopped);
+        assert!(prefix.rows.is_empty());
+        assert_eq!(prefix.bytes, 0);
+    }
+}

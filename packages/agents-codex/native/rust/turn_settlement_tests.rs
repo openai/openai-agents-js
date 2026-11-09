@@ -1945,3 +1945,43 @@ async fn raw_child_steering_and_retained_continuation_case() {
         }
     }).await.expect("raw child retained continuation must settle");
 }
+
+// The original collector remains alive inside the actual Core terminal/idle
+// wait. Stopping collection must not need its held ThreadEvents mutex.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_prefix_stop_keeps_original_terminal_read_until_close() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        let fixture = Fixture::held_before_terminal().await;
+        let mut read = Box::pin(async {
+            loop {
+                let rows = fixture
+                    .state
+                    .next_owned_session_events(fixture.old_turn.clone(), true)
+                    .await?;
+                if rows.is_empty() {
+                    return Ok::<_, anyhow::Error>(rows);
+                }
+            }
+        });
+        assert!(futures_util::poll!(read.as_mut()).is_pending());
+        let prefix = fixture.state.stop_session_event_collection();
+        for row in prefix {
+            serde_json::from_str::<Value>(&row).unwrap();
+        }
+        assert!(
+            futures_util::poll!(read.as_mut()).is_pending(),
+            "taking a prefix must not cancel the original read"
+        );
+        let state = fixture.state.clone();
+        let close = tokio::spawn(async move { state.close().await });
+        assert!(
+            read.await.is_err(),
+            "native closing must wake the retained terminal read"
+        );
+        fixture.release();
+        close.await.unwrap().unwrap();
+        fixture.engine.close().await.unwrap();
+    })
+    .await
+    .expect("shared-prefix terminal read or cleanup did not join");
+}

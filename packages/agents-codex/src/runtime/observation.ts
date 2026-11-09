@@ -200,6 +200,8 @@ export class ObservationBuffer {
     private readonly options: {
       validate?: () => void;
       pendingManual?: () => Iterable<ManualToolRequest>;
+      /** First public read demand wakes the sole event pump. */
+      onDemand?: () => void;
     } = {},
   ) {}
 
@@ -337,6 +339,7 @@ export class ObservationBuffer {
       throw new RangeError(
         'after must be a sequence between zero and the current event',
       );
+    this.options.onDemand?.();
     let closed = false;
     let reading = false;
     const seen = scope ? undefined : new WeakSet<ManualToolRequest>();

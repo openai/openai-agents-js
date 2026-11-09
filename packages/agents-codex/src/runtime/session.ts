@@ -908,6 +908,7 @@ interface NativeCallbackDelivery {
 }
 
 class NativeTurn {
+  collectorTextInput = false;
   parentTrace?: TraceContext;
   readonly accepted = Promise.withResolvers<AcceptedSubmission>();
   readonly completion = Promise.withResolvers<NativeRunResult>();
@@ -1482,6 +1483,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   /** Latest usable API-key limits observed in this live session. */
   rateLimits(): ApiRateLimits {
+    this.requestOrdinaryEvents();
     return this.apiRateLimitState.snapshot;
   }
 
@@ -1629,6 +1631,22 @@ export class Session<OutputT = string, Context = unknown> {
   }>();
   private selectedEnvironmentRetirementAttempted = false;
   private readers: Promise<void>[] = [];
+  private ordinaryEventReads = false;
+  private collectorWake?: () => void;
+  private collectorTurn?: string;
+  private collectorModelRequestSeen = false;
+  private pendingCollectorRead?: {
+    native: NativeThread;
+    promise: Promise<string[]>;
+  };
+
+  private requestOrdinaryEvents(): void {
+    this.ordinaryEventReads = true;
+    const wake = this.collectorWake;
+    this.collectorWake = undefined;
+    wake?.();
+  }
+
   private readonly interceptionCleanups = new Set<() => Promise<void>>();
   private readonly interceptionStops = new Set<
     (run?: NativeTurn, mode?: 'force' | 'graceful') => Promise<void>
@@ -1729,6 +1747,7 @@ export class Session<OutputT = string, Context = unknown> {
       }),
     );
     this.observations = new ObservationBuffer(native.id, {
+      onDemand: () => this.requestOrdinaryEvents(),
       validate: () => this.checkCallbackOperation('observe'),
       pendingManual: () =>
         [...this.manualCalls.values()].flatMap((call) => {
@@ -2118,6 +2137,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   /** Current issued interactions; this snapshot reserves no response. */
   async pendingInteractions(): Promise<readonly Interaction[]> {
+    this.requestOrdinaryEvents();
     this.checkCallbackOperation('read interactions');
     for (;;) {
       if (!this.isOpen) throw new NativeError('Session is closed');
@@ -2164,6 +2184,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   /** Live wrappers once per reader, independent of observation retention. */
   interactions(): AsyncIterableIterator<Interaction> {
+    this.requestOrdinaryEvents();
     this.checkCallbackOperation('read interactions');
     if (!this.isOpen) throw new NativeError('Session is closed');
     const seen = new WeakSet<object>();
@@ -3032,13 +3053,15 @@ export class Session<OutputT = string, Context = unknown> {
           rootResultReady: () => scope.phase() === 'ended',
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
-          wait: (turn, options, completion) =>
-            this.waitRequests(
+          wait: (turn, options, completion) => {
+            this.requestOrdinaryEvents();
+            return this.waitRequests(
               turn,
               () => this.ownedStep(run),
               options,
               completion,
-            ),
+            );
+          },
         },
         (input, expectedTurnId) => {
           this.checkCallbackOperation('steer');
@@ -4280,6 +4303,13 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private dispatchStart(run: NativeTurn, parts: JsonValue[]): void {
+    run.collectorTextInput =
+      parts.length === 1 &&
+      parts[0] !== null &&
+      typeof parts[0] === 'object' &&
+      !Array.isArray(parts[0]) &&
+      parts[0].type === 'text' &&
+      typeof parts[0].text === 'string';
     const { output } = submissions.get(run)!;
     const selection = run.selection;
     if (selection?.prepareRequest && output.repair)
@@ -5035,11 +5065,63 @@ export class Session<OutputT = string, Context = unknown> {
     if (primary) throw primary.error;
   }
 
+  private collectableTurn(): string | undefined {
+    if (
+      this.ordinaryEventReads ||
+      this.oneShot ||
+      this.starting ||
+      this.lifecycle.kind !== 'turn'
+    )
+      return;
+    const run = this.lifecycle.run;
+    const submission = submissions.get(run)!;
+    if (
+      !run.id ||
+      run.id !== this.collectorTurn ||
+      !run.collectorTextInput ||
+      this.restored ||
+      this.environment !== null ||
+      this.options.environment ||
+      this.options.localStorage ||
+      this.options.customStore ||
+      this.options.localResume ||
+      this.options.state ||
+      this.options.onInteraction ||
+      this.options.tracingCapture ||
+      this.options.parentTrace ||
+      this.options.agentGraph ||
+      this.options.nativeAgents ||
+      this.options.nativeGoals ||
+      this.options.checklist ||
+      this.options.webSearch ||
+      this.options.hostedTools?.length ||
+      this.mcpTools.length ||
+      this.catalog.tools.length ||
+      this.mcpReaderStarted ||
+      this.codeModeEnabled ||
+      this.manualCalls.size ||
+      this.realtimeOwner ||
+      this.options.websocketsAllowed !== false ||
+      run.selection ||
+      run.tracing ||
+      run.parentTrace ||
+      run.writableRoots ||
+      submission.outputOverride ||
+      submission.output.parse ||
+      submission.output.prompt ||
+      submission.output.schema ||
+      submission.output.repair
+    )
+      return;
+    return run.id;
+  }
+
   private async readEvents(): Promise<void> {
     const native = this.#native;
     const producer = this.childObservationProducer;
     let batch: string[] = [];
     let batchIndex = 0;
+    let remainder: Promise<string[]> | undefined;
     let delivery: NativeCallbackDelivery | undefined;
     try {
       while (this.isOpen && this.#native === native) {
@@ -5049,8 +5131,49 @@ export class Session<OutputT = string, Context = unknown> {
         let event: NativeEvent;
         try {
           if (batchIndex === batch.length) {
-            batch = await native._next_session_events();
+            let collectorRead = remainder !== undefined;
+            if (remainder) {
+              const pending = remainder;
+              remainder = undefined;
+              batch = await pending;
+            } else {
+              const turn = this.collectableTurn();
+              if (!turn) batch = await native._next_session_events();
+              else {
+                collectorRead = true;
+                const demand = Promise.withResolvers<undefined>();
+                const wake = () => demand.resolve(undefined);
+                this.collectorWake = wake;
+                try {
+                  const pending = native._next_owned_session_events(
+                    turn,
+                    this.collectorModelRequestSeen,
+                  );
+                  const owner = { native, promise: pending };
+                  this.pendingCollectorRead = owner;
+                  const settled = () => {
+                    if (this.pendingCollectorRead === owner)
+                      this.pendingCollectorRead = undefined;
+                  };
+                  // Handle rejection now; prefix reduction may fail before we
+                  // await this read again. Existing native close joins it below.
+                  void pending.then(settled, settled);
+                  const first = await Promise.race([pending, demand.promise]);
+                  if (first === undefined) {
+                    remainder = pending;
+                    batch = native._stop_session_event_collection();
+                  } else batch = first;
+                } finally {
+                  if (this.collectorWake === wake)
+                    this.collectorWake = undefined;
+                }
+              }
+            }
             batchIndex = 0;
+            // A stop before Rust starts, or after the prefix was taken, can
+            // legitimately leave no rows. Join its original read before polling.
+            if (batch.length === 0 && collectorRead && this.ordinaryEventReads)
+              continue;
             if (batch.length === 0)
               throw new NativeError('Native event batch was empty');
           }
@@ -5085,6 +5208,25 @@ export class Session<OutputT = string, Context = unknown> {
         }
         if (this.realtimeOwner?._ingest(event)) continue;
         const msg = event.msg;
+        if (
+          event.subagent_id === undefined &&
+          event.subagent_incarnation === undefined &&
+          event.subagent_instance_id === undefined
+        ) {
+          if (msg.type === 'task_started' || msg.type === 'turn_started') {
+            this.collectorTurn = event.id;
+            this.collectorModelRequestSeen = false;
+          }
+          if (
+            event.id === this.collectorTurn &&
+            msg.type === '_sdk_request_metadata' &&
+            msg.observation !== null &&
+            typeof msg.observation === 'object' &&
+            !Array.isArray(msg.observation) &&
+            msg.observation.type === 'model_request_dispatching'
+          )
+            this.collectorModelRequestSeen = true;
+        }
         if (msg.type === 'token_count') {
           const snapshot = apiRateLimits(msg.api_rate_limits);
           if (snapshot) this.apiRateLimitState.snapshot = snapshot;
@@ -11030,7 +11172,12 @@ export class Session<OutputT = string, Context = unknown> {
         }
         acknowledgmentFailure =
           (await this.closeNative()) ?? acknowledgmentFailure;
-        await Promise.allSettled(this.readers);
+        await Promise.allSettled([
+          ...this.readers,
+          ...(this.pendingCollectorRead
+            ? [this.pendingCollectorRead.promise]
+            : []),
+        ]);
         phase = 'engine';
       }
       await interceptionCleanup;

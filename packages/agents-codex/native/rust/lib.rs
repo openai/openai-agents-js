@@ -3605,6 +3605,23 @@ impl NativeThread {
             .map_err(native_error)
     }
 
+    #[napi(js_name = "_next_owned_session_events")]
+    pub async fn next_owned_session_events(
+        &self,
+        turn: String,
+        model_request_seen: bool,
+    ) -> napi::Result<Vec<String>> {
+        self.current()?
+            .next_owned_session_events(turn, model_request_seen)
+            .await
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_stop_session_event_collection")]
+    pub fn stop_session_event_collection(&self) -> napi::Result<Vec<String>> {
+        Ok(self.current()?.stop_session_event_collection())
+    }
+
     #[napi(js_name = "_next_session_event")]
     pub async fn next_session_event(&self) -> napi::Result<String> {
         let inner = self.current()?;
