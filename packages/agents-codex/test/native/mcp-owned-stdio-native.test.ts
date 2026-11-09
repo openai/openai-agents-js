@@ -874,3 +874,78 @@ for (const location of ['host', 'environment'] as const) {
     60_000,
   );
 }
+
+it.each(['none', 'complete', 'partial'] as const)(
+  'keeps host MCP separate from the selected remote executor with %s ambient Noise',
+  async (noise) => {
+    if (noise !== 'none') {
+      vi.stubEnv(
+        'CODEX_EXEC_SERVER_NOISE_REGISTRY_URL',
+        'http://127.0.0.1:1/unused',
+      );
+      vi.stubEnv(
+        'CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID',
+        noise === 'complete' ? 'unused' : undefined,
+      );
+      vi.stubEnv(
+        'CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN',
+        noise === 'complete' ? 'synthetic-unused-noise' : undefined,
+      );
+      vi.stubEnv('CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID', undefined);
+    }
+    const executor = await startPublicExecutor();
+    const selected = await peer('host-with-remote', 'key', false, {
+      location: 'host',
+    });
+    const model = new ModelServer([
+      [lookup('key', 'host-request')],
+      [
+        call(
+          'exec_command',
+          { cmd: 'printf HOST_MUST_NOT_RUN', environment_id: 'local' },
+          { callId: 'unselected-local' },
+        ),
+      ],
+    ]);
+    let session: Session | undefined;
+    try {
+      session = await (
+        await agent(model, selected.declaration)
+      ).session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command'],
+          approval: () => true,
+        }),
+      });
+      sessions.push(session);
+      await expect(
+        (await session.submit('Use the current authorities.')).wait(),
+      ).rejects.toThrow(
+        'Native executor rejected invalid arguments before dispatch',
+      );
+      expect(await records(selected.calls)).toHaveLength(1);
+      expect(JSON.stringify(model.requests[1].input)).toContain(
+        'host-with-remote-record',
+      );
+      expect(model.requests).toHaveLength(2);
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toEqual([]);
+      expect(JSON.stringify(model.requests)).not.toContain(
+        'synthetic-unused-noise',
+      );
+      model.assertExhausted();
+      await session.close();
+      await stopped(selected.starts);
+    } finally {
+      await session?.close();
+      await executor.close();
+    }
+  },
+  30_000,
+);

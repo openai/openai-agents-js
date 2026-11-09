@@ -359,7 +359,11 @@
     {
       "path": "0090-native-session-media-history.patch",
       "sha256": "ecf7709fb518bcf8568e5341c1d7cb046f104fb38629836160a360e561854025"
+    },
+    {
+      "path": "0095-host-mcp-lazy-launcher.patch",
+      "sha256": "39b5e2b9736fa31ef3ced7da637bd443ed1878263976da1c8a4b2c17c5f4ca9d"
     }
   ],
-  "result_tree": "c34a436b3e8724d26e323efceaf54c0d5bd5af48"
+  "result_tree": "b125467ff58026a02d033e9a62c23469c4a7b6b9"
 }

@@ -71,23 +71,12 @@ async fn local_environment_manager(
     } else {
         paths
     };
-    // The pinned public constructor reads a file; never read or replace the caller's home.
-    // Shared Codex sessions may admit a current local MCP roster after manager
-    // construction. Reserve its lazy executor here: only configured MCP starts
-    // it without a workspace selection. No default grants ordinary threads a
-    // shell. SDK execution uses the explicitly assigned environment.
-    let home = tempfile::tempdir().context("prepare native MCP environment")?;
-    std::fs::write(
-        home.path().join("environments.toml"),
-        "default = \"none\"\ninclude_local = true\n",
-    )?;
-    let prepared = EnvironmentManager::prepare_from_codex_home(home.path()).await?;
-    // Noise takes precedence over the file upstream. Do not start an ambient executor.
-    ensure!(
-        !prepared.default_environment_is_remote(),
-        "native local MCP configuration cannot select an ambient remote environment"
-    );
-    Ok(prepared.build(Some(paths), config.http_client_factory())?)
+    // The SDK owns its explicit execution selection. Reserve host MCP capacity
+    // without reading ambient Noise or user environment configuration.
+    Ok(EnvironmentManager::with_unselected_local_environment(
+        paths,
+        config.http_client_factory(),
+    )?)
 }
 
 const LOCAL_COMMAND_PATH: &str = "/usr/bin:/bin";
@@ -528,16 +517,16 @@ impl EnvironmentOptions {
                     codex_config::McpServerTransportConfig::Stdio { .. }
                 )
         });
-        let manager = if needs_local_mcp {
-            let manager = for_unattached_threads(config).await?;
+        // SDK selections may publish a host MCP roster after this manager is built.
+        // Reserve its lazy local launcher without selecting a host workspace:
+        // for_unattached_threads has no default; selection below remains remote.
+        let manager = for_unattached_threads(config).await?;
+        if needs_local_mcp {
             ensure!(
                 manager.try_local_environment().is_some(),
                 "local stdio MCP requires the native process helper"
             );
-            manager
-        } else {
-            EnvironmentManager::without_environments(config.http_client_factory())
-        };
+        }
         self.register(&manager)?;
         Ok(manager)
     }
