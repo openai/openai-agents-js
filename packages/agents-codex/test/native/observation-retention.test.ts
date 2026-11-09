@@ -1,9 +1,11 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { Agent, NativeProvider } from '../../src';
 import { ObservationBuffer } from '../../src/runtime/observation';
 import { ModelServer, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
+afterEach(() => vi.restoreAllMocks());
 
 it.each([
   ['x', 350],
@@ -153,5 +155,48 @@ it('replays a retained source gap through native Turn.events', async () => {
   ).observations.gap();
   const events = await Array.fromAsync(turn.events());
   expect(events.some((event) => event.type === 'gap')).toBe(true);
+  server.assertExhausted();
+});
+
+it('forwards a repair source gap through public parent Turn.events', async () => {
+  const link = ObservationBuffer.prototype.linkRepairParent;
+  vi.spyOn(ObservationBuffer.prototype, 'linkRepairParent').mockImplementation(
+    function (this: ObservationBuffer, parent, submissionId) {
+      link.call(this, parent, submissionId);
+      // Inject source loss at the real correction-to-parent publication boundary.
+      this.gap();
+    },
+  );
+  const server = new ModelServer([
+    [message('{"label":"x"}')],
+    [message('{"label":"corrected"}')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-repair-gap',
+    supportsWebsockets: false,
+  });
+  await using session = await new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+    outputType: {
+      mode: 'prompted',
+      schema: z.object({ label: z.string().min(2) }),
+      maxRetries: 1,
+    },
+  }).session({ observationRetention: 'all' });
+  const turn = await session.submit('begin');
+  expect((await turn.wait()).finalOutput).toEqual({ label: 'corrected' });
+  const events = await Array.fromAsync(turn.events());
+  const gap = events.find((event) => event.type === 'gap');
+  expect(gap).toMatchObject({ type: 'gap', sessionId: session.id });
+  expect(gap?.sequence).toBeGreaterThan(1);
+  expect(events.filter((event) => event.type === 'turn_started')).toHaveLength(
+    2,
+  );
+  expect(await Array.fromAsync(turn.events())).toEqual(events);
   server.assertExhausted();
 });

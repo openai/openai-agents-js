@@ -269,6 +269,7 @@ export class ObservationBuffer {
   gap(): void {
     if (this.closed) return;
     this.sequence++;
+    this.repairParent?.buffer.gap();
     if (this.options.retention === 'all') {
       this.records.push({
         event: Object.freeze({
