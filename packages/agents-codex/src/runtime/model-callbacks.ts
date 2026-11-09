@@ -21,6 +21,23 @@ export interface CompletionContext<Context = unknown> {
   readonly finalOutput?: JsonValue;
 }
 
+/** Captured history before summarization. A returned summary becomes canonical history. */
+export interface CompactionContext<Context = unknown> {
+  readonly context: Context;
+  readonly items: readonly JsonObject[];
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly subagentId?: string;
+  readonly requestId: string;
+  readonly model: string;
+  readonly automatic: boolean;
+  readonly signal: AbortSignal;
+}
+/** Return a nonempty summary to skip native summarization, or undefined to use it. */
+export type BeforeCompact<Context = unknown> = (
+  context: CompactionContext<Context>,
+) => string | void | Promise<string | void>;
+
 /**
  * Request-only Responses input; replacements never rewrite canonical history.
  * Application instruction envelopes are input items, so filtering them changes

@@ -1,6 +1,7 @@
 import {
   captureCompletionDecision,
   type BeforeComplete,
+  type BeforeCompact,
   type ContextTransform,
 } from './model-callbacks';
 import { isDeepStrictEqual } from 'node:util';
@@ -282,6 +283,7 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   beforeComplete?: BeforeComplete<any>;
+  beforeCompact?: BeforeCompact<any>;
   transformContext?: ContextTransform<any>;
   contextTransformPurpose?: 'turn' | 'output_repair';
   /** @internal Detached fresh-opening data; removed before Session construction. */
@@ -5562,6 +5564,7 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     if (
+      msg.type === '_sdk_before_compact' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -5893,7 +5896,11 @@ export class Session<OutputT = string, Context = unknown> {
       this.track(run, this.prepareRequest(run, event));
       return;
     }
-    if (kind === '_sdk_transform_context' || kind === '_sdk_before_complete') {
+    if (
+      kind === '_sdk_before_compact' ||
+      kind === '_sdk_transform_context' ||
+      kind === '_sdk_before_complete'
+    ) {
       if (msg.turn_id === run.id)
         void this.modelCallback(run, event, this.#native).catch(() => {});
       return;
@@ -6437,6 +6444,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   private sourceModelCallbacks(message: Record<string, unknown>): {
     beforeComplete?: BeforeComplete<any>;
+    beforeCompact?: BeforeCompact<any>;
     transformContext?: ContextTransform<any>;
   } {
     const source = this.messageProfile(message);
@@ -6467,11 +6475,12 @@ export class Session<OutputT = string, Context = unknown> {
             request_id: msg.request_id,
           };
           const contextEdit = msg.type === '_sdk_transform_context';
+          const compact = msg.type === '_sdk_before_compact';
           const sourceCatalog = this.sourceCatalog(
             msg,
             z.string().parse(msg.generation),
           );
-          const { beforeComplete, transformContext } =
+          const { beforeComplete, beforeCompact, transformContext } =
             this.sourceModelCallbacks(msg);
           let replied = false;
           const reply = (result: Record<string, unknown>, failed = false) => {
@@ -6480,7 +6489,8 @@ export class Session<OutputT = string, Context = unknown> {
             const data = contextEdit
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
-            if (contextEdit) sourceNative._reply_model_context(data);
+            if (compact) sourceNative._reply_compaction(data);
+            else if (contextEdit) sourceNative._reply_model_context(data);
             else sourceNative._reply_natural_completion(data);
             replied = true;
           };
@@ -6516,7 +6526,31 @@ export class Session<OutputT = string, Context = unknown> {
               model: z.string().parse(msg.model),
               signal,
             };
-            if (contextEdit) {
+            if (compact) {
+              const items = z.array(losslessJsonObjectSchema).parse(msg.items);
+              const returned = beforeCompact?.(
+                Object.freeze({
+                  ...base,
+                  items: Object.freeze(items),
+                  requestId: z.string().parse(msg.request_id),
+                  automatic: z.boolean().parse(msg.automatic),
+                }),
+              );
+              const settled =
+                returned &&
+                typeof (returned as Promise<unknown>).then === 'function'
+                  ? await returned
+                  : returned;
+              if (
+                settled !== undefined &&
+                (typeof settled !== 'string' || !settled.trim())
+              )
+                throw new TypeError(
+                  'beforeCompact must return a nonempty summary or undefined',
+                );
+              check();
+              reply(settled === undefined ? {} : { summary: settled });
+            } else if (contextEdit) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
               const returned = transformContext?.(
                 Object.freeze({

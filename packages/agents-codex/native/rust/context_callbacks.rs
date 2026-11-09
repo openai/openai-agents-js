@@ -2,12 +2,13 @@
 
 use super::*;
 use crate::native_interception::CapturedTurnStop;
-use codex_extension_api::{ModelContextInput, TurnCompletionInput};
+use codex_extension_api::{CompactionInput, ModelContextInput, TurnCompletionInput};
 use tokio_util::sync::CancellationToken;
 
 pub(super) enum PreparationReply {
     Selection(oneshot::Sender<Option<Vec<ToolName>>>),
     Context(oneshot::Sender<std::result::Result<Option<Vec<ResponseItem>>, ()>>),
+    Compaction(oneshot::Sender<std::result::Result<Option<String>, ()>>),
     Completion {
         reply: oneshot::Sender<std::result::Result<Option<String>, ()>>,
         stop: Arc<CapturedTurnStop>,
@@ -19,6 +20,7 @@ impl PreparationReply {
         match self {
             Self::Selection(reply) => reply.is_closed(),
             Self::Context(reply) => reply.is_closed(),
+            Self::Compaction(reply) => reply.is_closed(),
             Self::Completion { reply, .. } => reply.is_closed(),
         }
     }
@@ -52,9 +54,87 @@ pub(crate) struct CompletionReply {
     failed: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompactionReply {
+    pub(crate) owner: StepReply,
+    summary: Option<String>,
+    #[serde(default)]
+    failed: bool,
+}
+
 impl PythonTools {
     pub(crate) fn transforms_context(&self) -> bool {
         self.context_callbacks.transform_context
+    }
+
+    pub(crate) fn customizes_compaction(&self) -> bool {
+        self.context_callbacks.before_compact
+    }
+
+    pub(crate) async fn before_compact(
+        self: &Arc<Self>,
+        input: CompactionInput<'_>,
+    ) -> Result<Option<String>> {
+        if !self.customizes_compaction()
+            || self
+                .source_catalog(input.step_store)?
+                .is_some_and(|catalog| !catalog.before_compact)
+        {
+            return Ok(None);
+        }
+        let cancellation = self
+            .context_stop(input.turn_id)?
+            .callback_cancellation()
+            .context("Expired compaction callback turn")?;
+        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation,
+            json!({"type":"_sdk_before_compact", "model":input.model, "automatic":input.automatic, "items":input.items}),
+            PreparationReply::Compaction).await
+    }
+
+    pub(crate) fn reply_compaction(&self, response: CompactionReply) -> Result<()> {
+        ensure!(
+            !(response.failed && response.summary.is_some()),
+            "Conflicting compaction reply"
+        );
+        if let Some(summary) = &response.summary {
+            ensure!(
+                !summary.trim().is_empty(),
+                "Compaction summary must be nonempty"
+            );
+        }
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self
+            .step_replies
+            .lock()
+            .expect("JavaScript step replies poisoned");
+        let id = crate::native_id(&response.owner.request_id)?;
+        ensure!(
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.owner.thread,
+                &response.owner,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::Compaction(_)
+            )),
+            "Expired compaction reply"
+        );
+        let pending = take_pending_step(&mut replies, id).expect("checked compaction reply");
+        let PreparationReply::Compaction(reply) = pending.reply else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                Ok(response.summary)
+            })
+            .map_err(|_| anyhow::anyhow!("Expired compaction reply"))
     }
 
     pub(super) fn context_stop(&self, turn: &str) -> Result<Arc<CapturedTurnStop>> {

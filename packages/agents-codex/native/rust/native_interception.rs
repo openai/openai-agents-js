@@ -3000,6 +3000,23 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn customizes_compaction(&self, thread_id: &str) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.customizes_compaction())
+    }
+    fn before_compact<'a>(
+        &'a self,
+        input: codex_extension_api::CompactionInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired compaction callback owner")?
+                .before_compact(input)
+                .await
+                .map_err(|_| "Compaction callback failed".to_owned())
+        })
+    }
+
     fn transforms_context(&self, thread_id: &str) -> bool {
         self.context_tools(thread_id)
             .is_some_and(|tools| tools.transforms_context())

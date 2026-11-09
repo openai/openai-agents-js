@@ -169,7 +169,7 @@ export function captureProfileRuntimes(
       step_defaults: catalog.tools.map((_, index) => index),
       handoffs: { ...profile.handoffs },
       transform_context: declaration.transformContext !== undefined,
-      before_compact: false,
+      before_compact: declaration.beforeCompact !== undefined,
       before_complete: declaration.beforeComplete !== undefined,
       selecting_steps: false,
       output_fingerprint: output.identity.fingerprint,

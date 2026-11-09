@@ -357,5 +357,7 @@ export type {
   CompletionContext,
   ModelRequestContext,
   BeforeComplete,
+  BeforeCompact,
+  CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';

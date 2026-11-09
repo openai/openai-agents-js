@@ -7,4 +7,4 @@
 '@openai/agents-realtime': patch
 ---
 
-feat: Embed the Codex harness in `@openai/agents`. Add explicit turn control, captured model-context and completion callbacks, strict write defaults, trusted A2A environments, typed interactions, recoverable storage, validated output, checkpoint upgrade checks, and configurable speech workflows with validated native output and bounded private tracing. Retain the classic Agent and Runner APIs at `@openai/agents/classic`.
+feat: Embed the Codex harness in `@openai/agents`. Add explicit turn control, captured model-context, completion, and compaction callbacks, strict write defaults, trusted A2A environments, typed interactions, recoverable storage, validated output, checkpoint upgrade checks, and configurable speech workflows with validated native output and bounded private tracing. Retain the classic Agent and Runner APIs at `@openai/agents/classic`.

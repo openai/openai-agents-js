@@ -199,6 +199,7 @@ pub(crate) struct ChildStepSelection;
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ContextCallbacks {
+    pub(crate) before_compact: bool,
     pub(crate) transform_context: bool,
     pub(crate) before_complete: bool,
 }

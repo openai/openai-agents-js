@@ -363,7 +363,11 @@
     {
       "path": "0095-context-completion-callbacks.patch",
       "sha256": "f14dac4fb1589dfdd248084f1f1b535d474ccecad75f6a080c7a9264cf912c31"
+    },
+    {
+      "path": "0096-before-compact-callback.patch",
+      "sha256": "62d66a9c96da28d34ac37e8caeeefbcbb47abedcb0400fb5fdee59a02a09b766"
     }
   ],
-  "result_tree": "718cc0adc3fa7678173e629c2652f56eb0689bc1"
+  "result_tree": "4ba4e76a868b6042b0579a40080b6a3a81dd7398"
 }

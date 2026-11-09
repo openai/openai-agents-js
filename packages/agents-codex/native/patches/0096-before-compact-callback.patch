@@ -1,0 +1,260 @@
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -238,6 +238,110 @@
+     result.map(|_| ())
+ }
+ 
++/// Await the captured application callback once, before native summarization retries.
++pub(crate) async fn try_custom_compaction(
++    sess: &Session,
++    source_step_context: &StepContext,
++    replacement_step_context: &StepContext,
++    world_state: &WorldState,
++    metadata: CompactionTurnMetadata,
++) -> CodexResult<Option<String>> {
++    let turn_context = &source_step_context.turn;
++    let thread_id = sess.thread_id.to_string();
++    let contributors = sess.services.extensions.model_request_contributors();
++    if !contributors
++        .iter()
++        .any(|c| c.customizes_compaction(&thread_id))
++    {
++        return Ok(None);
++    }
++    let history = sess.clone_history().await;
++    let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
++    let items = history.for_prompt(&source_step_context.settings.model_info.input_modalities);
++    for contributor in contributors {
++        if !contributor.customizes_compaction(&thread_id) {
++            continue;
++        }
++        let summary = contributor
++            .before_compact(codex_extension_api::CompactionInput {
++                step_store: Some(&source_step_context.extension_data),
++                thread_id: &thread_id,
++                turn_id: &turn_context.sub_id,
++                model: &source_step_context.settings.model_info.slug,
++                automatic: matches!(metadata.trigger(), CompactionTrigger::Auto),
++                items: &items,
++            })
++            .await
++            .map_err(CodexErr::InvalidRequest)?;
++        if let Some(summary) = summary {
++            if summary.trim().is_empty() {
++                return Err(CodexErr::InvalidRequest(
++                    "Compaction summary must be nonempty".into(),
++                ));
++            }
++            publish_compaction_summary(
++                sess,
++                turn_context,
++                replacement_step_context,
++                world_state,
++                &summary,
++                input_goal_ids,
++                None,
++            )
++            .await;
++            return Ok(Some(summary));
++        }
++    }
++    Ok(None)
++}
++
++async fn publish_compaction_summary(
++    sess: &Session,
++    turn_context: &TurnContext,
++    replacement_step_context: &StepContext,
++    world_state: &WorldState,
++    summary_suffix: &str,
++    input_goal_ids: HashSet<ResponseItemId>,
++    compaction_response_id: Option<String>,
++) {
++    let history_snapshot = sess.clone_history().await;
++    let history_items = history_snapshot.annotated_items();
++    let compaction_model_hash = compaction_response_id
++        .as_ref()
++        .and_then(|_| turn_context.model_info().comp_hash.clone());
++    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
++    let user_messages = collect_annotated_user_messages(history_items);
++
++    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
++    if let Some(summary_item) = new_history.last_mut() {
++        // This replacement history skips `record_conversation_items`; only the appended summary
++        // belongs to this compaction turn.
++        summary_item.set_turn_id_if_missing(&turn_context.sub_id);
++    }
++    let (window_number, window_ids) = sess.advance_auto_compact_window().await;
++
++    let (initial_context, world_state_baseline) =
++        build_compaction_initial_context(sess, replacement_step_context, world_state).await;
++    new_history =
++        insert_initial_context_before_last_real_user_or_summary(new_history, initial_context);
++    sess.replace_compacted_history(
++        new_history,
++        replacement_step_context.to_turn_context_item(),
++        world_state_baseline,
++        CompactedHistoryMetadata {
++            input_goal_ids,
++            message: summary_text,
++            window_number,
++            window_ids,
++            compaction_response_id: compaction_response_id,
++            compaction_model_hash,
++            reviewer_compaction_hash: None,
++        },
++    )
++    .await;
++    sess.recompute_token_usage(replacement_step_context).await;
++}
++
+ async fn run_compact_task_inner_impl(
+     sess: Arc<Session>,
+     source_step_context: Arc<StepContext>,
+@@ -250,6 +354,19 @@
+     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
+     sess.emit_turn_item_started(&turn_context, &compaction_item)
+         .await;
++    if let Some(summary) = try_custom_compaction(
++        &sess,
++        &source_step_context,
++        &replacement_step_context,
++        &world_state,
++        compaction_metadata,
++    )
++    .await?
++    {
++        sess.emit_turn_item_completed(&turn_context, compaction_item)
++            .await;
++        return Ok(summary);
++    }
+     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+ 
+     let mut history = sess.clone_history().await;
+@@ -369,7 +486,6 @@
+     };
+ 
+     let history_snapshot = sess.clone_history().await;
+-    let history_items = history_snapshot.annotated_items();
+     let summary_suffix = if matches!(compaction_metadata.phase(), CompactionPhase::PostTurn) {
+         get_last_assistant_message_from_turn(compaction_response.output.iter())
+             .filter(|summary| !summary.trim().is_empty())
+@@ -381,38 +497,16 @@
+     } else {
+         get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default()
+     };
+-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+-    let user_messages = collect_annotated_user_messages(history_items);
+-
+-    let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
+-    if let Some(summary_item) = new_history.last_mut() {
+-        // This replacement history skips `record_conversation_items`; only the appended summary
+-        // belongs to this compaction turn.
+-        summary_item.set_turn_id_if_missing(&turn_context.sub_id);
+-    }
+-    let (window_number, window_ids) = sess.advance_auto_compact_window().await;
+-
+-    let (initial_context, world_state_baseline) =
+-        build_compaction_initial_context(sess.as_ref(), &replacement_step_context, &world_state)
+-            .await;
+-    new_history =
+-        insert_initial_context_before_last_real_user_or_summary(new_history, initial_context);
+-    sess.replace_compacted_history(
+-        new_history,
+-        replacement_step_context.to_turn_context_item(),
+-        world_state_baseline,
+-        CompactedHistoryMetadata {
+-            input_goal_ids,
+-            message: summary_text,
+-            window_number,
+-            window_ids,
+-            compaction_response_id: Some(compaction_response.response_id),
+-            compaction_model_hash: turn_context.model_info().comp_hash.clone(),
+-            reviewer_compaction_hash: None,
+-        },
++    publish_compaction_summary(
++        &sess,
++        &turn_context,
++        &replacement_step_context,
++        &world_state,
++        &summary_suffix,
++        input_goal_ids,
++        Some(compaction_response.response_id),
+     )
+     .await;
+-    sess.recompute_token_usage(&replacement_step_context).await;
+ 
+     sess.emit_turn_item_completed(&turn_context, compaction_item)
+         .await;
+--- a/codex-rs/core/src/compact_remote_v2.rs
++++ b/codex-rs/core/src/compact_remote_v2.rs
+@@ -235,6 +235,20 @@
+     let compaction_item = TurnItem::ContextCompaction(context_compaction_item);
+     sess.emit_turn_item_started(turn_context, &compaction_item)
+         .await;
++    if crate::compact::try_custom_compaction(
++        sess,
++        step_context,
++        replacement_step_context,
++        &world_state,
++        compaction_metadata,
++    )
++    .await?
++    .is_some()
++    {
++        sess.emit_turn_item_completed(turn_context, compaction_item)
++            .await;
++        return Ok(());
++    }
+ 
+     let attempt = run_remote_compact_v2_attempt(
+         sess,
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -146,6 +146,7 @@
+     ModelResponseLinked,
+ };
+ 
++pub use model_request::CompactionInput;
+ pub use model_request::ModelContextInput;
+ pub use model_request::ModelHttpStream;
+ pub use model_request::ModelRequestContributor;
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -111,6 +111,16 @@
+     pub items: &'a mut Vec<ResponseItem>,
+ }
+ 
++/// Captured input before automatic or manual native summarization.
++pub struct CompactionInput<'a> {
++    pub step_store: Option<&'a ExtensionData>,
++    pub thread_id: &'a str,
++    pub turn_id: &'a str,
++    pub model: &'a str,
++    pub automatic: bool,
++    pub items: &'a [ResponseItem],
++}
++
+ /// Request identity before provider dispatch.
+ pub struct ModelRequestInput<'a> {
+     /// Whether this request generates output or warms up the session.
+@@ -153,6 +163,19 @@
+ /// Contributes request-scoped preparation and response interception.
+ /// Return None for requests this host does not manage.
+ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
++    fn customizes_compaction(&self, _thread_id: &str) -> bool {
++        false
++    }
++
++    /// Supply a summary before native summarization, or keep the default with None.
++    /// Core remains responsible for publishing the compacted history.
++    fn before_compact<'a>(
++        &'a self,
++        _input: CompactionInput<'a>,
++    ) -> ExtensionFuture<'a, Result<Option<String>, String>> {
++        Box::pin(async { Ok(None) })
++    }
++
+     fn transforms_context(&self, _thread_id: &str) -> bool {
+         false
+     }
