@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -222,20 +222,25 @@ it('retains child media input and tool output in its live history and portable g
     const observedTurn = child.turn;
     if (observedTurn)
       expect((await observedTurn.wait()).finalOutput).toBe('child ready');
-    expect(
-      await Array.fromAsync(session.items({ subagentId: child.id })),
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'assistant',
-          content: expect.arrayContaining([
+    await vi.waitFor(
+      async () => {
+        expect(
+          await Array.fromAsync(session.items({ subagentId: child.id })),
+        ).toEqual(
+          expect.arrayContaining([
             expect.objectContaining({
-              type: 'output_text',
-              text: 'child ready',
+              role: 'assistant',
+              content: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'output_text',
+                  text: 'child ready',
+                }),
+              ]),
             }),
           ]),
-        }),
-      ]),
+        );
+      },
+      { timeout: 10_000 },
     );
     const content = [
       {
