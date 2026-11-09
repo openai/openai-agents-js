@@ -26,7 +26,9 @@ With the current [source build](building.md), provider options accept `headers`,
 
 Your application owns the provider, including the default provider created by `new Agent(...)` when you omit `provider`. That default is available as `agent.provider`. Closing a Session or completing `agent.run()` releases that Session's resources. The provider remains available for later Sessions, including its reusable HTTP connections.
 
-Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
+With the current [source build](building.md), the same `NativeProvider` can reuse an idle native engine for a later `agent.run()` call. Each run starts a fresh conversation and uses that run's instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
+
+Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. This also releases any retained native engine and HTTP connections. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
 
 For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#check-application-compatibility).
 
