@@ -634,6 +634,65 @@ nativeIt(
 );
 
 nativeIt.each([false, true] as const)(
+  'keeps Decisions upstream request identity separate from body response identity (%s)',
+  async (withRequestId) => {
+    const server = new ModelServer(
+      [
+        [message('candidate')],
+        (request) => {
+          const response = decisionReply(request, 0.75);
+          if (!withRequestId)
+            delete (response.headers as Record<string, string>)['x-request-id'];
+          return response;
+        },
+      ],
+      [wireUsage(14)],
+    );
+    const config = await server.config();
+    const baseURL = (config['model_providers.fixture'] as { base_url: string })
+      .base_url;
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5.5',
+      provider,
+      decisions: new OpenAIDecisions({
+        client: new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
+      }),
+      beforeComplete: async (context) => {
+        expect(await context.decide('Ready?', { input: context.text! })).toBe(
+          true,
+        );
+      },
+    }).session();
+    const result = await (await session.submit('Answer.')).wait();
+    expect(result.finalOutput).toBe('candidate');
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(24);
+    const turns = [];
+    for await (const turn of session.turns()) turns.push(turn);
+    expect(turns).toHaveLength(1);
+    const responses = turns[0].responses ?? [];
+    expect(responses).toHaveLength(2);
+    const ordinary = responses.find((row) => row.responseId === 'response-1')!;
+    const decision = responses.find((row) => row !== ordinary)!;
+    expect(ordinary.responseId).toBe('response-1');
+    expect(ordinary).not.toHaveProperty('upstreamRequestId');
+    expect(decision.responseId).toBeNull();
+    if (withRequestId)
+      expect(decision).toHaveProperty('upstreamRequestId', 'decision-http');
+    else expect(decision).not.toHaveProperty('upstreamRequestId');
+    expect(decision.usage).toMatchObject({
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    });
+    expect(new Set(responses.map((row) => row.id)).size).toBe(2);
+    server.assertExhausted();
+  },
+  30000,
+);
+
+nativeIt.each([false, true] as const)(
   'checks repaired output using the active profile and explicit override (%s)',
   async (outputOverride) => {
     const rootDecision = decisionProvider(false),

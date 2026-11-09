@@ -914,6 +914,18 @@ index 7126f39f37a2298b7d2b2ec324a0fe78544e4ed5..20fd438ad3be6cf98ab9f5df86b41b0e
  pub(crate) mod endpoint;
  pub(crate) mod error;
  pub(crate) mod files;
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index 258e950b7fad3208d47446a5b2a9508ac14506c1..376ce331592fa4f3324ad6e4b6cb88e1899e3b85 100644
+--- a/codex-rs/codex-api/src/sse/responses.rs
++++ b/codex-rs/codex-api/src/sse/responses.rs
+@@ -285,6 +285,7 @@ impl ResponsesStreamEvent {
+                 .and_then(|r| r.get("id"))
+                 .and_then(Value::as_str)
+                 .map(str::to_owned),
++            upstream_request_id: None,
+             status,
+             incomplete_reason,
+             usage,
 diff --git a/codex-rs/core/src/auxiliary_response.rs b/codex-rs/core/src/auxiliary_response.rs
 new file mode 100644
 index 0000000000000000000000000000000000000000..579b75b4c1f38a5eff6b8a23fc66aeb859236739
@@ -1150,7 +1162,7 @@ index 156e0c839f7d1b048319f66d3dddf8fd01d6aaa2..23fd6e1bd0d20fcf9527b7cd5644843b
          &self,
          turn_context: &TurnContext,
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index c292a0e8f7e851b7f93e240941ea334c3e24e9d5..b19a760b0f2fff148d871e83b9c1291beea1a98e 100644
+index c292a0e8f7e851b7f93e240941ea334c3e24e9d5..baae00b043f31970d9ddf571d44d7cbf5a743360 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
 @@ -1,5 +1,5 @@
@@ -1160,7 +1172,7 @@ index c292a0e8f7e851b7f93e240941ea334c3e24e9d5..b19a760b0f2fff148d871e83b9c1291b
  #[path = "notification_tests.rs"]
  mod notification_tests;
  
-@@ -14173,3 +14173,98 @@ async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_he
+@@ -14173,3 +14173,99 @@ async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_he
      .await
      .expect("cancelled root termination wait test timed out");
  }
@@ -1211,7 +1223,8 @@ index c292a0e8f7e851b7f93e240941ea334c3e24e9d5..b19a760b0f2fff148d871e83b9c1291b
 +        completion
 +            .commit(
 +                codex_protocol::protocol::ResponseObservation {
-+                    response_id: Some("provider-request".to_string()),
++                    response_id: Some("provider-response".to_string()),
++                    upstream_request_id: Some("provider-request".to_string()),
 +                    status: codex_protocol::protocol::ResponseObservationStatus::Completed,
 +                    incomplete_reason: None,
 +                    usage: None,
@@ -1407,3 +1420,49 @@ index 33b29f4f2c4dc31ebc67c3058b388d27c67d7b76..fa84aef877a26f7b9b21a0ed8b8e2017
  pub use contributors::TurnContextContributionInput;
  pub use contributors::TurnErrorInput;
  pub use contributors::TurnInputContext;
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 126936e99680eaaf7f5c79362c543d0695f12e1b..f05e930e590c3f630beaeeb343ac334f906eaa53 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -2742,6 +2742,9 @@ pub enum ResponseIncompleteReason {
+ #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+ pub struct ResponseObservation {
+     pub response_id: Option<String>,
++    /// Upstream transport request identity, distinct from a provider body response ID.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub upstream_request_id: Option<String>,
+     pub status: ResponseObservationStatus,
+     pub incomplete_reason: Option<ResponseIncompleteReason>,
+     pub usage: Option<ReceivedResponseUsage>,
+@@ -6986,7 +6989,8 @@ mod response_observation_tests {
+             thread_id: ThreadId::new(),
+             turn_id: "origin-turn".to_string(),
+             observation: ResponseObservation {
+-                response_id: None,
++                response_id: Some("provider-response".to_string()),
++                upstream_request_id: Some("upstream-request".to_string()),
+                 status: ResponseObservationStatus::Incomplete,
+                 incomplete_reason: Some(ResponseIncompleteReason::Unknown),
+                 usage: Some(ReceivedResponseUsage {
+@@ -6999,6 +7003,21 @@ mod response_observation_tests {
+         let value = serde_json::to_value(&record).unwrap();
+         assert_eq!(value["id"], "occurrence");
+         assert_eq!(value["turn_id"], "origin-turn");
++        assert_eq!(value["response_id"], "provider-response");
++        assert_eq!(value["upstream_request_id"], "upstream-request");
++        let mut legacy = value.clone();
++        legacy
++            .as_object_mut()
++            .unwrap()
++            .remove("upstream_request_id");
++        let legacy: ResponseObservationRecord = serde_json::from_value(legacy).unwrap();
++        assert!(legacy.observation.upstream_request_id.is_none());
++        assert!(
++            serde_json::to_value(legacy)
++                .unwrap()
++                .get("upstream_request_id")
++                .is_none()
++        );
+         assert_eq!(value["usage"]["input_tokens"], 9007199254740993_i64);
+         assert_eq!(value["usage"]["cache_write_input_tokens"], 0);
+         assert!(value["usage"].get("cached_input_tokens").is_none());

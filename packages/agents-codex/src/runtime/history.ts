@@ -83,7 +83,10 @@ export interface RecordedResponse {
   id: string | null;
   threadId: string;
   turnId: string;
+  /** Provider response body ID, or null when unavailable. */
   responseId: string | null;
+  /** Captured upstream transport request ID, separate from the body response ID. */
+  upstreamRequestId?: string;
   status?: 'completed' | 'incomplete' | 'failed';
   incompleteReason?:
     'content_filter' | 'max_output_tokens' | 'interrupted' | 'unknown';
@@ -162,6 +165,7 @@ const recordedResponseWireSchema = z
     threadId: z.string().min(1),
     turnId: z.string().min(1),
     responseId: z.string().nullable(),
+    upstreamRequestId: z.string().optional(),
     status: z.enum(['completed', 'incomplete', 'failed']).optional(),
     incompleteReason: z
       .enum(['content_filter', 'max_output_tokens', 'interrupted', 'unknown'])
@@ -1368,11 +1372,13 @@ export function projectHistory(
         ids.add(payload.id);
         observations.set(payload.turn_id, ids);
         const reason = text(payload.incomplete_reason);
+        const upstreamRequestId = text(payload.upstream_request_id);
         appendResponse(responses, payload.turn_id, {
           id: payload.id,
           threadId: String(payload.thread_id),
           turnId: payload.turn_id,
           responseId: text(payload.response_id),
+          ...(upstreamRequestId === null ? {} : { upstreamRequestId }),
           status: payload.status as RecordedResponse['status'],
           ...(reason === null
             ? {}

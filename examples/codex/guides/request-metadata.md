@@ -34,6 +34,8 @@ A `model_response_linked` event associates its `requestId` with `responseObserva
 
 Use the native occurrence ID for this join. A provider's `responseId` can repeat across occurrences. The [retained response guide](state.md#read-retained-response-usage) explains nullable status, usage, and legacy unlinked records. SDK acceptance and the Turn's final outcome remain separate from retained provider status.
 
+A retained response's `responseId` holds the provider response body's ID, or `null` when unavailable. Its optional `upstreamRequestId` holds a captured upstream HTTP request ID separately from the SDK dispatch `requestId`. A Decisions completion without a body ID can therefore have `responseId: null` and `upstreamRequestId: 'req_123'`.
+
 Link delivery is best effort. Native retirement can drop a link even after a terminal observation entered history. A missing link does not establish that no response exists. Keep unmatched dispatches and history records visible instead of inventing an association.
 
 ## Handle bounded delivery
