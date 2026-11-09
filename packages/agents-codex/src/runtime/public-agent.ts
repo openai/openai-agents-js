@@ -905,15 +905,7 @@ export class Agent<Context = undefined, Output = string> {
           )
             selected.push(identity);
       }
-    const selectedPairs = new Set<string>();
-    for (const identity of selected) {
-      const key = JSON.stringify([identity.namespace, identity.name]);
-      if (selectedPairs.has(key))
-        throw new TypeError(
-          `Duplicate selected tool ${identity.namespace}.${identity.name}`,
-        );
-      selectedPairs.add(key);
-    }
+    assertUniqueToolIdentities(selected);
     const config: JsonObject = {
       include_permissions_instructions: !!environment,
       include_environment_context: !!environment,
@@ -1263,6 +1255,20 @@ export class Agent<Context = undefined, Output = string> {
   }
 }
 
+function assertUniqueToolIdentities(
+  identities: readonly { namespace: string; name: string }[],
+): void {
+  const selectedPairs = new Set<string>();
+  for (const identity of identities) {
+    const key = JSON.stringify([identity.namespace, identity.name]);
+    if (selectedPairs.has(key))
+      throw new TypeError(
+        `Duplicate selected tool ${identity.namespace}.${identity.name}`,
+      );
+    selectedPairs.add(key);
+  }
+}
+
 /** @internal Resolve a graph synchronously, before any provider/native acquisition. */
 export function captureAgentProfiles<Context, Output>(
   root: Agent<Context, Output>,
@@ -1299,8 +1305,13 @@ export function captureAgentProfiles<Context, Output>(
   const profiles: CapturedAgentProfile<Context, Output>[] = [];
   for (const agent of agents) {
     const source = agent === root ? rootDeclaration : agent;
-    const plain = splitToolDeclarations(source.tools).tools;
+    const declarations = splitToolDeclarations(source.tools);
+    const plain = declarations.tools;
     const capturedTools = captureTools(plain).tools;
+    assertUniqueToolIdentities([
+      ...capturedTools.map(toolIdentity),
+      ...mcpToolNames(declarations.mcp),
+    ]);
     const replacements = new Map(
       plain.map((tool, index) => [tool, capturedTools[index]]),
     );
