@@ -429,3 +429,160 @@ it.each(['approve', 'onSafetyCheck'] as const)(
   },
   30_000,
 );
+
+it('rejects orphan computer compaction before publishing a replacement', async () => {
+  const calls: string[] = [];
+  const server = new ModelServer([
+    [computerCall({ action: { type: 'wait' } })],
+    [message('done')],
+  ]);
+  const selected = await provider(server);
+  const agent = new Agent({
+    instructions: 'Use computer.',
+    provider: selected,
+    tools: [computerTool({ computer: device(calls) })],
+  });
+  const session = await agent.session();
+  try {
+    await (await session.submit('wait')).wait();
+    let foundCall = false,
+      foundOutput = false;
+    for await (const item of session.items()) {
+      if (item.type === 'function_call' && item.name === 'computer') {
+        expect(item.arguments).toMatchObject({
+          type: 'computer_call',
+          action: { type: 'wait' },
+        });
+        foundCall = true;
+      }
+      if (item.type === 'function_call_output') {
+        expect(item.output).toEqual({
+          output: {
+            type: 'computer_screenshot',
+            image_url: 'data:image/png;base64,aA==',
+          },
+          acknowledged_safety_checks: [],
+        });
+        foundOutput = true;
+      }
+    }
+    expect(foundCall && foundOutput).toBe(true);
+    const snapshot = await session.modelContext();
+    const call = snapshot.items.findIndex(
+      (item) => item.type === 'computer_call',
+    );
+    const output = snapshot.items.findIndex(
+      (item) => item.type === 'computer_call_output',
+    );
+    expect(call).toBeGreaterThanOrEqual(0);
+    expect(output).toBeGreaterThan(call);
+    for (const retain of [[call], [output]]) {
+      await expect(
+        session.compact({ summary: 'Keep the screen.', snapshot, retain }),
+      ).rejects.toThrow(/retain both original tool call and result/);
+      expect(await session.modelContext()).toEqual(snapshot);
+    }
+    await session.compact({
+      summary: 'Keep the screen.',
+      snapshot,
+      retain: [call, output],
+    });
+    const retained = await session.modelContext();
+    expect(
+      retained.items.filter((item) => item.type === 'computer_call'),
+    ).toHaveLength(1);
+    expect(
+      retained.items.filter((item) => item.type === 'computer_call_output'),
+    ).toHaveLength(1);
+    expect(calls).toEqual(['wait', 'screenshot']);
+    expect(server.requests).toHaveLength(2);
+  } finally {
+    await session.close();
+    await selected.close();
+  }
+}, 30_000);
+
+it.each(
+  [false, true].flatMap((sameDeclaration) =>
+    ['approve', 'onSafetyCheck'].map(
+      (policy) => [sameDeclaration, policy] as const,
+    ),
+  ),
+)(
+  'serializes a shared borrowed device across Sessions (same declaration=%s, policy=%s)',
+  async (sameDeclaration, policyKind) => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    let screen = 0;
+    const observations: number[] = [],
+      effects: number[] = [];
+    const driver = device([]);
+    driver.wait = async () => {
+      entered.resolve();
+      await release.promise;
+      effects.push(screen++);
+    };
+    const policy = async () => {
+      observations.push(screen);
+      return screen === 0;
+    };
+    const tool = computerTool({ computer: driver, [policyKind]: policy });
+    const other = sameDeclaration
+      ? tool
+      : computerTool({ computer: driver, [policyKind]: policy });
+    const server = new ModelServer([
+      [
+        computerCall({
+          action: { type: 'wait' },
+          pending_safety_checks:
+            policyKind === 'onSafetyCheck'
+              ? [{ id: 'screen', code: 'screen', message: 'Confirm' }]
+              : [],
+        }),
+      ],
+      [
+        computerCall({
+          action: { type: 'wait' },
+          pending_safety_checks:
+            policyKind === 'onSafetyCheck'
+              ? [{ id: 'screen', code: 'screen', message: 'Confirm' }]
+              : [],
+        }),
+      ],
+      [message('done')],
+    ]);
+    const selected = await provider(server);
+    const first = await new Agent({
+      instructions: 'Use computer.',
+      provider: selected,
+      tools: [tool],
+    }).session();
+    const second = await new Agent({
+      instructions: 'Use computer.',
+      provider: selected,
+      tools: [other],
+    }).session();
+    try {
+      const one = await first.submit('first');
+      await entered.promise;
+      const two = await second.submit('second');
+      for await (const event of two.events())
+        if (event.type === 'tool_started') break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(observations).toEqual([0]);
+      release.resolve();
+      await expect(two.wait()).rejects.toThrow(
+        /not approved|require acknowledgment/,
+      );
+      expect((await one.wait()).finalOutput).toBe('done');
+      expect(observations).toEqual([0, 1]);
+      expect(effects).toEqual([0]);
+    } finally {
+      release.resolve();
+      await first.close();
+      await second.close();
+      await selected.close();
+    }
+  },
+  30_000,
+);

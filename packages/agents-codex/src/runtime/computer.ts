@@ -123,6 +123,7 @@ type Lease = {
   initializationFailure?: { error: unknown };
 };
 const resources = new WeakMap<object, Map<object, Lease>>();
+const borrowedGates = new WeakMap<object, FunctionAdmission>();
 
 /** @internal Called only after the Session's callback owners retire. */
 export async function closeComputerResources(owner: object): Promise<void> {
@@ -154,6 +155,11 @@ export function computerTool<Context = unknown>(
   const { computer, onSafetyCheck, approve } = options;
   const provider = 'create' in computer ? computer : undefined;
   const borrowed = provider ? undefined : (computer as Computer<Context>);
+  let borrowedGate = borrowed && borrowedGates.get(borrowed);
+  if (borrowed && !borrowedGate) {
+    borrowedGate = new FunctionAdmission(1);
+    borrowedGates.set(borrowed, borrowedGate);
+  }
   const dimensions = options.dimensions ?? borrowed?.dimensions;
   const environment = options.environment ?? borrowed?.environment;
   const toolType = options.toolType ?? 'computer';
@@ -185,7 +191,10 @@ export function computerTool<Context = unknown>(
       if (!leases) resources.set(owner, (leases = new Map()));
       let lease = leases.get(identity);
       if (!lease) {
-        lease = { gate: new FunctionAdmission(1), initialized: false };
+        lease = {
+          gate: borrowedGate ?? new FunctionAdmission(1),
+          initialized: false,
+        };
         leases.set(identity, lease);
       }
       const release = await lease.gate.acquire(context.signal);
