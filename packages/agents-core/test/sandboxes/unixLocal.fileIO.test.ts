@@ -10,6 +10,7 @@ import {
   rename,
   rm,
   symlink,
+  truncate,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -337,6 +338,41 @@ def checked_path(spec):
         true,
       );
       expect(await session.directoryExists('nested/note.txt')).toBe(false);
+    });
+
+    it('bounds worker output for a capped read of a large regular file', async () => {
+      const path = join(session.state.workspaceRootPath, 'large.bin');
+      await writeFile(path, Buffer.from([0, 255, 128, 10]));
+      await truncate(path, 8 * 1024 * 1024);
+      const spawn = childProcess.spawn;
+      let transferred = 0;
+      vi.spyOn(childProcess, 'spawn').mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnOptions,
+      ) => {
+        const child = spawn(command, args, options);
+        if (args.includes(UNIX_LOCAL_FILE_WORKER)) {
+          child.stdout?.on('data', (chunk: Buffer) => {
+            transferred += chunk.length;
+          });
+        }
+        return child;
+      }) as typeof childProcess.spawn);
+
+      expect(
+        await session.readFile({ path: 'large.bin', maxBytes: 4 }),
+      ).toEqual(Buffer.from([0, 255, 128, 10]));
+      expect(transferred).toBe(4);
+      expect(
+        await session.readFile({ path: 'large.bin', maxBytes: 0 }),
+      ).toEqual(Buffer.alloc(0));
+      await expect(
+        session.readFile({ path: 'missing.bin', maxBytes: 0 }),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await session.readFile({ path: 'nested/note.txt' })).toEqual(
+        Buffer.from('before\n'),
+      );
     });
 
     // Root bypasses directory mode checks on supported Unix hosts.

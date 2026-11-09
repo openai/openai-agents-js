@@ -130,10 +130,12 @@ def regular(fd, path):
         raise OSError(errno.EINVAL, "Sandbox path is not a regular file", path)
     return info
 
-def output_file(fd, limit=None):
+def output_file(fd, limit=None, truncate=False):
     count = 0
     while True:
-        data = os.read(fd, 65536)
+        if truncate and count == limit:
+            return
+        data = os.read(fd, min(65536, limit - count) if truncate else 65536)
         if not data:
             return
         count += len(data)
@@ -448,9 +450,9 @@ def run(request):
         try:
             info = regular(fd, path)
             limit = request.get("limit")
-            if limit is not None and info.st_size > limit:
+            if operation == "image" and limit is not None and info.st_size > limit:
                 raise OSError(errno.EFBIG, "Image file exceeds the 10 MB limit", path)
-            output_file(fd, limit)
+            output_file(fd, limit, operation == "read" and limit is not None)
         finally:
             close(fd)
         return

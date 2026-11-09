@@ -16,6 +16,7 @@ import {
   type ExposedPortEndpoint,
   type ExecCommandArgs,
   type Mount,
+  type ReadFileArgs,
   type SandboxSessionLifecycleOptions,
   type SandboxSessionState,
   type TypedMount,
@@ -70,7 +71,11 @@ import { closePtyWebSocket } from '../shared/pty';
 import {
   configuredMountCredentialFields,
   validateMountCredentialBoundaries,
+  BOUNDED_FILE_READ_STATUS_BYTES,
 } from '@openai/agents-core/sandbox/internal';
+import { Buffer } from 'node:buffer';
+import { validateRemoteSandboxPathForManifest } from '../shared/paths';
+import { readRunAsRemoteFile } from '../shared/runAs';
 import {
   blaxelFuseMountHandle,
   isBlaxelCloudBucketMountEntry,
@@ -121,14 +126,24 @@ type BlaxelSandboxLike = {
     };
   };
   process: {
-    exec(params: Record<string, unknown>): Promise<BlaxelProcessResult>;
+    exec(
+      params: Record<string, unknown>,
+      collection?: {
+        maxResponseBytes: number;
+        stdoutLimit: number;
+        signal: AbortSignal;
+      },
+    ): Promise<BlaxelProcessResult>;
   };
   fs: {
     mkdir(path: string): Promise<void>;
     write(path: string, content: string): Promise<void>;
     writeBinary(path: string, content: Uint8Array): Promise<void>;
     read(path: string): Promise<string>;
-    readBinary(path: string): Promise<Blob | Uint8Array | ArrayBuffer>;
+    readBinary(
+      path: string,
+      collection?: { maxBytes: number; signal: AbortSignal },
+    ): Promise<Blob | Uint8Array | ArrayBuffer>;
     rm(path: string, recursive?: boolean): Promise<void>;
   };
   previews?: BlaxelPreviewApi;
@@ -698,19 +713,113 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     command: string,
     options: RemoteSandboxCommandOptions,
   ): Promise<RemoteSandboxCommandResult> {
+    return await this.runBlaxelCommand(command, options);
+  }
+
+  override async readFile(args: ReadFileArgs): Promise<Uint8Array> {
+    if (args.maxBytes === undefined) return await super.readFile(args);
+    this.assertSessionUsable();
+    this.assertFilesystemRunAs(args.runAs);
+    const maxBytes = args.maxBytes;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    }
+    const absolutePath = await validateRemoteSandboxPathForManifest({
+      manifest: this.state.manifest,
+      path: args.path,
+      runCommand: (command) =>
+        this.runBlaxelCommand(
+          command,
+          {
+            kind: 'path',
+            workdir: this.state.manifest.root,
+            environment: {},
+          },
+          65536,
+        ),
+    });
+    if (args.runAs) {
+      const encodedBytes =
+        Math.ceil((maxBytes + BOUNDED_FILE_READ_STATUS_BYTES) / 3) * 4;
+      return await readRunAsRemoteFile({
+        providerName: this.providerName,
+        providerId: this.providerId,
+        path: absolutePath,
+        runAs: args.runAs,
+        maxBytes,
+        runCommand: (command, options) =>
+          this.runBlaxelCommand(
+            command,
+            { kind: 'fileRead', workdir: '/', runAs: options?.runAs },
+            encodedBytes + Math.ceil(encodedBytes / 76),
+          ),
+      });
+    }
+    const controller = new AbortController();
+    try {
+      return await toUint8Array(
+        await withBlaxelOperationTimeout(
+          this.sandbox.fs.readBinary(absolutePath, {
+            maxBytes,
+            signal: controller.signal,
+          }),
+          this.state.timeouts?.fileDownloadTimeoutMs,
+          'read binary file',
+          { onTimeout: () => controller.abort() },
+        ),
+      );
+    } catch (error) {
+      throw blaxelReadError(absolutePath, error);
+    }
+  }
+
+  private async runBlaxelCommand(
+    command: string,
+    options: RemoteSandboxCommandOptions,
+    stdoutLimit?: number,
+  ): Promise<RemoteSandboxCommandResult> {
     const shellCommand = buildShellCommand(
       command,
       options.environment ?? this.state.environment,
     );
     const commandForUser = options.runAs
-      ? `sudo -n -u ${shellQuote(options.runAs)} -- sh -lc ${shellQuote(shellCommand)}`
+      ? `sudo -n -u ${shellQuote(options.runAs)} -- ${options.kind === 'fileRead' ? '/bin/sh -c' : 'sh -lc'} ${shellQuote(shellCommand)}`
       : shellCommand;
-    const result = await this.sandbox.process.exec({
-      command: commandForUser,
-      workingDir: options.workdir,
-      waitForCompletion: true,
-      timeout: toBlaxelTimeoutSeconds(this.timeoutForCommand(options)),
-    });
+    const controller =
+      stdoutLimit === undefined ? undefined : new AbortController();
+    const operation = this.sandbox.process.exec(
+      {
+        command: commandForUser,
+        workingDir: options.workdir,
+        waitForCompletion: true,
+        timeout: toBlaxelTimeoutSeconds(this.timeoutForCommand(options)),
+      },
+      stdoutLimit === undefined
+        ? undefined
+        : {
+            // The response repeats stdout/stderr in logs. File output is base64 with
+            // escaped wrapping newlines; path output and diagnostics may need six-byte
+            // JSON escapes. Keep a fixed metadata allowance, not a file-size multiplier.
+            maxResponseBytes:
+              (options.kind === 'fileRead'
+                ? 2 * (stdoutLimit + Math.ceil(stdoutLimit / 76))
+                : 12 * stdoutLimit) +
+              12 * 8192 +
+              6 * Buffer.byteLength(commandForUser) +
+              65536,
+            stdoutLimit,
+            signal: controller!.signal,
+          },
+    );
+    const result =
+      options.kind === 'fileRead'
+        ? await withBlaxelOperationTimeout(
+            operation,
+            this.state.timeouts?.fileDownloadTimeoutMs,
+            'read binary file',
+            { onTimeout: () => controller?.abort() },
+          )
+        : await operation;
     return {
       status: result.exitCode ?? 1,
       stdout: result.stdout ?? '',
@@ -836,6 +945,9 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     }
     if (options.kind === 'exec') {
       return this.state.timeouts?.execTimeoutMs ?? this.state.timeoutMs;
+    }
+    if (options.kind === 'fileRead') {
+      return this.state.timeouts?.fileDownloadTimeoutMs;
     }
     if (options.kind === 'path' || options.kind === 'running') {
       return this.state.timeouts?.fastOperationTimeoutMs;
@@ -1153,11 +1265,16 @@ export class BlaxelSandboxClient implements SandboxClient<
 
 async function loadBlaxelSandboxClass(): Promise<BlaxelSandboxClass> {
   try {
-    const { SandboxInstance } = await import('@blaxel/core');
+    const { SandboxInstance, postProcess, getFilesystemByPath } =
+      await import('@blaxel/core');
     if (!SandboxInstance) {
       throw new Error('Missing SandboxInstance export from @blaxel/core.');
     }
-    return adaptBlaxelSandboxClass(SandboxInstance);
+    return adaptBlaxelSandboxClass(
+      SandboxInstance,
+      postProcess,
+      getFilesystemByPath,
+    );
   } catch (error) {
     throw new UserError(
       `Blaxel sandbox support requires the optional \`@blaxel/core\` package. Install it before using Blaxel-backed sandbox examples. ${(error as Error).message}`,
@@ -1383,6 +1500,8 @@ function isConflictValue(value: unknown): boolean {
 
 function adaptBlaxelSandboxClass(
   SandboxInstance: typeof import('@blaxel/core').SandboxInstance,
+  postProcess: typeof import('@blaxel/core').postProcess,
+  getFilesystemByPath: typeof import('@blaxel/core').getFilesystemByPath,
 ): BlaxelSandboxClass {
   return {
     create: async (params) =>
@@ -1390,13 +1509,22 @@ function adaptBlaxelSandboxClass(
         await SandboxInstance.create(
           params as Parameters<typeof SandboxInstance.create>[0],
         ),
+        postProcess,
+        getFilesystemByPath,
       ),
-    get: async (name) => adaptBlaxelSandbox(await SandboxInstance.get(name)),
+    get: async (name) =>
+      adaptBlaxelSandbox(
+        await SandboxInstance.get(name),
+        postProcess,
+        getFilesystemByPath,
+      ),
   };
 }
 
 function adaptBlaxelSandbox(
   sandbox: import('@blaxel/core').SandboxInstance,
+  postProcess: typeof import('@blaxel/core').postProcess,
+  getFilesystemByPath: typeof import('@blaxel/core').getFilesystemByPath,
 ): BlaxelSandboxLike {
   const sandboxUrl = extractBlaxelSandboxUrl(sandbox);
   const previews = adaptBlaxelPreviewApi(
@@ -1408,10 +1536,48 @@ function adaptBlaxelSandbox(
     status: typeof sandbox.status === 'string' ? sandbox.status : undefined,
     ...(sandboxUrl ? { sandbox: { metadata: { url: sandboxUrl } } } : {}),
     process: {
-      exec: async (params) =>
-        await sandbox.process.exec(
-          params as Parameters<typeof sandbox.process.exec>[0],
-        ),
+      exec: async (params, collection) => {
+        if (!collection) {
+          return await sandbox.process.exec(
+            params as Parameters<typeof sandbox.process.exec>[0],
+          );
+        }
+        const client = sandbox.process.client;
+        const configuredFetch = client.getConfig().fetch ?? globalThis.fetch;
+        const { response, data, error } = await postProcess({
+          body: params as Parameters<typeof sandbox.process.exec>[0],
+          client,
+          baseUrl: sandbox.process.url,
+          fetch: async (request) => {
+            const controller = new AbortController();
+            const signal = AbortSignal.any([
+              request.signal,
+              collection.signal,
+              controller.signal,
+            ]);
+            const response = await configuredFetch(
+              new Request(request, { signal }),
+            );
+            return await boundedBlaxelResponse(
+              response,
+              collection.maxResponseBytes,
+              controller,
+            );
+          },
+        });
+        sandbox.process.handleResponseError(response, data, error);
+        if (
+          (data?.stdout &&
+            Buffer.byteLength(data.stdout) > collection.stdoutLimit) ||
+          (data?.stderr && Buffer.byteLength(data.stderr) > 8192)
+        ) {
+          throw new SandboxProviderError(
+            'Blaxel file read response exceeded its output limit.',
+            { provider: 'blaxel' },
+          );
+        }
+        return data!;
+      },
     },
     fs: {
       mkdir: async (path) => {
@@ -1424,7 +1590,64 @@ function adaptBlaxelSandbox(
         await sandbox.fs.writeBinary(path, content);
       },
       read: async (path) => await sandbox.fs.read(path),
-      readBinary: async (path) => await sandbox.fs.readBinary(path),
+      readBinary: async (path, collection) => {
+        if (!collection) return await sandbox.fs.readBinary(path);
+        const client = sandbox.fs.client;
+        const configuredFetch = client.getConfig().fetch ?? globalThis.fetch;
+        const controller = new AbortController();
+        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+        try {
+          // The minimum SDK's private formatPath is identity. Preserve the same
+          // validated absolute path without depending on that private method.
+          const { response, data, error } = await getFilesystemByPath({
+            path: { path },
+            client,
+            baseUrl: sandbox.fs.url,
+            headers: { Accept: 'application/octet-stream' },
+            parseAs: 'stream',
+            fetch: async (request) => {
+              const signal = AbortSignal.any([
+                request.signal,
+                collection.signal,
+                controller.signal,
+              ]);
+              const response = await configuredFetch(
+                new Request(request, { signal }),
+              );
+              // Success stays streaming; the generated client eagerly reads
+              // non-OK bodies even with parseAs:stream, so limit only that body.
+              return response.ok
+                ? response
+                : await boundedBlaxelResponse(
+                    response,
+                    8192 + 6 * Buffer.byteLength(path),
+                    controller,
+                  );
+            },
+          });
+          sandbox.fs.handleResponseError(response, data, error);
+          reader = response.body?.getReader();
+          if (!reader) return new Uint8Array();
+          const chunks: Uint8Array[] = [];
+          let bytes = 0;
+          while (bytes < collection.maxBytes) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value.byteLength === 0) continue;
+            const prefix = value.subarray(0, collection.maxBytes - bytes);
+            chunks.push(prefix.slice());
+            bytes += prefix.byteLength;
+          }
+          return new Uint8Array(Buffer.concat(chunks));
+        } finally {
+          // H2 needs request abort in addition to cancelling its body reader.
+          controller.abort();
+          if (reader) {
+            void reader.cancel().catch(() => {});
+            reader.releaseLock();
+          }
+        }
+      },
       rm: async (path, recursive) => {
         await sandbox.fs.rm(path, recursive);
       },
@@ -1435,6 +1658,43 @@ function adaptBlaxelSandbox(
       await sandbox.delete();
     },
   };
+}
+
+async function boundedBlaxelResponse(
+  response: Response,
+  maxBytes: number,
+  controller: AbortController,
+): Promise<Response> {
+  const reader = response.body?.getReader();
+  if (!reader) return response;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.byteLength === 0) continue;
+      if (bytes + value.byteLength > maxBytes) {
+        throw new SandboxProviderError(
+          'Blaxel file read response exceeded its byte limit.',
+          { provider: 'blaxel' },
+        );
+      }
+      bytes += value.byteLength;
+      chunks.push(value);
+    }
+    return new Response(Buffer.concat(chunks), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } catch (error) {
+    controller.abort();
+    void reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function adaptBlaxelPreviewApi(

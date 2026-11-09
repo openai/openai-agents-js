@@ -1,5 +1,5 @@
 import { makeTarArchive } from './tarFixture';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import {
   chmod,
   mkdtemp,
@@ -9,8 +9,10 @@ import {
   rm,
   stat,
   symlink,
+  truncate,
   writeFile,
 } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -21,7 +23,7 @@ import {
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
 import { liveMountCredentialAuthorityMatches } from '@openai/agents-core/sandbox/internal';
 import {
@@ -33,6 +35,8 @@ import {
   resolvedRemotePathFromValidationCommand,
 } from './remotePathValidation';
 
+const actualFetch = globalThis.fetch;
+const getPreviewLinkMock = vi.fn();
 const createMock = vi.fn();
 const getMock = vi.fn();
 const executeCommandMock = vi.fn();
@@ -48,6 +52,14 @@ const stopMock = vi.fn();
 const deleteMock = vi.fn();
 const daytonaConstructorMock = vi.fn();
 const execFileAsync = promisify(execFile);
+
+// Fault-injection fixtures target the POSIX script inside the provider wrapper.
+function editorScript(command: string): string {
+  const prefix = "/bin/sh -c '";
+  return command.startsWith(prefix)
+    ? command.slice(prefix.length, -1).replaceAll("'\\''", "'")
+    : command;
+}
 
 async function executeLocalEditorCommand(command: string) {
   try {
@@ -87,6 +99,7 @@ vi.mock('@daytonaio/sdk', () => ({
 }));
 
 describe('DaytonaSandboxClient', () => {
+  afterEach(() => vi.unstubAllGlobals());
   test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
     const client = new DaytonaSandboxClient();
     const manifest = new Manifest({
@@ -107,6 +120,27 @@ describe('DaytonaSandboxClient', () => {
   });
 
   beforeEach(() => {
+    getPreviewLinkMock.mockReset();
+    getPreviewLinkMock.mockResolvedValue({
+      url: 'https://2280-daytona.example.test',
+      token: 'fixture-token',
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url, init) => {
+        const payload = JSON.parse(String(init?.body));
+        const result = await executeCommandMock(
+          payload.command,
+          payload.cwd,
+          payload.envs,
+          payload.timeout,
+        );
+        return Response.json({
+          exitCode: result.exitCode,
+          result: result.artifacts?.stdout ?? result.result,
+        });
+      }),
+    );
     createMock.mockReset();
     getMock.mockReset();
     executeCommandMock.mockReset();
@@ -124,6 +158,7 @@ describe('DaytonaSandboxClient', () => {
 
     const sandbox = {
       id: 'daytona-test',
+      getPreviewLink: getPreviewLinkMock,
       start: startMock,
       stop: stopMock,
       delete: deleteMock,
@@ -144,6 +179,7 @@ describe('DaytonaSandboxClient', () => {
     createMock.mockResolvedValue(sandbox);
     getMock.mockResolvedValue(sandbox);
     executeCommandMock.mockImplementation(async (command: string) => {
+      command = editorScript(command);
       const resolvedPath =
         resolvedRemotePathFromValidationCommand(command) ??
         resolvedRemoteEffectivePathFromCommand(command);
@@ -401,6 +437,7 @@ describe('DaytonaSandboxClient', () => {
     uploadFileMock.mockClear();
 
     executeCommandMock.mockImplementation(async (command: string) => {
+      command = editorScript(command);
       if (command.includes('resolve-workspace-path.sh')) {
         return {
           exitCode: 0,
@@ -485,6 +522,7 @@ describe('DaytonaSandboxClient', () => {
         );
         let denyOwnershipCopy = false;
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (denyOwnershipCopy) {
             command =
               'chown() { printf "Operation not permitted\\n" >&2; return 1; }\n' +
@@ -586,6 +624,7 @@ describe('DaytonaSandboxClient', () => {
           new Manifest({ root }),
         );
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             const mutation = {
               'mode-change': 'chmod 644 "$target"',
@@ -661,6 +700,7 @@ describe('DaytonaSandboxClient', () => {
           new Manifest({ root }),
         );
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             command = [
               'chown() {',
@@ -723,6 +763,7 @@ describe('DaytonaSandboxClient', () => {
         const outside = join(root, 'outside');
         await execFileAsync('/bin/mkdir', [outside]);
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             command =
               attack === 'occupied-child'
@@ -786,6 +827,7 @@ describe('DaytonaSandboxClient', () => {
           new Manifest({ root }),
         );
         executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
           if (command.includes('stage=$(mktemp -d')) {
             command = `chown() { command chown "$@"; kill -TERM "$(sh -c 'printf %s "$PPID"')"; }\n${command}`;
           }
@@ -814,6 +856,7 @@ describe('DaytonaSandboxClient', () => {
     uploadFileMock.mockClear();
 
     executeCommandMock.mockImplementation(async (command: string) => {
+      command = editorScript(command);
       if (command.includes('test -e ')) {
         return {
           exitCode: 1,
@@ -860,8 +903,12 @@ describe('DaytonaSandboxClient', () => {
     downloadFileMock.mockClear();
 
     executeCommandMock.mockImplementation(async (command: string) => {
-      if (command.includes('base64 <&3')) {
-        const stdout = pngBytes.toString('base64');
+      command = editorScript(command);
+      if (command.includes('exec 3<') && command.includes('base64')) {
+        const stdout = Buffer.concat([
+          pngBytes,
+          Buffer.from('\n000\n'),
+        ]).toString('base64');
         return {
           exitCode: 0,
           result: stdout,
@@ -880,10 +927,13 @@ describe('DaytonaSandboxClient', () => {
 
     const readCommand = executeCommandMock.mock.calls
       .map(([command]) => String(command))
-      .find((command) => command.includes('base64 <&3'));
+      .find(
+        (command) => command.includes('exec 3<') && command.includes('base64'),
+      );
     expect(readCommand).toContain('resolved=$(readlink -f -- "$path")');
     expect(readCommand).toContain('exec 3< "$resolved"');
     expect(readCommand).toContain('[ -f "$resolved" ]');
+    expect(readCommand).toContain('head -c 10485761 <&3');
     expect(
       readCommand?.indexOf('resolved=$(readlink -f -- "$path")'),
     ).toBeLessThan(readCommand?.indexOf('exec 3< "$resolved"') ?? -1);
@@ -902,6 +952,414 @@ describe('DaytonaSandboxClient', () => {
     }
     expect(image.image.mediaType).toBe('image/png');
   });
+
+  test.each(['success', 'error', 'validation', 'redirect'] as const)(
+    'bounds real HTTP %s output with the supported minimum SDK',
+    async (mode) => {
+      const { Daytona } =
+        await vi.importActual<typeof import('@daytonaio/sdk')>(
+          '@daytonaio/sdk',
+        );
+      let origin = '';
+      let written = 0;
+      let completed = false;
+      let closed = false;
+      let armed = false;
+      const intendedResponseBytes = 64 * 1024 * 1024;
+      const requests: Array<{
+        command: string;
+        cwd?: string;
+        envs?: Record<string, string>;
+        timeout?: number;
+      }> = [];
+      const server = createServer(async (request, response) => {
+        const path = new URL(request.url!, origin).pathname;
+        response.setHeader('content-type', 'application/json');
+        if (path === '/api/sandbox/fixture') {
+          response.end(
+            JSON.stringify({
+              id: 'fixture',
+              user: 'daytona',
+              state: 'started',
+              labels: {},
+              toolboxProxyUrl: `${origin}/toolbox`,
+            }),
+          );
+          return;
+        }
+        if (path === '/api/sandbox/fixture/ports/2280/preview-url') {
+          response.end(
+            JSON.stringify({
+              url: `${origin}/preview/base`,
+              token: 'fixture-token',
+            }),
+          );
+          return;
+        }
+        if (path.endsWith('/process/execute')) {
+          let body = '';
+          for await (const chunk of request) body += chunk;
+          const payload = JSON.parse(body);
+          if (!armed) {
+            response.end(JSON.stringify({ exitCode: 0, result: '' }));
+            return;
+          }
+          requests.push(payload);
+          if (path.startsWith('/preview')) {
+            expect(path).toBe('/preview/base/process/execute');
+            expect(request.headers['x-daytona-preview-token']).toBe(
+              'fixture-token',
+            );
+            expect(request.headers['x-daytona-skip-preview-warning']).toBe(
+              'true',
+            );
+          }
+          response.statusCode = mode === 'error' ? 500 : 200;
+          response.on('close', () => {
+            closed = true;
+          });
+          if (mode === 'redirect') {
+            response.writeHead(307, { Location: `${origin}/process/execute` });
+            response.end();
+            return;
+          }
+          response.write('{"exitCode":0,"result":"');
+          const chunk = 'A'.repeat(4096);
+          for (
+            let i = 0;
+            i < intendedResponseBytes / chunk.length && !response.destroyed;
+            i++
+          ) {
+            const canContinue = response.write(chunk);
+            written += chunk.length;
+            if (!canContinue) {
+              await new Promise<void>((resolve) => {
+                const finish = () => {
+                  response.off('drain', finish);
+                  response.off('close', finish);
+                  resolve();
+                };
+                response.once('drain', finish);
+                response.once('close', finish);
+              });
+            }
+          }
+          if (!response.destroyed) {
+            completed = true;
+            response.end('"}');
+          }
+          return;
+        }
+        response.writeHead(404);
+        response.end('{}');
+      });
+      server.on('upgrade', (_request, socket) => socket.destroy());
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', resolve),
+      );
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Expected HTTP address.');
+      origin = `http://127.0.0.1:${address.port}`;
+      const daytona = new Daytona({
+        apiKey: 'local-fixture-only',
+        apiUrl: `${origin}/api`,
+        target: 'us',
+        otelEnabled: false,
+        useDeprecatedPolling: true,
+      });
+      vi.stubGlobal('fetch', actualFetch);
+      getMock.mockImplementation(async () => await daytona.get('fixture'));
+      try {
+        const sandbox = await daytona.get('fixture');
+        sandbox.start = async () => {};
+        getMock.mockResolvedValue(sandbox);
+        const session = await new DaytonaSandboxClient().resume({
+          sandboxId: 'fixture',
+          manifest: new Manifest({ root: '/workspace' }),
+          environment: {},
+          timeoutSec: 7,
+          pauseOnExit: false,
+        });
+        armed = true;
+        const failure = await session
+          .readFile({
+            path: 'large.bin',
+            maxBytes: 4,
+            runAs: mode === 'validation' ? 'alice' : undefined,
+          })
+          .catch((error: unknown) => error);
+        await expect.poll(() => closed, { timeout: 3000 }).toBe(true);
+        expect(written).toBeLessThan(intendedResponseBytes);
+        expect(failure).toHaveProperty(
+          'message',
+          expect.stringMatching(
+            mode === 'error'
+              ? /HTTP request failed/
+              : mode === 'redirect'
+                ? /request failed/
+                : /response byte limit/,
+          ),
+        );
+        expect(completed).toBe(false);
+        expect(requests).toHaveLength(1);
+        expect(requests[0].cwd).toBe('/workspace');
+        expect(requests[0].timeout).toBe(mode === 'validation' ? undefined : 7);
+      } finally {
+        await daytona[Symbol.asyncDispose]();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  test.each([404, 500])(
+    'keeps HTTP %s failures separate from file missing errors',
+    async (status) => {
+      const session = await new DaytonaSandboxClient().create(new Manifest());
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          Response.json(
+            {
+              code: 'ENOENT',
+              message: 'fixture-token private guest diagnostics',
+            },
+            { status },
+          ),
+        ),
+      );
+      const failure = await session
+        .readFile({ path: 'missing', maxBytes: 1 })
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(SandboxProviderError);
+      expect(failure).toMatchObject({
+        code: 'provider_error',
+        details: { provider: 'daytona', status },
+      });
+      expect(String(failure)).not.toMatch(/ENOENT|fixture-token|private guest/);
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  test.each(['pending preview', 'unterminated response'] as const)(
+    'bounds %s by the existing HTTP deadline',
+    async (phase) => {
+      const session = await new DaytonaSandboxClient().create(new Manifest());
+      const preview = deferred<{ url: string; token: string }>();
+      const cancel = vi.fn();
+      if (phase === 'pending preview')
+        getPreviewLinkMock.mockReturnValue(preview.promise);
+      else
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(
+            async () =>
+              new Response(
+                new ReadableStream({
+                  start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"result":"'));
+                  },
+                  cancel,
+                }),
+              ),
+          ),
+        );
+      vi.useFakeTimers();
+      try {
+        const pending = session
+          .readFile({ path: 'data', maxBytes: 1 })
+          .catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+        expect(await pending).toMatchObject({
+          code: 'provider_error',
+          message: expect.stringContaining('timed out'),
+        });
+        if (phase === 'pending preview') {
+          preview.resolve({
+            url: 'https://late.example.test',
+            token: 'fixture-token',
+          });
+          await Promise.resolve();
+          await Promise.resolve();
+          expect(fetch).not.toHaveBeenCalled();
+        } else {
+          await Promise.resolve();
+          expect(cancel).toHaveBeenCalledOnce();
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test('accepts legacy status framing, cancels bodies and forwards original timeout options', async () => {
+    const session = await new DaytonaSandboxClient({ timeoutSec: 7 }).create(
+      new Manifest(),
+    );
+    const cancel = vi.fn();
+    let pulls = 0;
+    const framed = Buffer.concat([
+      Buffer.from([0, 255, 128, 10]),
+      Buffer.from('\n000\n'),
+    ]).toString('base64');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () => new Response(JSON.stringify({ code: 0, result: framed })),
+      ),
+    );
+    expect(await session.readFile({ path: 'binary', maxBytes: 4 })).toEqual(
+      Buffer.from([0, 255, 128, 10]),
+    );
+    expect(
+      JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)),
+    ).toMatchObject({
+      timeout: 7,
+      envs: { BASH_ENV: '/dev/null', ENV: '/dev/null', ZDOTDIR: '/dev/null' },
+    });
+    expect(vi.mocked(fetch).mock.calls[0][1]).toMatchObject({
+      method: 'POST',
+      redirect: 'error',
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream({
+              pull(controller) {
+                pulls += 1;
+                controller.enqueue(new Uint8Array(32768));
+              },
+              cancel,
+            }),
+          ),
+      ),
+    );
+    await expect(
+      session.readFile({ path: 'binary', maxBytes: 0 }),
+    ).rejects.toThrow(/response byte limit/);
+    expect(pulls).toBeLessThanOrEqual(2);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(vi.mocked(fetch).mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  test.skipIf(process.platform !== 'linux')(
+    'bounds pinned descriptor output for capped file reads',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'daytona-bounded-read-'));
+      try {
+        const large = join(root, 'large.bin');
+        await writeFile(large, Buffer.from([0, 255, 128, 10]));
+        await truncate(large, 8 * 1024 * 1024);
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root }),
+        );
+        let transferred = 0;
+        executeCommandMock.mockImplementation(async (command: string) => {
+          command = editorScript(command);
+          const result = await executeLocalEditorCommand(command);
+          if (command.includes('head -c')) {
+            transferred += result.artifacts.stdout.length;
+          }
+          return result;
+        });
+
+        expect(
+          await session.readFile({ path: 'large.bin', maxBytes: 4 }),
+        ).toEqual(Buffer.from([0, 255, 128, 10]));
+        expect(transferred).toBeLessThan(32);
+        expect(
+          await session.readFile({ path: 'large.bin', maxBytes: 0 }),
+        ).toEqual(Buffer.alloc(0));
+        await chmod(large, 0);
+        await expect(
+          session.readFile({ path: 'large.bin', maxBytes: 0 }),
+        ).rejects.toThrow(/permission denied/iu);
+        await chmod(large, 0o600);
+        const summary = '# memory summary\nこんにちは\n';
+        await writeFile(join(root, 'memory_summary.md'), summary);
+        expect(
+          new TextDecoder().decode(
+            await session.readFile({
+              path: 'memory_summary.md',
+              maxBytes: 1_000_000,
+            }),
+          ),
+        ).toBe(summary);
+        await expect(
+          session.readFile({ path: 'missing.bin', maxBytes: 0 }),
+        ).rejects.toThrow();
+        await writeFile(join(root, 'small.txt'), 'hello');
+        expect(await session.readFile({ path: 'small.txt' })).toEqual(
+          Buffer.from('hello'),
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(
+    process.platform !== 'linux' ||
+      spawnSync('zsh', ['--version']).status !== 0,
+  )(
+    'bounds reads when the provider shell has user startup functions',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'daytona-startup-read-'));
+      try {
+        await writeFile(
+          join(root, '.zshenv'),
+          'printf "startup-file-loaded\\n"\nhead() { cat; }\n',
+        );
+        await writeFile(
+          join(root, '.profile'),
+          'printf "login-profile-loaded\\n"\ncommand() { cat; }\n',
+        );
+        const large = join(root, 'large.bin');
+        await writeFile(large, 'prefix');
+        await truncate(large, 8 * 1024 * 1024);
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root, environment: { ZDOTDIR: root, HOME: root } }),
+        );
+        let transferred = 0;
+        executeCommandMock.mockImplementation(
+          async (
+            command: string,
+            _cwd: string,
+            environment: Record<string, string>,
+          ) => {
+            const { stdout } = await execFileAsync('zsh', ['-c', command], {
+              env: { ...process.env, ...environment },
+              maxBuffer: 16 * 1024 * 1024,
+            });
+            if (command.includes('head -c')) transferred += stdout.length;
+            return { exitCode: 0, result: stdout, artifacts: { stdout } };
+          },
+        );
+        const bytes = await session.readFile({
+          path: 'large.bin',
+          maxBytes: 4,
+        });
+        expect(transferred).toBeLessThan(32);
+        expect(bytes).toEqual(Buffer.from('pref'));
+        const user = (await execFileAsync('id', ['-un'])).stdout.trim();
+        const runAsBytes = await session.readFile({
+          path: 'large.bin',
+          maxBytes: 4,
+          runAs: user,
+        });
+        expect(Array.from(runAsBytes)).toEqual(Array.from(Buffer.from('pref')));
+        expect(transferred).toBeLessThan(64);
+        expect(
+          await session.execCommand({ cmd: 'printf user-command' }),
+        ).toContain('startup-file-loaded');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('reuses resolved manifest environment values during create', async () => {
     let tokenVersion = 0;
