@@ -6,9 +6,9 @@ import { NativeProvider } from '../src/runtime/provider';
 
 // Like provider-transport-owner.test.ts, control only the external cleanup calls.
 // The real Provider owns the lease, immediate callback and temporary home.
-async function retained() {
+async function retained(useEnvironmentKey = false) {
   const provider = new NativeProvider({
-    apiKey: 'synthetic',
+    ...(useEnvironmentKey ? {} : { apiKey: 'synthetic' }),
     supportsWebsockets: false,
   });
   const lease = provider._acquire(undefined, true);
@@ -40,7 +40,10 @@ async function retained() {
   }
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 it('cancels pending idle cleanup for a new lease and disposes its home only after that lease', async () => {
   vi.useFakeTimers({ toFake: ['setImmediate', 'clearImmediate'] });
@@ -183,5 +186,38 @@ it('keeps buffered HTTP providers on fresh engines', async () => {
     expect(lease.privateRuntime).toBeUndefined();
   } finally {
     await lease.release();
+  }
+});
+
+it.each([undefined, ''])(
+  'falls back to a fresh owner when the environment key is removed (%j)',
+  async (missing) => {
+    vi.useFakeTimers({ toFake: ['setImmediate', 'clearImmediate'] });
+    vi.stubEnv('OPENAI_API_KEY', 'synthetic-environment');
+    const fixture = await retained(true);
+    await using provider = fixture.provider;
+    await fixture.lease.privateRuntime!.finish(true);
+    vi.stubEnv('OPENAI_API_KEY', missing);
+    const next = provider._acquire(undefined, true);
+    try {
+      expect(next.privateRuntime).toBeUndefined();
+      expect(next.apiKey).toBe(missing);
+      expect((await next.open()).codex_home).not.toBe(fixture.home.codex_home);
+      expect(fixture.engine._close_report).not.toHaveBeenCalled();
+    } finally {
+      await next.release();
+    }
+  },
+);
+
+it('pins the captured environment key for an opening', async () => {
+  vi.stubEnv('OPENAI_API_KEY', 'synthetic-new-environment');
+  await using provider = new NativeProvider({ supportsWebsockets: false });
+  const lease = provider._acquire({ apiKey: 'synthetic-captured' }, true);
+  try {
+    expect(lease.apiKey).toBe('synthetic-captured');
+    expect(lease.privateRuntime).toBeDefined();
+  } finally {
+    await lease.privateRuntime!.finish(false);
   }
 });

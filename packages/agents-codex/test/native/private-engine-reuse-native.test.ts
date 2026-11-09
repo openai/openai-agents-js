@@ -66,6 +66,7 @@ afterEach(async () => {
     await ModelServer.closeAll();
   } finally {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   }
 });
 
@@ -99,6 +100,58 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(input).not.toContain('warm isolated marker');
         if (!empty) expect(input).toContain('seed isolation marker');
       },
+    );
+
+    it.each([false, true])(
+      'pins effective API keys and resets only for environment rotation (explicit=%s)',
+      async (explicit) => {
+        vi.stubEnv('OPENAI_API_KEY', 'synthetic-env-first');
+        const model = new ModelServer([
+          [message('first')],
+          [message('same key')],
+          [message('changed environment')],
+        ]);
+        const config = await model.config();
+        await using provider = new NativeProvider({
+          baseUrl: (config['model_providers.fixture'] as { base_url: string })
+            .base_url,
+          ...(explicit ? { apiKey: 'synthetic-explicit' } : {}),
+          supportsWebsockets: false,
+        });
+        const agent = new Agent({
+          provider,
+          model: 'gpt-5',
+          instructions: 'Answer.',
+        });
+        const rows = await starts();
+        expect((await agent.run('first')).finalOutput).toBe('first');
+        expect((await agent.run('same')).finalOutput).toBe('same key');
+        vi.stubEnv('OPENAI_API_KEY', 'synthetic-env-next');
+        expect((await agent.run('rotated')).finalOutput).toBe(
+          'changed environment',
+        );
+        expect(rows.map((row) => row.kind)).toEqual([
+          'ordinary',
+          'private',
+          explicit ? 'private' : 'ordinary',
+        ]);
+        expect(rows[1].engine).toBe(rows[0].engine);
+        if (explicit) expect(rows[2].engine).toBe(rows[0].engine);
+        else expect(rows[2].engine).not.toBe(rows[0].engine);
+        expect(
+          model.requestHeaders.map((headers) => headers.authorization),
+        ).toEqual(
+          explicit
+            ? Array(3).fill('Bearer synthetic-explicit')
+            : [
+                'Bearer synthetic-env-first',
+                'Bearer synthetic-env-first',
+                'Bearer synthetic-env-next',
+              ],
+        );
+        model.assertExhausted();
+      },
+      30_000,
     );
 
     it('uses one Engine for two distinct fresh roots and leaves a completed old Turn independent', async () => {

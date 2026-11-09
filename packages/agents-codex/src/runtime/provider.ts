@@ -183,8 +183,9 @@ export class NativeProvider {
       privateRun &&
       this.constructor === NativeProvider &&
       !options.chatGPT &&
-      options.apiKey !== undefined &&
-      apiKey === options.apiKey &&
+      apiKey !== undefined &&
+      apiKey.length > 0 &&
+      (options.apiKey === undefined || apiKey === options.apiKey) &&
       options.responseMode !== 'buffered' &&
       !websocketsAllowed;
     const slot = eligible ? (this.#runtime ??= {}) : undefined;
