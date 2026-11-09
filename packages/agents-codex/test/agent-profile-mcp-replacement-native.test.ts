@@ -10,9 +10,27 @@ const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 async function peer(toolNames = ['lookup']) {
   const effects: unknown[] = [];
   const server = createServer(async (request, response) => {
+    if (request.url !== '/mcp') {
+      response.writeHead(404).end();
+      return;
+    }
+    if (request.method !== 'POST') {
+      response.writeHead(405, { Allow: 'POST' }).end();
+      return;
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    const rpc = JSON.parse(Buffer.concat(chunks).toString());
+    let rpc;
+    try {
+      rpc = JSON.parse(Buffer.concat(chunks).toString());
+    } catch {
+      response.writeHead(400).end();
+      return;
+    }
+    if (rpc === null || typeof rpc !== 'object' || Array.isArray(rpc)) {
+      response.writeHead(400).end();
+      return;
+    }
     if (rpc.id === undefined) {
       response.writeHead(202).end();
       return;
@@ -60,6 +78,73 @@ async function peer(toolNames = ['lookup']) {
     },
   };
 }
+
+it.each([
+  ['GET', '/mcp', undefined, 405],
+  ['DELETE', '/mcp', undefined, 405],
+  ['POST', '/missing', '{}', 404],
+  ['POST', '/mcp', '', 400],
+  ['POST', '/mcp', '{', 400],
+  ['POST', '/mcp', 'null', 400],
+  ['POST', '/mcp', '[]', 400],
+] as const)(
+  'MCP fixture handles %s %s with body %j as HTTP %i',
+  async (method, path, body, status) => {
+    const remote = await peer();
+    try {
+      const response = await fetch(new URL(path, remote.url), { method, body });
+      expect(response.status).toBe(status);
+      if (status === 405) expect(response.headers.get('allow')).toBe('POST');
+      expect(remote.effects).toHaveLength(0);
+    } finally {
+      await remote.close();
+    }
+  },
+);
+
+it('MCP fixture accepts JSON-RPC requests and notifications', async () => {
+  const remote = await peer();
+  const post = (body: unknown) =>
+    fetch(remote.url, { method: 'POST', body: JSON.stringify(body) });
+  try {
+    const initialized = await post({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-03-26' },
+    });
+    expect(initialized.status).toBe(200);
+    expect(await initialized.json()).toMatchObject({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { protocolVersion: '2025-03-26', capabilities: { tools: {} } },
+    });
+    const notified = await post({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    });
+    expect(notified.status).toBe(202);
+    const listed = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    expect(await listed.json()).toMatchObject({
+      id: 2,
+      result: { tools: [expect.objectContaining({ name: 'lookup' })] },
+    });
+    const params = { name: 'lookup', arguments: {} };
+    const called = await post({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params,
+    });
+    expect(await called.json()).toMatchObject({
+      id: 3,
+      result: { content: [{ type: 'text', text: 'record' }] },
+    });
+    expect(remote.effects).toEqual([params]);
+  } finally {
+    await remote.close();
+  }
+});
 
 nativeIt(
   'keeps retained response callbacks separate from accepted replacement callbacks',
