@@ -867,7 +867,10 @@ nativeIt.each([false, true] as const)(
     const decisions = new OpenAIDecisions({
       client: new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
     });
-    const result = await decisions.decide('Is the request ready?', {
+    const result = await new Agent({
+      instructions: 'Answer.',
+      decisions,
+    }).decide('Is the request ready?', {
       input: 'Explicit request.',
       choices: [selected, 'unknown'] as const,
     });
@@ -1338,7 +1341,7 @@ nativeIt(
 );
 
 nativeIt(
-  'returns a typed standalone value through the actual shared compiler with one physical request',
+  'returns a typed Agent-bound value through the actual shared compiler with one physical request',
   async () => {
     const server = new ModelServer([(request) => decisionReply(request, 0.75)]);
     const config = await server.config();
@@ -1348,7 +1351,7 @@ nativeIt(
       client: new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
     });
     await expect(
-      decisions.decide('Ready?', {
+      new Agent({ instructions: 'Answer.', decisions }).decide('Ready?', {
         input: 'Explicit input.',
         outputType: z.strictObject({ ready: z.boolean() }),
       }),

@@ -2,10 +2,8 @@ import OpenAI from 'openai';
 import { binding, type JsonObject } from './binding';
 import { parseTokenCount, type TokenUsage } from './run-events';
 import {
-  decide,
   DecisionError,
   captureDecisionMetadata,
-  type BoundDecide,
   type DecisionProvider,
   type DecisionRequest,
   type DecisionResponse,
@@ -33,16 +31,6 @@ export class OpenAIDecisions implements DecisionProvider {
     this.client = options.client;
     this.fallbackModel = options.fallbackModel;
   }
-
-  /** The same typed implementation as the standalone decide function. */
-  readonly decide: BoundDecide = ((
-    question: string,
-    options: Parameters<BoundDecide>[1],
-  ) =>
-    decide(question, {
-      ...options,
-      provider: options.provider ?? this,
-    } as Parameters<typeof decide>[1])) as BoundDecide;
 
   async getDecision(
     request: DecisionRequest,

@@ -1,8 +1,9 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
+import * as agents from '@openai/agents';
+import * as codex from '../src';
 import {
   Agent,
-  decide,
   DecisionError,
   OutputValidationError,
   type DecisionProvider,
@@ -33,10 +34,13 @@ function provider(value: unknown): DecisionProvider {
 describe('provider-agnostic decisions', () => {
   it('returns a boolean through the existing native-output wrapper', async () => {
     const selected = provider({ response: true });
-    const result = decide('Is this ready?', {
-      provider: selected,
-      input: 'Ready.',
-    });
+    const result = new Agent({ instructions: 'Answer.' }).decide(
+      'Is this ready?',
+      {
+        provider: selected,
+        input: 'Ready.',
+      },
+    );
     expectTypeOf(result).toEqualTypeOf<Promise<boolean>>();
     await expect(result).resolves.toBe(true);
     expect(selected.getDecision).toHaveBeenCalledWith(
@@ -54,7 +58,7 @@ describe('provider-agnostic decisions', () => {
   });
 
   it('preserves distinct scalar choices and their inferred type', async () => {
-    const result = decide('Choose.', {
+    const result = new Agent({ instructions: 'Answer.' }).decide('Choose.', {
       provider: provider({ response: false }),
       input: 'Text.',
       choices: [false, 'false', 0, null] as const,
@@ -64,7 +68,7 @@ describe('provider-agnostic decisions', () => {
   });
 
   it('validates typed records without an internal wrapper in provider output', async () => {
-    const result = decide('Classify.', {
+    const result = new Agent({ instructions: 'Answer.' }).decide('Classify.', {
       provider: provider({ category: 'support' }),
       input: [],
       outputType: z.strictObject({ category: z.enum(['sales', 'support']) }),
@@ -88,7 +92,10 @@ describe('provider-agnostic decisions', () => {
       },
     };
     const input = [{ role: 'user', content: 'original' }];
-    const result = decide('Ready?', { provider: selected, input });
+    const result = new Agent({ instructions: 'Answer.' }).decide('Ready?', {
+      provider: selected,
+      input,
+    });
     await entered.promise;
     input[0].content = 'later';
     release.resolve();
@@ -161,10 +168,12 @@ describe('provider-agnostic decisions', () => {
         usage: { ...usage, totalTokens: 99 },
       }),
     };
-    const failure = await decide('Ready?', {
-      provider: selected,
-      input: 'Text.',
-    }).catch((error) => error);
+    const failure = await new Agent({ instructions: 'Answer.' })
+      .decide('Ready?', {
+        provider: selected,
+        input: 'Text.',
+      })
+      .catch((error) => error);
     expect(failure).toBeInstanceOf(DecisionError);
     expect(failure.usage).toBeUndefined();
     expect(String(failure)).not.toContain('PRIVATE_RESPONSE');
@@ -174,7 +183,7 @@ describe('provider-agnostic decisions', () => {
 
 it('rejects non-finite provider values before they can coerce to valid null output', async () => {
   await expect(
-    decide('Null?', {
+    new Agent({ instructions: 'Answer.' }).decide('Null?', {
       provider: provider({ response: NaN }),
       input: 'Explicit.',
       outputType: z.null(),
@@ -249,4 +258,10 @@ it('propagates a lone accounting failure unchanged after successful inference', 
     requestId: 'request-1',
     model: 'resolved',
   });
+});
+
+it('exposes decisions only through Agents and callback contexts', () => {
+  expect(agents).not.toHaveProperty('decide');
+  expect(codex).not.toHaveProperty('decide');
+  expect(new agents.OpenAIDecisions()).not.toHaveProperty('decide');
 });

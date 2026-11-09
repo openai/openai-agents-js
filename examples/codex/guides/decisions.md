@@ -1,22 +1,25 @@
 # Make typed decisions
 
-Use `decide()` for a boolean, a choice, or a structured value. A decision provider sends the request. The SDK validates the result as it validates Agent output. Call it directly or bind it to an Agent for use in callbacks.
+Use `agent.decide()` or `ctx.decide()` for a boolean, a choice, or a structured value. A decision provider sends the request. The SDK validates the result as it validates Agent output. Configure the provider on an Agent or override it for one bound call.
 
 Decisions support is not in the latest published preview. [Build the matching source](building.md) and set `OPENAI_API_KEY` before running these examples.
 
 ## Return a typed value
 
 ```ts
-import { OpenAIDecisions } from '@openai/agents';
+import { Agent, OpenAIDecisions } from '@openai/agents';
 import { z } from 'zod';
 
-const decisions = new OpenAIDecisions();
+const agent = new Agent({
+  instructions: 'Help classify support tickets.',
+  decisions: new OpenAIDecisions(),
+});
 const TicketDecision = z.object({
   category: z.enum(['billing', 'technical', 'other']),
   urgent: z.boolean(),
 });
 
-const result = await decisions.decide('Classify this support ticket.', {
+const result = await agent.decide('Classify this support ticket.', {
   input: 'I was charged twice for my subscription.',
   outputType: TicketDecision,
 });
@@ -71,7 +74,7 @@ Before-step, request-preparation, function-tool, native-agent approval, and comp
 
 Any object implementing `DecisionProvider.getDecision(request, { signal })` can replace `OpenAIDecisions`. It receives a `DecisionRequest` with `question`, `input`, and `outputSchema`, and returns a `DecisionResponse` with `value` and optional `usage`, `requestId`, and `model`. Return JSON matching the supplied schema; scalar outputs use the schema's `response` wrapper. The SDK validates and unwraps that value for the caller. Honor the supplied abort signal and settle all work before returning.
 
-Use the same provider through `decide(question, { input, provider })`, `agent.decide(...)`, or callback helpers. `agent.decide()` is a standalone convenience: it does not open a run or use history.
+Use the same provider through `agent.decide(...)` or callback helpers. `agent.decide()` does not open a run or use history. `OpenAIDecisions` implements the provider protocol; the Agent and its callback contexts expose the typed decision methods.
 
 An explicit `decisions` on `agent.run()` or `agent.session()` overrides the Agent default for that whole opening. Otherwise a handoff target's explicit provider takes precedence over the root Agent default. A helper's `provider` overrides either for one call. Provider selection is captured when opening starts and stays fixed for that Session. Provider objects and credentials are not serialized into saved state.
 

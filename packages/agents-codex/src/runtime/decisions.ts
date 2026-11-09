@@ -63,9 +63,6 @@ interface CallOptions {
   input: DecisionInput;
   signal?: AbortSignal;
 }
-export interface DecisionOptions extends CallOptions {
-  provider: DecisionProvider;
-}
 export interface BoundDecisionOptions extends CallOptions {
   provider?: DecisionProvider;
 }
@@ -79,26 +76,6 @@ type OutputOptions<T, Output> = T & {
   outputType: z.ZodType<Output>;
   choices?: never;
 };
-
-/** One typed decision, with an explicit provider and input. */
-export function decide(
-  question: string,
-  options: PredicateOptions<DecisionOptions>,
-): Promise<boolean>;
-export function decide<Choice extends DecisionChoice>(
-  question: string,
-  options: ChoiceOptions<DecisionOptions, Choice>,
-): Promise<Choice>;
-export function decide<Output>(
-  question: string,
-  options: OutputOptions<DecisionOptions, Output>,
-): Promise<Output>;
-export async function decide(
-  question: string,
-  options: InternalOptions,
-): Promise<unknown> {
-  return performDecision(captureDecision(question, options));
-}
 
 /** A live callback helper, or a convenience bound to an Agent's defaults. */
 export interface BoundDecide {

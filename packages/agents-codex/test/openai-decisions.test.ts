@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import OpenAI from 'openai';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { OpenAIDecisions, DecisionError } from '../src';
+import { Agent, OpenAIDecisions, DecisionError } from '../src';
 
 // Transport tests isolate the shared native compiler; native callback tests use the real compiler.
 const compiler = vi.hoisted(() => ({
@@ -126,10 +126,13 @@ it('rejects unsupported schemas before dispatch without explicit fallback', asyn
   );
   const provider = new OpenAIDecisions({ client: await endpoint(null) });
   await expect(
-    provider.decide('Summarize.', {
-      input: 'Explicit.',
-      outputType: z.string(),
-    }),
+    new Agent({ instructions: 'Answer.', decisions: provider }).decide(
+      'Summarize.',
+      {
+        input: 'Explicit.',
+        outputType: z.string(),
+      },
+    ),
   ).rejects.toBeInstanceOf(TypeError);
   expect(requests).toHaveLength(0);
 });
@@ -153,7 +156,10 @@ it.each(['completed', 'incomplete', undefined])(
       }),
       fallbackModel: 'generative-alias',
     });
-    const result = provider.decide('Summarize.', {
+    const result = new Agent({
+      instructions: 'Answer.',
+      decisions: provider,
+    }).decide('Summarize.', {
       input: [{ role: 'user', content: 'Original input.' }],
       outputType: z.string(),
     });
@@ -189,7 +195,10 @@ it.each(['Decisions refused a question', 'invalid Decisions answer'])(
       client: await endpoint({ answers: [], usage, model: 'resolved' }),
       fallbackModel: 'generative-alias',
     });
-    const failure = await provider
+    const failure = await new Agent({
+      instructions: 'Answer.',
+      decisions: provider,
+    })
       .decide('Ready?', { input: 'PRIVATE_INPUT' })
       .catch((error) => error);
     expect(failure).toBeInstanceOf(DecisionError);
@@ -211,7 +220,10 @@ it('reports a malformed completed body safely with its request receipt', async (
   });
   const provider = new OpenAIDecisions({ client: await endpoint(null) });
   await expect(
-    provider.decide('Ready?', { input: 'Explicit.' }),
+    new Agent({ instructions: 'Answer.', decisions: provider }).decide(
+      'Ready?',
+      { input: 'Explicit.' },
+    ),
   ).rejects.toMatchObject({
     reason: 'invalid_response',
     requestId: 'physical-request',

@@ -12,7 +12,7 @@ export type {
   RunOptions,
 } from './runtime/public-agent';
 export { RunCleanupError } from './runtime/native-error';
-export { decide, DecisionError } from './runtime/decisions';
+export { DecisionError } from './runtime/decisions';
 export type {
   DecisionInput,
   DecisionChoice,
@@ -20,7 +20,6 @@ export type {
   DecisionResponse,
   DecisionProvider,
   DecisionMetadata,
-  DecisionOptions,
   BoundDecisionOptions,
   BoundDecide,
 } from './runtime/decisions';
