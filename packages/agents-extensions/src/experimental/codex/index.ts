@@ -1889,7 +1889,7 @@ export type NativeCodexToolOptions = Pick<
   | 'defaultTurnOptions'
   | 'persistSession'
 > & {
-  /** Observes CLI events; usage is returned separately from native model usage. */
+  /** Observes CLI events without changing execution success; observer failures are isolated. */
   onEvent?: (event: ThreadEvent) => void | Promise<void>;
 };
 
@@ -1984,7 +1984,11 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
         let usage: CodexUsage | null = null;
         for await (const event of stream.events) {
           context.signal.throwIfAborted();
-          await onEvent?.(event);
+          if (onEvent)
+            await Promise.allSettled([
+              Promise.resolve().then(() => onEvent(event)),
+            ]);
+          context.signal.throwIfAborted();
           if (
             event.type === 'item.completed' &&
             event.item.type === 'agent_message'

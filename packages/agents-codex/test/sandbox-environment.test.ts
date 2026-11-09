@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   Manifest,
+  inContainerMountStrategy,
   s3Mount,
   normalizeSandboxClientCreateArgs,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxSessionLike,
 } from '@openai/agents-core/sandbox';
-import { recordLiveMountCredentialAuthority } from '@openai/agents-core/sandbox/internal';
+import {
+  recordLiveMountCredentialAuthority,
+  captureLiveMountCredentialAuthorityIfAbsent,
+} from '@openai/agents-core/sandbox/internal';
 import { Environment } from '../src/runtime/environment';
 import { acquireEnvironment } from '../src/runtime/environment-source';
 import {
@@ -573,3 +577,104 @@ describe('native sandbox environment', () => {
       expect(output).not.toContain(secret);
   });
 });
+
+it.each(['root', 'topology', 'credential'])(
+  'rejects borrowed %s authority mismatch before the gateway without taking resource ownership',
+  async (mismatch) => {
+    const f = fixture();
+    f.resource.state.manifest = mountManifest();
+    let current: Manifest = mountManifest();
+    if (mismatch === 'root')
+      current = new Manifest({ root: '/other', entries: current.entries });
+    else if (mismatch === 'topology') delete current.entries.data;
+    else
+      (current.entries.data as { accessKeyId: string }).accessKeyId =
+        'rotated-principal';
+    await expect(
+      acquireEnvironment(
+        sandboxEnvironment({ ...f, manifest: current, session: f.resource }),
+      ),
+    ).rejects.toThrow('mount authority');
+    expect(f.events).toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+    expect(f.resource.close).not.toHaveBeenCalled();
+    expect(f.client.delete).not.toHaveBeenCalled();
+  },
+);
+
+function environmentMountManifest(
+  access = 'synthetic-access',
+  safe = 'current',
+) {
+  return new Manifest({
+    entries: {
+      remote: s3Mount({
+        bucket: 'synthetic',
+        mountStrategy: inContainerMountStrategy(),
+      }),
+    },
+    environment: {
+      AWS_ACCESS_KEY_ID: access,
+      AWS_SECRET_ACCESS_KEY: 'synthetic-secret',
+      SAFE: safe,
+    },
+  }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
+}
+
+it('rejects rotated borrowed environment authority before connecting or taking ownership', async () => {
+  const f = fixture();
+  f.resource.state.manifest = environmentMountManifest();
+  f.resource.state.environment =
+    await f.resource.state.manifest.resolveEnvironment();
+  captureLiveMountCredentialAuthorityIfAbsent(
+    f.resource.state.manifest,
+    f.resource.state.environment,
+  );
+  await expect(
+    acquireEnvironment(
+      sandboxEnvironment({
+        ...f,
+        manifest: environmentMountManifest('rotated-access'),
+        session: f.resource,
+      }),
+    ),
+  ).rejects.toThrow('mount environment authority');
+  expect(f.events).toEqual([]);
+  expect(f.connect).not.toHaveBeenCalled();
+  expect(f.resource.close).not.toHaveBeenCalled();
+  expect(f.client.delete).not.toHaveBeenCalled();
+});
+
+it.each([
+  'in_container',
+  'e2b_cloud_bucket',
+  'daytona_cloud_bucket',
+  'vercel_cloud_bucket',
+] as const)(
+  'rejects rotated environment-backed %s resume before any provider effects',
+  (type) => {
+    const f = fixture();
+    const saved = environmentMountManifest();
+    const current = environmentMountManifest('rotated-access');
+    for (const manifest of [saved, current]) {
+      (
+        manifest.entries.remote as { mountStrategy: { type: string } }
+      ).mountStrategy = { type };
+    }
+    f.client.resume = vi.fn();
+    f.client.validateSessionStateForResume = vi.fn();
+    expect(() =>
+      sandboxEnvironment({
+        ...f,
+        manifest: current,
+        authorizedResumeState: {
+          backendId: 'fixture',
+          state: { manifest: saved },
+        },
+      }),
+    ).toThrow('cannot be resumed safely');
+    expect(f.client.resume).not.toHaveBeenCalled();
+    expect(f.client.validateSessionStateForResume).not.toHaveBeenCalled();
+    expect(f.events).toEqual([]);
+  },
+);

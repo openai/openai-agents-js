@@ -323,3 +323,60 @@ it.each(['--last', ' --last', '-x'])(
     });
   },
 );
+
+it.skipIf(process.platform === 'win32').each(['throw', 'reject'])(
+  'isolates observer %s from successful native calls and persistent CLI thread reuse',
+  async (mode) => {
+    const { cli, calls } = await recordingCli();
+    const server = new ModelServer(
+      Array.from({ length: 2 }, (_, index) => [
+        [
+          call(
+            'codex',
+            { prompt: 'Task', threadId: null },
+            { callId: `observer-${index}` },
+          ),
+        ],
+        [message('done')],
+      ]).flat(),
+    );
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    let observed = 0;
+    const agent = new Agent({
+      instructions: 'Use codex.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        nativeCodexTool({
+          codex: new Codex({ codexPathOverride: cli }),
+          persistSession: true,
+          onEvent() {
+            observed++;
+            if (mode === 'throw') throw new Error('observer failed');
+            return Promise.reject(new Error('observer failed'));
+          },
+        }),
+      ],
+    });
+    await using session = await agent.session();
+    expect((await (await session.submit('First')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect((await (await session.submit('Continue')).wait()).finalOutput).toBe(
+      'done',
+    );
+    const argv = await calls();
+    expect(argv).toHaveLength(2);
+    expect(argv[0]).not.toContain('resume');
+    expect(argv[1]).toContain('resume');
+    expect(observed).toBe(6);
+    expect(JSON.stringify(server.requests)).toContain('CLI completed');
+    server.assertExhausted();
+  },
+);

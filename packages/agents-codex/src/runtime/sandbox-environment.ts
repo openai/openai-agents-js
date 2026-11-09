@@ -16,6 +16,11 @@ import {
   assertHostPathGrantsRebound,
   assertMountCredentialsRebound,
   assertLiveMountCredentialAuthorityMatches,
+  assertLiveMountEnvironmentAuthorityMatches,
+  assertSandboxSessionStateUsable,
+  captureLiveMountCredentialAuthorityIfAbsent,
+  materializeEnvironment,
+  validateMountEnvironmentCredentialBoundaries,
 } from '@openai/agents-core/sandbox/internal';
 import type { Environment } from './environment';
 import {
@@ -170,6 +175,28 @@ export function sandboxEnvironment<
           );
       }));
     try {
+      if (borrowed) {
+        const trustedEnvironment = await materializeEnvironment(manifest);
+        signal.throwIfAborted();
+        assertSandboxSessionStateUsable(borrowed.state);
+        captureLiveMountCredentialAuthorityIfAbsent(
+          borrowed.state.manifest,
+          borrowed.state.environment,
+        );
+        assertLiveMountCredentialAuthorityMatches(
+          borrowed.state.manifest,
+          manifest,
+        );
+        validateMountEnvironmentCredentialBoundaries(
+          manifest,
+          trustedEnvironment,
+        );
+        assertLiveMountEnvironmentAuthorityMatches(
+          borrowed.state.manifest,
+          manifest,
+          trustedEnvironment,
+        );
+      }
       // Providers prepare and mount through their existing create pipeline.
       const currentOptions =
         providerOptions === undefined
