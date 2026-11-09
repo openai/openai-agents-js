@@ -768,7 +768,6 @@ impl EngineState {
                         .environments
                         .as_ref()
                         .is_none_or(|environments| environments.is_empty())
-                    && config::web_search_tool(&startup.config).is_none()
                     && !startup.config.features.enabled(Feature::Goals)
                     && !startup.config.features.enabled(Feature::CodeMode)
                     && startup.dynamic_tools.is_empty()
