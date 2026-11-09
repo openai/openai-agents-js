@@ -603,6 +603,9 @@ pub(crate) struct CapturedTurnStop {
     sessions: Mutex<Vec<Arc<Session>>>,
 }
 impl CapturedTurnStop {
+    pub(crate) fn callback_cancellation(&self) -> Option<CancellationToken> {
+        self.owner.as_ref().map(|owner| owner.cancelled.clone())
+    }
     pub(crate) fn local_exec_cancel_confirmed(&self) -> bool {
         self.settlement
             .as_ref()
@@ -739,6 +742,7 @@ impl HeldPolicyStop {
 }
 
 pub struct Control {
+    context_tools: OnceLock<Weak<crate::python_tools::PythonTools>>,
     mcp_results: OnceLock<Weak<crate::mcp_result_control::McpResultControl>>,
     profile_policies: AtomicU8,
     id: String,
@@ -798,6 +802,9 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn bind_context_tools(&self, tools: &Arc<crate::python_tools::PythonTools>) {
+        let _ = self.context_tools.set(Arc::downgrade(tools));
+    }
     pub(crate) fn bind_mcp_results(
         &self,
         results: &Arc<crate::mcp_result_control::McpResultControl>,
@@ -916,6 +923,7 @@ impl Control {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
             mcp_results: OnceLock::new(),
+            context_tools: OnceLock::new(),
             profile_policies: AtomicU8::new(0),
             root,
             native_depth: if root { 0 } else { usize::MAX },
@@ -962,6 +970,7 @@ impl Control {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
             mcp_results: OnceLock::new(),
+            context_tools: OnceLock::new(),
             profile_policies: AtomicU8::new(parent.profile_policies.load(Ordering::Acquire)),
             root: false,
             native_depth: parent.native_depth.saturating_add(1),
@@ -2991,6 +3000,23 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn transforms_context(&self, thread_id: &str) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.transforms_context())
+    }
+    fn transform_context<'a>(
+        &'a self,
+        input: codex_extension_api::ModelContextInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<(), String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired model context owner")?
+                .transform_context(input)
+                .await
+                .map_err(|_| "Model context transformation failed".to_owned())
+        })
+    }
+
     fn admit_tools_only_call(
         &self,
         input: codex_extension_api::ToolsOnlyCallInput,
@@ -9170,3 +9196,16 @@ mod mcp_policy_tests {
 #[cfg(test)]
 #[path = "direct_transport_tests.rs"]
 mod direct_http_transport_tests;
+
+impl Boundary {
+    fn context_tools(&self, thread: &str) -> Option<Arc<crate::python_tools::PythonTools>> {
+        self.threads
+            .lock()
+            .expect("interception index poisoned")
+            .get(thread)?
+            .upgrade()?
+            .context_tools
+            .get()?
+            .upgrade()
+    }
+}

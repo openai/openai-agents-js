@@ -359,7 +359,11 @@
     {
       "path": "0090-native-session-media-history.patch",
       "sha256": "ecf7709fb518bcf8568e5341c1d7cb046f104fb38629836160a360e561854025"
+    },
+    {
+      "path": "0095-context-completion-callbacks.patch",
+      "sha256": "f14dac4fb1589dfdd248084f1f1b535d474ccecad75f6a080c7a9264cf912c31"
     }
   ],
-  "result_tree": "c34a436b3e8724d26e323efceaf54c0d5bd5af48"
+  "result_tree": "718cc0adc3fa7678173e629c2652f56eb0689bc1"
 }

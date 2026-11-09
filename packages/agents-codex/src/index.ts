@@ -351,3 +351,11 @@ export {
   isBackgroundResult,
 } from './runtime/background-result';
 export type { BackgroundResult } from './runtime/background-result';
+
+export type {
+  CompletionDecision,
+  CompletionContext,
+  ModelRequestContext,
+  BeforeComplete,
+  ContextTransform,
+} from './runtime/model-callbacks';

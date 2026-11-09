@@ -1,3 +1,4 @@
+import type { BeforeComplete, ContextTransform } from './model-callbacks';
 import {
   captureProfileRuntimes,
   profileRoster,
@@ -89,6 +90,15 @@ export type AgentOptions<Context = undefined, Output = string> = {
   name?: string;
   model?: string;
   modelSettings?: ModelSettings;
+  /** Await completion policy before accepting a root or native child result.
+   * Feedback continues the same turn. Stop affects only its issuing owner.
+   * Cancellation and close join entered callbacks. Do not mutate this Session.
+   */
+  beforeComplete?: BeforeComplete<Context>;
+  /** Replace detached model input for turns, children, compaction and output repair.
+   * Transport retries reuse its result; canonical history and tool authority stay intact.
+   */
+  transformContext?: ContextTransform<Context>;
   provider?: NativeProvider;
   tools?: readonly Tool<Context>[];
   /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
@@ -196,6 +206,9 @@ interface CapturedOpening {
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
   readonly maxFunctionConcurrency?: number;
+  readonly contextTransformPurpose: 'turn' | 'output_repair';
+  readonly beforeComplete?: BeforeComplete<any>;
+  readonly transformContext?: ContextTransform<any>;
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
@@ -284,6 +297,8 @@ export class Agent<Context = undefined, Output = string> {
   name?: string;
   model?: string;
   modelSettings?: ModelSettings;
+  beforeComplete?: BeforeComplete<Context>;
+  transformContext?: ContextTransform<Context>;
   provider: NativeProvider;
   outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
@@ -302,6 +317,11 @@ export class Agent<Context = undefined, Output = string> {
       options.modelSettings === undefined
         ? undefined
         : captureModelSettings(options.modelSettings);
+    for (const name of ['beforeComplete', 'transformContext'] as const)
+      if (options[name] !== undefined && typeof options[name] !== 'function')
+        throw new TypeError(`${name} must be callable`);
+    this.beforeComplete = options.beforeComplete;
+    this.transformContext = options.transformContext;
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
       implicitProviders.set(this.provider, new WeakSet([this]));
@@ -543,6 +563,23 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const beforeComplete = opening
+      ? opening.beforeComplete
+      : this.beforeComplete;
+    const transformContext = opening
+      ? opening.transformContext
+      : this.transformContext;
+    const contextTransformPurpose =
+      opening?.contextTransformPurpose ??
+      ((options as OwnedSessionOptions<Context>)[correctionOpening]
+        ? 'output_repair'
+        : 'turn');
+    for (const [name, callback] of [
+      ['beforeComplete', beforeComplete],
+      ['transformContext', transformContext],
+    ] as const)
+      if (callback !== undefined && typeof callback !== 'function')
+        throw new TypeError(`${name} must be a function`);
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -678,6 +715,8 @@ export class Agent<Context = undefined, Output = string> {
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
               programmaticToolCalling,
+              beforeComplete,
+              transformContext,
             } as AgentOptions<Context, Output>),
           )
         : undefined;
@@ -1114,6 +1153,20 @@ export class Agent<Context = undefined, Output = string> {
                 },
               }
             : {}),
+          _context_callbacks: {
+            before_complete:
+              beforeComplete !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.before_complete === true,
+              ) ??
+                false),
+            transform_context:
+              transformContext !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.transform_context === true,
+              ) ??
+                false),
+          },
           _hosted_tools: hostedToolSpecs(declarations.hostedTools),
           ...(provider.responseMode === 'buffered'
             ? { _buffered_responses: true }
@@ -1158,6 +1211,9 @@ export class Agent<Context = undefined, Output = string> {
         context,
         onInteraction: options.onInteraction,
         applicationAgent: this,
+        beforeComplete,
+        transformContext,
+        contextTransformPurpose,
         agentGraph: completedGraph,
         output,
         restoredOutput: selection?.restoredOutput,
@@ -1187,6 +1243,14 @@ export class Agent<Context = undefined, Output = string> {
             model,
             modelSettings,
             tools: [],
+            transformContext:
+              transformContext === undefined
+                ? undefined
+                : (request) =>
+                    transformContext({
+                      ...request,
+                      context: context as Context,
+                    }),
           });
           const correctionOptions: OwnedSessionOptions<undefined> = {
             parentTrace,
@@ -1217,6 +1281,9 @@ export class Agent<Context = undefined, Output = string> {
           context,
           onInteraction: options.onInteraction,
           maxFunctionConcurrency,
+          contextTransformPurpose,
+          beforeComplete,
+          transformContext,
         });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
@@ -1333,6 +1400,8 @@ export function captureAgentProfiles<Context, Output>(
       ),
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
+      beforeComplete: source.beforeComplete,
+      transformContext: source.transformContext,
     } as AgentOptions<Context, Output>);
     if (wireIdentity(declaration) !== output)
       throw new TypeError(

@@ -218,6 +218,8 @@ export class NativeThread {
   ): Promise<string>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
+  _reply_model_context(response_json: string): void;
+  _reply_natural_completion(response_json: string): void;
   _check_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
   _replace_tools(
