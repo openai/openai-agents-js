@@ -248,6 +248,39 @@ const HANDOFF_LIMIT = 1024;
 const PENDING_LIMIT = 16;
 const MAX_HOSTED_MCP_TOOLS = 1024;
 
+/** Estimate structured JSON allocations before cloning or serializing them. */
+function jsonAllocationBytes(value: unknown, remaining: number): number {
+  let bytes = 0;
+  const charge = (amount: number) => {
+    bytes += amount;
+    if (bytes > remaining)
+      throw new RangeError(
+        'Hosted MCP structured JSON exceeds the event buffer budget',
+      );
+  };
+  const string = (value: unknown) => {
+    if (typeof value === 'string') charge(4 * value.length);
+  };
+  const json = (value: unknown, depth: number): void => {
+    if (depth > 128)
+      throw new RangeError('Hosted MCP structured JSON exceeds 128 levels');
+    charge(256);
+    if (typeof value === 'string') string(value);
+    else if (Array.isArray(value)) {
+      for (const child of value) json(child, depth + 1);
+    } else if (value && typeof value === 'object') {
+      for (const key in value) {
+        if (!Object.hasOwn(value, key)) continue;
+        charge(128);
+        string(key);
+        json((value as Record<string, unknown>)[key], depth + 1);
+      }
+    }
+  };
+  json(value, 0);
+  return bytes;
+}
+
 /** Bound the retained catalog allocation before copying provider-owned schemas. */
 function hostedMcpCatalogBytes(
   tools: readonly any[],
@@ -269,22 +302,6 @@ function hostedMcpCatalogBytes(
   const string = (value: unknown) => {
     if (typeof value === 'string') charge(4 * value.length);
   };
-  const json = (value: unknown, depth: number): void => {
-    if (depth > 128)
-      throw new RangeError('Hosted MCP tool schema exceeds 128 levels');
-    charge(256);
-    if (typeof value === 'string') string(value);
-    else if (Array.isArray(value)) {
-      for (const child of value) json(child, depth + 1);
-    } else if (value && typeof value === 'object') {
-      for (const key in value) {
-        if (!Object.hasOwn(value, key)) continue;
-        charge(128);
-        string(key);
-        json((value as Record<string, unknown>)[key], depth + 1);
-      }
-    }
-  };
   charge(0);
   string(itemId);
   string(serverLabel);
@@ -293,7 +310,12 @@ function hostedMcpCatalogBytes(
     charge(256);
     string(tool.name);
     string(tool.description);
-    json(tool.input_schema ?? tool.inputSchema, 0);
+    charge(
+      jsonAllocationBytes(
+        tool.input_schema ?? tool.inputSchema,
+        remaining - bytes,
+      ),
+    );
   }
   return bytes;
 }
@@ -1101,7 +1123,7 @@ class NativeRealtimeOwner {
         AUDIO_LIMIT,
       );
     if (event.type === 'hosted_mcp_call_completed' && event.error !== undefined)
-      bytes += Buffer.byteLength(JSON.stringify(event.error));
+      bytes += jsonAllocationBytes(event.error, AUDIO_LIMIT - bytes);
     for (const value of Object.values(fields))
       if (typeof value === 'string') bytes += Buffer.byteLength(value);
     return bytes;
@@ -1285,17 +1307,30 @@ class NativeRealtimeOwner {
         }),
       );
     } else if (name === 'HostedMcpCallCompleted') {
+      const completed: NativeRealtimeEvent = {
+        type: 'hosted_mcp_call_completed',
+        itemId: value.item_id,
+        serverLabel: value.server_label,
+        toolName: value.tool_name,
+        arguments: value.arguments,
+        responseId: value.response_id ?? undefined,
+        output: value.output ?? undefined,
+        error: value.error,
+      };
+      if (
+        this.queue.length >= EVENT_LIMIT ||
+        this.eventBytes(completed) > AUDIO_LIMIT - this.queuedBytes
+      )
+        throw new Error(
+          'Native Realtime event buffer overflow; consume events promptly',
+        );
       this.emit(
         Object.freeze({
-          type: 'hosted_mcp_call_completed',
-          itemId: value.item_id,
-          serverLabel: value.server_label,
-          toolName: value.tool_name,
-          arguments: value.arguments,
-          responseId: value.response_id ?? undefined,
-          output: value.output ?? undefined,
+          ...completed,
           error:
-            value.error === undefined ? undefined : copyJsonValue(value.error),
+            completed.error === undefined
+              ? undefined
+              : copyJsonValue(completed.error),
         }),
       );
     } else if (name === 'FunctionBatchFinished') {
