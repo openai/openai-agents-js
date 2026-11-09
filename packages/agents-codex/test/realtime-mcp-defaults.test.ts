@@ -45,6 +45,7 @@ function fixture(
   });
   const native = {
     id: 'root',
+    call: vi.fn(async (_operation: string, _params: string) => '{}'),
     _configure_manual_tools: vi.fn(),
     _replace_mcp_servers: publish,
     _replace_tools: vi.fn(async (generation: string) => generation),
@@ -56,7 +57,7 @@ function fixture(
     { mcpTools: [descriptor(openingTools)] },
     {},
   );
-  return { session, publish, descriptor };
+  return { session, publish, descriptor, native };
 }
 
 it('promotes inherited operation MCP defaults once without a native model turn', async () => {
@@ -166,5 +167,25 @@ it('rejects replacing an operation MCP binding with a stdio binding', async () =
       ],
     }),
   ).rejects.toThrow('activation must match');
+  expect(publish).not.toHaveBeenCalled();
+});
+
+it('SIP configuration promotes inherited MCP defaults before native config capture', async () => {
+  const { session, publish, native } = fixture();
+  native.call.mockImplementationOnce(async (operation) => {
+    expect(operation).toBe('realtime_conversation_config_sdk');
+    expect(publish).toHaveBeenCalledOnce();
+    const config = JSON.parse(publish.mock.calls[0][0]);
+    expect(config.records.enabled).not.toBe(false);
+    expect(config.records.enabled_tools).toEqual(['lookup', 'other']);
+    return '{}';
+  });
+  await expect(session.buildRealtimeSipConfig()).resolves.toEqual({});
+  expect(native.call).toHaveBeenCalledOnce();
+});
+
+it('explicit SIP tools skip inherited MCP preparation just as connection does', async () => {
+  const { session, publish } = fixture();
+  await session.buildRealtimeSipConfig({ tools: [] });
   expect(publish).not.toHaveBeenCalled();
 });

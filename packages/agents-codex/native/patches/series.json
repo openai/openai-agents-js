@@ -381,6 +381,14 @@
       "sha256": "43ee308eaad0e9a518ecb1e8c00b80c7ab8151197e6b3c75635a50d1a9d1d495"
     },
     {
+      "path": "0096-native-realtime-sip-config.patch",
+      "sha256": "a7efd01ecbf54fa78106dda845ed46f99af70583620437aa02f9c9b501777285"
+    },
+    {
+      "path": "0097-native-realtime-provider-history.patch",
+      "sha256": "8b6badb78293eb00eed5a2147244164a195b4f4dfd9f823689977c7df7af5b9c"
+    },
+    {
       "path": "0180-portable-realtime-control.patch",
       "sha256": "83f796bd2ec4bf671ebba69bf3cf34c348908e711b2c4cb9173f5d2a8db8f5b9"
     },
@@ -393,5 +401,5 @@
       "sha256": "e181d7460d3b958e034169baf84906909d70933814c6feb7a4680dbd2ca05a75"
     }
   ],
-  "result_tree": "4ef0b70581750867b734869e47e5146fe87cf323"
+  "result_tree": "f00568b901f7eb9ef50aba5ccba61a386f482455"
 }
