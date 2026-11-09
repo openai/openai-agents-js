@@ -233,3 +233,21 @@ it('retains native active roots across cache churn and fences callback retries',
     'PASS native active-root churn and callback retry fence',
   );
 }, 35000);
+
+it.each([[], ['--bytes']])(
+  'recovers bounded native descriptor capacity after queue loss %j',
+  async (...arguments_: string[]) => {
+    const result = await execute(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(fixtures, 'tracing-loss-recovery-child.ts'),
+        ...arguments_,
+      ],
+      { timeout: 30000, maxBuffer: 2097152 },
+    );
+    expect(result.stdout).toContain('PASS native loss recovery');
+  },
+  35000,
+);

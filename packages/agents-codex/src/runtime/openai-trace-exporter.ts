@@ -44,6 +44,10 @@ function descriptor(event: TraceEvent): TraceDescriptor {
  * eviction. Completed traces retire first; full active capacity rejects new roots.
  * Unknown child records never fabricate a root descriptor. Metadata preserves
  * native flattened values; runtime is reserved for the native marker.
+ * After native record loss, descriptors are invalidated after a captured native
+ * sequence watermark drains. Only fresh root starts re-establish identity; old
+ * child/end records fail closed. Flush continues reporting loss. Lossless active
+ * roots retain their original eviction guarantee.
  */
 export class OpenAITraceExporter implements TraceProcessor {
   readonly #endpoint: URL;
@@ -52,6 +56,7 @@ export class OpenAITraceExporter implements TraceProcessor {
   readonly #maxRetries: number;
   readonly #traces = new Map<string, TraceState>();
   #credentialRevision = 0;
+  #requiresRootStart = false;
 
   constructor(options: {
     apiKey: string;
@@ -115,6 +120,11 @@ export class OpenAITraceExporter implements TraceProcessor {
     this.#headers.Authorization = `Bearer ${apiKey}`;
     this.#credentialRevision++;
   }
+  /** @internal Called serially by the native pump after its loss watermark. */
+  _onNativeTraceLoss(): void {
+    this.#traces.clear();
+    this.#requiresRootStart = true;
+  }
   async onEvent(event: TraceEvent): Promise<void> {
     await this.onEvents([event]);
   }
@@ -129,7 +139,7 @@ export class OpenAITraceExporter implements TraceProcessor {
       const root = event.parent_span_id === null;
       let state = this.#traces.get(traceId);
       if (!state) {
-        if (!root) {
+        if (!root || (this.#requiresRootStart && event.lifecycle !== 'start')) {
           admissionError ??= 'Native trace root descriptor is unavailable';
           continue;
         }
