@@ -19,6 +19,7 @@ import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
+// Refusals are supported; an invalid text value preserves the parser-failure control.
 const cases: {
   reason: ResponseIntegrityReason;
   phase: 'added' | 'done';
@@ -32,7 +33,9 @@ const cases: {
         type: 'message',
         id: 'private-item',
         role: 'assistant',
-        content: [{ type: 'refusal', refusal: 'private-refusal' }],
+        content: [
+          { type: 'output_text', text: { private_payload: 'private-refusal' } },
+        ],
       },
     ],
   })),
@@ -177,7 +180,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               type: 'message',
               id: 'private-child-item',
               role: 'assistant',
-              content: [{ type: 'refusal', refusal: 'private-child-refusal' }],
+              content: [
+                {
+                  type: 'output_text',
+                  text: { private_payload: 'private-child-refusal' },
+                },
+              ],
             },
           ];
         };
@@ -255,7 +263,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             type: 'message',
             id: 'private-recovered-item',
             role: 'assistant',
-            content: [{ type: 'refusal', refusal: 'private-refusal' }],
+            content: [
+              {
+                type: 'output_text',
+                text: { private_payload: 'private-refusal' },
+              },
+            ],
           },
         ],
       ]);
@@ -342,7 +355,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             type: 'message',
             id: 'private-item',
             role: 'assistant',
-            content: [{ type: 'refusal', refusal: 'private-refusal' }],
+            content: [
+              {
+                type: 'output_text',
+                text: { private_payload: 'private-refusal' },
+              },
+            ],
           },
         ],
       ]);

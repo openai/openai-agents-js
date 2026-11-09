@@ -566,13 +566,14 @@ it('redacts late metadata callback errors while cancellation joins entered work'
   if (index >= 0) sessions.splice(index, 1);
 }, 30000);
 
-it('fences child metadata rejection through environment stdio without continuing its model and joins its entered callback', async () => {
+it('keeps child metadata ownership across parent completion and rejects before dispatch', async () => {
   const { startPublicExecutor } = await import('./fixtures/public-executor');
   const executor = await startPublicExecutor();
-  const childCaptured = Promise.withResolvers<void>();
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  let aborted = false;
+  const heldEntered = Promise.withResolvers<void>();
+  const releaseHeld = Promise.withResolvers<void>();
+  const releaseMetadata = Promise.withResolvers<void>();
+  const releaseRoot = Promise.withResolvers<void>();
+  const contexts: MCPMetadataContext[] = [];
   let effects = 0;
   let selectedSession: Session | undefined;
   let rootId: string | undefined;
@@ -582,21 +583,14 @@ it('fences child metadata rejection through environment stdio without continuing
     const held = tool({
       name: 'held',
       parameters: z.object({}),
-      async execute(_args, context) {
-        context.signal.addEventListener(
-          'abort',
-          () => {
-            aborted = true;
-          },
-          { once: true },
-        );
-        entered.resolve();
-        await release.promise;
+      async execute() {
+        heldEntered.resolve();
+        await releaseHeld.promise;
         effects += 1;
-        return 'must-not-publish-child-held-result';
+        return 'completed-child-held-result';
       },
     });
-    const respond = (request: Record<string, any>) => {
+    const respond = async (request: Record<string, any>) => {
       const id = JSON.parse(request.client_metadata['x-codex-turn-metadata'])
         .thread_id as string;
       rootId ??= id;
@@ -609,6 +603,7 @@ it('fences child metadata rejection through environment stdio without continuing
               { namespace: 'collaboration', callId: 'metadata-child-spawn' },
             ),
           ];
+        await releaseRoot.promise;
         return [message('root done')];
       }
       childRequests += 1;
@@ -622,9 +617,9 @@ it('fences child metadata rejection through environment stdio without continuing
       ];
     };
     const { session, model, calls } = await setup(
-      async () => {
-        await entered.promise;
-        await childCaptured.promise;
+      async (ctx) => {
+        contexts.push(ctx);
+        await releaseMetadata.promise;
         return {
           'codex/sandbox-state-meta': 'private-child-rejected-metadata',
         };
@@ -646,11 +641,31 @@ it('fences child metadata rejection through environment stdio without continuing
     );
     selectedSession = session;
     const root = await session.submit('Delegate.');
-    expect((await root.wait()).finalOutput).toBe('root done');
-    const children = await vi.waitUntil(async () => {
-      const children = await Array.fromAsync(session.subagents());
-      return children.length === 1 && children[0].turn ? children : false;
+    let rootSettled = false;
+    const rootResult = root.wait().then((value) => {
+      rootSettled = true;
+      return value;
     });
+    await heldEntered.promise;
+    // This route serializes the calls. Complete held before waiting for metadata.
+    releaseHeld.resolve();
+    await vi.waitFor(() => expect(contexts).toHaveLength(1), {
+      timeout: 10000,
+    });
+    const captured = contexts[0];
+    expect(rootSettled).toBe(false);
+    expect(effects).toBe(1);
+    expect(await records(calls)).toEqual([]);
+    // Parent completion must neither retire nor rebind its child's captured callback.
+    releaseRoot.resolve();
+    expect((await rootResult).finalOutput).toBe('root done');
+    const children = await vi.waitUntil(
+      async () => {
+        const values = await Array.fromAsync(session.subagents());
+        return values.length === 1 && values[0].turn ? values : false;
+      },
+      { timeout: 10000 },
+    );
     const child = children[0];
     let settled = false;
     const result = child
@@ -659,18 +674,30 @@ it('fences child metadata rejection through environment stdio without continuing
       .finally(() => {
         settled = true;
       });
-    childCaptured.resolve();
-    await vi.waitFor(() => expect(aborted).toBe(true));
+    expect(captured.call).toMatchObject({
+      sessionId: session.id,
+      childId: child.id,
+      turnId: child.turn!.turnId,
+      callId: 'child-metadata',
+      tool: { name: 'lookup', namespace: 'mcp__fixture' },
+      route: 'direct',
+    });
+    expect(captured.call.childIncarnation).toEqual(expect.any(String));
+    expect(captured.arguments).toEqual({ key: 'original' });
+    expect(contexts).toEqual([captured]);
     expect(settled).toBe(false);
-    expect(effects).toBe(0);
     expect(await records(calls)).toEqual([]);
+    expect(rootRequests).toBe(2);
     expect(childRequests).toBe(1);
-    release.resolve();
+    releaseMetadata.resolve();
     expect(await result).toBeInstanceOf(NativeError);
     expect(await result).toMatchObject({
       message: 'Native MCP result policy failed',
     });
+    expect((await root.wait()).finalOutput).toBe('root done');
+    expect(await records(calls)).toEqual([]);
     expect(effects).toBe(1);
+    expect(contexts).toEqual([captured]);
     expect(rootRequests).toBe(2);
     expect(childRequests).toBe(1);
     expect(JSON.stringify(model.requests)).not.toContain(
@@ -678,8 +705,9 @@ it('fences child metadata rejection through environment stdio without continuing
     );
     model.assertExhausted();
   } finally {
-    release.resolve();
-    childCaptured.resolve();
+    releaseHeld.resolve();
+    releaseMetadata.resolve();
+    releaseRoot.resolve();
     try {
       await selectedSession?.close();
     } finally {

@@ -9797,22 +9797,23 @@ export class Session<OutputT = string, Context = unknown> {
       );
       beforeRetirement();
       this.configureNative(owner.thread);
-      owner.thread._configure_manual_tools(
-        encode(
-          this.catalog.tools
-            .filter((tool) => tool.kind === 'manual')
-            .map((tool) => ({ name: tool.name })),
-        ),
-        this.terminalSlots(),
+      const manualSlots = encode(
+        this.catalog.tools
+          .filter((tool) => tool.kind === 'manual')
+          .map((tool) => ({ name: tool.name })),
       );
+      owner.thread._configure_manual_tools(manualSlots);
+      await this.publishContextStartup(owner, signal);
+      beforeRetirement();
+      await owner.change.validateCandidate(owner.thread);
+      beforeRetirement();
+      // Validation retains the source catalog generation and narrowed defaults.
+      owner.thread._configure_manual_tools(manualSlots, this.terminalSlots());
       const manualCheckpoint = this.catalog.tools.some(
         (tool) => tool.kind === 'manual',
       )
         ? await owner.thread._manual_checkpoint_config_supported()
         : false;
-      await this.publishContextStartup(owner, signal);
-      beforeRetirement();
-      await owner.change.validateCandidate(owner.thread);
       beforeRetirement();
       owner.retiring = true;
       this.replacingNative = owner.source;

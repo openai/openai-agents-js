@@ -35,6 +35,7 @@ import {
 import {
   VercelCloudBucketMountStrategy,
   VercelSandboxClient,
+  VercelSandboxSession,
 } from '../../src/sandbox/vercel';
 import {
   resolvedRemoteEffectivePathFromCommand,
@@ -4835,6 +4836,38 @@ describe('VercelSandboxClient', () => {
     await expect(
       session.execCommand({ cmd: 'id', runAs: 'root' }),
     ).rejects.toThrow(/does not support runAs yet/);
+    expect(runCommandMock).not.toHaveBeenCalled();
+  });
+  test('keeps the released injected Vercel shape and rejects uncaptured bounded reads', async () => {
+    const created = await new VercelSandboxClient().create(new Manifest());
+    const content = Buffer.from([1, 2, 3, 4]);
+    readFileToBufferMock.mockResolvedValue(content);
+    const session = new VercelSandboxSession({
+      state: created.state,
+      sandbox: {
+        sandboxId: created.state.sandboxId,
+        runCommand: runCommandMock,
+        runDetachedCommand: runCommandMock,
+        mkDir: mkDirMock,
+        readFileToBuffer: readFileToBufferMock,
+        writeFiles: writeFilesMock,
+      },
+    });
+    await expect(session.readFile({ path: 'legacy.txt' })).resolves.toEqual(
+      new Uint8Array(content),
+    );
+    expect(readFileToBufferMock).toHaveBeenCalledOnce();
+    expect(readFileToBufferMock).toHaveBeenCalledWith({
+      path: '/vercel/sandbox/legacy.txt',
+    });
+    readFileToBufferMock.mockClear();
+    readFileMock.mockClear();
+    runCommandMock.mockClear();
+    await expect(
+      session.readFile({ path: 'legacy.txt', maxBytes: 2 }),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    expect(readFileToBufferMock).not.toHaveBeenCalled();
+    expect(readFileMock).not.toHaveBeenCalled();
     expect(runCommandMock).not.toHaveBeenCalled();
   });
 });

@@ -105,19 +105,36 @@ describe('native input and composition recipes', () => {
   });
 
   it.each([
-    'https://example.com/image.png',
-    '/tmp/image.png',
-    'file_synthetic',
+    {
+      scope: 'ResponsesLite remote image reference',
+      model: 'gpt-6.1-sol',
+      image_url: 'https://example.com/image.png',
+      error: 'current image format cannot preserve provider image references',
+    },
+    {
+      scope: 'relative image_url',
+      model: 'gpt-5.5',
+      image_url: '/tmp/image.png',
+      error: 'Media URL must be absolute',
+    },
+    {
+      scope: 'bare ID in image_url',
+      model: 'gpt-5.5',
+      image_url: 'file_synthetic',
+      error: 'Media URL must be absolute',
+    },
   ])(
-    'refuses unsupported image reference %s before a request',
-    async (image_url) => {
+    'rejects $scope before a provider request',
+    async ({ image_url, error, model }) => {
       await withScriptedResponses([], async (peer) => {
+        const agent = imageAgent(peer.provider);
+        agent.model = model;
         await expect(
-          imageAgent(peer.provider).run({
+          agent.run({
             role: 'user',
             content: [{ type: 'input_image', image_url }],
           }),
-        ).rejects.toThrow('base64 image data URL');
+        ).rejects.toThrow(error);
         expect(peer.requests).toEqual([]);
       });
     },

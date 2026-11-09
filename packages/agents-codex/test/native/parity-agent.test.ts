@@ -196,11 +196,9 @@ describe('Python-aligned public Agent API', () => {
     await expect(
       agent.run({
         role: 'user',
-        content: [
-          { type: 'input_image', image_url: 'https://example.com/image.png' },
-        ],
+        content: [{ type: 'input_image', image_url: 'file:///tmp/image.png' }],
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow('Unsupported media URL scheme');
     expect(server.requests).toHaveLength(0);
     expect((await agent.run('Hello')).finalOutput).toBe('text only');
     await provider.close();

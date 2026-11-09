@@ -15,6 +15,7 @@ import { ONE_BY_ONE_PNG } from './imageFixture';
 import {
   E2BCloudBucketMountStrategy,
   E2BSandboxClient,
+  E2BSandboxSession,
   type E2BSandboxClientOptions,
 } from '../../src/sandbox/e2b';
 import {
@@ -2376,5 +2377,38 @@ describe('E2BSandboxClient', () => {
       timeoutMs: undefined,
       user: 'sandbox-user',
     });
+  });
+  test('keeps the released injected E2B reader shape and rejects uncaptured bounded reads', async () => {
+    const created = await new E2BSandboxClient().create(new Manifest());
+    const content = new Uint8Array([1, 2, 3, 4]);
+    const legacyRead = vi.fn(
+      async (
+        _path: string,
+        _options?: { format?: 'text' | 'bytes' },
+      ): Promise<string | Uint8Array> => content,
+    );
+    const session = new E2BSandboxSession({
+      state: created.state,
+      sandbox: {
+        sandboxId: created.state.sandboxId,
+        files: { write: writeMock, read: legacyRead },
+        commands: { run: runMock },
+        kill: killMock,
+      },
+    });
+    await expect(session.readFile({ path: 'legacy.txt' })).resolves.toEqual(
+      content,
+    );
+    expect(legacyRead).toHaveBeenCalledOnce();
+    expect(legacyRead).toHaveBeenCalledWith('/workspace/legacy.txt', {
+      format: 'bytes',
+    });
+    legacyRead.mockClear();
+    runMock.mockClear();
+    await expect(
+      session.readFile({ path: 'legacy.txt', maxBytes: 2 }),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    expect(legacyRead).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
   });
 });
