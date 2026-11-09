@@ -1,4 +1,6 @@
-import { afterEach, expect, it } from 'vitest';
+import { NativeSessionVoiceWorkflow } from '../../src/voice';
+import { afterEach, expect, it, vi } from 'vitest';
+import { FunctionAdmission } from '../../src/runtime/function-admission';
 import { z } from 'zod';
 import {
   Agent,
@@ -605,5 +607,235 @@ it.each([false, true])(
     expect((await turn.wait()).finalOutput).toBe('done');
     expect(effects).toEqual([expected]);
     server.assertExhausted();
+  },
+);
+
+it.each(['approved', 'automatic', 'rejected'])(
+  'balances managed call observations (%s)',
+  async (mode) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: mode === 'automatic' ? () => false : true,
+      execute: ({ value }) => {
+        effects.push(value);
+        return value;
+      },
+    });
+    const server = new ModelServer([
+      [call('risky', { value: 'A' }, { callId: 'observed-approval' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    }).session();
+    const turn = await session.submit('begin');
+    if (mode !== 'automatic') {
+      const request = await nextApproval(session);
+      expect(effects).toEqual([]);
+      await session.respond(
+        mode === 'approved' ? request.approve() : request.reject('denied'),
+      );
+    }
+    expect((await turn.wait()).finalOutput).toBe('done');
+    const facts: string[] = [];
+    for await (const event of turn.events())
+      if (
+        (event.type === 'tool_started' || event.type === 'tool_finished') &&
+        event.callId === 'observed-approval'
+      )
+        facts.push(event.type);
+    expect(facts).toEqual(['tool_started', 'tool_finished']);
+    expect(effects).toEqual(mode === 'rejected' ? [] : ['A']);
+    server.assertExhausted();
+  },
+);
+
+it.each([false, true])(
+  'admits managed approvals through a voice workflow tool ceiling (explicit=%s)',
+  async (explicit) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: true,
+      execute: ({ value }) => {
+        effects.push(value);
+        return value;
+      },
+    });
+    const server = new ModelServer([
+      [call('risky', { value: 'A' }, { callId: 'voice-workflow' })],
+      [message('spoken output')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    }).session();
+    const workflow = new NativeSessionVoiceWorkflow(
+      session,
+      explicit ? [risky] : undefined,
+    );
+    const output = (async () => {
+      const words: string[] = [];
+      for await (const text of workflow.run('begin')) words.push(text);
+      return words;
+    })();
+    const request = await Promise.race([
+      nextApproval(session),
+      output.then(() => {
+        throw new Error('Voice completed before its required approval');
+      }),
+    ]);
+    expect(effects).toEqual([]);
+    await session.respond(request.approve());
+    expect(await output).toEqual(['spoken output']);
+    expect(effects).toEqual(['A']);
+    server.assertExhausted();
+  },
+);
+
+it.each(['predicate', 'before'])(
+  'rejects callback self-close during managed preparation (%s)',
+  async (phase) => {
+    const prevented: string[] = [];
+    const checkClose = async () => {
+      await Promise.resolve();
+      await expect(async () => session.close()).rejects.toThrow(
+        /callback|own session/,
+      );
+      prevented.push(phase);
+    };
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: async () => {
+        if (phase === 'predicate') await checkClose();
+        return false;
+      },
+      runBeforeApproval: phase === 'before',
+      before:
+        phase === 'before'
+          ? async () => {
+              await checkClose();
+              return { action: 'allow' as const };
+            }
+          : undefined,
+      execute: ({ value }) => value,
+    });
+    const server = new ModelServer([
+      [call('risky', { value: 'A' }, { callId: 'self-close' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    }).session({ maxFunctionConcurrency: 1 });
+    expect((await (await session.submit('begin')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect(prevented).toEqual(phase === 'before' ? [phase, phase] : [phase]);
+    server.assertExhausted();
+  },
+);
+
+it.each([1, 2])(
+  'shares function admission before managed validators/hooks and releases before approval (limit=%s)',
+  async (limit) => {
+    const validated: number[] = [],
+      guards: number[] = [],
+      policies: number[] = [],
+      effects: number[] = [];
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>(),
+      allPrepared = Promise.withResolvers<void>(),
+      queued = Promise.withResolvers<void>();
+    let attempts = 0;
+    const acquire = FunctionAdmission.prototype.acquire;
+    const admissionSpy = vi
+      .spyOn(FunctionAdmission.prototype, 'acquire')
+      .mockImplementation(function (
+        this: FunctionAdmission,
+        signal: AbortSignal,
+      ) {
+        const pending = acquire.call(this, signal);
+        if (++attempts === 3) queued.resolve();
+        return pending;
+      });
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({
+        value: z.number().transform((value) => {
+          validated.push(value);
+          return value;
+        }),
+      }),
+      needsApproval: (context) => {
+        policies.push(Number(context.effectiveArguments.value));
+        if (policies.length === 3) allPrepared.resolve();
+        return true;
+      },
+      runBeforeApproval: true,
+      before: async (context) => {
+        guards.push(Number(context.originalArguments.value));
+        if (guards.length === limit) entered.resolve();
+        await release.promise;
+        return { action: 'allow' as const };
+      },
+      execute: ({ value }) => {
+        effects.push(value);
+        return String(value);
+      },
+    });
+    const server = new ModelServer([
+      [
+        ...Array.from({ length: 3 }, (_, i) =>
+          call('risky', { value: i }, { callId: 'admission-' + i }),
+        ),
+      ],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    }).session({ maxFunctionConcurrency: limit });
+    try {
+      const turn = await session.submit('begin');
+      await entered.promise;
+      await queued.promise;
+      expect(guards).toHaveLength(limit);
+      expect(new Set(validated)).toEqual(new Set(guards));
+      expect(policies).toEqual([]);
+      release.resolve();
+      await allPrepared.promise;
+      expect([...policies].sort()).toEqual([0, 1, 2]);
+      expect(effects).toEqual([]);
+      let decided = 0;
+      for await (const request of session.interactions()) {
+        if (!isFunctionApprovalRequest(request)) continue;
+        await session.respond(request.approve());
+        if (++decided === 3) break;
+      }
+      expect((await turn.wait()).finalOutput).toBe('done');
+      expect(effects.sort()).toEqual([0, 1, 2]);
+      server.assertExhausted();
+    } finally {
+      release.resolve();
+      admissionSpy.mockRestore();
+    }
   },
 );

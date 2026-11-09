@@ -1304,7 +1304,10 @@ export class Session<OutputT = string, Context = unknown> {
         this.catalog,
         declarationCatalog,
       );
-      if (!captured || captured.kind === 'manual')
+      if (
+        !captured ||
+        (captured.kind === 'manual' && !managedApproval(captured))
+      )
         throw new TypeError(
           'Voice tool was not admitted in the current Agent catalog',
         );
@@ -7564,8 +7567,27 @@ export class Session<OutputT = string, Context = unknown> {
         family: 'function' as const,
       };
       this.observeToolStart(run, identity);
+      let release: (() => void) | undefined;
+      let admission: FunctionAdmission | undefined;
       try {
-        if (!this.current(run) || !this.manualCurrent(event)) return;
+        if (approval) {
+          admission = this.functionAdmissions.get(run);
+          if (!admission && this.options.maxFunctionConcurrency !== undefined) {
+            admission = new FunctionAdmission(
+              this.options.maxFunctionConcurrency,
+            );
+            this.functionAdmissions.set(run, admission);
+          }
+          release = admission
+            ? await admission.acquire(run.controller.signal)
+            : undefined;
+        }
+        if (
+          !this.current(run) ||
+          run.failure !== undefined ||
+          !this.manualCurrent(event)
+        )
+          return;
         const args =
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
@@ -7651,6 +7673,7 @@ export class Session<OutputT = string, Context = unknown> {
           };
           const check = () => {
             context.signal.throwIfAborted();
+            admission?.check();
             if (!this.current(run) || !this.manualCurrent(event))
               throw new NativeError(
                 'Managed approval expired during policy evaluation',
@@ -7706,7 +7729,10 @@ export class Session<OutputT = string, Context = unknown> {
         }
         this.observeToolEnd(run, identity, 'failed');
         run.failure ??= error;
+        admission?.seal(error);
         throw error;
+      } finally {
+        release?.();
       }
     };
     const invoke = async () => {
@@ -8541,7 +8567,9 @@ export class Session<OutputT = string, Context = unknown> {
         namespace: toolNamespace(tool),
         family: 'function',
       };
-      this.observeToolStart(owner, identity);
+      // Native manual admission already records the start before its decision.
+      if (msg._sdk_managed_approved !== true)
+        this.observeToolStart(owner, identity);
       let status: ToolStatus | undefined;
       try {
         const args =
