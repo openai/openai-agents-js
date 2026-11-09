@@ -296,6 +296,7 @@ def replace_file(directory, name, source_fd):
             ):
                 raise OSError(errno.ESTALE, "File changed during update", name)
             os.rename("content", name, src_dir_fd=stage, dst_dir_fd=directory)
+            return created
         finally:
             with defer_cancellation():
                 if fd is not None:
@@ -308,18 +309,36 @@ def replace_file(directory, name, source_fd):
                     finally:
                         close(fd)
 
-def write_destination(path):
+def move_updated_file(path, unlink_directory, unlink_name, source_entry):
     with parent(path, create=True) as (directory, name):
+        replacement = None
         try:
             fd = os.open(name, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         except FileNotFoundError:
             create_file(directory, name)
-            return
-        try:
-            regular(fd, path)
-            replace_file(directory, name, fd)
-        finally:
-            close(fd)
+        else:
+            try:
+                existing = regular(fd, path)
+                published = replace_file(directory, name, fd)
+                if os.path.samestat(existing, source_entry):
+                    replacement = published
+            finally:
+                close(fd)
+
+        current = os.stat(unlink_name, dir_fd=unlink_directory, follow_symlinks=False)
+        if os.path.samestat(current, source_entry):
+            # A distinct source entry still names the original file, including a hardlink.
+            os.unlink(unlink_name, dir_fd=unlink_directory)
+        elif (
+            replacement is not None and os.path.samestat(current, replacement)
+            and os.path.samestat(os.fstat(unlink_directory), os.fstat(directory))
+            and os.path.samestat(os.stat(name, dir_fd=directory, follow_symlinks=False), replacement)
+        ):
+            # Both spellings now name the replacement. Let the filesystem rename that entry.
+            if unlink_name != name:
+                os.rename(unlink_name, name, src_dir_fd=unlink_directory, dst_dir_fd=directory)
+        else:
+            raise OSError(errno.ESTALE, "Source entry changed during move", unlink_name)
 
 def check_removal(directory, name):
     if sys.platform == "darwin":
@@ -405,6 +424,7 @@ def run(request):
             if unlink_path is not None:
                 unlink_directory, unlink_name = handles.enter_context(parent(unlink_path))
                 check_removal(unlink_directory, unlink_name)
+                source_entry = os.stat(unlink_name, dir_fd=unlink_directory, follow_symlinks=False)
             flags = FILE_READ if unlink_path is not None else os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
             fd = os.open(name, flags, dir_fd=directory)
             try:
@@ -420,8 +440,7 @@ def run(request):
                 if sys.stdin.buffer.read(1) != b"W":
                     return
                 if unlink_path is not None:
-                    write_destination(destination)
-                    os.unlink(unlink_name, dir_fd=unlink_directory)
+                    move_updated_file(destination, unlink_directory, unlink_name, source_entry)
                 else:
                     replace_file(directory, name, fd)
             finally:
