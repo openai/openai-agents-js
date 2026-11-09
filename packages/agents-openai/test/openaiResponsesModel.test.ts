@@ -6,7 +6,13 @@ import {
 import { HEADERS } from '../src/defaults';
 import { ResponsesWebSocketInternalError } from '../src/responsesWebSocketConnection';
 import OpenAI from 'openai';
-import { fileSearchTool, imageGenerationTool, webSearchTool } from '../src';
+import {
+  fileSearchTool,
+  imageGenerationTool,
+  programmaticToolCallingTool,
+  toolSearchTool,
+  webSearchTool,
+} from '../src';
 import {
   Agent,
   retryPolicies,
@@ -102,20 +108,21 @@ const serializedFunctionTool = {
   type: 'function',
   name: 'lookup',
   description: 'Look up a record.',
-  parameters: { type: 'object', properties: {}, additionalProperties: false },
+  parameters: {
+    type: 'object',
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  },
   strict: true,
-} as const;
+} satisfies ModelRequest['tools'][number];
 
 const serializedHandoff = {
   toolName: 'transfer_to_specialist',
   toolDescription: 'Transfer to a specialist.',
-  inputJsonSchema: {
-    type: 'object',
-    properties: {},
-    additionalProperties: false,
-  },
+  inputJsonSchema: serializedFunctionTool.parameters,
   strictJsonSchema: true,
-} as const;
+} satisfies ModelRequest['handoffs'][number];
 
 describe('OpenAIResponsesModel', () => {
   beforeAll(() => {
@@ -3837,6 +3844,167 @@ describe('OpenAIResponsesModel', () => {
       });
     },
   );
+
+  describe('forcing a tool with a built-in name', () => {
+    const webSearchFunction = { ...serializedFunctionTool, name: 'web_search' };
+    const request: ModelRequest = {
+      systemInstructions: undefined,
+      input: 'Search for a record.',
+      modelSettings: { toolChoice: 'web_search' },
+      tools: [webSearchFunction],
+      handoffs: [],
+      outputType: 'text',
+      tracing: false,
+    };
+    const response = { id: 'resp_search', usage: {}, output: [] };
+
+    function setup(result: unknown = response) {
+      const create = vi.fn().mockResolvedValue(result);
+      const model = new OpenAIResponsesModel(
+        { responses: { create } } as unknown as OpenAI,
+        'gpt-test',
+      );
+      const getResponse = (input: ModelRequest) =>
+        withTrace('tool choice', () => model.getResponse(input));
+      return { create, model, getResponse };
+    }
+
+    it.each([false, true])(
+      'forces the declared function (stream=%s)',
+      async (stream) => {
+        const { create, getResponse, model } = setup(
+          stream ? [{ type: 'response.completed', response }] : response,
+        );
+        if (stream) {
+          for await (const event of model.getStreamedResponse(request)) {
+            if (event.type === 'response_done')
+              expect(event.response.output).toEqual([]);
+          }
+        } else {
+          await getResponse(request);
+        }
+        expect(create.mock.calls[0][0]).toMatchObject({
+          stream,
+          tools: [webSearchFunction],
+          tool_choice: { type: 'function', name: 'web_search' },
+        });
+      },
+    );
+
+    it.each(['shell', 'apply_patch', 'programmatic_tool_calling', 'mcp'])(
+      'forces the declared %s function or handoff',
+      async (name) => {
+        const { create, getResponse } = setup();
+        await getResponse({
+          ...request,
+          modelSettings: { toolChoice: name },
+          tools: name === 'mcp' ? [] : [{ ...serializedFunctionTool, name }],
+          handoffs:
+            name === 'mcp' ? [{ ...serializedHandoff, toolName: name }] : [],
+        });
+        expect(create.mock.calls[0][0]).toMatchObject({
+          tools: [{ type: 'function', name }],
+          tool_choice: { type: 'function', name },
+        });
+      },
+    );
+
+    it('forces the handoff when a same-name deferred function is listed first', async () => {
+      const { create, getResponse } = setup();
+      await getResponse({
+        ...request,
+        tools: [{ ...webSearchFunction, deferLoading: true }, toolSearchTool()],
+        handoffs: [{ ...serializedHandoff, toolName: 'web_search' }],
+      });
+      expect(create.mock.calls[0][0]).toMatchObject({
+        tools: [
+          { ...webSearchFunction, defer_loading: true },
+          { type: 'tool_search' },
+          {
+            type: 'function',
+            name: 'web_search',
+            description: serializedHandoff.toolDescription,
+          },
+        ],
+        tool_choice: { type: 'function', name: 'web_search' },
+      });
+    });
+
+    it('prefers the built-in only while it is present in the outgoing tools', async () => {
+      const { create, getResponse } = setup();
+      const both = { ...request, tools: [webSearchFunction, webSearchTool()] };
+      await getResponse(both);
+      expect(create.mock.calls[0][0]).toMatchObject({
+        tools: [webSearchFunction, { type: 'web_search' }],
+        tool_choice: { type: 'web_search' },
+      });
+      await getResponse({
+        ...both,
+        prompt: { promptId: 'pmpt_search' },
+        modelSettings: {
+          ...both.modelSettings,
+          providerData: { extraBody: { tools: [webSearchFunction] } },
+        },
+      });
+      expect(create.mock.calls[1][0]).toMatchObject({
+        tools: [webSearchFunction],
+        tool_choice: { type: 'function', name: 'web_search' },
+      });
+    });
+
+    it('preserves an explicit wire choice when the body replaces the SDK tools', async () => {
+      const { create, getResponse } = setup();
+      await getResponse({
+        ...request,
+        modelSettings: {
+          toolChoice: 'web_search',
+          providerData: {
+            extraBody: {
+              tools: [serializedFunctionTool],
+              tool_choice: { type: 'function', name: 'lookup' },
+            },
+          },
+        },
+      });
+      expect(create.mock.calls[0][0]).toMatchObject({
+        tools: [serializedFunctionTool],
+        tool_choice: { type: 'function', name: 'lookup' },
+      });
+    });
+
+    it.each([
+      [
+        'deferred',
+        [{ ...webSearchFunction, deferLoading: true }, toolSearchTool()],
+      ],
+      [
+        'programmatic-only',
+        [
+          { ...webSearchFunction, allowedCallers: ['programmatic'] },
+          programmaticToolCallingTool(),
+        ],
+      ],
+      [
+        'namespaced',
+        [
+          {
+            ...webSearchFunction,
+            namespace: 'crm',
+            namespaceDescription: 'CRM tools.',
+          },
+        ],
+      ],
+    ] satisfies [string, ModelRequest['tools']][])(
+      'rejects a bare name with only a %s match',
+      async (_label, tools) => {
+        const { create, getResponse } = setup();
+        await expect(getResponse({ ...request, tools })).rejects.toThrow(
+          'toolChoice="web_search" is unavailable',
+        );
+        expect(create).not.toHaveBeenCalled();
+      },
+    );
+  });
 
   it('rejects deferred namespaced function tools before toolChoice validation', async () => {
     await withTrace('test', async () => {
