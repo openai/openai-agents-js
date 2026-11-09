@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -7,11 +6,23 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, expect, test, vi } from 'vitest';
 import { Manifest, file, gitRepo, localDir } from '@openai/agents-core/sandbox';
+import * as sourceReaders from '@openai/agents-core/sandbox/internal';
 import { materializeLocalSourceManifest } from '../../src/sandbox/shared/localSources';
 
 vi.mock('node:fs/promises', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:fs/promises')>()),
 }));
+
+vi.mock('@openai/agents-core/sandbox/internal', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('@openai/agents-core/sandbox/internal')
+    >();
+  return {
+    ...actual,
+    openLocalSourceDirectory: vi.fn(actual.openLocalSourceDirectory),
+  };
+});
 
 const exec = promisify(execFile);
 const temporaryDirectories: string[] = [];
@@ -72,6 +83,7 @@ async function sourceTree(git: boolean) {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.mocked(sourceReaders.openLocalSourceDirectory).mockReset();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -88,16 +100,29 @@ test.each([
   'bounds reads and awaited uploads across a recursive source ($git, $limit)',
   async ({ git, limit }) => {
     const { root, files, entry } = await sourceTree(git);
-    const open = fs.open;
+    const actualReaders = await vi.importActual<typeof sourceReaders>(
+      '@openai/agents-core/sandbox/internal',
+    );
     let active = 0;
     let peak = 0;
-    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
-      if (typeof args[1] === 'number' && !(args[1] & constants.O_DIRECTORY)) {
+    type SourceDirectory = Awaited<
+      ReturnType<typeof sourceReaders.openLocalSourceDirectory>
+    >;
+    const observeReads = (directory: SourceDirectory): SourceDirectory => ({
+      entries: () => directory.entries(),
+      close: () => directory.close(),
+      openDirectory: async (name, enumerate) =>
+        observeReads(await directory.openDirectory(name, enumerate)),
+      readFile: (name) => {
         active++;
         peak = Math.max(peak, active);
-      }
-      return open(...args);
+        return directory.readFile(name);
+      },
     });
+    vi.mocked(sourceReaders.openLocalSourceDirectory).mockImplementation(
+      async (path) =>
+        observeReads(await actualReaders.openLocalSourceDirectory(path)),
+    );
     const pending: Array<ReturnType<typeof deferred>> = [];
     const written = new Map<string, string>();
     const mkdir = vi.fn();
@@ -164,13 +189,14 @@ test.each(['upload', 'traversal'])(
     const { entry } = await sourceTree(true);
     const gate = deferred();
     const failure = new Error('copy failed');
-    const open = fs.open;
+    const mkdtemp = fs.mkdtemp;
     let cloneRoot: string | undefined;
-    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+    vi.spyOn(fs, 'mkdtemp').mockImplementation(async (...args) => {
+      const directory = await mkdtemp(...args);
       if (String(args[0]).includes('openai-agents-test-git-')) {
-        cloneRoot = String(args[0]).split('/tree')[0];
+        cloneRoot = directory.toString();
       }
-      return open(...args);
+      return directory;
     });
     let writes = 0;
     let failureReached = false;

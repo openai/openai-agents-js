@@ -2,21 +2,14 @@ import { UserError } from '@openai/agents-core';
 import { type Entry, type Manifest } from '@openai/agents-core/sandbox';
 import {
   isHostPathStrictlyWithinRoot,
+  openLocalSourceDirectory,
+  readLocalSourceFile,
   isHostPathWithinRoot,
   sandboxPathGrantHostPath,
 } from '@openai/agents-core/sandbox/internal';
-import { constants, type Dirent, type Stats } from 'node:fs';
-import {
-  lstat,
-  mkdtemp,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rm,
-} from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { normalizeGitRepository } from './git';
 import { formatSandboxProcessError, runSandboxProcess } from './process';
 import {
@@ -42,15 +35,6 @@ import type { RemoteSandboxPathResolver } from './types';
 const GIT_VERSION_TIMEOUT_MS = 10_000;
 const GIT_CLONE_TIMEOUT_MS = 5 * 60_000;
 const COMMIT_REF_PATTERN = /^[0-9a-fA-F]{7,40}$/;
-const LOCAL_SOURCE_FILE_READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
-const LOCAL_SOURCE_DIRECTORY_READ_FLAGS =
-  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY;
-
-type StableLocalDirectorySource = {
-  root: string;
-  stat: Stats;
-};
-
 export async function applyLocalSourceManifestEntryToState(
   state: MaterializedManifestEntryState,
   path: string,
@@ -153,7 +137,7 @@ export async function materializeLocalSourceManifestEntry(
     case 'local_file':
       await writer.writeFile(
         absolutePath,
-        await readStableLocalFile(
+        await readLocalSourceFile(
           resolveLocalSourcePath('local_file', entry.src, options),
         ),
       );
@@ -223,11 +207,8 @@ async function materializeLocalDirectory(
   await runLimited(
     walkLocalDirectory(writer, absolutePath, sourceDir),
     resolveLocalDirFileConcurrency(options.concurrencyLimits),
-    async ({ sourceRoot, sourcePath, destinationPath }) => {
-      await writer.writeFile(
-        destinationPath,
-        await readStableLocalDirectoryFile(sourceRoot, sourcePath),
-      );
+    async ({ content, destinationPath }) => {
+      await writer.writeFile(destinationPath, await content);
     },
   );
 }
@@ -236,325 +217,60 @@ async function* walkLocalDirectory(
   writer: RemoteManifestWriter,
   absolutePath: string,
   sourceDir: string,
-  expectedSourceStat?: Stats,
-): AsyncGenerator<{
-  sourceRoot: string;
-  sourcePath: string;
-  destinationPath: string;
-}> {
-  const source = await resolveStableLocalDirectorySource(
-    sourceDir,
-    expectedSourceStat,
-  );
-  await writer.mkdir(absolutePath);
-  const entries = await readStableLocalDirectoryEntries(sourceDir, source.stat);
-
-  for (const entry of entries) {
-    const sourcePath = join(sourceDir, entry.name);
-    const destinationPath = `${absolutePath}/${entry.name}`;
-
-    if (entry.isDirectory()) {
-      const childSourceStat = await assertStableLocalDirectoryChild(
-        source.root,
-        sourcePath,
-      );
-      yield* walkLocalDirectory(
-        writer,
-        destinationPath,
-        sourcePath,
-        childSourceStat,
-      );
-      continue;
-    }
-
-    if (entry.isFile()) {
-      yield { sourceRoot: source.root, sourcePath, destinationPath };
-      continue;
-    }
-
-    if (entry.isSymbolicLink()) {
-      throw new UserError(
-        `local_dir entries do not support symbolic links: ${sourcePath}`,
-      );
-    }
-  }
-}
-
-async function resolveStableLocalDirectorySource(
-  sourceDir: string,
-  expectedSourceStat?: Stats,
-): Promise<StableLocalDirectorySource> {
-  await assertNoLocalSourceSymlinkAncestors(
-    sourceDir,
-    'local_dir',
-    localDirectoryPathChangedError,
-  );
-  const sourceStat = await statStableLocalSourcePath(sourceDir);
-  if (sourceStat.isSymbolicLink()) {
-    throw new UserError(
-      `local_dir entries do not support symbolic links: ${sourceDir}`,
-    );
-  }
-  if (!sourceStat.isDirectory()) {
-    throw new UserError(`local_dir source must be a directory: ${sourceDir}`);
-  }
-  if (
-    expectedSourceStat &&
-    !sameFilesystemEntry(sourceStat, expectedSourceStat)
-  ) {
-    throw localDirectoryPathChangedError(sourceDir);
-  }
-
-  const sourceRoot = await realpathStableLocalSourcePath(sourceDir);
-  let handle: Awaited<ReturnType<typeof open>>;
+): AsyncGenerator<{ content: Promise<Uint8Array>; destinationPath: string }> {
+  const source = await openLocalSourceDirectory(sourceDir);
   try {
-    handle = await open(sourceDir, LOCAL_SOURCE_DIRECTORY_READ_FLAGS);
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw localDirectoryPathChangedError(sourceDir);
-    }
-    throw error;
-  }
-  try {
-    const openedStat = await handle.stat();
-    if (
-      !openedStat.isDirectory() ||
-      !sameFilesystemEntry(openedStat, sourceStat)
-    ) {
-      throw localDirectoryPathChangedError(sourceDir);
-    }
-    return { root: sourceRoot, stat: openedStat };
+    yield* walkOpenedLocalDirectory(writer, absolutePath, source, sourceDir);
   } finally {
-    await handle.close();
+    await source.close();
   }
 }
 
-async function readStableLocalDirectoryEntries(
-  sourceDir: string,
-  expectedStat: Stats,
-): Promise<Array<Dirent<string>>> {
-  let entries: Array<Dirent<string>>;
-  try {
-    entries = await readdir(sourceDir, { withFileTypes: true });
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw localDirectoryPathChangedError(sourceDir);
-    }
-    throw error;
-  }
-
-  await assertStableLocalDirectoryPath(sourceDir, expectedStat);
-  return entries;
-}
-
-async function assertStableLocalDirectoryPath(
+async function* walkOpenedLocalDirectory(
+  writer: RemoteManifestWriter,
+  absolutePath: string,
+  source: Awaited<ReturnType<typeof openLocalSourceDirectory>>,
   sourcePath: string,
-  expectedStat: Stats,
-): Promise<void> {
-  const currentStat = await statStableLocalSourcePath(sourcePath);
-  if (
-    currentStat.isSymbolicLink() ||
-    !currentStat.isDirectory() ||
-    !sameFilesystemEntry(currentStat, expectedStat)
-  ) {
-    throw localDirectoryPathChangedError(sourcePath);
-  }
-}
-
-async function readStableLocalFile(sourcePath: string): Promise<Uint8Array> {
-  await assertNoLocalSourceSymlinkAncestors(
-    sourcePath,
-    'local_file',
-    localFilePathChangedError,
-  );
-  const sourceStat = await statStableLocalSourcePath(
-    sourcePath,
-    localFilePathChangedError,
-  );
-  if (sourceStat.isSymbolicLink()) {
-    throw new UserError(
-      `local_file entries do not support symbolic links: ${sourcePath}`,
-    );
-  }
-  if (!sourceStat.isFile()) {
-    throw localFilePathChangedError(sourcePath);
-  }
-
-  let handle: Awaited<ReturnType<typeof open>>;
+): AsyncGenerator<{ content: Promise<Uint8Array>; destinationPath: string }> {
+  const pendingReads = new Set<Promise<Uint8Array>>();
   try {
-    handle = await open(sourcePath, LOCAL_SOURCE_FILE_READ_FLAGS);
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw localFilePathChangedError(sourcePath);
-    }
-    throw error;
-  }
-  try {
-    const openedStat = await handle.stat();
-    if (!openedStat.isFile() || !sameFilesystemEntry(openedStat, sourceStat)) {
-      throw localFilePathChangedError(sourcePath);
-    }
-    return await handle.readFile();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function assertNoLocalSourceSymlinkAncestors(
-  sourcePath: string,
-  entryType: 'local_dir' | 'local_file',
-  pathChangedError: (sourcePath: string) => UserError,
-): Promise<void> {
-  const resolvedPath = resolve(sourcePath);
-  let current = dirname(resolvedPath);
-
-  while (current !== dirname(current)) {
-    const parent = dirname(current);
-    if (parent === dirname(parent)) {
-      break;
-    }
-    let currentStat: Stats;
-    try {
-      currentStat = await lstat(current);
-    } catch (error) {
-      if (isPathChangedError(error)) {
-        throw pathChangedError(sourcePath);
+    await writer.mkdir(absolutePath);
+    for (const entry of await source.entries()) {
+      const destinationPath = `${absolutePath}/${entry.name}`;
+      if (entry.type === 'directory') {
+        const child = await source.openDirectory(entry.name);
+        try {
+          yield* walkOpenedLocalDirectory(
+            writer,
+            destinationPath,
+            child,
+            join(sourcePath, entry.name),
+          );
+        } finally {
+          await child.close();
+        }
+      } else if (entry.type === 'file') {
+        // Begin acquisition while the directory is retained. The backend queues
+        // close after acquisitions and owns each opened file until its read ends.
+        const content = source.readFile(entry.name);
+        pendingReads.add(content);
+        // A sibling failure can make runLimited discard an awaited iterator
+        // result. Observe every read here, including results no worker accepts.
+        void content.then(
+          () => pendingReads.delete(content),
+          () => pendingReads.delete(content),
+        );
+        yield { content, destinationPath };
+      } else if (entry.type === 'symlink') {
+        throw new UserError(
+          `local_dir entries do not support symbolic links: ${join(sourcePath, entry.name)}`,
+        );
       }
-      throw error;
     }
-    if (currentStat.isSymbolicLink()) {
-      throw new UserError(
-        `${entryType} entries do not support symbolic link ancestors: ${sourcePath}`,
-      );
-    }
-    current = parent;
-  }
-}
-
-async function readStableLocalDirectoryFile(
-  sourceRoot: string,
-  sourcePath: string,
-): Promise<Uint8Array> {
-  // local_dir expands on the host before upload, so reject symlinks and pin the
-  // opened inode to avoid leaking swapped-in files outside the declared directory.
-  const sourceStat = await statStableLocalSourcePath(sourcePath);
-  if (sourceStat.isSymbolicLink()) {
-    throw new UserError(
-      `local_dir entries do not support symbolic links: ${sourcePath}`,
-    );
-  }
-  if (!sourceStat.isFile()) {
-    throw localDirectoryPathChangedError(sourcePath);
-  }
-
-  const resolvedSourcePath = await realpathStableLocalSourcePath(sourcePath);
-  assertPathInsideRootChild(
-    sourceRoot,
-    resolvedSourcePath,
-    `local_dir entry path changed while materializing: ${sourcePath}`,
-  );
-
-  let handle: Awaited<ReturnType<typeof open>>;
-  try {
-    handle = await open(sourcePath, LOCAL_SOURCE_FILE_READ_FLAGS);
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw localDirectoryPathChangedError(sourcePath);
-    }
-    throw error;
-  }
-  try {
-    const openedStat = await handle.stat();
-    if (!openedStat.isFile() || !sameFilesystemEntry(openedStat, sourceStat)) {
-      throw localDirectoryPathChangedError(sourcePath);
-    }
-    return await handle.readFile();
   } finally {
-    await handle.close();
+    // Iterator cancellation joins source work before its directory is closed.
+    await Promise.allSettled(pendingReads);
   }
-}
-
-async function assertStableLocalDirectoryChild(
-  sourceRoot: string,
-  sourcePath: string,
-): Promise<Stats> {
-  const sourceStat = await statStableLocalSourcePath(sourcePath);
-  if (sourceStat.isSymbolicLink()) {
-    throw new UserError(
-      `local_dir entries do not support symbolic links: ${sourcePath}`,
-    );
-  }
-  if (!sourceStat.isDirectory()) {
-    throw localDirectoryPathChangedError(sourcePath);
-  }
-
-  const resolvedSourcePath = await realpathStableLocalSourcePath(sourcePath);
-  assertPathInsideRootChild(
-    sourceRoot,
-    resolvedSourcePath,
-    `local_dir entry path changed while materializing: ${sourcePath}`,
-  );
-
-  return sourceStat;
-}
-
-async function statStableLocalSourcePath(
-  sourcePath: string,
-  pathChangedError: (
-    sourcePath: string,
-  ) => UserError = localDirectoryPathChangedError,
-): Promise<Stats> {
-  try {
-    return await lstat(sourcePath);
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw pathChangedError(sourcePath);
-    }
-    throw error;
-  }
-}
-
-async function realpathStableLocalSourcePath(
-  sourcePath: string,
-  pathChangedError: (
-    sourcePath: string,
-  ) => UserError = localDirectoryPathChangedError,
-): Promise<string> {
-  try {
-    return await realpath(sourcePath);
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw pathChangedError(sourcePath);
-    }
-    throw error;
-  }
-}
-
-function localDirectoryPathChangedError(sourcePath: string): UserError {
-  return new UserError(
-    `local_dir entry path changed while materializing: ${sourcePath}`,
-  );
-}
-
-function localFilePathChangedError(sourcePath: string): UserError {
-  return new UserError(
-    `local_file entry path changed while materializing: ${sourcePath}`,
-  );
-}
-
-function isPathChangedError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error.code === 'ELOOP' ||
-      error.code === 'ENOENT' ||
-      error.code === 'ENOTDIR')
-  );
-}
-
-function sameFilesystemEntry(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function assertPathInsideRootChild(

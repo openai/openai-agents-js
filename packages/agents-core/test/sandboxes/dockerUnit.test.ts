@@ -6736,8 +6736,18 @@ describe('DockerSandboxClient unit behavior', () => {
       const written = Promise.withResolvers<void>();
       const events: string[] = [];
       vi.mocked(open).mockImplementation(async (...args) => {
-        if (args[0] === queuedSource) events.push('queued-started');
-        if (args[0] === failingSource) {
+        // Fail a destination write. Source reads use native descriptors, so
+        // mocking pathname reads would leave this lifecycle gate untriggered.
+        const target = String(args[0]);
+        if (
+          target !== queuedSource &&
+          basename(target) === (kind === 'manifest' ? 'queued' : 'queued.txt')
+        )
+          events.push('queued-started');
+        if (
+          target !== failingSource &&
+          basename(target) === (kind === 'manifest' ? 'failing' : 'failing.txt')
+        ) {
           await entered.promise;
           failed.resolve();
           throw firstError;

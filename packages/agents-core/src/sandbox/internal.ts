@@ -132,3 +132,8 @@ export {
 } from './shared/media';
 
 export { cleanupSandboxSession } from './runtime/sessionLifecycle';
+
+export {
+  openLocalSourceDirectory,
+  readLocalSourceFile,
+} from './shared/localSourceReader';

@@ -253,10 +253,70 @@ jobs:
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
         run: pnpm exec vitest --run --project "@openai/agents-core" packages/agents-core/test/sandboxWorkspacePaths.test.ts packages/agents-core/test/sandboxManifest.test.ts packages/agents-core/test/sandboxNativePathGrants.test.ts
+      - name: Verify native local source containment on Windows
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: pnpm exec vitest run packages/agents-core/test/sandboxes/localSourceReader.test.ts packages/agents-extensions/test/sandbox/localSourceContainment.test.ts
       - name: Run Windows remote path tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
         run: pnpm exec vitest --run --project "@openai/agents-extensions" packages/agents-extensions/test/sandbox/remotePaths.test.ts
+
+  local-sources-native:
+    needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            target: linux/arm64
+            node: 24
+            arch: arm64
+          - runner: macos-15-intel
+            target: darwin/x64
+            node: 24
+            arch: x64
+          - runner: macos-15
+            target: darwin/arm64
+            node: 24
+            arch: arm64
+          - runner: windows-11-arm
+            target: win32/arm64
+            node: 24
+            arch: arm64
+          - runner: windows-latest
+            target: win32/ia32
+            node: 22
+            arch: ia32
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Setup Node.js
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ matrix.node }}
+          architecture: ${{ matrix.arch == 'ia32' && 'x86' || matrix.arch }}
+          cache: 'pnpm'
+      - name: Install dependencies
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm install --frozen-lockfile --cpu=${{ matrix.arch }}
+      - name: Verify native runtime architecture
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm exec node -e "require('node:assert/strict').equal(process.platform + '/' + process.arch, '${{ matrix.target }}')"
+      - name: Verify native local source containment
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm exec vitest run packages/agents-core/test/sandboxes/localSourceReader.test.ts packages/agents-extensions/test/sandbox/localSourceContainment.test.ts
 
   coverage:
     needs: changes

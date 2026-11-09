@@ -18,16 +18,27 @@ export type File = EntryBase & {
   content: string | Uint8Array;
 };
 
+/**
+ * A host file copied with native filesystem protection. Deno applications need
+ * local node_modules (nodeModulesDir: "auto" or "manual") and --allow-ffi to
+ * load the packaged native dependency.
+ */
 export type LocalFile = EntryBase & {
   type: 'local_file';
   src: string;
 };
 
+/** A host directory copied with the same runtime requirements as LocalFile. */
 export type LocalDir = EntryBase & {
   type: 'local_dir';
   src: string;
 };
 
+/**
+ * A repository cloned with local git. Copying a repository directory uses the
+ * same native runtime requirements as LocalDir, including Deno --allow-ffi
+ * and local node_modules.
+ */
 export type GitRepo = EntryBase & {
   type: 'git_repo';
   host?: string;
@@ -115,13 +126,7 @@ export type MountStrategy =
     };
 
 export type MountProvider =
-  | 's3'
-  | 'gcs'
-  | 'r2'
-  | 'azure_blob'
-  | 'box'
-  | 's3_files'
-  | (string & {});
+  's3' | 'gcs' | 'r2' | 'azure_blob' | 'box' | 's3_files' | (string & {});
 
 export type MountBase = EntryBase & {
   source?: string;
@@ -210,18 +215,7 @@ export type S3FilesMount = MountBase & {
 };
 
 export type TypedMount =
-  | S3Mount
-  | GCSMount
-  | R2Mount
-  | AzureBlobMount
-  | BoxMount
-  | S3FilesMount;
+  S3Mount | GCSMount | R2Mount | AzureBlobMount | BoxMount | S3FilesMount;
 
 export type Entry =
-  | Dir
-  | File
-  | LocalFile
-  | LocalDir
-  | GitRepo
-  | Mount
-  | TypedMount;
+  Dir | File | LocalFile | LocalDir | GitRepo | Mount | TypedMount;
