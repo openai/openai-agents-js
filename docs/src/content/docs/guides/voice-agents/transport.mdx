@@ -164,4 +164,10 @@ Use the transport for low-level operations such as `session.update`, `response.c
 
 If you do not need automatic tool execution, guardrails, or local history management, use the transport directly to manage the connection and interruptions.
 
+For a server or custom audio pipeline, `OpenAIRealtimeWebSocket` sends and receives raw audio frames. Your application owns audio capture and playback. WebRTC handles microphone capture and playback through media tracks instead of this callback.
+
 <Code lang="typescript" code={thinClientExample} />
+
+Create the client with `const client = await connectRawAudio(apiKey, playAudio)`. Pass a server-side API key and your playback callback. Keep that key on the server. The callback receives each decoded PCM16 output frame as an `ArrayBuffer`; queue the frames for playback in order.
+
+After the helper returns, send your captured 24 kHz PCM16 frames with `client.sendAudio(frame)`. The returned `client` is the SDK transport. Keep it open while the conversation runs, then call `client.close()` and stop your application's capture and playback resources. The helper closes the transport if the connection fails.

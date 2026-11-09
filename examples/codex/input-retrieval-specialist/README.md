@@ -8,7 +8,9 @@ These three examples run local scripted Responses through `@openai/agents/testin
 pnpm exec tsx examples/codex/input-retrieval-specialist/image-input.ts
 ```
 
-The example creates a red PNG, reads its bytes into an inline image data URL, and submits that URL alongside text. It validates the scripted final answer. This checks request transport and output validation. Use a live model to assess image understanding. Supply inline image data for this input. Paths, remote URLs, file IDs, and PDFs cannot serve as image bytes.
+The example creates a red PNG, reads its bytes into an inline image data URL, and submits that URL alongside text. It validates the scripted final answer. This checks request transport and output validation. Use a live model to assess image understanding.
+
+Native `input_image` also accepts an HTTP(S) `image_url` or provider `file_id`. Use `input_file` for supported provider file inputs, including PDFs. The SDK captures those references without fetching URLs, uploading files, or reading host paths. Provider and model support still determine whether a request succeeds. See [input, tools, and output](../guides/tools.md#input-tools-and-output).
 
 ## Check retrieved source IDs
 

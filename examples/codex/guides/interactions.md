@@ -98,7 +98,7 @@ Root command and patch approvals require selected Environment tools. A child mus
 
 `HttpMCP` and `StdioMCP` with `approvalMode: 'preapproved'` approve automatically. Ordinary `native` mode follows Core policy and tool annotations. Without `onInteraction`, a native question fails an owned run with `InteractionRequired`. The same handler handles manual tool requests.
 
-Opening starts with an empty native MCP roster, starts the sole event reader, then publishes the captured current roster and policies. A native question during publication fails opening and joins cleanup. The cancellation evidence covers a native Thread that already exists before the public Session promise resolves; it does not establish cancellation of pre-Thread construction or same-Engine sibling isolation.
+A native question during MCP setup fails Session opening. Opening waits for cleanup before reporting the failure, so retain that error and any reported cleanup failure before trying again.
 
 ### Explicit URL consent and completion
 

@@ -596,7 +596,7 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<NativeThread> {
-        self.start_native_thread(&options_json, &specs_json, None)
+        Box::pin(self.start_native_thread(&options_json, &specs_json, None))
             .await
             .map_err(native_error)
     }
@@ -634,6 +634,32 @@ impl Engine {
                 Err(error) => Err(native_error(error)),
             },
         }
+    }
+
+    #[napi(getter, js_name = "_private_reuse_ready")]
+    pub fn private_reuse_ready(&self) -> napi::Result<bool> {
+        Ok(self.current()?.private_reuse_ready())
+    }
+
+    #[napi(js_name = "_private_start_thread")]
+    pub async fn private_start_thread(
+        &self,
+        config_json: String,
+        runtime_json: String,
+        origin: String,
+        grant: String,
+        options_json: String,
+        specs_json: String,
+    ) -> napi::Result<Option<NativeThread>> {
+        let current = self.current()?;
+        let _operation = current.operation(false).map_err(native_error)?;
+        let options = config::decode(serde_json::from_str(&options_json).map_err(native_error)?)
+            .map_err(native_error)?;
+        let specs = serde_json::from_str(&specs_json).map_err(native_error)?;
+        current
+            .private_start_with_tools(&config_json, &runtime_json, &origin, &grant, options, specs)
+            .await
+            .map_err(native_error)
     }
 
     #[napi(js_name = "close")]
@@ -893,6 +919,14 @@ impl NativeThread {
     }
 
     async fn close_owned(&self, selected_environment: bool) -> napi::Result<Option<String>> {
+        self.close_owned_mode(selected_environment, false).await
+    }
+
+    async fn close_owned_mode(
+        &self,
+        selected_environment: bool,
+        retire_private: bool,
+    ) -> napi::Result<Option<String>> {
         self.inner
             .lock()
             .map_err(native_error)?
@@ -912,6 +946,14 @@ impl NativeThread {
         };
         // A completed diagnostic does not leave a live thread. Shutdown failure
         // returns above, retaining the existing incomplete-close retry path.
+        if retire_private && ack_error.is_none() {
+            inner
+                .engine
+                .retire_private_thread(&inner)
+                .await
+                .map_err(native_error)?;
+            inner.engine.retire_private_registration(&self.inner);
+        }
         self.inner.lock().map_err(native_error)?.release();
         Ok(ack_error)
     }
@@ -3900,6 +3942,11 @@ impl NativeThread {
     #[napi(js_name = "_close_report")]
     pub async fn _close_report(&self) -> napi::Result<Option<String>> {
         self.close_owned(false).await
+    }
+
+    #[napi(js_name = "_close_private_root_report")]
+    pub async fn _close_private_root_report(&self) -> napi::Result<Option<String>> {
+        self.close_owned_mode(false, true).await
     }
 
     #[napi(js_name = "_close_selected_environment")]

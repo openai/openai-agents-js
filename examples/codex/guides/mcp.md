@@ -14,6 +14,22 @@ Invocation approval does not necessarily precede connection or discovery. Choose
 
 Add `StdioMCP` or `HttpMCP` declarations to `tools`, naming the MCP tools the session may expose. Their optional `transformResult` callback runs before the result reaches the model and history. Codex owns the connection and sends calls to the selected server. That server performs the operation in its own process or service. A stdio server runs at its declared host or Environment location. An HTTP server runs at its configured service endpoint.
 
+## Read resources and prompts
+
+The current [source build](building.md) lets an idle Session read resources and prompts from an `HttpMCP` or session-lifetime `StdioMCP` declaration in its current tool selection. Declare `tools: []` for a server that supplies only this data. Its first read connects lazily without exposing model-visible tools. Turn-lifetime stdio has no idle connection. `ChatGPTAppsMCP` and `HostedVerificationMCP` do not support these methods.
+
+| Method | Returned data |
+| --- | --- |
+| `session.listMcpResources(server, cursor?)` | One resource page. Pass its `nextCursor` explicitly to request another page. |
+| `session.listMcpResourceTemplates(server, cursor?)` | One template page, with the same explicit pagination. |
+| `session.readMcpResource(server, uri)` | Resource contents, including text, base64 blobs, and metadata. |
+| `session.listMcpPrompts(server)` | The complete ordered prompt catalog, or an error without a partial list. |
+| `session.getMcpPrompt(server, name, arguments?)` | Prompt messages and metadata. Argument values are strings; omitted arguments remain distinct from `{}`. |
+
+Use the server's declared name, such as `'documents'`, for `server`. Missing capabilities return empty lists; reading an unsupported resource or prompt fails. Prompt collection is bounded to 100 pages, 2,048 items, 64 KiB per cursor, and 8 MiB of serialized prompt-page arrays. The server's execution timeout also bounds collection.
+
+The [resource example](../mcp-resources.ts) and [prompt example](../mcp-prompts.ts) show the calls against an application-provided local MCP service. They are integration excerpts: provide the endpoint and credentials before using them. The SDK returns the server's content without inserting it into instructions, history, or model context. Your application must inspect and select any content it wants to submit. Closing the Session cancels and joins pending reads; abandoning a Promise does not cancel its operation.
+
 ## Configure HTTP headers
 
 Pass `headers` to `HttpMCP` for application-supplied HTTP fields, for example `headers: { 'X-Region': 'eu' }`. The declaration captures a copy of the map. Header names are case-insensitive for duplicate detection. If you supply an `Authorization` header, omit `bearerToken` so the declaration has one source of authorization.
