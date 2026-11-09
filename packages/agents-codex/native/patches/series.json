@@ -357,9 +357,13 @@
       "sha256": "4e2bb732edab48888aa9bdca723f591caaf87465c86c0ce0a76ea5baa60c1081"
     },
     {
+      "path": "0095-bound-hosted-mcp-catalogs.patch",
+      "sha256": "2d4bec4d35bc81d8c5e42c5e7e9b1fbd9d8c49e3fd808edae6a1fe7de0bb5833"
+    },
+    {
       "path": "0095-decisions.patch",
       "sha256": "8bd03cd5f75e6697d2aac66087cb76de48d326db3699b771656f7fccf8c37647"
     }
   ],
-  "result_tree": "4806938a91f7786c8a796fbd69f4951f428db0c5"
+  "result_tree": "a008e9c3bedcee89753b1bcc4b540f6216b35c27"
 }

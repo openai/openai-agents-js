@@ -12,6 +12,7 @@ import {
   type MCPResultContext,
 } from '../src';
 import { ModelServer, call, message } from './native/fixtures/model-server';
+import { NativeSessionVoiceWorkflow } from '../src/voice';
 import type {
   NativeRealtimeEvent,
   NativeRealtimeHostedMcpApprovalRequest,
@@ -2192,4 +2193,536 @@ nativeIt(
     }
   },
   120000,
+);
+
+nativeIt.each([false, true])(
+  'resolves an original voice selector to the same profile replacement (graph=%s)',
+  async (graph) => {
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'original',
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'replacement',
+    });
+    const foreign = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'foreign',
+    });
+    const target = new Agent({
+      name: 'Other',
+      instructions: 'Other profile.',
+      tools: [foreign],
+    });
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [original],
+        ...(graph ? { handoffs: [target] } : {}),
+        provider,
+      }).session();
+      let voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [original],
+      });
+      try {
+        await session.update({ tools: [replacement] });
+        peer.call('lookup', {}, 'updated-selector');
+        expect(
+          (
+            await peer.frame(
+              (frame) => frame.item?.call_id === 'updated-selector',
+            )
+          ).item.output,
+        ).toBe('replacement');
+        await voice.close();
+        await expect(
+          session.realtime({ model: 'fixture-realtime', tools: [foreign] }),
+        ).rejects.toThrow(/not admitted/);
+        voice = await session.realtime({
+          model: 'fixture-realtime',
+          tools: [original],
+        });
+        peer.call('lookup', {}, 'reopened-selector');
+        expect(
+          (
+            await peer.frame(
+              (frame) => frame.item?.call_id === 'reopened-selector',
+            )
+          ).item.output,
+        ).toBe('replacement');
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'rejects a compact oversized hosted catalog on the provider wire',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: {
+          hostedMcpTools: [
+            {
+              serverLabel: 'docs',
+              serverUrl: 'https://mcp.example.test/server',
+              requireApproval: 'never',
+            },
+          ],
+        },
+      });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      void reading.catch(() => {});
+      peer.send({
+        type: 'response.output_item.done',
+        response_id: 'catalog-response',
+        output_index: 0,
+        item: {
+          type: 'mcp_list_tools',
+          id: 'oversized-catalog',
+          server_label: 'docs',
+          tools: Array.from({ length: 1025 }, (_, index) => ({
+            name: `tool_${index}`,
+            input_schema: {},
+          })),
+        },
+      });
+      await expect(reading).rejects.toThrow();
+      expect(
+        seen.some((event) => event.type === 'hosted_mcp_tools_listed'),
+      ).toBe(false);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each(['conversation item', 'generic error'] as const)(
+  'rejects dense %s JSON at the native wire allocation boundary',
+  async (kind) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      let failure: unknown;
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch((error: unknown) => {
+        failure = error;
+      });
+      try {
+        const dense = Array.from({ length: 33_000 }, () => ({}));
+        peer.send(
+          kind === 'conversation item'
+            ? {
+                type: 'conversation.item.added',
+                item: {
+                  id: 'dense-item',
+                  type: 'message',
+                  role: 'assistant',
+                  content: [],
+                  metadata: { dense },
+                },
+              }
+            : { type: 'error', error: { dense } },
+        );
+        await vi.waitFor(() => expect(failure).toBeDefined(), {
+          timeout: 2000,
+        });
+        expect(
+          /capacity/.test(String(failure) + String((failure as Error).cause)),
+        ).toBe(true);
+        expect(
+          seen.some(
+            (event) =>
+              event.type === 'conversation_item' &&
+              event.itemId === 'dense-item',
+          ),
+        ).toBe(false);
+      } finally {
+        await voice.close().catch(() => {});
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'preserves small generic conversation items and provider errors',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      let failure: unknown;
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch((error: unknown) => {
+        failure = error;
+      });
+      try {
+        peer.send({
+          type: 'conversation.item.added',
+          item: {
+            id: 'small-item',
+            type: 'message',
+            role: 'assistant',
+            content: [],
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item' &&
+                event.itemId === 'small-item',
+            ),
+          ).toBe(true),
+        );
+        peer.send({ type: 'error', error: { code: 'small-provider-error' } });
+        await reading;
+        expect(String((failure as Error).cause)).toContain(
+          'small-provider-error',
+        );
+      } finally {
+        await voice.close().catch(() => {});
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each([false, true])(
+  'retains an original background selector after same-profile replacement (graph=%s)',
+  async (graph) => {
+    let originalEffects = 0;
+    let replacementEffects = 0;
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        originalEffects++;
+        return 'original';
+      },
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        replacementEffects++;
+        return 'replacement';
+      },
+    });
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'backend-lookup' })],
+      [message('Replacement complete.')],
+    ]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      const other = new Agent({
+        name: 'Other',
+        instructions: 'Other profile.',
+      });
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [original],
+        ...(graph ? { handoffs: [other] } : {}),
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [original],
+      });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      void reading.catch(() => {});
+      try {
+        await session.update({ tools: [replacement] });
+        peer.call(
+          'background_agent',
+          { input_transcript: 'Use lookup.' },
+          'same-profile-background',
+        );
+        await vi.waitFor(
+          () =>
+            expect(
+              seen.some(
+                (event) =>
+                  event.type === 'delegation' &&
+                  event.handoffId === 'same-profile-background' &&
+                  event.status !== 'started',
+              ),
+            ).toBe(true),
+          { timeout: 5000 },
+        );
+        expect(
+          seen.find(
+            (event) =>
+              event.type === 'delegation' &&
+              event.handoffId === 'same-profile-background' &&
+              event.status !== 'started',
+          ),
+        ).toMatchObject({ status: 'completed' });
+        expect(originalEffects).toBe(0);
+        expect(replacementEffects).toBe(1);
+        expect(model.requests).toHaveLength(2);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'uses original graph selectors in a standalone voice workflow after replacement',
+  async () => {
+    let replacementEffects = 0;
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'original',
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        replacementEffects++;
+        return 'replacement';
+      },
+    });
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'standalone-lookup' })],
+      [message('Standalone replacement complete.')],
+    ]);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [original],
+        handoffs: [
+          new Agent({ name: 'Other', instructions: 'Other profile.' }),
+        ],
+        provider,
+      }).session();
+      const workflow = new NativeSessionVoiceWorkflow(session, [original]);
+      await session.update({ tools: [replacement] });
+      const output: string[] = [];
+      for await (const text of workflow.run('Use lookup.')) output.push(text);
+      expect(output).toEqual(['Standalone replacement complete.']);
+      expect(replacementEffects).toBe(1);
+      model.assertExhausted();
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each([false, true])(
+  'retains intermediate mono voice declarations without widening graph admission (graph=%s)',
+  async (graph) => {
+    const first = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'A',
+    });
+    const intermediate = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'B',
+    });
+    const current = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'C',
+    });
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'intermediate-workflow' })],
+      [message('C complete.')],
+    ]);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [first],
+        ...(graph
+          ? {
+              handoffs: [
+                new Agent({ name: 'Other', instructions: 'Other profile.' }),
+              ],
+            }
+          : {}),
+        provider,
+      }).session();
+      await session.update({ tools: [intermediate] });
+      const workflow = new NativeSessionVoiceWorkflow(session, [intermediate]);
+      await session.update({ tools: [current] });
+      const output = (async () => {
+        const values: string[] = [];
+        for await (const text of workflow.run('Use lookup.')) values.push(text);
+        return values;
+      })();
+      if (graph) {
+        await expect(output).rejects.toThrow(/not admitted/);
+        expect(model.requests).toHaveLength(0);
+      } else {
+        expect(await output).toEqual(['C complete.']);
+        model.assertExhausted();
+      }
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each([false, true])(
+  'retains intermediate mono Realtime declarations through updates and reopening (graph=%s)',
+  async (graph) => {
+    const first = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'A',
+    });
+    const intermediate = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'B',
+    });
+    const current = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'C',
+    });
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [first],
+        ...(graph
+          ? {
+              handoffs: [
+                new Agent({ name: 'Other', instructions: 'Other profile.' }),
+              ],
+            }
+          : {}),
+        provider,
+      }).session();
+      await session.update({ tools: [intermediate] });
+      let voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [intermediate],
+      });
+      try {
+        const start = peer.frames.length;
+        await session.update({ tools: [current] });
+        const updated = await peer.frame(
+          (frame) => frame.type === 'session.update',
+          start,
+        );
+        expect(
+          updated.session.tools.some((spec: Frame) => spec.name === 'lookup'),
+        ).toBe(!graph);
+        if (!graph) {
+          peer.call('lookup', {}, 'intermediate-active');
+          expect(
+            (
+              await peer.frame(
+                (frame) => frame.item?.call_id === 'intermediate-active',
+              )
+            ).item.output,
+          ).toBe('C');
+        }
+        await voice.close();
+        if (graph) {
+          await expect(
+            session.realtime({
+              model: 'fixture-realtime',
+              tools: [intermediate],
+            }),
+          ).rejects.toThrow(/not admitted/);
+        } else {
+          voice = await session.realtime({
+            model: 'fixture-realtime',
+            tools: [intermediate],
+          });
+          peer.call('lookup', {}, 'intermediate-reopened');
+          expect(
+            (
+              await peer.frame(
+                (frame) => frame.item?.call_id === 'intermediate-reopened',
+              )
+            ).item.output,
+          ).toBe('C');
+        }
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
 );
