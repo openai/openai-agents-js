@@ -1067,6 +1067,16 @@ export class E2BSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedEnvironment(
+    manifest: Manifest,
+    options?: E2BSandboxClientOptions,
+  ): Promise<Record<string, string>> {
+    return materializeEnvironment(
+      manifest,
+      { ...this.options, ...options }.env,
+    );
+  }
+
   async create(
     args?: SandboxClientCreateArgs<E2BSandboxClientOptions> | Manifest,
     manifestOptions?: E2BSandboxClientOptions,

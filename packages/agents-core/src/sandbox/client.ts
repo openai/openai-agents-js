@@ -193,6 +193,15 @@ export interface SandboxClient<
     manifest: Manifest,
     options?: TOptions,
   ): Manifest;
+  /**
+   * Resolve the current provider execution environment for live authority checks.
+   * Include constructor and per-call defaults. Results are transient secrets;
+   * callers must not persist them in manifests or serialized state.
+   */
+  resolveTrustedEnvironment?(
+    manifest: Manifest,
+    options?: TOptions,
+  ): Promise<Record<string, string>>;
   /** Synchronously validates resume policy before environment materialization. */
   validateSessionStateForResume?(
     input: SandboxSessionResumeValidationInput<TSessionState>,

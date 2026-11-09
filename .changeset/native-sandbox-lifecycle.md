@@ -5,3 +5,5 @@
 ---
 
 feat: support native sandbox lifecycle, snapshots and budgets, expose pure diff application, and add external Codex CLI delegation with Session-scoped thread reuse and cancellation.
+
+Borrowed native sandboxes validate provider-owned environment defaults, and authorized resume preserves unusable-state checks on the original state identity.

@@ -11,6 +11,7 @@ import {
   type SandboxSessionLike,
 } from '@openai/agents-core/sandbox';
 import {
+  markSandboxSessionStateUnsafe,
   recordLiveMountCredentialAuthority,
   captureLiveMountCredentialAuthorityIfAbsent,
 } from '@openai/agents-core/sandbox/internal';
@@ -828,5 +829,155 @@ it.each([
       );
     }).rejects.toThrow();
     expect(f.connect).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['construction', 'acquisition'] as const)(
+  'rejects the original unusable resume state at %s before cloning or provider work',
+  async (stage) => {
+    const client = new UnixLocalSandboxClient();
+    const session = await client.create(new Manifest());
+    const f = fixture();
+    const build = () =>
+      sandboxEnvironment({
+        client,
+        manifest: new Manifest({ root: session.state.manifest.root }),
+        authorizedResumeState: {
+          backendId: client.backendId,
+          state: session.state,
+        },
+        connect: f.connect,
+      });
+    const source = stage === 'acquisition' ? build() : undefined;
+    markSandboxSessionStateUnsafe(session.state);
+    try {
+      await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+        'privileged manifest transition',
+      );
+      const resume = vi.spyOn(client, 'resume');
+      await expect(async () => {
+        const owner = await acquireEnvironment(source ?? build());
+        await owner.dispose();
+      }).rejects.toThrow('privileged manifest transition');
+      expect(resume).not.toHaveBeenCalled();
+      expect(f.connect).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+      await session.delete();
+    }
+  },
+);
+
+it('holds original resume inspection through asynchronous provider policy and gateway acquisition', async () => {
+  const { withExclusiveSandboxManifestMutation } =
+    await import('@openai/agents-core/sandbox/internal');
+  const f = fixture();
+  const original = { manifest: new Manifest() };
+  let entered!: () => void;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.client.serializedSessionStateRequiresFreshCreationForOptions = async () => {
+    entered();
+    await gate;
+    return false;
+  };
+  f.client.resume = vi.fn(async (state) => {
+    f.resource.state = state;
+    return f.resource;
+  });
+  const opening = acquireEnvironment(
+    sandboxEnvironment({
+      ...f,
+      manifest: new Manifest(),
+      authorizedResumeState: { backendId: 'fixture', state: original },
+    }),
+  );
+  let mutated = false;
+  try {
+    await ready;
+    const mutation = withExclusiveSandboxManifestMutation(
+      original,
+      async () => {
+        mutated = true;
+        markSandboxSessionStateUnsafe(original);
+      },
+    );
+    await setImmediate();
+    expect(mutated).toBe(false);
+    release();
+    const owner = await opening;
+    await mutation;
+    expect(mutated).toBe(true);
+    expect(f.connect).toHaveBeenCalledOnce();
+    await owner.dispose();
+  } finally {
+    release();
+    await opening.then(
+      (owner) => owner.dispose(),
+      () => {},
+    );
+  }
+});
+
+it('does not fall back after provider environment validation fails', async () => {
+  const f = fixture();
+  const failure = new Error('provider environment refused');
+  f.client.resolveTrustedEnvironment = async () => {
+    throw failure;
+  };
+  await expect(
+    acquireEnvironment(
+      sandboxEnvironment({
+        ...f,
+        manifest: new Manifest(),
+        session: f.resource,
+      }),
+    ),
+  ).rejects.toBe(failure);
+  expect(f.connect).not.toHaveBeenCalled();
+  expect(f.resource.close).not.toHaveBeenCalled();
+});
+
+it.each(['e2b', 'daytona', 'modal', 'vercel'] as const)(
+  'resolves trusted %s provider environment with creation precedence without changing the manifest',
+  async (backend) => {
+    const environment = { CONSTRUCTOR_ONLY: 'synthetic', VALUE: 'constructor' };
+    const client =
+      backend === 'e2b'
+        ? new (
+            await import('../../agents-extensions/src/sandbox/e2b')
+          ).E2BSandboxClient({ env: environment })
+        : backend === 'daytona'
+          ? new (
+              await import('../../agents-extensions/src/sandbox/daytona')
+            ).DaytonaSandboxClient({ env: environment })
+          : backend === 'modal'
+            ? new (
+                await import('../../agents-extensions/src/sandbox/modal')
+              ).ModalSandboxClient({ env: environment })
+            : new (
+                await import('../../agents-extensions/src/sandbox/vercel')
+              ).VercelSandboxClient({ env: environment });
+    const manifest = new Manifest({ environment: { VALUE: 'manifest' } });
+    await expect(client.resolveTrustedEnvironment(manifest)).resolves.toEqual({
+      CONSTRUCTOR_ONLY: 'synthetic',
+      VALUE: 'manifest',
+    });
+    await expect(
+      client.resolveTrustedEnvironment(manifest, {
+        appName: 'synthetic',
+        env: { CALL_ONLY: 'synthetic', VALUE: 'call' },
+      }),
+    ).resolves.toEqual({
+      ...(backend === 'modal' ? { CONSTRUCTOR_ONLY: 'synthetic' } : {}),
+      CALL_ONLY: 'synthetic',
+      VALUE: 'manifest',
+    });
+    expect(Object.keys(manifest.environment)).toEqual(['VALUE']);
   },
 );

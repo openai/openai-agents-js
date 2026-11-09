@@ -1548,6 +1548,16 @@ export class DaytonaSandboxClient implements SandboxClient<
     return resolveManifestRoot(manifest);
   }
 
+  resolveTrustedEnvironment(
+    manifest: Manifest,
+    options?: DaytonaSandboxClientOptions,
+  ): Promise<Record<string, string>> {
+    return materializeEnvironment(
+      manifest,
+      { ...this.options, ...options }.env,
+    );
+  }
+
   async create(
     args?: SandboxClientCreateArgs<DaytonaSandboxClientOptions> | Manifest,
     manifestOptions?: DaytonaSandboxClientOptions,

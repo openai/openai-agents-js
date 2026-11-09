@@ -80,6 +80,7 @@ export function sandboxEnvironment<
   const create = client.create?.bind(client);
   const borrowed = options.session;
   const resume = options.authorizedResumeState;
+  const originalResumeState = resume?.state;
   if (
     [borrowed, resume, options.snapshot].filter((value) => value !== undefined)
       .length > 1
@@ -119,11 +120,19 @@ export function sandboxEnvironment<
   const snapshot = captureOptions(options.snapshot);
   // Explicit authorization covers provider identity. Current config is the sole
   // source of mount/path authority, using the provider's existing rebind rules.
-  if (resume)
-    assertLiveMountCredentialAuthorityMatches(resume.state.manifest, manifest);
+  if (originalResumeState) {
+    assertSandboxSessionStateUsable(originalResumeState);
+    assertLiveMountCredentialAuthorityMatches(
+      originalResumeState.manifest,
+      manifest,
+    );
+  }
   const resumeState = resume
     ? rebindPersistedPathGrants(
-        rebindPersistedMountCredentials(captureOptions(resume.state), manifest),
+        rebindPersistedMountCredentials(
+          captureOptions(originalResumeState!),
+          manifest,
+        ),
         manifest,
         { replaceWithTrustedManifest: true },
       )
@@ -178,7 +187,9 @@ export function sandboxEnvironment<
     try {
       const open = async () => {
         if (borrowed) {
-          const trustedEnvironment = await materializeEnvironment(manifest);
+          const trustedEnvironment = client.resolveTrustedEnvironment
+            ? await client.resolveTrustedEnvironment(manifest, providerOptions)
+            : await materializeEnvironment(manifest);
           signal.throwIfAborted();
           assertSandboxSessionStateUsable(borrowed.state);
           captureLiveMountCredentialAuthorityIfAbsent(
@@ -269,8 +280,9 @@ export function sandboxEnvironment<
           gateway.signal,
         );
       };
-      return borrowed
-        ? await withExclusiveSandboxStateInspection(borrowed.state, open)
+      const inspectedState = borrowed?.state ?? originalResumeState;
+      return inspectedState
+        ? await withExclusiveSandboxStateInspection(inspectedState, open)
         : await open();
     } catch (error) {
       try {
