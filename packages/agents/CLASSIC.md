@@ -139,6 +139,6 @@ Use `withResponseSpan()` to run a callback and manage its span, or `createRespon
 
 ### Configure a Realtime connection
 
-Set the default model in the `RealtimeSession` constructor or select one connection's model with `connect({ model })`. Agent updates and handoffs keep that connection's model. A later connection uses its own override, the constructor default, or the transport's normal selection, in that order.
+Set the model in the `RealtimeSession` constructor. `RealtimeSession.connect()` uses that constructor setting and does not apply its `model` option. Agent updates and handoffs keep the connection's model. Raw transports also support selecting a model at connection time.
 
 For trace grouping or metadata, enable tracing and set `workflowName` with `groupId` or `traceMetadata`. When turn detection leaves response creation to your application, commit the input audio and then call the OpenAI transport's `requestResponse()`.

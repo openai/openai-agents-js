@@ -16,7 +16,7 @@ The [local fixture](selective-collection-fixture.ts) creates 10,000 decoded text
 
 ## Connect application data
 
-Import [SelectiveCollection and collectionAgent](selective-collection.ts) into server-side application code:
+Save this integration excerpt in a server-side module beside [selective-collection.ts](selective-collection.ts) and its helper [document-workspace.ts](document-workspace.ts). The following integration excerpt assumes you supply `applicationFetchAuthorizedText(id, signal)` and an existing trusted `applicationScratchDirectory`. The fetch callback returns a `Promise<Uint8Array>`. Set model credentials for this `NativeProvider` integration; the scripted command above supplies its own provider.
 
 ```ts
 import { NativeProvider } from '@openai/agents';
