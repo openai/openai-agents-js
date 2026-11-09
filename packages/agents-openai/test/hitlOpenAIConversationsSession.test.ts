@@ -95,6 +95,79 @@ describe('OpenAIConversationsSession HITL scenario', () => {
     setDefaultModelProvider(provider);
   });
 
+  it('refuses to replay approved work when only the first conversation batch was saved', async () => {
+    const execute = vi.fn(async () => 'approved');
+    const approvedTool = tool({
+      name: 'approve_item',
+      description: 'Approves an item.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute,
+    });
+    const model = new ScriptedModel([
+      modelResponder(() => ({
+        usage: new Usage(),
+        output: Array.from({ length: 21 }, (_, index) => ({
+          type: 'function_call' as const,
+          name: approvedTool.name,
+          callId: `call_${index}`,
+          arguments: '{}',
+          status: 'completed' as const,
+        })),
+      })),
+    ]);
+    const agent = new Agent({
+      name: 'Batch approval',
+      model,
+      tools: [approvedTool],
+    });
+    const history: Array<Record<string, any>> = [];
+    const create = vi.fn(
+      async (_id: string, { items }: { items: typeof history }) => {
+        if (history.some((item) => item.type === 'function_call_output')) {
+          throw new Error('Next conversation batch rejected');
+        }
+        for (const item of items) {
+          history.push({
+            ...item,
+            id: `item_${history.length}`,
+            ...(item.role === 'user'
+              ? {
+                  type: 'message',
+                  content:
+                    typeof item.content === 'string'
+                      ? [{ type: 'input_text', text: item.content }]
+                      : item.content,
+                }
+              : {}),
+          });
+        }
+      },
+    );
+    const session = new OpenAIConversationsSession({
+      conversationId: 'conv-approvals',
+      client: {
+        conversations: { items: { create, list: () => history.slice() } },
+      } as any,
+    });
+    const first = await run(agent, 'Approve these items', { session });
+    expect(first.interruptions).toHaveLength(21);
+    for (const approval of first.interruptions) first.state.approve(approval);
+    await expect(run(agent, first.state, { session })).rejects.toThrow(
+      'Next conversation batch rejected',
+    );
+    const writes = create.mock.calls.length;
+    expect(
+      history.filter((item) => item.type === 'function_call_output'),
+    ).toHaveLength(20);
+    await expect(run(agent, first.state, { session })).rejects.toThrow(
+      'cannot be reconciled safely',
+    );
+    expect(create).toHaveBeenCalledTimes(writes);
+    expect(execute).toHaveBeenCalledTimes(21);
+    expect(model.calls).toHaveLength(1);
+  });
+
   it('persists approvals, rehydration, and rejections across tools', async () => {
     const storedItems: Array<Record<string, any>> = [];
     const createItems = vi.fn(

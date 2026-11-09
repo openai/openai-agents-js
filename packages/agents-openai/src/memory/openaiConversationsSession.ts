@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import type { AgentInputItem, Session } from '@openai/agents-core';
 import { getDefaultOpenAIClient, getDefaultOpenAIKey } from '../defaults';
 import { convertToOutputItem, getInputItems } from '../openaiResponsesModel';
-import { protocol } from '@openai/agents-core';
+import { protocol, UserError } from '@openai/agents-core';
 import type { ConversationItem as APIConversationItem } from 'openai/resources/conversations/items';
 import type { Message as APIConversationMessage } from 'openai/resources/conversations/conversations';
 import {
@@ -10,6 +10,8 @@ import {
   type OpenAISessionApiTagged,
 } from './openaiSessionApi';
 import type { OpenAIClient } from '../openaiClient';
+
+const MAX_ITEMS_PER_CREATE = 20;
 
 export type OpenAIConversationsSessionOptions = {
   conversationId?: string;
@@ -36,8 +38,7 @@ export class OpenAIConversationsSession
 
   #client: OpenAI;
   #conversationId?: string;
-  #conversationIdOperation: Promise<void> = Promise.resolve();
-  #activeItemOperations = new Set<Promise<void>>();
+  #sessionOperation: Promise<void> = Promise.resolve();
 
   constructor(options: OpenAIConversationsSessionOptions = {}) {
     this.#client = resolveClient(options);
@@ -49,7 +50,7 @@ export class OpenAIConversationsSession
   }
 
   async getSessionId(): Promise<string> {
-    return this.#runConversationIdOperation(() => this.#getSessionId());
+    return this.#runSessionOperation(() => this.#getSessionId());
   }
 
   async getItems(limit?: number): Promise<AgentInputItem[]> {
@@ -216,6 +217,17 @@ export class OpenAIConversationsSession
   }
 
   async addItems(items: AgentInputItem[]): Promise<void> {
+    await this.#writeItems(items, 'append');
+  }
+
+  async replaceHistoryWithCompaction(items: AgentInputItem[]): Promise<void> {
+    await this.#writeItems(items, 'replace');
+  }
+
+  async #writeItems(
+    items: AgentInputItem[],
+    operation: 'append' | 'replace',
+  ): Promise<void> {
     if (!items.length) {
       return;
     }
@@ -225,14 +237,33 @@ export class OpenAIConversationsSession
       if (!sanitizedItems.length) {
         return;
       }
-      await this.#client.conversations.items.create(conversationId, {
-        items: sanitizedItems,
-      });
-    });
-  }
+      if (sanitizedItems.length <= MAX_ITEMS_PER_CREATE) {
+        await this.#client.conversations.items.create(conversationId, {
+          items: sanitizedItems,
+        });
+        return;
+      }
 
-  async replaceHistoryWithCompaction(items: AgentInputItem[]): Promise<void> {
-    await this.addItems(items);
+      // The compaction item and its retained suffix must become visible together.
+      if (operation === 'replace') {
+        throw new UserError(
+          `A conversation compaction replacement must fit within one request of ${MAX_ITEMS_PER_CREATE} items.`,
+        );
+      }
+
+      // A lost acknowledgment can leave an accepted batch in the conversation.
+      for (
+        let start = 0;
+        start < sanitizedItems.length;
+        start += MAX_ITEMS_PER_CREATE
+      ) {
+        await this.#client.conversations.items.create(
+          conversationId,
+          { items: sanitizedItems.slice(start, start + MAX_ITEMS_PER_CREATE) },
+          { maxRetries: 0 },
+        );
+      }
+    });
   }
 
   async popItem(): Promise<AgentInputItem | undefined> {
@@ -254,12 +285,11 @@ export class OpenAIConversationsSession
   }
 
   async clearSession(): Promise<void> {
-    await this.#runConversationIdOperation(async () => {
+    await this.#runSessionOperation(async () => {
       if (!this.#conversationId) {
         return;
       }
 
-      await Promise.all(this.#activeItemOperations);
       await this.#client.conversations.delete(this.#conversationId);
       this.#conversationId = undefined;
     });
@@ -278,27 +308,14 @@ export class OpenAIConversationsSession
   async #runItemOperation<T>(
     operation: (conversationId: string) => Promise<T>,
   ): Promise<T> {
-    let resolveOperation!: () => void;
-    const operationFinished = new Promise<void>((resolve) => {
-      resolveOperation = resolve;
-    });
-    const conversationId = await this.#runConversationIdOperation(async () => {
-      const conversationId = await this.#getSessionId();
-      this.#activeItemOperations.add(operationFinished);
-      return conversationId;
-    });
-
-    try {
-      return await operation(conversationId);
-    } finally {
-      this.#activeItemOperations.delete(operationFinished);
-      resolveOperation();
-    }
+    return this.#runSessionOperation(async () =>
+      operation(await this.#getSessionId()),
+    );
   }
 
-  #runConversationIdOperation<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#conversationIdOperation.then(operation);
-    this.#conversationIdOperation = result.then(
+  #runSessionOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#sessionOperation.then(operation);
+    this.#sessionOperation = result.then(
       () => undefined,
       () => undefined,
     );

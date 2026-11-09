@@ -710,6 +710,147 @@ describe('OpenAIConversationsSession', () => {
     });
   });
 
+  it('keeps a normalized append together across reads, pops and other writers', async () => {
+    const messages = Array.from({ length: 21 }, (_, index) => ({
+      type: 'message' as const,
+      role: 'system' as const,
+      content: String(index),
+    }));
+    const firstBatch = createDeferred<void>();
+    const started = createDeferred<void>();
+    const history: typeof messages = [];
+    const create = vi.fn(
+      async (_id: string, body: { items: typeof messages }) => {
+        history.push(...body.items);
+        if (history.length === 20) {
+          started.resolve(undefined);
+          await firstBatch.promise;
+        }
+      },
+    );
+    const session = createSession({
+      conversationId: 'conv-order',
+      client: {
+        conversations: {
+          items: {
+            create,
+            list: (_id: string, { order }: { order: string }) =>
+              (order === 'desc' ? history.slice().reverse() : history).map(
+                (item) => ({ ...item, id: item.content }),
+              ),
+            delete: (id: string) => {
+              expect(history.pop()?.content).toBe(id);
+            },
+          },
+        },
+      } as any,
+    });
+    getInputItemsMock.mockImplementation((items) => items);
+    const append = session.addItems([
+      ...messages.slice(0, 19),
+      { type: 'reasoning', content: [] },
+      ...messages.slice(19),
+    ]);
+    await started.promise;
+    const read = session.getItems();
+    const pop = session.popItem();
+    const next = session.addItems(messages.slice(0, 20));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(create).toHaveBeenCalledTimes(1);
+    firstBatch.resolve(undefined);
+    await append;
+    expect(await read).toEqual(
+      messages.map((item) => ({ ...item, id: item.content })),
+    );
+    expect(await pop).toEqual({ ...messages[20], id: '20' });
+    await next;
+    expect(create.mock.calls).toEqual([
+      ['conv-order', { items: messages.slice(0, 20) }, { maxRetries: 0 }],
+      ['conv-order', { items: [messages[20]] }, { maxRetries: 0 }],
+      ['conv-order', { items: messages.slice(0, 20) }],
+    ]);
+    expect(history).toEqual([
+      ...messages.slice(0, 20),
+      ...messages.slice(0, 20),
+    ]);
+  });
+
+  it('finishes an earlier pop before appending to the same conversation', async () => {
+    const deleting = createDeferred<void>();
+    const deleted = createDeferred<void>();
+    const create = vi.fn();
+    const session = createSession({
+      conversationId: 'conv-pop',
+      client: {
+        conversations: {
+          items: {
+            list: () => [
+              { id: 'old', type: 'message', role: 'system', content: 'old' },
+            ],
+            delete: async () => {
+              deleting.resolve(undefined);
+              await deleted.promise;
+            },
+            create,
+          },
+        },
+      } as any,
+    });
+    const pop = session.popItem();
+    await deleting.promise;
+    getInputItemsMock.mockImplementation((items) => items);
+    const append = session.addItems(
+      Array.from({ length: 21 }, (_, index) => ({
+        type: 'message',
+        role: 'system',
+        content: String(index),
+      })),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(create).not.toHaveBeenCalled();
+    deleted.resolve(undefined);
+    expect(await pop).toMatchObject({ id: 'old' });
+    await append;
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops after a rejected batch and lets a queued clear delete the conversation', async () => {
+    const messages = Array.from({ length: 41 }, (_, index) => ({
+      type: 'message' as const,
+      role: 'system' as const,
+      content: String(index),
+    }));
+    const secondBatch = createDeferred<void>();
+    const started = createDeferred<void>();
+    const accepted: typeof messages = [];
+    const create = vi.fn(
+      async (_id: string, { items }: { items: typeof messages }) => {
+        if (accepted.length) {
+          started.resolve(undefined);
+          await secondBatch.promise;
+        }
+        accepted.push(...items);
+      },
+    );
+    const remove = vi.fn();
+    const session = createSession({
+      conversationId: 'conv-failure',
+      client: { conversations: { items: { create }, delete: remove } } as any,
+    });
+    getInputItemsMock.mockImplementation((items) => items);
+    const append = session.addItems(messages);
+    await started.promise;
+    const clear = session.clearSession();
+    const failure = new Error('Batch failed');
+    secondBatch.reject(failure);
+    await expect(append).rejects.toBe(failure);
+    await clear;
+    expect(accepted).toEqual(messages.slice(0, 20));
+    expect(create.mock.calls).toHaveLength(2);
+    expect(remove).toHaveBeenCalledWith('conv-failure');
+    expect(session.sessionId).toBeUndefined();
+  });
+
   it('preserves IDs required by program items when adding items', async () => {
     const createMock = vi.fn();
     const inputItems = [
@@ -883,6 +1024,31 @@ describe('OpenAIConversationsSession', () => {
       });
     },
   );
+
+  it('preserves existing history when a compaction replacement exceeds one request', async () => {
+    const retained = Array.from({ length: 20 }, (_, index) => ({
+      type: 'message' as const,
+      role: 'system' as const,
+      content: String(index),
+    }));
+    const history = retained.map((item) => ({ ...item, id: item.content }));
+    const create = vi.fn();
+    const session = createSession({
+      conversationId: 'conv-compaction',
+      client: {
+        conversations: { items: { list: () => history, create } },
+      } as any,
+    });
+    getInputItemsMock.mockImplementation((items) => items);
+    await expect(
+      session.replaceHistoryWithCompaction([
+        { type: 'compaction', encrypted_content: 'summary' },
+        ...retained,
+      ]),
+    ).rejects.toThrow('one request of 20 items');
+    expect(create).not.toHaveBeenCalled();
+    expect(await session.getItems()).toEqual(history);
+  });
 
   it('preserves the conversation ID when replacing history with compaction', async () => {
     const createItems = vi.fn();
