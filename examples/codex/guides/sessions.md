@@ -42,7 +42,7 @@ Use `turn.wait()` to follow the captured turn and preserve its result type. `ses
 
 ### Seed settled conversation history
 
-On a fresh Session, pass ordered user/assistant messages through `initialMessages`:
+With the current [source build](building.md), pass ordered user/assistant messages through `initialMessages` on a fresh Session. This option is not included in `0.22.0-alpha.2`:
 
 ```ts
 await using session = await agent.session({
@@ -80,6 +80,8 @@ Cancellation cannot undo completed effects or preempt synchronous JavaScript. En
 ### Update a session
 
 An idle Session can update one category at a time: instructions, model and settings, or tools. Tool updates can remove, restore, or replace opening declarations within their original names. A Session opened with `NativeAgents` keeps its instructions and model settings fixed from the start.
+
+The current source build also supports captured Agent handoff graphs. Declare reachable Agents through `Agent.handoffs` before opening. While idle, call `await session.update({ agent: target })` to activate one of those original Agent objects, separately from other updates. The target supplies its captured declaration defaults. `await session.getActiveAgent()` returns the currently active Agent. A same-named replacement object is not an admitted target. See [live Agent and voice settings](native-voice.md#settings-tools-and-live-agents) for tool-selection and restore constraints.
 
 ## Observations and interruption
 

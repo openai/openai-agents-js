@@ -4,7 +4,7 @@ Pass text, images, or files to the agent. Use this guide to declare tools, choos
 
 ## Input, tools, and output
 
-Input is a string or a Responses-shaped user message. The current [source build](building.md) accepts `input_image` with exactly one `image_url` (HTTPS or an inline data URL) or `file_id`, plus optional `detail: 'auto' | 'low' | 'high' | 'original'`. An `input_file` has exactly one `file_id`, `file_data` (base64), or `file_url` (HTTPS), plus optional `filename`.
+Input is a string or a Responses-shaped user message. The current [source build](building.md) accepts `input_image` with exactly one `image_url` (HTTP, HTTPS, or an inline data URL) or `file_id`, plus optional `detail: 'auto' | 'low' | 'high' | 'original'`. An `input_file` has exactly one `file_id`, `file_data` (base64), or `file_url` (HTTPS), plus optional `filename`.
 
 The current provider route and issuing model must support the reference. Unsupported references and known lossy inline image-detail combinations reject before publication. Capture copies the descriptors without reading a local file or uploading it. Use provider file IDs, URLs, or bytes that your application supplies; a host path is not a file reference. Saved history preserves these descriptors and IDs.
 
@@ -20,7 +20,7 @@ Both modes abort the callback signal at the deadline and wait for entered callba
 
 ### Finish a turn from a function tool
 
-Set `finishTurn: true` when declaring an automatic function tool:
+With the current [source build](building.md), set `finishTurn: true` when declaring an automatic function tool:
 
 ```ts
 import { Agent, NativeProvider, tool } from '@openai/agents';
@@ -87,7 +87,7 @@ On supported Code Mode models, native search replaces the initial request's defe
 
 `ToolOutput` explicitly returns text, image, or audio content to the model: construct it with a content-item array and an optional success flag (default `true`). The SDK returns other callback values as text or serialized JSON, including objects with `contentItems` or `success` fields.
 
-Use `ToolOutput.image(imageDataUrl)` to return one inline image. It requires an image data URL such as `data:image/png;base64,...` with a nonempty payload; remote URLs, file IDs and local paths throw a `TypeError`. The helper checks the data URL envelope. The native engine decodes and processes the image bytes. Use the constructor to combine an image with text or other content items.
+Use `ToolOutput.image(imageDataUrl)` for an inline base64 image data URL, or pass an HTTP or HTTPS image URL string. The reference-object overload also accepts a provider file ID and explicit detail setting, such as `ToolOutput.image({ fileId: 'file-example', detail: 'high' })`. Local paths reject. The helper checks the reference without fetching or uploading it; the native engine and provider process the image. Use the constructor to combine an image with text or other content items.
 
 Choose how to report a tool failure:
 
@@ -142,6 +142,8 @@ A pending manual checkpoint stores the remaining steps. Resume with `agent.run(n
 ### Select tools before a model step
 
 `beforeStep` receives the issued Turn, application context, zero-based `stepIndex`, and an AbortSignal. Return a subset of the tools selected for the root. Return `undefined` to allow that full set for the step. Selection limits eligibility and leaves tool choice to the model.
+
+Return `{ action: 'stop' }` when an application policy no longer permits another model step. The SDK stops the owning turn before its pending model request; waiting for that turn rejects with `NativeError`. Earlier tool effects remain. A `NativeAgents.beforeStep` callback can return the same decision to stop its child turn without stopping the parent or siblings.
 
 The [create-then-read application recipe](../operation-selection.ts) uses four checks.
 

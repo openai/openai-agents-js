@@ -40,7 +40,9 @@ Call `stream.toTextStream()` to get a stream of the emitted text. When `compatib
 
 `stream.completed` resolves once the run and all pending callbacks complete. Await it to ensure there is no more output. This includes post-processing work such as session persistence or history compaction hooks that finish after the last text token arrives.
 
-`toTextStream()` only emits assistant text. Tool calls, handoffs, approvals, and other runtime events are available from the full event stream.
+`toTextStream()` emits assistant text from every model response, including intermediate agents before a handoff. Text can arrive before output guardrails finish. If you need an answer only after guardrails pass, await successful `stream.completed` and read `stream.finalOutput` instead.
+
+Tool calls, handoffs, approvals, and other runtime events are available from the full event stream.
 
 ### Listen to all events
 

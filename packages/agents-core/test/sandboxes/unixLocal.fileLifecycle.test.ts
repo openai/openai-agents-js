@@ -17,6 +17,7 @@ import {
   UnixLocalSandboxSession,
 } from '../../src/sandbox/local';
 import { serializeSandboxRuntimeState } from '../../src/sandbox/runtime/sessionSerialization';
+import { rebindPersistedPathGrants } from '../../src/sandbox/sandboxes/shared/manifestPersistence';
 import * as snapshots from '../../src/sandbox/sandboxes/shared/localSnapshots';
 import { UNIX_LOCAL_FILE_WORKER } from '../../src/sandbox/sandboxes/shared/unixLocalFileWorker';
 
@@ -51,7 +52,7 @@ describe.skipIf(process.platform === 'win32')(
       await rm(root, { recursive: true, force: true });
     });
 
-    it.each(['archive', 'local snapshot'] as const)(
+    it.each(['archive', 'local snapshot', 'rebound local snapshot'] as const)(
       'keeps pending replacement files out of the %s',
       async (kind) => {
         const workspace = session.state.workspaceRootPath;
@@ -101,7 +102,14 @@ describe.skipIf(process.platform === 'win32')(
               : new UnixLocalSandboxClient({
                   snapshot: { type: 'local', baseDir: join(root, 'snapshots') },
                 })
-                  .serializeSessionState(session.state)
+                  .serializeSessionState(
+                    kind === 'rebound local snapshot'
+                      ? rebindPersistedPathGrants(
+                          session.state,
+                          session.state.manifest,
+                        )
+                      : session.state,
+                  )
                   .then((state) =>
                     readdir((state.snapshot as { path: string }).path, {
                       recursive: true,

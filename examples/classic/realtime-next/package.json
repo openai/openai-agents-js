@@ -7,7 +7,6 @@
     "start": "next start",
     "generate-token": "node generate-token.mjs",
     "test": "tsx --test test/token.test.ts",
-    "lint": "next lint",
     "build-check": "tsc --noEmit"
   },
   "dependencies": {

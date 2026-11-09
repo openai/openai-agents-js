@@ -140,6 +140,7 @@ import {
   canReuseLocalSnapshotWorkspace,
   localSnapshotIsRestorable,
   persistLocalSnapshot,
+  withLocalSnapshotPersistence,
   restoreLocalSnapshotToWorkspace,
   serializeLocalSnapshotSpec,
 } from './shared/localSnapshots';
@@ -1790,6 +1791,15 @@ export class DockerSandboxClient implements SandboxClient<
   async serializeSessionState(
     state: DockerSandboxSessionState,
     options: SandboxSessionSerializationOptions = {},
+  ): Promise<Record<string, unknown>> {
+    return await withLocalSnapshotPersistence(state, () =>
+      this.serializeSessionStateExclusive(state, options),
+    );
+  }
+
+  private async serializeSessionStateExclusive(
+    state: DockerSandboxSessionState,
+    options: SandboxSessionSerializationOptions,
   ): Promise<Record<string, unknown>> {
     assertSandboxSessionStateUsable(state);
     const labels = normalizeDockerLabels(

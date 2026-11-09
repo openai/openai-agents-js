@@ -1,5 +1,7 @@
 # Realtime Twilio Integration
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 This example connects the OpenAI Realtime API to a phone call through Twilio's Media Streams. The script in `index.ts` starts a Fastify server that serves TwiML for incoming calls and creates a WebSocket endpoint for streaming audio. When a call connects, the server forwards the audio stream through a `TwilioRealtimeTransportLayer` to a `RealtimeSession`. The `RealtimeAgent` can then respond in real time.
 
 The demo uses a friendly voice assistant with a hosted DeepWiki MCP integration and local sample tools for weather lookups and a secret number helper. Ask the agent to "look that up in DeepWiki" to try the hosted MCP tool.

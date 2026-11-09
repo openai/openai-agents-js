@@ -3,6 +3,7 @@ import { accessSync, constants, realpathSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { UserError } from '../../../errors';
 import { UNIX_LOCAL_FILE_WORKER } from './unixLocalFileWorker';
+import { getSandboxStateIdentity } from '../../internal/sessionStateTrust';
 
 /** Host file protection. auto is an alias for required; off is rejected. */
 export type LocalFileIOProtection = 'auto' | 'required' | 'off';
@@ -17,6 +18,7 @@ export async function withUnixLocalFileAccess<T>(
   state: object,
   operation: () => Promise<T>,
 ): Promise<T> {
+  state = getSandboxStateIdentity(state);
   const previous = fileAccessTails.get(state) ?? Promise.resolve();
   const current = previous.catch(() => {}).then(operation);
   fileAccessTails.set(state, current);

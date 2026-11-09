@@ -190,7 +190,22 @@ if (import.meta.url === \`file://\${process.argv[1]}\`) {
     const frozenSessionState = await resumableClient.deserializeSessionState(
       serializedSessionState,
     );
-    resumedSession = await resumableClient.resume(frozenSessionState);
+    resumedSession =
+      client instanceof UnixLocalSandboxClient
+        ? await client.resume(frozenSessionState, {
+            clientOptions: {
+              // Keep trusted host bindings separate from serialized state.
+              resumeAuthority: {
+                workspaceRootPath: initialSession.state.workspaceRootPath,
+                workspaceRootOwned: initialSession.state.workspaceRootOwned,
+                localSnapshotPath:
+                  initialSession.state.snapshot?.type === 'local'
+                    ? initialSession.state.snapshot.path
+                    : undefined,
+              },
+            },
+          })
+        : await resumableClient.resume(frozenSessionState);
 
     const secondResult = await run(
       agent,

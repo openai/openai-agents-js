@@ -13,7 +13,7 @@ For an existing v0 application, follow the [direct migration to native v1](../..
 - <a name="deno-and-bun"></a>[Deno and Bun](../../examples/codex/guides/installation.md#deno-and-bun)
 - <a name="build-from-source"></a>[Build from source](../../examples/codex/guides/building.md#build-from-source)
 
-The guides describe `0.22.0-alpha.2`. Follow the [installation guide](../../examples/codex/guides/installation.md) for its prebuilt bundles. For the earlier alpha.1 starter, use the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md).
+These guides describe the current source branch, including changes after `0.22.0-alpha.2`. Follow the [installation guide](../../examples/codex/guides/installation.md) to choose matching packages and documentation. For the earlier alpha.1 starter, use the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md).
 
 ## Run and manage sessions
 
@@ -25,6 +25,7 @@ The guides describe `0.22.0-alpha.2`. Follow the [installation guide](../../exam
 - <a name="native-checklists"></a>[Native checklists](../../examples/codex/guides/sessions.md#native-checklists)
 - <a name="native-telemetry"></a>[Native telemetry](../../examples/codex/guides/telemetry.md#native-telemetry)
 
+- [Control model context and completion](../../examples/codex/guides/session-configuration.md#control-model-context-and-completion)
 - [Prepare a model request](../../examples/codex/guides/request-preparation.md) · [Observe request metadata](../../examples/codex/guides/request-metadata.md)
 - [Configure trace processors](../../examples/codex/guides/trace-processors.md)
 
