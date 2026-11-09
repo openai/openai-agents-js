@@ -648,3 +648,75 @@ it.each(['type', 'generate', 'input', 'tools', 'previous_response_id'])(
     ).toThrow('extraBody cannot replace');
   },
 );
+
+it('keeps include=[] as a sparse no-wire patch across Lite update, clear and restore', async () => {
+  const server = new ModelServer([
+    [message('opened')],
+    [message('cleared')],
+    [message('restored')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: 'gpt-5.6-sol',
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { include: [] },
+  });
+  let saved;
+  {
+    await using session = await agent.session();
+    expect((await (await session.submit('open')).wait()).finalOutput).toBe(
+      'opened',
+    );
+    await session.update({ modelSettings: { include: [] } });
+    saved = await session.saveState();
+    await expect(
+      session.update({
+        modelSettings: { include: ['message.output_text.logprobs'] },
+      }),
+    ).rejects.toThrow(/standard Responses|Responses Lite/);
+    await session.update({ modelSettings: { include: null } });
+    expect((await (await session.submit('clear')).wait()).finalOutput).toBe(
+      'cleared',
+    );
+  }
+  await using restored = await agent.session({ state: saved });
+  expect((await (await restored.submit('restore')).wait()).finalOutput).toBe(
+    'restored',
+  );
+  expect(server.requests).toHaveLength(3);
+  for (const request of server.requests)
+    expect(request.include ?? []).not.toContain('message.output_text.logprobs');
+  server.assertExhausted();
+}, 30_000);
+
+it('clears caller includes with [] while preserving native required includes after restore', async () => {
+  const server = new ModelServer([
+    [message('before')],
+    [message('empty')],
+    [message('restored')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: MODEL,
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { include: ['message.output_text.logprobs'] },
+  });
+  let saved;
+  {
+    await using session = await agent.session();
+    await (await session.submit('before')).wait();
+    await session.update({ modelSettings: { include: [] } });
+    await (await session.submit('empty')).wait();
+    saved = await session.saveState();
+  }
+  await using restored = await agent.session({ state: saved });
+  await (await restored.submit('restore')).wait();
+  expect(server.requests[0].include).toContain('message.output_text.logprobs');
+  for (const request of server.requests.slice(1)) {
+    expect(request.include).not.toContain('message.output_text.logprobs');
+    expect(request.include).toContain('reasoning.encrypted_content');
+  }
+  server.assertExhausted();
+}, 30_000);

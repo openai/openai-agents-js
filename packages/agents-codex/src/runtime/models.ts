@@ -190,6 +190,7 @@ export class ChatCompletionsModel implements NativeModel {
         .map((key) => [key, request.body[key]]),
     );
     const text = (request.body.text ?? {}) as JsonObject;
+    if (text.verbosity != null) options.verbosity = text.verbosity;
     const format = (text.format ?? {}) as JsonObject;
     if (format.type === 'json_schema') {
       const { type: _type, ...jsonSchema } = format;
@@ -234,12 +235,17 @@ export class ChatCompletionsModel implements NativeModel {
       );
     const message = value.choices[0].message;
     const output: JsonObject[] = [];
-    if (message.content != null)
-      output.push({
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: message.content }],
-      });
+    const content: JsonObject[] = [];
+    if (message.content != null) {
+      const part: JsonObject = { type: 'output_text', text: message.content };
+      const probabilities = value.choices[0].logprobs?.content;
+      if (probabilities != null) part.logprobs = probabilities;
+      content.push(part);
+    }
+    if (message.refusal != null)
+      content.push({ type: 'refusal', refusal: message.refusal });
+    if (content.length)
+      output.push({ type: 'message', role: 'assistant', content });
     for (const call of message.tool_calls ?? []) {
       if (call.type !== 'function')
         throw new TypeError(

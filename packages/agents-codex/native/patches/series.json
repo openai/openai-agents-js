@@ -395,7 +395,11 @@
     {
       "path": "0103-empty-extra-body-lite.patch",
       "sha256": "8b13438eea150779e0adcb4d2b533e4192cb5e5c4539f054a8402aaaef29cf77"
+    },
+    {
+      "path": "0104-native-model-response-fidelity.patch",
+      "sha256": "a1f354cdd0b303ce91db87626aea68a509823d5cd893a2874094aa3fbd3d9672"
     }
   ],
-  "result_tree": "5603fc121cbf17c349685f47035b79c63c4d294e"
+  "result_tree": "06e3ee1a3a44c3a0953580953d3bee99d0dd0f01"
 }

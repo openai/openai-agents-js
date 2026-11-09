@@ -623,7 +623,7 @@ mod tests {
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelReply {
     response_id: String,
-    output: Vec<ResponseItem>,
+    output: Vec<Value>,
     #[serde(default)]
     usage: Option<codex_protocol::protocol::TokenUsage>,
 }
@@ -666,21 +666,11 @@ impl PythonTools {
             !reply.response_id.trim().is_empty(),
             "Native model response requires an identifier"
         );
-        let mut events = vec![Ok(ResponseEvent::Created {
-            response_id: Some(reply.response_id.clone()),
-        })];
-        events.extend(
-            reply
-                .output
-                .into_iter()
-                .map(|item| Ok(ResponseEvent::OutputItemDone(item))),
+        let events = codex_extension_api::completed_model_response(
+            reply.response_id,
+            reply.output,
+            reply.usage,
         );
-        events.push(Ok(ResponseEvent::Completed {
-            response_id: reply.response_id,
-            token_usage: reply.usage,
-            usage_metadata: None,
-            end_turn: None,
-        }));
         Ok(futures_util::stream::iter(events).boxed())
     }
     pub(crate) fn reply_model_producer(&self, response: ModelProducerReply) -> Result<()> {

@@ -77,9 +77,9 @@ it('keeps custom model tool calls, results and continuation in native Core', asy
 
 it.each([
   [undefined, false],
-  ['fixture-chat-standard', false],
+  ['gpt-5.2', false],
   [undefined, true],
-  ['fixture-chat-standard', true],
+  ['gpt-5.2', true],
 ] as const)(
   'uses an injected OpenAI Chat client with native model %s and parallel=%s while Core executes tools',
   async (nativeModel, parallel) => {
@@ -430,3 +430,219 @@ it('joins cancelled producer work on a reused private root before starting anoth
     trace.mockRestore();
   }
 }, 20_000);
+
+it.each([false, true])(
+  'preserves native Chat facts and controls with refusal=%s',
+  async (refusal) => {
+    const requests: any[] = [];
+    const capturedInstructions: unknown[] = [];
+    const effects: string[] = [];
+    const privateRefusal = 'private-model-refusal';
+    const token = {
+      token: 'ok',
+      bytes: [111, 107],
+      logprob: -0.25,
+      top_logprobs: [],
+    };
+    const server = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+      response.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({
+          id: 'chat_facts',
+          object: 'chat.completion',
+          created: 0,
+          model: 'chat-model',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'stop',
+              message: {
+                role: 'assistant',
+                content: refusal ? null : 'ok',
+                refusal: refusal ? privateRefusal : null,
+                tool_calls: refusal
+                  ? [
+                      {
+                        type: 'function',
+                        id: 'never',
+                        function: {
+                          name: 'echo',
+                          arguments: '{"value":"never"}',
+                        },
+                      },
+                    ]
+                  : null,
+              },
+              logprobs: refusal ? null : { content: [token] },
+            },
+          ],
+        }),
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw Error('Expected port');
+    try {
+      const adapter = new ChatCompletionsModel(
+        new OpenAI({
+          apiKey: 'synthetic-key',
+          baseURL: `http://127.0.0.1:${address.port}/v1`,
+        }),
+        'chat-model',
+      );
+      await using provider = new NativeProvider({
+        modelBackend: {
+          complete(request: ModelRequest) {
+            capturedInstructions.push(
+              (request.body.input as any[])
+                .filter(
+                  (item) =>
+                    item.type === 'message' &&
+                    ['system', 'developer'].includes(item.role),
+                )
+                .map((item) => ({
+                  role: item.role,
+                  content: item.content.map((part: any) => ({
+                    type: 'text',
+                    text: part.text,
+                  })),
+                })),
+            );
+            return adapter.complete(request);
+          },
+        },
+      });
+      const echo = tool({
+        name: 'echo',
+        description: 'Echo.',
+        parameters: z.object({ value: z.string() }),
+        execute: ({ value }) => {
+          effects.push(value);
+          return value;
+        },
+      });
+      await using session = await new Agent({
+        model: 'gpt-5.2',
+        instructions: 'Preserve this exact instruction.',
+        modelSettings: { verbosity: 'high', topLogprobs: 1 },
+        tools: [echo],
+        provider,
+      }).session();
+      const turn = await session.submit('answer');
+      if (refusal) {
+        const error = await turn.wait().then(
+          () => {
+            throw Error('Refusal accepted');
+          },
+          (error) => error,
+        );
+        expect(error.responseIntegrityReason).toBe('provider_refusal');
+        expect(String(error)).not.toContain(privateRefusal);
+      } else expect((await turn.wait()).finalOutput).toBe('ok');
+      const recorded = [];
+      for await (const row of session.turns()) recorded.push(row);
+      const facts = (recorded[0].responseFacts ?? []).map((row) => row.fact);
+      if (refusal) {
+        expect(
+          facts.some(
+            (fact) => fact.kind === 'refusal' && fact.text === privateRefusal,
+          ),
+        ).toBe(true);
+        expect(recorded[0].status).toBe('failed');
+      } else
+        expect(
+          facts.flatMap((fact) =>
+            fact.kind === 'text_probabilities' ? fact.tokens : [],
+          ),
+        ).toEqual([
+          { token: 'ok', bytes: [111, 107], logprob: -0.25, topLogprobs: [] },
+        ]);
+      expect(effects).toEqual([]);
+      expect(requests).toHaveLength(1);
+      expect(
+        requests[0].messages.filter((message: any) =>
+          ['system', 'developer'].includes(message.role),
+        ),
+      ).toEqual(capturedInstructions[0]);
+      expect(JSON.stringify(capturedInstructions[0])).toContain(
+        'Preserve this exact instruction.',
+      );
+      expect(requests[0]).toMatchObject({
+        verbosity: 'high',
+        logprobs: true,
+        top_logprobs: 1,
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+  20_000,
+);
+
+it.each(['refusal', 'malformed'] as const)(
+  'validates whole completed output before any tool when later item is %s',
+  async (later) => {
+    const effects: string[] = [];
+    const echo = tool({
+      name: 'echo',
+      description: 'Echo.',
+      parameters: z.object({ value: z.string() }),
+      execute: ({ value }) => {
+        effects.push(value);
+        return value;
+      },
+    });
+    await using provider = new NativeProvider({
+      modelBackend: {
+        complete(): ModelResponse {
+          return {
+            output: [
+              {
+                type: 'function_call',
+                call_id: 'never',
+                name: 'echo',
+                arguments: '{"value":"never"}',
+              },
+              later === 'refusal'
+                ? {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [
+                      { type: 'refusal', refusal: 'private-later-refusal' },
+                    ],
+                  }
+                : {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 7 }],
+                  },
+            ],
+          };
+        },
+      },
+    });
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      tools: [echo],
+      provider,
+    }).session();
+    const turn = await session.submit('answer');
+    const error = await turn.wait().then(
+      () => {
+        throw Error('Invalid output accepted');
+      },
+      (error) => error,
+    );
+    expect(error.responseIntegrityReason).toBe(
+      later === 'refusal' ? 'provider_refusal' : 'undecodable_output_item',
+    );
+    expect(effects).toEqual([]);
+  },
+  20_000,
+);
