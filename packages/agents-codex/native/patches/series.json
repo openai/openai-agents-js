@@ -386,8 +386,8 @@
     },
     {
       "path": "0097-native-realtime-provider-history.patch",
-      "sha256": "bc3eb9ac1e0d049b3687fba8f55ab08021c38db7f4062815bf494be4baada03a"
+      "sha256": "38c7a424a162f574075eebd72dabe1375bac4bca62f5bea1cf0afd269aa36c35"
     }
   ],
-  "result_tree": "86141dcdedad5838bcb0fda2cbcfbcc6d8aa238b"
+  "result_tree": "62a60810aa9166ffb442010b6ac6053b6f70045b"
 }

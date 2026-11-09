@@ -101,9 +101,13 @@ Shared Session history, tool outcomes, and approval records remain intact. Delet
 
 ### Retrieve and edit provider history
 
-Use `await voice.retrieveConversationItem(providerItemId)` to retrieve a known provider item with its available media, including an item from before SIP attachment. Retrieval rejects locally deleted IDs. Retrieving an ID absent from the observed history does not add it to that history's order. `await voice.retrieveConversationHistory()` retrieves available media for IDs observed during this connection, in observed order, and can return large payloads. It cannot discover items from before SIP attachment. These explicit requests are separate from the synchronous `voice.history` audit view.
+Use `await voice.retrieveConversationItem(providerItemId)` to retrieve a known provider item with its available media, including an item from before SIP attachment. Retrieval rejects IDs still recorded as deleted. Retrieving an ID absent from the observed history does not add it to that history's order. `await voice.retrieveConversationHistory()` retrieves available media for IDs observed during this connection, in observed order, and can return large payloads. It cannot discover items from before SIP attachment. These explicit requests are separate from the synchronous `voice.history` audit view.
 
 `await voice.updateHistory(items)` reconciles the observed portion of the provider conversation with an array of provider items. It cannot erase unobserved items, including SIP items from before attachment. Core validates the requested replacement before sending changes and waits for provider acknowledgements. Pass provider item IDs and provider content shapes, including audio or image content where supported. Only supported system, user, and assistant message rows are editable. Retain tool, MCP, and approval rows with their exact content and order; messages cannot move across these rows. As with deletion, canonical audit history, background work, and retained context for subsequent Session turns remain intact. An interrupted edit or a provider failure after some acknowledgements can leave partial provider edits. If the connection remains active, retrieve the observed history before retrying.
+
+The connection retains 128 recent deletion receipts. Within this window, you can restore a message removed by an interrupted `updateHistory()` under its original ID. Supply a supported message after refreshing the observed history. IDs deleted directly with `deleteConversationItem()`, and tool or control identities, remain protected while their receipts are retained. Recovery preserves the canonical deletion audit.
+
+Once the receipt window evicts any deletion, individual item lookup requires a current live provider observation. An arbitrary or unobserved ID, including one from before SIP attachment, then rejects locally. This restriction lasts until a new voice connection. Further pruning and history editing remain available.
 
 Created or changed messages use the provider's role-specific content types: `input_text` for system messages; `input_text`, `input_audio`, or `input_image` for user messages; and `output_text` for assistant messages. For images, pass a PNG or JPEG base64 data URI. Base64-encode audio bytes in the session's input audio format. Existing assistant audio can be retained but cannot be created through this API. Keep existing provider item IDs and give new messages unique IDs.
 
@@ -117,25 +121,34 @@ Validation failures and interruptions caused by concurrent input or responses le
 
 Native execution runs on the server. Browser code can import `NativeVoiceWebRTC` from `@openai/agents/voice/browser`. Its `connect({exchangeSdp})` callback sends the offer to your authenticated server and returns the server's answer. The helper owns browser media only; its data-channel observations cannot execute native tools or approve work. Keep server credentials out of the browser. Close the server owner when the application call ends; closing browser media alone does not replace server cleanup.
 
-SIP calls must be accepted and configured before attachment. On your server, call `await session.buildRealtimeSipConfig({ model, voice, instructions })` to build the call-accept request body from the same native configuration pipeline as `session.realtime()`. The builder includes the captured Agent instructions, tools, and handoffs, and prepares Session-owned MCP tools when `tools` is omitted. It does not accept the call, open voice media, or resolve voice credentials. Send its result to your call-accept endpoint, then attach the same Session with `await session.realtime({ transport: { type: 'sip', callId } })`. Regenerate the body if you change the Session or its configuration before accepting the call. The builder preserves supported SIP VAD tuning, including `threshold`, `prefixPaddingMs`, and `silenceDurationMs`.
+SIP calls must be accepted and configured before attachment. On your server, call `await session.buildRealtimeSipConfig({ model, voice, instructions })` to build the call-accept request body from the same native configuration pipeline as `session.realtime()`. The builder includes the captured Agent instructions, tools, and handoffs, and prepares Session-owned MCP tools when `tools` is omitted. It does not accept the call, open voice media, or resolve voice credentials. Send its result to your call-accept endpoint, then attach the same Session with the same options and a SIP transport. Regenerate the body if you change the Session or its configuration before accepting the call. The builder preserves supported SIP VAD tuning, including `threshold`, `prefixPaddingMs`, and `silenceDurationMs`.
 
-If you pass an explicit `tools` selection to the builder, pass the same selection to `session.realtime()` when attaching. The accept body controls the tools advertised to the provider. The attachment selection also limits the tools available to delegated native work. The builder does not save the selection for a later attachment.
+Repeat the builder's `model`, `voice`, `instructions`, `settings`, and `tools` when attaching. These values describe the already accepted call; attachment checks them without sending an initial configuration update. A mismatch rejects attachment. The accept body controls the tools advertised to the provider. The attachment selection also limits the tools available to delegated native work. The builder saves no configuration for a later attachment.
 
-Reuse one selection object for both steps. This empty selection excludes the Agent's tools:
+In your verified incoming-call handler, reuse one options object for both steps. Here, `session` is your open Session, `callId` identifies the accepted provider call, and `serveCall` consumes `voice.events()` until the call ends. This empty selection excludes the Agent's tools:
 
 ```ts
-const selection = { tools: [] };
-const acceptance = await session.buildRealtimeSipConfig(selection);
+import type { NativeRealtimeSipConfigOptions } from '@openai/agents';
+
+const config: NativeRealtimeSipConfigOptions = {
+  model: 'gpt-realtime',
+  voice: 'alloy',
+  instructions: 'Answer spoken questions briefly.',
+  settings: { toolChoice: 'auto' },
+  tools: [],
+};
+const acceptance = await session.buildRealtimeSipConfig(config);
 // Send acceptance to the provider's call-accept endpoint before attaching.
 await using voice = await session.realtime({
-  ...selection,
+  ...config,
   transport: { type: 'sip', callId },
 });
+await serveCall(voice);
 ```
 
 Configure hosted MCP follow-ups by passing `automaticallyTriggerResponseForMcpToolCalls` when attaching with `session.realtime()`. The HTTP accept body cannot carry this SDK option, so `buildRealtimeSipConfig()` does not accept it.
 
-Do not pass initial `model`, `voice`, or `instructions` overrides with the SIP transport. Nonempty client audio is rejected; an empty audio buffer with `{ commit: true }` can control audio already buffered by the provider. Closing an SDK-created WebRTC owner also hangs up its created call.
+Nonempty client audio is rejected; an empty audio buffer with `{ commit: true }` can control audio already buffered by the provider. Closing an SDK-created WebRTC owner also hangs up its created call.
 
 WebRTC SDP offers are limited to 1 MiB of UTF-8 text. Oversized offers are rejected before credentials are resolved or a connection is opened.
 
@@ -183,7 +196,7 @@ export async function startBrowserCall(
 }
 ```
 
-For an already accepted SIP call, use the same server lifetime and event consumer with `transport: { type: 'sip', callId }`. Context disposal detaches native control; the application that owns the provider call handles hangup.
+For an already accepted SIP call, use the same server lifetime and event consumer. Repeat the acceptance options and add `transport: { type: 'sip', callId }`, as shown above. Context disposal detaches native control; the application that owns the provider call handles hangup.
 
 `@openai/agents/voice/workerd` supplies a socket relay helper for an application server. It does not load or run the native runtime in the Worker. The retained `@openai/agents/realtime` entrypoint continues to expose the Classic runtime.
 

@@ -528,3 +528,35 @@ it('releases the input reservation when provider history cannot be copied as JSO
   await voice.close();
   await f.session.close();
 });
+
+it('admits repeated SIP acceptance options as the expected native configuration', async () => {
+  const f = fixture();
+  await f.session._start();
+  const options = {
+    model: 'accepted-model',
+    voice: 'marin',
+    instructions: 'Accepted instructions.',
+    tools: [],
+    settings: { turnDetection: null, transcription: null },
+  };
+  f.native.call.mockResolvedValueOnce('{}');
+  await f.session.buildRealtimeSipConfig(options);
+  const voice = await f.session.realtime({
+    ...options,
+    transport: { type: 'sip', callId: 'accepted-call' },
+  });
+  const prepare = f.native.call.mock.calls.find(
+    ([operation]) => operation === 'realtime_conversation_prepare_sdk',
+  )!;
+  expect(JSON.parse(prepare[1])).toMatchObject({
+    params: {
+      model: options.model,
+      voice: options.voice,
+      prompt: options.instructions,
+      transport: { type: 'existing_call', call_id: 'accepted-call' },
+    },
+    function_tools: [],
+  });
+  await voice.close();
+  await f.session.close();
+});
