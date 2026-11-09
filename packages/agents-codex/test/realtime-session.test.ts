@@ -207,16 +207,21 @@ it('builds SIP acceptance configuration before admission without media admission
   expect(f.native.call).toHaveBeenCalledOnce();
   const params = JSON.parse(f.native.call.mock.calls[0][1]);
   expect(params).not.toHaveProperty('generation');
+  expect(params).not.toHaveProperty('hosted_mcp_auto_response');
   expect(params).toMatchObject({
     function_tools: null,
     expected_selection_id: null,
-    hosted_mcp_auto_response: true,
     params: { model: 'gpt-realtime', client_managed_handoffs: true },
   });
   // Building acceptance configuration leaves the Session free to attach sideband.
   const voice = await f.session.realtime({
     transport: { type: 'sip', callId: 'incoming-call' },
+    automaticallyTriggerResponseForMcpToolCalls: false,
   });
+  const prepare = f.native.call.mock.calls.find(
+    ([operation]) => operation === 'realtime_conversation_prepare_sdk',
+  )!;
+  expect(JSON.parse(prepare[1]).hosted_mcp_auto_response).toBe(false);
   await voice.close();
   await f.session.close();
 });
@@ -230,7 +235,6 @@ it('uses the same native configuration inputs for SIP acceptance and connection'
     voice: 'marin',
     tools: [],
     settings: { transcription: null, turnDetection: null },
-    automaticallyTriggerResponseForMcpToolCalls: false,
   };
   f.native.call.mockResolvedValueOnce('{}');
   await f.session.buildRealtimeSipConfig(options);
@@ -239,7 +243,13 @@ it('uses the same native configuration inputs for SIP acceptance and connection'
   const prepare = f.native.call.mock.calls.find(
     ([operation]) => operation === 'realtime_conversation_prepare_sdk',
   )!;
-  const { generation: _generation, ...prepareParams } = JSON.parse(prepare[1]);
+  const {
+    generation: _generation,
+    hosted_mcp_auto_response,
+    ...prepareParams
+  } = JSON.parse(prepare[1]);
+  expect(hosted_mcp_auto_response).toBe(true);
+  expect(configParams).not.toHaveProperty('hosted_mcp_auto_response');
   expect(configParams).toEqual(prepareParams);
   expect(configParams.function_tools).toEqual([]);
   await voice.close();
@@ -257,15 +267,19 @@ it.each([
   { model: 123 },
   { tools: {} },
   { automaticallyTriggerResponseForMcpToolCalls: 'yes' },
+  { automaticallyTriggerResponseForMcpToolCalls: true },
+  { automaticallyTriggerResponseForMcpToolCalls: false },
 ])(
   'rejects unsupported SIP builder inputs before native work: %o',
   async (options) => {
     const f = fixture();
     await f.session._start();
+    const prepareMcp = vi.spyOn(f.session, '_prepareRealtimeMcp');
     await expect(
       f.session.buildRealtimeSipConfig(options as never),
     ).rejects.toThrow(TypeError);
     expect(f.native.call).not.toHaveBeenCalled();
+    expect(prepareMcp).not.toHaveBeenCalled();
     await f.session.close();
   },
 );
@@ -373,7 +387,6 @@ it.each(['inherited', 'explicit'] as const)(
       instructions: 'Captured instructions.',
       settings,
       ...(selection === 'explicit' ? { tools } : {}),
-      automaticallyTriggerResponseForMcpToolCalls: false,
     };
     f.native.call.mockResolvedValueOnce('{}');
     const pending = f.session.buildRealtimeSipConfig(options);
@@ -381,7 +394,6 @@ it.each(['inherited', 'explicit'] as const)(
     options.model = 'changed-model';
     options.voice = 'cedar';
     options.instructions = 'Changed instructions.';
-    options.automaticallyTriggerResponseForMcpToolCalls = true;
     options.tools = [];
     tools.push({ name: 'injected' } as never);
     settings.outputSpeed = 1.7;
@@ -389,7 +401,6 @@ it.each(['inherited', 'explicit'] as const)(
     await pending;
     const params = JSON.parse(f.native.call.mock.calls[0][1]);
     expect(params).toMatchObject({
-      hosted_mcp_auto_response: false,
       settings: { output_speed: 1.1 },
       params: {
         model: 'captured-model',
@@ -397,6 +408,7 @@ it.each(['inherited', 'explicit'] as const)(
         prompt: 'Captured instructions.',
       },
     });
+    expect(params).not.toHaveProperty('hosted_mcp_auto_response');
     expect(params.function_tools).toEqual(selection === 'explicit' ? [] : null);
     if (selection === 'explicit') {
       expect(selectTools).toHaveBeenCalledWith([]);

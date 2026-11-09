@@ -1070,14 +1070,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     for (const [name, value] of Object.entries(options)) {
       if (
-        ![
-          'model',
-          'voice',
-          'instructions',
-          'settings',
-          'tools',
-          'automaticallyTriggerResponseForMcpToolCalls',
-        ].includes(name)
+        !['model', 'voice', 'instructions', 'settings', 'tools'].includes(name)
       )
         throw new TypeError(
           `Unsupported Realtime SIP configuration option: ${name}`,
@@ -1093,11 +1086,6 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError(
         'Realtime tools must be an array of captured function declarations',
       );
-    if (
-      options.automaticallyTriggerResponseForMcpToolCalls !== undefined &&
-      typeof options.automaticallyTriggerResponseForMcpToolCalls !== 'boolean'
-    )
-      throw new TypeError('Hosted MCP automatic response must be a boolean');
     options = {
       ...options,
       tools: options.tools === undefined ? undefined : [...options.tools],
@@ -1110,18 +1098,18 @@ export class Session<OutputT = string, Context = unknown> {
       options.tools === undefined
         ? null
         : await this._realtimeFunctionTools([...options.tools]);
+    const params = realtimePrepareParams(
+      options,
+      { type: 'websocket' },
+      settings,
+      selection?.tools ?? null,
+      selection?.selectionId ?? null,
+    );
+    delete params.hosted_mcp_auto_response;
     const result: unknown = JSON.parse(
       await this.#native.call(
         'realtime_conversation_config_sdk',
-        encode(
-          realtimePrepareParams(
-            options,
-            { type: 'websocket' },
-            settings,
-            selection?.tools ?? null,
-            selection?.selectionId ?? null,
-          ),
-        ),
+        encode(params),
       ),
     );
     if (!result || typeof result !== 'object' || Array.isArray(result))

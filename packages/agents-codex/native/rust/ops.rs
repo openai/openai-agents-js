@@ -1285,9 +1285,7 @@ params!(RealtimeSdkConfig {
     #[serde(default)]
     function_tools: Option<Vec<codex_protocol::dynamic_tools::DynamicToolFunctionSpec>>,
     #[serde(default)]
-    expected_selection_id: Option<String>,
-    #[serde(default = "realtime_auto_response_default")]
-    hosted_mcp_auto_response: bool
+    expected_selection_id: Option<String>
 });
 pub(crate) async fn prepare_realtime(
     thread: &CodexThread,
@@ -1561,7 +1559,6 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
                 settings: p.settings,
                 function_tools: realtime_function_tools(p.function_tools),
                 expected_selection_id: p.expected_selection_id,
-                hosted_mcp_auto_response: p.hosted_mcp_auto_response,
                 reply,
             })
             .await?;

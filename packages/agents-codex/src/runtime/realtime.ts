@@ -84,17 +84,12 @@ export interface NativeRealtimeOptions {
 /** Session configuration for accepting an inbound SIP call before attaching sideband media. */
 export type NativeRealtimeSipConfigOptions = Pick<
   NativeRealtimeOptions,
-  | 'model'
-  | 'voice'
-  | 'instructions'
-  | 'settings'
-  | 'tools'
-  | 'automaticallyTriggerResponseForMcpToolCalls'
+  'model' | 'voice' | 'instructions' | 'settings' | 'tools'
 >;
 
 /** @internal Both connection admission and SIP acceptance use Core's config builder. */
 export function realtimePrepareParams(
-  options: NativeRealtimeSipConfigOptions,
+  options: NativeRealtimeOptions,
   transport: JsonObject,
   settings: JsonObject | null,
   functionTools: JsonObject[] | null,

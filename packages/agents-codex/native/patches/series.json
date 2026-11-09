@@ -382,12 +382,12 @@
     },
     {
       "path": "0096-native-realtime-sip-config.patch",
-      "sha256": "eb75c1e1e790395630f4a46fc107f119e6a1d61b697fccdb3bdb05253d327baa"
+      "sha256": "a7efd01ecbf54fa78106dda845ed46f99af70583620437aa02f9c9b501777285"
     },
     {
       "path": "0097-native-realtime-provider-history.patch",
-      "sha256": "24ed172feb9fa6276c561adf30cc63368a3fd9c31a0fe3b4a3b96a8176e818b0"
+      "sha256": "c2dfe1071d0e12ba926d785054729644222e04b9935c98952f38adc9227c8b48"
     }
   ],
-  "result_tree": "c19699127f60c3a4c0e10bd907f35a03f1acbc59"
+  "result_tree": "1584e693de0b8fd4ed37bd1248e65a868ea0ea02"
 }

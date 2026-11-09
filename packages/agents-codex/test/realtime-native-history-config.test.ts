@@ -12,6 +12,7 @@ type Frame = Record<string, any>;
 class HistoryPeer {
   readonly frames: Frame[] = [];
   readonly models: (string | null)[] = [];
+  readonly retrievals = new Map<string, JsonObject>();
   private socket?: WebSocket;
   private readonly server = new WebSocketServer({ noServer: true });
   constructor(model: ModelServer) {
@@ -29,6 +30,14 @@ class HistoryPeer {
       socket.on('message', (raw) => {
         const frame = JSON.parse(raw.toString());
         this.frames.push(frame);
+        if (
+          frame.type === 'conversation.item.retrieve' &&
+          this.retrievals.has(frame.item_id)
+        )
+          this.send({
+            type: 'conversation.item.retrieved',
+            item: this.retrievals.get(frame.item_id)!,
+          });
         if (frame.type === 'session.update') {
           Object.assign(session, frame.session);
           this.send({
@@ -83,8 +92,13 @@ async function observe(
   seen: NativeRealtimeEvent[],
   item: JsonObject,
 ) {
+  let previousItemId: string | null = null;
+  for (const event of seen)
+    if (event.type === 'conversation_item' && event.status === 'done')
+      previousItemId = event.itemId;
   peer.send({
     type: 'conversation.item.added',
+    previous_item_id: previousItemId,
     item: { ...item, status: 'completed' },
   });
   peer.send({
@@ -174,12 +188,12 @@ nativeIt(
 );
 
 nativeIt.each([
-  { threshold: 0.5 },
-  { prefixPaddingMs: 100 },
-  { silenceDurationMs: 300 },
+  [{ threshold: 0.5 }, { threshold: 0.5 }],
+  [{ prefixPaddingMs: 100 }, { prefix_padding_ms: 100 }],
+  [{ silenceDurationMs: 300 }, { silence_duration_ms: 300 }],
 ])(
-  'rejects unsupported SIP VAD tuning before voice admission: %o',
-  async (tuning) => {
+  'preserves supported SIP VAD tuning without voice admission: %o',
+  async (tuning, expected) => {
     const model = new ModelServer([]);
     const peer = new HistoryPeer(model);
     try {
@@ -188,11 +202,14 @@ nativeIt.each([
         provider,
         instructions: 'Help.',
       }).session();
-      await expect(
-        session.buildRealtimeSipConfig({
-          settings: { turnDetection: { type: 'server_vad', ...tuning } },
-        }),
-      ).rejects.toThrow();
+      const config = await session.buildRealtimeSipConfig({
+        settings: { turnDetection: { type: 'server_vad', ...tuning } },
+      });
+      expect(config).toMatchObject({
+        audio: {
+          input: { turn_detection: { type: 'server_vad', ...expected } },
+        },
+      });
       expect(peer.frames).toEqual([]);
       expect(peer.models).toEqual([]);
       expect(model.requests).toEqual([]);
@@ -236,7 +253,7 @@ nativeIt(
           id: 'new3',
           type: 'message',
           role: 'assistant',
-          content: [{ type: 'text', text: 'Corrected answer.' }],
+          content: [{ type: 'output_text', text: 'Corrected answer.' }],
         };
         await observe(peer, seen, first);
         await observe(peer, seen, second);
@@ -476,4 +493,128 @@ nativeIt(
     }
   },
   15000,
+);
+
+nativeIt.each([
+  {
+    role: 'assistant',
+    content: [
+      {
+        type: 'input_audio',
+        audio: 'AQACAA==',
+        transcript: 'invalid assistant input audio',
+      },
+    ],
+  },
+  {
+    role: 'system',
+    content: [{ type: 'input_image', image_url: 'data:image/png;base64,AQID' }],
+  },
+])(
+  'rejects invalid role/media replacements before deleting observed messages: %o',
+  async (replacement) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Keep existing messages.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const original = userItem(
+          'original',
+          'Keep this until the full plan is valid.',
+        );
+        await observe(peer, seen, original);
+        peer.retrievals.set('original', original);
+        const after = peer.frames.length;
+        await expect(
+          voice.updateHistory([
+            { id: 'original', type: 'message', ...replacement },
+          ]),
+        ).rejects.toThrow();
+        expect(
+          peer.frames
+            .slice(after)
+            .filter((frame) =>
+              ['conversation.item.delete', 'conversation.item.create'].includes(
+                frame.type,
+              ),
+            ),
+        ).toEqual([]);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'preserves full user audio when reordering an observed message suffix',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Keep media intact.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const audio = {
+          id: 'audio-first',
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_audio', audio: 'AQACAA==', transcript: 'hello' },
+          ],
+        };
+        const text = userItem('text-second', 'Move this before the recording.');
+        for (const item of [audio, text]) {
+          await observe(peer, seen, item);
+          peer.retrievals.set(item.id as string, item);
+        }
+        const after = peer.frames.length;
+        const updating = voice.updateHistory([text, audio]);
+        void updating.catch(() => {});
+        const deletion = await peer.frame('conversation.item.delete', after);
+        expect(deletion.item_id).toBe(audio.id);
+        peer.send({ type: 'conversation.item.deleted', item_id: audio.id });
+        const creation = await peer.frame('conversation.item.create', after);
+        expect(creation.previous_item_id).toBe(text.id);
+        expect(creation.item).toEqual(audio);
+        peer.send({
+          type: 'conversation.item.created',
+          item: audio,
+          previous_item_id: text.id,
+        });
+        await updating;
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
 );
