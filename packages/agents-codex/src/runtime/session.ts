@@ -7007,21 +7007,25 @@ export class Session<OutputT = string, Context = unknown> {
               const invoke = async (text: string | null) => {
                 const scope = this.decisionScope(owner, event, signal, check);
                 try {
-                  const decision = captureCompletionDecision(
-                    await beforeComplete?.(
-                      Object.freeze({
-                        ...base,
-                        text,
-                        continuationCount: z
-                          .number()
-                          .int()
-                          .nonnegative()
-                          .safe()
-                          .parse(msg.continuation_count),
-                        decide: scope.decide,
-                      }),
-                    ),
+                  const returned = beforeComplete?.(
+                    Object.freeze({
+                      ...base,
+                      text,
+                      continuationCount: z
+                        .number()
+                        .int()
+                        .nonnegative()
+                        .safe()
+                        .parse(msg.continuation_count),
+                      decide: scope.decide,
+                    }),
                   );
+                  const settled =
+                    returned &&
+                    typeof (returned as Promise<unknown>).then === 'function'
+                      ? await returned
+                      : returned;
+                  const decision = captureCompletionDecision(settled);
                   await scope.join();
                   check();
                   return decision;

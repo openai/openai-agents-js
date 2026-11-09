@@ -219,6 +219,41 @@ nativeIt(
 );
 
 nativeIt(
+  'captures a synchronous completion decision before queued mutations',
+  async () => {
+    const model = new ModelServer([
+      [message('first proposal')],
+      [message('final answer')],
+    ]);
+    await using provider = await providerFor(model);
+    const agent = new Agent({
+      instructions: 'Test native callbacks.',
+      provider,
+      beforeComplete: (context) => {
+        if (context.continuationCount !== 0) return;
+        const decision = {
+          action: 'continue' as const,
+          instructions: 'CAPTURED_CONTINUATION',
+        };
+        queueMicrotask(() => {
+          decision.instructions = 'MUTATED_CONTINUATION';
+        });
+        return decision;
+      },
+    });
+    expect((await agent.run('one')).finalOutput).toBe('final answer');
+    expect(model.requests).toHaveLength(2);
+    expect(historyText(model.requests[1]!.input)).toContain(
+      'CAPTURED_CONTINUATION',
+    );
+    expect(historyText(model.requests[1]!.input)).not.toContain(
+      'MUTATED_CONTINUATION',
+    );
+    model.assertExhausted();
+  },
+);
+
+nativeIt(
   'a completion stop prevents another request and leaves the Session usable',
   async () => {
     const model = new ModelServer([
