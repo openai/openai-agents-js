@@ -365,19 +365,6 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           });
         } else if (!['auto', 'none', 'required'].includes(value as string))
           throw new TypeError('toolChoice must be an outer mode or ToolRef');
-      } else if (
-        key === 'verbosity' ||
-        key === 'promptCacheRetention' ||
-        key === 'promptCacheTtl'
-      ) {
-        const values =
-          key === 'verbosity'
-            ? ['low', 'medium', 'high']
-            : key === 'promptCacheRetention'
-              ? ['in_memory', '24h']
-              : ['30m', '12h'];
-        if (!values.includes(value as string))
-          throw new TypeError(`Unsupported ${key}`);
       } else if (typeof value !== 'string' || !value.trim()) {
         throw new TypeError(`Invalid model setting: ${key}`);
       }

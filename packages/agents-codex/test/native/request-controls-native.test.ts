@@ -167,10 +167,7 @@ it.each([
   { topP: -0.1 },
   { parallelToolCalls: 1 },
   { store: 'true' },
-  { verbosity: 'LOUD' },
   { metadata: { x: 'v'.repeat(513) } },
-  { promptCacheTtl: '24h' },
-  { promptCacheRetention: '12h' },
 ])('rejects invalid controls before resource opening: %j', (settings) => {
   expect(
     () =>

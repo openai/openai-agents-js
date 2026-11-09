@@ -169,7 +169,7 @@ export function decode<T>(schema: z.ZodType<T>, source: string): T {
   return schema.parse(JSON.parse(source));
 }
 export function encode(value: unknown): string {
-  return JSON.stringify(jsonValue.parse(value));
+  return JSON.stringify(losslessJsonValueSchema.parse(value));
 }
 
 // Convert only an authority's exact integer token; never return a rounded JS number.
