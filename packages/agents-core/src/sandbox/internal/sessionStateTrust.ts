@@ -1,6 +1,6 @@
 import type { SandboxClientOptions } from '../client';
 import type { SandboxSessionState } from '../session';
-import type { SnapshotSpec } from '../snapshot';
+import type { RemoteSnapshotStore, SnapshotSpec } from '../snapshot';
 import type { LocalSandboxSnapshotSpec } from '../sandboxes/types';
 
 export type LocalSandboxStateAuthority = {
@@ -14,7 +14,73 @@ export type LocalSandboxStateAuthority = {
 
 // Parsing saved state, including RunState, never establishes local authority.
 const localStateAuthorities = new WeakMap<object, LocalSandboxStateAuthority>();
+const remoteSnapshotAuthorities = new WeakMap<
+  object,
+  {
+    id?: string;
+    store?: RemoteSnapshotStore;
+    snapshotSpec?: LocalSandboxSnapshotSpec | null;
+  }
+>();
 const stateIdentities = new WeakMap<object, object>();
+
+export function getRemoteSnapshotIdAuthority(
+  state: object,
+): string | undefined {
+  return remoteSnapshotAuthorities.get(state)?.id;
+}
+
+export function setRemoteSnapshotIdAuthority(
+  state: object,
+  id: string | undefined,
+  store?: RemoteSnapshotStore,
+): void {
+  remoteSnapshotAuthorities.set(state, {
+    ...remoteSnapshotAuthorities.get(state),
+    id,
+    store:
+      id === undefined
+        ? undefined
+        : (store ?? remoteSnapshotAuthorities.get(state)?.store),
+  });
+}
+
+export function getRemoteSnapshotStoreAuthority(
+  state: object,
+): RemoteSnapshotStore | undefined {
+  return remoteSnapshotAuthorities.get(state)?.store;
+}
+
+export function getRemoteSnapshotPolicyAuthority(
+  state: object,
+): LocalSandboxSnapshotSpec | null | undefined {
+  return remoteSnapshotAuthorities.get(state)?.snapshotSpec;
+}
+
+export function setRemoteSnapshotPolicyAuthority(
+  state: object,
+  spec: LocalSandboxSnapshotSpec | null | undefined,
+): void {
+  remoteSnapshotAuthorities.set(state, {
+    ...remoteSnapshotAuthorities.get(state),
+    snapshotSpec: spec ? { ...spec } : null,
+  });
+}
+
+export function copyRemoteSnapshotAuthority(
+  source: object,
+  target: object,
+): void {
+  const authority = remoteSnapshotAuthorities.get(source);
+  if (authority)
+    remoteSnapshotAuthorities.set(target, {
+      ...authority,
+      snapshotSpec: authority.snapshotSpec
+        ? { ...authority.snapshotSpec }
+        : authority.snapshotSpec,
+    });
+  else remoteSnapshotAuthorities.delete(target);
+}
 
 export function getSandboxStateIdentity(state: object): object {
   return stateIdentities.get(state) ?? state;

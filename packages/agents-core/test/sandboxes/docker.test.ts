@@ -279,6 +279,14 @@ describe('DockerSandboxClient', () => {
         }
         const restored = await client.resume(
           await client.deserializeSessionState(serialized),
+          {
+            clientOptions: {
+              resumeAuthority: {
+                remoteSnapshotId:
+                  type === 'remote' ? session.state.snapshot!.id : undefined,
+              },
+            },
+          },
         );
         cleanupContainerIds.add(restored.state.containerId);
         const restoredRoot = restored.state.workspaceRootPath;

@@ -1,5 +1,11 @@
 import { UserError } from '../../../errors';
 import {
+  copyRemoteSnapshotAuthority,
+  getRemoteSnapshotIdAuthority,
+  getRemoteSnapshotStoreAuthority,
+  setRemoteSnapshotIdAuthority,
+} from '../../internal/sessionStateTrust';
+import {
   resolveSandboxArchiveLimits,
   type SandboxArchiveLimits,
 } from '../../client';
@@ -9,6 +15,7 @@ import {
   isNoopSnapshotSpec,
   type RemoteSnapshot,
   type RemoteSnapshotSpec,
+  type RemoteSnapshotStore,
   type SnapshotSpec,
 } from '../../snapshot';
 import type {
@@ -84,6 +91,31 @@ type LocalSnapshotState = {
   snapshotFingerprintVersion?: string | null;
 };
 
+/** Bind only IDs obtained independently of serialized session state. */
+export function authorizeRemoteSnapshot(
+  state: LocalSnapshotState,
+  configuredId?: string,
+  configuredStore?: RemoteSnapshotStore,
+): void {
+  if (state.snapshot?.type !== 'remote') return;
+  const id = getRemoteSnapshotIdAuthority(state) ?? configuredId;
+  if (id === undefined || state.snapshot.id !== id) {
+    throw new UserError(
+      'Remote snapshot requires a matching trusted resumeAuthority.remoteSnapshotId.',
+    );
+  }
+  setRemoteSnapshotIdAuthority(
+    state,
+    id,
+    getRemoteSnapshotStoreAuthority(state) ?? configuredStore,
+  );
+}
+
+function authorizedRemoteSnapshotId(state: LocalSnapshotState): string {
+  authorizeRemoteSnapshot(state);
+  return getRemoteSnapshotIdAuthority(state)!;
+}
+
 export async function createLocalSnapshot(
   state: LocalSnapshotState,
   spec?: LocalSnapshotSpec,
@@ -111,6 +143,17 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
     snapshot: Readonly<LocalSandboxSnapshot> | null,
   ) => void,
 ): Promise<LocalSandboxSnapshot | null> {
+  authorizeRemoteSnapshot(state);
+  spec = spec ? { ...spec } : null;
+  const saveStore = isRemoteSnapshotSpec(spec) ? spec.store : undefined;
+  const publish = (snapshot: Readonly<LocalSandboxSnapshot> | null) => {
+    setRemoteSnapshotIdAuthority(
+      state,
+      snapshot?.type === 'remote' ? snapshot.id : undefined,
+      saveStore,
+    );
+    onSnapshotPublished?.(snapshot);
+  };
   // Pin filesystem inputs and previous cleanup authority before capture can yield.
   const captureState: LocalSnapshotState = {
     ...state,
@@ -120,8 +163,9 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
     snapshot: state.snapshot ? { ...state.snapshot } : null,
     snapshotSpec: state.snapshotSpec ? { ...state.snapshotSpec } : null,
   };
+  copyRemoteSnapshotAuthority(state, captureState);
   if (isNoopSnapshotSpec(spec)) {
-    await replaceLocalSnapshot(state, null, onSnapshotPublished, captureState);
+    await replaceLocalSnapshot(state, null, publish, captureState);
     replaceLocalSnapshotFingerprint(state, null);
     return null;
   }
@@ -143,12 +187,7 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
       type: 'remote',
       ...(saved.metadata ? { metadata: saved.metadata } : {}),
     };
-    await replaceLocalSnapshot(
-      state,
-      snapshot,
-      onSnapshotPublished,
-      captureState,
-    );
+    await replaceLocalSnapshot(state, snapshot, publish, captureState);
     replaceLocalSnapshotFingerprint(state, fingerprint);
     return snapshot;
   }
@@ -165,12 +204,7 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
       (spec as LocalSnapshotSpec | null) ?? undefined,
     ),
   }));
-  await replaceLocalSnapshot(
-    state,
-    snapshot,
-    onSnapshotPublished,
-    captureState,
-  );
+  await replaceLocalSnapshot(state, snapshot, publish, captureState);
   replaceLocalSnapshotFingerprint(state, fingerprint);
   return snapshot;
 }
@@ -233,7 +267,15 @@ export async function replaceLocalSnapshot<TState extends LocalSnapshotState>(
     ? { ...previousState.snapshot }
     : null;
   const previousWorkspaceRootPath = previousState.workspaceRootPath;
-  const previousStore = remoteSnapshotStoreFromSpec(previousState);
+  if (
+    previousSnapshot?.type === 'remote' &&
+    previousSnapshot.id !== getRemoteSnapshotIdAuthority(previousState)
+  ) {
+    throw new UserError(
+      'Remote snapshot cleanup requires trusted snapshot authority.',
+    );
+  }
+  const previousStore = getRemoteSnapshotStoreAuthority(previousState);
   // Never expose the observer's capability fields through the public object.
   const publishedSnapshot = snapshot ? { ...snapshot } : null;
   state.snapshot = snapshot;
@@ -292,12 +334,13 @@ export async function localSnapshotIsRestorable(
   state: LocalSnapshotState,
 ): Promise<boolean> {
   if (state.snapshot?.type === 'remote') {
-    const store = remoteSnapshotStoreFromSpec(state);
+    const id = authorizedRemoteSnapshotId(state);
+    const store = getRemoteSnapshotStoreAuthority(state);
     if (!store) {
       return false;
     }
     if (store.exists) {
-      return await store.exists({ id: state.snapshot.id });
+      return await store.exists({ id });
     }
     return true;
   }
@@ -318,11 +361,12 @@ export async function restoreLocalSnapshotToWorkspace<
   }
 
   if (state.snapshot?.type === 'remote') {
-    const store = remoteSnapshotStoreFromSpec(state);
+    const id = authorizedRemoteSnapshotId(state);
+    const store = getRemoteSnapshotStoreAuthority(state);
     if (!store) {
       throw new UserError('No remote snapshot store is available to restore.');
     }
-    const restored = await store.load({ id: state.snapshot.id });
+    const restored = await store.load({ id });
     await restoreWorkspaceArchive(restored.data, workspaceRootPath, options);
   } else {
     await replaceDirectoryContents(state.snapshot!.path, workspaceRootPath);
@@ -730,11 +774,6 @@ export function isRemoteSnapshotSpec(
     typeof (store as { save?: unknown }).save === 'function' &&
     typeof (store as { load?: unknown }).load === 'function'
   );
-}
-
-function remoteSnapshotStoreFromSpec(state: LocalSnapshotState) {
-  const spec = state.snapshotSpec;
-  return isRemoteSnapshotSpec(spec) ? spec.store : undefined;
 }
 
 async function pathExists(path: string): Promise<boolean> {
