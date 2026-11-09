@@ -1,0 +1,263 @@
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
+index 42714609dc49ac5aa8bf8fc3074889e7999db60e..7b2158b6e4186c350d84988de5dc9fc5dab73cb1 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
+@@ -8,6 +8,82 @@ use serde_json::{Value, json};
+ use std::collections::VecDeque;
+ use std::sync::Arc;
+ 
++// Allocation policy, not a provider protocol catalog limit.
++pub(super) const MAX_HOSTED_MCP_TOOLS: usize = 1024;
++
++fn charge(bytes: &mut usize, additional: usize) -> Result<(), ObserveError> {
++    *bytes = bytes.saturating_add(additional);
++    if *bytes > super::methods::SDK_WIRE_BYTES_CAPACITY {
++        return Err(ObserveError::Capacity);
++    }
++    Ok(())
++}
++
++fn schema_bytes(value: &Value, bytes: &mut usize, depth: usize) -> Result<(), ObserveError> {
++    // Bound container/scalar/key allocations without serializing or cloning.
++    if depth > 128 {
++        return Err(ObserveError::Capacity);
++    }
++    charge(bytes, 256)?;
++    match value {
++        Value::String(text) => charge(bytes, text.len().saturating_mul(4))?,
++        Value::Array(values) => {
++            for value in values {
++                schema_bytes(value, bytes, depth + 1)?;
++            }
++        }
++        Value::Object(values) => {
++            for (key, value) in values {
++                charge(bytes, 128usize.saturating_add(key.len().saturating_mul(4)))?;
++                schema_bytes(value, bytes, depth + 1)?;
++            }
++        }
++        _ => {}
++    }
++    Ok(())
++}
++
++fn catalog_bytes(item_id: &str, label: &str) -> Result<usize, ObserveError> {
++    let mut bytes = 512;
++    charge(&mut bytes, item_id.len().saturating_mul(4))?;
++    charge(&mut bytes, label.len().saturating_mul(4))?;
++    Ok(bytes)
++}
++
++fn listed_tool_bytes(
++    name: &str,
++    description: Option<&str>,
++    schema: &Value,
++    bytes: &mut usize,
++) -> Result<(), ObserveError> {
++    charge(bytes, 256)?;
++    charge(bytes, name.len().saturating_mul(4))?;
++    charge(bytes, description.map_or(0, str::len).saturating_mul(4))?;
++    schema_bytes(schema, bytes, 0)
++}
++
++pub(super) fn event_bytes(event: &RealtimeEvent) -> Result<usize, ObserveError> {
++    if let RealtimeEvent::HostedMcpToolsListed(catalog) = event {
++        if catalog.tools.len() > MAX_HOSTED_MCP_TOOLS {
++            return Err(ObserveError::Capacity);
++        }
++        let mut bytes = catalog_bytes(&catalog.item_id, &catalog.server_label)?;
++        for tool in &catalog.tools {
++            listed_tool_bytes(
++                &tool.name,
++                tool.description.as_deref(),
++                &tool.input_schema,
++                &mut bytes,
++            )?;
++        }
++        Ok(bytes)
++    } else {
++        serde_json::to_vec(event)
++            .map(|value| value.len())
++            .map_err(|_| ObserveError::Invalid)
++    }
++}
++
+ #[derive(Default)]
+ pub(super) struct HostedMcpState {
+     records: Vec<Record>,
+@@ -156,6 +232,7 @@ impl HostedMcpState {
+         };
+         let mut candidates = Vec::new();
+         let mut observations = Vec::new();
++        let mut catalog_export_bytes = 0;
+         for item in items {
+             let item_kind = match kind {
+                 "response.function_call_arguments.done" => "function_call",
+@@ -169,10 +246,30 @@ impl HostedMcpState {
+                     && let Some(label) = item["server_label"].as_str()
+                     && config.hosted_declaration(label).is_some()
+                 {
+-                    let tools = item["tools"]
++                    let raw_tools = item["tools"]
+                         .as_array()
+-                        .into_iter()
+-                        .flatten()
++                        .map(Vec::as_slice)
++                        .unwrap_or_default();
++                    if raw_tools.len() > MAX_HOSTED_MCP_TOOLS {
++                        return Err(ObserveError::Capacity);
++                    }
++                    let mut allocation =
++                        catalog_bytes(item["id"].as_str().unwrap_or_default(), label)?;
++                    for tool in raw_tools {
++                        if let (Some(name), Some(schema)) =
++                            (tool["name"].as_str(), tool.get("input_schema"))
++                        {
++                            listed_tool_bytes(
++                                name,
++                                tool["description"].as_str(),
++                                schema,
++                                &mut allocation,
++                            )?;
++                        }
++                    }
++                    charge(&mut catalog_export_bytes, allocation)?;
++                    let tools = raw_tools
++                        .iter()
+                         .filter_map(|tool| {
+                             Some(RealtimeHostedMcpListedTool {
+                                 name: tool["name"].as_str()?.to_owned(),
+@@ -363,10 +460,7 @@ impl HostedMcpState {
+         }
+         let mut bytes = self.bytes();
+         let mut count = self.records.len();
+-        let mut exported_bytes = observations
+-            .iter()
+-            .map(|event| serde_json::to_vec(event).map_or(usize::MAX, |value| value.len()))
+-            .sum::<usize>();
++        let mut exported_bytes = catalog_export_bytes;
+         for c in &candidates {
+             if let Some(old) = self.records.iter().find(|r| r.item_id == c.id) {
+                 bytes = bytes
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+index 82f180622d6e4f43c64d4b0f48b4d1e402b74ac9..2c25aba04c60973fe1318fdb6cf96be5a451a4cf 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+@@ -110,9 +110,14 @@ impl QueuedWireMessage {
+         budget: Option<Arc<tokio::sync::Semaphore>>,
+     ) -> Result<(), ()> {
+         if !events.is_empty() {
+-            let bytes = serde_json::to_vec(&events).map_err(|_| ())?.len();
+-            if bytes > SDK_WIRE_BYTES_CAPACITY {
+-                return Err(());
++            let mut bytes = events.len().saturating_add(1);
++            for event in &events {
++                bytes = bytes
++                    .checked_add(super::hosted_mcp::event_bytes(event).map_err(|_| ())?)
++                    .ok_or(())?;
++                if bytes > SDK_WIRE_BYTES_CAPACITY {
++                    return Err(());
++                }
+             }
+             if let Some(budget) = budget {
+                 let extra = budget
+@@ -4917,6 +4922,47 @@ mod tests {
+         connection.close().await.unwrap();
+         server.await.unwrap();
+     }
++    #[test]
++    fn hosted_catalog_structures_share_queue_permits_and_release_on_drop() {
++        use codex_protocol::protocol::{RealtimeHostedMcpListedTool, RealtimeHostedMcpToolsListed};
++        let event = RealtimeEvent::HostedMcpToolsListed(RealtimeHostedMcpToolsListed {
++            item_id: "catalog".into(),
++            server_label: "docs".into(),
++            tools: vec![
++                RealtimeHostedMcpListedTool {
++                    name: "x".into(),
++                    description: None,
++                    input_schema: serde_json::json!({}),
++                };
++                1024
++            ],
++        });
++        let budget = Arc::new(tokio::sync::Semaphore::new(SDK_WIRE_BYTES_CAPACITY));
++        let mut queued = Vec::new();
++        let mut rejected = false;
++        for _ in 0..17 {
++            let mut message =
++                QueuedWireMessage::new(Ok(Message::Text("{}".into())), Some(Arc::clone(&budget)))
++                    .unwrap();
++            if message
++                .charge_hosted_events(vec![event.clone()], Some(Arc::clone(&budget)))
++                .is_err()
++            {
++                rejected = true;
++                break;
++            }
++            queued.push(message);
++        }
++        assert!(
++            rejected,
++            "compact catalogs must charge their retained structure"
++        );
++        assert!(queued.len() > 1);
++        assert!(budget.available_permits() < SDK_WIRE_BYTES_CAPACITY);
++        drop(queued);
++        assert_eq!(budget.available_permits(), SDK_WIRE_BYTES_CAPACITY);
++    }
++
+     #[test]
+     fn four_tiny_final_frames_charge_derived_identity_to_shared_queue_bytes() {
+         use super::super::readiness::SessionReadiness;
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+index dc7b32036482d3b2c6ae28b3a746b2d01bfb6aaa..45ef150f70d1b2151b2803b8ad25c07c59a0e8e9 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+@@ -2876,6 +2876,47 @@ mod tests {
+             );
+         }
+     }
++    #[test]
++    fn hosted_catalog_rejects_compact_entry_and_schema_expansion() {
++        for tools in [
++            vec![json!({"name":"x","input_schema":{}}); 1025],
++            vec![json!({"name":"x","input_schema":{"anyOf":vec![json!({});33_000]}})],
++            // Count raw entries before filtering malformed tool declarations.
++            vec![json!({}); 1025],
++        ] {
++            let observer = accepted_hosted_observer();
++            let events = hosted_event(
++                &observer,
++                "conversation.item.done",
++                None,
++                json!({"type":"mcp_list_tools","id":"catalog","server_label":"docs","tools":tools}),
++            );
++            assert!(events.is_empty());
++            assert!(observer.mismatched());
++        }
++    }
++
++    #[test]
++    fn hosted_catalog_accepts_bounded_tools_without_changing_schemas() {
++        let observer = accepted_hosted_observer();
++        let schema = json!({"type":"object","properties":{"query":{"type":"string"}}});
++        let tools = vec![json!({"name":"search","input_schema":schema}); 1024];
++        let events = hosted_event(
++            &observer,
++            "conversation.item.done",
++            None,
++            json!({"type":"mcp_list_tools","id":"catalog","server_label":"docs","tools":tools}),
++        );
++        let [codex_protocol::protocol::RealtimeEvent::HostedMcpToolsListed(catalog)] =
++            events.as_slice()
++        else {
++            panic!("bounded catalog must remain observable");
++        };
++        assert_eq!(catalog.tools.len(), 1024);
++        assert_eq!(catalog.tools[0].input_schema, schema);
++        assert!(!observer.mismatched());
++    }
++
+     #[test]
+     fn hosted_export_budget_counts_repeated_retained_response_identity_before_cloning() {
+         let observer = accepted_hosted_observer();

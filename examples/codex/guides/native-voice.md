@@ -169,6 +169,8 @@ Declare reachable `Agent.handoffs` before opening the Session. The graph keeps o
 
 A function can return `backgroundResult(value)` to publish its accepted result without requesting a model follow-up. Output policies can replace that decision. Hosted MCP tools are configured separately in `settings.hostedMcpTools`, with a URL or connector ID. Handle `hosted_mcp_approval_requested` by passing that exact issued event to `approveHostedMcp(event, {approve, reason})`. Clones and cross-session requests are invalid. Issued approval requests are not auto-approved. `automaticallyTriggerResponseForMcpToolCalls` defaults to true and controls hosted MCP follow-ups.
 
+Hosted MCP catalogs are limited to 1,024 tools. Catalog events share a 2 MiB queue budget, including estimated storage for schema structures and strings. Oversized catalogs, deeply nested schemas, or a full queue terminate the voice connection. Keep server tool lists and schemas small, and consume events promptly to release queue capacity.
+
 Realtime speech itself streams before completion. Optional `outputGuardrails` check text and can interrupt the exact response, but some audio may already have played. Report actual playback with `reportPlayback()`. On `playback_interrupted`, discard queued audio for `retiredResponseIds`. This differs from the accepted-final-text rule for native backend delegation.
 
 Report playback progress while audio plays. When playback bookkeeping reaches its limit, it can release older completed content that has finished playing or was interrupted. Playback reports for released content are no longer accepted.

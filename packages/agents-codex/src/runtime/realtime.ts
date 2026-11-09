@@ -246,6 +246,57 @@ const INPUT_QUEUE_BYTES_LIMIT = 8 * 1024 * 1024;
 const AUDIO_LIMIT = 2 * 1024 * 1024;
 const HANDOFF_LIMIT = 1024;
 const PENDING_LIMIT = 16;
+const MAX_HOSTED_MCP_TOOLS = 1024;
+
+/** Bound the retained catalog allocation before copying provider-owned schemas. */
+function hostedMcpCatalogBytes(
+  tools: readonly any[],
+  itemId: string,
+  serverLabel: string,
+  responseId: string | undefined,
+  remaining: number,
+): number {
+  if (tools.length > MAX_HOSTED_MCP_TOOLS)
+    throw new RangeError('Hosted MCP tool catalog exceeds 1024 tools');
+  let bytes = 512;
+  const charge = (amount: number) => {
+    bytes += amount;
+    if (bytes > remaining)
+      throw new RangeError(
+        'Hosted MCP tool catalog exceeds the event buffer budget',
+      );
+  };
+  const string = (value: unknown) => {
+    if (typeof value === 'string') charge(4 * value.length);
+  };
+  const json = (value: unknown, depth: number): void => {
+    if (depth > 128)
+      throw new RangeError('Hosted MCP tool schema exceeds 128 levels');
+    charge(256);
+    if (typeof value === 'string') string(value);
+    else if (Array.isArray(value)) {
+      for (const child of value) json(child, depth + 1);
+    } else if (value && typeof value === 'object') {
+      for (const key in value) {
+        if (!Object.hasOwn(value, key)) continue;
+        charge(128);
+        string(key);
+        json((value as Record<string, unknown>)[key], depth + 1);
+      }
+    }
+  };
+  charge(0);
+  string(itemId);
+  string(serverLabel);
+  string(responseId);
+  for (const tool of tools) {
+    charge(256);
+    string(tool.name);
+    string(tool.description);
+    json(tool.input_schema ?? tool.inputSchema, 0);
+  }
+  return bytes;
+}
 
 function userInputBytes(
   text: string,
@@ -1042,7 +1093,13 @@ class NativeRealtimeOwner {
           : event;
     let bytes = 128 + (event.type === 'audio' ? event.data.byteLength : 0);
     if (event.type === 'hosted_mcp_tools_listed')
-      bytes += Buffer.byteLength(JSON.stringify(event.tools));
+      return hostedMcpCatalogBytes(
+        event.tools,
+        event.itemId,
+        event.serverLabel,
+        event.responseId,
+        AUDIO_LIMIT,
+      );
     if (event.type === 'hosted_mcp_call_completed' && event.error !== undefined)
       bytes += Buffer.byteLength(JSON.stringify(event.error));
     for (const value of Object.values(fields))
@@ -1194,6 +1251,17 @@ class NativeRealtimeOwner {
     } else if (name === 'HostedMcpToolsListed') {
       if (!Array.isArray(value.tools))
         throw new TypeError('Invalid native hosted MCP tool list');
+      if (this.queue.length >= EVENT_LIMIT)
+        throw new Error(
+          'Native Realtime event buffer overflow; consume events promptly',
+        );
+      hostedMcpCatalogBytes(
+        value.tools,
+        value.item_id,
+        value.server_label,
+        value.response_id,
+        AUDIO_LIMIT - this.queuedBytes,
+      );
       this.emit(
         Object.freeze({
           type: 'hosted_mcp_tools_listed',

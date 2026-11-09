@@ -2193,3 +2193,132 @@ nativeIt(
   },
   120000,
 );
+
+nativeIt.each([false, true])(
+  'resolves an original voice selector to the same profile replacement (graph=%s)',
+  async (graph) => {
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'original',
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'replacement',
+    });
+    const foreign = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'foreign',
+    });
+    const target = new Agent({
+      name: 'Other',
+      instructions: 'Other profile.',
+      tools: [foreign],
+    });
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'Owner',
+        instructions: 'Use lookup.',
+        tools: [original],
+        ...(graph ? { handoffs: [target] } : {}),
+        provider,
+      }).session();
+      let voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [original],
+      });
+      try {
+        await session.update({ tools: [replacement] });
+        peer.call('lookup', {}, 'updated-selector');
+        expect(
+          (
+            await peer.frame(
+              (frame) => frame.item?.call_id === 'updated-selector',
+            )
+          ).item.output,
+        ).toBe('replacement');
+        await voice.close();
+        await expect(
+          session.realtime({ model: 'fixture-realtime', tools: [foreign] }),
+        ).rejects.toThrow(/not admitted/);
+        voice = await session.realtime({
+          model: 'fixture-realtime',
+          tools: [original],
+        });
+        peer.call('lookup', {}, 'reopened-selector');
+        expect(
+          (
+            await peer.frame(
+              (frame) => frame.item?.call_id === 'reopened-selector',
+            )
+          ).item.output,
+        ).toBe('replacement');
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'rejects a compact oversized hosted catalog on the provider wire',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: {
+          hostedMcpTools: [
+            {
+              serverLabel: 'docs',
+              serverUrl: 'https://mcp.example.test/server',
+              requireApproval: 'never',
+            },
+          ],
+        },
+      });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      void reading.catch(() => {});
+      peer.send({
+        type: 'response.output_item.done',
+        response_id: 'catalog-response',
+        output_index: 0,
+        item: {
+          type: 'mcp_list_tools',
+          id: 'oversized-catalog',
+          server_label: 'docs',
+          tools: Array.from({ length: 1025 }, (_, index) => ({
+            name: `tool_${index}`,
+            input_schema: {},
+          })),
+        },
+      });
+      await expect(reading).rejects.toThrow();
+      expect(
+        seen.some((event) => event.type === 'hosted_mcp_tools_listed'),
+      ).toBe(false);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);

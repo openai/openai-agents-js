@@ -1153,6 +1153,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     const generation = profileInteger(raw.catalog_generation);
     let catalog: ToolCatalog | undefined;
+    let declarationCatalog = this.openingCatalog;
     if (this.options.agentGraph) {
       const receipt = checkProfileReceipt(
         'profile_receipt' in raw ? raw.profile_receipt : undefined,
@@ -1161,6 +1162,9 @@ export class Session<OutputT = string, Context = unknown> {
       catalog = this.profileCatalogs.get(
         this.profileKey(receipt.profile_id, generation),
       );
+      declarationCatalog = this.profileRuntimes.get(
+        receipt.profile_id,
+      )!.catalog;
     } else if (
       ('profile_receipt' in raw && raw.profile_receipt != null) ||
       generation !== this.catalog.generation.toString()
@@ -1184,10 +1188,23 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TypeError(
           'Realtime tools must be captured function declarations',
         );
-      const captured = catalog.tools.find(
+      const admitted = declarationCatalog.tools.find(
         (candidate) =>
           toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
       );
+      const captured = catalog.tools.find((candidate) => {
+        if (
+          toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool)
+        )
+          return true;
+        if (!admitted) return false;
+        const original = toolIdentity(admitted);
+        const current = toolIdentity(candidate);
+        return (
+          original.name === current.name &&
+          original.namespace === current.namespace
+        );
+      });
       if (!captured || captured.kind === 'manual') {
         if (allowMissing) continue;
         throw new TypeError(

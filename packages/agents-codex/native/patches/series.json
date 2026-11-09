@@ -355,7 +355,11 @@
     {
       "path": "0094-reject-ambiguous-code-mode-names.patch",
       "sha256": "4e2bb732edab48888aa9bdca723f591caaf87465c86c0ce0a76ea5baa60c1081"
+    },
+    {
+      "path": "0095-bound-hosted-mcp-catalogs.patch",
+      "sha256": "628f70f92891f972266529d5ec33c18cefd1d37c34e1ed65730472dddb4d941d"
     }
   ],
-  "result_tree": "2fc6196675ed7d0a1944fe0b73f7b38321f3270c"
+  "result_tree": "fe39a8b9ff5943acd3c764c0a0ab53517fdabca9"
 }

@@ -2910,3 +2910,57 @@ it('retires exact pending approvals but retains in-flight decisions until their 
     await peer.owner.close();
   }
 });
+
+it.each(['count', 'schema', 'aggregate'] as const)(
+  'bounds hosted catalog allocation before schema copies (%s)',
+  async (mode) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const events = peer.owner.events();
+    await events.next();
+    const minimal = { name: 'x', input_schema: {} };
+    const tools =
+      mode === 'count'
+        ? Array.from({ length: 1025 }, () => minimal)
+        : mode === 'schema'
+          ? [{ name: 'large', input_schema: { enum: Array(8192).fill('') } }]
+          : Array.from({ length: 1024 }, () => minimal);
+    const list = () =>
+      peer.payload({
+        HostedMcpToolsListed: {
+          item_id: 'catalog',
+          server_label: 'docs',
+          tools,
+        },
+      });
+    if (mode === 'aggregate') {
+      list();
+      list();
+      list();
+    }
+    list();
+    await expect(events.next()).rejects.toThrow(/catalog|buffer budget/);
+    await peer.owner.close();
+  },
+);
+
+it('releases hosted catalog allocation when its event is consumed', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  for (let i = 0; i < 8; i++) {
+    peer.payload({
+      HostedMcpToolsListed: {
+        item_id: 'catalog',
+        server_label: 'docs',
+        tools: Array.from({ length: 1024 }, () => ({
+          name: 'x',
+          input_schema: {},
+        })),
+      },
+    });
+    expect((await events.next()).value?.type).toBe('hosted_mcp_tools_listed');
+  }
+  await peer.owner.close();
+});
