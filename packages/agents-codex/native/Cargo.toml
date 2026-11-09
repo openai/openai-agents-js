@@ -103,7 +103,7 @@ native-tls = "=0.2.14"
 libc = "=0.2.186"
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))'.dependencies]
-mimalloc = { version = "=0.1.52", default-features = false, features = ["local_dynamic_tls", "v2"] }
+mimalloc = { version = "=0.1.52", default-features = false, features = ["local_dynamic_tls", "v2", "no_thp"] }
 
 [build-dependencies]
 napi-build = "2"
