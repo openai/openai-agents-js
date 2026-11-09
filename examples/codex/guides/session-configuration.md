@@ -145,7 +145,16 @@ See [the tenant tools example](../opening-tools.ts) for two Sessions with separa
 
 ## Connection retries and errors
 
-`NativeProvider` uses the native client's request and stream recovery limits and backoff. Its public options do not expose retry budgets. Classic Model retry settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md). The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. Native retry limits do not set a total operation timeout or cap server-requested delays.
+`NativeProvider` exposes `requestMaxRetries` for failed HTTP requests and `streamMaxRetries` for dropped response streams. Omitted values use the native defaults: four request retries and five stream reconnections. Set either value to zero to disable that recovery path. Values must be nonnegative safe integers; the native client caps each limit at 100.
+
+```ts
+const provider = new NativeProvider({
+  requestMaxRetries: 2,
+  streamMaxRetries: 0,
+});
+```
+
+The native client owns retry classification and backoff. These options do not rerun a whole Turn or replay completed tool effects. Classic Model retry settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md). The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. Native retry limits do not set a total operation timeout or cap server-requested delays.
 
 Use `turn.cancel()` to stop an active Turn and join its cleanup, including while it waits to retry. If a request fails, inspect the error before deciding whether to submit more work.
 

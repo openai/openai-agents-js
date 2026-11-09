@@ -1004,6 +1004,12 @@ type Lifecycle =
   | { kind: 'closed'; completion: Promise<void> };
 type ClosePhase = 'revoke' | 'native' | 'engine' | 'carrier' | 'provider';
 
+/** @internal The optional MCP App helper borrows this Session-owned dispatch closure. */
+export interface MCPAppBinding {
+  readonly view: import('../mcp-apps').MCPAppView;
+  callTool(name: string, arguments_: JsonObject): Promise<JsonObject>;
+}
+
 /** A view of the active model context issued by an idle Session. */
 export interface ModelContextSnapshot {
   /** Detached Responses-shaped JSON items in native context order. */
@@ -1777,6 +1783,7 @@ export class Session<OutputT = string, Context = unknown> {
   private defaultMcpTools: readonly McpTool[];
   private readonly allowedMcpTools: Set<string>;
   private mcpGeneration = 0n;
+  private mcpAppToolsUpdated = false;
   private mcpReaderStarted = false;
   private readonly publicChildTurns = new Map<
     string,
@@ -9191,6 +9198,7 @@ export class Session<OutputT = string, Context = unknown> {
             );
           }
           checkMcpPublication(receipt, active, generation, bindings);
+          this.mcpAppToolsUpdated = true;
           this.acceptCatalog(candidate, replacements.tools, slots);
           this.mcpTools = active;
           this.defaultMcpTools = Object.freeze([...next.mcp]);
@@ -9375,6 +9383,247 @@ export class Session<OutputT = string, Context = unknown> {
       server,
       cursor === undefined ? {} : { cursor },
     ) as Promise<MCPListResourceTemplatesResult>;
+  }
+
+  /** @internal Bind one live canonical call; native MCP ownership stays in this Session. */
+  async _openMcpApp(
+    turn: Turn<any, any>,
+    callId: string,
+  ): Promise<MCPAppBinding> {
+    this.checkCallbackOperation('open MCPApp');
+    if (typeof callId !== 'string' || !callId)
+      throw new TypeError('MCPApp requires a nonempty callId');
+    return this.mutate(async () => {
+      const run = this.lastRun;
+      const native = this.#native;
+      const generation = this.mcpGeneration;
+      const check = () => {
+        if (
+          !this.isOpen ||
+          this.#native !== native ||
+          this.lastRun !== run ||
+          this.mcpGeneration !== generation ||
+          this.mcpAppToolsUpdated ||
+          this.options.nativeAgents !== undefined ||
+          (this.options.agentGraph?.profiles.size ?? 0) > 1 ||
+          !run ||
+          this.#turnFor(run) !== turn ||
+          turn.childId !== null ||
+          run.failure !== undefined
+        )
+          throw new TypeError(
+            'MCPApp requires the latest settled root Turn and fixed opening tools',
+          );
+      };
+      check();
+      await turn.wait();
+      check();
+      const history = projectHistory(await this.#readHistory(), this.id);
+      check();
+      if (
+        !history.turns.some(
+          (entry) => entry.id === turn.turnId && entry.status === 'completed',
+        )
+      )
+        throw new TypeError(
+          'MCPApp requires a successfully completed root Turn',
+        );
+      const calls = history.items.filter(
+        (item) =>
+          item.type === 'mcp_call' &&
+          item.turnId === turn.turnId &&
+          item.callId === callId &&
+          item.threadId === this.id,
+      );
+      if (calls.length !== 1 || calls[0].type !== 'mcp_call')
+        throw new TypeError('MCPApp requires one exact canonical MCP call');
+      const call = calls[0];
+      const result = losslessJsonObjectSchema.parse(call.output);
+      if (
+        call.status !== 'completed' ||
+        call.error != null ||
+        result.isError === true
+      )
+        throw new TypeError('MCPApp requires a successful completed MCP call');
+      const selected = this.openingMcpTools.find(
+        (server) => server.name === call.serverLabel,
+      );
+      if (
+        !selected ||
+        !this.defaultMcpTools.includes(selected) ||
+        !this.mcpTools.includes(selected) ||
+        isHostedRegistration(selected) ||
+        selected.approvalMode !== 'preapproved' ||
+        selected.before ||
+        selected.approval ||
+        selected.transformResult ||
+        (selected as { requestMetadata?: unknown }).requestMetadata ||
+        (selected instanceof StdioMCP &&
+          (selected.lifetime !== 'session' || selected.location !== 'host')) ||
+        (selected instanceof HttpMCP && selected.activation !== 'session') ||
+        !selected.tools.includes(call.name)
+      )
+        throw new TypeError(
+          'MCPApp requires a fixed preapproved local MCP declaration without callbacks',
+        );
+      const mimeType = 'text/html;profile=mcp-app';
+      // Read the current negotiated declaration from this native connection, not result data.
+      const metadata = JSON.parse(
+        await native.call(
+          'mcp_app_tool_metadata',
+          encode({
+            server: selected.name,
+            params: { name: call.name, arguments: {} },
+          }),
+        ),
+      );
+      check();
+      const meta =
+        metadata === null ? {} : losslessJsonObjectSchema.parse(metadata);
+      const ui = meta.ui;
+      if (
+        ui !== undefined &&
+        (ui === null || typeof ui !== 'object' || Array.isArray(ui))
+      )
+        throw new TypeError('MCPApp tool UI metadata must be an object');
+      const declared = ui === undefined ? undefined : ui.resourceUri;
+      const legacy = meta['ui/resourceUri'];
+      const declaredUri = declared ?? legacy;
+      if (
+        (declared !== undefined &&
+          legacy !== undefined &&
+          declared !== legacy) ||
+        (declared !== undefined && typeof declared !== 'string') ||
+        (legacy !== undefined && typeof legacy !== 'string')
+      )
+        throw new TypeError('MCPApp tool resource URI metadata is invalid');
+      if (declaredUri !== undefined) {
+        let valid = false;
+        try {
+          const parsed = new URL(declaredUri as string);
+          valid =
+            parsed.protocol === 'ui:' &&
+            !!parsed.hostname &&
+            !parsed.username &&
+            !parsed.password &&
+            (declaredUri as string).startsWith('ui://');
+        } catch {
+          /* Reject malformed declared authority instead of falling back. */
+        }
+        if (!valid)
+          throw new TypeError(
+            'MCPApp tool resource URI must be a valid ui:// URI',
+          );
+      }
+      const content = Array.isArray(result.content) ? result.content : [];
+      const candidates = content.flatMap((part) => {
+        if (!part || typeof part !== 'object' || Array.isArray(part)) return [];
+        const resource =
+          part.type === 'resource'
+            ? part.resource
+            : part.type === 'resource_link'
+              ? part
+              : undefined;
+        if (
+          !resource ||
+          typeof resource !== 'object' ||
+          Array.isArray(resource) ||
+          resource.mimeType !== mimeType ||
+          typeof resource.uri !== 'string' ||
+          !resource.uri.startsWith('ui://')
+        )
+          return [];
+        return [{ resource, linked: part.type === 'resource_link' }];
+      });
+      if (declaredUri === undefined && candidates.length !== 1)
+        throw new TypeError(
+          'MCPApp requires one embedded or linked MCP App HTML resource',
+        );
+      const candidate =
+        declaredUri === undefined
+          ? candidates[0]
+          : {
+              resource: { uri: declaredUri, mimeType } as JsonObject,
+              linked: true,
+            };
+      let resource = candidate.resource;
+      if (candidate.linked) {
+        const read = losslessJsonObjectSchema.parse(
+          JSON.parse(
+            await native.call(
+              'read_mcp_resource',
+              encode({ server: selected.name, params: { uri: resource.uri } }),
+            ),
+          ),
+        );
+        check();
+        const matches = Array.isArray(read.contents)
+          ? read.contents.filter(
+              (entry) =>
+                entry &&
+                typeof entry === 'object' &&
+                !Array.isArray(entry) &&
+                entry.uri === resource.uri &&
+                entry.mimeType === mimeType,
+            )
+          : [];
+        if (matches.length !== 1)
+          throw new TypeError(
+            'MCPApp resource read did not return the exact HTML resource',
+          );
+        resource = losslessJsonObjectSchema.parse(matches[0]);
+      }
+      if (
+        typeof resource.text !== 'string' ||
+        resource.blob !== undefined ||
+        Buffer.byteLength(resource.text, 'utf8') > 64 * 1024
+      )
+        throw new TypeError(
+          'MCPApp resource must contain at most 64 KiB of HTML text',
+        );
+      const view: import('../mcp-apps').MCPAppView = {
+        callId,
+        toolName: call.name,
+        arguments: structuredClone(call.arguments),
+        result: structuredClone(result),
+        resource: {
+          uri: resource.uri as string,
+          mimeType,
+          text: resource.text,
+          ...(resource._meta === undefined
+            ? {}
+            : { _meta: losslessJsonObjectSchema.parse(resource._meta) }),
+        },
+      };
+      return {
+        view,
+        callTool: (name: string, arguments_: JsonObject) => {
+          const request = JSON.stringify(
+            losslessJsonObjectSchema.parse({
+              server: selected.name,
+              params: { name, arguments: arguments_ },
+            }),
+          );
+          this.checkCallbackOperation('MCPApp tool call');
+          return this.mutate(async () => {
+            check();
+            if (
+              name !== call.name ||
+              !this.defaultMcpTools.includes(selected) ||
+              !this.mcpTools.includes(selected)
+            )
+              throw new TypeError(
+                'MCPApp may call only its originating selected tool',
+              );
+            const output = losslessJsonObjectSchema.parse(
+              JSON.parse(await native.call('call_mcp_app_tool', request)),
+            );
+            check();
+            return output;
+          });
+        },
+      };
+    });
   }
 
   /**
