@@ -317,7 +317,7 @@ const BuiltinComputerToolChoice = z.enum([
 function getToolChoice(
   toolChoice?: ModelSettingsToolChoice,
   options?: {
-    tools?: Array<{ type?: unknown }>;
+    tools?: ResponsesTool[];
     model?: string;
     allowPromptSuppliedComputerTool?: boolean;
   },
@@ -352,7 +352,19 @@ function getToolChoice(
 
   const result = HostedToolChoice.safeParse(toolChoice);
   if (result.success) {
-    return { type: result.data as any };
+    const builtinChoice = { type: result.data } as ToolChoice;
+    const tools = options?.tools ?? [];
+    if (!isToolChoiceAvailable(builtinChoice, tools)) {
+      const fn = findFunctionToolChoice(result.data, tools);
+      if (
+        fn &&
+        !fn.defer_loading &&
+        (fn.allowed_callers ?? ['direct']).includes('direct')
+      ) {
+        return { type: 'function', name: result.data };
+      }
+    }
+    return builtinChoice;
   }
 
   return { type: 'function', name: toolChoice };
@@ -475,16 +487,19 @@ function findFunctionToolChoice(
   toolChoiceName: string,
   tools: ResponsesTool[],
   namespacePrefix?: string,
-):
-  | (Extract<ResponsesTool, { type: 'function' }> & { name: string })
-  | undefined {
+): OpenAI.Responses.FunctionTool | undefined {
+  let deferredMatch: OpenAI.Responses.FunctionTool | undefined;
   for (const tool of tools) {
     if (isNamedFunctionTool(tool)) {
       const qualifiedName = namespacePrefix
         ? `${namespacePrefix}.${tool.name}`
         : tool.name;
       if (toolChoiceName === qualifiedName) {
-        return tool;
+        // A deferred top-level tool can share a name with an immediate tool or handoff.
+        if (!tool.defer_loading) {
+          return tool;
+        }
+        deferredMatch = tool;
       }
       continue;
     }
@@ -504,7 +519,7 @@ function findFunctionToolChoice(
     }
   }
 
-  return undefined;
+  return deferredMatch;
 }
 
 function collectAvailableToolChoiceNames(
@@ -557,16 +572,6 @@ function isNamespaceTool(tool: ResponsesTool): tool is ResponsesTool & {
     typeof candidate.name === 'string' &&
     Array.isArray(candidate.tools)
   );
-}
-
-function getExtraBodyToolsForToolChoiceValidation(
-  extraBody: Record<string, unknown> | undefined,
-): ResponsesTool[] {
-  if (!extraBody || !Array.isArray(extraBody.tools)) {
-    return [];
-  }
-
-  return extraBody.tools as ResponsesTool[];
 }
 
 function assertSupportedToolChoice(
@@ -1716,26 +1721,6 @@ export class OpenAIResponsesModel implements Model {
       model: effectiveRequestModel,
       toolChoice: request.modelSettings.toolChoice,
     });
-    const toolChoiceValidationTools = [
-      ...tools,
-      ...getExtraBodyToolsForToolChoiceValidation(transportOverrides.extraBody),
-    ];
-    const allowPromptSuppliedTools =
-      Boolean(request.prompt) &&
-      !(request.toolsExplicitlyProvided === true && tools.length === 0);
-    const toolChoice = getToolChoice(request.modelSettings.toolChoice, {
-      tools: toolChoiceValidationTools,
-      model: effectiveRequestModel,
-      allowPromptSuppliedComputerTool: allowPromptSuppliedTools,
-    });
-    assertSupportedToolChoice(toolChoice, toolChoiceValidationTools, {
-      allowPromptSuppliedTools,
-    });
-    assertValidProgrammaticToolCallingConfiguration(
-      toolChoice,
-      toolChoiceValidationTools,
-      { allowPromptSuppliedTools },
-    );
     const { text, ...restOfProviderData } = providerDataWithoutTransport;
 
     if (request.modelSettings.reasoning) {
@@ -1757,16 +1742,7 @@ export class OpenAIResponsesModel implements Model {
       tools.length > 0 ||
       request.toolsExplicitlyProvided === true ||
       !request.prompt;
-    const compatibleToolChoice = getCompatibleToolChoice(
-      toolChoice,
-      toolChoiceValidationTools,
-      {
-        allowPromptSuppliedTools,
-      },
-    );
-    const shouldOmitToolChoice = typeof compatibleToolChoice === 'undefined';
-
-    let requestData = {
+    let requestData: BuiltResponsesCreateRequest['requestData'] = {
       ...(effectiveRequestModel ? { model: effectiveRequestModel } : {}),
       instructions: normalizeInstructions(request.systemInstructions),
       input,
@@ -1783,9 +1759,6 @@ export class OpenAIResponsesModel implements Model {
       top_p: request.modelSettings.topP,
       truncation: request.modelSettings.truncation,
       max_output_tokens: request.modelSettings.maxTokens,
-      ...(!shouldOmitToolChoice
-        ? { tool_choice: compatibleToolChoice as ToolChoiceOptions }
-        : {}),
       stream,
       text: responseFormat,
       store: request.modelSettings.store,
@@ -1806,8 +1779,41 @@ export class OpenAIResponsesModel implements Model {
       };
     }
 
-    const hasExplicitTools =
-      Array.isArray(requestData.tools) && requestData.tools.length > 0;
+    const outgoingTools = Array.isArray(requestData.tools)
+      ? requestData.tools
+      : [];
+    const hasExplicitTools = outgoingTools.length > 0;
+    const allowPromptSuppliedTools =
+      Boolean(request.prompt) &&
+      (requestData.tools === undefined || hasExplicitTools);
+    const sdkToolChoice = Object.prototype.hasOwnProperty.call(
+      requestData,
+      'tool_choice',
+    )
+      ? undefined
+      : request.modelSettings.toolChoice;
+    const toolChoice = getToolChoice(sdkToolChoice, {
+      tools: outgoingTools,
+      model: effectiveRequestModel,
+      allowPromptSuppliedComputerTool: allowPromptSuppliedTools,
+    });
+    assertSupportedToolChoice(toolChoice, outgoingTools, {
+      allowPromptSuppliedTools,
+    });
+    assertValidProgrammaticToolCallingConfiguration(toolChoice, outgoingTools, {
+      allowPromptSuppliedTools,
+    });
+    const compatibleToolChoice = getCompatibleToolChoice(
+      toolChoice,
+      outgoingTools,
+      {
+        allowPromptSuppliedTools,
+      },
+    );
+    if (compatibleToolChoice !== undefined) {
+      requestData.tool_choice = compatibleToolChoice;
+    }
+
     const promptMaySupplyTools =
       Boolean(request.prompt) &&
       requestData.tools === undefined &&
