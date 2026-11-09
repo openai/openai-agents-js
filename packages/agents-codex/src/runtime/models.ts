@@ -207,10 +207,38 @@ export class ChatCompletionsModel implements NativeModel {
         'safety_identifier',
         'prediction',
         'logprobs',
+        'response_format',
+        'prompt_cache_key',
       ]
         .filter((key) => key in request.body)
         .map((key) => [key, request.body[key]]),
     );
+    if (
+      Object.keys(request.body).some(
+        (key) =>
+          !Object.hasOwn(options, key) &&
+          ![
+            'model',
+            'input',
+            'tools',
+            'stream',
+            'stream_options',
+            'reasoning',
+            'text',
+            'include',
+            'client_metadata',
+            'access_programs',
+            'max_output_tokens',
+            'top_logprobs',
+            'prompt',
+            'truncation',
+            'context_management',
+          ].includes(key),
+      )
+    )
+      throw new TypeError(
+        'ChatCompletionsModel received unsupported request controls',
+      );
     const text = (request.body.text ?? {}) as JsonObject;
     if (text.verbosity != null) options.verbosity = text.verbosity;
     const format = (text.format ?? {}) as JsonObject;

@@ -1076,3 +1076,73 @@ it('does not start backend completion when synchronous model resolution aborts t
   expect(resolved).toBe(1);
   expect(effects).toEqual([]);
 }, 20_000);
+
+it.each([false, true])(
+  'preserves explicit Chat response_format and rejects unmapped controls before I/O (%s)',
+  async (unmapped) => {
+    const requests: any[] = [];
+    const responseFormat = { type: 'json_object' };
+    const server = createServer(async (request, response) => {
+      let body = '';
+      for await (const part of request) body += part;
+      requests.push(JSON.parse(body));
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          id: 'chat-explicit-format',
+          object: 'chat.completion',
+          created: 0,
+          model: 'chat-model',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'stop',
+              message: { role: 'assistant', content: '{"ok":true}' },
+            },
+          ],
+        }),
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw Error('Expected port');
+    try {
+      await using provider = new NativeProvider({
+        modelBackend: new ChatCompletionsModel(
+          new OpenAI({
+            apiKey: 'synthetic-key',
+            baseURL: `http://127.0.0.1:${address.port}/v1`,
+          }),
+        ),
+      });
+      const agent = new Agent({
+        name: 'Explicit Chat controls',
+        model: 'fixture-unlisted-chat-controls',
+        instructions: 'Return JSON.',
+        provider,
+        modelSettings: {
+          extraBody: {
+            response_format: responseFormat,
+            ...(unmapped ? { unmapped_chat_control: true } : {}),
+          },
+        },
+      });
+      const pending = agent.run('answer');
+      if (unmapped) {
+        await expect(pending).rejects.toThrow('unsupported request controls');
+        expect(requests).toEqual([]);
+      } else {
+        expect((await pending).finalOutput).toBe('{"ok":true}');
+        expect(requests).toHaveLength(1);
+        expect(requests[0].response_format).toEqual(responseFormat);
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+  20_000,
+);

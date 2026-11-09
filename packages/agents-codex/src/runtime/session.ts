@@ -292,6 +292,7 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   modelBackend?: NativeModel | ModelProvider;
+  observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
   beforeCompact?: BeforeCompact<any>;
   transformContext?: ContextTransform<any>;
@@ -887,6 +888,7 @@ const submissions = new WeakMap<
     profileSettlement?: Promise<void>;
     callerSignal?: AbortSignal;
     observation: ObservationPhase;
+    observationAfter: number;
     next?: NativeTurn;
     previous?: NativeTurn;
     cancelled?: boolean;
@@ -1844,7 +1846,9 @@ export class Session<OutputT = string, Context = unknown> {
   };
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
-  private readonly childCallbacks = new ChildCallbacks();
+  private readonly childCallbacks = new ChildCallbacks(
+    () => this.observations.currentSequence,
+  );
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -1934,6 +1938,7 @@ export class Session<OutputT = string, Context = unknown> {
       }),
     );
     this.observations = new ObservationBuffer(native.id, {
+      retention: options.observationRetention,
       validate: () => this.checkCallbackOperation('observe'),
       pendingManual: () =>
         [...this.manualCalls.values()].flatMap((call) => {
@@ -3337,6 +3342,9 @@ export class Session<OutputT = string, Context = unknown> {
 
   private rootObservationScope(root: NativeTurn): TurnObservationScope {
     return {
+      get after() {
+        return submissions.get(root)!.observationAfter;
+      },
       includes: (event) => {
         if (!('submissionId' in event)) return false;
         for (const run of this.rootSteps(root))
@@ -3505,6 +3513,7 @@ export class Session<OutputT = string, Context = unknown> {
     run.selection = selection;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
+    submissions.get(run)!.observationAfter = -1;
     this.pendingRoots.push({ run, parts });
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
@@ -4571,7 +4580,12 @@ export class Session<OutputT = string, Context = unknown> {
     const reference = new WeakRef(run);
     this.runs.add(reference);
     this.runFinalizer.register(run, reference, reference);
-    submissions.set(run, { output, outputOverride, observation: 'open' });
+    submissions.set(run, {
+      output,
+      outputOverride,
+      observation: 'open',
+      observationAfter: this.observations.currentSequence,
+    });
     void run.completion.promise.then(
       () => run.tracing?.finish(),
       (error: unknown) =>
@@ -4634,6 +4648,8 @@ export class Session<OutputT = string, Context = unknown> {
   ): void {
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
+    submissions.get(run)!.observationAfter = this.observations.currentSequence;
+    this.observations.notify();
     // Own synchronous bridge errors through the same admission failure path.
     let submission: Promise<string>;
     try {
@@ -9926,6 +9942,7 @@ export class Session<OutputT = string, Context = unknown> {
         beforeWait: () => this.checkCallbackOperation('wait on a child of'),
         observations: (options) =>
           this.observations.events(options, {
+            after: owner.observationAfter,
             includes: (event) =>
               'submissionId' in event && event.submissionId === key,
             phase: () => owner.observationPhase,

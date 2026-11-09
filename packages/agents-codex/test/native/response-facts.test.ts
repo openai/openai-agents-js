@@ -78,30 +78,34 @@ it('projects only typed fields and preserves empty versus missing provider bytes
   expect(missing.fact.tokens[0]).not.toHaveProperty('topLogprobs');
 });
 for (const kind of ['refusal', 'text_probabilities'] as const)
-  it(`keeps default ${kind} observations private and trusted readers independent`, async () => {
-    const buffer = new ObservationBuffer('session');
-    buffer.append({
-      type: 'response_fact',
-      turnId: 'turn',
-      submissionId: 'submission',
-      record: projectResponseFactRecord(raw(kind))!,
-    });
-    const ordinary = buffer.events(),
-      trusted = buffer.events({ includeExecutionDetails: true });
-    const a = await ordinary.next(),
-      b = await trusted.next();
-    expect(JSON.stringify(a.value)).not.toContain('SYNTHETIC_PRIVATE');
-    expect(JSON.stringify(b.value)).toContain('SYNTHETIC_PRIVATE');
-    if (b.value?.type !== 'response_fact') throw Error('missing trusted fact');
-    (b.value.record as any).fact = {};
-    const another = buffer.events({ includeExecutionDetails: true });
-    expect(JSON.stringify((await another.next()).value)).toContain(
-      'SYNTHETIC_PRIVATE',
-    );
-    await ordinary.return?.();
-    await trusted.return?.();
-    await another.return?.();
-  });
+  it.each(['bounded', 'all'] as const)(
+    `keeps ${kind} observations private and trusted readers independent (%s)`,
+    async (retention) => {
+      const buffer = new ObservationBuffer('session', { retention });
+      buffer.append({
+        type: 'response_fact',
+        turnId: 'turn',
+        submissionId: 'submission',
+        record: projectResponseFactRecord(raw(kind))!,
+      });
+      const ordinary = buffer.events(),
+        trusted = buffer.events({ includeExecutionDetails: true });
+      const a = await ordinary.next(),
+        b = await trusted.next();
+      expect(JSON.stringify(a.value)).not.toContain('SYNTHETIC_PRIVATE');
+      expect(JSON.stringify(b.value)).toContain('SYNTHETIC_PRIVATE');
+      if (b.value?.type !== 'response_fact')
+        throw Error('missing trusted fact');
+      (b.value.record as any).fact = {};
+      const another = buffer.events({ includeExecutionDetails: true });
+      expect(JSON.stringify((await another.next()).value)).toContain(
+        'SYNTHETIC_PRIVATE',
+      );
+      await ordinary.return?.();
+      await trusted.return?.();
+      await another.return?.();
+    },
+  );
 it('counts received fact payloads in the existing bounded observation suffix', async () => {
   const buffer = new ObservationBuffer('session');
   const source = raw() as any;
