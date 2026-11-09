@@ -1846,8 +1846,9 @@ impl ModelsManager for ConfiguredModels {
                     )
                 });
             }
-            if cacheable && !info.used_fallback_model_metadata {
-                // Keep the first successful key; other keys stay on the ordinary path.
+            if cacheable {
+                // Keep the first configured result, including fallback metadata.
+                // Exact hits omit repeated diagnostics; other keys take the ordinary path.
                 // Only the winning initializer clones, with no await or external work.
                 self.first_model_info.get_or_init(|| ConfiguredModelInfo {
                     model: model.to_owned(),

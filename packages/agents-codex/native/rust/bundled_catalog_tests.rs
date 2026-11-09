@@ -468,9 +468,11 @@ async fn configured_metadata_slot_keeps_first_exact_model_and_config_key() {
 }
 
 #[tokio::test]
-async fn configured_metadata_slot_keeps_ineligible_and_fallback_requests_uncached() {
+async fn configured_metadata_slot_retains_fallback_and_keeps_ineligible_requests_uncached() {
     let models = configured_metadata_fixture(false);
     let mut config = ModelsManagerConfig {
+        model_context_window: Some(123_456),
+        base_instructions: Some("fixture instructions".into()),
         model_catalog: Some(codex_models_manager::bundled_models_response().unwrap()),
         ..Default::default()
     };
@@ -478,15 +480,24 @@ async fn configured_metadata_slot_keeps_ineligible_and_fallback_requests_uncache
     assert!(!explicit.used_fallback_model_metadata);
     assert!(models.first_model_info.get().is_none());
     config.model_catalog = None;
-    for _ in 0..2 {
-        assert!(
-            models
-                .get_model_info("fixture-unlisted-model", &config)
-                .await
-                .used_fallback_model_metadata
-        );
-        assert!(models.first_model_info.get().is_none());
-    }
+    let expected = models.inner.get_model_info("gpt-5", &config).await;
+    assert!(expected.used_fallback_model_metadata);
+    let expected = serde_json::to_value(expected).unwrap();
+    let mut first = models.get_model_info("gpt-5", &config).await;
+    assert!(first.used_fallback_model_metadata);
+    assert_eq!(serde_json::to_value(&first).unwrap(), expected);
+    assert!(
+        models
+            .first_model_info
+            .get()
+            .unwrap()
+            .matches("gpt-5", &config)
+    );
+    first.display_name.clear();
+    assert_eq!(
+        serde_json::to_value(models.get_model_info("gpt-5", &config).await).unwrap(),
+        expected
+    );
     let known = models.get_model_info("gpt-5.5", &config).await;
     assert_eq!(
         serde_json::to_value(known).unwrap(),
@@ -497,7 +508,7 @@ async fn configured_metadata_slot_keeps_ineligible_and_fallback_requests_uncache
             .first_model_info
             .get()
             .unwrap()
-            .matches("gpt-5.5", &config)
+            .matches("gpt-5", &config)
     );
     config.model_catalog = Some(codex_models_manager::bundled_models_response().unwrap());
     assert!(
@@ -505,7 +516,7 @@ async fn configured_metadata_slot_keeps_ineligible_and_fallback_requests_uncache
             .first_model_info
             .get()
             .unwrap()
-            .matches("gpt-5.5", &config)
+            .matches("gpt-5", &config)
     );
     let mut unbundled = configured_metadata_fixture(false);
     unbundled.bundled_catalog = false;
