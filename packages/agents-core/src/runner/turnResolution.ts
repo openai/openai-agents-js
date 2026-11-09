@@ -1909,6 +1909,7 @@ async function resolveHandoffAfterTools<TContext>(
     getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
     validateHandoffAgent,
     beforeHandoffInputFilter,
+    signal,
   );
 }
 

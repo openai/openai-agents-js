@@ -867,7 +867,15 @@ export function selectRunItemIndexesForBlockedOutput(
     if (
       !record.terminal ||
       !record.kind ||
-      (pair.kind !== undefined && pair.kind !== record.kind)
+      (pair.kind !== undefined &&
+        pair.kind !== record.kind &&
+        !(
+          pair.kind === 'handoff' &&
+          record.role === 'result' &&
+          item instanceof RunToolCallOutputItem &&
+          item.rawItem.type === 'function_call_result' &&
+          item.executionStatus === 'executed'
+        ))
     ) {
       pair.valid = false;
       continue;

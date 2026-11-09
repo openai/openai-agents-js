@@ -192,7 +192,8 @@ import {
  * - 1.22: Records hosted MCP namespace discovery provenance. Older namespace-only
  *   search outputs require rediscovery; explicit MCP descriptors remain usable.
  * - 1.23: Preserves nested numeric token usage breakdowns.
- * - 1.24: Preserves arbitrary JSON token usage metadata and child-owned approval slots.
+ * - 1.24: Preserves arbitrary JSON token usage metadata, child-owned approval slots,
+ *   and completion evidence for handoff failures returned to the source agent.
  *   Adds sandbox session-state envelope version 6 so client-owned
  *   unresolved environment references cannot be consumed by older SDKs that
  *   would resolve them in the runner process.
@@ -997,6 +998,15 @@ function validateCurrentApprovalInvocationRecords(
   }
 }
 
+function isRecoveredHandoffEvidence(
+  evidence: ToolInvocationCompletionEvidence,
+): boolean {
+  return (
+    evidence.items[0] instanceof RunHandoffCallItem &&
+    evidence.items[1] instanceof RunToolCallOutputItem
+  );
+}
+
 function validateToolInvocationCompletionEvidence(
   agent: Agent<any, any>,
   callId: string,
@@ -1015,8 +1025,13 @@ function validateToolInvocationCompletionEvidence(
     evidenceCallId = toolCall.callId;
     correlated =
       callItem.agent === agent &&
-      outputItem instanceof RunHandoffOutputItem &&
-      outputItem.sourceAgent === agent &&
+      ((outputItem instanceof RunHandoffOutputItem &&
+        outputItem.sourceAgent === agent) ||
+        (outputItem instanceof RunToolCallOutputItem &&
+          outputItem.agent === agent &&
+          outputItem.executionStatus === 'executed' &&
+          outputItem.rawItem.type === 'function_call_result' &&
+          outputItem.rawItem.status === 'completed')) &&
       toolResultMatchesCall(toolCall, outputItem.rawItem);
   } else if (
     callItem instanceof RunToolCallItem ||
@@ -1199,6 +1214,7 @@ function validateGeneratedHistoryForCompletionEvidence(
 function validateCurrentCompletedToolInvocations(
   state: RunState<any, Agent<any, any>>,
   generatedItems: readonly RunItem[],
+  schemaVersion: SupportedSchemaVersion,
 ): void {
   const serializedCompleted = state._completedToolInvocations;
   const inferred = inferCompletedToolInvocations(generatedItems);
@@ -1206,6 +1222,14 @@ function validateCurrentCompletedToolInvocations(
   const evidenceCompleted = new Map<Agent<any, any>, Map<string, string>>();
   for (const [agent, invocations] of state._completedToolInvocationEvidence) {
     for (const [callId, evidence] of invocations) {
+      if (
+        schemaVersion !== CURRENT_SCHEMA_VERSION &&
+        isRecoveredHandoffEvidence(evidence)
+      ) {
+        throw new UserError(
+          `Run state schema version ${schemaVersion} does not support recovered handoff evidence.`,
+        );
+      }
       validateGeneratedHistoryForCompletionEvidence(
         generatedItems,
         agent,
@@ -3443,9 +3467,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         }
       }
     }
+    let hasRecoveredHandoff = false;
     for (const [agent, invocations] of completedToolInvocationEvidence) {
       const completedByAgent = completedToolInvocations.get(agent);
       for (const [callId, evidence] of invocations) {
+        hasRecoveredHandoff ||= isRecoveredHandoffEvidence(evidence);
         validateGeneratedHistoryForCompletionEvidence(
           this._generatedItems,
           agent,
@@ -3675,6 +3701,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         ),
       ].every((envelope) => envelope.version <= 5);
     if (
+      !hasRecoveredHandoff &&
       !state.currentResponseGeneratedItemOwnership?.interruptionGeneratedItemIndexes.includes(
         null,
       ) &&
@@ -4394,7 +4421,12 @@ function getPendingDeclarativeTerminalCandidate(
   const completionEvidence = callId
     ? completedInvocations?.get(callId)
     : undefined;
-  if (!callId || !completionEvidence || completionEvidence.items[1] !== item) {
+  if (
+    !callId ||
+    !completionEvidence ||
+    completionEvidence.items[0] instanceof RunHandoffCallItem ||
+    completionEvidence.items[1] !== item
+  ) {
     return undefined;
   }
   return { callId, completionEvidence, outputItem: item };
@@ -6139,7 +6171,11 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       )
     : new Map();
   if (schemaVersionSupportsV118State(schemaVersion)) {
-    validateCurrentCompletedToolInvocations(state, generatedItems);
+    validateCurrentCompletedToolInvocations(
+      state,
+      generatedItems,
+      schemaVersion,
+    );
   }
 
   // rebuild current agent span

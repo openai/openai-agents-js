@@ -14,6 +14,19 @@ import { toFunctionToolName } from './utils/tools';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { addErrorToCurrentSpan } from './tracing/context';
 import logger from './logger';
+import { isAbortError } from './utils/abortSignals';
+import { isAsyncStandardSchemaValidationError } from './utils/standardSchema';
+
+// Direct invocations retain their released parse error. Runner can propagate a fatal
+// validator failure without attaching its potentially sensitive cause to that error.
+const fatalHandoffInputErrors = new WeakMap<ModelBehaviorError, unknown>();
+
+/** @internal */
+export function getFatalHandoffInputError(error: unknown): unknown {
+  return error instanceof ModelBehaviorError
+    ? fatalHandoffInputErrors.get(error)
+    : undefined;
+}
 
 /**
  * Data passed to the handoff function.
@@ -104,6 +117,11 @@ export type HandoffEnabledFunction<TContext = UnknownContext> = (args: {
   agent: Agent<any, any>;
 }) => Promise<boolean>;
 
+type HandoffErrorFunction<TContext> = (
+  context: RunContext<TContext>,
+  error: unknown,
+) => string | Promise<string>;
+
 export type HandoffCloneOptions<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
@@ -150,6 +168,9 @@ export type HandoffCloneOptions<
    * A function that filters the inputs that are passed to the cloned handoff's agent.
    */
   inputFilter?: HandoffInputFilter;
+
+  /** See {@link Handoff.errorFunction}. */
+  errorFunction?: HandoffErrorFunction<TContext>;
 
   /**
    * Determines whether the cloned handoff should be available for the current run.
@@ -220,6 +241,15 @@ export class Handoff<
   public inputFilter?: HandoffInputFilter;
 
   /**
+   * Lets Runner continue on the source agent after a failed invocation. Return only
+   * application-approved feedback for the model, or throw to propagate the failure.
+   * Omitting this callback propagates invocation errors. Cancellation, transfer hooks,
+   * input filters and Realtime handoffs retain their existing behavior. Recovery
+   * preserves any external effects already performed by the invocation.
+   */
+  public errorFunction?: HandoffErrorFunction<TContext>;
+
+  /**
    * The agent that is being handed off to.
    */
   public agent: Agent<TContext, TOutput>;
@@ -266,6 +296,7 @@ export class Handoff<
     cloned.strictJsonSchema =
       overrides.strictJsonSchema ?? this.strictJsonSchema;
     cloned.inputFilter = overrides.inputFilter ?? this.inputFilter;
+    cloned.errorFunction = overrides.errorFunction ?? this.errorFunction;
     cloned.isEnabled = overrides.isEnabled ?? this.isEnabled;
 
     return cloned;
@@ -330,6 +361,9 @@ export type HandoffConfig<
    */
   inputFilter?: HandoffInputFilter;
 
+  /** See {@link Handoff.errorFunction}. */
+  errorFunction?: HandoffErrorFunction<TContext>;
+
   /**
    * Determines whether the handoff should be available to the model for the current run.
    */
@@ -393,7 +427,14 @@ export function handoff<
             `Invalid JSON when parsing: ${inputJsonString}. Error: ${error}`,
           );
         }
-        throw new ModelBehaviorError('Invalid JSON provided');
+        const invalidInput = new ModelBehaviorError('Invalid JSON provided');
+        if (
+          isAbortError(error) ||
+          isAsyncStandardSchemaValidationError(error)
+        ) {
+          fatalHandoffInputErrors.set(invalidInput, error);
+        }
+        throw invalidInput;
       }
       if (config.onHandoff) {
         await config.onHandoff(context, parsed);
@@ -406,6 +447,8 @@ export function handoff<
   }
 
   const handoff = new Handoff(agent, onInvokeHandoff);
+
+  handoff.errorFunction = config.errorFunction;
 
   if (typeof config.isEnabled === 'function') {
     const predicate = config.isEnabled as HandoffEnabledPredicate<TContext>;
