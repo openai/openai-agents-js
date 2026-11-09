@@ -120,6 +120,122 @@ describe('OpenAIChatCompletionsModel', () => {
     setTraceProcessors([]);
   });
 
+  it.each(['non-streaming', 'streaming'] as const)(
+    'captures the offered definitions before the %s client can mutate them',
+    async (mode) => {
+      const processor = new RecordingProcessor();
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
+      const client = new FakeClient();
+      const tool = structuredClone(functionTool);
+      const expected = [
+        {
+          type: 'function',
+          function: {
+            name: 'lookup',
+            description: 'Look up a record.',
+            parameters: structuredClone(tool.parameters),
+            strict: true,
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'transfer_to_specialist',
+            description: 'Transfer to a specialist.',
+            parameters: handoffTool.inputJsonSchema,
+          },
+        },
+      ];
+      client.chat.completions.create.mockImplementation(async (params) => {
+        expect(params.tools).toEqual(expected);
+        params.tools[0].function.parameters.required.push('provider-change');
+        return { id: 'r', choices: [{ message: { content: 'hi' } }] };
+      });
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      await callModel(
+        model,
+        {
+          input: 'hello',
+          modelSettings: {},
+          outputType: 'text',
+          tools: [tool],
+          handoffs: [handoffTool],
+          tracing: true,
+        },
+        mode,
+      );
+      expect(processor.spansEnded).toHaveLength(1);
+      expect(processor.spansEnded[0].spanData.tools).toEqual(expected);
+    },
+  );
+
+  it('captures the final tools override only on generations that offer tools', async () => {
+    const processor = new RecordingProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({ id: 'r', choices: [] });
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const override = [{ type: 'function', function: { name: 'replacement' } }];
+    for (const tools of [override, []]) {
+      await callModel(
+        model,
+        {
+          input: 'hello',
+          modelSettings: { providerData: { tools } },
+          outputType: 'text',
+          tools: [functionTool],
+          handoffs: [],
+          tracing: true,
+        },
+        'non-streaming',
+      );
+    }
+    expect(processor.spansEnded).toHaveLength(2);
+    expect(processor.spansEnded[0].spanData.tools).toEqual(override);
+    expect(processor.spansEnded[1].spanData).not.toHaveProperty('tools');
+  });
+
+  it.each(['non-streaming', 'streaming'] as const)(
+    'keeps schemas out of %s spans with sensitive capture disabled',
+    async (mode) => {
+      const processor = new RecordingProcessor();
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
+      const client = new FakeClient();
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      const marker = 'synthetic-private-schema';
+      const error = new Error();
+      const request = {
+        input: 'hello',
+        modelSettings: {},
+        outputType: 'text',
+        tools: [{ ...functionTool, description: marker }],
+        handoffs: [],
+        tracing: 'enabled_without_data',
+      };
+      client.chat.completions.create.mockResolvedValueOnce({
+        id: 'r',
+        choices: [],
+      });
+      await callModel(model, request, mode);
+      client.chat.completions.create.mockImplementation(async (params) => {
+        error.message = params.tools[0].function.description;
+        throw error;
+      });
+      await expect(callModel(model, request, mode)).rejects.toBe(error);
+      expect(processor.spansEnded).toHaveLength(2);
+      await expect(
+        callModel(model, { ...request, tracing: false }, mode),
+      ).rejects.toBe(error);
+      for (const span of processor.spansEnded) {
+        expect(span.spanData).not.toHaveProperty('tools');
+        expect(JSON.stringify(span)).not.toContain(marker);
+      }
+    },
+  );
+
   it('handles text message output', async () => {
     const client = new FakeClient();
     const response = {
