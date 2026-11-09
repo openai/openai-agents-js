@@ -61,6 +61,99 @@ function fixture() {
 }
 
 describe('native sandbox environment', () => {
+  it('borrows a live session without starting, closing or deleting it', async () => {
+    const f = fixture();
+    f.resource.start = vi.fn();
+    const owner = await acquireEnvironment(
+      sandboxEnvironment({
+        ...f,
+        manifest: new Manifest(),
+        session: f.resource,
+      }),
+    );
+    await owner.dispose();
+    expect(f.events).toEqual(['connect', 'gateway']);
+    expect(f.resource.start).not.toHaveBeenCalled();
+    expect(f.resource.close).not.toHaveBeenCalled();
+    expect(f.client.delete).not.toHaveBeenCalled();
+  });
+  it('resumes explicitly authorized state with current authority and owns cleanup', async () => {
+    const f = fixture();
+    const saved = {
+      manifest: new Manifest({ root: '/current' }),
+      providerId: 'synthetic-id',
+    };
+    f.client.resume = vi.fn(async (state, options) => {
+      f.events.push('resume');
+      expect(state.manifest.root).toBe('/current');
+      expect(options?.trustedManifest?.root).toBe('/current');
+      expect(state.providerId).toBe('synthetic-id');
+      return f.resource;
+    });
+    const owner = await acquireEnvironment(
+      sandboxEnvironment({
+        ...f,
+        manifest: new Manifest({ root: '/current' }),
+        authorizedResumeState: { backendId: 'fixture', state: saved },
+      }),
+    );
+    await owner.dispose();
+    expect(saved.manifest.root).toBe('/current');
+    expect(f.events).toEqual([
+      'resume',
+      'connect',
+      'gateway',
+      'close',
+      'delete',
+    ]);
+  });
+  it('rejects backend mismatch and conflicting ownership before effects', () => {
+    const f = fixture();
+    expect(() =>
+      sandboxEnvironment({
+        ...f,
+        manifest: new Manifest(),
+        authorizedResumeState: {
+          backendId: 'different',
+          state: f.resource.state,
+        },
+      }),
+    ).toThrow('matching backend');
+    expect(() =>
+      sandboxEnvironment({
+        ...f,
+        manifest: new Manifest(),
+        session: f.resource,
+        authorizedResumeState: {
+          backendId: 'fixture',
+          state: f.resource.state,
+        },
+      }),
+    ).toThrow('mutually exclusive');
+    expect(f.events).toEqual([]);
+  });
+  it('forwards resource snapshots and materialization budgets on creation', async () => {
+    const f = fixture();
+    const create = f.client.create!;
+    const capture = vi.fn(async (args: SandboxClientCreateArgs | undefined) =>
+      create(args),
+    );
+    f.client.create = capture;
+    const owner = await acquireEnvironment(
+      sandboxEnvironment({
+        ...f,
+        manifest: new Manifest(),
+        concurrencyLimits: { manifestEntries: 3 },
+        archiveLimits: { maxMembers: 8 },
+      }),
+    );
+    expect(capture.mock.calls[0]?.[0]).toMatchObject({
+      concurrencyLimits: { manifestEntries: 3 },
+      archiveLimits: { maxMembers: 8 },
+    });
+    await owner.dispose();
+  });
+
   it('rejects serialized provider secret selectors before provider effects', () => {
     const f = fixture();
     const manifest = {
