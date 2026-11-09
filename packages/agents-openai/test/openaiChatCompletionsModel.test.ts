@@ -2428,7 +2428,7 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(convertChatCompletionsStreamToResponses).toHaveBeenCalled();
     expect(
       vi.mocked(convertChatCompletionsStreamToResponses).mock.calls[0]?.[2],
-    ).toEqual({ strictFeatureValidation: false, preserveRawUsage: true });
+    ).toMatchObject({ strictFeatureValidation: false, preserveRawUsage: true });
     expect(events).toEqual([{ type: 'first' }, { type: 'second' }]);
   });
 
@@ -2509,7 +2509,7 @@ describe('OpenAIChatCompletionsModel', () => {
 
     expect(
       vi.mocked(convertChatCompletionsStreamToResponses).mock.calls[0]?.[2],
-    ).toEqual({ strictFeatureValidation: true });
+    ).toMatchObject({ strictFeatureValidation: true });
   });
 
   it('warns and ignores unsupported stream response features by default', async () => {

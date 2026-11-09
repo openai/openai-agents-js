@@ -403,6 +403,31 @@ describe('Runner.run (streaming)', () => {
     expect(result.error).toBeInstanceOf(Error);
   });
 
+  it.each([
+    { events: [], lastType: 'none' },
+    {
+      events: [
+        { type: 'response_started' },
+        { type: 'model', event: { type: 'sensitive-provider-value' } },
+      ] satisfies StreamEvent[],
+      lastType: 'model',
+    },
+  ])(
+    'describes missing completion after $lastType',
+    async ({ events, lastType }) => {
+      const agent = new Agent({
+        name: 'Incomplete stream',
+        model: new ScriptedModel([modelStream(events)]),
+      });
+      const result = await run(agent, 'hi', { stream: true });
+      await expect(result.completed).rejects.toMatchObject({
+        name: 'ModelBehaviorError',
+        message: `Model did not produce a final response! Stream ended before response_done (event_count=${events.length}, last_event_type=${lastType}).`,
+        state: result.state,
+      });
+    },
+  );
+
   it('exposes model error to the consumer', async () => {
     const agent = new Agent({
       name: 'StreamError',
