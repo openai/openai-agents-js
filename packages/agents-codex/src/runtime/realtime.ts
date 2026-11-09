@@ -2145,6 +2145,7 @@ class NativeRealtimeOwner {
 export type NativeRealtimeSession = Pick<
   NativeRealtimeOwner,
   | 'history'
+  | 'usage'
   | 'callId'
   | 'answerSdp'
   | 'reportPlayback'
