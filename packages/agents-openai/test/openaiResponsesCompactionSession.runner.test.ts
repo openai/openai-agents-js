@@ -7,6 +7,7 @@ import {
   RunContext,
   RunState,
   UserError,
+  hostedMcpTool,
   tool,
   type AgentInputItem,
   type NonStreamRunOptions,
@@ -344,6 +345,153 @@ describe('Runner compaction ownership', () => {
 });
 
 describe('Runner compaction model visibility', () => {
+  it('retains a function call until a later exchange covers its result', async () => {
+    const { session, runner, compact, compacted } = setup();
+    const agent = new Agent({
+      name: 'approval',
+      model: new ScriptedModel([
+        [functionCall('lookup', '{}', { callId: 'lookup-1' })],
+        [assistantMessage('resolved')],
+        [assistantMessage('done')],
+      ]),
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a record.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute: () => 'found',
+        }),
+      ],
+      modelSettings: { store: false },
+    });
+    const paused = await runner.run(agent, 'hello', { session });
+    expect(paused.interruptions).toHaveLength(1);
+    expect(compact).not.toHaveBeenCalled();
+    expect(await session.getItems()).toEqual([
+      user('hello'),
+      expect.objectContaining({ type: 'function_call', callId: 'lookup-1' }),
+    ]);
+    paused.state.approve(paused.interruptions[0]);
+    const restored = await RunState.fromString(agent, paused.state.toString());
+    await runner.run(agent, restored, { session });
+    await runner.run(agent, 'again', { session });
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(compact.mock.calls[0][0].input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'function_call', call_id: 'lookup-1' }),
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'lookup-1',
+        }),
+      ]),
+    );
+    expect(await session.getItems()).toEqual([compacted]);
+  });
+
+  it('retains a streamed hosted MCP request until the rejection is covered', async () => {
+    const { session, runner, compact } = setup();
+    const request = {
+      type: 'hosted_tool_call' as const,
+      name: 'mcp_approval_request',
+      id: 'req-1',
+      status: 'completed' as const,
+      providerData: {
+        type: 'mcp_approval_request',
+        id: 'req-1',
+        server_label: 'records',
+        name: 'lookup',
+        arguments: '{}',
+      },
+    };
+    const model = new ScriptedModel([
+      [request],
+      [assistantMessage('resolved')],
+    ]);
+    const agent = new Agent({
+      name: 'approval',
+      model,
+      tools: [
+        hostedMcpTool({
+          serverLabel: 'records',
+          serverUrl: 'https://records.example/mcp',
+          requireApproval: 'always',
+        }),
+      ],
+    });
+    const paused = await runner.run(agent, 'hello', { session, stream: true });
+    await paused.completed;
+    expect(paused.interruptions).toHaveLength(1);
+    expect(compact).not.toHaveBeenCalled();
+    expect(await session.getItems()).toContainEqual(request);
+    paused.state.reject(paused.interruptions[0]);
+    await runner.run(agent, paused.state, { session });
+    expect(model.calls[1].request.input).toContainEqual(
+      expect.objectContaining({
+        name: 'mcp_approval_response',
+        providerData: expect.objectContaining({
+          approve: false,
+          approval_request_id: 'req-1',
+        }),
+      }),
+    );
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(compact.mock.calls[0][0]).toHaveProperty(
+      'previous_response_id',
+      'scripted-response-2',
+    );
+  });
+
+  it.each([false, true])(
+    'keeps the latest paused exchange available for manual compaction (store=%s)',
+    async (store) => {
+      const { session, runner, compact, decision } = setup();
+      decision.mockReturnValue(false);
+      const agent = new Agent({
+        name: 'approval',
+        model: new ScriptedModel([
+          [assistantMessage('first')],
+          [functionCall('lookup', '{}', { callId: 'lookup-1' })],
+        ]),
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Look up a record.',
+            parameters: z.object({}),
+            needsApproval: true,
+            execute: () => 'found',
+          }),
+        ],
+        modelSettings: { store: true },
+      });
+      await runner.run(agent, 'first', { session });
+      decision.mockClear();
+      const paused = await runner.run(
+        agent.clone({ modelSettings: { store } }),
+        'again',
+        { session },
+      );
+      expect(paused.interruptions).toHaveLength(1);
+      expect(decision).not.toHaveBeenCalled();
+      expect(compact).not.toHaveBeenCalled();
+      await session.runCompaction({ force: true });
+      expect(compact).toHaveBeenCalledTimes(1);
+      if (store) {
+        expect(compact.mock.calls[0][0]).toHaveProperty(
+          'previous_response_id',
+          'scripted-response-2',
+        );
+      } else {
+        expect(compact.mock.calls[0][0].input).toContainEqual(
+          expect.objectContaining({
+            type: 'function_call',
+            call_id: 'lookup-1',
+          }),
+        );
+      }
+    },
+  );
+
   it('retains history when a stream fails after its completed response event', async () => {
     const hidden = user('retained');
     const { session, runner, compact } = setup(

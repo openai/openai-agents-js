@@ -5,6 +5,11 @@ import {
   deduplicateAgentInputItemsPreferringLatest,
   stripReasoningItemIdForPolicy,
 } from './items';
+import {
+  getToolResultCorrelationForCall,
+  getToolResultCorrelationForResult,
+  getToolResultCorrelationKey,
+} from './toolResultCorrelation';
 import type {
   Session,
   OpenAIResponsesCompactionAwareSession,
@@ -64,6 +69,36 @@ export function getModelVisibleSessionItems(
     visible.push(exchange.items[cursor++]);
   }
   return visible;
+}
+
+/** Check the covered history before automatically compacting an approval group. */
+export function hasCompleteApprovalGroups(items: AgentInputItem[]): boolean {
+  const pending = new Map<string, number>();
+  for (const item of items) {
+    if (
+      item.type !== 'function_call' &&
+      item.type !== 'function_call_result' &&
+      item.type !== 'hosted_tool_call'
+    ) {
+      continue;
+    }
+    const call = getToolResultCorrelationForCall(item);
+    const correlation = call ?? getToolResultCorrelationForResult(item);
+    if (!correlation) continue;
+
+    const key = getToolResultCorrelationKey(correlation);
+    const count = pending.get(key) ?? 0;
+    if (call) {
+      pending.set(key, count + 1);
+    } else if (count === 0) {
+      return false;
+    } else if (count === 1) {
+      pending.delete(key);
+    } else {
+      pending.set(key, count - 1);
+    }
+  }
+  return pending.size === 0;
 }
 
 export function normalizeItemsForSessionPersistence(
