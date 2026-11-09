@@ -16,6 +16,7 @@ export const nativeEventSchema = z
         type: z.string(),
         arguments: losslessJsonValueSchema.optional(),
         tool_completion: losslessJsonValueSchema.optional(),
+        items: losslessJsonValueSchema.optional(),
         _sdk_python_tool: nativeMarker.optional(),
       })
       .catchall(jsonValue),

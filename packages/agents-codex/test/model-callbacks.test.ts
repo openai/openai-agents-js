@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { parseEvent } from '../src/runtime/events';
 import { Agent } from '../src/runtime/public-agent';
 import { captureCompletionDecision } from '../src/runtime/model-callbacks';
 
@@ -60,4 +61,23 @@ new Agent<{ account: string }>({
     void account;
     return context.items;
   },
+});
+
+it('preserves literal JSON keys before handing retained items to an identity context transform', () => {
+  const source =
+    '{"id":"turn","msg":{"type":"_sdk_model_context","items":[{"type":"tool_search_output","tools":[{"type":"function","name":"literal","parameters":{"type":"object","properties":{"__proto__":{"type":"string"}}}}]}]}}';
+  const event = parseEvent(source);
+  const original = JSON.parse(source).msg.items;
+  expect(event.msg.items).toEqual(original);
+  const copied = JSON.parse(JSON.stringify(event.msg.items));
+  expect(
+    Object.hasOwn(copied[0].tools[0].parameters.properties, '__proto__'),
+  ).toBe(true);
+  expect(copied[0].tools[0].parameters.properties['__proto__']).toEqual({
+    type: 'string',
+  });
+  expect(Object.getPrototypeOf(copied[0].tools[0].parameters.properties)).toBe(
+    Object.prototype,
+  );
+  expect(Object.prototype).not.toHaveProperty('type');
 });
