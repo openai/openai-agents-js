@@ -292,7 +292,7 @@ export class ChatCompletionsModel implements NativeModel {
     const choice = value.choices[0];
     const message = choice.message;
     if (
-      ['length', 'content_filter'].includes(choice.finish_reason) &&
+      !['stop', 'tool_calls'].includes(choice.finish_reason) &&
       message.refusal == null
     )
       throw new TypeError(

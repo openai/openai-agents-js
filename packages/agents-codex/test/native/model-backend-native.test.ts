@@ -663,6 +663,12 @@ it.each([
   ['content_filter', false],
   ['length', true],
   ['content_filter', true],
+  ['function_call', false],
+  ['function_call', true],
+  [undefined, false],
+  [undefined, true],
+  ['vendor-custom', false],
+  ['vendor-custom', true],
 ] as const)(
   'fails Chat finish_reason=%s with refusal=%s before any tool effect',
   async (finishReason, refusal) => {
@@ -688,18 +694,23 @@ it.each([
                 role: 'assistant',
                 content: first ? 'private-partial-answer' : 'finished',
                 refusal: first && refusal ? privateRefusal : null,
-                tool_calls: first
-                  ? [
-                      {
-                        type: 'function',
-                        id: 'never',
-                        function: {
-                          name: 'echo',
-                          arguments: '{"value":"never"}',
+                function_call:
+                  first && finishReason === 'function_call'
+                    ? { name: 'echo', arguments: '{"value":"never"}' }
+                    : undefined,
+                tool_calls:
+                  first && finishReason !== 'function_call'
+                    ? [
+                        {
+                          type: 'function',
+                          id: 'never',
+                          function: {
+                            name: 'echo',
+                            arguments: '{"value":"never"}',
+                          },
                         },
-                      },
-                    ]
-                  : null,
+                      ]
+                    : null,
               },
             },
           ],
