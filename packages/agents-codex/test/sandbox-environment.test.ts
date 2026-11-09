@@ -134,11 +134,7 @@ describe('native sandbox environment', () => {
   });
   it('forwards resource snapshots and materialization budgets on creation', async () => {
     const f = fixture();
-    const create = f.client.create!;
-    const capture = vi.fn(async (args: SandboxClientCreateArgs | undefined) =>
-      create(args),
-    );
-    f.client.create = capture;
+    const capture = vi.spyOn(f.client, 'create');
     const owner = await acquireEnvironment(
       sandboxEnvironment({
         ...f,
