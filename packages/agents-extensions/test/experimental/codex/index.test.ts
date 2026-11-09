@@ -389,7 +389,7 @@ describe('codexTool', () => {
         }
         const { result } = await runPolicyTool({ includeSensitiveData });
         expect(result.finalOutput).toBe(
-          'An error occurred while running the tool. Please try again.',
+          'An error occurred while running the tool.',
         );
         const functionSpan = processor.spans.find(
           (span) => span.spanData.type === 'function',
@@ -1522,9 +1522,7 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1558,9 +1556,7 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1594,9 +1590,7 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1640,9 +1634,7 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
   });
 
   test('throws when Codex turn fails', async () => {
@@ -1669,9 +1661,7 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
   });
 
   test('throws when Codex emits an error event', async () => {
@@ -1695,9 +1685,7 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
   });
 
   test('returns a default response when no agent message is streamed', async () => {

@@ -14,8 +14,7 @@ import type { Span } from '../src/tracing/spans';
 import { TEST_TOOL } from './stubs';
 
 const SECRET = 'synthetic-private-tool-failure';
-const GENERIC_ERROR =
-  'An error occurred while running the tool. Please try again.';
+const GENERIC_ERROR = 'An error occurred while running the tool.';
 const REDACTED_ERROR = 'Tool execution failed. Error details are redacted.';
 let spans: Span<any>[];
 

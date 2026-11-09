@@ -783,9 +783,7 @@ describe('mcpToFunctionTool', () => {
 
     const result = await tool.invoke(new RunContext({}), '{}');
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
     expect(callTool).toHaveBeenCalledTimes(1);
   });
 
@@ -828,9 +826,7 @@ describe('mcpToFunctionTool', () => {
 
     const result = await tool.invoke(new RunContext({}), '{}');
 
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
     for (const secret of [
       'ERROR_USER',
       'ERROR_PASSWORD',

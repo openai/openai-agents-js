@@ -122,7 +122,7 @@ describe('agent tool streaming backlog', () => {
           }
         }
         expect(result.finalOutput).toBe(
-          'An error occurred while running the tool. Please try again.',
+          'An error occurred while running the tool.',
         );
         expect(result.finalOutput).not.toContain('nested success');
         expect(modelSignal?.aborted).toBe(true);
@@ -369,7 +369,7 @@ describe('agent tool streaming lifecycle', () => {
       expect(second.finalOutput).toBe('surviving invocation');
       allowOverflow.release();
       expect((await first).finalOutput).toBe(
-        'An error occurred while running the tool. Please try again.',
+        'An error occurred while running the tool.',
       );
       expect(second.finalOutput).toBe('surviving invocation');
     } finally {
@@ -417,7 +417,7 @@ describe('agent tool streaming lifecycle', () => {
     try {
       expect(
         (await runner.run(parentFor(nestedTool), 'start')).finalOutput,
-      ).toBe('An error occurred while running the tool. Please try again.');
+      ).toBe('An error occurred while running the tool.');
       expect(closed).toHaveBeenCalledOnce();
     } finally {
       releaseHandler.release();
@@ -462,7 +462,7 @@ describe('agent tool streaming lifecycle', () => {
     try {
       const result = await runner.run(parentFor(nestedTool), 'start');
       expect(result.finalOutput).toBe(
-        'An error occurred while running the tool. Please try again.',
+        'An error occurred while running the tool.',
       );
       expect(result.finalOutput).not.toContain('secondary');
     } finally {
@@ -497,7 +497,7 @@ describe('agent tool streaming lifecycle', () => {
     try {
       expect(
         (await runner.run(parentFor(nestedTool), 'start')).finalOutput,
-      ).toBe('An error occurred while running the tool. Please try again.');
+      ).toBe('An error occurred while running the tool.');
     } finally {
       releaseHandler.release();
     }

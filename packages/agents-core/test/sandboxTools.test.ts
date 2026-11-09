@@ -490,9 +490,7 @@ describe('sandbox filesystem tools', () => {
         new RunContext(),
         JSON.stringify({ path: 'image.png' }),
       ),
-    ).resolves.toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    ).resolves.toBe('An error occurred while running the tool.');
     session.assertComplete();
   });
 
