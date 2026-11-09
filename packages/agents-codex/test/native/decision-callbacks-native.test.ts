@@ -77,6 +77,63 @@ function decisionReply(request: JsonObject, probability: number) {
   };
 }
 
+nativeIt.each([false, true] as const)(
+  'decides a mixed boolean/string choice without fallback (%s)',
+  async (selected) => {
+    const paths: string[] = [];
+    const server = new ModelServer([
+      (request) => {
+        expect(request.model).toBe('gpt-6-luna');
+        const questions = request.questions as JsonObject[];
+        expect(questions).toHaveLength(1);
+        const question = questions[0];
+        expect(question.type).toBe('choice');
+        const choices = question.choices as JsonObject[];
+        expect(
+          choices.map((choice) => JSON.parse(choice.description as string)),
+        ).toEqual([selected, 'unknown']);
+        return {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'resolved-decision',
+            usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+            answers: [
+              {
+                type: 'choice',
+                name: question.name,
+                choice: choices[0].value,
+                confidence: 1,
+                probabilities: choices.map((choice, index) => ({
+                  value: choice.value,
+                  probability: index === 0 ? 1 : 0,
+                })),
+              },
+            ],
+          }),
+        };
+      },
+    ]);
+    server.onRecord = (phase, detail) => {
+      if (phase === 'MODEL_REQUEST')
+        paths.push((detail as { path: string }).path);
+    };
+    const config = await server.config();
+    const baseURL = (config['model_providers.fixture'] as { base_url: string })
+      .base_url;
+    const decisions = new OpenAIDecisions({
+      client: new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
+    });
+    const result = await decisions.decide('Is the request ready?', {
+      input: 'Explicit request.',
+      choices: [selected, 'unknown'] as const,
+    });
+    expect(result).toBe(selected);
+    expect(paths).toEqual(['/v1/decisions']);
+    server.assertExhausted();
+  },
+);
+
 nativeIt(
   'continues one turn through completion decisions with native accounting and the real shared compiler',
   async () => {
