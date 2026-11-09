@@ -597,11 +597,16 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     workflow.indexOf('  select:'),
     workflow.indexOf('  produce-linux:'),
   );
-  const qualify = workflow.slice(workflow.indexOf('  package:'));
+  const qualify = workflow.slice(
+    workflow.indexOf('  package:'),
+    workflow.indexOf('  package-linux:'),
+  );
   expect(qualify).toContain(
     'needs: [select, produce-linux, produce-macos, produce-windows]',
   );
-  expect(qualify).toContain("!cancelled() && needs.select.result == 'success'");
+  expect(qualify).toContain(
+    "github.event_name != 'pull_request' && !cancelled() && needs.select.result == 'success'",
+  );
   for (const key of Object.keys(nativePlatforms)) {
     expect(workflow).toContain('toJSON(steps.upload_' + key + '.outputs)');
     expect(qualify).toContain('needs.produce-' + key + ".result == 'skipped'");
@@ -641,3 +646,31 @@ test('workflow keeps the publication barrier and qualification coverage on expli
   ])
     expect(qualify).toContain('name: ' + step);
 });
+
+test.each(Object.keys(nativePlatforms))(
+  'pull request qualification for %s waits for its own native transfer',
+  (key) => {
+    const workflow = readFileSync(
+      new URL(
+        '../.github/workflows/alpha-release-artifacts.yml',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    const qualify = workflow
+      .split(`  package-${key}:\n`)[1]
+      .split(/^ {2}package-/m)[0];
+    expect(qualify).toContain(`needs: [select, produce-${key}]`);
+    expect(qualify).toContain(
+      "github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success'",
+    );
+    expect(qualify).toContain(
+      `needs.select.outputs.${key}_hit == 'true' && needs.produce-${key}.result == 'skipped'`,
+    );
+    expect(qualify).toContain(
+      `needs.select.outputs.${key}_hit != 'true' && needs.produce-${key}.result == 'success'`,
+    );
+    expect(qualify).toContain(`include: [*${key}_package]`);
+    expect(qualify).toContain('steps: *package_steps');
+  },
+);
