@@ -463,18 +463,21 @@ export class UnixLocalSandboxSession<
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
     this.assertSessionUsable();
+    if (
+      args.maxBytes !== undefined &&
+      (!Number.isSafeInteger(args.maxBytes) || args.maxBytes < 0)
+    ) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    }
     const identity = await this.resolveFilesystemRunAs(args.runAs);
-    const bytes = await this.files.run(
+    return await this.files.run(
       {
         operation: 'read',
         path: this.resolveFilesystemPath(args.path),
+        limit: args.maxBytes,
       },
       { identity },
     );
-    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
-      return bytes.subarray(0, args.maxBytes);
-    }
-    return bytes;
   }
 
   async listDir(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]> {

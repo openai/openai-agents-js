@@ -29,17 +29,20 @@ import {
   validateSandboxArchiveLimits,
 } from '@openai/agents-core/sandbox';
 import {
+  BOUNDED_FILE_READ_STATUS_BYTES,
   liveMountEnvironmentAuthorityMatches,
   normalizePosixPath,
   relativePosixPathWithinRoot,
   shellQuote,
   withExclusiveSandboxManifestMutation,
 } from '@openai/agents-core/sandbox/internal';
+import { Buffer } from 'node:buffer';
 import { posix as pathPosix } from 'node:path';
 import {
   assertCoreSnapshotUnsupported,
   assertRemoteSandboxSessionStateCanResume,
   imageOutputFromBytes,
+  MAX_VIEW_IMAGE_BYTES,
   RemoteSandboxEditor,
   assertTarWorkspacePersistence,
   assertSandboxEntryMetadataSupported,
@@ -508,21 +511,36 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
   }
 
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    const absolutePath = await this.resolveRemotePath(args.path);
-    const bytes = args.runAs
-      ? await readRunAsRemoteFile({
-          providerName: 'ModalSandboxClient',
-          providerId: 'modal',
-          path: absolutePath,
-          runAs: args.runAs,
-          runCommand: this.runAsCommandRunner.bind(this),
-        })
-      : await this.readSandboxFile(absolutePath);
+    const bytes = await this.readFile({
+      ...args,
+      maxBytes: MAX_VIEW_IMAGE_BYTES + 1,
+    });
     return imageOutputFromBytes(args.path, bytes);
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
-    const absolutePath = await this.resolveRemotePath(args.path);
+    const maxBytes = args.maxBytes;
+    if (
+      maxBytes !== undefined &&
+      (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
+    ) {
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    }
+    const absolutePath =
+      maxBytes === undefined
+        ? await this.resolveRemotePath(args.path)
+        : await this.resolveRemotePathWithOutputLimit(args.path, {}, 65536);
+    if (maxBytes !== undefined) {
+      return await readRunAsRemoteFile({
+        providerName: 'ModalSandboxClient',
+        providerId: 'modal',
+        path: absolutePath,
+        runAs: args.runAs,
+        maxBytes,
+        runCommand: (command, options) =>
+          this.runCappedFileCommand(command, maxBytes, options),
+      });
+    }
     const bytes = args.runAs
       ? await readRunAsRemoteFile({
           providerName: 'ModalSandboxClient',
@@ -532,9 +550,6 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
           runCommand: this.runAsCommandRunner.bind(this),
         })
       : await this.readSandboxFile(absolutePath);
-    if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
-      return bytes.subarray(0, args.maxBytes);
-    }
     return bytes;
   }
 
@@ -1205,6 +1220,14 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     path?: string,
     options: RemoteSandboxPathOptions = {},
   ): Promise<string> {
+    return await this.resolveRemotePathWithOutputLimit(path, options);
+  }
+
+  private async resolveRemotePathWithOutputLimit(
+    path?: string,
+    options: RemoteSandboxPathOptions = {},
+    stdoutLimit?: number,
+  ): Promise<string> {
     return await validateRemoteSandboxPathForManifest({
       manifest: this.state.manifest,
       path,
@@ -1216,6 +1239,9 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
           stdout: 'pipe',
           stderr: 'pipe',
         });
+        if (stdoutLimit !== undefined) {
+          return await this.readCappedCommandOutput(process, stdoutLimit);
+        }
         const [stdout, stderr, exitCode] = await Promise.all([
           readStreamText(process.stdout),
           readStreamText(process.stderr),
@@ -1276,6 +1302,75 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
       stdout,
       stderr,
     };
+  }
+
+  private async runCappedFileCommand(
+    command: string,
+    maxBytes: number,
+    options: { runAs?: string } = {},
+  ) {
+    const process = await this.sandbox.exec(
+      [
+        '/bin/sh',
+        '-c',
+        sandboxUserShellCommand(command, options.runAs, { login: false }),
+      ],
+      {
+        mode: 'text',
+        workdir: this.state.manifest.root,
+        env: this.state.environment,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    );
+    const encodedBytes =
+      Math.ceil((maxBytes + BOUNDED_FILE_READ_STATUS_BYTES) / 3) * 4;
+    const stdoutLimit = encodedBytes + Math.ceil(encodedBytes / 76);
+    return await this.readCappedCommandOutput(process, stdoutLimit);
+  }
+
+  private async readCappedCommandOutput(
+    process: ModalContainerProcessLike,
+    stdoutLimit: number,
+  ) {
+    let stdout = '';
+    let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const stdoutPump = startTextStreamPump(process.stdout, (chunk) => {
+      stdoutBytes += Buffer.byteLength(chunk);
+      if (stdoutBytes > stdoutLimit) {
+        throw new SandboxProviderError(
+          'Modal file read exceeded its output limit.',
+          {
+            provider: 'modal',
+          },
+        );
+      }
+      stdout += chunk;
+    });
+    const stderrPump = startTextStreamPump(process.stderr, (chunk) => {
+      stderrBytes += Buffer.byteLength(chunk);
+      if (stderrBytes > 8192) {
+        throw new SandboxProviderError(
+          'Modal file read exceeded its diagnostic limit.',
+          {
+            provider: 'modal',
+          },
+        );
+      }
+      stderr += chunk;
+    });
+    try {
+      const [, , status] = await Promise.all([
+        stdoutPump.promise,
+        stderrPump.promise,
+        process.wait(),
+      ]);
+      return { status, stdout, stderr };
+    } finally {
+      await Promise.allSettled([stdoutPump.cancel(), stderrPump.cancel()]);
+    }
   }
 
   private writer(): RemoteManifestWriter {
@@ -2543,6 +2638,9 @@ function startTextStreamPump(
           onChunk(value);
         }
       }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
     } finally {
       reader.releaseLock();
     }

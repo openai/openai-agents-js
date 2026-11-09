@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -6,6 +6,7 @@ import {
   readFile,
   rm,
   stat,
+  truncate,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,8 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import {
   Manifest,
+  SandboxProviderError,
+  SandboxWorkspaceReadNotFoundError,
   type SandboxSessionState,
 } from '@openai/agents-core/sandbox';
 import { describe, expect, test } from 'vitest';
@@ -42,8 +45,14 @@ async function readableByOtherUser(path: string): Promise<boolean> {
 }
 
 async function runShell(command: string) {
+  return await runShellWithPath(command, process.env.PATH);
+}
+
+async function runShellWithPath(command: string, path?: string) {
   try {
-    const { stdout, stderr } = await execFileAsync('/bin/sh', ['-c', command]);
+    const { stdout, stderr } = await execFileAsync('/bin/sh', ['-c', command], {
+      env: { ...process.env, PATH: path },
+    });
     return { status: 0, stdout, stderr };
   } catch (error) {
     const result = error as { code: number; stdout: string; stderr: string };
@@ -110,6 +119,158 @@ class ShellSession extends RemoteSandboxSessionBase<
 }
 
 describe.skipIf(process.platform === 'win32')('private runAs staging', () => {
+  test.skipIf(spawnSync('zsh', ['--version']).status !== 0)(
+    'bounds transfer despite a startup-defined head function',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'bounded-function-read-'));
+      try {
+        await writeFile(join(root, '.zshenv'), 'head() { cat; }\n');
+        await writeFile(join(root, 'large.bin'), 'prefix');
+        await truncate(join(root, 'large.bin'), 8 * 1024 * 1024);
+        let transferred = 0;
+        const session = new ShellSession(
+          root,
+          async () => {},
+          async (command) => {
+            const result = await execFileAsync('zsh', ['-c', command], {
+              env: { ...process.env, ZDOTDIR: root },
+              maxBuffer: 16 * 1024 * 1024,
+            });
+            transferred += result.stdout.length;
+            return { status: 0, stdout: result.stdout, stderr: result.stderr };
+          },
+        );
+        const bytes = await session.readFile({
+          path: 'large.bin',
+          maxBytes: 4,
+        });
+        expect(transferred).toBeLessThan(32);
+        expect(Array.from(bytes)).toEqual(Array.from(Buffer.from('pref')));
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('rejects partial read errors under shells that enable errexit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'bounded-read-partial-'));
+    await writeFile(join(root, 'note.txt'), 'synthetic');
+    const session = new ShellSession(
+      root,
+      async () => {},
+      async (command) =>
+        // Model a storage read that produces a binary prefix and then fails.
+        runShell(
+          `set -e; failing_read() { printf '\\n000\\n'; return 1; }; ${command.replace('command -p head', 'failing_read')}`,
+        ),
+    );
+    try {
+      await expect(
+        session.readFile({ path: 'note.txt', maxBytes: 5 }),
+      ).rejects.toBeInstanceOf(SandboxProviderError);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a provider response larger than the requested prefix', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'bounded-read-response-'));
+    try {
+      await writeFile(join(root, 'note.txt'), 'synthetic');
+      const session = new ShellSession(
+        root,
+        async () => {},
+        async (command) =>
+          command.includes('head -c')
+            ? {
+                status: 0,
+                stdout: Buffer.from('oversized\n000\n').toString('base64'),
+                stderr: '',
+              }
+            : await runShell(command),
+      );
+      await expect(
+        session.readFile({ path: 'note.txt', maxBytes: 4 }),
+      ).rejects.toBeInstanceOf(SandboxProviderError);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform !== 'linux')(
+    'rejects a capped read when a regular descriptor returns a read error',
+    async () => {
+      const session = new ShellSession('/proc/self', async () => {}, runShell);
+      await expect(
+        session.readFile({ path: 'mem', maxBytes: 4 }),
+      ).rejects.toBeInstanceOf(SandboxProviderError);
+    },
+  );
+
+  test.skipIf(process.getuid?.() === 0)(
+    'preserves permission failures beneath an inaccessible ancestor',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'bounded-read-permission-'));
+      const directory = join(root, 'private');
+      await mkdir(directory);
+      await writeFile(join(directory, 'note.txt'), 'synthetic');
+      const session = new ShellSession(root, async () => {}, runShell);
+      try {
+        await chmod(directory, 0);
+        await expect(
+          session.readFile({ path: 'private/note.txt', maxBytes: 4 }),
+        ).rejects.toBeInstanceOf(SandboxProviderError);
+      } finally {
+        await chmod(directory, 0o700);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('capped base reads transfer only the prefix and retain file errors', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'bounded-remote-read-'));
+    try {
+      const large = join(root, 'large.bin');
+      await writeFile(large, Buffer.from([0, 255, 128, 10]));
+      await truncate(large, 8 * 1024 * 1024);
+      const bin = join(root, 'bin');
+      await mkdir(bin);
+      await writeFile(join(bin, 'head'), '#!/bin/sh\ncat\n', { mode: 0o755 });
+      let transferred = 0;
+      const session = new ShellSession(
+        root,
+        async () => {},
+        async (command) => {
+          const result = await runShellWithPath(
+            command,
+            `${bin}:${process.env.PATH}`,
+          );
+          transferred += result.stdout.length;
+          return result;
+        },
+      );
+      expect(
+        Array.from(await session.readFile({ path: 'large.bin', maxBytes: 4 })),
+      ).toEqual([0, 255, 128, 10]);
+      expect(transferred).toBeLessThan(32);
+      await expect(
+        session.readFile({ path: 'missing.bin', maxBytes: 0 }),
+      ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
+      await expect(
+        session.readFile({ path: 'missing.bin', maxBytes: 0, runAs: 'reader' }),
+      ).rejects.toBeInstanceOf(SandboxProviderError);
+      expect(
+        Array.from(await session.readFile({ path: 'large.bin', maxBytes: 0 })),
+      ).toEqual([]);
+      await writeFile(join(root, 'small.txt'), 'hello');
+      expect(await session.readFile({ path: 'small.txt' })).toEqual(
+        Buffer.from('hello'),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test.each(['shared helper', 'base session'] as const)(
     '%s keeps uploads and provider copies private, preserving the destination',
     async (entrypoint) => {

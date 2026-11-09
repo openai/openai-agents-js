@@ -4,8 +4,11 @@ import {
   SandboxUnsupportedFeatureError,
 } from '@openai/agents-core/sandbox';
 import { captureLiveMountCredentialAuthorityIfAbsent } from '@openai/agents-core/sandbox/internal';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   ModalSandboxClient,
@@ -21,6 +24,7 @@ import {
 } from '../../src/sandbox/shared';
 import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
+import { ONE_BY_ONE_PNG } from './imageFixture';
 
 const processMocks = vi.hoisted(() => ({
   runSandboxProcess: vi.fn(),
@@ -106,6 +110,7 @@ const processFailure = (stderr: string) => ({
   stderr,
   timedOut: false,
 });
+const execFileAsync = promisify(execFile);
 
 function textStream(text: string): ReadableStream<string> {
   return new ReadableStream<string>({
@@ -132,6 +137,48 @@ function deferred<T>(): {
 
 describe('ModalSandboxClient', () => {
   const files = new Map<string, Uint8Array>();
+
+  test('bounds image transfer and preserves valid image bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'modal-image-limit-'));
+    try {
+      await writeFile(join(root, 'image.png'), ONE_BY_ONE_PNG);
+      const session = await new ModalSandboxClient({
+        appName: 'sandbox-tests',
+      }).create(new Manifest({ root }));
+      let transferred = 0;
+      sandboxExecMock.mockImplementation(async (argv: string[]) => {
+        const { stdout, stderr } = await promisify(execFile)(
+          argv[0],
+          argv.slice(1),
+          {
+            maxBuffer: 64 * 1024 * 1024,
+          },
+        );
+        if (argv[2]?.includes('head -c')) {
+          transferred += Buffer.from(stdout, 'base64').byteLength;
+        }
+        return {
+          stdout: textStream(stdout),
+          stderr: textStream(stderr),
+          wait: async () => 0,
+        };
+      });
+      const image = await session.viewImage({ path: 'image.png' });
+      expect((image.image as { data: Uint8Array }).data).toEqual(
+        ONE_BY_ONE_PNG,
+      );
+      await truncate(join(root, 'image.png'), 32 * 1024 * 1024);
+      transferred = 0;
+      await expect(session.viewImage({ path: 'image.png' })).rejects.toThrow(
+        'Image file exceeds the 10 MB limit: image.png',
+      );
+      // The wire payload includes five bytes of read status.
+      expect(transferred).toBe(10 * 1024 * 1024 + 6);
+      expect(sandboxFilesystemReadBytesMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   beforeEach(() => {
     files.clear();
@@ -295,6 +342,160 @@ describe('ModalSandboxClient', () => {
     sandboxesCreateMock.mockResolvedValue(sandbox);
     sandboxesFromIdMock.mockResolvedValue(sandbox);
   });
+
+  test.each(['stdout', 'stderr'] as const)(
+    'bounds capped Modal path validation %s before reading file data',
+    async (stream) => {
+      const session = await new ModalSandboxClient().create(new Manifest(), {
+        appName: 'sandbox-tests',
+      });
+      const original = sandboxExecMock.getMockImplementation()!;
+      const cancelled = vi.fn();
+      let pulled = 0;
+      let fileReads = 0;
+      const overflowing = new ReadableStream<string>({
+        pull(controller) {
+          pulled++;
+          if (pulled <= 20) controller.enqueue('X'.repeat(8192));
+          else controller.close();
+        },
+        cancel: cancelled,
+      });
+      sandboxExecMock.mockClear();
+      sandboxExecMock.mockImplementation(async (argv, options) => {
+        const path = resolvedRemotePathFromValidationCommand(argv.at(-1) ?? '');
+        if (!path) {
+          fileReads++;
+          return await original(argv, options);
+        }
+        expect(argv.slice(0, 2)).toEqual(['/bin/sh', '-c']);
+        expect(options).toEqual({
+          mode: 'text',
+          workdir: session.state.manifest.root,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+        return {
+          stdout: stream === 'stdout' ? overflowing : textStream(`${path}\n`),
+          stderr: stream === 'stderr' ? overflowing : textStream(''),
+          wait: async () => 0,
+        };
+      });
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes: 0, runAs: 'sandbox-user' }),
+      ).rejects.toThrow(/limit/u);
+      expect(cancelled).toHaveBeenCalledOnce();
+      expect(pulled).toBeLessThan(12);
+      expect(fileReads).toBe(0);
+      expect(sandboxTerminateMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'keeps capped Modal reads out of writable login startup files',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'modal-file-startup-'));
+      try {
+        await writeFile(join(root, 'tiny'), 'ABCD');
+        await writeFile(join(root, 'payload'), 'X'.repeat(8 * 1024 * 1024));
+        await writeFile(
+          join(root, '.profile'),
+          `printf 'login-profile-loaded\\n'\ncommand() { /bin/cat '${root}/payload'; }\ntest() { return 0; }\n`,
+        );
+        const session = await new ModalSandboxClient().create(
+          new Manifest({ root, environment: { HOME: root } }),
+          { appName: 'sandbox-tests' },
+        );
+        let transferred = 0;
+        sandboxExecMock.mockImplementation(async (argv, options) => {
+          const { stdout, stderr } = await execFileAsync(
+            argv[0],
+            argv.slice(1),
+            {
+              env: { ...process.env, HOME: root, ...options?.env },
+              maxBuffer: 16 * 1024 * 1024,
+            },
+          );
+          if (argv.at(-1)?.includes('head -c')) transferred += stdout.length;
+          return {
+            stdout: textStream(stdout),
+            stderr: textStream(stderr),
+            wait: async () => 0,
+          };
+        });
+        const user = (await execFileAsync('id', ['-un'])).stdout.trim();
+        for (const runAs of [undefined, user]) {
+          expect(
+            Array.from(
+              await session.readFile({ path: 'tiny', maxBytes: 4, runAs }),
+            ),
+          ).toEqual([65, 66, 67, 68]);
+        }
+        expect(transferred).toBe(26);
+        sandboxFilesystemReadBytesMock.mockResolvedValue(Buffer.from('ABCD'));
+        expect(Array.from(await session.readFile({ path: 'tiny' }))).toEqual([
+          65, 66, 67, 68,
+        ]);
+        expect(transferred).toBe(26);
+        expect(
+          await session.execCommand({
+            cmd: 'printf user-command',
+            shell: '/bin/sh',
+            login: true,
+          }),
+        ).toContain('login-profile-loaded');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each(['single stdout chunk', 'endless stdout', 'single stderr chunk'])(
+    'cancels bounded Modal file streams on %s without waiting for the producer',
+    async (scenario) => {
+      const session = await new ModalSandboxClient().create(new Manifest(), {
+        appName: 'sandbox-tests',
+      });
+      const original = sandboxExecMock.getMockImplementation();
+      const stdoutCancelled = vi.fn();
+      const stderrCancelled = vi.fn();
+      let pulled = 0;
+      const overflowing = (cancel: () => void, diagnostic = false) =>
+        new ReadableStream<string>({
+          pull(controller) {
+            pulled++;
+            controller.enqueue(
+              scenario === 'endless stdout'
+                ? 'AAAA'
+                : 'X'.repeat(diagnostic ? 8193 : 1024 * 1024),
+            );
+          },
+          cancel,
+        });
+      const idle = (cancel: () => void) =>
+        new ReadableStream<string>({ cancel });
+      sandboxExecMock.mockImplementation(async (argv, options) => {
+        if (!argv.at(-1)?.includes('head -c')) return original!(argv, options);
+        return {
+          stdout:
+            scenario === 'single stderr chunk'
+              ? idle(stdoutCancelled)
+              : overflowing(stdoutCancelled),
+          stderr:
+            scenario === 'single stderr chunk'
+              ? overflowing(stderrCancelled, true)
+              : idle(stderrCancelled),
+          wait: () => new Promise<number>(() => {}),
+        };
+      });
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes: 4 }),
+      ).rejects.toThrow(/limit/);
+      expect(stdoutCancelled).toHaveBeenCalledOnce();
+      expect(stderrCancelled).toHaveBeenCalledOnce();
+      expect(pulled).toBeLessThan(8);
+    },
+  );
 
   test.each(['constructor', 'create options', 'undefined override'] as const)(
     'enforces archive limits from %s before hydration side effects',

@@ -9,6 +9,11 @@ import {
 } from '@openai/agents-core/sandbox';
 import { withExclusiveSandboxManifestMutation } from '@openai/agents-core/sandbox/internal';
 import { describe, expect, test, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { ONE_BY_ONE_PNG } from './imageFixture';
 import {
   assertCoreConcurrencyLimitsUnsupported,
@@ -80,6 +85,20 @@ class FakeRemoteSession extends RemoteSandboxSessionBase<FakeRemoteSessionState>
         .replace(/^'|'$/g, '');
       return { status: this.dirs.has(path) ? 0 : 1 };
     }
+    if (command.includes('head -c ')) {
+      const path = command.match(/exec 3< '([^']+)'/)?.[1] ?? '';
+      const maxBytes = Number(command.match(/head -c (\d+)/)?.[1]);
+      const bytes = this.files.get(path);
+      return bytes
+        ? {
+            status: 0,
+            stdout: Buffer.concat([
+              Buffer.from(bytes.subarray(0, maxBytes)),
+              Buffer.from('\n000\n'),
+            ]).toString('base64'),
+          }
+        : { status: 66 };
+    }
     return {
       status: 0,
       stdout: `ran ${command}`,
@@ -133,6 +152,38 @@ class FakeRemoteSession extends RemoteSandboxSessionBase<FakeRemoteSessionState>
     port: number,
   ): Promise<string> {
     return `https://sandbox.example.com:${port}`;
+  }
+}
+
+// Execute the provider wire command locally to measure bytes crossing its boundary.
+class LocalImageReadSession extends FakeRemoteSession {
+  transferredBytes = 0;
+
+  constructor(root: string) {
+    super();
+    this.state.manifest = new Manifest({ root });
+  }
+
+  protected override async readRemoteFile(path: string): Promise<Uint8Array> {
+    const bytes = await readFile(path);
+    this.transferredBytes += bytes.byteLength;
+    return bytes;
+  }
+
+  protected override async runRemoteCommand(
+    command: string,
+    options: RemoteSandboxCommandOptions,
+  ): Promise<RemoteSandboxCommandResult> {
+    this.commands.push({ command, options });
+    const { stdout, stderr } = await promisify(execFile)(
+      '/bin/sh',
+      ['-c', command],
+      {
+        maxBuffer: 64 * 1024 * 1024,
+      },
+    );
+    this.transferredBytes += Buffer.from(stdout, 'base64').byteLength;
+    return { status: 0, stdout, stderr };
   }
 }
 
@@ -882,4 +933,54 @@ describe('shared sandbox session helpers', () => {
     expect(chownCommand).toContain('sandbox-user');
     expect(chownCommand).toContain('/workspace/notes.txt');
   });
+});
+
+describe('remote image transfer limit', () => {
+  test.each([undefined, 'sandbox-user'])(
+    'rejects oversized images after a bounded transfer with runAs=%s',
+    async (runAs) => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-image-limit-'));
+      try {
+        const handle = await open(join(root, 'large.png'), 'w');
+        try {
+          await handle.write(ONE_BY_ONE_PNG);
+          await handle.truncate(32 * 1024 * 1024);
+        } finally {
+          await handle.close();
+        }
+        const session = new LocalImageReadSession(root);
+        await expect(
+          session.viewImage({ path: 'large.png', runAs }),
+        ).rejects.toThrow('Image file exceeds the 10 MB limit: large.png');
+        expect(session.transferredBytes).toBeLessThanOrEqual(
+          10 * 1024 * 1024 + 6,
+        );
+        if (runAs) {
+          expect(session.commands.at(-1)?.options.runAs).toBe(runAs);
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.each([ONE_BY_ONE_PNG.byteLength, 10 * 1024 * 1024])(
+    'preserves supported images of %i bytes',
+    async (size) => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-image-control-'));
+      try {
+        const bytes = new Uint8Array(size);
+        bytes.set(ONE_BY_ONE_PNG);
+        await writeFile(join(root, 'image.png'), bytes);
+        const image = await new LocalImageReadSession(root).viewImage({
+          path: 'image.png',
+        });
+        const payload = image.image as { data: Uint8Array; mediaType: string };
+        expect(payload.mediaType).toBe('image/png');
+        expect(Buffer.from(payload.data).equals(bytes)).toBe(true);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

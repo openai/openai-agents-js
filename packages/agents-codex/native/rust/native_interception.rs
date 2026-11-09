@@ -1368,14 +1368,13 @@ impl Control {
         state.timeout.is_some() && (self.root || state.scope == Scope::ThreadTree)
     }
 
-    pub(crate) fn capture_mcp_source(&self) -> ProfileMcpSource {
-        self.profile_policies.fetch_max(1, Ordering::AcqRel);
+    fn capture_mcp_rules(&self) -> Rules {
         let state = self
             .channel
             .state
             .lock()
             .expect("interception control poisoned");
-        let rules = state
+        state
             .tools
             .as_ref()
             .map(|rules| {
@@ -1385,8 +1384,29 @@ impl Control {
                     .map(|(name, rule)| (name.clone(), *rule))
                     .collect::<Rules>()
             })
-            .unwrap_or_default();
-        drop(state);
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn capture_mcp_policy(&self, binding: &codex_mcp::McpBinding) -> ProfileMcpPolicy {
+        let names = binding
+            .tools()
+            .into_iter()
+            .map(|tool| {
+                ToolName::new(
+                    Some(tool.callable_namespace.clone()),
+                    tool.callable_name.clone(),
+                )
+                .with_default_namespace()
+            })
+            .collect::<HashSet<_>>();
+        let mut rules = self.capture_mcp_rules();
+        rules.retain(|name, _| names.contains(name));
+        ProfileMcpPolicy { names, rules }
+    }
+
+    pub(crate) fn capture_mcp_source(&self) -> ProfileMcpSource {
+        self.profile_policies.fetch_max(1, Ordering::AcqRel);
+        let rules = self.capture_mcp_rules();
         ProfileMcpSource {
             result_selection: self
                 .mcp_results

@@ -3370,7 +3370,15 @@ export class Session<OutputT = string, Context = unknown> {
         !submissions.get(entry.run)!.outputOverride
       )
         submissions.get(entry.run)!.output = this.defaultOutput;
-      this.dispatchStart(entry.run, entry.parts);
+      try {
+        this.dispatchStart(entry.run, entry.parts);
+      } catch (error) {
+        entry.run.controller.abort(error);
+        entry.run.accepted.reject(error);
+        entry.run.completion.reject(error);
+        this.finishObservation(entry.run);
+        this.drainPending();
+      }
     }
   }
 
@@ -4134,6 +4142,17 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         result = await afterSubmissionRetirement(run, run.completion.promise);
       } catch (error) {
+        const next = submissions.get(run)?.next;
+        if (next && error instanceof OutputValidationError) {
+          try {
+            await afterSubmissionRetirement(next, next.accepted.promise);
+          } catch (admissionError) {
+            if (continuationWasSuperseded(admissionError)) throw error;
+            throw admissionError;
+          }
+          run = next;
+          continue;
+        }
         const previous = submissions.get(run)?.previous;
         if (previous && continuationWasSuperseded(error))
           return afterSubmissionRetirement(
@@ -4325,7 +4344,8 @@ export class Session<OutputT = string, Context = unknown> {
               names: selection.names ?? null,
               before_step:
                 (this.options.agentGraph !== undefined &&
-                  selection.names !== undefined) ||
+                  (selection.names !== undefined ||
+                    selection.prepareRequest !== undefined)) ||
                 selection.beforeStep !== undefined ||
                 selection.maxModelSteps !== undefined ||
                 selection.budget !== undefined,
@@ -4868,6 +4888,12 @@ export class Session<OutputT = string, Context = unknown> {
       }
       return;
     }
+    const retained =
+      unsampledSteering &&
+      this.threadOptions._managed_instructions === true &&
+      run.id !== null &&
+      submission !== undefined;
+    let predecessorValidationError: OutputValidationError | undefined;
     if (
       error === undefined &&
       submission?.output.parse &&
@@ -4890,14 +4916,13 @@ export class Session<OutputT = string, Context = unknown> {
           this.startOutputRepair(run, output);
           return;
         }
-        error = cause;
+        // A retained successor owns final validation. Keep this exact failure
+        // for the typed fallback if native refuses that continuation.
+        if (retained && cause instanceof OutputValidationError)
+          predecessorValidationError = cause;
+        else error = cause;
       }
     }
-    const retained =
-      unsampledSteering &&
-      this.threadOptions._managed_instructions === true &&
-      run.id !== null &&
-      submission !== undefined;
     if (error === undefined && retained) {
       // Abort listeners run synchronously and may cancel or close this Session.
       // Keep the original owner until they finish, then recheck admission.
@@ -4975,10 +5000,10 @@ export class Session<OutputT = string, Context = unknown> {
                 : 'failed',
           errorType: error instanceof Error ? error.name : null,
         });
-      this.drainPending();
-      if (error !== undefined) {
-        run.accepted.reject(error);
-        run.completion.reject(error);
+      const settlementError = error ?? predecessorValidationError;
+      if (settlementError !== undefined) {
+        run.accepted.reject(settlementError);
+        run.completion.reject(settlementError);
       } else if (run.id !== null) {
         run.completion.resolve({
           finalOutput: output,
@@ -4992,6 +5017,7 @@ export class Session<OutputT = string, Context = unknown> {
         run.accepted.reject(missing);
         run.completion.reject(missing);
       }
+      this.drainPending();
     } finally {
       this.finishObservation(run);
     }
@@ -8812,17 +8838,22 @@ export class Session<OutputT = string, Context = unknown> {
         return;
       }
       for (const server of next.mcp) {
-        if (
-          !this.hasOperationMcp &&
-          !(server instanceof HttpMCP && server.activation === 'operation')
-        )
-          continue;
         const opening = this.openingMcpTools.find(
           (original) => original.name === server.name,
         );
         if (
           !opening ||
-          server.tools.some((raw) => !opening.tools.includes(raw)) ||
+          server.tools.some((raw) => !opening.tools.includes(raw))
+        )
+          throw new TypeError(
+            'Updated MCP raw identities and activation must match Session opening',
+          );
+        if (
+          !this.hasOperationMcp &&
+          !(server instanceof HttpMCP && server.activation === 'operation')
+        )
+          continue;
+        if (
           (opening instanceof HttpMCP &&
             opening.activation === 'operation' &&
             !(server instanceof HttpMCP)) ||
