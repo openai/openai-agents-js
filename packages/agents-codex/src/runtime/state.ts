@@ -19,7 +19,7 @@ import {
   isCellNumber,
   decode,
   encode,
-  jsonValue,
+  losslessJsonValueSchema as jsonValue,
   type JsonValue,
   jsonObject,
   parseNative,
@@ -241,11 +241,11 @@ const rootState = {
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
   history: z.array(losslessJsonObjectSchema),
-  pending_actions: z.array(jsonObject).default([]),
+  pending_actions: z.array(losslessJsonObjectSchema).default([]),
   recovery: z
     .object({
       interrupted_thread_ids: z.array(z.string()),
-      expired_actions: z.array(jsonObject),
+      expired_actions: z.array(losslessJsonObjectSchema),
     })
     .nullable()
     .optional(),

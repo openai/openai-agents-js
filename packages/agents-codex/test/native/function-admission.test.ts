@@ -357,6 +357,11 @@ it('gives a native child its own permits while a parent function awaits it', asy
     expect((await turn.wait()).finalOutput).toBe('root done');
     expect(seen).toHaveLength(2);
     expect(seen.filter((id) => id !== null)).toHaveLength(1);
+    const children = await Array.fromAsync(session.subagents());
+    expect(children).toHaveLength(1);
+    const childTurn = children[0]!.turn;
+    if (!childTurn) throw new Error('Expected the original child turn');
+    expect((await childTurn.wait()).finalOutput).toBe('child done');
     server.assertExhausted();
   } finally {
     rootEntered.resolve();

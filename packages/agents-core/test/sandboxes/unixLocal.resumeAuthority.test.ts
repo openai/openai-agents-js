@@ -22,6 +22,7 @@ import {
   shell,
 } from '../../src/sandbox/local';
 import { Runner } from '../../src';
+import type { RemoteSnapshotStore } from '../../src/sandbox/snapshot';
 import {
   ScriptedModel,
   assistantMessage,
@@ -1124,13 +1125,357 @@ it('restores remote RunState using its separate trusted snapshot configuration',
   await session.close();
   const state = markRunStateSessionState(
     await new UnixLocalSandboxClient().deserializeSessionState(saved),
-    { clientOptions: { workspaceBaseDir: base }, snapshot },
+    {
+      clientOptions: {
+        workspaceBaseDir: base,
+        resumeAuthority: { remoteSnapshotId: session.state.snapshot!.id },
+      },
+      snapshot,
+    },
   );
   const restored = await new UnixLocalSandboxClient().resume(state);
   expect(
     Buffer.from(await restored.readFile({ path: 'remote.txt' })).toString(),
   ).toBe('remote data');
   await restored.close();
+});
+
+it('rejects unbound and forged remote IDs before shared-store effects', async () => {
+  const store = new InMemoryRemoteSnapshotStore();
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', id: 'tenant-a', store },
+  });
+  const session = await client.create(
+    new Manifest({
+      entries: { 'marker.txt': { type: 'file', content: 'tenant A' } },
+    }),
+  );
+  const saved = JSON.parse(
+    JSON.stringify(await client.serializeSessionState(session.state)),
+  );
+  await session.close();
+  const exists = vi.spyOn(store, 'exists');
+  const load = vi.spyOn(store, 'load');
+  const save = vi.spyOn(store, 'save');
+  const remove = vi.spyOn(store, 'delete');
+  await expect(
+    client.resume(await client.deserializeSessionState(saved)),
+  ).rejects.toThrow(/resumeAuthority.remoteSnapshotId/);
+  const forged = { ...saved, snapshot: { type: 'remote', id: 'tenant-b' } };
+  const bound = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', id: 'tenant-a', store },
+    resumeAuthority: { remoteSnapshotId: 'tenant-a' },
+  });
+  await expect(
+    bound.resume(await bound.deserializeSessionState(forged)),
+  ).rejects.toThrow(/resumeAuthority.remoteSnapshotId/);
+  await expect(
+    bound.serializeSessionState(await bound.deserializeSessionState(forged)),
+  ).rejects.toThrow(/resumeAuthority.remoteSnapshotId/);
+  expect(exists).not.toHaveBeenCalled();
+  expect(load).not.toHaveBeenCalled();
+  expect(save).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  const restored = await bound.resume(
+    await bound.deserializeSessionState(saved),
+  );
+  expect(
+    Buffer.from(await restored.readFile({ path: 'marker.txt' })).toString(),
+  ).toBe('tenant A');
+  await restored.close();
+});
+
+it('preserves returned remote IDs through live copies and snapshot replacement', async () => {
+  const backing = new InMemoryRemoteSnapshotStore();
+  let sequence = 0;
+  const store = {
+    save: vi.fn((args) =>
+      backing.save({ ...args, id: `allocated-${++sequence}` }),
+    ),
+    exists: vi.fn((args) => backing.exists(args)),
+    load: vi.fn((args) => backing.load(args)),
+    delete: vi.fn((args) => backing.delete(args)),
+  };
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', id: 'save-request', store },
+  });
+  const source = await client.create(
+    new Manifest({
+      entries: {
+        'marker.txt': { type: 'file', content: 'allocated content' },
+      },
+    }),
+  );
+  await client.serializeSessionState(source.state);
+  const copied = rebindPersistedPathGrants(source.state, source.state.manifest);
+  await rm(source.state.workspaceRootPath, { recursive: true, force: true });
+  const restored = await client.resume(copied);
+  expect(store.load).toHaveBeenCalledWith({ id: 'allocated-1' });
+  await client.serializeSessionState(restored.state);
+  expect(store.delete).toHaveBeenCalledWith({ id: 'allocated-1' });
+  expect(restored.state.snapshot).toMatchObject({ id: 'allocated-2' });
+  await client.resume(restored.state);
+  await restored.close();
+});
+
+it('does not redirect remote load or cleanup when store callbacks mutate state', async () => {
+  const backing = new InMemoryRemoteSnapshotStore();
+  const store = {
+    save: vi.fn((args) => backing.save(args)),
+    exists: vi.fn((args) => backing.exists(args)),
+    load: vi.fn((args) => backing.load(args)),
+    delete: vi.fn((args) => backing.delete(args)),
+  };
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', store },
+  });
+  const source = await client.create(
+    new Manifest({
+      entries: {
+        'marker.txt': { type: 'file', content: 'safe' },
+      },
+    }),
+  );
+  await client.serializeSessionState(source.state);
+  const authorizedId = source.state.snapshot!.id;
+  await rm(source.state.workspaceRootPath, { recursive: true, force: true });
+  store.exists.mockImplementationOnce(async (args) => {
+    source.state.snapshot = { type: 'remote', id: 'tenant-b' };
+    return backing.exists(args);
+  });
+  const restored = await client.resume(source.state);
+  expect(store.load).toHaveBeenCalledWith({ id: authorizedId });
+  expect(store.load).not.toHaveBeenCalledWith({ id: 'tenant-b' });
+  expect(restored.state.snapshot).toMatchObject({ id: authorizedId });
+  store.save.mockImplementationOnce(async (args) => {
+    restored.state.snapshot!.id = 'tenant-b';
+    return backing.save(args);
+  });
+  await client.serializeSessionState(restored.state);
+  expect(store.delete).toHaveBeenCalledWith({ id: authorizedId });
+  expect(store.delete).not.toHaveBeenCalledWith({ id: 'tenant-b' });
+  await restored.close();
+});
+
+it.each(['noop', 'local'] as const)(
+  'rejects forged prior remote cleanup under %s policy',
+  async (type) => {
+    const store = new InMemoryRemoteSnapshotStore();
+    const sourceClient = new UnixLocalSandboxClient({
+      workspaceBaseDir: base,
+      snapshot: { type: 'remote', id: 'tenant-a', store },
+    });
+    const session = await sourceClient.create(new Manifest());
+    await sourceClient.serializeSessionState(session.state);
+    const remove = vi.spyOn(store, 'delete');
+    session.state.snapshot!.id = 'tenant-b';
+    const client = new UnixLocalSandboxClient({
+      snapshot:
+        type === 'noop'
+          ? new NoopSnapshotSpec()
+          : { type: 'local', baseDir: base },
+    });
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /remoteSnapshotId/,
+    );
+    expect(remove).not.toHaveBeenCalled();
+    await session.close();
+  },
+);
+
+it('retains the bound remote store when changing to a noop save policy', async () => {
+  const store = new InMemoryRemoteSnapshotStore();
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', id: 'previous', store },
+  });
+  const session = await client.create(
+    new Manifest({
+      entries: {
+        'marker.txt': { type: 'file', content: 'remote content' },
+      },
+    }),
+  );
+  const saved = JSON.parse(
+    JSON.stringify(await client.serializeSessionState(session.state)),
+  );
+  await session.close();
+  const resumed = await client.resume(
+    await client.deserializeSessionState(saved),
+    {
+      clientOptions: {
+        snapshot: new NoopSnapshotSpec(),
+        resumeAuthority: { remoteSnapshotId: 'previous' },
+      },
+    },
+  );
+  expect(
+    Buffer.from(await resumed.readFile({ path: 'marker.txt' })).toString(),
+  ).toBe('remote content');
+  const serialized = await client.serializeSessionState(resumed.state);
+  expect(serialized.snapshot).toBeNull();
+  expect(await store.exists({ id: 'previous' })).toBe(false);
+  await resumed.close();
+});
+
+it('resumes a rotated remote snapshot while previous cleanup is pending', async () => {
+  const backing = new InMemoryRemoteSnapshotStore();
+  let sequence = 0;
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const store = {
+    save: (args) => backing.save({ ...args, id: `rotated-${++sequence}` }),
+    exists: (args) => backing.exists(args),
+    load: (args) => backing.load(args),
+    delete: vi.fn(async (args) => {
+      entered();
+      await released;
+      await backing.delete(args);
+    }),
+  } satisfies RemoteSnapshotStore;
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', store },
+  });
+  const source = await client.create(
+    new Manifest({
+      entries: { 'marker.txt': { type: 'file', content: 'initial' } },
+    }),
+  );
+  await client.serializeSessionState(source.state);
+  await source.materializeEntry({
+    path: 'marker.txt',
+    entry: { type: 'file', content: 'rotated' },
+  });
+  const pending = client.serializeSessionState(source.state);
+  try {
+    await waiting;
+    const resumed = await client.resume(source.state);
+    expect(resumed.state.snapshot).toMatchObject({ id: 'rotated-2' });
+    expect(
+      Buffer.from(await resumed.readFile({ path: 'marker.txt' })).toString(),
+    ).toBe('rotated');
+    release();
+    await pending;
+    expect(store.delete).toHaveBeenCalledWith({ id: 'rotated-1' });
+    await resumed.close();
+  } finally {
+    release();
+    await pending.catch(() => {});
+    await source.close();
+  }
+});
+
+it.each(['rejection', 'synchronous throw'] as const)(
+  'retains rotated remote recovery after cleanup %s',
+  async (failure) => {
+    const backing = new InMemoryRemoteSnapshotStore();
+    let sequence = 0;
+    let fail = true;
+    const store = {
+      save: (args) => backing.save({ ...args, id: `rotated-${++sequence}` }),
+      exists: (args) => backing.exists(args),
+      load: (args) => backing.load(args),
+      delete: vi.fn((args) => {
+        if (fail) {
+          if (failure === 'synchronous throw')
+            throw new Error('synthetic cleanup failure');
+          return Promise.reject(new Error('synthetic cleanup failure'));
+        }
+        return backing.delete(args);
+      }),
+    } satisfies RemoteSnapshotStore;
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: base,
+      snapshot: { type: 'remote', store },
+    });
+    const source = await client.create(new Manifest());
+    await client.serializeSessionState(source.state);
+    const pending = client.serializeSessionState(source.state);
+    if (failure === 'synchronous throw')
+      await expect(pending).rejects.toThrow('synthetic cleanup failure');
+    else await pending;
+    expect(source.state.snapshot).toMatchObject({ id: 'rotated-2' });
+    const resumed = await client.resume(source.state);
+    expect(resumed.state.snapshot).toMatchObject({ id: 'rotated-2' });
+    fail = false;
+    await client.serializeSessionState(resumed.state);
+    expect(store.delete).toHaveBeenLastCalledWith({ id: 'rotated-2' });
+    expect(await backing.exists({ id: 'rotated-3' })).toBe(true);
+    await resumed.close();
+    await source.close();
+  },
+);
+
+it('does not renew stale copied authority when a remote snapshot is published', async () => {
+  const backing = new InMemoryRemoteSnapshotStore();
+  let sequence = 0;
+  const store = {
+    save: async (args) => {
+      if (++sequence === 2)
+        await source.materializeEntry({
+          path: 'changed.txt',
+          entry: { type: 'file', content: 'changed' },
+        });
+      return backing.save({ ...args, id: `rotated-${sequence}` });
+    },
+    exists: (args) => backing.exists(args),
+    load: (args) => backing.load(args),
+    delete: (args) => backing.delete(args),
+  } satisfies RemoteSnapshotStore;
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', store },
+  });
+  const source = await client.create(new Manifest());
+  await client.serializeSessionState(source.state);
+  const copied = rebindPersistedPathGrants(source.state, source.state.manifest);
+  await expect(client.serializeSessionState(copied)).rejects.toThrow(
+    /manifest changed/,
+  );
+  expect(copied.snapshot).toMatchObject({ id: 'rotated-2' });
+  await expect(client.resume(copied)).rejects.toThrow(/manifest changed/);
+  expect(() => rebindPersistedPathGrants(copied, copied.manifest)).toThrow(
+    /manifest changed/,
+  );
+  await source.close();
+});
+
+it('does not bind a remote ID substituted by a public snapshot setter', async () => {
+  const store = new InMemoryRemoteSnapshotStore();
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'remote', id: 'actual-id', store },
+  });
+  const session = await client.create(new Manifest());
+  let snapshot = session.state.snapshot;
+  Object.defineProperty(session.state, 'snapshot', {
+    configurable: true,
+    get: () => snapshot,
+    set(value) {
+      snapshot = value;
+      if (value?.type === 'remote') value.id = 'forged-id';
+    },
+  });
+  await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+    /remoteSnapshotId/,
+  );
+  await expect(client.resume(session.state)).rejects.toThrow(
+    /remoteSnapshotId/,
+  );
+  expect(await store.exists({ id: 'actual-id' })).toBe(true);
+  expect(await store.exists({ id: 'forged-id' })).toBe(false);
+  await session.close();
 });
 
 it('does not let mutable live state redirect snapshot creation', async () => {

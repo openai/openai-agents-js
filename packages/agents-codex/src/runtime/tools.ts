@@ -384,7 +384,7 @@ export function tool<
     timeoutErrorFunction,
     deferLoading: options.deferLoading ?? false,
     parameters: decode(
-      jsonValue,
+      losslessJsonValueSchema,
       JSON.stringify(z.toJSONSchema(parameters, { io: 'input' })),
     ),
     async [prepareInvocation](
@@ -636,7 +636,7 @@ export function captureTools(
       ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
-      parameters: jsonValue.parse(tool.parameters),
+      parameters: losslessJsonValueSchema.parse(tool.parameters),
     });
     declarationOwners.set(binding, declarationOwners.get(tool) ?? tool);
     return binding;

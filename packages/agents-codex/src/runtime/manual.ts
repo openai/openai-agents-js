@@ -2,7 +2,6 @@ import { z } from 'zod';
 import {
   copyJsonValue,
   decode,
-  jsonValue,
   losslessJsonValueSchema,
   type JsonValue,
 } from './binding';
@@ -147,7 +146,7 @@ export function manualTool<
   const { parameters, result } = options;
   const definition: Definition = {
     resultSchema: decode(
-      jsonValue,
+      losslessJsonValueSchema,
       JSON.stringify(z.toJSONSchema(result, { io: 'input' })),
     ),
     parseInput: (args) => parameters.parse(args),
@@ -160,7 +159,7 @@ export function manualTool<
       description: options.description,
       deferLoading: options.deferLoading,
       parameters: decode(
-        jsonValue,
+        losslessJsonValueSchema,
         JSON.stringify(z.toJSONSchema(parameters, { io: 'input' })),
       ),
     },
@@ -194,7 +193,7 @@ export function assembleManualTool<Input, Result>(
 
 /** @internal Current declarations describe restore compatibility, never persisted validators. */
 export function manualResultSchema(tool: ManualTool): JsonValue {
-  return jsonValue.parse(tool[manualDefinition].resultSchema);
+  return losslessJsonValueSchema.parse(tool[manualDefinition].resultSchema);
 }
 
 /** @internal Parse once; only a live request for this declaration may consume the result. */

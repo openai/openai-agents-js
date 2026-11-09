@@ -14,6 +14,7 @@ export const nativeEventSchema = z
     msg: z
       .object({
         type: z.string(),
+        data: losslessJsonValueSchema.optional(),
         arguments: losslessJsonValueSchema.optional(),
         tool_completion: losslessJsonValueSchema.optional(),
         items: losslessJsonValueSchema.optional(),

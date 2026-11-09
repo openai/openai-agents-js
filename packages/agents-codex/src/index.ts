@@ -123,7 +123,7 @@ export {
 } from './runtime/executor-decisions';
 export type { ExecutorPolicyDecision } from './runtime/executor-decisions';
 export { Environment } from './runtime/environment';
-export type { NetworkPolicy } from './runtime/network-policy';
+export { NetworkPolicy } from './runtime/network-policy';
 export type {
   EnvironmentSource,
   EnvironmentLease,
@@ -366,3 +366,7 @@ export type {
 
 export { isFunctionApprovalRequest } from './runtime/manual';
 export type { FunctionApprovalRequest } from './runtime/manual';
+export type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageCounters,
+} from './runtime/realtime-usage';

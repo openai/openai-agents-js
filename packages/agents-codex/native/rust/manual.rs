@@ -774,8 +774,7 @@ impl PythonTools {
 
     pub(crate) fn record_native_manual_completion(&self, input: ToolFinishInput<'_>) {
         let manual = self.manual.lock().expect("manual tools poisoned");
-        if !manual.slots.is_empty()
-            && let Some(turn) = input.turn_store.get::<ManualNativeTurn>()
+        if let Some(turn) = input.turn_store.get::<ManualNativeTurn>()
             && Weak::ptr_eq(&manual.native_turn, &Arc::downgrade(&turn))
         {
             turn.completed
@@ -890,9 +889,6 @@ impl PythonTools {
 
     pub(crate) fn observe_manual_event(&self, event: &Event) {
         let mut manual = self.manual.lock().expect("manual tools poisoned");
-        if manual.slots.is_empty() {
-            return;
-        }
         match &event.msg {
             EventMsg::TurnStarted(start) if start.turn_id == event.id => {
                 // Reset even on original-ID recovery. This completion receipt
@@ -1697,10 +1693,11 @@ mod progress_tests {
     }
 
     #[tokio::test]
-    async fn sampled_call_mutation_wakes_an_already_registered_wait() {
+    async fn sampled_call_mutation_wakes_without_opening_manual_slots() {
         let tools = waiting_tools();
         {
             let mut manual = tools.manual.lock().unwrap();
+            manual.slots.clear();
             manual.attempt = Some("physical-turn".into());
             manual.observed_calls.insert("manual-call".into());
             assert!(!manual.completed_calls.contains("manual-call"));

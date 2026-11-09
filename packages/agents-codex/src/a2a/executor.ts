@@ -11,6 +11,7 @@ import {
   type TaskStore,
 } from '@a2a-js/sdk/server';
 import { type Agent, type Session } from '../runtime/public-agent';
+import { Session as CoreSession } from '../runtime/session';
 import type { Environment } from '../runtime/environment';
 import type { EnvironmentSource } from '../runtime/environment-source';
 import {
@@ -243,21 +244,13 @@ export class NativeA2AExecutor<
             generation: payload.generation,
             result: payload.result,
           };
-          manual = tools.find(
-            (tool) =>
-              tool.kind === 'manual' && tool.name === record!.pending?.name,
-          ) as ManualTool | undefined;
           if (
-            !reply ||
-            !manual ||
             !record.pending ||
             !record.checkpoint ||
             reply.generation !== record.generation ||
-            reply.challenge !== record.pending.challenge ||
-            declaration(manual) !== record.pending.declaration
+            reply.challenge !== record.pending.challenge
           )
             throw new A2AError('authorization');
-          preparedResult = prepareManualResult(manual, reply.result);
         }
         const publish = async (
           state: NativeA2ATask['state'],
@@ -297,14 +290,13 @@ export class NativeA2AExecutor<
           metadata: record?.desired.metadata,
         });
         const checkpoint = record?.checkpoint;
+        const waitingGeneration = record?.generation;
         const oldCall = record?.pending?.callId;
-        await publish(
-          record ? 'claimed' : 'running',
-          task(TaskState.TASK_STATE_WORKING),
-        );
-        this.#waiting.delete(scope.taskId);
+        if (!record)
+          await publish('running', task(TaskState.TASK_STATE_WORKING));
         let session: Session<Output, Context> | undefined;
         let closed = false;
+        let answerRejected = false;
         const stop = () => {
           if (session) void session.close().catch(() => {});
         };
@@ -323,14 +315,30 @@ export class NativeA2AExecutor<
           if (reply) {
             const pending = await session.pendingInteractions();
             await current();
-            if (
-              pending.length !== 1 ||
-              pending[0].type !== 'action_requested' ||
-              pending[0].subagentId !== null ||
-              pending[0].callId !== oldCall ||
-              !manual?.match(pending[0])
-            )
-              throw new A2AError('authorization');
+            try {
+              if (
+                pending.length !== 1 ||
+                pending[0].type !== 'action_requested' ||
+                pending[0].subagentId !== null ||
+                pending[0].callId !== oldCall
+              )
+                throw new A2AError('authorization');
+              manual = (session as CoreSession<Output, Context>)._manualTool(
+                pending[0],
+              );
+              if (
+                !manual ||
+                declaration(manual) !== record!.pending!.declaration
+              )
+                throw new A2AError('authorization');
+              preparedResult = prepareManualResult(manual, reply.result);
+            } catch (error) {
+              answerRejected = true;
+              throw error;
+            }
+            await current();
+            await publish('claimed', task(TaskState.TASK_STATE_WORKING));
+            this.#waiting.delete(scope.taskId);
             await session.respond(pending[0].reply(preparedResult));
           } else {
             await session.submit(input!);
@@ -345,9 +353,9 @@ export class NativeA2AExecutor<
             )
               throw new A2AError('unsupported');
             const request = outcome.requests[0];
-            const tool = tools.find(
-              (entry) => entry.kind === 'manual' && entry.match(request),
-            ) as ManualTool | undefined;
+            const tool = (session as CoreSession<Output, Context>)._manualTool(
+              request,
+            );
             if (!tool) throw new A2AError('unsupported');
             const saved = await session.suspend();
             await current();
@@ -453,7 +461,14 @@ export class NativeA2AExecutor<
             }
           }
           await claim.current();
-          if (record?.state === 'completed' || record?.state === 'waiting')
+          if (
+            record?.state === 'completed' ||
+            (record?.state === 'waiting' &&
+              (record.generation !== waitingGeneration ||
+                (answerRejected &&
+                  !cleanupUnconfirmed &&
+                  !controller.signal.aborted)))
+          )
             throw error;
           // Recheck after ownership validation: before Session handoff, only the
           // original abort reason confirms clean cancellation. A distinct opening
@@ -477,6 +492,7 @@ export class NativeA2AExecutor<
             cleanupUnconfirmed ? 'unknown' : canceled ? 'canceled' : 'failed',
             desired,
           );
+          this.#waiting.delete(scope.taskId);
           // Unconfirmed cleanup must not become a successful cancellation acknowledgment.
           if (cleanupUnconfirmed) throw error;
         } finally {
