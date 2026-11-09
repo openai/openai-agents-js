@@ -379,7 +379,11 @@
     {
       "path": "0097-provider-owned-request-validation.patch",
       "sha256": "43ee308eaad0e9a518ecb1e8c00b80c7ab8151197e6b3c75635a50d1a9d1d495"
+    },
+    {
+      "path": "0101-native-request-extensions.patch",
+      "sha256": "fc28e524a2b71b3501d232cad8a2a3e420f8463f719c2415b89ab853b9beaa68"
     }
   ],
-  "result_tree": "c7782675ee2dd7a63db79dee741e4c677b573c0f"
+  "result_tree": "2449d06c7b2edf7d212b762fba8b4235962caea7"
 }

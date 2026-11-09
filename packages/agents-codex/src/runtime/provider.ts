@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from './config';
-import type { JsonObject } from './binding';
+import { copyJsonValue, type JsonObject } from './binding';
 import type { ToolRef } from './tools';
 import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
@@ -257,6 +257,11 @@ export interface ModelSettings {
   promptCacheRetention?: 'in_memory' | '24h' | null;
   /** Distinct from retention; omission leaves the provider default omitted. */
   promptCacheTtl?: '30m' | '12h' | null;
+  truncation?: 'auto' | 'disabled' | null;
+  /** Additional response fields; native replay and hosted-tool includes remain enabled. */
+  include?: readonly string[] | null;
+  contextManagement?: readonly JsonObject[] | null;
+  extraBody?: JsonObject | null;
 }
 
 /** @internal Capture nested settings before opening can await. */
@@ -281,6 +286,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'store',
     'promptCacheRetention',
     'promptCacheTtl',
+    'truncation',
+    'include',
+    'contextManagement',
+    'extraBody',
   ]);
   for (const key of Object.getOwnPropertyNames(source)) {
     if (!allowed.has(key))
@@ -318,6 +327,72 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
       } else if (key === 'parallelToolCalls' || key === 'store') {
         if (typeof value !== 'boolean')
           throw new TypeError(`${key} must be boolean or null`);
+      } else if (key === 'truncation') {
+        if (value !== 'auto' && value !== 'disabled')
+          throw new TypeError('truncation must be auto or disabled');
+      } else if (key === 'include') {
+        if (
+          !Array.isArray(value) ||
+          value.some((item) => typeof item !== 'string')
+        )
+          throw new TypeError('include must be an array of strings');
+        value = [...value];
+      } else if (key === 'contextManagement' || key === 'extraBody') {
+        if (key === 'contextManagement') {
+          if (
+            !Array.isArray(value) ||
+            value.some(
+              (item) =>
+                item === null ||
+                typeof item !== 'object' ||
+                Array.isArray(item),
+            )
+          )
+            throw new TypeError(
+              'contextManagement must be an array of JSON objects',
+            );
+        } else if (typeof value !== 'object' || Array.isArray(value))
+          throw new TypeError('extraBody must be a JSON object');
+        if (
+          key === 'extraBody' &&
+          Object.keys(value).some((field) =>
+            [
+              'type',
+              'generate',
+              'model',
+              'stream',
+              'input',
+              'instructions',
+              'tools',
+              'tool_choice',
+              'parallel_tool_calls',
+              'reasoning',
+              'store',
+              'stream_options',
+              'include',
+              'prompt_cache_key',
+              'text',
+              'client_metadata',
+              'access_programs',
+              'previous_response_id',
+              'conversation',
+              'service_tier',
+              'max_output_tokens',
+              'temperature',
+              'top_p',
+              'top_logprobs',
+              'metadata',
+              'prompt_cache_retention',
+              'prompt_cache_options',
+              'truncation',
+              'context_management',
+            ].includes(field),
+          )
+        )
+          throw new TypeError(
+            'extraBody cannot replace native request fields; use the corresponding model setting',
+          );
+        value = copyJsonValue(value);
       } else if (key === 'metadata') {
         if (typeof value !== 'object' || Array.isArray(value))
           throw new TypeError('metadata must be a string map');
@@ -365,6 +440,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'store',
         'promptCacheRetention',
         'promptCacheTtl',
+        'truncation',
+        'include',
+        'contextManagement',
+        'extraBody',
       ].includes(key)
     ) {
       throw new TypeError(`Invalid null model setting: ${key}`);
@@ -548,10 +627,14 @@ export function modelOverrides(
     store: 'store',
     promptCacheRetention: 'prompt_cache_retention',
     promptCacheTtl: 'prompt_cache_ttl',
+    truncation: 'truncation',
+    include: 'include',
+    contextManagement: 'context_management',
+    extraBody: 'extra_body',
   } as const;
   for (const [key, wire] of Object.entries(names)) {
     const value = selected[key as keyof typeof names];
-    if (value !== undefined) controls[wire] = value;
+    if (value !== undefined) controls[wire] = copyJsonValue(value);
   }
   if (selected.toolChoice !== undefined) {
     const choice = selected.toolChoice;
