@@ -32,7 +32,7 @@ Choose ownership before attaching a response reader:
 | `vercelResponse(turn, session)` or `agUiResponse(turn, session, outputType)` | Your application | Releases the reader and its local waits; work continues. |
 | `ownedVercelResponse(agent, input)` | The helper | Closes and joins its Session when the response closes; the provider remains caller-owned. |
 
-For work that should survive a response-reader disconnect, keep its worker and Session alive. Pass the actual issued Turn and owning Session to a passive helper:
+For work that should survive a response-reader disconnect, keep its worker and Session alive. Pass the actual issued Turn and owning Session to a passive helper. Keep the import at module scope and run the calls inside an asynchronous handler that already holds an open `session`:
 
 ```ts
 import { vercelResponse } from './vercel.js';
@@ -43,7 +43,7 @@ const response = vercelResponse(turn, session);
 
 This Vercel helper requires plain default output. A `Turn<string>` alone does not prove that the output is plain default text. A prompted string declaration is still outside this recipe. `ownedVercelResponse(agent, input)` checks the Agent's actual declaration before opening its own Session. That convenience wrapper closes and joins its Session when the response closes. It borrows the caller's provider. The passive helper never closes a Session or cancels a Turn.
 
-For AG-UI, pass the actual selected declaration as the third argument. Retain a submission override instead when one was selected:
+For AG-UI, pass the actual selected declaration as the third argument. This excerpt assumes `session` was opened from `agent` without an output override. Retain a Session or submission override instead when one was selected:
 
 ```ts
 import { agUiResponse } from './ag-ui.js';

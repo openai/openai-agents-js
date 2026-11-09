@@ -14,7 +14,7 @@ These examples use the `aisdk()` helper from `@openai/agents-extensions/ai-sdk` 
 
 ## Prerequisites
 
-- Run `pnpm install` at the repo root.
+- Follow the [classic example setup](../README.md) to install dependencies and build the SDK.
 - Export the API keys shown for your script in the table above before you run it.
 
 After you set the environment variable, run the corresponding command from the repository root. Each script prints the Agents runner's final output.

@@ -33,10 +33,10 @@ This guide uses `@openai/agents/classic`. For new text agents, start with the [n
    npm init -y
    ```
 
-2. [Install the alpha SDK](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application) to use the `@openai/agents/classic` import shown below. Install Zod 4 for tool schemas and structured outputs.
+2. [Install the alpha SDK](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application) to use the `@openai/agents/classic` import shown below. The manifest includes Zod 4 for tool schemas and structured outputs. Install `tsx` to run the TypeScript examples.
 
    ```bash
-   npm install zod@4
+   npm install --save-dev tsx
    ```
 
 3. Set an OpenAI API key. If you don't have one, follow [these instructions](https://platform.openai.com/docs/quickstart#create-and-export-an-api-key) to create an OpenAI API key.
@@ -101,9 +101,17 @@ The runner executes individual agents, handoffs, and tool calls.
 
 ## Putting it all together
 
-Put the complete example in your `index.js` file and run it. If your app is set up for TypeScript, use `index.ts` instead.
+Save the complete example as `index.ts` in your project directory.
 
 <Code lang="typescript" code={quickstartExample} title="Quickstart" />
+
+Run it from the same directory:
+
+```bash
+npx tsx index.ts
+```
+
+The triage agent hands the question to a tutor, and the script prints the final answer, such as `Paris`.
 
 ## View your traces
 

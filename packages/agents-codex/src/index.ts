@@ -197,6 +197,7 @@ export type {
 export type {
   OperationOptions,
   BeforeStepContext,
+  StepDecision,
   PrepareRequestContext,
 } from './runtime/session';
 

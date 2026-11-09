@@ -287,6 +287,10 @@ impl ThreadOptions {
         Ok(())
     }
 
+    pub(crate) fn matches_private_inputs(&self, config: &Value, runtime: &Value) -> bool {
+        config.as_object() == Some(&self.config) && runtime.as_object() == Some(&self.runtime)
+    }
+
     pub(crate) fn validate_local_authority(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.client_mcp_extensions.is_empty(),

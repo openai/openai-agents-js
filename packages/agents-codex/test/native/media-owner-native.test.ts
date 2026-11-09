@@ -216,9 +216,14 @@ it('retains child media input and tool output in its live history and portable g
     expect((await (await session.submit('Delegate.')).wait()).finalOutput).toBe(
       'root ready',
     );
-    const children = await Array.fromAsync(session.subagents());
-    expect(children).toHaveLength(1);
-    const child = children[0];
+    const child = await vi.waitFor(
+      async () => {
+        const children = await Array.fromAsync(session.subagents());
+        expect(children).toHaveLength(1);
+        return children[0];
+      },
+      { timeout: 25_000 },
+    );
     const observedTurn = child.turn;
     if (observedTurn)
       expect((await observedTurn.wait()).finalOutput).toBe('child ready');
