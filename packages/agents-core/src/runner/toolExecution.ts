@@ -29,7 +29,11 @@ import {
   isRedactedInvalidToolOutputError,
   refreshInvalidToolOutputFailure,
 } from '../toolOutputError';
-import { getTransferMessage, HandoffInputData } from '../handoff';
+import {
+  getFatalHandoffInputError,
+  getTransferMessage,
+  HandoffInputData,
+} from '../handoff';
 import {
   RunHandoffCallItem,
   RunHandoffOutputItem,
@@ -2753,6 +2757,7 @@ export async function executeHandoffCalls<
   parent?: Span<any>,
   validateHandoffAgent?: (agent: Agent<any, any>) => void,
   beforeInputFilter?: (input: HandoffInputData) => void,
+  signal?: AbortSignal,
 ): Promise<import('./steps').SingleStepResult> {
   newStepItems = [...newStepItems];
 
@@ -2802,10 +2807,44 @@ export async function executeHandoffCalls<
       }
 
       validateHandoffAgent?.(handoff.agent);
-      const newAgent = await handoff.onInvokeHandoff(
-        runContext,
-        actualHandoff.toolCall.arguments,
-      );
+      let newAgent: Agent<any, any>;
+      try {
+        newAgent = await handoff.onInvokeHandoff(
+          runContext,
+          actualHandoff.toolCall.arguments,
+        );
+      } catch (error) {
+        if (!handoff.errorFunction || isAbortError(error)) {
+          throw error;
+        }
+        signal?.throwIfAborted();
+        const fatalInputError = getFatalHandoffInputError(error);
+        if (fatalInputError !== undefined) throw fatalInputError;
+        handoffSpan.setError({
+          message: 'Handoff invocation failed',
+          data: {},
+        });
+        const feedback = await handoff.errorFunction(runContext, error);
+        signal?.throwIfAborted();
+        newStepItems.push(
+          new RunToolCallOutputItem(
+            getToolCallOutputItem(actualHandoff.toolCall, feedback),
+            agent,
+            feedback,
+            undefined,
+            'executed',
+          ),
+        );
+        return new SingleStepResult(
+          originalInput,
+          newResponse,
+          preStepItems,
+          newStepItems,
+          {
+            type: 'next_step_run_again',
+          },
+        );
+      }
       validateHandoffAgent?.(newAgent);
 
       handoffSpan.spanData.to_agent = newAgent.name;

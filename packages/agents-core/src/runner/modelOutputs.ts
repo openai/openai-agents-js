@@ -115,6 +115,7 @@ function ensureProgrammaticToolCallingAvailable<TContext>(
 
 type ModelResponseProcessingOptions = {
   toolSearchAgentName?: string;
+  completedInvocations?: ReadonlyMap<string, string>;
   allowPromptSuppliedTools?: boolean;
   beforeClientToolSearch?: () => void;
 };
@@ -258,18 +259,21 @@ function recordHandoffRequest(
   items: RunItem[],
   toolsUsed: string[],
   handoffs: ToolRunHandoff[],
+  completedInvocations?: ReadonlyMap<string, string>,
 ): void {
   toolsUsed.push(output.name);
-  const isPrimaryHandoff = handoffs.length === 0;
-  handoffs.push({
-    toolCall: output,
-    handoff,
-  });
-  if (!isPrimaryHandoff) {
+  const request = { toolCall: output, handoff };
+  if (
+    completedInvocations?.has(output.callId) ||
+    (handoffs.length > 0 &&
+      !completedInvocations?.has(handoffs[0].toolCall.callId))
+  ) {
+    handoffs.push(request);
     return;
   }
-  // Only persist the first handoff request. Later handoffs are SDK-ignored and
-  // would otherwise bias future turns against valid delegation targets.
+  // Keep the first fresh request first for execution and managed continuation.
+  // Preflight still validates the identity of every request, including replays.
+  handoffs.unshift(request);
   items.push(new RunHandoffCallItem(output, agent));
 }
 
@@ -1010,6 +1014,7 @@ export function processModelResponse<TContext>(
         items,
         toolsUsed,
         runHandoffs,
+        processingOptions.completedInvocations,
       );
     } else {
       ensureToolCallerAllowed(
@@ -1105,6 +1110,7 @@ export async function processModelResponseAsync<TContext>(
   processingOptions = {
     ...processingOptions,
     toolSearchAgentName: state._getToolSearchAgentName(agent),
+    completedInvocations: state._completedToolInvocations.get(agent),
   };
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasCustomClientToolSearchExecutor = Boolean(
@@ -1424,6 +1430,7 @@ export async function processModelResponseAsync<TContext>(
         items,
         toolsUsed,
         runHandoffs,
+        processingOptions.completedInvocations,
       );
     } else {
       ensureToolCallerAllowed(

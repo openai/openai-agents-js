@@ -369,6 +369,7 @@ function createApprovalHandoffRun(
     target,
     sourceModel,
     targetModel,
+    transfer,
     execute,
     inputGuardrail,
     outputGuardrail,
@@ -703,6 +704,27 @@ describe('resumed Session write recovery', () => {
       expect(onHandoff).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('settles recovered handoff feedback before requesting the next turn after rejecting a sibling tool', async () => {
+    const { agent, transfer, sourceModel, onHandoff } =
+      createApprovalHandoffRun();
+    onHandoff.mockRejectedValue(new Error('busy'));
+    transfer.errorFunction = () => 'Please answer directly.';
+    sourceModel.enqueue([fakeModelMessage('source done')]);
+    const session = new UncertainAppendSession();
+    const paused = await run(agent, 'Route request.', { session });
+    paused.state.reject(paused.interruptions[0]!);
+    session.failNextAppend('after');
+    await expect(run(agent, paused.state, { session })).rejects.toThrow(
+      /acknowledgement lost/,
+    );
+    expect(sourceModel.calls).toHaveLength(1);
+    const restored = await RunState.fromString(agent, paused.state.toString());
+    const completed = await run(agent, restored, { session });
+    expect(completed.lastAgent).toBe(agent);
+    expect(completed.finalOutput).toBe('source done');
+    expect(onHandoff).toHaveBeenCalledTimes(1);
+  });
 
   it.each([
     { mode: 'non_streamed' as const, failure: 'before' as const },

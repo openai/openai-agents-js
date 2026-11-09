@@ -299,9 +299,9 @@ export async function resumeInterruptedTurn<
       ) === true
     );
   });
+  const pendingHandoffs = state._lastProcessedResponse?.handoffs ?? [];
   const preparation =
-    approvedToolWillResume ||
-    (state._lastProcessedResponse?.handoffs.length ?? 0) > 0
+    approvedToolWillResume || pendingHandoffs.length > 0
       ? await beforeResumedSideEffects?.()
       : undefined;
   let unfilteredHandoffInput: ResumedSessionWritePreparation['handoffInput'];
@@ -328,6 +328,22 @@ export async function resumeInterruptedTurn<
   );
   const resumedSideEffects =
     turnResult.nextStep.type === 'next_step_handoff' ||
+    // A handled invocation can have external effects even when every sibling approval was rejected.
+    turnResult.newStepItems.some((item) => {
+      if (
+        item.type !== 'tool_call_output_item' ||
+        item.executionStatus !== 'executed'
+      ) {
+        return false;
+      }
+      const { rawItem } = item;
+      return (
+        rawItem.type === 'function_call_result' &&
+        pendingHandoffs.some(
+          ({ toolCall }) => toolCall.callId === rawItem.callId,
+        )
+      );
+    }) ||
     (approvedToolWillResume &&
       turnResult.generatedItems.length > state._currentTurnPersistedItemCount);
 

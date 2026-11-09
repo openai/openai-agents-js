@@ -1,6 +1,11 @@
 import { Agent, AgentOutputType } from '../agent';
 import { MaxTurnsExceededError } from '../errors';
-import { RunHandoffOutputItem, RunInputItem, RunItem } from '../items';
+import {
+  RunHandoffCallItem,
+  RunHandoffOutputItem,
+  RunInputItem,
+  RunItem,
+} from '../items';
 import logger from '../logger';
 import { RunState } from '../runState';
 import type { AgentInputItem } from '../types';
@@ -243,37 +248,64 @@ export function getManagedConversationSupplementalItems<
   TAgent extends Agent<TContext, AgentOutputType>,
 >(state: RunState<TContext, TAgent>): AgentInputItem[] {
   const processedResponse = state._lastProcessedResponse;
-  const handoffs = processedResponse?.handoffs;
-  if (!handoffs || handoffs.length <= 1) {
+  if (!processedResponse?.handoffs.length) {
     return [];
   }
+  const { handoffs } = processedResponse;
 
-  const acceptedCallId = handoffs[0]?.toolCall.callId;
-  // Respect handoff input filters that removed the accepted handoff output from the next turn.
-  const acceptedHandoffOutputStillPresent =
-    typeof acceptedCallId === 'string' &&
-    state._generatedItems.some(
-      (item) =>
-        item instanceof RunHandoffOutputItem &&
-        item.rawItem.callId === acceptedCallId,
-    );
-  if (!acceptedHandoffOutputStillPresent) {
+  const selected = processedResponse.newItems.find(
+    (item) => item instanceof RunHandoffCallItem,
+  );
+  if (selected && handoffs.length === 1) {
     return [];
   }
-
+  const completions = state._completedToolInvocationEvidence.get(
+    selected?.agent ?? state._currentAgent,
+  );
+  const primaryId = handoffs[0].toolCall.callId;
+  const recoveredOutput = (callId: string) => {
+    const pair = completions?.get(callId)?.items;
+    if (
+      pair?.[0] instanceof RunHandoffCallItem &&
+      pair[1].type === 'tool_call_output_item' &&
+      pair[1].rawItem.type === 'function_call_result' &&
+      state._generatedItems.includes(pair[1])
+    ) {
+      return pair[1].rawItem;
+    }
+  };
+  const primaryRecovery = recoveredOutput(primaryId);
+  // A filter may have removed the successful transfer from local history.
+  if (
+    !primaryRecovery &&
+    (handoffs.length === 1 ||
+      !state._generatedItems.some(
+        (item) =>
+          item instanceof RunHandoffOutputItem &&
+          item.rawItem.callId === primaryId,
+      ))
+  ) {
+    return [];
+  }
   const cached =
     managedConversationSupplementalItemsCache.get(processedResponse);
-  if (cached) {
-    return cached;
-  }
+  if (cached) return cached;
 
-  // Server-managed transcripts still contain ignored handoff calls from the last response.
-  // Add synthetic results only to the continuation request so the provider transcript stays balanced.
-  const items = handoffs
-    .slice(1)
-    .map(({ toolCall }) =>
-      getToolCallOutputItem(toolCall, IGNORED_HANDOFF_OUTPUT_MESSAGE),
+  // The selected result travels with normal history. An exact replay has no new call
+  // item, so send a fresh copy of its previously committed result for this response.
+  const acknowledged = new Set<string>();
+  if (selected || !primaryRecovery) acknowledged.add(primaryId);
+  const items: AgentInputItem[] = [];
+  for (const { toolCall } of handoffs) {
+    if (acknowledged.has(toolCall.callId)) continue;
+    acknowledged.add(toolCall.callId);
+    const previous = recoveredOutput(toolCall.callId);
+    items.push(
+      previous
+        ? { ...previous }
+        : getToolCallOutputItem(toolCall, IGNORED_HANDOFF_OUTPUT_MESSAGE),
     );
+  }
   managedConversationSupplementalItemsCache.set(processedResponse, items);
   return items;
 }
