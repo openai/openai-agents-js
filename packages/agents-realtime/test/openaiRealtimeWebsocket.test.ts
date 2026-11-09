@@ -1438,6 +1438,111 @@ describe('OpenAIRealtimeWebSocket', () => {
     expect(sendSpy).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { modality: 'text', interruptResponse: true },
+    { modality: 'audio', interruptResponse: false },
+  ] as const)(
+    'cancels an active $modality response on explicit interrupt before audio arrives',
+    async ({ modality, interruptResponse }) => {
+      const session = new RealtimeSession(new RealtimeAgent({ name: 'test' }), {
+        transport: 'websocket',
+        config: {
+          outputModalities: [modality],
+          audio: {
+            input: { turnDetection: { type: 'server_vad', interruptResponse } },
+          },
+        },
+      });
+      const interrupted = vi.fn();
+      session.on('audio_interrupted', interrupted);
+      const connect = session.connect({ apiKey: 'ek_test' });
+      await vi.runAllTimersAsync();
+      await connect;
+      const emit = (event: Record<string, unknown>) =>
+        lastFakeSocket.emit('message', { data: JSON.stringify(event) });
+      emit({
+        type: 'session.updated',
+        event_id: 'session',
+        session: sentPayloads().find(
+          (event: any) => event.type === 'session.update',
+        ).session,
+      });
+      lastFakeSocket.sent.length = 0;
+
+      session.interrupt();
+      emit({
+        type: 'response.created',
+        event_id: 'created',
+        response: { id: 'r', output_modalities: [modality] },
+      });
+      if (!interruptResponse) {
+        emit({
+          type: 'input_audio_buffer.speech_started',
+          event_id: 'speech-started',
+          item_id: 'input',
+          audio_start_ms: 0,
+        });
+      }
+      expect(sentPayloads()).toEqual([]);
+
+      session.interrupt();
+      session.interrupt();
+      expect(sentPayloads()).toEqual([{ type: 'response.cancel' }]);
+      expect(interrupted).not.toHaveBeenCalled();
+
+      session.sendMessage('Next question');
+      await vi.runAllTimersAsync();
+      const sentTypes = () => sentPayloads().map((event: any) => event.type);
+      expect(sentTypes()).toEqual([
+        'response.cancel',
+        'conversation.item.create',
+      ]);
+      emit({
+        type: 'response.done',
+        event_id: 'done',
+        response: { id: 'r', status: 'cancelled', output: [] },
+      });
+      session.interrupt();
+      await vi.runAllTimersAsync();
+      expect(sentTypes()).toEqual([
+        'response.cancel',
+        'conversation.item.create',
+        'response.create',
+      ]);
+      session.close();
+    },
+  );
+
+  it.each(['agent_start', 'agent_end'] as const)(
+    'uses the current response state when a %s listener interrupts',
+    async (event) => {
+      const session = new RealtimeSession(new RealtimeAgent({ name: 'test' }), {
+        transport: 'websocket',
+        config: { outputModalities: ['text'] },
+      });
+      const connect = session.connect({ apiKey: 'ek_test' });
+      await vi.runAllTimersAsync();
+      await connect;
+      lastFakeSocket.sent.length = 0;
+      const stop = vi.fn(() => session.interrupt());
+      session.on(event, stop);
+      for (const type of ['response.created', 'response.done']) {
+        lastFakeSocket.emit('message', {
+          data: JSON.stringify({
+            type,
+            event_id: type,
+            response: { id: 'r', output: [] },
+          }),
+        });
+      }
+      expect(stop).toHaveBeenCalledOnce();
+      expect(sentPayloads()).toEqual(
+        event === 'agent_start' ? [{ type: 'response.cancel' }] : [],
+      );
+      session.close();
+    },
+  );
+
   it('defers follow-up response.create until response.done after interrupt', async () => {
     const ws = new OpenAIRealtimeWebSocket();
     const p = ws.connect({ apiKey: 'ek', model: 'm' });

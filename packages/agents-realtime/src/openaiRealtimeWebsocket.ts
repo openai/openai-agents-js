@@ -414,12 +414,16 @@ export class OpenAIRealtimeWebSocket
         return;
       }
 
-      this._onMessage(message);
-      if (this.#state.websocket !== ws) {
-        return;
-      }
       const { data: parsed } = parseRealtimeEvent(message);
-      if (!parsed) {
+      // Session listeners can interrupt synchronously from agent_start or agent_end.
+      if (parsed?.type === 'response.created') {
+        this.#responseCreateSequencer.markResponseCreated();
+      } else if (parsed?.type === 'response.done') {
+        this.#responseCreateSequencer.markResponseDone();
+      }
+
+      this._onMessage(message);
+      if (this.#state.websocket !== ws || !parsed) {
         return;
       }
 
@@ -494,12 +498,10 @@ export class OpenAIRealtimeWebSocket
               this._rawSessionConfig?.audio?.output?.format,
           );
         }
-        this.#responseCreateSequencer.markResponseCreated();
       } else if (parsed.type === 'response.done') {
         if (parsed.response.id) {
           this.#responseAudioFormats.delete(parsed.response.id);
         }
-        this.#responseCreateSequencer.markResponseDone();
       } else if (parsed.type === 'session.created') {
         this._tracingConfig =
           'tracing' in parsed.session ? (parsed.session.tracing ?? null) : null;
@@ -772,15 +774,19 @@ export class OpenAIRealtimeWebSocket
    * You can also call this method directly if you want to interrupt the conversation for example
    * based on an event in the client.
    */
-  interrupt(cancelOngoingResponse: boolean = true) {
+  interrupt(cancelOngoingResponse?: boolean) {
     if (!this.#currentItemId || typeof this._firstAudioTimestamp !== 'number') {
+      // A manual stop also cancels generation before audio starts. VAD supplies its own policy.
+      if (cancelOngoingResponse === undefined) {
+        this._cancelResponse();
+      }
       return;
     }
 
     const elapsedTime = Date.now() - this._firstAudioTimestamp;
 
     if (elapsedTime >= 0) {
-      this._interrupt(elapsedTime, cancelOngoingResponse);
+      this._interrupt(elapsedTime, cancelOngoingResponse ?? true);
     }
 
     this.#resetAudioPlaybackState();
