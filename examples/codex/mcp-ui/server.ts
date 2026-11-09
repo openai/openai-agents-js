@@ -58,21 +58,17 @@ export async function startCounter(port = 0) {
   // A failed request may finish before a browser asks for its view.
   void viewReady.catch(() => {});
   let session: Session | undefined;
+  const resource = () => ({
+    uri: 'ui://counter/app',
+    mimeType: 'text/html;profile=mcp-app',
+    text:
+      '<!doctype html><html lang="en"><meta charset="utf-8">' +
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${origin}; connect-src 'none'">` +
+      '<h1>Counter</h1><output id="count">Loading</output><button id="increment">Increment</button><pre id="error"></pre>' +
+      `<script type="module" src="${origin}/app.js"></script></html>`,
+  });
   const result = () => ({
-    content: [
-      {
-        type: 'resource',
-        resource: {
-          uri: 'ui://counter/app',
-          mimeType: 'text/html;profile=mcp-app',
-          text:
-            '<!doctype html><html lang="en"><meta charset="utf-8">' +
-            `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${origin}; connect-src 'none'">` +
-            '<h1>Counter</h1><output id="count">Loading</output><button id="increment">Increment</button><pre id="error"></pre>' +
-            `<script type="module" src="${origin}/app.js"></script></html>`,
-        },
-      },
-    ],
+    content: [{ type: 'text', text: 'Counter data' }],
     structuredContent: { count },
     isError: false,
   });
@@ -128,7 +124,7 @@ export async function startCounter(port = 0) {
           case 'initialize':
             value = {
               protocolVersion: rpc.params.protocolVersion,
-              capabilities: { tools: {} },
+              capabilities: { tools: {}, resources: {} },
               serverInfo: { name: 'synthetic-counter', version: '1' },
             };
             break;
@@ -137,6 +133,7 @@ export async function startCounter(port = 0) {
               tools: [
                 {
                   name: 'increment',
+                  _meta: { ui: { resourceUri: 'ui://counter/app' } },
                   description: 'Increment synthetic counter',
                   inputSchema: {
                     type: 'object',
@@ -147,6 +144,14 @@ export async function startCounter(port = 0) {
                 },
               ],
             };
+            break;
+          case 'resources/read':
+            if (
+              (rpc.params as unknown as { uri: string }).uri !==
+              'ui://counter/app'
+            )
+              throw new Error('Unknown app resource');
+            value = { contents: [resource()] };
             break;
           case 'tools/call':
             if (

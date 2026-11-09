@@ -2057,6 +2057,7 @@ impl NativeThread {
                     .map_err(native_error)?
             }
             "call_mcp_app_tool"
+            | "mcp_app_tool_metadata"
             | "list_mcp_resources"
             | "list_mcp_resource_templates"
             | "read_mcp_resource"
@@ -2102,7 +2103,7 @@ impl NativeThread {
                     .clone();
                 let request = async {
                     match operation.as_str() {
-                        "call_mcp_app_tool" => {
+                        "call_mcp_app_tool" | "mcp_app_tool_metadata" => {
                             #[derive(serde::Deserialize)]
                             #[serde(deny_unknown_fields)]
                             struct ToolParams {
@@ -2130,6 +2131,31 @@ impl NativeThread {
                                 return Err(input_error(
                                     "MCP App actions require an explicitly selected preapproved ordinary local tool",
                                 ));
+                            }
+                            if operation == "mcp_app_tool_metadata" {
+                                let (_, snapshot) = inner
+                                    .thread
+                                    .mcp_server_status_snapshot(
+                                        &request.server,
+                                        codex_mcp::McpSnapshotDetail::ToolsAndAuthOnly,
+                                    )
+                                    .await
+                                    .map_err(|_| {
+                                        input_error("MCP App tool metadata is unavailable")
+                                    })?;
+                                if snapshot.tools_errors.contains_key(&request.server) {
+                                    return Err(input_error(
+                                        "MCP App tool metadata is unavailable",
+                                    ));
+                                }
+                                let tool = snapshot
+                                    .tools_by_server
+                                    .get(&request.server)
+                                    .and_then(|tools| tools.get(&params.name))
+                                    .ok_or_else(|| {
+                                        input_error("MCP App originating tool is unavailable")
+                                    })?;
+                                return Ok(tool.meta.clone().unwrap_or(Value::Null));
                             }
                             let result = inner
                                 .thread

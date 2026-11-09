@@ -9370,6 +9370,54 @@ export class Session<OutputT = string, Context = unknown> {
           'MCPApp requires a fixed preapproved local MCP declaration without callbacks',
         );
       const mimeType = 'text/html;profile=mcp-app';
+      // Read the current negotiated declaration from this native connection, not result data.
+      const metadata = JSON.parse(
+        await native.call(
+          'mcp_app_tool_metadata',
+          encode({
+            server: selected.name,
+            params: { name: call.name, arguments: {} },
+          }),
+        ),
+      );
+      check();
+      const meta =
+        metadata === null ? {} : losslessJsonObjectSchema.parse(metadata);
+      const ui = meta.ui;
+      if (
+        ui !== undefined &&
+        (ui === null || typeof ui !== 'object' || Array.isArray(ui))
+      )
+        throw new TypeError('MCPApp tool UI metadata must be an object');
+      const declared = ui === undefined ? undefined : ui.resourceUri;
+      const legacy = meta['ui/resourceUri'];
+      const declaredUri = declared ?? legacy;
+      if (
+        (declared !== undefined &&
+          legacy !== undefined &&
+          declared !== legacy) ||
+        (declared !== undefined && typeof declared !== 'string') ||
+        (legacy !== undefined && typeof legacy !== 'string')
+      )
+        throw new TypeError('MCPApp tool resource URI metadata is invalid');
+      if (declaredUri !== undefined) {
+        let valid = false;
+        try {
+          const parsed = new URL(declaredUri as string);
+          valid =
+            parsed.protocol === 'ui:' &&
+            !!parsed.hostname &&
+            !parsed.username &&
+            !parsed.password &&
+            (declaredUri as string).startsWith('ui://');
+        } catch {
+          /* Reject malformed declared authority instead of falling back. */
+        }
+        if (!valid)
+          throw new TypeError(
+            'MCPApp tool resource URI must be a valid ui:// URI',
+          );
+      }
       const content = Array.isArray(result.content) ? result.content : [];
       const candidates = content.flatMap((part) => {
         if (!part || typeof part !== 'object' || Array.isArray(part)) return [];
@@ -9390,11 +9438,17 @@ export class Session<OutputT = string, Context = unknown> {
           return [];
         return [{ resource, linked: part.type === 'resource_link' }];
       });
-      if (candidates.length !== 1)
+      if (declaredUri === undefined && candidates.length !== 1)
         throw new TypeError(
           'MCPApp requires one embedded or linked MCP App HTML resource',
         );
-      const candidate = candidates[0];
+      const candidate =
+        declaredUri === undefined
+          ? candidates[0]
+          : {
+              resource: { uri: declaredUri, mimeType } as JsonObject,
+              linked: true,
+            };
       let resource = candidate.resource;
       if (candidate.linked) {
         const read = losslessJsonObjectSchema.parse(

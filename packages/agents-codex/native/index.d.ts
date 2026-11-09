@@ -210,7 +210,8 @@ export class NativeThread {
       | 'get_mcp_prompt'
       | 'list_mcp_resource_templates'
       | 'read_mcp_resource'
-      | 'call_mcp_app_tool',
+      | 'call_mcp_app_tool'
+      | 'mcp_app_tool_metadata',
     params_json: string,
   ): Promise<string>;
   _submit(params_json: string): Promise<string>;

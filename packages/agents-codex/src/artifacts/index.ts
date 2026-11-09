@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { open, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
+import { losslessJsonValueSchema } from '../runtime/binding';
 import { tool, ToolOutput, type FunctionTool } from '../runtime/tools';
 
 /**
@@ -9,7 +10,8 @@ import { tool, ToolOutput, type FunctionTool } from '../runtime/tools';
  * The model supplies a `json` string; expected check failures go back to the same
  * agent for correction. Other errors fail the turn. The trusted application
  * chooses the path and Zod schema. The parent directory must exist.
- * Non-finite JSON numbers return repair feedback instead of becoming null.
+ * Schema outputs must be finite, plain JSON values; unsupported outputs return
+ * repair feedback instead of being silently changed during serialization.
  * Rejected candidates preserve previous bytes. Concurrent successful calls use
  * the last atomic replacement; replacement does not promise crash durability.
  */
@@ -52,21 +54,12 @@ export function jsonArtifactTool(options: {
         });
         return rejected(`schema check failed: ${problems.join('; ')}`);
       }
-      let hasNonFiniteNumber = false;
-      const content = JSON.stringify(
-        checked.data,
-        (_key, value: unknown) => {
-          if (typeof value === 'number' && !Number.isFinite(value)) {
-            hasNonFiniteNumber = true;
-          }
-          return value;
-        },
-        2,
-      );
-      if (hasNonFiniteNumber)
-        return rejected('JSON value check failed: numbers must be finite');
-      if (content === undefined)
-        throw new TypeError('Artifact schema must produce a JSON value');
+      const jsonValue = losslessJsonValueSchema.safeParse(checked.data);
+      if (!jsonValue.success)
+        return rejected(
+          'JSON value check failed: schema output must contain only finite, plain JSON values',
+        );
+      const content = JSON.stringify(jsonValue.data, null, 2);
       context.signal.throwIfAborted();
       const temporary = join(
         dirname(destination),

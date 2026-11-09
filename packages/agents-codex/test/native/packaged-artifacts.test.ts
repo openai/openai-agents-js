@@ -128,6 +128,34 @@ it('bounds schema diagnostics and preserves the previous artifact', async () => 
 }, 30_000);
 
 it.each([
+  ...[
+    { label: 'nested undefined', value: { nested: { missing: undefined } } },
+    { label: 'nested function', value: { nested: { callback: () => null } } },
+    { label: 'nested symbol', value: { nested: { token: Symbol('token') } } },
+    { label: 'nested array undefined', value: { nested: [undefined] } },
+    { label: 'bigint', value: 1n },
+    { label: 'Date', value: new Date('2026-01-01T00:00:00Z') },
+    { label: 'toJSON', value: { toJSON: () => ({ changed: true }) } },
+    { label: 'sparse array', value: Array(1) },
+    {
+      label: 'cycle',
+      value: (() => {
+        const value: unknown[] = [];
+        value.push(value);
+        return value;
+      })(),
+    },
+  ].map(({ label, value }) => ({
+    schema: z
+      .string()
+      .transform((candidate) =>
+        candidate === 'corrected' ? { title: 'Corrected' } : value,
+      ),
+    invalid: JSON.stringify(label),
+    valid: '"corrected"',
+    expected: { title: 'Corrected' },
+    problem: 'JSON value check failed',
+  })),
   { schema: z.unknown(), invalid: '1e400', valid: '1.25', expected: 1.25 },
   {
     schema: z.strictObject({ amount: z.unknown() }),
@@ -240,4 +268,34 @@ it('fails on I/O errors without asking the model to repair valid JSON', async ()
     },
   );
   expect(await readdir(root)).toEqual([]);
+}, 30_000);
+
+it('fails on unexpected schema exceptions without changing the artifact', async () => {
+  const root = await directory();
+  const path = join(root, 'report.json');
+  await writeFile(path, 'previous', 'utf8');
+  await withScriptedResponses(
+    [[toolCall('report', { json: '"candidate"' }, { callId: 'candidate' })]],
+    async (peer) => {
+      const agent = new Agent({
+        provider: peer.provider,
+        instructions: 'Publish the requested JSON artifact.',
+        tools: [
+          jsonArtifactTool({
+            name: 'report',
+            path,
+            schema: z.string().transform(async () => {
+              throw new Error('Unexpected schema failure');
+            }),
+          }),
+        ],
+      });
+      await expect(agent.run('Publish the report.')).rejects.toThrow(
+        'Unexpected schema failure',
+      );
+      expect(peer.requests).toHaveLength(1);
+    },
+  );
+  expect(await readFile(path, 'utf8')).toBe('previous');
+  expect(await readdir(root)).toEqual(['report.json']);
 }, 30_000);

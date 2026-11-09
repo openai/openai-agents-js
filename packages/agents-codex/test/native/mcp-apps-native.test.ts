@@ -22,6 +22,8 @@ async function peer(
   policy: 'plain' | 'before' | 'approval' | 'transform' | 'native' = 'plain',
   resourceFields: JsonObject = {},
   holdAction?: Promise<void>,
+  toolMetadata?: JsonObject,
+  resultResource?: JsonObject,
 ) {
   const resource: JsonObject = {
     uri,
@@ -58,6 +60,7 @@ async function peer(
         tools: [
           {
             name: 'display',
+            ...(toolMetadata === undefined ? {} : { _meta: toolMetadata }),
             inputSchema: {
               type: 'object',
               properties: {
@@ -75,11 +78,21 @@ async function peer(
       if (calls.filter((entry) => entry.method === 'tools/call').length > 1)
         await holdAction;
       result = {
-        content: [
-          linked
-            ? { type: 'resource_link', uri, name: 'Billing app', mimeType }
-            : { type: 'resource', resource },
-        ],
+        content:
+          toolMetadata === undefined
+            ? [
+                linked
+                  ? {
+                      type: 'resource_link',
+                      uri,
+                      name: 'Billing app',
+                      mimeType,
+                    }
+                  : { type: 'resource', resource },
+              ]
+            : resultResource
+              ? [{ type: 'resource', resource: resultResource }]
+              : [{ type: 'text', text: 'Counter data' }],
         structuredContent: {
           count: (params.arguments as JsonObject).count,
           payload: preservedJson,
@@ -346,4 +359,78 @@ it('excludes other work and joins a pending native MCP App action when the Sessi
     await Promise.allSettled([action, ...(closing ? [closing] : [])]);
     app.close();
   }
+});
+
+it.each([
+  { ui: { resourceUri: uri } },
+  { 'ui/resourceUri': uri },
+] as JsonObject[])(
+  'opens negotiated tool UI metadata without result resources (%j)',
+  async (metadata) => {
+    const remote = await peer(false, 'plain', {}, undefined, metadata);
+    const { session, turn, model } = await open(remote.declaration);
+    const app = await MCPApp.open(session, turn, 'app-origin');
+    expect(app.view.resource).toMatchObject({ uri, mimeType, text: html });
+    expect(app.view.result.content).toEqual([
+      { type: 'text', text: 'Counter data' },
+    ]);
+    expect(
+      (await app.callTool('display', { count: 2 })).structuredContent,
+    ).toMatchObject({ count: 2 });
+    const reads = remote.calls.filter((rpc) => rpc.method === 'resources/read');
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({ params: { uri } });
+    expect(
+      remote.calls.filter((rpc) => rpc.method === 'initialize'),
+    ).toHaveLength(1);
+    expect(
+      remote.calls
+        .filter((rpc) => rpc.method === 'tools/call')
+        .map((rpc) => {
+          const params = rpc.params as JsonObject;
+          return { name: params.name, arguments: params.arguments };
+        }),
+    ).toEqual([
+      { name: 'display', arguments: { count: 1 } },
+      { name: 'display', arguments: { count: 2 } },
+    ]);
+    model.assertExhausted();
+  },
+);
+
+it.each([
+  { ui: { resourceUri: 'https://untrusted.invalid/app' } },
+  { ui: { resourceUri: null } },
+  { ui: { resourceUri: '' } },
+  { ui: { resourceUri: uri }, 'ui/resourceUri': 'ui://other/app' },
+  { ui: 'invalid' },
+] as JsonObject[])(
+  'rejects malformed or conflicting declared UI metadata (%j)',
+  async (metadata) => {
+    const remote = await peer(false, 'plain', {}, undefined, metadata);
+    const { session, turn } = await open(remote.declaration);
+    await expect(MCPApp.open(session, turn, 'app-origin')).rejects.toThrow(
+      /metadata|URI/,
+    );
+    expect(
+      remote.calls.filter((rpc) => rpc.method === 'resources/read'),
+    ).toHaveLength(0);
+  },
+);
+
+it('uses declared resource authority instead of a conflicting result resource and keeps the captured view', async () => {
+  const metadata = { ui: { resourceUri: uri } };
+  const remote = await peer(false, 'plain', {}, undefined, metadata, {
+    uri: 'ui://other/app',
+    mimeType,
+    text: 'Unselected result HTML',
+  });
+  const { session, turn } = await open(remote.declaration);
+  const app = await MCPApp.open(session, turn, 'app-origin');
+  expect(app.view.resource).toMatchObject({ uri, text: html });
+  metadata.ui.resourceUri = 'ui://later/app';
+  expect(app.view.resource.uri).toBe(uri);
+  await expect(app.callTool('other', {})).rejects.toThrow();
+  app.close();
+  await expect(app.callTool('display', { count: 2 })).rejects.toThrow();
 });
