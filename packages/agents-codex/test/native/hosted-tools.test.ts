@@ -355,3 +355,9 @@ it('rejects additions, removals, and changed hosted configuration on tool update
   );
   await expect(ungranted.update({ tools: [grant] })).rejects.toThrow('retain');
 });
+
+it('rejects provider fields that replace an admitted hosted identity', () => {
+  expect(() =>
+    hostedToolSpecs([imageGeneration({ providerData: { type: 'computer' } })]),
+  ).toThrow('cannot replace declared fields');
+});
