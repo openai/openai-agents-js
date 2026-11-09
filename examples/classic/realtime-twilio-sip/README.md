@@ -4,8 +4,8 @@ This example shows how to handle OpenAI Realtime SIP calls with the Agents JS SD
 
 ## Prerequisites
 
-- Node.js 22+
-- pnpm 10+
+- Node.js 24
+- The pnpm version pinned in the root `package.json`
 - An OpenAI API key with Realtime API access
 - A configured webhook secret for your OpenAI project
 - A Twilio account with a phone number and Elastic SIP Trunking enabled
@@ -24,10 +24,7 @@ This example shows how to handle OpenAI Realtime SIP calls with the Agents JS SD
 
 ## Setup
 
-1. Install dependencies from the monorepo root (if you have not already):
-   ```bash
-   pnpm install
-   ```
+1. Follow the [classic example setup](../README.md) to install dependencies and build the SDK. Run the commands below from the repository root.
 2. Export the required environment variables:
    ```bash
    export OPENAI_API_KEY="sk-..."

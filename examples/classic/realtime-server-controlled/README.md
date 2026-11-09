@@ -78,7 +78,7 @@ Audio-only transport does not prevent spoken prompt injection and does not make 
 
 ## Run the example
 
-From the repository root:
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK. Then, from the repository root:
 
 ```bash
 cp examples/classic/realtime-server-controlled/.env.example \
