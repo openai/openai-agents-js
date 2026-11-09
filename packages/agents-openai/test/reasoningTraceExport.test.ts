@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createGenerationSpan,
+  createAgentSpan,
   getGlobalTraceProvider,
   createFunctionSpan,
   setTraceProcessors,
@@ -55,6 +56,34 @@ describe('generation reasoning trace exports', () => {
     }).export([item]);
     return JSON.parse(fetchMock.mock.calls.at(-1)![1].body).data[0];
   }
+
+  it('omits offered definitions only from hosted generation payloads', async () => {
+    const tools = [{ type: 'function', function: { name: 'lookup' } }];
+    const generation = span({ tools });
+    for (const destination of [
+      undefined,
+      'https://API.OPENAI.COM.:443/v1/traces/ingest/?source=sdk#trace',
+    ]) {
+      expect(
+        (await exported(generation, destination)).span_data,
+      ).not.toHaveProperty('tools');
+    }
+    for (const destination of [
+      'https://example.test/v1/traces/ingest',
+      'https://api.openai.com/custom',
+      'https://api.openai.com:8443/v1/traces/ingest',
+    ]) {
+      expect((await exported(generation, destination)).span_data.tools).toEqual(
+        tools,
+      );
+    }
+    expect(generation.spanData.tools).toEqual(tools);
+    const agent = createAgentSpan(
+      { data: { name: 'agent', tools: ['lookup'] } },
+      getGlobalTraceProvider().createTrace({ name: 'synthetic' }),
+    );
+    expect((await exported(agent)).span_data.tools).toEqual(['lookup']);
+  });
 
   it.each([undefined, endpoint, `${endpoint}/`])(
     'omits supported reasoning at the default destination %s without mutating spans',

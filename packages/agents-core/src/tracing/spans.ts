@@ -63,6 +63,12 @@ export type GenerationSpanData = SpanDataBase & {
   type: 'generation';
   input?: Array<Record<string, any>>;
   output?: Array<Record<string, any>>;
+  /**
+   * Tool definitions offered to the model, including handoffs. Chat Completions
+   * captures these for processors when sensitive data is enabled. The OpenAI
+   * tracing exporter omits them from hosted ingest.
+   */
+  tools?: Array<Record<string, any>>;
   model?: string;
   model_config?: Record<string, any>;
   /**
