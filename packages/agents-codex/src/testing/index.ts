@@ -440,12 +440,15 @@ class Peer implements ScriptedResponses {
     return this.closing;
   }
 }
-function captureResponse(response: ScriptedResponse): ScriptedResponse {
+function captureResponse(
+  response: ScriptedResponse,
+  index: number,
+): ScriptedResponse {
   if (typeof response === 'function') return response;
   try {
     return responseSchema.parse(response);
   } catch {
-    throw new TypeError('Invalid scripted response');
+    throw new TypeError(`Invalid scripted response at index ${index}`);
   }
 }
 /**
