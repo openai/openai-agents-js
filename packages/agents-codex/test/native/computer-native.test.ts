@@ -191,11 +191,14 @@ it.each([toolRef('unavailable'), toolRef('computer', 'foreign')])(
       await expect(
         new Agent({
           instructions: 'Use computer.',
+          model: 'gpt-5',
           provider: selected,
           tools: [computerTool({ computer: { create } })],
           modelSettings: { toolChoice },
         }).run('wait'),
-      ).rejects.toThrow();
+      ).rejects.toThrow(
+        'named tool choice is outside the already admitted step catalog',
+      );
     } finally {
       await selected.close();
     }
