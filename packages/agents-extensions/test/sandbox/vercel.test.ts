@@ -18,7 +18,15 @@ import {
   validateMountCredentialBoundaries,
   withExclusiveSandboxManifestMutation,
 } from '@openai/agents-core/sandbox/internal';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+} from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
 import { z } from 'zod';
 import { execFile } from 'node:child_process';
@@ -464,183 +472,194 @@ describe('VercelSandboxClient', () => {
     },
   );
 
-  test.each([
-    'unterminated record',
-    'tiny empty records',
-    'HTTP error body',
-    'oversized chunk',
-  ])(
-    'bounds %s before the real Vercel SDK parser or error collector',
-    async (attack) => {
-      const actual =
+  describe('real Vercel SDK log transport', () => {
+    let actual: typeof import('@vercel/sandbox');
+
+    // Keep cold SDK loading outside each stream-limit assertion deadline.
+    beforeAll(async () => {
+      actual =
         await vi.importActual<typeof import('@vercel/sandbox')>(
           '@vercel/sandbox',
         );
-      const metadata = {
-        id: 'sbx_transport',
-        memory: 2048,
-        vcpus: 1,
-        region: 'iad1',
-        runtime: 'node22',
-        timeout: 300000,
-        status: 'running',
-        requestedAt: 1,
-        createdAt: 1,
-        cwd: '/vercel/sandbox',
-        updatedAt: 1,
-      };
-      const commands = new Map<
-        string,
-        {
-          id: string;
-          name: string;
-          args: string[];
-          cwd: string;
-          sandboxId: string;
-          exitCode: number;
-          startedAt: number;
-        }
-      >();
-      let delivered = 0;
-      let cancelled = 0;
-      let killed = 0;
-      let stopped = 0;
-      let wrongAuthentication = false;
-      let attacking = false;
-      let validationCommandId = '';
-      const storedOutput = 'stored logs'.repeat(65536);
-      const fakeFetch: typeof fetch = async (input, init) => {
-        const url = new URL(String(input));
-        wrongAuthentication ||=
-          new Headers(init?.headers).get('Authorization') !==
-          'Bearer synthetic_transport_token';
-        if (url.pathname.endsWith('/logs')) {
-          const command = commands.get(url.pathname.split('/').at(-2)!)!;
-          if (
-            attacking &&
-            resolvedRemotePathFromValidationCommand(command.args[1] ?? '')
-          ) {
-            validationCommandId = command.id;
-            return new Response(
-              new ReadableStream<Uint8Array>({
-                pull(controller) {
-                  delivered++;
-                  if (delivered > 100) {
-                    controller.close();
-                    return;
-                  }
-                  const chunk =
-                    attack === 'tiny empty records'
-                      ? `${JSON.stringify({ stream: 'stdout', data: '' })}\n`.repeat(
-                          1024,
-                        )
-                      : 'x'.repeat(
-                          attack === 'oversized chunk'
-                            ? 2 * 1024 * 1024
-                            : 32768,
-                        );
-                  const prefix =
-                    delivered === 1 && attack === 'unterminated record'
-                      ? '{"stream":"stdout","data":"'
-                      : '';
-                  controller.enqueue(new TextEncoder().encode(prefix + chunk));
-                },
-                cancel() {
-                  cancelled++;
-                },
-              }),
-              {
-                status: attack === 'HTTP error body' ? 403 : 200,
-                headers: {
-                  'content-type':
-                    attack === 'HTTP error body'
-                      ? 'application/json'
-                      : 'application/x-ndjson',
-                },
-              },
-            );
+    }, 10_000);
+
+    test.each([
+      'unterminated record',
+      'tiny empty records',
+      'HTTP error body',
+      'oversized chunk',
+    ])(
+      'bounds %s before the real Vercel SDK parser or error collector',
+      async (attack) => {
+        const metadata = {
+          id: 'sbx_transport',
+          memory: 2048,
+          vcpus: 1,
+          region: 'iad1',
+          runtime: 'node22',
+          timeout: 300000,
+          status: 'running',
+          requestedAt: 1,
+          createdAt: 1,
+          cwd: '/vercel/sandbox',
+          updatedAt: 1,
+        };
+        const commands = new Map<
+          string,
+          {
+            id: string;
+            name: string;
+            args: string[];
+            cwd: string;
+            sandboxId: string;
+            exitCode: number;
+            startedAt: number;
           }
-          if (command.id === validationCommandId) {
+        >();
+        let delivered = 0;
+        let cancelled = 0;
+        let killed = 0;
+        let stopped = 0;
+        let wrongAuthentication = false;
+        let attacking = false;
+        let validationCommandId = '';
+        const storedOutput = 'stored logs'.repeat(65536);
+        const fakeFetch: typeof fetch = async (input, init) => {
+          const url = new URL(String(input));
+          wrongAuthentication ||=
+            new Headers(init?.headers).get('Authorization') !==
+            'Bearer synthetic_transport_token';
+          if (url.pathname.endsWith('/logs')) {
+            const command = commands.get(url.pathname.split('/').at(-2)!)!;
+            if (
+              attacking &&
+              resolvedRemotePathFromValidationCommand(command.args[1] ?? '')
+            ) {
+              validationCommandId = command.id;
+              return new Response(
+                new ReadableStream<Uint8Array>({
+                  pull(controller) {
+                    delivered++;
+                    if (delivered > 100) {
+                      controller.close();
+                      return;
+                    }
+                    const chunk =
+                      attack === 'tiny empty records'
+                        ? `${JSON.stringify({ stream: 'stdout', data: '' })}\n`.repeat(
+                            1024,
+                          )
+                        : 'x'.repeat(
+                            attack === 'oversized chunk'
+                              ? 2 * 1024 * 1024
+                              : 32768,
+                          );
+                    const prefix =
+                      delivered === 1 && attack === 'unterminated record'
+                        ? '{"stream":"stdout","data":"'
+                        : '';
+                    controller.enqueue(
+                      new TextEncoder().encode(prefix + chunk),
+                    );
+                  },
+                  cancel() {
+                    cancelled++;
+                  },
+                }),
+                {
+                  status: attack === 'HTTP error body' ? 403 : 200,
+                  headers: {
+                    'content-type':
+                      attack === 'HTTP error body'
+                        ? 'application/json'
+                        : 'application/x-ndjson',
+                  },
+                },
+              );
+            }
+            if (command.id === validationCommandId) {
+              return new Response(
+                `${JSON.stringify({ stream: 'stdout', data: storedOutput })}\n`,
+                { headers: { 'content-type': 'application/x-ndjson' } },
+              );
+            }
+            const resolved = resolvedRemotePathFromValidationCommand(
+              command.args[1] ?? '',
+            );
             return new Response(
-              `${JSON.stringify({ stream: 'stdout', data: storedOutput })}\n`,
+              resolved
+                ? `${JSON.stringify({ stream: 'stdout', data: `${resolved}\n` })}\n`
+                : '',
               { headers: { 'content-type': 'application/x-ndjson' } },
             );
           }
-          const resolved = resolvedRemotePathFromValidationCommand(
-            command.args[1] ?? '',
-          );
-          return new Response(
-            resolved
-              ? `${JSON.stringify({ stream: 'stdout', data: `${resolved}\n` })}\n`
-              : '',
-            { headers: { 'content-type': 'application/x-ndjson' } },
-          );
-        }
-        if (url.pathname.endsWith('/kill')) {
-          killed++;
-          return Response.json({
-            command: commands.get(url.pathname.split('/').at(-2)!),
-          });
-        }
-        if (url.pathname.endsWith('/stop')) {
-          stopped++;
-          return Response.json({ sandbox: metadata });
-        }
-        if (url.pathname.endsWith('/cmd')) {
-          const body = JSON.parse(String(init?.body));
-          const command = {
-            id: `cmd_transport_${commands.size}`,
-            name: body.command,
-            args: body.args,
-            cwd: body.cwd ?? metadata.cwd,
+          if (url.pathname.endsWith('/kill')) {
+            killed++;
+            return Response.json({
+              command: commands.get(url.pathname.split('/').at(-2)!),
+            });
+          }
+          if (url.pathname.endsWith('/stop')) {
+            stopped++;
+            return Response.json({ sandbox: metadata });
+          }
+          if (url.pathname.endsWith('/cmd')) {
+            const body = JSON.parse(String(init?.body));
+            const command = {
+              id: `cmd_transport_${commands.size}`,
+              name: body.command,
+              args: body.args,
+              cwd: body.cwd ?? metadata.cwd,
+              sandboxId: metadata.id,
+              exitCode: 0,
+              startedAt: 1,
+            };
+            commands.set(command.id, command);
+            return body.wait
+              ? new Response(
+                  `${JSON.stringify({ command })}\n${JSON.stringify({ command })}\n`,
+                  { headers: { 'content-type': 'application/x-ndjson' } },
+                )
+              : Response.json({ command });
+          }
+          const commandId = url.pathname.match(/\/cmd\/([^/]+)$/u)?.[1];
+          if (commandId)
+            return Response.json({ command: commands.get(commandId) });
+          if (url.pathname.endsWith('/mkdir')) return Response.json({});
+          return Response.json({ sandbox: metadata, routes: [] });
+        };
+        vi.stubGlobal('fetch', fakeFetch);
+        let nativeSandbox!: import('@vercel/sandbox').Sandbox;
+        createMock.mockImplementation(async (params) => {
+          nativeSandbox = await actual.Sandbox.get({
+            ...params,
             sandboxId: metadata.id,
-            exitCode: 0,
-            startedAt: 1,
-          };
-          commands.set(command.id, command);
-          return body.wait
-            ? new Response(
-                `${JSON.stringify({ command })}\n${JSON.stringify({ command })}\n`,
-                { headers: { 'content-type': 'application/x-ndjson' } },
-              )
-            : Response.json({ command });
-        }
-        const commandId = url.pathname.match(/\/cmd\/([^/]+)$/u)?.[1];
-        if (commandId)
-          return Response.json({ command: commands.get(commandId) });
-        if (url.pathname.endsWith('/mkdir')) return Response.json({});
-        return Response.json({ sandbox: metadata, routes: [] });
-      };
-      vi.stubGlobal('fetch', fakeFetch);
-      let nativeSandbox!: import('@vercel/sandbox').Sandbox;
-      createMock.mockImplementation(async (params) => {
-        nativeSandbox = await actual.Sandbox.get({
-          ...params,
-          sandboxId: metadata.id,
+          });
+          return nativeSandbox;
         });
-        return nativeSandbox;
-      });
-      const session = await new VercelSandboxClient({
-        projectId: 'project_transport',
-        teamId: 'team_transport',
-        token: 'synthetic_transport_token',
-      }).create(new Manifest());
-      attacking = true;
-      await expect(
-        session.readFile({ path: 'tiny', maxBytes: 0 }),
-      ).rejects.toThrow(/exceeded its output limit/u);
-      expect(delivered).toBeLessThan(30);
-      expect(cancelled).toBe(1);
-      expect(killed).toBe(1);
-      expect(stopped).toBe(0);
-      expect(wrongAuthentication).toBe(false);
-      // The same original SDK client can read stored logs without the capped
-      // owner after cleanup; no budget leaks into subsequent ordinary work.
-      attacking = false;
-      const storedCommand = await nativeSandbox.getCommand(validationCommandId);
-      expect((await storedCommand.output()).length).toBe(storedOutput.length);
-    },
-  );
+        const session = await new VercelSandboxClient({
+          projectId: 'project_transport',
+          teamId: 'team_transport',
+          token: 'synthetic_transport_token',
+        }).create(new Manifest());
+        attacking = true;
+        await expect(
+          session.readFile({ path: 'tiny', maxBytes: 0 }),
+        ).rejects.toThrow(/exceeded its output limit/u);
+        expect(delivered).toBeLessThan(30);
+        expect(cancelled).toBe(1);
+        expect(killed).toBe(1);
+        expect(stopped).toBe(0);
+        expect(wrongAuthentication).toBe(false);
+        // The same original SDK client can read stored logs without the capped
+        // owner after cleanup; no budget leaks into subsequent ordinary work.
+        attacking = false;
+        const storedCommand =
+          await nativeSandbox.getCommand(validationCommandId);
+        expect((await storedCommand.output()).length).toBe(storedOutput.length);
+      },
+    );
+  });
 
   test('isolates a pending native capped read from uncapped reads and application commands', async () => {
     const session = await new VercelSandboxClient().create(new Manifest());

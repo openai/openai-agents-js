@@ -79,7 +79,7 @@ it.runIf(process.platform === 'linux')(
 );
 
 it.runIf(process.platform === 'linux').each([false, true])(
-  'rejects explicit Local login=%s before approval or file effects',
+  'rejects explicit Local login=%s before command dispatch',
   async (login) => {
     const directory = await mkdtemp(
       join(tmpdir(), 'agents-local-login-reject-'),
@@ -102,7 +102,10 @@ it.runIf(process.platform === 'linux').each([false, true])(
         apiKey: 'synthetic-local-login-reject',
         supportsWebsockets: false,
       });
-      let approvals = 0;
+      const approvals: Array<{
+        callId: string | null;
+        argumentsValue: unknown;
+      }> = [];
       await using session = await new Agent({
         instructions: 'Check local execution admission.',
         model: 'gpt-5.5',
@@ -111,12 +114,13 @@ it.runIf(process.platform === 'linux').each([false, true])(
         environment: Environment.local({
           cwd: directory,
           tools: ['exec_command'],
-          approval: () => {
-            approvals++;
+          approval: (context, argumentsValue) => {
+            approvals.push({ callId: context.callId, argumentsValue });
             return true;
           },
         }),
       });
+      expect(approvals).toEqual([]);
       await expect((await session.submit('Run.')).wait()).rejects.toThrow(
         /Native executor rejected invalid arguments before dispatch/,
       );
@@ -129,7 +133,15 @@ it.runIf(process.platform === 'linux').each([false, true])(
       };
       expect(Object.hasOwn(schema.properties, 'login')).toBe(false);
       expect(schema.additionalProperties).toBe(false);
-      expect(approvals).toBe(0);
+      expect(approvals).toEqual([
+        {
+          callId: 'explicit-login',
+          argumentsValue: {
+            cmd: 'printf forbidden > forbidden-login-effect',
+            login,
+          },
+        },
+      ]);
       await expect(
         access(join(directory, 'forbidden-login-effect')),
       ).rejects.toThrow();
@@ -137,7 +149,7 @@ it.runIf(process.platform === 'linux').each([false, true])(
         (await (await session.submit('Continue.')).wait()).finalOutput,
       ).toBe('healthy');
       expect(server.requests).toHaveLength(2);
-      expect(approvals).toBe(0);
+      expect(approvals).toHaveLength(1);
       await expect(
         access(join(directory, 'forbidden-login-effect')),
       ).rejects.toThrow();
