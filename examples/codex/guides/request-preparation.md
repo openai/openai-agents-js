@@ -38,3 +38,5 @@ Use the callback's `signal` for cooperative cancellation. Cancellation joins an 
 An active edited operation cannot export a manual checkpoint. For manual tools in `agent.run()`, supply `onInteraction` to answer live requests. Do not add an editor to `agent.run(null, { state, ... })` when resuming an admitted turn. Completed idle history can be saved and restored; supply a fresh callback on the next new operation. The callback and sampling-only edits do not persist as executable configuration or canonical history.
 
 To inspect effective scalar settings and correlate retained responses without editing a request, use [passive request metadata](request-metadata.md). For a classic Model wrapper, use [prepared model declarations](../prepared-model-declarations/README.md).
+
+For broader native model-input replacement, see [`transformContext`](session-configuration.md#control-model-context-and-completion). It also covers child, compaction, and output-repair input, but does not edit tool presentation.

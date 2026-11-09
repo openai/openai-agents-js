@@ -8,11 +8,11 @@ Use Node.js 24 with its bundled npm. Choose a bundle for your operating system a
 
 The Windows x64 bundle uses the Microsoft Visual C++ runtime. If Windows reports that `VCRUNTIME140.dll` is missing, install the [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/).
 
-To run the migration repository examples, build the SDK and examples from the same `v0.22.0-alpha.2` checkout using the [source-build guide](building.md). External applications need the matching five-package bundle. The alpha.2 starter below includes those five packages and a greeting example to check the installation.
+To run repository examples, build the SDK and examples from the same checkout using the [source-build guide](building.md). For the alpha.2 versions of those examples, check out the `v0.22.0-alpha.2` tag first. External applications need the matching five-package bundle. The alpha.2 starter below includes those five packages and a greeting example to check the installation.
 
 ## Run the starter bundle
 
-Choose the starter archive for the machine that will run your application from the [0.22.0-alpha.2 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.2). These prebuilt bundles and the current source checkout can expose different features. Use the guides and examples for the SDK version you install.
+Choose the starter archive for the machine that will run your application from the [0.22.0-alpha.2 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.2). These prebuilt bundles and the current source checkout can expose different features. Use the [guides and examples at the alpha.2 tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.2/README.md#sdk-guides) with this starter.
 
 | Platform            | Starter archive                                     |
 | ------------------- | --------------------------------------------------- |

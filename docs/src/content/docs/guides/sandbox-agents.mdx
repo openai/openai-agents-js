@@ -38,6 +38,14 @@ This example stages a local repo under `repo/`, loads local skills lazily, and l
   title="Create a local sandbox agent"
 />
 
+The example resolves `repo/` and `skills/` next to its source file. Use the [complete example directory](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/docs/sandbox-agents) to include the invoice task and skill fixtures. To run that copy from a matching [source checkout](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/building.md), install dependencies, build the SDK, and set `OPENAI_API_KEY`. From the repository root, run:
+
+```bash
+node examples/classic/docs/sandbox-agents/basic.ts
+```
+
+The agent reads the invoice task, edits the staged files, and reports its verification result. The staged workspace is separate from the original fixture directory.
+
 ## Key choices
 
 After the basic run works, choose these settings:
