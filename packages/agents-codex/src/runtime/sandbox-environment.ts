@@ -20,6 +20,7 @@ import {
   assertSandboxSessionStateUsable,
   captureLiveMountCredentialAuthorityIfAbsent,
   materializeEnvironment,
+  withExclusiveSandboxStateInspection,
   validateMountEnvironmentCredentialBoundaries,
 } from '@openai/agents-core/sandbox/internal';
 import type { Environment } from './environment';
@@ -175,97 +176,102 @@ export function sandboxEnvironment<
           );
       }));
     try {
-      if (borrowed) {
-        const trustedEnvironment = await materializeEnvironment(manifest);
-        signal.throwIfAborted();
-        assertSandboxSessionStateUsable(borrowed.state);
-        captureLiveMountCredentialAuthorityIfAbsent(
-          borrowed.state.manifest,
-          borrowed.state.environment,
-        );
-        assertLiveMountCredentialAuthorityMatches(
-          borrowed.state.manifest,
-          manifest,
-        );
-        validateMountEnvironmentCredentialBoundaries(
-          manifest,
-          trustedEnvironment,
-        );
-        assertLiveMountEnvironmentAuthorityMatches(
-          borrowed.state.manifest,
-          manifest,
-          trustedEnvironment,
-        );
-      }
-      // Providers prepare and mount through their existing create pipeline.
-      const currentOptions =
-        providerOptions === undefined
-          ? undefined
-          : captureOptions(providerOptions);
-      if (resumeState) {
-        const state = captureOptions(resumeState);
-        const resumeOptions = {
-          clientOptions: currentOptions,
-          trustedManifest: cloneManifest(manifest),
-          archiveLimits,
-        };
-        client.validateSessionStateForResume?.(
-          { source: 'explicit', state },
-          resumeOptions,
-        );
-        if (
-          client.serializedSessionStateRequiresFreshCreation ||
-          (await client.serializedSessionStateRequiresFreshCreationForOptions?.(
-            state,
+      const open = async () => {
+        if (borrowed) {
+          const trustedEnvironment = await materializeEnvironment(manifest);
+          signal.throwIfAborted();
+          assertSandboxSessionStateUsable(borrowed.state);
+          captureLiveMountCredentialAuthorityIfAbsent(
+            borrowed.state.manifest,
+            borrowed.state.environment,
+          );
+          assertLiveMountCredentialAuthorityMatches(
+            borrowed.state.manifest,
+            manifest,
+          );
+          validateMountEnvironmentCredentialBoundaries(
+            manifest,
+            trustedEnvironment,
+          );
+          assertLiveMountEnvironmentAuthorityMatches(
+            borrowed.state.manifest,
+            manifest,
+            trustedEnvironment,
+          );
+        }
+        // Providers prepare and mount through their existing create pipeline.
+        const currentOptions =
+          providerOptions === undefined
+            ? undefined
+            : captureOptions(providerOptions);
+        if (resumeState) {
+          const state = captureOptions(resumeState);
+          const resumeOptions = {
+            clientOptions: currentOptions,
+            trustedManifest: cloneManifest(manifest),
+            archiveLimits,
+          };
+          client.validateSessionStateForResume?.(
+            { source: 'explicit', state },
             resumeOptions,
-          ))
+          );
+          if (
+            client.serializedSessionStateRequiresFreshCreation ||
+            (await client.serializedSessionStateRequiresFreshCreationForOptions?.(
+              state,
+              resumeOptions,
+            ))
+          )
+            throw new TypeError(
+              'provider requires fresh resource creation for this resume state',
+            );
+          sandbox = await client.resume!(state, resumeOptions);
+        } else {
+          sandbox =
+            borrowed ??
+            (await create!({
+              manifest: cloneManifest(manifest),
+              options: currentOptions,
+              snapshot,
+              concurrencyLimits,
+              archiveLimits,
+            }));
+        }
+        if (
+          !borrowed &&
+          !sandbox.close &&
+          !sandbox.stop &&
+          !sandbox.shutdown &&
+          !sandbox.delete &&
+          !deleteResource
         )
           throw new TypeError(
-            'provider requires fresh resource creation for this resume state',
+            'sandboxEnvironment requires a sandbox cleanup route',
           );
-        sandbox = await client.resume!(state, resumeOptions);
-      } else {
-        sandbox =
-          borrowed ??
-          (await create!({
-            manifest: cloneManifest(manifest),
-            options: currentOptions,
-            snapshot,
-            concurrencyLimits,
-            archiveLimits,
-          }));
-      }
-      if (
-        !borrowed &&
-        !sandbox.close &&
-        !sandbox.stop &&
-        !sandbox.shutdown &&
-        !sandbox.delete &&
-        !deleteResource
-      )
-        throw new TypeError(
-          'sandboxEnvironment requires a sandbox cleanup route',
-        );
-      signal.throwIfAborted();
-      if (!borrowed && archiveLimits !== undefined)
-        sandbox.setArchiveLimits?.(archiveLimits);
-      if (!borrowed && sandbox.start && !(await sandbox.running?.())) {
         signal.throwIfAborted();
-        await sandbox.start({ reason: 'native session opening' });
-      }
-      signal.throwIfAborted();
-      const created = sandbox;
-      gateway = await acquireEnvironment(
-        ({ signal }) => connect(created, { signal }),
-        signal,
-      );
-      gateway.opened();
-      signal.throwIfAborted();
-      return createEnvironmentLease(
-        gateway.environment! as Environment<Context>,
-        dispose,
-        gateway.signal,
-      );
+        if (!borrowed && archiveLimits !== undefined)
+          sandbox.setArchiveLimits?.(archiveLimits);
+        if (!borrowed && sandbox.start && !(await sandbox.running?.())) {
+          signal.throwIfAborted();
+          await sandbox.start({ reason: 'native session opening' });
+        }
+        signal.throwIfAborted();
+        const created = sandbox;
+        gateway = await acquireEnvironment(
+          ({ signal }) => connect(created, { signal }),
+          signal,
+        );
+        gateway.opened();
+        signal.throwIfAborted();
+        return createEnvironmentLease(
+          gateway.environment! as Environment<Context>,
+          dispose,
+          gateway.signal,
+        );
+      };
+      return borrowed
+        ? await withExclusiveSandboxStateInspection(borrowed.state, open)
+        : await open();
     } catch (error) {
       try {
         await dispose();

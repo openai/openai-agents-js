@@ -380,3 +380,18 @@ it.skipIf(process.platform === 'win32').each(['throw', 'reject'])(
     server.assertExhausted();
   },
 );
+
+it.each([
+  ['engineer', 'codex_engineer'],
+  ['my helper', 'codex_my_helper'],
+  [' codex_existing ', 'codex_existing'],
+])(
+  'normalizes the native Codex tool name %s through the shared resolver',
+  (name, expected) => {
+    expect(nativeCodexTool({ name }).name).toBe(expected);
+  },
+);
+
+it('rejects an empty native Codex tool name', () => {
+  expect(() => nativeCodexTool({ name: '   ' })).toThrow('non-empty');
+});

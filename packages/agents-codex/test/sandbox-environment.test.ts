@@ -1,3 +1,5 @@
+import { setImmediate } from 'node:timers/promises';
+import { UnixLocalSandboxClient } from '@openai/agents-core/sandbox/local';
 import { describe, expect, it, vi } from 'vitest';
 import {
   Manifest,
@@ -678,3 +680,106 @@ it.each([
     expect(f.events).toEqual([]);
   },
 );
+
+it('waits for an actual local manifest mutation before inspecting a borrowed session', async () => {
+  const client = new UnixLocalSandboxClient();
+  const session = await client.create(new Manifest());
+  const trusted = new Manifest({ root: session.state.manifest.root });
+  let mutationEntered!: () => void;
+  let finishMutation!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    mutationEntered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    finishMutation = resolve;
+  });
+  const f = fixture();
+  const mutation = session.applyManifest(
+    new Manifest({
+      root: session.state.manifest.root,
+      environment: {
+        FLAG: async () => {
+          mutationEntered();
+          await gate;
+          return 'changed';
+        },
+      },
+    }),
+  );
+  try {
+    await entered;
+    const opening = acquireEnvironment(
+      sandboxEnvironment({
+        client,
+        manifest: trusted,
+        session,
+        connect: f.connect,
+      }),
+    );
+    await setImmediate();
+    expect(f.connect).not.toHaveBeenCalled();
+    finishMutation();
+    await mutation;
+    const owner = await opening;
+    expect(session.state.environment.FLAG).toBe('changed');
+    expect(f.connect).toHaveBeenCalledOnce();
+    await owner.dispose();
+  } finally {
+    finishMutation();
+    await mutation;
+    await session.close();
+    await session.delete();
+  }
+});
+
+it('holds borrowed inspection through gateway acquisition against actual local mutation', async () => {
+  const client = new UnixLocalSandboxClient();
+  const session = await client.create(new Manifest());
+  let connected!: () => void;
+  let finishConnect!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    connected = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    finishConnect = resolve;
+  });
+  let mutated = false;
+  const f = fixture();
+  const opening = acquireEnvironment(
+    sandboxEnvironment({
+      client,
+      manifest: new Manifest({ root: session.state.manifest.root }),
+      session,
+      connect: async (...args) => {
+        connected();
+        await gate;
+        return f.connect(...args);
+      },
+    }),
+  );
+  try {
+    await entered;
+    const mutation = session.applyManifest(
+      new Manifest({
+        root: session.state.manifest.root,
+        environment: {
+          FLAG: () => {
+            mutated = true;
+            return 'changed';
+          },
+        },
+      }),
+    );
+    await setImmediate();
+    expect(mutated).toBe(false);
+    finishConnect();
+    const owner = await opening;
+    await mutation;
+    expect(mutated).toBe(true);
+    await owner.dispose();
+  } finally {
+    finishConnect();
+    await session.close();
+    await session.delete();
+  }
+});

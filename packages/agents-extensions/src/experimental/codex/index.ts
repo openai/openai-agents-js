@@ -1,4 +1,7 @@
-import { tool as nativeTool, _nativeToolSessionOwner } from '@openai/agents';
+import {
+  tool as nativeTool,
+  _nativeToolSessionOwner,
+} from '@openai/agents-codex';
 import {
   RunContext,
   Usage,
@@ -1930,7 +1933,7 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
     { persisted?: Thread; pending: Promise<void> }
   >();
   return nativeTool({
-    name: options.name ?? 'codex',
+    name: resolveCodexToolName(options.name ?? DEFAULT_CODEX_TOOL_NAME),
     description:
       options.description ??
       'Run an external Codex CLI task in the configured workspace.',
