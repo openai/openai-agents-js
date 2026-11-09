@@ -390,15 +390,26 @@ export interface OperationOptions<Context = unknown> {
   /**
    * Select a subset of the operation ceiling before each model preparation.
    * Returning undefined uses that ceiling. Indices start at zero.
+   * Return { action: 'stop' } to stop this turn before its pending model request.
+   * Earlier tool effects remain; the stop does not accept a final answer.
    * An exhausted step limit or run budget blocks this callback.
    */
   beforeStep?: (
     context: BeforeStepContext<Context>,
-  ) =>
-    | readonly ToolSelector<Context>[]
-    | undefined
-    | Promise<readonly ToolSelector<Context>[] | undefined>;
+  ) => StepDecision<Context> | Promise<StepDecision<Context>>;
 }
+/** Keep the operation tools, select a subset, or stop the exact owning turn. */
+export type StepDecision<Context = unknown> =
+  readonly ToolSelector<Context>[] | { readonly action: 'stop' } | undefined;
+
+function isStepStop<Context>(
+  decision: StepDecision<Context>,
+): decision is { readonly action: 'stop' } {
+  return (
+    decision !== undefined && 'action' in decision && decision.action === 'stop'
+  );
+}
+
 export interface PrepareRequestContext<Context = unknown> extends Omit<
   BeforeStepContext<Context>,
   'stepIndex'
@@ -6910,6 +6921,11 @@ export class Session<OutputT = string, Context = unknown> {
             signal,
           });
           assertActive();
+          if (isStepStop(selected)) {
+            if (native._stop_step(nonce)) replied = true;
+            else reply(null);
+            return;
+          }
           const names = this.selectedStepNames(
             event,
             selected,
@@ -7087,6 +7103,11 @@ export class Session<OutputT = string, Context = unknown> {
       } catch (error) {
         this.callbackAuthorityFailed(delivery, error);
       }
+      if (isStepStop(selected)) {
+        if (native._stop_step(encode(receipt))) replied = true;
+        else reply(null);
+        return;
+      }
       reply(this.selectedStepNames(event, selected));
     } catch (error) {
       reply(null);
@@ -7135,9 +7156,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   private selectedStepNames(
     event: NativeEvent,
-    selected: Awaited<
-      ReturnType<NonNullable<OperationOptions<Context>['beforeStep']>>
-    >,
+    selected: readonly ToolSelector<Context>[] | undefined,
     defaults?: readonly ReturnType<typeof toolIdentity>[],
     sourceCatalog?: ToolCatalog,
   ): readonly ReturnType<typeof toolIdentity>[] {
