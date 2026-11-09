@@ -9,6 +9,7 @@ import { tool, ToolOutput, type FunctionTool } from '../runtime/tools';
  * The model supplies a `json` string; expected check failures go back to the same
  * agent for correction. Other errors fail the turn. The trusted application
  * chooses the path and Zod schema. The parent directory must exist.
+ * Non-finite JSON numbers return repair feedback instead of becoming null.
  * Rejected candidates preserve previous bytes. Concurrent successful calls use
  * the last atomic replacement; replacement does not promise crash durability.
  */
@@ -24,10 +25,9 @@ export function jsonArtifactTool(options: {
       [
         {
           type: 'inputText',
-          text: `Artifact ${basename(destination)}: ${problem}. Fix the JSON and call ${name} again.`.slice(
-            0,
-            2048,
-          ),
+          text: `Artifact ${basename(destination)}: ${problem}. Fix the JSON and call ${name} again.`
+            .slice(0, 2048)
+            .toWellFormed(),
         },
       ],
       false,
@@ -52,7 +52,19 @@ export function jsonArtifactTool(options: {
         });
         return rejected(`schema check failed: ${problems.join('; ')}`);
       }
-      const content = JSON.stringify(checked.data, null, 2);
+      let hasNonFiniteNumber = false;
+      const content = JSON.stringify(
+        checked.data,
+        (_key, value: unknown) => {
+          if (typeof value === 'number' && !Number.isFinite(value)) {
+            hasNonFiniteNumber = true;
+          }
+          return value;
+        },
+        2,
+      );
+      if (hasNonFiniteNumber)
+        return rejected('JSON value check failed: numbers must be finite');
       if (content === undefined)
         throw new TypeError('Artifact schema must produce a JSON value');
       context.signal.throwIfAborted();

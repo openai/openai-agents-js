@@ -92,7 +92,8 @@ async function fixture(
   // Failure-only, bounded protocol evidence for the unsolicited GET fixtures.
   // Keep headers, URLs, arguments, descriptions and result payloads out of logs.
   const diagnosticEnabled =
-    !!(options.formOrigin || options.urlQuestion) && !options.urlCompletion;
+    !!options.urlRequired ||
+    (!!(options.formOrigin || options.urlQuestion) && !options.urlCompletion);
   const diagnosticStart = Date.now();
   const diagnosticRows: Record<string, unknown>[] = [];
   let droppedDiagnosticRows = 0;

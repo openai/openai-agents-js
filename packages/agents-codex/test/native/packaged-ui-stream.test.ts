@@ -337,7 +337,7 @@ it('bounds streamed text without cancelling the underlying turn', async () => {
 function displayedMessage(
   id: string,
   text: string,
-  phase: 'final_answer' | null = null,
+  phase: 'commentary' | 'final_answer' | null = null,
 ): SessionItem {
   return {
     id,
@@ -377,6 +377,34 @@ function shownText(values: any[], id: string): string {
     .map((value) => value.delta)
     .join('');
 }
+
+it.each([
+  ['retained commentary', 'Final answer.'],
+  ['retained commentary', ''],
+  ['', 'Final answer.'],
+  ['', ''],
+])(
+  'checks done-only commentary before finish (commentary=%j, final=%j)',
+  async (commentary, output) => {
+    const { turn, session } = textFixture(
+      output ? [['answer', output]] : [],
+      [
+        displayedMessage('commentary', commentary, 'commentary'),
+        displayedMessage('answer', output, 'final_answer'),
+      ],
+      output,
+    );
+    const values = await frames(vercelResponse(turn, session));
+    expect(values.slice(-2)).toEqual([
+      commentary
+        ? { type: 'error', errorText: 'resync_required' }
+        : { type: 'finish' },
+      '[DONE]',
+    ]);
+    expect(shownText(values, 'answer')).toBe(output);
+    expect(await turn.wait()).toEqual({ finalOutput: output });
+  },
+);
 
 it('preserves many small interleaved ASCII and Unicode deltas through canonical settlement', async () => {
   const left = 'a'.repeat(64),
@@ -514,7 +542,7 @@ it('accounts for the latest canonical text when a retained message ID is replace
 });
 
 it.each([false, true])(
-  'bounds aggregate canonical text independently of streamed text (extra=%s)',
+  'rejects unstreamed canonical text within and beyond its byte cap (extra=%s)',
   async (extra) => {
     const filler = 'x'.repeat(1_048_576 - 2 + (extra ? 1 : 0));
     const { turn, session } = textFixture(
@@ -528,9 +556,7 @@ it.each([false, true])(
     const values = await frames(vercelResponse(turn, session));
     expect(shownText(values, 'answer')).toBe('ok');
     expect(values.slice(-2)).toEqual([
-      extra
-        ? { type: 'error', errorText: 'resync_required' }
-        : { type: 'finish' },
+      { type: 'error', errorText: 'resync_required' },
       '[DONE]',
     ]);
   },

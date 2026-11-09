@@ -127,6 +127,103 @@ it('bounds schema diagnostics and preserves the previous artifact', async () => 
   expect(await readdir(root)).toEqual(['report.json']);
 }, 30_000);
 
+it.each([
+  { schema: z.unknown(), invalid: '1e400', valid: '1.25', expected: 1.25 },
+  {
+    schema: z.strictObject({ amount: z.unknown() }),
+    invalid: '{"amount":-1e400}',
+    valid: '{"amount":1.25}',
+    expected: { amount: 1.25 },
+  },
+  {
+    schema: z.array(z.unknown()),
+    invalid: '[1e400]',
+    valid: '[1.25]',
+    expected: [1.25],
+  },
+  {
+    schema: z.string().transform(Number),
+    invalid: '"1e400"',
+    valid: '"1.25"',
+    expected: 1.25,
+  },
+  {
+    schema: z.record(z.string(), z.number()),
+    invalid: '{"\\ud800":"bad"}',
+    valid: '{"amount":1.25}',
+    expected: { amount: 1.25 },
+    problem: 'schema check failed',
+  },
+  {
+    schema: z.record(z.string(), z.number()),
+    invalid: JSON.stringify({ ['a'.repeat(159) + '🦦']: 'bad' }),
+    valid: '{"amount":1.25}',
+    expected: { amount: 1.25 },
+    problem: 'schema check failed',
+  },
+])(
+  'repairs rejected $invalid in the same native session before publishing',
+  async ({
+    schema,
+    invalid,
+    valid,
+    expected,
+    problem = 'JSON value check failed',
+  }) => {
+    const root = await directory();
+    const path = join(root, 'report.json');
+    const previous = '{"retained":true}\n';
+    await writeFile(path, previous, 'utf8');
+    await withScriptedResponses(
+      [
+        [toolCall('report', { json: invalid }, { callId: 'invalid-value' })],
+        [toolCall('inspect_previous', {}, { callId: 'previous' })],
+        [toolCall('report', { json: valid }, { callId: 'corrected' })],
+        [text('Published')],
+      ],
+      async (peer) => {
+        const agent = new Agent({
+          provider: peer.provider,
+          instructions: 'Publish the report, repairing rejected values.',
+          tools: [
+            jsonArtifactTool({ name: 'report', path, schema }),
+            tool({
+              name: 'inspect_previous',
+              parameters: z.strictObject({}),
+              execute: () => readFile(path, 'utf8'),
+            }),
+          ],
+        });
+        await using session = await agent.session();
+        const turn = await session.submit('Publish the report.');
+        expect((await turn.wait()).finalOutput).toBe('Published');
+        const turnIds = new Set<string>();
+        let calls = 0;
+        for await (const item of session.items()) {
+          if (item.type === 'function_call') {
+            turnIds.add(item.turnId);
+            calls++;
+          }
+        }
+        expect(calls).toBe(3);
+        expect(turnIds).toEqual(new Set([turn.turnId]));
+        const feedback = peer.toolOutput('invalid-value') ?? '';
+        expect(feedback).toContain(problem);
+        expect(feedback.length).toBeLessThan(2048);
+        expect(feedback.isWellFormed()).toBe(true);
+        expect(JSON.stringify(peer.requests[1])).toContain(problem);
+        expect(peer.toolOutput('previous')).toBe(previous);
+        expect(peer.toolOutput('corrected')).toContain(
+          'Published validated JSON artifact report',
+        );
+      },
+    );
+    expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(expected);
+    expect(await readdir(root)).toEqual(['report.json']);
+  },
+  30_000,
+);
+
 it('fails on I/O errors without asking the model to repair valid JSON', async () => {
   const root = await directory();
   const path = join(root, 'missing', 'report.json');

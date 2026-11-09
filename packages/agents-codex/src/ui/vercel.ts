@@ -74,33 +74,31 @@ async function completeDisplay(
   let fallback: string | undefined;
   const items = session.items({ subagentId: childId ?? undefined });
   try {
-    if (shown.size || (plain && output)) {
-      for (;;) {
-        const next = await localWait(items.next(), signal);
-        if (next.done) break;
-        const item: SessionItem = next.value;
-        if (
-          item.type !== 'message' ||
-          item.role !== 'assistant' ||
-          item.status !== 'completed' ||
-          !turns.has(item.turnId)
-        )
-          continue;
-        const text =
-          item.displayText ??
-          item.content
-            .map((part) => (part.type === 'input_image' ? '' : part.text))
-            .join('');
-        const bytes = utf8.encode(text).length;
-        recordedBytes += bytes - (recorded.get(item.id)?.bytes ?? 0);
-        recorded.set(item.id, { text, bytes });
-        if (recorded.size > 256 || recordedBytes > 1_048_576) return false;
-        if (item.turnId !== last) continue;
-        if (item.phase === 'final_answer') candidate = item.id;
-        else if (item.phase === null) {
-          fallback = item.id;
-          if (!nativeBlank(text)) candidate = item.id;
-        }
+    for (;;) {
+      const next = await localWait(items.next(), signal);
+      if (next.done) break;
+      const item: SessionItem = next.value;
+      if (
+        item.type !== 'message' ||
+        item.role !== 'assistant' ||
+        item.status !== 'completed' ||
+        !turns.has(item.turnId)
+      )
+        continue;
+      const text =
+        item.displayText ??
+        item.content
+          .map((part) => (part.type === 'input_image' ? '' : part.text))
+          .join('');
+      const bytes = utf8.encode(text).length;
+      recordedBytes += bytes - (recorded.get(item.id)?.bytes ?? 0);
+      recorded.set(item.id, { text, bytes });
+      if (recorded.size > 256 || recordedBytes > 1_048_576) return false;
+      if (item.turnId !== last) continue;
+      if (item.phase === 'final_answer') candidate = item.id;
+      else if (item.phase === null) {
+        fallback = item.id;
+        if (!nativeBlank(text)) candidate = item.id;
       }
     }
   } catch (error) {
@@ -113,6 +111,8 @@ async function completeDisplay(
   }
   for (const [id, value] of shown)
     if (recorded.get(id)?.text !== value.text) return false;
+  for (const [id, value] of recorded)
+    if (value.text && shown.get(id)?.text !== value.text) return false;
   if (!plain) return true;
   if (output === '' && [...shown.values()].every((value) => value.text === ''))
     return true;
