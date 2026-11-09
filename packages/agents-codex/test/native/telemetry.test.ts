@@ -5,6 +5,8 @@ import { expect, it } from 'vitest';
 
 const exec = promisify(execFile);
 for (const mode of [
+  'completion-decisions',
+  'completion-decisions-disabled',
   'lifecycle',
   'preclaim',
   'late',

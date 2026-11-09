@@ -14,7 +14,68 @@ async function main() {
     native.create_engine('{"not_a_native_option":true}', '{}', null);
   const once = 'Codex telemetry can only be configured once per process';
   const late = 'Configure telemetry before creating any Codex clients';
-  if (mode === 'lifecycle') {
+  if (
+    mode === 'completion-decisions' ||
+    mode === 'completion-decisions-disabled'
+  ) {
+    await telemetry.configure();
+    const server = new ModelServer([[message('4')]]);
+    const config = await server.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-traced-decision',
+      supportsWebsockets: false,
+    });
+    let hooks = 0;
+    let decisions = 0;
+    try {
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider,
+        decisions: {
+          async getDecision() {
+            decisions++;
+            return {
+              value: { response: true },
+              usage: {
+                inputTokens: 7,
+                cachedInputTokens: 0,
+                cacheWriteInputTokens: 0,
+                outputTokens: 3,
+                reasoningOutputTokens: 0,
+                totalTokens: 10,
+              },
+            };
+          },
+        },
+        async beforeComplete(context) {
+          hooks++;
+          assert.equal(
+            await context.decide('Ready?', { input: context.text! }),
+            true,
+          );
+        },
+      });
+      const session = await agent.session({
+        tracing: { disabled: mode === 'completion-decisions-disabled' },
+      });
+      try {
+        const result = await (await session.submit('What is 2 + 2?')).wait();
+        assert.equal(result.finalOutput, '4');
+        assert.equal(result.threadUsage?.totalTokenUsage.totalTokens, 10);
+        assert.equal(hooks, 1);
+        assert.equal(decisions, 1);
+        server.assertExhausted();
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await provider.close();
+      await ModelServer.closeAll();
+      await telemetry.shutdown();
+    }
+  } else if (mode === 'lifecycle') {
     await assert.rejects(
       telemetry.shutdown(),
       /Configure telemetry successfully/,
