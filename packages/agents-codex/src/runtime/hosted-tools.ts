@@ -1,5 +1,5 @@
 import type OpenAI from 'openai';
-import type { JsonObject } from './binding';
+import { copyJsonValue, type JsonObject } from './binding';
 
 export interface HostedToolOptions {
   /** Additional provider fields; declared fields and tool identity cannot be replaced. */
@@ -111,7 +111,13 @@ export function captureHostedTool(tool: HostedTool): HostedTool {
 /** @internal The bridge removes SDK include controls before provider serialization. */
 export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
   return tools.map((tool): JsonObject => {
-    const providerData = tool.providerData ?? {};
+    const providerData = copyJsonValue(tool.providerData ?? {});
+    if (
+      providerData === null ||
+      typeof providerData !== 'object' ||
+      Array.isArray(providerData)
+    )
+      throw new TypeError('Hosted tool providerData must be a JSON object');
     const fieldsByKind = {
       file_search: [
         'vector_store_ids',

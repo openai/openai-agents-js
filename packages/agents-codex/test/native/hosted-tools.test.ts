@@ -20,6 +20,19 @@ import type {
 import { vi } from 'vitest';
 
 describe('native provider-hosted declarations', () => {
+  it.each([{ value: false }, { value: 0 }, { value: '' }, { value: [] }])(
+    'rejects non-object provider data: $value',
+    ({ value }) => {
+      expect(() =>
+        hostedToolSpecs([
+          fileSearch('vs_synthetic', {
+            providerData: value as unknown as JsonObject,
+          }),
+        ]),
+      ).toThrow();
+    },
+  );
+
   it('captures nested configuration separately from local callbacks', () => {
     const stores = ['vs_synthetic'];
     const callers: ('direct' | 'programmatic')[] = ['direct'];
