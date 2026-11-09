@@ -3,6 +3,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -827,7 +828,11 @@ describe('UnixLocalSandboxClient', () => {
       }),
     );
 
+    const assets = join(session.state.workspaceRootPath, 'assets');
+    await mkdir(join(assets, 'empty'), { recursive: true });
+    await writeFile(join(assets, 'image.png'), ONE_BY_ONE_PNG);
     const archive = await session.persistWorkspace();
+    await rm(assets, { recursive: true });
     await writeFile(
       join(session.state.workspaceRootPath, 'keep.txt'),
       'mutated\n',
@@ -839,6 +844,10 @@ describe('UnixLocalSandboxClient', () => {
 
     await session.hydrateWorkspace(archive);
 
+    expect(await readFile(join(assets, 'image.png'))).toEqual(
+      Buffer.from(ONE_BY_ONE_PNG),
+    );
+    expect(await readdir(join(assets, 'empty'))).toEqual([]);
     await expect(
       readFile(join(session.state.workspaceRootPath, 'keep.txt'), 'utf8'),
     ).resolves.toBe('keep\n');
@@ -852,6 +861,309 @@ describe('UnixLocalSandboxClient', () => {
 
     await session.close();
   });
+
+  it.each([
+    ['invalid file data', [], [{ path: 'bad', data: null }]],
+    ['invalid directory list', 'bad', []],
+    ['escaping directory', ['../outside'], []],
+    ['absolute file path', [], [{ path: '/bad', data: '' }]],
+    ['file with a directory suffix', [], [{ path: 'bad/', data: '' }]],
+    ['file at a directory path', ['incoming/child'], []],
+    [
+      'file below another file',
+      [],
+      [
+        { path: 'incoming!', data: '' },
+        { path: 'incoming/child', data: '' },
+      ],
+    ],
+    [
+      'file at an implicit directory',
+      [],
+      [
+        { path: 'nested/child', data: '' },
+        { path: 'nested', data: '' },
+      ],
+    ],
+  ] as const)(
+    'preserves the workspace on %s',
+    async (_case, directories, files) => {
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+      const session = await client.create(new Manifest());
+      const root = session.state.workspaceRootPath;
+      await mkdir(join(root, 'original'));
+      await writeFile(join(root, 'original', 'note'), 'keep');
+      const archive = JSON.stringify({
+        version: 1,
+        directories,
+        files: [{ path: 'incoming', data: '' }, ...files],
+      });
+
+      await expect(
+        session.hydrateWorkspace(archive, { archiveLimits: null }),
+      ).rejects.toThrow();
+      expect(await readdir(root)).toEqual(['original']);
+      expect(await readFile(join(root, 'original', 'note'), 'utf8')).toBe(
+        'keep',
+      );
+      await session.close();
+    },
+  );
+
+  it.for(['file', 'directory', 'implicit directory'])(
+    'preserves the workspace when an archive %s name exceeds the filesystem limit',
+    async (kind, { skip }) => {
+      const name = 'x'.repeat(256);
+      const probe = join(rootDir, name);
+      try {
+        await mkdir(probe);
+        await rm(probe, { recursive: true });
+        skip('This filesystem accepts 256-character names.');
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENAMETOOLONG')
+          throw error;
+      }
+      const session = await new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+      }).create(new Manifest());
+      const root = session.state.workspaceRootPath;
+      try {
+        await writeFile(join(root, 'original'), 'keep');
+        const archive = JSON.stringify({
+          version: 1,
+          directories: kind === 'directory' ? [name] : [],
+          files:
+            kind === 'directory'
+              ? []
+              : [
+                  {
+                    path: kind === 'file' ? name : `missing/${name}/leaf`,
+                    data: '',
+                  },
+                ],
+        });
+        await expect(session.hydrateWorkspace(archive)).rejects.toThrow();
+        expect(await readdir(root)).toEqual(['original']);
+        expect(await readFile(join(root, 'original'), 'utf8')).toBe('keep');
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it('uses the workspace filesystem to detect aliased archive paths', async () => {
+    const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest());
+    const root = session.state.workspaceRootPath;
+    try {
+      await writeFile(join(root, 'Original'), 'keep');
+      const ignoresCase = await pathExists(join(root, 'original'));
+      const archive = JSON.stringify({
+        version: 1,
+        directories: ['Folder'],
+        files: [{ path: 'folder', data: 'AQI=' }],
+      });
+      if (ignoresCase) {
+        await expect(session.hydrateWorkspace(archive)).rejects.toThrow();
+        expect(await readdir(root)).toEqual(['Original']);
+        expect(await readFile(join(root, 'Original'), 'utf8')).toBe('keep');
+      } else {
+        await session.hydrateWorkspace(archive);
+        expect(await readdir(join(root, 'Folder'))).toEqual([]);
+        expect(await readFile(join(root, 'folder'))).toEqual(
+          Buffer.from([1, 2]),
+        );
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('compares descendants of directories with different spellings', async () => {
+    const session = await new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    }).create(new Manifest());
+    const root = session.state.workspaceRootPath;
+    try {
+      await writeFile(join(root, 'Original'), 'keep');
+      const archive = JSON.stringify({
+        version: 1,
+        directories: ['Folder/nested'],
+        files: [{ path: 'folder/nested', data: '' }],
+      });
+      if (await pathExists(join(root, 'original'))) {
+        await expect(session.hydrateWorkspace(archive)).rejects.toThrow();
+        expect(await readdir(root)).toEqual(['Original']);
+      } else {
+        await session.hydrateWorkspace(archive);
+        expect((await stat(join(root, 'Folder/nested'))).isDirectory()).toBe(
+          true,
+        );
+        expect((await stat(join(root, 'folder/nested'))).isFile()).toBe(true);
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'preserves the workspace when a complete destination exceeds the pathname limit',
+    async () => {
+      const session = await new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+      }).create(new Manifest());
+      const root = session.state.workspaceRootPath;
+      try {
+        await writeFile(join(root, 'original'), 'keep');
+        const path = Array(12).fill('d'.repeat(100)).join('/');
+        await expect(
+          session.hydrateWorkspace(
+            JSON.stringify({ version: 1, directories: [path], files: [] }),
+          ),
+        ).rejects.toThrow();
+        expect(await readdir(root)).toEqual(['original']);
+        expect(await readFile(join(root, 'original'), 'utf8')).toBe('keep');
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')(
+    'preserves the workspace when an aliased directory makes the installed path too long',
+    async ({ skip }) => {
+      const base = await realpath(rootDir);
+      const stored = 'e\u0301'.repeat(50);
+      const alias = stored.normalize('NFC');
+      await mkdir(join(base, stored));
+      if (!(await pathExists(join(base, alias))))
+        skip('The filesystem distinguishes Unicode spellings.');
+      const session = await new UnixLocalSandboxClient({
+        workspaceBaseDir: base,
+      }).create(new Manifest());
+      const root = session.state.workspaceRootPath;
+      let parent = alias;
+      while (Buffer.byteLength(join(root, parent)) < 800)
+        parent = join(parent, 'd'.repeat(100));
+      const path = join(
+        parent,
+        'f'.repeat(1021 - Buffer.byteLength(join(root, parent))),
+      );
+      try {
+        await writeFile(join(root, 'original'), 'keep');
+        await expect(
+          session.hydrateWorkspace(
+            JSON.stringify({
+              version: 1,
+              directories: [stored],
+              files: [{ path, data: '' }],
+            }),
+          ),
+        ).rejects.toThrow();
+        expect(await readdir(root)).toEqual(['original']);
+        expect(await readFile(join(root, 'original'), 'utf8')).toBe('keep');
+      } finally {
+        await rm(join(root, path), { force: true });
+        await session.close();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')(
+    'restores a directory with a trailing slash at the macOS pathname limit',
+    async () => {
+      const session = await new UnixLocalSandboxClient({
+        workspaceBaseDir: await realpath(rootDir),
+      }).create(new Manifest());
+      const root = await realpath(session.state.workspaceRootPath);
+      try {
+        let parent = '';
+        while (Buffer.byteLength(join(root, parent)) < 800) {
+          parent = join(parent, 'd'.repeat(100));
+        }
+        const directory = join(
+          parent,
+          'd'.repeat(1022 - Buffer.byteLength(join(root, parent))),
+        );
+        await session.hydrateWorkspace(
+          JSON.stringify({
+            version: 1,
+            directories: [directory + '/'],
+            files: [],
+          }),
+        );
+        expect((await lstat(join(root, directory))).isDirectory()).toBe(true);
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')(
+    'restores an archive close to the macOS pathname limit',
+    async () => {
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+      const session = await client.create(new Manifest());
+      let parent = await realpath(session.state.workspaceRootPath);
+      try {
+        while (Buffer.byteLength(parent) < 800) {
+          parent = join(parent, 'd'.repeat(100));
+        }
+        await mkdir(parent, { recursive: true });
+        const file = join(parent, 'f'.repeat(1022 - Buffer.byteLength(parent)));
+        await writeFile(file, 'before');
+        const archive = await session.persistWorkspace();
+        await writeFile(file, 'after');
+        await chmod(rootDir, 0o555);
+        try {
+          await session.hydrateWorkspace(archive);
+          expect(await readFile(file, 'utf8')).toBe('before');
+        } finally {
+          await chmod(rootDir, 0o700);
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')(
+    'restores a nested file when the workspace root is near the pathname limit',
+    async () => {
+      let base = await realpath(rootDir);
+      while (Buffer.byteLength(base) < 800) base = join(base, 'd'.repeat(100));
+      const suffix = '/openai-agents-sandbox-XXXXXX';
+      base = join(
+        base,
+        'b'.repeat(1018 - Buffer.byteLength(base + suffix) - 1),
+      );
+      await mkdir(base, { recursive: true });
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: base });
+      const session = await client.create(new Manifest());
+      const root = session.state.workspaceRootPath;
+      try {
+        await mkdir(join(root, 'd'));
+        await mkdir(join(root, 'Long'));
+        await writeFile(join(root, 'note'), 'top level');
+        const file = join(root, 'd', 'f');
+        await writeFile(file, 'before');
+        const archive = await session.persistWorkspace();
+        await writeFile(file, 'after');
+        await chmod(base, 0o555);
+        try {
+          await session.hydrateWorkspace(archive);
+          expect(await readFile(file, 'utf8')).toBe('before');
+          expect(await readdir(join(root, 'Long'))).toEqual([]);
+          expect(await readFile(join(root, 'note'), 'utf8')).toBe('top level');
+        } finally {
+          await chmod(base, 0o700);
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
 
   it('rejects local workspace archive hydration over resource limits', async () => {
     const client = new UnixLocalSandboxClient({

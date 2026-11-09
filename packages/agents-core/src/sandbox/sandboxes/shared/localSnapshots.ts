@@ -1,9 +1,5 @@
 import { UserError } from '../../../errors';
-import {
-  resolveSandboxArchiveLimits,
-  type SandboxArchiveLimits,
-} from '../../client';
-import { SandboxArchiveError } from '../../errors';
+import type { SandboxArchiveLimits } from '../../client';
 import {
   isNoopSnapshotSpec,
   type RemoteSnapshot,
@@ -16,39 +12,29 @@ import type {
   LocalSnapshot,
   LocalSnapshotSpec,
 } from '../types';
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  open,
-  readdir,
-  realpath,
-  rm,
-  stat,
-} from 'node:fs/promises';
-import { constants, type Dirent, type Stats } from 'node:fs';
+import { lstat, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Manifest } from '../../manifest';
-import type { WorkspaceArchiveData } from '../../session';
 import { stableJsonStringify } from '../../shared/stableJson';
 import { isRecord } from '../../shared/typeGuards';
 import {
-  isHostPathStrictlyWithinRoot,
-  isHostPathWithinRoot,
-  relativeHostPathEscapesRoot,
-} from '../../shared/hostPath';
+  clearDirectory,
+  shouldSkipSnapshotPath,
+  readStableSnapshotDirectoryEntries,
+  readStableSnapshotFile,
+  writeStableSnapshotFile,
+  assertSafeSnapshotDestinationPath,
+} from './snapshotFilesystem';
+import {
+  createWorkspaceArchive,
+  restoreWorkspaceArchive,
+} from './workspaceArchive';
 import { defaultLocalSnapshotBaseDir } from './localSnapshotPaths';
 import { serializeManifest } from './manifestPersistence';
 
 export const LOCAL_SNAPSHOT_FINGERPRINT_VERSION = 'workspace_tree_sha256_v1';
-const SNAPSHOT_FILE_READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
-const SNAPSHOT_FILE_WRITE_FLAGS =
-  constants.O_WRONLY |
-  constants.O_CREAT |
-  constants.O_TRUNC |
-  constants.O_NOFOLLOW;
-
 export type LocalSnapshotFingerprint = {
   fingerprint: string;
   version: typeof LOCAL_SNAPSHOT_FINGERPRINT_VERSION;
@@ -374,240 +360,6 @@ export async function copyDirectory(
   }
 }
 
-type WorkspaceArchiveV1 = {
-  version: 1;
-  directories: string[];
-  files: Array<{ path: string; data: string }>;
-};
-
-export async function createWorkspaceArchive(
-  sourceRoot: string,
-  excludedLogicalPaths: Set<string>,
-): Promise<Uint8Array> {
-  // Remote SnapshotStore is provider-agnostic, so its portable fallback is a small
-  // JSON/base64 archive instead of relying on host tar availability.
-  const archive: WorkspaceArchiveV1 = {
-    version: 1,
-    directories: [],
-    files: [],
-  };
-  await appendWorkspaceArchiveEntries(
-    archive,
-    sourceRoot,
-    excludedLogicalPaths,
-  );
-  return new TextEncoder().encode(JSON.stringify(archive));
-}
-
-async function appendWorkspaceArchiveEntries(
-  archive: WorkspaceArchiveV1,
-  sourceRoot: string,
-  excludedLogicalPaths: Set<string>,
-  currentRelativePath: string = '',
-  expectedSourceStats?: Stats,
-): Promise<void> {
-  const entries = await readStableSnapshotDirectoryEntries(
-    sourceRoot,
-    expectedSourceStats,
-  );
-  for (const entry of entries.sort((left, right) =>
-    left.name.localeCompare(right.name),
-  )) {
-    const relativePath = currentRelativePath
-      ? `${currentRelativePath}/${entry.name}`
-      : entry.name;
-    if (shouldSkipSnapshotPath(relativePath, excludedLogicalPaths)) {
-      continue;
-    }
-
-    const sourcePath = join(sourceRoot, entry.name);
-    const sourceStats = await lstat(sourcePath);
-    if (sourceStats.isDirectory()) {
-      archive.directories.push(relativePath);
-      await appendWorkspaceArchiveEntries(
-        archive,
-        sourcePath,
-        excludedLogicalPaths,
-        relativePath,
-        sourceStats,
-      );
-      continue;
-    }
-    if (!sourceStats.isFile()) {
-      continue;
-    }
-
-    archive.files.push({
-      path: relativePath,
-      data: Buffer.from(
-        await readStableSnapshotFile(sourcePath, sourceStats),
-      ).toString('base64'),
-    });
-  }
-}
-
-export async function restoreWorkspaceArchive(
-  data: WorkspaceArchiveData,
-  destinationRoot: string,
-  options: { archiveLimits?: SandboxArchiveLimits | null } = {},
-): Promise<void> {
-  const bytes =
-    typeof data === 'string'
-      ? new TextEncoder().encode(data)
-      : workspaceArchiveDataToUint8Array(data);
-  const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
-  checkWorkspaceArchiveInputBytes(bytes.byteLength, archiveLimits);
-
-  const archive = JSON.parse(
-    new TextDecoder().decode(bytes),
-  ) as WorkspaceArchiveV1;
-  if (archive.version !== 1) {
-    throw new UserError('Unsupported remote snapshot archive version.');
-  }
-  validateWorkspaceArchiveLimits(archive, archiveLimits);
-
-  await mkdir(destinationRoot, { recursive: true });
-  await clearDirectory(destinationRoot);
-  for (const directory of archive.directories) {
-    await writeSafeArchiveDirectory(destinationRoot, directory);
-  }
-  for (const file of archive.files) {
-    await writeSafeArchiveFile(destinationRoot, file.path, file.data);
-  }
-}
-
-function workspaceArchiveDataToUint8Array(
-  data: ArrayBuffer | Uint8Array,
-): Uint8Array {
-  if (data instanceof Uint8Array) {
-    return data;
-  }
-  return new Uint8Array(data);
-}
-
-function checkWorkspaceArchiveInputBytes(
-  actual: number,
-  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
-): void {
-  const limit = limits?.maxInputBytes;
-  if (limit != null && actual > limit) {
-    throw new SandboxArchiveError(
-      'Workspace archive input size exceeds limit.',
-      {
-        reason: 'archive input size exceeds limit',
-        limit,
-        actual,
-      },
-    );
-  }
-}
-
-function validateWorkspaceArchiveLimits(
-  archive: WorkspaceArchiveV1,
-  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
-): void {
-  if (limits == null) {
-    return;
-  }
-
-  let memberCount = 0;
-  for (const directory of archive.directories) {
-    memberCount += 1;
-    checkWorkspaceArchiveMemberCount(memberCount, directory, limits);
-  }
-
-  let extractedBytes = 0;
-  for (const file of archive.files) {
-    memberCount += 1;
-    checkWorkspaceArchiveMemberCount(memberCount, file.path, limits);
-    extractedBytes += Buffer.byteLength(file.data, 'base64');
-    checkWorkspaceArchiveExtractedBytes(extractedBytes, file.path, limits);
-  }
-}
-
-function checkWorkspaceArchiveMemberCount(
-  actual: number,
-  member: string,
-  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
-): void {
-  const limit = limits?.maxMembers;
-  if (limit != null && actual > limit) {
-    throw new SandboxArchiveError(
-      'Workspace archive member count exceeds limit.',
-      {
-        reason: 'archive member count exceeds limit',
-        limit,
-        actual,
-        member,
-      },
-    );
-  }
-}
-
-function checkWorkspaceArchiveExtractedBytes(
-  actual: number,
-  member: string,
-  limits: ReturnType<typeof resolveSandboxArchiveLimits>,
-): void {
-  const limit = limits?.maxExtractedBytes;
-  if (limit != null && actual > limit) {
-    throw new SandboxArchiveError(
-      'Workspace archive extracted size exceeds limit.',
-      {
-        reason: 'archive extracted size exceeds limit',
-        limit,
-        actual,
-        member,
-      },
-    );
-  }
-}
-
-async function writeSafeArchiveDirectory(
-  destinationRoot: string,
-  relativePath: string,
-): Promise<void> {
-  const destinationPath = safeArchivePath(destinationRoot, relativePath);
-  await assertSafeSnapshotDestinationPath(destinationRoot, destinationPath);
-  await mkdir(destinationPath, { recursive: true });
-  await assertSafeSnapshotDestinationPath(destinationRoot, destinationPath);
-}
-
-async function writeSafeArchiveFile(
-  destinationRoot: string,
-  relativePath: string,
-  base64Data: string,
-): Promise<void> {
-  const destinationPath = safeArchivePath(destinationRoot, relativePath);
-  await assertSafeSnapshotDestinationPath(
-    destinationRoot,
-    dirname(destinationPath),
-  );
-  await mkdir(dirname(destinationPath), { recursive: true });
-  await assertSafeSnapshotDestinationPath(
-    destinationRoot,
-    dirname(destinationPath),
-  );
-  await writeStableSnapshotFile(
-    destinationRoot,
-    destinationPath,
-    Buffer.from(base64Data, 'base64'),
-  );
-}
-
-function safeArchivePath(
-  destinationRoot: string,
-  relativePath: string,
-): string {
-  const destinationPath = join(destinationRoot, relativePath);
-  if (!isHostPathStrictlyWithinRoot(destinationRoot, destinationPath)) {
-    throw new UserError(
-      `Remote snapshot archive path escapes root: ${relativePath}`,
-    );
-  }
-  return destinationPath;
-}
-
 async function replaceDirectoryContents(
   sourceRoot: string,
   destinationRoot: string,
@@ -617,16 +369,6 @@ async function replaceDirectoryContents(
   await assertSafeSnapshotDestinationPath(destinationRoot, destinationRoot);
   await clearDirectory(destinationRoot);
   await copyDirectory(sourceRoot, destinationRoot);
-}
-
-async function clearDirectory(destinationRoot: string): Promise<void> {
-  await assertSafeSnapshotDestinationPath(destinationRoot, destinationRoot);
-  const entries = await readdir(destinationRoot);
-  await Promise.all(
-    entries.map(async (entry) => {
-      await rm(join(destinationRoot, entry), { recursive: true, force: true });
-    }),
-  );
 }
 
 function replaceLocalSnapshotFingerprint(
@@ -641,22 +383,6 @@ async function mkdtempForSnapshot(spec?: LocalSnapshotSpec): Promise<string> {
   const baseDir = spec?.baseDir ?? defaultLocalSnapshotBaseDir();
   await mkdir(baseDir, { recursive: true });
   return await mkdtemp(join(baseDir, 'openai-agents-sandbox-snapshot-'));
-}
-
-function shouldSkipSnapshotPath(
-  relativePath: string,
-  excludedLogicalPaths: Set<string>,
-): boolean {
-  for (const excluded of excludedLogicalPaths) {
-    if (
-      excluded === '' ||
-      relativePath === excluded ||
-      relativePath.startsWith(`${excluded}/`)
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export function isRemoteSnapshotSpec(
@@ -730,166 +456,6 @@ async function hashDirectory(
     appendHashFrame(hash, 'bytes', String(content.byteLength));
     hash.update(content);
   }
-}
-
-async function readStableSnapshotDirectoryEntries(
-  sourceRoot: string,
-  expectedSourceStats?: Stats,
-): Promise<Array<Dirent<string>>> {
-  const sourceStats = await lstat(sourceRoot);
-  if (
-    !sourceStats.isDirectory() ||
-    (expectedSourceStats &&
-      !sameFilesystemEntry(sourceStats, expectedSourceStats))
-  ) {
-    throw snapshotPathChangedError(sourceRoot);
-  }
-
-  const entries = await readdir(sourceRoot, { withFileTypes: true });
-  await assertStableSnapshotDirectory(sourceRoot, sourceStats);
-  return entries;
-}
-
-async function assertStableSnapshotDirectory(
-  sourceRoot: string,
-  expectedSourceStats: Stats,
-): Promise<void> {
-  const sourceStats = await lstat(sourceRoot);
-  if (
-    !sourceStats.isDirectory() ||
-    !sameFilesystemEntry(sourceStats, expectedSourceStats)
-  ) {
-    throw snapshotPathChangedError(sourceRoot);
-  }
-}
-
-async function readStableSnapshotFile(
-  sourcePath: string,
-  expectedSourceStats: Stats,
-): Promise<Uint8Array> {
-  const sourceStats = await lstat(sourcePath);
-  if (
-    !sourceStats.isFile() ||
-    !sameFilesystemEntry(sourceStats, expectedSourceStats)
-  ) {
-    throw snapshotPathChangedError(sourcePath);
-  }
-
-  let handle: Awaited<ReturnType<typeof open>>;
-  try {
-    handle = await open(sourcePath, SNAPSHOT_FILE_READ_FLAGS);
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw snapshotPathChangedError(sourcePath);
-    }
-    throw error;
-  }
-  try {
-    const openedStats = await handle.stat();
-    if (
-      !openedStats.isFile() ||
-      !sameFilesystemEntry(openedStats, sourceStats)
-    ) {
-      throw snapshotPathChangedError(sourcePath);
-    }
-    return await handle.readFile();
-  } finally {
-    await handle.close();
-  }
-}
-
-async function writeStableSnapshotFile(
-  destinationRoot: string,
-  destinationPath: string,
-  content: Uint8Array,
-  mode?: number,
-): Promise<void> {
-  await assertSafeSnapshotDestinationPath(destinationRoot, destinationPath);
-  let handle: Awaited<ReturnType<typeof open>>;
-  try {
-    handle = await open(destinationPath, SNAPSHOT_FILE_WRITE_FLAGS, mode);
-  } catch (error) {
-    if (isPathChangedError(error)) {
-      throw snapshotPathChangedError(destinationPath);
-    }
-    throw error;
-  }
-  try {
-    await handle.writeFile(content);
-    if (mode !== undefined) {
-      await handle.chmod(mode);
-    }
-  } finally {
-    await handle.close();
-  }
-  await assertSafeSnapshotDestinationPath(destinationRoot, destinationPath);
-}
-
-async function assertSafeSnapshotDestinationPath(
-  destinationRoot: string,
-  destinationPath: string,
-): Promise<void> {
-  const rootStats = await lstat(destinationRoot).catch(() => undefined);
-  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
-    throw snapshotPathChangedError(destinationRoot);
-  }
-
-  const rootRealPath = await realpath(destinationRoot).catch(() => {
-    throw snapshotPathChangedError(destinationRoot);
-  });
-  const relativeDestination = relative(destinationRoot, destinationPath);
-  if (relativeHostPathEscapesRoot(relativeDestination)) {
-    throw snapshotPathChangedError(destinationPath);
-  }
-  if (relativeDestination === '') {
-    return;
-  }
-
-  let current = destinationRoot;
-  for (const segment of relativeDestination.split(sep)) {
-    if (!segment) {
-      continue;
-    }
-    current = join(current, segment);
-    const currentStats = await lstat(current).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return undefined;
-      }
-      throw error;
-    });
-    if (!currentStats) {
-      return;
-    }
-    if (currentStats.isSymbolicLink()) {
-      throw snapshotPathChangedError(current);
-    }
-
-    const currentRealPath = await realpath(current).catch(() => {
-      throw snapshotPathChangedError(current);
-    });
-    if (!isHostPathWithinRoot(rootRealPath, currentRealPath)) {
-      throw snapshotPathChangedError(current);
-    }
-  }
-}
-
-function snapshotPathChangedError(path: string): UserError {
-  return new UserError(`Sandbox snapshot path changed while copying: ${path}`);
-}
-
-function isPathChangedError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error.code === 'ELOOP' ||
-      error.code === 'ENOENT' ||
-      error.code === 'ENOTDIR')
-  );
-}
-
-function sameFilesystemEntry(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function appendHashFrame(

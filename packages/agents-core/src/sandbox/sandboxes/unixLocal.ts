@@ -105,13 +105,15 @@ import {
 } from '../shared/output';
 import {
   canReuseLocalSnapshotWorkspace,
-  createWorkspaceArchive,
   localSnapshotIsRestorable,
   persistLocalSnapshot,
   restoreLocalSnapshotToWorkspace,
-  restoreWorkspaceArchive,
   serializeLocalSnapshotSpec,
 } from './shared/localSnapshots';
+import {
+  createWorkspaceArchive,
+  restoreWorkspaceArchive,
+} from './shared/workspaceArchive';
 import { spawnInPseudoTerminal } from './shared/pty';
 import { runSandboxProcess } from './shared/runProcess';
 import { resolveLocalShellCommand } from './shared/shellCommand';
