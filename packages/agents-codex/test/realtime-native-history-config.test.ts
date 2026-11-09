@@ -6,6 +6,8 @@ import type { JsonObject } from '../src/runtime/binding';
 import { ModelServer } from './native/fixtures/model-server';
 
 type Frame = Record<string, any>;
+const PNG_IMAGE =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==';
 
 // Only the independent provider protocol is scripted; public Session, binding,
 // native configuration, reconciliation, and generation ownership execute normally.
@@ -508,7 +510,7 @@ nativeIt.each([
   },
   {
     role: 'system',
-    content: [{ type: 'input_image', image_url: 'data:image/png;base64,AQID' }],
+    content: [{ type: 'input_image', image_url: PNG_IMAGE }],
   },
 ])(
   'rejects invalid role/media replacements before deleting observed messages: %o',
@@ -718,6 +720,111 @@ nativeIt(
         await voice.close();
         await reading;
       }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'rejects conflicting text in a same-ID create acknowledgement before sending remaining history actions',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Preserve requested message content.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const first = userItem('expected-first', 'Requested first text.');
+      const second = userItem('must-not-create', 'Requested second text.');
+      const after = peer.frames.length;
+      const updating = voice.updateHistory([first, second]);
+      void updating.catch(() => {});
+      const created = await peer.frame('conversation.item.create', after);
+      expect(created.item).toEqual(first);
+      peer.send({
+        type: 'conversation.item.added',
+        item: userItem('expected-first', 'Conflicting provider text.'),
+        previous_item_id: null,
+      });
+      await expect(updating).rejects.toThrow();
+      await voice.update({ toolChoice: 'none' });
+      expect(
+        peer.frames
+          .slice(after)
+          .filter((frame) => frame.type === 'conversation.item.create')
+          .map((frame) => frame.item.id),
+      ).toEqual(['expected-first']);
+      expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'accepts create acknowledgements with null audio and omitted image data while preserving requested media on the wire',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Preserve requested media.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const audio = {
+        id: 'created-audio',
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_audio', audio: 'AQACAA==', transcript: 'hello' },
+        ],
+      };
+      const image = {
+        id: 'created-image',
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_image', image_url: PNG_IMAGE }],
+      };
+      peer.retrievals.set(audio.id, audio);
+      peer.retrievals.set(image.id, image);
+      let after = peer.frames.length;
+      const updating = voice.updateHistory([audio, image]);
+      void updating.catch(() => {});
+      const audioCreate = await peer.frame('conversation.item.create', after);
+      expect(audioCreate.item).toEqual(audio);
+      after = peer.frames.length;
+      peer.send({
+        type: 'conversation.item.added',
+        item: {
+          ...audio,
+          content: [{ type: 'input_audio', audio: null, transcript: null }],
+        },
+        previous_item_id: null,
+      });
+      const imageCreate = await peer.frame('conversation.item.create', after);
+      expect(imageCreate.previous_item_id).toBe(audio.id);
+      expect(imageCreate.item).toEqual(image);
+      peer.send({
+        type: 'conversation.item.added',
+        item: { ...image, content: [{ type: 'input_image' }] },
+        previous_item_id: audio.id,
+      });
+      await updating;
+      await expect(voice.retrieveConversationHistory()).resolves.toEqual([
+        audio,
+        image,
+      ]);
+      expect(model.requests).toEqual([]);
     } finally {
       await peer.close();
       await ModelServer.closeAll();

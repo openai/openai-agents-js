@@ -392,7 +392,7 @@ const matchesFilter = (start, filter) => {
 const detectTags = (start) => {
   const tags = new Set();
   const commandLower = start.command.toLowerCase();
-  const dirLower = start.dir.toLowerCase();
+  const dirLower = path.relative(rootDir, start.dir).toLowerCase();
 
   if (
     SERVER_COMMAND_KEYWORDS.some((keyword) => commandLower.includes(keyword)) ||
