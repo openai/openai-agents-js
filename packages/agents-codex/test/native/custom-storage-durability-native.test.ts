@@ -136,7 +136,7 @@ describe('public native custom storage durability', () => {
         model: 'gpt-5.1-codex',
         provider,
         tools: [
-          webSearch(),
+          webSearch({ route: 'hosted' }),
           kind === 'goals'
             ? nativeGoals()
             : kind === 'children'
@@ -897,7 +897,7 @@ describe('public native custom storage durability', () => {
         model: 'gpt-5',
         provider,
         tools: [
-          webSearch(),
+          webSearch({ route: 'hosted' }),
           tool({
             name: 'record',
             description: 'Record once.',
