@@ -150,6 +150,60 @@ async function sha256(path) {
   return `sha256:${hash.digest('hex')}`;
 }
 
+async function v8ReleaseAsset(artifact) {
+  const headers = { Accept: 'application/vnd.github+json' };
+  if (process.env.GITHUB_TOKEN)
+    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  const tag = `rusty-v8-v${v8Release.version}`;
+  const release = await globalThis.fetch(
+    `https://api.github.com/repos/openai/codex/releases/tags/${tag}`,
+    {
+      headers,
+      redirect: 'error',
+      signal: globalThis.AbortSignal.timeout(30_000),
+    },
+  );
+  const apiError = async (response) => {
+    const reset = response.headers.get('x-ratelimit-reset');
+    await response.body?.cancel();
+    throw new Error(
+      `V8 download failed (${response.status}) via release API: ${artifact.name}${reset ? `; rate reset ${reset}` : ''}`,
+    );
+  };
+  if (!release.ok) return apiError(release);
+  const metadata = await release.json();
+  const asset = metadata.assets?.find(
+    ({ name, digest }) => name === artifact.name && digest === artifact.digest,
+  );
+  if (
+    metadata.tag_name !== tag ||
+    !Number.isSafeInteger(asset?.id) ||
+    asset.id <= 0 ||
+    asset.state !== 'uploaded'
+  )
+    throw new Error(`No pinned V8 release asset: ${artifact.name}`);
+  const response = await globalThis.fetch(
+    `https://api.github.com/repos/openai/codex/releases/assets/${asset.id}`,
+    {
+      headers: { ...headers, Accept: 'application/octet-stream' },
+      redirect: 'manual',
+      signal: globalThis.AbortSignal.timeout(30_000),
+    },
+  );
+  if (response.status === 302) {
+    const url = new URL(response.headers.get('location'));
+    await response.body?.cancel();
+    if (url.protocol !== 'https:' || url.username || url.password)
+      throw new Error('Invalid V8 release asset redirect');
+    // The release download host must never receive the API credential.
+    return globalThis.fetch(url, {
+      signal: globalThis.AbortSignal.timeout(30_000),
+    });
+  }
+  if (!response.ok) return apiError(response);
+  return response;
+}
+
 async function verifiedV8(filename, override) {
   const artifact = v8Release.assets.find(({ name }) => name === filename);
   if (!artifact)
@@ -180,6 +234,10 @@ async function verifiedV8(filename, override) {
     let response;
     for (let attempt = 1; attempt <= 3; attempt++) {
       response = await globalThis.fetch(url);
+      if (response.status === 504 && attempt === 3) {
+        await response.body?.cancel();
+        response = await v8ReleaseAsset(artifact);
+      }
       if (response.ok) break;
       if (response.status !== 504 || attempt === 3)
         throw new Error(`V8 download failed (${response.status}): ${filename}`);
@@ -212,6 +270,8 @@ async function build() {
   const release = values.release || command === 'package';
   const environment = {
     ...process.env,
+    // The optional release API credential belongs only to this downloader.
+    GITHUB_TOKEN: undefined,
     // Keep Cargo's checkouts out of long Windows package source paths.
     ...(process.platform === 'win32'
       ? {}
