@@ -221,6 +221,20 @@ impl EngineState {
             && self.service_config.config_layer_stack.cloud_config_binding().is_none()
     }
 
+    async fn private_registry_empty(&self) -> bool {
+        self.manager.list_thread_ids().await.is_empty()
+            && self
+                .native_threads
+                .lock()
+                .expect("native threads poisoned")
+                .is_empty()
+    }
+
+    pub(crate) async fn private_idle_ready(&self) -> bool {
+        let _guard = self.lifecycle.lock().await;
+        self.private_reuse_ready() && self.private_registry_empty().await
+    }
+
     pub(crate) async fn private_start_with_tools(
         self: &Arc<Self>,
         config_json: &str,
@@ -236,12 +250,7 @@ impl EngineState {
             || options.agent_profiles.is_some()
             || options.sdk_resume_thread_id.is_some()
             || !options.sdk_reconciled_calls.is_empty()
-            || !self.manager.list_thread_ids().await.is_empty()
-            || !self
-                .native_threads
-                .lock()
-                .expect("native threads poisoned")
-                .is_empty()
+            || !self.private_registry_empty().await
         {
             return Ok(None);
         }

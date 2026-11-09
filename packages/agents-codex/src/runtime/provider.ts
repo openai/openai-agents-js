@@ -32,7 +32,7 @@ export interface NativeProviderOptions {
 interface PrivateRuntimeSlot {
   active?: LeaseToken;
   entry?: PrivateKernel;
-  idle?: ReturnType<typeof setImmediate>;
+  idle?: { cancel(): void };
   closing?: Promise<void>;
 }
 
@@ -107,6 +107,24 @@ export class NativeProvider {
     });
   }
 
+  #closePrivateEntry(slot: PrivateRuntimeSlot, entry: PrivateKernel): void {
+    if (slot.closing) return;
+    // Claim before the first await. New leases take independent fresh owners.
+    const closing = Promise.resolve().then(async () => {
+      const diagnostic = await disposePrivateKernel(entry);
+      if (slot.entry === entry) slot.entry = undefined;
+      if (diagnostic) throw new NativeError(diagnostic);
+    });
+    slot.closing = closing;
+    // Keep a rejected cleanup latched until explicit close consumes it.
+    void closing.then(
+      () => {
+        if (slot.closing === closing) slot.closing = undefined;
+      },
+      () => {},
+    );
+  }
+
   #schedulePrivateCleanup(): void {
     const slot = this.#runtime;
     if (
@@ -119,7 +137,12 @@ export class NativeProvider {
     )
       return;
     const entry = slot.entry;
-    slot.idle = setImmediate(() => {
+    const retained = entry.engine._try_private_idle(entry.home.codex_home);
+    if (retained) {
+      entry.nativeHome = true;
+      entry.carrier.setIdle(true);
+    }
+    const cleanup = () => {
       slot.idle = undefined;
       if (
         this.#runtime !== slot ||
@@ -129,21 +152,17 @@ export class NativeProvider {
         this.#closed
       )
         return;
-      // Claim before the first await. New leases take independent fresh owners.
-      const closing = Promise.resolve().then(async () => {
-        const diagnostic = await disposePrivateKernel(entry);
-        if (slot.entry === entry) slot.entry = undefined;
-        if (diagnostic) throw new NativeError(diagnostic);
-      });
-      slot.closing = closing;
-      // Keep a rejected cleanup latched until explicit close consumes it.
-      void closing.then(
-        () => {
-          if (slot.closing === closing) slot.closing = undefined;
-        },
-        () => {},
-      );
-    });
+      this.#closePrivateEntry(slot, entry);
+    };
+    if (retained) {
+      // The environment hook joins native cleanup if Node exits before expiry.
+      const timer = setTimeout(cleanup, 5_000);
+      timer.unref();
+      slot.idle = { cancel: () => clearTimeout(timer) };
+    } else {
+      const immediate = setImmediate(cleanup);
+      slot.idle = { cancel: () => clearImmediate(immediate) };
+    }
   }
 
   get baseUrl(): string | undefined {
@@ -167,11 +186,6 @@ export class NativeProvider {
     if (this.#closed) throw new Error('NativeProvider is closed');
     const token: LeaseToken = { failed: false };
     this.#leases.add(token);
-    const pendingIdle = this.#runtime;
-    if (pendingIdle?.idle) {
-      clearImmediate(pendingIdle.idle);
-      pendingIdle.idle = undefined;
-    }
     const options = this.#options;
     const websocketsAllowed =
       options.responseMode !== 'buffered' &&
@@ -189,11 +203,26 @@ export class NativeProvider {
       options.responseMode !== 'buffered' &&
       !websocketsAllowed;
     const slot = eligible ? (this.#runtime ??= {}) : undefined;
-    const reserved =
+    let reserved =
       slot !== undefined &&
       slot.active === undefined &&
       slot.closing === undefined;
-    if (reserved) slot.active = token;
+    if (reserved) {
+      const entry = slot.entry;
+      if (entry) {
+        if (entry.nativeHome && !entry.engine._leave_private_idle()) {
+          // A close already claimed it. Fresh opening happens before dispatch.
+          this.#closePrivateEntry(slot, entry);
+          reserved = false;
+        } else {
+          // Restore liveness before any opening/configuration await.
+          entry.carrier.setIdle(false);
+        }
+      }
+      slot.idle?.cancel();
+      slot.idle = undefined;
+      if (reserved) slot.active = token;
+    }
     let home: string | undefined;
     let released = false;
     let privateDone = false;
@@ -356,7 +385,7 @@ export class NativeProvider {
     this.#closed = true;
     const slot = this.#runtime;
     if (slot?.idle) {
-      clearImmediate(slot.idle);
+      slot.idle.cancel();
       slot.idle = undefined;
     }
     if (slot?.closing) {

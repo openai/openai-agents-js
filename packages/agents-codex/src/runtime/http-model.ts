@@ -7,6 +7,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { Duplex } from 'node:stream';
+import type { Socket } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import * as wsModule from 'ws';
@@ -133,6 +134,8 @@ class Prefix {
 /** Private loopback routes preserve tool schemas before native provider dispatch. */
 export class NativeProviderRoutes {
   private server?: Server;
+  private idle = false;
+  private readonly sockets = new Set<Socket>();
   private localOrigin?: string;
   private websocketServer?: WebSocketServer;
   private readonly tasks = new Set<Promise<unknown>>();
@@ -156,6 +159,12 @@ export class NativeProviderRoutes {
       void task.finally(() => this.tasks.delete(task));
     });
     this.server = server;
+    server.on('connection', (socket) => {
+      this.sockets.add(socket);
+      socket.once('close', () => this.sockets.delete(socket));
+      if (this.idle) socket.unref();
+      else socket.ref();
+    });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     const address = server.address();
@@ -164,6 +173,16 @@ export class NativeProviderRoutes {
     this.localOrigin = `http://127.0.0.1:${address.port}`;
     this.enableWebsockets();
     return { config, runtime, apiKey };
+  }
+  /** Only the joined private entry may release its Node loop references. */
+  setIdle(idle: boolean): void {
+    this.idle = idle;
+    if (idle) this.server?.unref();
+    else this.server?.ref();
+    for (const socket of this.sockets) {
+      if (idle) socket.unref();
+      else socket.ref();
+    }
   }
   bindEngine(engine: Engine, transports = this.providerTransports): void {
     if (!this.localOrigin)

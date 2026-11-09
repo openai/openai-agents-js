@@ -32,6 +32,7 @@ mod native_interception;
 mod node_runtime;
 mod ops;
 mod options;
+mod private_idle;
 mod project_search;
 mod provider_error;
 mod provider_transports;
@@ -313,6 +314,7 @@ pub fn create_provider_http_transports(
 #[napi(js_name = "Engine")]
 pub struct Engine {
     inner: Arc<std::sync::Mutex<EngineOwner>>,
+    private_idle: std::sync::Mutex<Option<Arc<private_idle::Owner>>>,
     startup_warnings: Vec<String>,
 }
 
@@ -345,6 +347,7 @@ impl Engine {
                 close_diagnostic: None,
             })),
             startup_warnings,
+            private_idle: std::sync::Mutex::new(None),
         }
     }
 
@@ -641,6 +644,43 @@ impl Engine {
         Ok(self.current()?.private_reuse_ready())
     }
 
+    #[napi(js_name = "_try_private_idle")]
+    pub fn try_private_idle(&self, env: napi::Env, home: String) -> napi::Result<bool> {
+        let current = self.current()?;
+        let _operation = current.operation(false).map_err(native_error)?;
+        // The owned Session has already joined; this checks only native state.
+        if !current.runtime.block_on(current.private_idle_ready()) {
+            return Ok(false);
+        }
+        let home = std::path::PathBuf::from(home);
+        if home != current.service_config.codex_home {
+            return Err(native_error(
+                "Private Engine home does not match its configuration",
+            ));
+        }
+        let mut slot = self.private_idle.lock().map_err(native_error)?;
+        if slot.is_none() {
+            *slot = Some(private_idle::Owner::new(
+                env,
+                Arc::clone(&self.inner),
+                current.runtime.clone(),
+                home.clone(),
+            )?);
+        }
+        slot.as_ref()
+            .expect("private idle owner initialized")
+            .arm(&home)
+    }
+
+    #[napi(js_name = "_leave_private_idle")]
+    pub fn leave_private_idle(&self) -> napi::Result<bool> {
+        self.private_idle
+            .lock()
+            .map_err(native_error)?
+            .as_ref()
+            .map_or(Ok(false), |owner| owner.activate())
+    }
+
     #[napi(js_name = "_private_start_thread")]
     pub async fn private_start_thread(
         &self,
@@ -678,7 +718,12 @@ impl Engine {
 
 impl Engine {
     async fn close_owned(&self) -> napi::Result<Option<String>> {
-        Self::close_owner(Arc::clone(&self.inner)).await
+        let private = self.private_idle.lock().map_err(native_error)?.clone();
+        if let Some(owner) = private {
+            owner.close().await
+        } else {
+            Self::close_owner(Arc::clone(&self.inner)).await
+        }
     }
 
     async fn close_owner(

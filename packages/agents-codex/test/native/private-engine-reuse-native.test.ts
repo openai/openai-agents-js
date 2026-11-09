@@ -1,4 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';
+import { once } from 'node:events';
+import { createConnection } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Engine } from '../../native/index.js';
@@ -73,6 +76,115 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private Engine fresh-root reuse',
   () => {
+    it('reuses a joined Engine after timer and socket I/O and closes its owned home', async () => {
+      const model = new ModelServer([
+        [message('before I/O')],
+        [message('after I/O')],
+      ]);
+      await using provider = await providerFor(model);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Answer.',
+      });
+      const rows = await starts();
+      expect((await agent.run('before I/O marker')).finalOutput).toBe(
+        'before I/O',
+      );
+      const home = (rows[0].runtime as { codex_home: string }).codex_home;
+      expect((await stat(home)).isDirectory()).toBe(true);
+      await delay(25);
+      const config = await model.config();
+      const url = new URL(
+        (config['model_providers.fixture'] as { base_url: string }).base_url,
+      );
+      const socket = createConnection({
+        host: url.hostname,
+        port: Number(url.port),
+      });
+      await once(socket, 'connect');
+      socket.end();
+      await once(socket, 'close');
+      expect((await agent.run('after I/O marker')).finalOutput).toBe(
+        'after I/O',
+      );
+      expect(rows.map((row) => row.kind)).toEqual(['ordinary', 'private']);
+      expect(rows[1].engine).toBe(rows[0].engine);
+      await provider.close();
+      await expect(stat(home)).rejects.toMatchObject({ code: 'ENOENT' });
+      model.assertExhausted();
+    }, 30_000);
+
+    it('expires an abandoned idle Engine and removes its private home before opening fresh', async () => {
+      const model = new ModelServer([
+        [message('before expiry')],
+        [message('after expiry')],
+      ]);
+      await using provider = await providerFor(model);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Answer.',
+      });
+      const rows = await starts();
+      await agent.run('before expiry marker');
+      const home = (rows[0].runtime as { codex_home: string }).codex_home;
+      await expect
+        .poll(
+          async () =>
+            stat(home).then(
+              () => false,
+              (error: NodeJS.ErrnoException) => {
+                if (error.code !== 'ENOENT') throw error;
+                return true;
+              },
+            ),
+          { timeout: 8_000, interval: 25 },
+        )
+        .toBe(true);
+      expect((await agent.run('after expiry marker')).finalOutput).toBe(
+        'after expiry',
+      );
+      expect(rows.map((row) => row.kind)).toEqual(['ordinary', 'ordinary']);
+      expect(rows[1].engine).not.toBe(rows[0].engine);
+      model.assertExhausted();
+    }, 30_000);
+
+    it.skipIf(process.platform !== 'linux' || process.getuid?.() === 0)(
+      'joins failed native closes and retries owned-home deletion without reporting early success',
+      async () => {
+        const model = new ModelServer([[message('home failure')]]);
+        const provider = await providerFor(model);
+        const agent = new Agent({
+          provider,
+          model: 'gpt-5',
+          instructions: 'Answer.',
+        });
+        const rows = await starts();
+        await agent.run('owned home retry marker');
+        const home = (rows[0].runtime as { codex_home: string }).codex_home;
+        const engine = rows[0].engine as Engine;
+        await chmod(home, 0o500);
+        try {
+          const results = await Promise.allSettled([
+            engine._close_report(),
+            engine._close_report(),
+          ]);
+          expect(results.map((result) => result.status)).toEqual([
+            'rejected',
+            'rejected',
+          ]);
+          expect((await stat(home)).isDirectory()).toBe(true);
+        } finally {
+          await chmod(home, 0o700);
+          await Promise.all([engine._close_report(), provider.close()]);
+        }
+        await expect(stat(home)).rejects.toMatchObject({ code: 'ENOENT' });
+        model.assertExhausted();
+      },
+      30_000,
+    );
+
     it.each([false, true])(
       'keeps explicit initial messages on fresh seeded roots (empty=%s)',
       async (empty) => {
@@ -324,36 +436,124 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       30_000,
     );
 
-    it.each(['process', 'worker'])(
-      'exits naturally after an abandoned private Provider in a %s',
+    it.each([
+      'process',
+      'worker',
+      'terminated-worker',
+      'sibling-worker',
+      'active-process',
+      'idle-socket',
+    ])(
+      'joins private idle cleanup promptly in a %s',
       async (mode) => {
-        const model = new ModelServer([[message('natural answer')]]);
+        const requests =
+          mode === 'sibling-worker' ? 3 : mode === 'active-process' ? 2 : 1;
+        const model = new ModelServer(
+          Array.from({ length: requests }, () => [message('natural answer')]),
+          [],
+          undefined,
+          undefined,
+          async () => {
+            if (mode === 'active-process') await delay(100);
+          },
+        );
         const config = await model.config();
         const url = (config['model_providers.fixture'] as { base_url: string })
           .base_url;
-        const module = createRequire(import.meta.url).resolve(
-          '../../dist/index.js',
-        );
+        const require = createRequire(import.meta.url);
+        const module = require.resolve('../../dist/index.js');
+        const nativeModule = require.resolve('../../native/index.js');
         const code = `
       const assert = require('node:assert/strict');
+      const { existsSync } = require('node:fs');
+      const { once } = require('node:events');
       const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
-      const args = isMainThread ? { module: process.argv[1], url: process.argv[2], mode: process.argv[3] } : workerData;
-      if (isMainThread && args.mode === 'worker') {
-        const worker = new Worker(process.argv[4], { eval: true, workerData: args });
-        let completed = false;
-        worker.on('message', (value) => { assert.equal(value, 'completed'); completed = true; });
-        worker.on('error', (error) => { console.error(error); process.exitCode = 1; });
-        worker.on('exit', (status) => { assert.equal(status, 0); assert.equal(completed, true); process.stdout.write('natural exit'); });
-      } else {
+      const args = isMainThread ? { module: process.argv[1], nativeModule: process.argv[2], url: process.argv[3], mode: process.argv[4] } : workerData;
+      (async () => {
+        if (isMainThread && ['worker', 'terminated-worker', 'sibling-worker'].includes(args.mode)) {
+          const make = (role) => new Worker(process.argv[5], { eval: true, workerData: { ...args, role } });
+          if (args.mode === 'sibling-worker') {
+            const victim = make('victim');
+            const survivor = make('survivor');
+            const victimExit = once(victim, 'exit');
+            const survivorExit = once(survivor, 'exit');
+            const [[a], [b]] = await Promise.all([once(victim, 'message'), once(survivor, 'message')]);
+            assert(existsSync(a.home)); assert(existsSync(b.home));
+            await victim.terminate();
+            assert.equal((await victimExit)[0], 1);
+            assert(!existsSync(a.home));
+            const resumed = once(survivor, 'message');
+            survivor.postMessage('resume');
+            assert.equal((await resumed)[0], 'second completed');
+            assert.equal((await survivorExit)[0], 0);
+            assert(!existsSync(b.home));
+            process.stdout.write(JSON.stringify({ home: a.home, idleAt: a.idleAt }));
+          } else {
+            const worker = make(args.mode === 'terminated-worker' ? 'victim' : 'natural');
+            const exited = once(worker, 'exit');
+            const [idle] = await once(worker, 'message');
+            if (args.mode === 'terminated-worker') {
+              assert(existsSync(idle.home));
+              await worker.terminate();
+            }
+            assert.equal((await exited)[0], args.mode === 'terminated-worker' ? 1 : 0);
+            assert(!existsSync(idle.home));
+            process.stdout.write(JSON.stringify(idle));
+          }
+          return;
+        }
+        const native = require(args.nativeModule);
+        const start = native.Engine.prototype.start_replaceable_thread;
+        let home;
+        native.Engine.prototype.start_replaceable_thread = async function(...values) {
+          home = JSON.parse(values[0]).runtime.codex_home;
+          return start.apply(this, values);
+        };
+        const admit = native.Engine.prototype._private_start_thread;
+        let reused = false;
+        native.Engine.prototype._private_start_thread = function(...values) {
+          assert(process.getActiveResourcesInfo().includes('TCPServerWrap'), 'active private listener must be referenced');
+          reused = true;
+          return admit.apply(this, values);
+        };
+        const bind = native.Engine.prototype._sentinel_bind;
+        let origin;
+        native.Engine.prototype._sentinel_bind = function(base, ...values) {
+          origin = base;
+          return bind.call(this, base, ...values);
+        };
         const { Agent, NativeProvider } = require(args.module);
-        (async () => {
-          const provider = new NativeProvider({ baseUrl: args.url, apiKey: 'synthetic-natural-exit', supportsWebsockets: false });
-          const agent = new Agent({ provider, model: 'gpt-5', instructions: 'Answer.' });
-          assert.equal((await agent.run('natural exit marker')).finalOutput, 'natural answer');
-          if (parentPort) parentPort.postMessage('completed'); else process.stdout.write('natural exit');
-          // Deliberately abandon the still-open Provider; no forced exit or close.
-        })().catch((error) => { console.error(error); process.exitCode = 1; });
-      }
+        const provider = new NativeProvider({ baseUrl: args.url, apiKey: 'synthetic-natural-exit', supportsWebsockets: false });
+        const agent = new Agent({ provider, model: 'gpt-5', instructions: 'Answer.' });
+        assert.equal((await agent.run('natural exit marker')).finalOutput, 'natural answer');
+        globalThis.keptProvider = [provider, agent];
+        if (args.mode === 'idle-socket') {
+          const url = new URL(origin);
+          const socket = require('node:net').createConnection({ host: url.hostname, port: Number(url.port) });
+          await once(socket, 'connect');
+          socket.unref();
+          globalThis.keptIdleSocket = socket;
+        }
+        if (args.mode === 'active-process') {
+          await new Promise(resolve => setTimeout(resolve, 25));
+          assert.equal((await agent.run('active call marker')).finalOutput, 'natural answer');
+          assert(reused, 'active call must exercise the retained Engine');
+        }
+        const idle = { home, idleAt: Date.now() };
+        if (parentPort) {
+          if (args.role === 'victim') parentPort.on('message', () => {});
+          if (args.role === 'survivor') parentPort.once('message', async () => {
+            try {
+              assert.equal((await agent.run('sibling runtime marker')).finalOutput, 'natural answer');
+              await provider.close();
+              parentPort.postMessage('second completed');
+              parentPort.close();
+            } catch (error) { console.error(error); process.exitCode = 1; }
+          });
+          parentPort.postMessage(idle);
+        } else process.stdout.write(JSON.stringify(idle));
+        // Natural cases abandon the Provider. The timer must not keep it alive.
+      })().catch((error) => { console.error(error); process.exitCode = 1; });
     `;
         const env = { ...process.env };
         for (const key of Object.keys(env))
@@ -364,10 +564,15 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             delete env[key];
         const { stdout } = await promisify(execFile)(
           process.execPath,
-          ['-e', code, module, url, mode, code],
-          { timeout: 20_000, env },
+          ['-e', code, module, nativeModule, url, mode, code],
+          { timeout: 20_000, killSignal: 'SIGKILL', env },
         );
-        expect(stdout).toBe('natural exit');
+        const result = JSON.parse(stdout) as { home: string; idleAt: number };
+        // Less than half the5s idle TTL: waiting for expiry cannot pass.
+        expect(Date.now() - result.idleAt).toBeLessThan(2_500);
+        await expect(stat(result.home)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
         model.assertExhausted();
       },
       30_000,

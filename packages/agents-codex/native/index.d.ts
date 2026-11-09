@@ -59,6 +59,8 @@ export class Engine {
     specs_json: string,
   ): Promise<NativeThread | string>;
   readonly _private_reuse_ready: boolean;
+  _try_private_idle(home: string): boolean;
+  _leave_private_idle(): boolean;
   _private_start_thread(
     configJson: string,
     runtimeJson: string,

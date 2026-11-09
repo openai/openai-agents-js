@@ -9,6 +9,7 @@ export interface PrivateKernel {
   home: { codex_home: string; cwd: string };
   apiKey: string;
   phase: 'engine' | 'carrier' | 'home' | 'done';
+  nativeHome?: boolean;
   diagnostic?: string | null;
   pending?: Promise<string | null>;
 }
@@ -82,7 +83,8 @@ export function disposePrivateKernel(
       entry.phase = 'home';
     }
     if (entry.phase === 'home') {
-      await rm(entry.home.codex_home, { recursive: true, force: true });
+      if (!entry.nativeHome)
+        await rm(entry.home.codex_home, { recursive: true, force: true });
       entry.phase = 'done';
     }
     return entry.diagnostic ?? null;

@@ -17,9 +17,11 @@ async function retained(useEnvironmentKey = false) {
     const engine = {
       _close_report: vi.fn(async (): Promise<string | null> => null),
       _private_reuse_ready: true,
+      _try_private_idle: vi.fn(() => false),
     };
     const carrier = {
       close: vi.fn(async () => {}),
+      setIdle: vi.fn(),
       reuseBinding: () => ({ origin: 'http://127.0.0.1', grant: 'synthetic' }),
     };
     const transports = { close: vi.fn() };
