@@ -185,7 +185,6 @@ mod tests {
         let observation = codex_protocol::protocol::ResponseObservation {
             upstream_request_id: None,
             response_id: Some("provider-completed".into()),
-            upstream_request_id: None,
             status: codex_protocol::protocol::ResponseObservationStatus::Completed,
             incomplete_reason: None,
             usage: None,
