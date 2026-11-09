@@ -668,3 +668,54 @@ it('preserves hosted preview ordering and canonical history across streamed text
   expect(model.requests).toHaveLength(1);
   model.assertExhausted();
 }, 30_000);
+
+it.each([false, true])(
+  'preserves provider fields with code output inclusion %s',
+  async (includeOutputs) => {
+    const providerData = { future_option: { nested: [true, null] } };
+    const model = new ModelServer([[message('Done.')]]);
+    const config = await model.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as JsonObject)
+        .base_url as string,
+      apiKey: 'synthetic-options',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Use hosted tools.',
+      tools: [
+        fileSearch('vs_fixture', { providerData }),
+        codeInterpreter({
+          container: 'cntr_fixture',
+          includeOutputs,
+          providerData,
+        }),
+        imageGeneration({ providerData }),
+      ],
+    }).session();
+    providerData.future_option.nested.push(false);
+    expect((await (await session.submit('Run.')).wait()).finalOutput).toBe(
+      'Done.',
+    );
+    for (const type of [
+      'file_search',
+      'code_interpreter',
+      'image_generation',
+    ]) {
+      const wire = (model.requests[0].tools as JsonObject[]).find(
+        (tool) => tool.type === type,
+      )!;
+      expect(wire.future_option).toEqual({ nested: [true, null] });
+      expect(wire).not.toHaveProperty('providerData');
+      expect(wire).not.toHaveProperty('include_outputs');
+    }
+    expect(
+      (model.requests[0].include as string[]).includes(
+        'code_interpreter_call.outputs',
+      ),
+    ).toBe(includeOutputs);
+    model.assertExhausted();
+  },
+);
