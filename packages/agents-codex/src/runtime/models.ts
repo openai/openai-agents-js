@@ -185,6 +185,16 @@ export class ChatCompletionsModel implements NativeModel {
         'store',
         'frequency_penalty',
         'presence_penalty',
+        'service_tier',
+        'prompt_cache_retention',
+        'prompt_cache_options',
+        'seed',
+        'stop',
+        'logit_bias',
+        'user',
+        'safety_identifier',
+        'prediction',
+        'logprobs',
       ]
         .filter((key) => key in request.body)
         .map((key) => [key, request.body[key]]),
@@ -201,9 +211,15 @@ export class ChatCompletionsModel implements NativeModel {
     }
     const reasoning = (request.body.reasoning ?? {}) as JsonObject;
     if (reasoning.effort != null) options.reasoning_effort = reasoning.effort;
-    if ('top_logprobs' in request.body) {
+    if (
+      'top_logprobs' in request.body ||
+      ((request.body.include ?? []) as string[]).includes(
+        'message.output_text.logprobs',
+      )
+    ) {
       options.logprobs = true;
-      options.top_logprobs = request.body.top_logprobs;
+      if ('top_logprobs' in request.body)
+        options.top_logprobs = request.body.top_logprobs;
     }
     if (
       ['prompt', 'truncation', 'context_management'].some(
@@ -233,7 +249,15 @@ export class ChatCompletionsModel implements NativeModel {
       throw new TypeError(
         'ChatCompletionsModel requires exactly one response choice',
       );
-    const message = value.choices[0].message;
+    const choice = value.choices[0];
+    const message = choice.message;
+    if (
+      ['length', 'content_filter'].includes(choice.finish_reason) &&
+      message.refusal == null
+    )
+      throw new TypeError(
+        `ChatCompletionsModel cannot complete finish_reason=${choice.finish_reason}`,
+      );
     const output: JsonObject[] = [];
     const content: JsonObject[] = [];
     if (message.content != null) {

@@ -527,7 +527,13 @@ it.each([false, true])(
       await using session = await new Agent({
         model: 'gpt-5.2',
         instructions: 'Preserve this exact instruction.',
-        modelSettings: { verbosity: 'high', topLogprobs: 1 },
+        modelSettings: {
+          verbosity: 'high',
+          topLogprobs: 1,
+          serviceTier: 'flex',
+          promptCacheRetention: '24h',
+          promptCacheTtl: '12h',
+        },
         tools: [echo],
         provider,
       }).session();
@@ -572,6 +578,9 @@ it.each([false, true])(
       );
       expect(requests[0]).toMatchObject({
         verbosity: 'high',
+        service_tier: 'flex',
+        prompt_cache_retention: '24h',
+        prompt_cache_options: { ttl: '12h' },
         logprobs: true,
         top_logprobs: 1,
       });
@@ -643,6 +652,202 @@ it.each(['refusal', 'malformed'] as const)(
       later === 'refusal' ? 'provider_refusal' : 'undecodable_output_item',
     );
     expect(effects).toEqual([]);
+  },
+  20_000,
+);
+
+it.each([
+  ['length', false],
+  ['content_filter', false],
+  ['length', true],
+  ['content_filter', true],
+] as const)(
+  'fails Chat finish_reason=%s with refusal=%s before any tool effect',
+  async (finishReason, refusal) => {
+    const requests: any[] = [];
+    const effects: string[] = [];
+    const privateRefusal = 'private-terminal-refusal';
+    const server = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+      const first = requests.length === 1;
+      response.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({
+          id: `chat_terminal_${requests.length}`,
+          object: 'chat.completion',
+          created: 0,
+          model: 'chat-model',
+          choices: [
+            {
+              index: 0,
+              finish_reason: first ? finishReason : 'stop',
+              message: {
+                role: 'assistant',
+                content: first ? 'private-partial-answer' : 'finished',
+                refusal: first && refusal ? privateRefusal : null,
+                tool_calls: first
+                  ? [
+                      {
+                        type: 'function',
+                        id: 'never',
+                        function: {
+                          name: 'echo',
+                          arguments: '{"value":"never"}',
+                        },
+                      },
+                    ]
+                  : null,
+              },
+            },
+          ],
+        }),
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw Error('Expected port');
+    try {
+      await using provider = new NativeProvider({
+        modelBackend: new ChatCompletionsModel(
+          new OpenAI({
+            apiKey: 'synthetic-key',
+            baseURL: `http://127.0.0.1:${address.port}/v1`,
+          }),
+          'chat-model',
+        ),
+      });
+      const echo = tool({
+        name: 'echo',
+        description: 'Echo.',
+        parameters: z.object({ value: z.string() }),
+        execute: ({ value }) => {
+          effects.push(value);
+          return value;
+        },
+      });
+      await using session = await new Agent({
+        model: 'gpt-5.2',
+        instructions: 'Answer.',
+        tools: [echo],
+        provider,
+      }).session();
+      const turn = await session.submit('answer');
+      const error = await turn.wait().then(
+        () => undefined,
+        (error) => error,
+      );
+      expect(error).toBeDefined();
+      expect(effects).toEqual([]);
+      expect(requests).toHaveLength(1);
+      expect(String(error)).not.toContain('private-partial-answer');
+      const recorded = [];
+      for await (const row of session.turns()) recorded.push(row);
+      expect(['failed', 'cancelled']).toContain(recorded[0].status);
+      if (refusal) {
+        expect(recorded[0].status).toBe('failed');
+        expect(error.responseIntegrityReason).toBe('provider_refusal');
+        expect(
+          recorded[0].responseFacts?.some(
+            (row) =>
+              row.fact.kind === 'refusal' && row.fact.text === privateRefusal,
+          ),
+        ).toBe(true);
+      } else expect(String(error)).toContain(`finish_reason=${finishReason}`);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+  20_000,
+);
+
+it.each(['include', 'extraBody'] as const)(
+  'forwards admitted Chat text options and probabilities requested through %s',
+  async (source) => {
+    const requests: any[] = [];
+    const token = {
+      token: 'ok',
+      bytes: [111, 107],
+      logprob: -0.5,
+      top_logprobs: [],
+    };
+    const extras = {
+      seed: 7,
+      stop: ['stop-marker'],
+      logit_bias: { '42': -1 },
+      user: 'synthetic-user',
+      safety_identifier: 'synthetic-safe',
+      prediction: { type: 'content', content: 'ok' },
+    };
+    const server = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      requests.push(body);
+      response.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({
+          id: 'chat_options',
+          object: 'chat.completion',
+          created: 0,
+          model: 'chat-model',
+          choices: [
+            {
+              index: 0,
+              finish_reason: 'stop',
+              message: { role: 'assistant', content: 'ok' },
+              logprobs: body.logprobs ? { content: [token] } : null,
+            },
+          ],
+        }),
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw Error('Expected port');
+    try {
+      await using provider = new NativeProvider({
+        modelBackend: new ChatCompletionsModel(
+          new OpenAI({
+            apiKey: 'synthetic-key',
+            baseURL: `http://127.0.0.1:${address.port}/v1`,
+          }),
+          'chat-model',
+        ),
+      });
+      await using session = await new Agent({
+        model: 'gpt-5.2',
+        instructions: 'Answer.',
+        modelSettings: {
+          include:
+            source === 'include' ? ['message.output_text.logprobs'] : undefined,
+          extraBody: {
+            ...extras,
+            ...(source === 'extraBody' ? { logprobs: true } : {}),
+          },
+        },
+        provider,
+      }).session();
+      expect((await (await session.submit('answer')).wait()).finalOutput).toBe(
+        'ok',
+      );
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ ...extras, logprobs: true });
+      expect(requests[0]).not.toHaveProperty('top_logprobs');
+      const recorded = [];
+      for await (const row of session.turns()) recorded.push(row);
+      // Core requires its topLogprobs opt-in before persisting sensitive probabilities.
+      expect(recorded[0].responseFacts ?? []).toEqual([]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   },
   20_000,
 );
