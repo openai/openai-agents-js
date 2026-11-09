@@ -315,8 +315,14 @@ jobs:
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm exec node -e "require('node:assert/strict').equal(process.platform + '/' + process.arch, '${{ matrix.target }}')"
       - name: Verify native local source containment
-        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch != 'ia32' }}
         run: pnpm exec vitest run packages/agents-core/test/sandboxes/localSourceReader.test.ts packages/agents-extensions/test/sandbox/localSourceContainment.test.ts
+      - name: Bundle source reader for Windows ia32 qualification
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch == 'ia32' }}
+        run: pnpm exec esbuild packages/agents-core/src/sandbox/shared/localSourceReader.ts --bundle --platform=node --format=cjs --packages=external --outfile=packages/agents-core/node_modules/.cache/local-source-qualification.cjs
+      - name: Verify Windows ia32 source containment without Vitest
+        if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch == 'ia32' }}
+        run: node scripts/local-source-native-qualification.mjs packages/agents-core/node_modules/.cache/local-source-qualification.cjs ${{ matrix.target }}
 
   coverage:
     needs: changes

@@ -55,7 +55,7 @@ const closedir = libc.func('int closedir(void *directory)');
 // Darwin x64 retains legacy inode32 symbols alongside the current inode64 ABI.
 const inodeSuffix = darwin && process.arch === 'x64' ? '$INODE64' : '';
 const readdir = darwin
-  ? libc.func(`void *readdir${inodeSuffix}(void *directory)`)
+  ? libc.func(`readdir${inodeSuffix}`, 'void *', ['void *'])
   : (() => {
       try {
         // glibc's large-file ABI preserves inode/offset widths on 32-bit CPUs.
