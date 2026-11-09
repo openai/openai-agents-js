@@ -8,6 +8,7 @@ import {
   OutputGuardrailTripwireTriggered,
   RunContext,
   RunResult,
+  Runner,
   RunState,
   StreamedRunResult,
   ToolGuardrailFunctionOutputFactory,
@@ -81,6 +82,167 @@ const terminalToolBehaviors: Array<{
 ];
 
 describe('output guardrails with Session persistence', () => {
+  it.each([
+    { stream: false, tripwireTriggered: false, overlap: false },
+    { stream: true, tripwireTriggered: true, overlap: false },
+    { stream: false, tripwireTriggered: false, overlap: true },
+  ])(
+    'restores a guarded nested approval (stream=$stream, blocked=$tripwireTriggered, overlap=$overlap)',
+    async ({ stream, tripwireTriggered, overlap }) => {
+      const session = new AppendOnlySession();
+      const sibling = vi.fn(async () => 'sibling result');
+      const approved = vi.fn(async () => 'guarded child result');
+      const guard = vi.fn(async () => ({
+        tripwireTriggered,
+        outputInfo: null,
+      }));
+      const outputGuardrails = [
+        { name: 'guard terminal output', execute: guard },
+      ];
+      const runner = new Runner({
+        outputGuardrails: stream ? outputGuardrails : [],
+      });
+      function buildParent() {
+        const requestApproval = modelResponse([
+          functionCall('approved', {}, { callId: 'inner' }),
+        ]);
+        const child = new Agent({
+          name: 'Child',
+          model: new ScriptedModel(
+            overlap ? [requestApproval, requestApproval] : [requestApproval],
+          ),
+          tools: [
+            tool({
+              name: 'approved',
+              description: 'Requires approval.',
+              parameters: z.object({}),
+              needsApproval: true,
+              execute: approved,
+            }),
+          ],
+          toolUseBehavior: 'stop_on_first_tool',
+        });
+        const calls = [
+          functionCall('sibling', {}, { callId: 'sibling' }),
+          functionCall('child', { input: 'go' }, { callId: 'outer' }),
+        ];
+        if (overlap)
+          calls.push(
+            functionCall(
+              'child',
+              { input: 'again' },
+              { callId: 'second-outer' },
+            ),
+          );
+        if (stream)
+          calls.push(functionCall('parent_approval', {}, { callId: 'direct' }));
+        return new Agent({
+          name: 'Parent',
+          model: new ScriptedModel([modelResponse(calls)]),
+          tools: [
+            tool({
+              name: 'sibling',
+              description: 'Completes before resume.',
+              parameters: z.object({}),
+              execute: sibling,
+            }),
+            child.asTool({
+              toolName: 'child',
+              toolDescription: 'Runs the child.',
+            }),
+            tool({
+              name: 'parent_approval',
+              description: 'Direct parent approval.',
+              parameters: z.object({}),
+              needsApproval: true,
+              execute: async () => 'direct result',
+            }),
+          ],
+          toolUseBehavior: { stopAtToolNames: ['child'] },
+          outputGuardrails: stream ? [] : outputGuardrails,
+        });
+      }
+      if (!stream && !overlap) {
+        const unguarded = buildParent();
+        unguarded.outputGuardrails = [];
+        const portable = await run(unguarded, 'go');
+        expect(portable.state.toJSON().$schemaVersion).toBe('1.23');
+        sibling.mockClear();
+      }
+      const first = await runner.run(buildParent(), 'go', { session });
+      expect(first.interruptions).toHaveLength(overlap || stream ? 2 : 1);
+      expect(sibling).toHaveBeenCalledTimes(1);
+      expect(approved).not.toHaveBeenCalled();
+      expect(guard).not.toHaveBeenCalled();
+      expect(JSON.stringify(await session.getItems())).not.toContain(
+        'sibling result',
+      );
+      const parent = buildParent();
+      const serialized = first.state.toString();
+      const restored = await RunState.fromString(parent, serialized);
+      if (overlap) {
+        for (const item of restored.getInterruptions()) restored.approve(item);
+        await expect(run(parent, restored, { session })).rejects.toThrow(
+          'current-response provenance was not preserved',
+        );
+        expect(approved).not.toHaveBeenCalled();
+        expect(sibling).toHaveBeenCalledTimes(1);
+        return;
+      }
+      const again = await RunState.fromString(parent, restored.toString());
+      for (const item of again.getInterruptions()) again.approve(item);
+      const complete = async () => {
+        if (stream) {
+          const result = await runner.run(parent, again, {
+            session,
+            stream: true,
+          });
+          await result.completed;
+          return result;
+        }
+        return runner.run(parent, again, { session });
+      };
+      if (tripwireTriggered) {
+        await expect(complete()).rejects.toBeInstanceOf(
+          OutputGuardrailTripwireTriggered,
+        );
+        expect(JSON.stringify(await session.getItems())).not.toContain(
+          'guarded child result',
+        );
+      } else {
+        expect((await complete()).finalOutput).toBe('guarded child result');
+        const snapshot = first.state.toJSON();
+        expect(snapshot.$schemaVersion).toBe('1.24');
+        expect(
+          snapshot.currentResponseGeneratedItemOwnership
+            ?.interruptionGeneratedItemIndexes,
+        ).toEqual([null]);
+        const missingChild = { ...snapshot, pendingAgentToolRuns: {} };
+        await expect(
+          RunState.fromString(parent, JSON.stringify(missingChild)),
+        ).rejects.toThrow(/child approval|pending agent tool aliases/);
+        await expect(
+          RunState.fromString(
+            parent,
+            JSON.stringify({ ...snapshot, $schemaVersion: '1.23' }),
+          ),
+        ).rejects.toThrow(/child approval/);
+        const changedApproval = JSON.parse(serialized);
+        changedApproval.currentStep.data.interruptions[0].rawItem.arguments =
+          '{"changed":true}';
+        await expect(
+          RunState.fromString(parent, JSON.stringify(changedApproval)),
+        ).rejects.toThrow(/child approval/);
+      }
+      expect(sibling).toHaveBeenCalledTimes(1);
+      expect(approved).toHaveBeenCalledTimes(1);
+      expect(guard).toHaveBeenCalledTimes(1);
+      expect(guard).toHaveBeenCalledWith(
+        expect.objectContaining({ agentOutput: 'guarded child result' }),
+      );
+    },
+  );
+
   it('preserves the guardrail error if safe-history persistence fails', async () => {
     const session = new MemorySession();
     const guardrailError = new Error('guardrail unavailable');

@@ -56,34 +56,57 @@ import { OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT } from './outputGuardrailBlockedMe
 
 type BlockedPairKind = 'tool' | 'handoff';
 
-const currentResponseToolOutputGuardrailResultStarts = new WeakMap<
+const currentResponseGuardrails = new WeakMap<
   RunState<any, any>,
-  number
+  { startIndex: number; hasOutputGuardrail: boolean }
 >();
 
 export function captureCurrentResponseToolOutputGuardrailResultStart(
   state: RunState<any, any>,
   overwrite: boolean,
+  hasOutputGuardrail = false,
 ): void {
-  if (overwrite || !currentResponseToolOutputGuardrailResultStarts.has(state)) {
-    currentResponseToolOutputGuardrailResultStarts.set(
-      state,
-      state._toolOutputGuardrailResults.length,
-    );
-  }
+  const previous = currentResponseGuardrails.get(state);
+  currentResponseGuardrails.set(state, {
+    startIndex:
+      overwrite || !previous
+        ? state._toolOutputGuardrailResults.length
+        : previous.startIndex,
+    hasOutputGuardrail,
+  });
 }
 
 export function getCurrentResponseToolOutputGuardrailResultStart(
   state: RunState<any, any>,
 ): number | undefined {
-  return currentResponseToolOutputGuardrailResultStarts.get(state);
+  return currentResponseGuardrails.get(state)?.startIndex;
 }
 
 export function restoreCurrentResponseToolOutputGuardrailResultStart(
   state: RunState<any, any>,
   startIndex: number,
+  hasNestedOwnership: boolean,
 ): void {
-  currentResponseToolOutputGuardrailResultStarts.set(state, startIndex);
+  currentResponseGuardrails.set(state, {
+    startIndex,
+    hasOutputGuardrail: hasNestedOwnership,
+  });
+}
+
+/** Selects the checkpoint format only. Resume always evaluates the configured guardrails. */
+export function needsNestedApprovalOwnership(
+  state: RunState<any, any>,
+  generatedItemStartIndex: number,
+): boolean {
+  // The writer has already identified the current response range. Running restored selection
+  // again here would revalidate every child for each propagated interruption.
+  return (
+    currentResponseGuardrails.get(state)?.hasOutputGuardrail === true &&
+    state._currentAgent.toolUseBehavior !== 'run_llm_again' &&
+    state._generatedItems
+      .slice(generatedItemStartIndex)
+      .some(isOutputBearingApprovalItem)
+  );
 }
 
 function currentCompletedToolRuns(state: RunState<any, any>) {
@@ -227,7 +250,7 @@ export function sanitizeBlockedTerminalToolOutput(
   );
   sanitizeBlockedToolOutputGuardrailResults(
     state,
-    currentResponseToolOutputGuardrailResultStarts.get(state) ?? 0,
+    getCurrentResponseToolOutputGuardrailResultStart(state) ?? 0,
     OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
   );
   if (!resolveBlockedMessage) {
@@ -1416,7 +1439,8 @@ function restoredCurrentRunItemSelection(
   const start = matchingStarts.length === 1 ? matchingStarts[0] : undefined;
   const processedEnd =
     start === undefined ? undefined : start + processed.length;
-  const interruptionIndexes = state._currentStep.data.interruptions.map(
+  const interruptions = state._currentStep.data.interruptions;
+  const interruptionIndexes = interruptions.map(
     (interruption: RunToolApprovalItem) =>
       generated.flatMap((item, index) =>
         item === interruption ? [index] : [],
@@ -1424,9 +1448,10 @@ function restoredCurrentRunItemSelection(
   );
   if (
     start === undefined ||
-    interruptionIndexes.some(
-      (indexes: number[]) =>
-        indexes.length !== 1 || indexes[0] < (processedEnd ?? Infinity),
+    interruptionIndexes.some((indexes: number[], offset: number) =>
+      indexes.length === 0
+        ? !state._ownsNestedApproval(interruptions[offset], interruptions)
+        : indexes.length !== 1 || indexes[0] < (processedEnd ?? Infinity),
     )
   ) {
     const fallbackStart = Math.min(
@@ -2076,10 +2101,13 @@ export function hasOutputBearingApprovalCheckpoint(
   if (responseOutput.some((item) => item.type !== 'function_call')) return true;
   const selection = currentRunItemSelection(state, responseOutput);
   if (!selection.proven) return true;
-  return selection.primary.some(
-    (item) =>
-      item instanceof RunToolCallOutputItem ||
-      (item instanceof RunToolCallItem &&
-        item.rawItem.type === 'hosted_tool_call'),
+  return selection.primary.some(isOutputBearingApprovalItem);
+}
+
+function isOutputBearingApprovalItem(item: RunItem): boolean {
+  return (
+    item instanceof RunToolCallOutputItem ||
+    (item instanceof RunToolCallItem &&
+      item.rawItem.type === 'hosted_tool_call')
   );
 }
