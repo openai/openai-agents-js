@@ -981,3 +981,73 @@ it.each(['e2b', 'daytona', 'modal', 'vercel'] as const)(
     expect(Object.keys(manifest.environment)).toEqual(['VALUE']);
   },
 );
+
+it.each(['inspection', 'policy'] as const)(
+  'cancellation before resume during %s admission has no provider effects',
+  async (stage) => {
+    const { withExclusiveSandboxManifestMutation } =
+      await import('@openai/agents-core/sandbox/internal');
+    const f = fixture();
+    const original = { manifest: new Manifest() };
+    const abort = new AbortController();
+    const reason = new Error('synthetic cancellation before resume');
+    let entered!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder =
+      stage === 'inspection'
+        ? withExclusiveSandboxManifestMutation(original, async () => {
+            entered();
+            await gate;
+          })
+        : undefined;
+    if (stage === 'policy') {
+      f.client.serializedSessionStateRequiresFreshCreationForOptions =
+        async () => {
+          entered();
+          await gate;
+          return false;
+        };
+    }
+    f.client.validateSessionStateForResume = vi.fn();
+    f.client.resume = vi.fn(async (state) => {
+      f.resource.state = state;
+      return f.resource;
+    });
+    const source = sandboxEnvironment({
+      ...f,
+      manifest: new Manifest(),
+      authorizedResumeState: { backendId: 'fixture', state: original },
+    });
+    const opening = source({ signal: abort.signal });
+    void opening.catch(() => {});
+    try {
+      await ready;
+      abort.abort(reason);
+      release();
+      await holder;
+      await expect(opening).rejects.toBe(reason);
+      expect(f.client.validateSessionStateForResume).toHaveBeenCalledTimes(
+        stage === 'inspection' ? 0 : 1,
+      );
+      expect(f.client.resume).not.toHaveBeenCalled();
+      expect(f.connect).not.toHaveBeenCalled();
+      expect(f.resource.close).not.toHaveBeenCalled();
+      expect(f.client.delete).not.toHaveBeenCalled();
+      let admitted = false;
+      await withExclusiveSandboxManifestMutation(original, async () => {
+        admitted = true;
+      });
+      expect(admitted).toBe(true);
+    } finally {
+      release();
+      await holder;
+      await opening.catch(() => {});
+    }
+  },
+);

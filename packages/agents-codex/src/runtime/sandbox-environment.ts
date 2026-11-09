@@ -186,6 +186,7 @@ export function sandboxEnvironment<
       }));
     try {
       const open = async () => {
+        signal.throwIfAborted();
         if (borrowed) {
           const trustedEnvironment = client.resolveTrustedEnvironment
             ? await client.resolveTrustedEnvironment(manifest, providerOptions)
@@ -226,13 +227,14 @@ export function sandboxEnvironment<
             { source: 'explicit', state },
             resumeOptions,
           );
-          if (
+          const requiresFreshCreation =
             client.serializedSessionStateRequiresFreshCreation ||
             (await client.serializedSessionStateRequiresFreshCreationForOptions?.(
               state,
               resumeOptions,
-            ))
-          )
+            ));
+          signal.throwIfAborted();
+          if (requiresFreshCreation)
             throw new TypeError(
               'provider requires fresh resource creation for this resume state',
             );
