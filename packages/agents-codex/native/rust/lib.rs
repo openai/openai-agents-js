@@ -2017,6 +2017,7 @@ impl NativeThread {
         // Preparation reserves the immutable config/declaration source while
         // every SDK publication uses this same native mutation lane.
         let _source_mutation = if operation == "realtime_conversation_prepare_sdk"
+            || operation == "realtime_conversation_config_sdk"
             || (operation == "realtime_conversation_update_sdk"
                 && params
                     .get("profile")
@@ -2030,6 +2031,10 @@ impl NativeThread {
             "realtime_tool_selection_sdk"
             | "realtime_conversation_start_sdk"
             | "realtime_conversation_prepare_sdk"
+            | "realtime_conversation_config_sdk"
+            | "realtime_conversation_update_history_sdk"
+            | "realtime_conversation_retrieve_item_sdk"
+            | "realtime_conversation_retrieve_history_sdk"
             | "realtime_conversation_activate_sdk"
             | "realtime_conversation_update_sdk"
             | "realtime_conversation_audio_sdk"
