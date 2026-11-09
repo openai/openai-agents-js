@@ -207,7 +207,7 @@ export class NativeProvider {
       slot !== undefined &&
       slot.active === undefined &&
       slot.closing === undefined;
-    if (reserved) {
+    if (slot && reserved) {
       const entry = slot.entry;
       if (entry) {
         if (entry.nativeHome && !entry.engine._leave_private_idle()) {
