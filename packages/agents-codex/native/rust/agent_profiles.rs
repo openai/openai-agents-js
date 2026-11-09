@@ -719,7 +719,14 @@ pub(crate) async fn configure(
             data,
             mcp: prepared.mcp.clone(),
         };
-        bind_accepted_mcp(thread, &mut target, &prepared.declaration, generation).await?;
+        bind_accepted_mcp(
+            thread,
+            &mut target,
+            &prepared.declaration,
+            generation,
+            false,
+        )
+        .await?;
         Arc::new(target)
     } else {
         profiles.candidate(thread, &profiles.opening.root_id)?
@@ -848,6 +855,7 @@ async fn update_active_inner(
             &mut target,
             &declaration.declaration,
             catalog.generation.id,
+            refresh_mcp,
         )
         .await?;
         target.data.insert(catalog);
@@ -865,16 +873,27 @@ async fn bind_accepted_mcp(
     target: &mut AgentProfile,
     declaration: &ProfileSpec,
     generation: u64,
+    refresh_policy: bool,
 ) -> Result<()> {
     let current = thread.config().await;
     let (mcp, plugins) = thread
         .prepare_agent_profile_mcp(current.mcp_servers.get().clone())
         .await?;
-    let policy = crate::native_interception::ProfileMcpPolicy::prepare(
-        &mcp,
-        &declaration.mcp_tools,
-        generation,
-    )?;
+    let policy = if refresh_policy {
+        // The MCP publication has committed its callbacks. Keep their exact
+        // generation and deadline rather than the opening declaration's flags.
+        thread
+            .thread_extension_data()
+            .get::<crate::native_interception::Control>()
+            .context("Agent MCP publication has no source policy owner")?
+            .capture_mcp_policy(&mcp)
+    } else {
+        crate::native_interception::ProfileMcpPolicy::prepare(
+            &mcp,
+            &declaration.mcp_tools,
+            generation,
+        )?
+    };
     let mut selection = thread
         .thread_extension_data()
         .get::<crate::mcp_result_control::McpResultControl>()
@@ -882,7 +901,9 @@ async fn bind_accepted_mcp(
         .unwrap_or(serde_json::from_value(
             json!({"generation":generation,"servers":{}}),
         )?);
-    selection.generation = generation;
+    if !refresh_policy {
+        selection.generation = generation;
+    }
     target.mcp = mcp;
     target.data.insert(plugins);
     target.data.insert(policy);
