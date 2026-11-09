@@ -1,7 +1,9 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import OpenAI from 'openai';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import type { Engine } from '../../native/index.js';
+import { binding } from '../../src/runtime/binding';
 import { z } from 'zod';
 import {
   Agent,
@@ -211,4 +213,162 @@ it('joins admitted asynchronous model work and discards a late tool call on canc
   await stopping;
   await expect(turn.wait()).rejects.toThrow();
   expect(effects).toEqual([]);
+}, 20_000);
+
+it('keeps current producer, instructions and controls on consecutive private roots', async () => {
+  const native = await binding();
+  const original = native.Engine.prototype._private_start_thread;
+  let reused = 0;
+  const trace = vi
+    .spyOn(native.Engine.prototype, '_private_start_thread')
+    .mockImplementation(async function (this: Engine, ...args) {
+      const thread = await original.apply(this, args);
+      if (thread) reused++;
+      return thread;
+    });
+  const seen: ModelRequest[] = [];
+  let stage = 'first';
+  const response = (text: string): ModelResponse => ({
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text }],
+      },
+    ],
+  });
+  try {
+    await using provider = new NativeProvider({
+      modelBackend: {
+        getModel() {
+          const selected = stage;
+          return {
+            complete(request: ModelRequest) {
+              seen.push(request);
+              return response(selected);
+            },
+          };
+        },
+      },
+    });
+    const agent = new Agent({
+      provider,
+      model: 'custom-model',
+      instructions: 'Original private instruction.',
+      modelSettings: { extraBody: { private_stage: 'first' } },
+    });
+    expect((await agent.run('first private user marker')).finalOutput).toBe(
+      'first',
+    );
+    stage = 'second';
+    agent.instructions = 'Current private instruction.';
+    agent.modelSettings = { extraBody: { private_stage: 'second' } };
+    expect((await agent.run('second private user marker')).finalOutput).toBe(
+      'second',
+    );
+    expect(reused).toBe(1);
+    expect(seen).toHaveLength(2);
+    expect(seen[1].sessionId).not.toBe(seen[0].sessionId);
+    expect(seen[1].body.private_stage).toBe('second');
+    const current = JSON.stringify(seen[1].body);
+    expect(current).toContain('Current private instruction.');
+    expect(current).toContain('second private user marker');
+    expect(current).not.toContain('Original private instruction.');
+    expect(current).not.toContain('first private user marker');
+  } finally {
+    trace.mockRestore();
+  }
+}, 20_000);
+
+it('joins cancelled producer work on a reused private root before starting another root', async () => {
+  const native = await binding();
+  const original = native.Engine.prototype._private_start_thread;
+  let reused = 0;
+  const trace = vi
+    .spyOn(native.Engine.prototype, '_private_start_thread')
+    .mockImplementation(async function (this: Engine, ...args) {
+      const thread = await original.apply(this, args);
+      if (thread) reused++;
+      return thread;
+    });
+  let enter!: () => void;
+  let release!: () => void;
+  let aborted!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const cancelled = new Promise<void>((resolve) => {
+    aborted = resolve;
+  });
+  let calls = 0;
+  const seen: ModelRequest[] = [];
+  const response = (text: string): ModelResponse => ({
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text }],
+      },
+    ],
+  });
+  try {
+    await using provider = new NativeProvider({
+      modelBackend: {
+        async complete(request) {
+          seen.push(request);
+          if (++calls === 2) {
+            request.signal.addEventListener('abort', aborted, { once: true });
+            enter();
+            await released;
+            return response('discarded late private output');
+          }
+          return response(calls === 1 ? 'warm' : 'fresh');
+        },
+      },
+    });
+    const agent = new Agent({
+      provider,
+      model: 'custom-model',
+      instructions: 'Answer.',
+    });
+    expect((await agent.run('warm private root marker')).finalOutput).toBe(
+      'warm',
+    );
+    const controller = new AbortController();
+    let settled = false;
+    let failure: unknown;
+    const stopping = agent
+      .run('cancel private root marker', { signal: controller.signal })
+      .then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          failure = error;
+        },
+      );
+    await entered;
+    expect(reused).toBe(1);
+    controller.abort(new Error('cancel reused producer'));
+    await cancelled;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    release();
+    await stopping;
+    expect(failure).toBeDefined();
+    expect((await agent.run('fresh private root marker')).finalOutput).toBe(
+      'fresh',
+    );
+    const fresh = JSON.stringify(seen[2].body);
+    expect(fresh).not.toContain('warm private root marker');
+    expect(fresh).not.toContain('cancel private root marker');
+    expect(fresh).not.toContain('discarded late private output');
+  } finally {
+    release?.();
+    trace.mockRestore();
+  }
 }, 20_000);
