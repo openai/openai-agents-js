@@ -362,3 +362,6 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+
+// Private extension hook for Session-scoped state, not execution authority.
+export { _nativeToolSessionOwner } from './runtime/tools';

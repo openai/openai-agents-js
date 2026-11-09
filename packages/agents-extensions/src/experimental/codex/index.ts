@@ -1,4 +1,4 @@
-import { tool as nativeTool } from '@openai/agents';
+import { tool as nativeTool, _nativeToolSessionOwner } from '@openai/agents';
 import {
   RunContext,
   Usage,
@@ -1898,7 +1898,8 @@ export type NativeCodexToolOptions = Pick<
  * The application authorizes executable, credentials and workspace in the
  * options. Native Environment grants do not constrain this application tool.
  * Cancellation joins the CLI stream. Persistent calls run sequentially and
- * reuse the most recently completed thread unless threadId selects another.
+ * reuse the most recently completed thread in the same native Session unless
+ * threadId selects another. Different native Sessions keep independent state.
  */
 export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
   const resolveCodex = createCodexResolver(
@@ -1924,8 +1925,10 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
     : undefined;
   const persistSession = options.persistSession ?? false;
   const onEvent = options.onEvent;
-  let persisted: Thread | undefined;
-  let pending = Promise.resolve();
+  const sessions = new WeakMap<
+    object,
+    { persisted?: Thread; pending: Promise<void> }
+  >();
   return nativeTool({
     name: options.name ?? 'codex',
     description:
@@ -1933,24 +1936,43 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
       'Run an external Codex CLI task in the configured workspace.',
     parameters: z.object({
       prompt: z.string().min(1),
-      threadId: z.string().min(1).nullable().default(null),
+      threadId: z
+        .string()
+        .min(1)
+        .refine(
+          (value) => !value.trimStart().startsWith('-'),
+          'threadId must be a thread ID, not a CLI option',
+        )
+        .nullable()
+        .default(null),
     }),
     execute: async ({ prompt, threadId }, context) => {
+      let state: { persisted?: Thread; pending: Promise<void> } | undefined;
+      let previous = Promise.resolve();
       let release: (() => void) | undefined;
       if (persistSession) {
-        const previous = pending;
-        pending = new Promise<void>((resolve) => {
+        const sessionOwner = _nativeToolSessionOwner(context);
+        state = sessions.get(sessionOwner);
+        if (!state) {
+          state = { pending: Promise.resolve() };
+          sessions.set(sessionOwner, state);
+        }
+        previous = state.pending;
+        const slot = new Promise<void>((resolve) => {
           release = resolve;
         });
-        await previous;
+        // A cancelled waiter settles promptly but its successors still wait for
+        // every earlier invocation to release ownership.
+        state.pending = previous.then(() => slot);
       }
       try {
+        if (state) await waitForNativeCodexSlot(previous, context.signal);
         context.signal.throwIfAborted();
         const codex = await resolveCodex();
         const thread =
           threadId !== null
             ? codex.resumeThread(threadId, threadOptions)
-            : (persisted ?? codex.startThread(threadOptions));
+            : (state?.persisted ?? codex.startThread(threadOptions));
         const signal = turnOptions?.signal
           ? AbortSignal.any([context.signal, turnOptions.signal])
           : context.signal;
@@ -1973,7 +1995,7 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
             throw new Error(event.error.message);
           else if (event.type === 'error') throw new Error(event.message);
         }
-        if (persistSession) persisted = thread;
+        if (state) state.persisted = thread;
         return { threadId: thread.id, response, usage };
       } catch (error) {
         // Node spawn wraps AbortSignal.reason. Preserve the native cancellation
@@ -1991,4 +2013,22 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
       }
     },
   });
+}
+
+async function waitForNativeCodexSlot(
+  previous: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    await Promise.race([previous, cancelled]);
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
 }

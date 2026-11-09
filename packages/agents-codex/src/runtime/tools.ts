@@ -102,6 +102,32 @@ export interface ToolCallContext<Context = unknown> {
   readonly callId: string;
   readonly signal: AbortSignal;
 }
+const toolSessionOwners = new WeakMap<object, object>();
+
+/** @internal Bind SDK-issued callback contexts to their opaque Session identity. */
+export function registerToolSessionOwner(
+  context: ToolCallContext,
+  owner: object,
+): void {
+  toolSessionOwners.set(context, owner);
+}
+
+// Private extension hook; retained in declarations for the sibling package.
+export function _nativeToolSessionOwner(context: ToolCallContext): object {
+  const owner = toolSessionOwners.get(context);
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
+  return owner;
+}
+
+function inheritToolSessionOwner<T extends ToolCallContext>(
+  context: T,
+  source: ToolCallContext,
+): T {
+  const owner = toolSessionOwners.get(source);
+  if (owner) toolSessionOwners.set(context, owner);
+  return context;
+}
+
 export interface ToolContext<
   Context = unknown,
 > extends ToolCallContext<Context> {
@@ -397,7 +423,11 @@ export function tool<
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
       try {
         value = await invokeWithTimeout(
-          (signal) => execute(parsed, { ...callContext, signal }),
+          (signal) =>
+            execute(
+              parsed,
+              inheritToolSessionOwner({ ...callContext, signal }, context),
+            ),
           context.signal,
           callbackTimeout,
           name,

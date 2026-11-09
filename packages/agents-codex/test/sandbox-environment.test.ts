@@ -7,6 +7,7 @@ import {
   type SandboxClientCreateArgs,
   type SandboxSessionLike,
 } from '@openai/agents-core/sandbox';
+import { recordLiveMountCredentialAuthority } from '@openai/agents-core/sandbox/internal';
 import { Environment } from '../src/runtime/environment';
 import { acquireEnvironment } from '../src/runtime/environment-source';
 import {
@@ -106,6 +107,64 @@ describe('native sandbox environment', () => {
       'close',
       'delete',
     ]);
+  });
+  it('acquires an authorized resume resource only once, including overlapping openings', async () => {
+    const f = fixture();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    f.client.resume = vi.fn(async () => {
+      entered.resolve();
+      await finish.promise;
+      return f.resource;
+    });
+    const source = sandboxEnvironment({
+      ...f,
+      manifest: new Manifest(),
+      authorizedResumeState: { backendId: 'fixture', state: f.resource.state },
+    });
+    const first = acquireEnvironment(source);
+    await entered.promise;
+    await expect(acquireEnvironment(source)).rejects.toThrow(
+      'already been acquired',
+    );
+    expect(f.client.resume).toHaveBeenCalledTimes(1);
+    expect(f.client.delete).not.toHaveBeenCalled();
+    finish.resolve();
+    const owner = await first;
+    await owner.dispose();
+    await expect(acquireEnvironment(source)).rejects.toThrow(
+      'already been acquired',
+    );
+    expect(f.client.resume).toHaveBeenCalledTimes(1);
+    expect(f.client.delete).toHaveBeenCalledTimes(1);
+  });
+  it('checks recorded live mount authority before rebinding or provider effects', () => {
+    const f = fixture();
+    const original = mountManifest();
+    const persisted = mountManifest();
+    recordLiveMountCredentialAuthority(persisted, original);
+    // Live processes still own the old principal even if persisted fields are edited.
+    (persisted.entries.data as { accessKeyId: string }).accessKeyId =
+      'rotated-id';
+    const current = mountManifest();
+    (current.entries.data as { accessKeyId: string }).accessKeyId =
+      'rotated-id';
+    f.client.resume = vi.fn();
+    f.client.validateSessionStateForResume = vi.fn();
+    expect(() =>
+      sandboxEnvironment({
+        ...f,
+        manifest: current,
+        authorizedResumeState: {
+          backendId: 'fixture',
+          state: { manifest: persisted },
+        },
+      }),
+    ).toThrow('mount authority');
+    expect(f.client.resume).not.toHaveBeenCalled();
+    expect(f.client.validateSessionStateForResume).not.toHaveBeenCalled();
+    expect(f.connect).not.toHaveBeenCalled();
+    expect(f.events).toEqual([]);
   });
   it('rejects backend mismatch and conflicting ownership before effects', () => {
     const f = fixture();

@@ -3,6 +3,11 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Agent, NativeProvider } from '@openai/agents';
+import {
+  invokeFunctionTool,
+  registerToolSessionOwner,
+  type ToolCallContext,
+} from '../../src/runtime/tools';
 import { Codex } from '@openai/codex-sdk';
 import { nativeCodexTool } from '../../../agents-extensions/src/experimental/codex';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -152,5 +157,169 @@ it.skipIf(process.platform === 'win32')(
     const pid = Number(await readFile(pidPath, 'utf8'));
     expect(() => process.kill(pid, 0)).toThrow();
     expect(server.requests).toHaveLength(1);
+  },
+);
+
+async function recordingCli() {
+  const root = await mkdtemp(join(tmpdir(), 'native-codex-isolation-'));
+  roots.push(root);
+  const cli = join(root, 'codex');
+  const callsPath = join(root, 'calls.jsonl');
+  await writeFile(
+    cli,
+    `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv) + '\\n');\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'synthetic-owned-thread'}));\nconsole.log(JSON.stringify({type:'item.completed',item:{id:'item',type:'agent_message',text:'CLI completed'}}));\nconsole.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}));\n`,
+  );
+  await chmod(cli, 0o700);
+  const calls = async () =>
+    (await readFile(callsPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[]);
+  return { cli, callsPath, calls };
+}
+
+it.skipIf(process.platform === 'win32')(
+  'isolates persistent CLI conversation state across native Sessions while reusing it within a Session',
+  async () => {
+    const { cli, calls } = await recordingCli();
+    const server = new ModelServer(
+      Array.from({ length: 3 }, (_, index) => [
+        [
+          call(
+            'codex',
+            { prompt: 'Task', threadId: null },
+            { callId: `isolated-${index}` },
+          ),
+        ],
+        [message('done')],
+      ]).flat(),
+    );
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Use codex.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        nativeCodexTool({
+          codex: new Codex({ codexPathOverride: cli }),
+          persistSession: true,
+        }),
+      ],
+    });
+    await using first = await agent.session();
+    expect((await (await first.submit('First')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect((await (await first.submit('Continue')).wait()).finalOutput).toBe(
+      'done',
+    );
+    await using second = await agent.session();
+    expect(
+      (await (await second.submit('Independent task')).wait()).finalOutput,
+    ).toBe('done');
+    const argv = await calls();
+    expect(argv).toHaveLength(3);
+    expect(argv[0]).not.toContain('resume');
+    expect(argv[1]).toContain('resume');
+    expect(argv[2]).not.toContain('resume');
+    server.assertExhausted();
+  },
+);
+
+// Controlled callback admission tests the queued invocation independently of a
+// running sibling's joined cancellation. Every entered invocation uses a real CLI.
+it.skipIf(process.platform === 'win32')(
+  'cancels a queued CLI invocation without starting it or releasing its successors early',
+  async () => {
+    const { cli, calls } = await recordingCli();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let starts = 0;
+    const tool = nativeCodexTool({
+      codex: new Codex({ codexPathOverride: cli }),
+      persistSession: true,
+      onEvent: async (event) => {
+        if (event.type === 'thread.started' && ++starts === 1) {
+          entered.resolve();
+          await finish.promise;
+        }
+      },
+    });
+    const owner = {};
+    const context = (signal: AbortSignal, callId: string) => {
+      const issued = {
+        context: undefined,
+        submission: { sessionId: 'owned-native-session' },
+        threadId: 'owned-native-session',
+        turnId: 'turn',
+        callId,
+        signal,
+      } as ToolCallContext;
+      registerToolSessionOwner(issued, owner);
+      return issued;
+    };
+    const first = invokeFunctionTool(
+      tool,
+      { prompt: 'First', threadId: null },
+      context(new AbortController().signal, 'first'),
+      () => {},
+    );
+    await entered.promise;
+    const abort = new AbortController();
+    const second = invokeFunctionTool(
+      tool,
+      { prompt: 'Cancelled', threadId: null },
+      context(abort.signal, 'second'),
+      () => {},
+    );
+    const cancelled = expect(second).rejects.toBe('queued cancellation');
+    const third = invokeFunctionTool(
+      tool,
+      { prompt: 'Third', threadId: null },
+      context(new AbortController().signal, 'third'),
+      () => {},
+    );
+    abort.abort('queued cancellation');
+    await cancelled;
+    expect(await calls()).toHaveLength(1);
+    finish.resolve();
+    await Promise.all([first, third]);
+    const argv = await calls();
+    expect(argv).toHaveLength(2);
+    expect(argv[1]).toContain('resume');
+  },
+);
+
+it.each(['--last', ' --last', '-x'])(
+  'rejects option-shaped thread ID %s before CLI execution',
+  async (threadId) => {
+    const { cli, callsPath } = await recordingCli();
+    const tool = nativeCodexTool({
+      codex: new Codex({ codexPathOverride: cli }),
+    });
+    await expect(
+      invokeFunctionTool(
+        tool,
+        { prompt: 'Task', threadId },
+        {
+          context: undefined,
+          submission: { sessionId: 'session' },
+          threadId: 'session',
+          turnId: 'turn',
+          callId: 'call',
+          signal: new AbortController().signal,
+        } as ToolCallContext,
+        () => {},
+      ),
+    ).rejects.toThrow('not a CLI option');
+    await expect(readFile(callsPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   },
 );

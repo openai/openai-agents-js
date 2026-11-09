@@ -251,6 +251,7 @@ import {
   toolDeclarationIdentity,
   type ToolSelector,
   invokeFunctionTool,
+  registerToolSessionOwner,
   outputOf,
   type ToolResponse,
   type SessionTool,
@@ -1743,6 +1744,7 @@ export class Session<OutputT = string, Context = unknown> {
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
   private readonly childCallbacks = new ChildCallbacks();
+  private readonly toolSessionOwner = Object.freeze({});
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -8216,6 +8218,7 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
+      registerToolSessionOwner(context, this.toolSessionOwner);
       const identity: ToolIdentity = {
         callId: context.callId,
         toolName: tool.name,

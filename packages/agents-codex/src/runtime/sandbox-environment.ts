@@ -15,6 +15,7 @@ import {
   rebindPersistedPathGrants,
   assertHostPathGrantsRebound,
   assertMountCredentialsRebound,
+  assertLiveMountCredentialAuthorityMatches,
 } from '@openai/agents-core/sandbox/internal';
 import type { Environment } from './environment';
 import {
@@ -44,7 +45,8 @@ export interface SandboxEnvironmentOptions<
   /**
    * Explicitly authorizes ALL provider identity and snapshot fields for resume.
    * Never pass untrusted persisted state without application/provider validation.
-   * The current manifest supplies filesystem authority.
+   * The current manifest supplies filesystem authority. This source can resume
+   * the resource only once, including when opening fails after acquisition.
    */
   authorizedResumeState?: { backendId: string; state: State };
   concurrencyLimits?: SandboxConcurrencyLimits;
@@ -111,6 +113,8 @@ export function sandboxEnvironment<
   const snapshot = captureOptions(options.snapshot);
   // Explicit authorization covers provider identity. Current config is the sole
   // source of mount/path authority, using the provider's existing rebind rules.
+  if (resume)
+    assertLiveMountCredentialAuthorityMatches(resume.state.manifest, manifest);
   const resumeState = resume
     ? rebindPersistedPathGrants(
         rebindPersistedMountCredentials(captureOptions(resume.state), manifest),
@@ -129,8 +133,14 @@ export function sandboxEnvironment<
       );
   }
 
+  let resumeConsumed = false;
   return async ({ signal }) => {
     signal.throwIfAborted();
+    if (resumeState) {
+      if (resumeConsumed)
+        throw new TypeError('authorizedResumeState has already been acquired');
+      resumeConsumed = true;
+    }
     let sandbox: SandboxSessionLike<State> | undefined;
     let gateway: EnvironmentAcquisition | undefined;
     let disposal: Promise<void> | undefined;
