@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
@@ -9,6 +10,7 @@ import {
   setTraceProcessors,
   withTrace,
   setTracingDisabled,
+  tool,
   type RetryPolicyContext,
   type TracingProcessor,
 } from '@openai/agents-core';
@@ -1567,6 +1569,138 @@ describe('OpenAIChatCompletionsModel', () => {
       signal: undefined,
     });
   });
+
+  it.each([
+    { selectedModel: 'gpt-6-sol', expected: 'none' },
+    { selectedModel: 'gpt-6-astra', expected: 'none' },
+    {
+      selectedModel: 'assistant-fast',
+      modelSettings: { providerData: { reasoning_effort: 'high' } },
+      expected: undefined,
+    },
+  ])(
+    'respects runner effort settings for $selectedModel routed to gpt-6-sol',
+    async ({ selectedModel, modelSettings, expected }) => {
+      const client = new FakeClient();
+      client.baseURL = 'https://api.openai.com/v1';
+      client.chat.completions.create.mockResolvedValue({
+        id: 'r',
+        choices: [{ message: { content: 'done' } }],
+      });
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt-6-sol');
+      const runner = new Runner({
+        model: selectedModel,
+        modelSettings,
+        modelProvider: { getModel: () => model },
+        tracingDisabled: true,
+      });
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Look up a record.',
+        parameters: z.object({}),
+        execute: async () => 'done',
+      });
+
+      await runner.run(
+        new Agent({ name: 'Assistant', tools: [lookup] }),
+        'hello',
+      );
+
+      const [body] = client.chat.completions.create.mock.calls[0];
+      expect(body.model).toBe('gpt-6-sol');
+      expect(body.tools).toMatchObject([
+        { type: 'function', function: { name: 'lookup' } },
+      ]);
+      expect(body.reasoning_effort).toBe(expected);
+    },
+  );
+
+  it('defaults gpt-6-luna effort for a streamed handoff', async () => {
+    const client = new FakeClient();
+    client.baseURL = 'https://api.openai.com/v1';
+    client.chat.completions.create.mockResolvedValue([]);
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt-6-luna');
+
+    await callModel(
+      model,
+      {
+        input: 'hello',
+        modelSettings: {},
+        outputType: 'text',
+        tools: [],
+        handoffs: [handoffTool],
+        tracing: false,
+      },
+      'streaming',
+    );
+
+    const [body] = client.chat.completions.create.mock.calls[0];
+    expect(body.tools).toMatchObject([
+      { type: 'function', function: { name: handoffTool.toolName } },
+    ]);
+    expect(body.reasoning_effort).toBe('none');
+  });
+
+  it.each([
+    {
+      label: 'explicit effort',
+      modelSettings: { reasoning: { effort: 'low' } },
+      expected: 'low',
+    },
+    {
+      label: 'explicit null effort',
+      modelSettings: { reasoning: { effort: null } },
+    },
+    {
+      label: 'provider effort',
+      modelSettings: { providerData: { reasoning_effort: 'medium' } },
+      expected: 'medium',
+    },
+    { label: 'no tools', hasTools: false },
+    { label: 'custom endpoint', baseURL: 'https://compatible.example/v1' },
+    { label: 'snapshot', model: 'gpt-6-sol-2026-10-01' },
+    {
+      label: 'overridden wire model',
+      modelSettings: { providerData: { model: 'gpt-6-astra' } },
+    },
+    {
+      label: 'overridden wire tools',
+      modelSettings: { providerData: { tools: [] } },
+    },
+  ])(
+    'preserves Chat Completions effort for $label',
+    async ({
+      model: modelName = 'gpt-6-sol',
+      modelSettings = {},
+      baseURL = 'https://api.openai.com/v1',
+      hasTools = true,
+      expected,
+    }) => {
+      const client = new FakeClient();
+      client.baseURL = baseURL;
+      client.chat.completions.create.mockResolvedValue({
+        id: 'r',
+        choices: [{ message: { content: 'done' } }],
+      });
+      const model = new OpenAIChatCompletionsModel(client as any, modelName);
+
+      await callModel(
+        model,
+        {
+          input: 'hello',
+          modelSettings,
+          outputType: 'text',
+          tools: hasTools ? [functionTool] : [],
+          handoffs: [],
+          tracing: false,
+        },
+        'non-streaming',
+      );
+
+      const [body] = client.chat.completions.create.mock.calls[0];
+      expect(body.reasoning_effort).toBe(expected);
+    },
+  );
 
   it.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
     'omits implicit reasoning effort for %s function tools',

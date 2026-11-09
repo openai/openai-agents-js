@@ -58,6 +58,7 @@ import {
 import type { OpenAIClient } from './openaiClient';
 import { camelOrSnakeToSnakeCase } from './utils/providerData';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
+import { isOfficialOpenAIEndpoint } from './utils/openaiEndpoint';
 import {
   normalizeInstructions,
   searchParamsToAuthHeaderQuery,

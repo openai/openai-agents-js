@@ -41,6 +41,7 @@ import {
 import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
+import { isOfficialOpenAIEndpoint } from './utils/openaiEndpoint';
 import type { OpenAIClient } from './openaiClient';
 import {
   CONTENT_FILTER_REFUSAL_MESSAGE,
@@ -756,6 +757,19 @@ export class OpenAIChatCompletionsModel implements Model {
       prompt_cache_options: request.modelSettings.promptCacheOptions,
       ...providerData,
     };
+
+    // These Chat Completions models require non-reasoning mode for function tools.
+    if (
+      (requestData.model === 'gpt-6-sol' ||
+        requestData.model === 'gpt-6-luna') &&
+      requestData.tools === tools &&
+      (requestInternal?.reasoningEffortImplicit ??
+        request.modelSettings.reasoning?.effort === undefined) &&
+      request.modelSettings.providerData?.reasoning_effort === undefined &&
+      isOfficialOpenAIEndpoint(this.#client.baseURL, 'http')
+    ) {
+      requestData.reasoning_effort = 'none';
+    }
 
     if (!requestData.tools?.length) {
       delete requestData.parallel_tool_calls;
