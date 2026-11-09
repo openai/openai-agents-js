@@ -158,6 +158,11 @@ for (const approvalMode of ['preapproved', 'native'] as const) {
               {},
               { callId: 'unselected', namespace: 'mcp__records_service' },
             ),
+            call(
+              projectedName,
+              {},
+              { callId: 'unselected-server', namespace: 'mcp__other_service' },
+            ),
           ],
           [message('done')],
         ]);
@@ -174,10 +179,16 @@ for (const approvalMode of ['preapproved', 'native'] as const) {
           tools: [rawName, 'remove-record'],
           approvalMode,
         });
+        const other = new HttpMCP({
+          name: 'other-service',
+          url: `http://127.0.0.1:${address.port}`,
+          tools: [rawName],
+          approvalMode,
+        });
         const b = new Agent({
           name: 'B',
           instructions: 'Read lookup.',
-          tools: [records],
+          tools: [records, other],
         });
         await using session = await new Agent({
           name: 'A',
@@ -208,6 +219,7 @@ for (const approvalMode of ['preapproved', 'native'] as const) {
         const advertised = JSON.stringify(model.requests[1].tools);
         expect(advertised).toContain(projectedName);
         expect(advertised).not.toContain('remove_record');
+        expect(advertised).not.toContain('mcp__other_service');
         const events = [];
         for await (const event of turn.events()) {
           if ('family' in event && event.family === 'mcp') events.push(event);

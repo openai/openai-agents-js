@@ -6963,13 +6963,14 @@ export class Session<OutputT = string, Context = unknown> {
               throw new NativeError(
                 'Native step has no captured source MCP bindings',
               );
+            const selectedNames = new Set(
+              names.map((name) => JSON.stringify([name.namespace, name.name])),
+            );
             this.stepMcp.set(run, {
               servers: servers.filter((server) =>
                 mcpToolNames([server]).some((identity) =>
-                  names.some(
-                    (name) =>
-                      name.namespace === identity.namespace &&
-                      name.name === identity.name,
+                  selectedNames.has(
+                    JSON.stringify([identity.namespace, identity.name]),
                   ),
                 ),
               ),
