@@ -22,11 +22,19 @@ pub(crate) struct CompletionReply {
     value: HashMap<String, Value>,
 }
 
+#[derive(Debug, PartialEq)]
+pub(super) enum ReplyValue {
+    Accept(Value),
+    Continue(String),
+}
+
 pub(super) struct Pending {
     key: PendingKey,
     generation: Arc<Generation>,
     step: String,
-    sender: oneshot::Sender<std::result::Result<Value, String>>,
+    sender: oneshot::Sender<std::result::Result<ReplyValue, String>>,
+    callback: Option<Arc<CallbackRelease>>,
+    stop: Option<Arc<crate::native_interception::CapturedTurnStop>>,
 }
 
 #[derive(Clone)]
@@ -45,11 +53,7 @@ struct Wait {
 }
 impl Drop for Wait {
     fn drop(&mut self) {
-        self.tools
-            .completion_replies
-            .lock()
-            .expect("JavaScript completion replies poisoned")
-            .remove(&self.id);
+        self.tools.retire_terminal_callback(self.id);
     }
 }
 
@@ -183,6 +187,7 @@ impl PythonTools {
 
     fn completion_matches(&self, response: &CompletionReply, pending: &Pending) -> bool {
         self.current_completion_owner(&pending.key.reply.thread)
+            && !pending.sender.is_closed()
             && response.thread == pending.key.reply.thread
             && response.instance == self.instance
             && response.instance == pending.key.reply.instance
@@ -228,27 +233,164 @@ impl PythonTools {
             {
                 return Ok(false);
             }
-            // Invalid payloads leave their original waiter available for a failure reply.
             ensure!(
-                response.value.len() == 1
-                    && (response.value.contains_key("final_output")
-                        || response.value.get("error").is_some_and(Value::is_string)),
+                response.value.len() == 1,
                 "Invalid terminal conversion reply"
             );
-            replies.remove(&id).expect("checked completion reply")
+            let valid = response.value.contains_key("final_output")
+                || response.value.get("error").is_some_and(Value::is_string)
+                || response
+                    .value
+                    .get("continue")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.trim().is_empty())
+                || response.value.get("stop") == Some(&Value::Bool(true));
+            ensure!(valid, "Invalid terminal conversion reply");
+            ensure!(
+                !response.value.contains_key("stop")
+                    || replies
+                        .get(&id)
+                        .is_some_and(|pending| pending.stop.is_some()),
+                "Expired terminal completion stop"
+            );
+            let pending = replies.remove(&id).expect("checked completion reply");
+            if let Some(callback) = &pending.callback {
+                let (sender, receive) = oneshot::channel();
+                drop(receive);
+                replies.insert(
+                    id,
+                    Pending {
+                        key: pending.key.clone(),
+                        generation: pending.generation.clone(),
+                        step: pending.step.clone(),
+                        sender,
+                        callback: Some(callback.clone()),
+                        stop: pending.stop.clone(),
+                    },
+                );
+            }
+            pending
         };
-        let value = match response.value.get("final_output") {
-            Some(value) => Ok(value.clone()),
-            None => Err("Terminal output conversion failed".into()),
+        let value = if let Some(value) = response.value.get("final_output") {
+            Ok(ReplyValue::Accept(value.clone()))
+        } else if let Some(feedback) = response.value.get("continue").and_then(Value::as_str) {
+            Ok(ReplyValue::Continue(feedback.to_owned()))
+        } else if response.value.contains_key("stop") {
+            Err("Terminal completion stopped".into())
+        } else {
+            Err("Terminal output conversion failed".into())
         };
-        Ok(pending.sender.send(value).is_ok())
+        let stop = response
+            .value
+            .contains_key("stop")
+            .then(|| pending.stop.clone())
+            .flatten();
+        let sent = pending.sender.send(value).is_ok();
+        // Failed admission never grants authority to stop even this captured owner.
+        if sent {
+            if let Some(stop) = stop {
+                stop.stop();
+            }
+        }
+        Ok(sent)
+    }
+
+    pub(super) fn terminal_callback_operation(
+        &self,
+        id: u64,
+        receipt: &Value,
+        operation: &str,
+    ) -> bool {
+        let replies = self
+            .completion_replies
+            .lock()
+            .expect("JavaScript completion replies poisoned");
+        let Some(pending) = replies.get(&id) else {
+            return false;
+        };
+        let Some(callback) = pending
+            .callback
+            .as_ref()
+            .filter(|callback| callback.receipt == *receipt)
+        else {
+            return false;
+        };
+        preparation_callback_claim(
+            callback,
+            operation,
+            pending.sender.is_closed(),
+            pending
+                .stop
+                .as_ref()
+                .and_then(|stop| stop.callback_cancellation())
+                .is_some_and(|token| token.is_cancelled()),
+        )
+    }
+
+    fn retire_terminal_callback(&self, id: u64) {
+        let mut replies = self
+            .completion_replies
+            .lock()
+            .expect("JavaScript completion replies poisoned");
+        let Some(pending) = replies.get_mut(&id) else {
+            return;
+        };
+        let Some(callback) = pending.callback.clone() else {
+            replies.remove(&id);
+            return;
+        };
+        let (sender, receive) = oneshot::channel();
+        drop(receive);
+        drop(std::mem::replace(&mut pending.sender, sender));
+        self.cancel_step_callback(&pending.key.turn, &callback);
+        if !callback.entered.load(Ordering::Acquire) {
+            replies.remove(&id);
+        }
     }
 
     pub(super) fn retire_tool_completion(&self, turn: Option<&str>) {
-        self.completion_replies
+        let ids: Vec<_> = self
+            .completion_replies
             .lock()
             .expect("JavaScript completion replies poisoned")
-            .retain(|_, pending| turn.is_some_and(|turn| turn != pending.key.turn));
+            .iter()
+            .filter(|(_, pending)| turn.is_none_or(|turn| turn == pending.key.turn))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.retire_terminal_callback(id);
+        }
+    }
+
+    pub(super) async fn finish_terminal_callbacks(&self, turn: Option<&str>, cancel: bool) {
+        if cancel {
+            self.retire_tool_completion(turn);
+        }
+        let callbacks: Vec<_> = self
+            .completion_replies
+            .lock()
+            .expect("JavaScript completion replies poisoned")
+            .iter()
+            .filter(|(_, pending)| turn.is_none_or(|turn| turn == pending.key.turn))
+            .filter_map(|(id, pending)| pending.callback.clone().map(|callback| (*id, callback)))
+            .collect();
+        for (id, callback) in callbacks {
+            if !callback.entered.load(Ordering::Acquire) {
+                callback.release();
+            }
+            callback.wait().await;
+            let mut replies = self
+                .completion_replies
+                .lock()
+                .expect("JavaScript completion replies poisoned");
+            if replies
+                .get(&id)
+                .and_then(|pending| pending.callback.as_ref())
+                .is_some_and(|current| Arc::ptr_eq(current, &callback))
+            {
+                replies.remove(&id);
+            }
+        }
     }
 }
 
@@ -323,7 +465,7 @@ pub(super) async fn propose(
         "generation":catalog.generation.id.to_string(), "request_id":id.to_string(),
         "native_step":input.step_store.level_id(), "slot":slot,
         "tool":{"name":entry.name.name,"namespace":entry.name.namespace},
-        "call_id":call_id, "output":output.body
+        "call_id":call_id, "output":output.body, "model":input.model, "continuation_count":input.continuation_count
     }});
     if let Some(profile) = tools
         .source_profile(Some(input.step_store))
@@ -365,12 +507,40 @@ pub(super) async fn propose(
                 generation: catalog.generation.clone(),
                 step: input.step_store.level_id().to_owned(),
                 sender,
+                callback: None,
+                stop: None,
             },
         );
     let _wait = Wait {
         tools: tools.clone(),
         id,
     };
+    let callback_enabled = tools.context_callbacks.before_complete
+        && tools
+            .source_catalog(Some(input.step_store))
+            .map_err(|error| error.to_string())?
+            .is_none_or(|source| source.before_complete);
+    let stop = tools.context_stop(input.turn_id).ok();
+    if callback_enabled && stop.is_none() {
+        return Err("Expired terminal completion owner".into());
+    }
+    let callback = callback_enabled.then(|| {
+        let mut receipt = json!({"kind":"preparation", "thread":input.thread_store.level_id(), "id":id.to_string()});
+        if let Some(instance) = &tools.instance { receipt["instance"] = json!(instance); }
+        CallbackRelease::new(receipt)
+    });
+    if let Some(callback) = &callback {
+        request["msg"]["_sdk_callback"] = callback.receipt.clone();
+    }
+    {
+        let mut replies = tools
+            .completion_replies
+            .lock()
+            .expect("JavaScript completion replies poisoned");
+        let pending = replies.get_mut(&id).ok_or("Expired terminal completion")?;
+        pending.callback = callback.clone();
+        pending.stop = stop;
+    }
     tools
         .family
         .requests
@@ -380,15 +550,59 @@ pub(super) async fn propose(
             request,
         ))
         .map_err(|_| "Terminal completion reader closed")?;
-    let final_output = receive
-        .await
-        .map_err(|_| "Terminal completion cancelled")??;
+    let received = receive.await.map_err(|_| "Terminal completion cancelled");
+    if let Some(callback) = &callback {
+        {
+            let replies = tools
+                .completion_replies
+                .lock()
+                .expect("JavaScript completion replies poisoned");
+            if replies
+                .get(&id)
+                .is_some_and(|pending| pending.sender.is_closed())
+                && !callback.entered.load(Ordering::Acquire)
+            {
+                callback.release();
+            }
+        }
+        if received.is_err() {
+            tools.retire_terminal_callback(id);
+        }
+        callback.wait().await;
+        tools
+            .completion_replies
+            .lock()
+            .expect("JavaScript completion replies poisoned")
+            .remove(&id);
+    }
+    let decision = received??;
     if !tools.current_completion_owner(input.thread_store.level_id())
         || !tools.admits_generation(&catalog.generation)
     {
         return Err("Expired terminal tool generation".into());
     }
-    Ok(Some(ToolCompletionDecision::Accept { final_output }))
+    match decision {
+        ReplyValue::Accept(final_output) => {
+            Ok(Some(ToolCompletionDecision::Accept { final_output }))
+        }
+        ReplyValue::Continue(feedback) => {
+            if let Some(turn) = input.turn_store.get::<crate::turn_settlement::Turn>() {
+                let mut proposal = turn
+                    .tool_proposal
+                    .lock()
+                    .expect("terminal proposal poisoned");
+                if proposal
+                    .as_ref()
+                    .is_some_and(|proposal| proposal.request_id == id)
+                {
+                    proposal.take();
+                }
+            }
+            Ok(Some(ToolCompletionDecision::Continue {
+                feedback: Some(feedback),
+            }))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -402,7 +616,7 @@ mod tests {
         json!({"thread":"root","instance":null,"turn_id":"turn","generation":"0",
             "request_id":"17","native_step":"step"})
     }
-    fn pending(tools: &PythonTools) -> oneshot::Receiver<std::result::Result<Value, String>> {
+    fn pending(tools: &PythonTools) -> oneshot::Receiver<std::result::Result<ReplyValue, String>> {
         let (sender, receive) = oneshot::channel();
         tools.completion_replies.lock().unwrap().insert(
             17,
@@ -421,6 +635,8 @@ mod tests {
                 generation: tools.snapshot(),
                 step: "step".into(),
                 sender,
+                callback: None,
+                stop: None,
             },
         );
         receive
@@ -469,7 +685,10 @@ mod tests {
             .unwrap()
             .generation = source.generation.clone();
         assert!(tools.reply_tool_completion(reply(value)).unwrap());
-        assert_eq!(receive.await.unwrap().unwrap(), json!("accepted"));
+        assert_eq!(
+            receive.await.unwrap().unwrap(),
+            ReplyValue::Accept(json!("accepted"))
+        );
         assert_eq!(tools.snapshot().id, 0);
     }
 
@@ -523,6 +742,7 @@ mod tests {
         .unwrap();
         let output: ResponseItem = serde_json::from_value(json!({"type":"function_call_output", "call_id":"call", "output":"settled after hooks"})).unwrap();
         let input = || ToolCompletionInput {
+            continuation_count: 0,
             turn_id: "turn",
             model: "fixture-model",
             call: &call,
@@ -723,7 +943,10 @@ mod tests {
                 .reply_tool_completion(reply(accepted.clone()))
                 .unwrap()
         );
-        assert_eq!(receive.await.unwrap().unwrap(), Value::Null);
+        assert_eq!(
+            receive.await.unwrap().unwrap(),
+            ReplyValue::Accept(Value::Null)
+        );
         assert!(!tools.reply_tool_completion(reply(accepted)).unwrap());
     }
 

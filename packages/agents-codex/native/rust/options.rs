@@ -206,6 +206,8 @@ impl ThreadInstructionsProvider for ThreadInstructions {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThreadOptions {
+    #[serde(rename = "_context_callbacks")]
+    context_callbacks: crate::python_tools::ContextCallbacks,
     #[serde(rename = "_agent_profiles")]
     pub(crate) agent_profiles: Option<crate::agent_profiles::OpeningProfiles>,
     #[serde(rename = "_sdk_resume_thread_id")]
@@ -349,6 +351,7 @@ impl ThreadOptions {
         let source = merged(base_config, self.config)?;
         let configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
         let mut options = StartThreadOptions::new(configuration);
+        options.thread_extension_init.insert(self.context_callbacks);
         options
             .thread_extension_init
             .insert(codex_core::BufferedResponsesPreference(

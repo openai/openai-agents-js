@@ -2628,6 +2628,68 @@ impl NativeThread {
         owner.reply_step(&thread, response).map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_compaction")]
+    pub fn _reply_compaction(&self, response_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::context_callbacks::CompactionReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner.reply_compaction(response).map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_model_context")]
+    pub fn _reply_model_context(&self, response_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::context_callbacks::ContextReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner.reply_model_context(response).map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_natural_completion")]
+    pub fn _reply_natural_completion(&self, response_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::context_callbacks::CompletionReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner
+            .reply_natural_completion(response)
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_replace_tools")]
     pub async fn _replace_tools(
         &self,

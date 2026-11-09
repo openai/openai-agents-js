@@ -52,6 +52,7 @@ function fixture(
         _signal?: AbortSignal,
       ) => admit(),
     ),
+    _voiceFunctionTools: vi.fn((tools: readonly unknown[]) => tools),
     _prepareRealtimeMcp: vi.fn(async () => {}),
     _realtimeFunctionTools: vi.fn(async (_tools: readonly unknown[]) => ({
       tools: [],
@@ -2909,4 +2910,110 @@ it('retires exact pending approvals but retains in-flight decisions until their 
     await deciding.catch(() => {});
     await peer.owner.close();
   }
+});
+
+it.each(['count', 'schema', 'aggregate'] as const)(
+  'bounds hosted catalog allocation before schema copies (%s)',
+  async (mode) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const events = peer.owner.events();
+    await events.next();
+    const minimal = { name: 'x', input_schema: {} };
+    const tools =
+      mode === 'count'
+        ? Array.from({ length: 1025 }, () => minimal)
+        : mode === 'schema'
+          ? [{ name: 'large', input_schema: { enum: Array(8192).fill('') } }]
+          : Array.from({ length: 1024 }, () => minimal);
+    const list = () =>
+      peer.payload({
+        HostedMcpToolsListed: {
+          item_id: 'catalog',
+          server_label: 'docs',
+          tools,
+        },
+      });
+    if (mode === 'aggregate') {
+      list();
+      list();
+      list();
+    }
+    list();
+    await expect(events.next()).rejects.toThrow(/catalog|buffer budget/);
+    await peer.owner.close();
+  },
+);
+
+it('releases hosted catalog allocation when its event is consumed', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  for (let i = 0; i < 8; i++) {
+    peer.payload({
+      HostedMcpToolsListed: {
+        item_id: 'catalog',
+        server_label: 'docs',
+        tools: Array.from({ length: 1024 }, () => ({
+          name: 'x',
+          input_schema: {},
+        })),
+      },
+    });
+    expect((await events.next()).value?.type).toBe('hosted_mcp_tools_listed');
+  }
+  await peer.owner.close();
+});
+
+it.each(['single', 'aggregate'] as const)(
+  'bounds structured hosted errors before copying or serializing them (%s)',
+  async (mode) => {
+    const peer = fixture();
+    await peer.owner._start();
+    const events = peer.owner.events();
+    await events.next();
+    const error = Array.from(
+      { length: mode === 'single' ? 33_000 : 2048 },
+      () => ({}),
+    );
+    for (let i = 0; i < (mode === 'single' ? 1 : 4); i++)
+      peer.payload({
+        HostedMcpCallCompleted: {
+          item_id: `error-${i}`,
+          server_label: 'docs',
+          tool_name: 'search',
+          arguments: '{}',
+          error,
+        },
+      });
+    await expect(events.next()).rejects.toThrow(/buffer|budget/);
+    await peer.owner.close();
+  },
+);
+
+it('preserves bounded structured hosted errors and releases their queue charge', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const events = peer.owner.events();
+  await events.next();
+  const error = {
+    details: Array.from({ length: 2048 }, () => ({ code: 'unavailable' })),
+  };
+  for (let i = 0; i < 8; i++) {
+    peer.payload({
+      HostedMcpCallCompleted: {
+        item_id: `error-${i}`,
+        server_label: 'docs',
+        tool_name: 'search',
+        arguments: '{}',
+        error,
+      },
+    });
+    expect((await events.next()).value).toMatchObject({
+      type: 'hosted_mcp_call_completed',
+      error,
+    });
+  }
+  await peer.owner.close();
 });

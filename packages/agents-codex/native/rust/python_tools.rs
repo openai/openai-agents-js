@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, Config, Feature, StartThreadOptions, ThreadManager};
@@ -41,6 +41,9 @@ mod schema_fidelity;
 #[path = "terminal_completion.rs"]
 mod terminal_completion;
 pub(crate) use terminal_completion::{CompletionReply, TerminalProposal, TerminalSlots};
+
+#[path = "context_callbacks.rs"]
+pub(crate) mod context_callbacks;
 
 #[path = "prepared_requests.rs"]
 pub(crate) mod prepared_requests;
@@ -193,6 +196,14 @@ struct PendingCall {
 
 pub(crate) struct ChildStepSelection;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ContextCallbacks {
+    pub(crate) before_compact: bool,
+    pub(crate) transform_context: bool,
+    pub(crate) before_complete: bool,
+}
+
 #[derive(Clone)]
 struct InheritedProfileSource {
     receipt: codex_extension_api::AgentProfileReceipt,
@@ -218,6 +229,8 @@ pub struct PythonTools {
     instance: Option<String>,
     pub(crate) inherit_children: bool,
     child_before_step: bool,
+    context_callbacks: ContextCallbacks,
+    context_control: OnceLock<Weak<crate::native_interception::Control>>,
     manual: Mutex<ManualLedger>,
     selection: Mutex<Option<ActiveSelection>>,
     step_replies: Mutex<HashMap<u64, PendingStep>>,
@@ -403,6 +416,29 @@ pub fn checkpoint_specs(specs: &[DynamicToolSpec]) -> Result<Value> {
     Ok(value)
 }
 
+fn preparation_callback_claim(
+    callback: &Arc<CallbackRelease>,
+    operation: &str,
+    closed: bool,
+    cancelled: bool,
+) -> bool {
+    match operation {
+        "enter" => {
+            !closed
+                && !cancelled
+                && !callback.cancelled.load(Ordering::Acquire)
+                && !callback.released.load(Ordering::Acquire)
+                && callback
+                    .entered
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+        }
+        "cancelled" => cancelled || callback.cancelled.load(Ordering::Acquire),
+        "release" => callback.release(),
+        _ => false,
+    }
+}
+
 impl PythonTools {
     fn preparation_callback_operation(
         self: &Arc<Self>,
@@ -432,7 +468,8 @@ impl PythonTools {
         };
         let mut replies = owner.step_replies.lock().expect("Step replies poisoned");
         let Some(pending) = replies.get_mut(&id) else {
-            return false;
+            drop(replies);
+            return owner.terminal_callback_operation(id, receipt, operation);
         };
         let Some(callback) = pending
             .callback
@@ -441,34 +478,17 @@ impl PythonTools {
         else {
             return false;
         };
-        match operation {
-            "enter" => {
-                if pending.reply.is_closed()
-                    || pending
-                        .source_cancellation
-                        .as_ref()
-                        .is_some_and(|token| token.is_cancelled())
-                    || callback.cancelled.load(Ordering::Acquire)
-                    || callback.released.load(Ordering::Acquire)
-                {
-                    return false;
-                }
-                callback
-                    .entered
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            }
-            "cancelled" => {
-                callback.cancelled.load(Ordering::Acquire)
-                    || pending
-                        .source_cancellation
-                        .as_ref()
-                        .is_some_and(|token| token.is_cancelled())
-            }
-            "release" => callback.release(),
-            _ => false,
-        }
+        preparation_callback_claim(
+            callback,
+            operation,
+            pending.reply.is_closed(),
+            pending
+                .source_cancellation
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled()),
+        )
     }
+
     fn cancel_step_callback(&self, turn: &str, callback: &Arc<CallbackRelease>) {
         if !callback.cancelled.swap(true, Ordering::AcqRel) {
             let mut notice =
@@ -530,6 +550,7 @@ impl PythonTools {
                 replies.remove(&id);
             }
         }
+        self.finish_terminal_callbacks(turn, cancel).await;
     }
 
     pub(crate) fn callback_operation(
@@ -1141,6 +1162,11 @@ impl PythonTools {
                 .thread_extension_init
                 .get::<ChildStepSelection>()
                 .is_some(),
+            context_control: OnceLock::new(),
+            context_callbacks: startup
+                .thread_extension_init
+                .get::<ContextCallbacks>()
+                .map_or_else(ContextCallbacks::default, |flags| *flags),
             manual: Mutex::new(ManualLedger::default()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
@@ -1223,6 +1249,8 @@ impl PythonTools {
             instance: Some(instance),
             inherit_children: parent.inherit_children,
             child_before_step: parent.child_before_step,
+            context_control: OnceLock::new(),
+            context_callbacks: parent.context_callbacks,
             manual: Mutex::new(parent.child_manual_ledger()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
@@ -1874,6 +1902,15 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
                     }
                 }
             }
+            if let (Some(control), Some(tools)) = (
+                input
+                    .thread_store
+                    .get::<crate::native_interception::Control>(),
+                input.thread_store.get::<PythonTools>(),
+            ) {
+                control.bind_context_tools(&tools);
+                let _ = tools.context_control.set(Arc::downgrade(&control));
+            }
         })
     }
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
@@ -1961,12 +1998,12 @@ struct PendingStep {
     turn: String,
     generation: u64,
     allowed: Vec<ToolName>,
-    reply: oneshot::Sender<Option<Vec<ToolName>>>,
+    reply: context_callbacks::PreparationReply,
 }
-fn closed_step_sender() -> oneshot::Sender<Option<Vec<ToolName>>> {
+fn closed_step_sender() -> context_callbacks::PreparationReply {
     let (sender, receiver) = oneshot::channel();
     drop(receiver);
-    sender
+    context_callbacks::PreparationReply::Selection(sender)
 }
 fn take_pending_step(replies: &mut HashMap<u64, PendingStep>, id: u64) -> Option<PendingStep> {
     let pending = replies.remove(&id)?;
@@ -2157,7 +2194,13 @@ impl PythonTools {
             && self.resolve_generation(pending.generation).is_some()
             && !pending.reply.is_closed()
             && if let Some(cancellation) = &pending.source_cancellation {
-                active.is_none() && !cancellation.is_cancelled()
+                !cancellation.is_cancelled()
+                    && (active.is_none()
+                        || (!pending.reply.is_selection()
+                            && active.is_some_and(|active| {
+                                active.turn == pending.turn
+                                    && active.generation.id == pending.operation_generation
+                            })))
             } else {
                 active.is_some_and(|active| {
                     active.turn == pending.turn
@@ -2197,7 +2240,8 @@ impl PythonTools {
                 .lock()
                 .expect("JavaScript step replies poisoned");
             if !replies.get(&id).is_some_and(|pending| {
-                self.step_matches(owner, &response, active.as_ref(), pending)
+                pending.reply.is_selection()
+                    && self.step_matches(owner, &response, active.as_ref(), pending)
             }) {
                 return Ok(false);
             }
@@ -2241,14 +2285,21 @@ impl PythonTools {
 
     pub(crate) fn reply_step(&self, owner: &str, response: StepReply) -> Result<()> {
         let id = response.request_id.parse::<u64>()?;
-        let pending = take_pending_step(
-            &mut self
+        let pending = {
+            let mut replies = self
                 .step_replies
                 .lock()
-                .expect("JavaScript step replies poisoned"),
-            id,
-        )
-        .ok_or_else(|| anyhow::anyhow!("Expired step selection"))?;
+                .expect("JavaScript step replies poisoned");
+            // A legacy selection reply must never consume another callback kind.
+            ensure!(
+                !replies
+                    .get(&id)
+                    .is_some_and(|pending| !pending.reply.is_selection()),
+                "Invalid selection reply kind"
+            );
+            take_pending_step(&mut replies, id)
+                .ok_or_else(|| anyhow::anyhow!("Expired step selection"))?
+        };
         // Taking the sender consumes this receipt even when validation fails.
         ensure!(
             response.thread == owner
@@ -2297,7 +2348,10 @@ impl PythonTools {
             validate_names(names, &pending.allowed)?;
         }
         let names = names.map(|names| expand_step_helpers(names, &pending.allowed));
-        Ok(pending.reply.send(names).is_ok())
+        let context_callbacks::PreparationReply::Selection(reply) = pending.reply else {
+            anyhow::bail!("Invalid selection reply kind");
+        };
+        Ok(reply.send(names).is_ok())
     }
 }
 
@@ -2872,7 +2926,7 @@ impl ToolContributor for PythonContributor {
                                 .map_or(generation.id, |active| active.generation.id),
                             generation: generation.id,
                             allowed: allowed.clone(),
-                            reply,
+                            reply: context_callbacks::PreparationReply::Selection(reply),
                         },
                     );
             }
@@ -3198,6 +3252,21 @@ impl ToolLifecycleContributor for PythonContributor {
 }
 
 impl TurnLifecycleContributor for PythonContributor {
+    fn before_turn_complete<'a>(
+        &'a self,
+        input: codex_extension_api::TurnCompletionInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+        Box::pin(async move {
+            let Some(tools) = input.thread_store.get::<PythonTools>() else {
+                return Ok(None);
+            };
+            tools
+                .before_complete(input)
+                .await
+                .map_err(|_| "Completion callback failed".to_owned())
+        })
+    }
+
     fn propose_tool_completion<'a>(
         &'a self,
         input: codex_extension_api::ToolCompletionInput<'a>,
@@ -3554,6 +3623,8 @@ mod pending_tests {
             instance: None,
             inherit_children: true,
             child_before_step: false,
+            context_control: OnceLock::new(),
+            context_callbacks: ContextCallbacks::default(),
             manual: Mutex::default(),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
@@ -4151,7 +4222,7 @@ mod pending_tests {
                 turn: "turn".into(),
                 generation: 0,
                 allowed: vec![tools.snapshot().entries[0].name.clone()],
-                reply,
+                reply: context_callbacks::PreparationReply::Selection(reply),
             },
         );
         receive
@@ -4283,7 +4354,7 @@ mod pending_tests {
                 turn: "child-turn".into(),
                 generation: 0,
                 allowed: vec![ToolName::plain("decision")],
-                reply,
+                reply: context_callbacks::PreparationReply::Selection(reply),
             },
         );
         let mut response = StepReply {
@@ -4981,7 +5052,7 @@ mod pending_tests {
                     turn: "next".into(),
                     generation: 0,
                     allowed: vec![tools.snapshot().entries[0].name.clone()],
-                    reply,
+                    reply: context_callbacks::PreparationReply::Selection(reply),
                 },
             );
             (receive, 8)

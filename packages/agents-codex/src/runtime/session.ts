@@ -1,3 +1,9 @@
+import {
+  captureCompletionDecision,
+  type BeforeComplete,
+  type BeforeCompact,
+  type ContextTransform,
+} from './model-callbacks';
 import { isDeepStrictEqual } from 'node:util';
 import {
   managedCallInfo,
@@ -276,6 +282,10 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  beforeComplete?: BeforeComplete<any>;
+  beforeCompact?: BeforeCompact<any>;
+  transformContext?: ContextTransform<any>;
+  contextTransformPurpose?: 'turn' | 'output_repair';
   /** @internal Detached fresh-opening data; removed before Session construction. */
   initialMessages?: readonly import('./initial-messages').InitialMessage[];
   maxFunctionConcurrency?: number;
@@ -290,6 +300,7 @@ export interface SessionOptions {
       readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
     }) => void,
     parentTrace?: TraceContext,
+    transformContext?: ContextTransform<any>,
   ) => Promise<Session<string>>;
   applicationAgent?: import('./public-agent').Agent<any, any>;
   /** @internal Sealed live declarations; excluded from persisted options. */
@@ -1146,6 +1157,58 @@ export class Session<OutputT = string, Context = unknown> {
     await this.mutate(() => this.promoteMcp(undefined));
   }
 
+  private capturedVoiceTool(
+    tool: SessionTool,
+    catalog: ToolCatalog,
+    declarationCatalog: ToolCatalog,
+  ): SessionTool | undefined {
+    let admitted = declarationCatalog.tools.find(
+      (candidate) =>
+        toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
+    );
+    if (!admitted && !this.options.agentGraph && catalog === this.catalog) {
+      const identity = toolIdentity(tool);
+      if (
+        this.admittedDeclarations
+          .get(JSON.stringify([identity.namespace, identity.name]))
+          ?.has(toolDeclarationIdentity(tool))
+      )
+        admitted = tool;
+    }
+    const captured = catalog.tools.find((candidate) => {
+      if (toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool))
+        return true;
+      if (!admitted) return false;
+      const original = toolIdentity(admitted);
+      const current = toolIdentity(candidate);
+      return (
+        original.name === current.name &&
+        original.namespace === current.namespace
+      );
+    });
+    return captured;
+  }
+
+  /** @internal Normalize voice declarations immediately before strict submission. */
+  _voiceFunctionTools(tools: readonly ToolSelector[]): readonly ToolSelector[] {
+    const declarationCatalog = this.options.agentGraph
+      ? this.profileRuntimes.get(this.profileCurrent!.profile_id)!.catalog
+      : this.openingCatalog;
+    return tools.map((tool) => {
+      if (tool.kind === 'tool_ref' || tool.kind === 'manual') return tool;
+      const captured = this.capturedVoiceTool(
+        tool,
+        this.catalog,
+        declarationCatalog,
+      );
+      if (!captured || captured.kind === 'manual')
+        throw new TypeError(
+          'Voice tool was not admitted in the current Agent catalog',
+        );
+      return captured;
+    });
+  }
+
   /** @internal Select only sealed captured functions; Core rechecks its atomic source catalog. */
   async _realtimeFunctionTools(
     tools: readonly FunctionTool<any>[],
@@ -1169,6 +1232,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     const generation = profileInteger(raw.catalog_generation);
     let catalog: ToolCatalog | undefined;
+    let declarationCatalog = this.openingCatalog;
     if (this.options.agentGraph) {
       const receipt = checkProfileReceipt(
         'profile_receipt' in raw ? raw.profile_receipt : undefined,
@@ -1177,6 +1241,9 @@ export class Session<OutputT = string, Context = unknown> {
       catalog = this.profileCatalogs.get(
         this.profileKey(receipt.profile_id, generation),
       );
+      declarationCatalog = this.profileRuntimes.get(
+        receipt.profile_id,
+      )!.catalog;
     } else if (
       ('profile_receipt' in raw && raw.profile_receipt != null) ||
       generation !== this.catalog.generation.toString()
@@ -1200,9 +1267,10 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TypeError(
           'Realtime tools must be captured function declarations',
         );
-      const captured = catalog.tools.find(
-        (candidate) =>
-          toolDeclarationIdentity(candidate) === toolDeclarationIdentity(tool),
+      const captured = this.capturedVoiceTool(
+        tool,
+        catalog,
+        declarationCatalog,
       );
       if (!captured || captured.kind === 'manual') {
         if (allowMissing) continue;
@@ -3366,7 +3434,15 @@ export class Session<OutputT = string, Context = unknown> {
         !submissions.get(entry.run)!.outputOverride
       )
         submissions.get(entry.run)!.output = this.defaultOutput;
-      this.dispatchStart(entry.run, entry.parts);
+      try {
+        this.dispatchStart(entry.run, entry.parts);
+      } catch (error) {
+        entry.run.controller.abort(error);
+        entry.run.accepted.reject(error);
+        entry.run.completion.reject(error);
+        this.finishObservation(entry.run);
+        this.drainPending();
+      }
     }
   }
 
@@ -4131,6 +4207,17 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         result = await afterSubmissionRetirement(run, run.completion.promise);
       } catch (error) {
+        const next = submissions.get(run)?.next;
+        if (next && error instanceof OutputValidationError) {
+          try {
+            await afterSubmissionRetirement(next, next.accepted.promise);
+          } catch (admissionError) {
+            if (continuationWasSuperseded(admissionError)) throw error;
+            throw admissionError;
+          }
+          run = next;
+          continue;
+        }
         const previous = submissions.get(run)?.previous;
         if (previous && continuationWasSuperseded(error))
           return afterSubmissionRetirement(
@@ -4322,7 +4409,8 @@ export class Session<OutputT = string, Context = unknown> {
               names: selection.names ?? null,
               before_step:
                 (this.options.agentGraph !== undefined &&
-                  selection.names !== undefined) ||
+                  (selection.names !== undefined ||
+                    selection.prepareRequest !== undefined)) ||
                 selection.beforeStep !== undefined ||
                 selection.maxModelSteps !== undefined ||
                 selection.budget !== undefined,
@@ -4611,6 +4699,19 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TurnAborted('Output repair stopped');
     };
     check(true);
+    // Output overrides do not identify the producing Agent. Capture Core's
+    // committed profile before opening any correction Session.
+    const source = this.options.agentGraph
+      ? checkProfileReceipt(
+          parseProfileReceipt(await this.#native._active_agent_profile()),
+          this.options.agentGraph,
+        )
+      : undefined;
+    check(true);
+    const transformContext = source
+      ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+          .transformContext
+      : this.options.transformContext;
     const history = await this.#readHistory();
     check(true);
     const settingsEvent = history
@@ -4656,6 +4757,7 @@ export class Session<OutputT = string, Context = unknown> {
           repair.opening = owner;
         },
         run.parentTrace,
+        transformContext,
       );
       repair.opening = undefined;
       const correction = repair.session;
@@ -4830,6 +4932,12 @@ export class Session<OutputT = string, Context = unknown> {
       }
       return;
     }
+    const retained =
+      unsampledSteering &&
+      this.threadOptions._managed_instructions === true &&
+      run.id !== null &&
+      submission !== undefined;
+    let predecessorValidationError: OutputValidationError | undefined;
     if (
       error === undefined &&
       submission?.output.parse &&
@@ -4852,14 +4960,13 @@ export class Session<OutputT = string, Context = unknown> {
           this.startOutputRepair(run, output);
           return;
         }
-        error = cause;
+        // A retained successor owns final validation. Keep this exact failure
+        // for the typed fallback if native refuses that continuation.
+        if (retained && cause instanceof OutputValidationError)
+          predecessorValidationError = cause;
+        else error = cause;
       }
     }
-    const retained =
-      unsampledSteering &&
-      this.threadOptions._managed_instructions === true &&
-      run.id !== null &&
-      submission !== undefined;
     if (error === undefined && retained) {
       // Abort listeners run synchronously and may cancel or close this Session.
       // Keep the original owner until they finish, then recheck admission.
@@ -4937,10 +5044,10 @@ export class Session<OutputT = string, Context = unknown> {
                 : 'failed',
           errorType: error instanceof Error ? error.name : null,
         });
-      this.drainPending();
-      if (error !== undefined) {
-        run.accepted.reject(error);
-        run.completion.reject(error);
+      const settlementError = error ?? predecessorValidationError;
+      if (settlementError !== undefined) {
+        run.accepted.reject(settlementError);
+        run.completion.reject(settlementError);
       } else if (run.id !== null) {
         run.completion.resolve({
           finalOutput: output,
@@ -4954,6 +5061,7 @@ export class Session<OutputT = string, Context = unknown> {
         run.accepted.reject(missing);
         run.completion.reject(missing);
       }
+      this.drainPending();
     } finally {
       this.finishObservation(run);
     }
@@ -5553,6 +5661,15 @@ export class Session<OutputT = string, Context = unknown> {
         void this.proposeToolCompletion(owner, event, native).catch(() => {});
       return;
     }
+    if (
+      msg.type === '_sdk_before_compact' ||
+      msg.type === '_sdk_transform_context' ||
+      msg.type === '_sdk_before_complete'
+    ) {
+      if (this.current(owner))
+        void this.modelCallback(owner, event, native).catch(() => {});
+      return;
+    }
     if (msg.type === '_sdk_select_step') {
       if (this.current(owner))
         void this.selectChildStep(owner, event, native).catch(() => {});
@@ -5875,6 +5992,15 @@ export class Session<OutputT = string, Context = unknown> {
     if (kind === '_sdk_prepare_request') {
       if (msg.turn_id !== run.id) return;
       this.track(run, this.prepareRequest(run, event));
+      return;
+    }
+    if (
+      kind === '_sdk_before_compact' ||
+      kind === '_sdk_transform_context' ||
+      kind === '_sdk_before_complete'
+    ) {
+      if (msg.turn_id === run.id)
+        void this.modelCallback(run, event, this.#native).catch(() => {});
       return;
     }
     if (kind === '_sdk_select_step') {
@@ -6219,132 +6345,368 @@ export class Session<OutputT = string, Context = unknown> {
   private proposeToolCompletion(
     owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
+    nativeSource: NativeThread,
+  ): Promise<void> {
+    const buffered = this.callbackEvents.get(event);
+    if (buffered) buffered.buffered = true;
+    return this.trackOwnedCallback(owner, () =>
+      this.ownCallbackDelivery(event, owner, async (signal, delivery) => {
+        const native = delivery?.native ?? nativeSource;
+        const msg = event.msg;
+        const child = !(owner instanceof NativeTurn);
+        const turnId = child ? owner.turnId : owner.id;
+        const receipt = {
+          thread: child ? owner.childId : this.id,
+          instance: child ? owner.incarnation : null,
+          turn_id: turnId,
+          generation: msg.generation,
+          request_id: msg.request_id,
+          native_step: msg.native_step,
+        };
+        let replied = false;
+        let capturedCatalog: ToolCatalog | undefined;
+        const reject = () => {
+          if (replied) return;
+          replied = true;
+          try {
+            native._reply_tool_completion(
+              encode({
+                ...receipt,
+                error: 'Terminal output conversion failed',
+              }),
+            );
+          } catch {
+            /* This exact native waiter may already have retired. */
+          }
+        };
+        const check = () => {
+          signal.throwIfAborted();
+          if (
+            !this.current(owner) ||
+            native !== this.#native ||
+            msg.thread !== receipt.thread ||
+            msg.turn_id !== turnId ||
+            (child && msg.instance !== owner.incarnation) ||
+            !capturedCatalog ||
+            this.sourceCatalog(msg, z.string().parse(msg.generation)) !==
+              capturedCatalog ||
+            !native._check_tool_completion(encode(receipt))
+          )
+            throw new NativeError('Expired terminal proposal owner');
+        };
+        const abort = () => {
+          this.discardTerminalValue(owner);
+          reject();
+        };
+        signal.addEventListener('abort', abort, { once: true });
+        try {
+          this.terminalProposals.delete(owner);
+          capturedCatalog = this.sourceCatalog(
+            msg,
+            z.string().parse(msg.generation),
+          );
+          check();
+          const slot = z.number().int().nonnegative().safe().parse(msg.slot);
+          const declaration = capturedCatalog.tools[slot];
+          const identity = z
+            .object({ name: z.string(), namespace: z.string().nullable() })
+            .parse(msg.tool);
+          if (
+            !declaration ||
+            declaration.kind === 'manual' ||
+            !declaration.finishTurn ||
+            declaration.name !== identity.name ||
+            (toolNamespace(declaration) ?? 'functions') !==
+              (identity.namespace ?? 'functions')
+          )
+            throw new NativeError(
+              'Terminal proposal does not match its captured declaration',
+            );
+          const attempt = {
+            requestId: z.string().parse(msg.request_id),
+            nativeStep: z.string().parse(msg.native_step),
+            generation: capturedCatalog.generation,
+            callId: z.string().parse(msg.call_id),
+            name: declaration.name,
+            namespace: toolNamespace(declaration),
+          };
+          this.terminalProposals.set(owner, { ...attempt, accepted: false });
+          let output: PreparedOutput = this.childOutput;
+          if (!child) {
+            const submission = submissions.get(owner)!;
+            const source = this.messageProfile(msg);
+            output = submission.output;
+            if (
+              source &&
+              !submission.outputOverride &&
+              !submission.compaction &&
+              !submission.review &&
+              !submission.realtimeTools
+            )
+              output = this.profileRuntimes.get(source.profile_id)!.output;
+          }
+          const converted = parseToolCompletion(output, msg.output);
+          check();
+          const beforeComplete = this.sourceModelCallbacks(msg).beforeComplete;
+          if (beforeComplete) {
+            const model = z.string().parse(msg.model);
+            const returned = beforeComplete(
+              Object.freeze({
+                context: this.options.context,
+                text: null,
+                sessionId: this.id,
+                turnId: z.string().parse(turnId),
+                ...(child ? { subagentId: owner.childId } : {}),
+                model,
+                continuationCount: z
+                  .number()
+                  .int()
+                  .nonnegative()
+                  .safe()
+                  .parse(msg.continuation_count),
+                signal,
+                finalOutput: losslessJsonValueSchema.parse(converted.json),
+                toolCall: Object.freeze({
+                  ...terminalCallInfo(
+                    {
+                      sessionId: this.id,
+                      turnId: z.string().parse(turnId),
+                      childId: child ? owner.childId : null,
+                      childIncarnation: child ? owner.incarnation : null,
+                    },
+                    {
+                      call_id: z.string().parse(msg.call_id),
+                      name: declaration.name,
+                      namespace: toolNamespace(declaration),
+                      final_output: converted.json,
+                    },
+                  ),
+                  model,
+                }),
+              }),
+            );
+            const settled =
+              returned &&
+              typeof (returned as Promise<unknown>).then === 'function'
+                ? await returned
+                : returned;
+            const decision = captureCompletionDecision(settled);
+            check();
+            if (decision) {
+              this.discardTerminalValue(owner);
+              const data =
+                decision.action === 'stop'
+                  ? { stop: true }
+                  : { continue: decision.instructions };
+              if (
+                !native._reply_tool_completion(encode({ ...receipt, ...data }))
+              )
+                throw new NativeError('Terminal decision reply expired');
+              replied = true;
+              return;
+            }
+          }
+          check();
+          this.terminalProposals.set(owner, {
+            ...attempt,
+            accepted: true,
+            value: converted.value,
+            json: converted.json,
+          });
+          check();
+          if (
+            !native._reply_tool_completion(
+              JSON.stringify(
+                losslessJsonValueSchema.parse({
+                  ...receipt,
+                  final_output: converted.json,
+                }),
+              ),
+            )
+          )
+            throw new NativeError('Terminal proposal reply expired');
+          replied = true;
+        } catch (error) {
+          this.discardTerminalValue(owner);
+          reject();
+          // Preserve the owning OutputValidationError for result and stream settlement.
+          owner.failure ??= error;
+          throw error;
+        } finally {
+          signal.removeEventListener('abort', abort);
+          if (!replied) reject();
+        }
+      }),
+    );
+  }
+
+  private sourceModelCallbacks(message: Record<string, unknown>): {
+    beforeComplete?: BeforeComplete<any>;
+    beforeCompact?: BeforeCompact<any>;
+    transformContext?: ContextTransform<any>;
+  } {
+    const source = this.messageProfile(message);
+    return source
+      ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+      : this.options;
+  }
+
+  private modelCallback(
+    owner: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
     native: NativeThread,
   ): Promise<void> {
-    return this.trackOwnedCallback(owner, async () => {
-      const msg = event.msg;
-      const child = !(owner instanceof NativeTurn);
-      const turnId = child ? owner.turnId : owner.id;
-      const receipt = {
-        thread: child ? owner.childId : this.id,
-        instance: child ? owner.incarnation : null,
-        turn_id: turnId,
-        generation: msg.generation,
-        request_id: msg.request_id,
-        native_step: msg.native_step,
-      };
-      const signal = owner.controller.signal;
-      let replied = false;
-      let capturedCatalog: ToolCatalog | undefined;
-      const reject = () => {
-        if (replied) return;
-        replied = true;
-        try {
-          native._reply_tool_completion(
-            encode({ ...receipt, error: 'Terminal output conversion failed' }),
+    const buffered = this.callbackEvents.get(event);
+    if (buffered) buffered.buffered = true;
+    return this.trackOwnedCallback(
+      owner,
+      () =>
+        this.ownCallbackDelivery(event, owner, async (signal, delivery) => {
+          const sourceNative = delivery?.native ?? native;
+          const msg = event.msg;
+          const child = !(owner instanceof NativeTurn);
+          const receipt = {
+            thread: child ? owner.childId : this.id,
+            instance: child ? owner.incarnation : null,
+            turn_id: child ? owner.turnId : owner.id,
+            generation: msg.generation,
+            request_id: msg.request_id,
+          };
+          const contextEdit = msg.type === '_sdk_transform_context';
+          const compact = msg.type === '_sdk_before_compact';
+          const sourceCatalog = this.sourceCatalog(
+            msg,
+            z.string().parse(msg.generation),
           );
-        } catch {
-          /* This exact native waiter may already have retired. */
-        }
-      };
-      const check = () => {
-        signal.throwIfAborted();
-        if (
-          !this.current(owner) ||
-          native !== this.#native ||
-          msg.thread !== receipt.thread ||
-          msg.turn_id !== turnId ||
-          (child && msg.instance !== owner.incarnation) ||
-          !capturedCatalog ||
-          this.sourceCatalog(msg, z.string().parse(msg.generation)) !==
-            capturedCatalog ||
-          !native._check_tool_completion(encode(receipt))
-        )
-          throw new NativeError('Expired terminal proposal owner');
-      };
-      const abort = () => {
-        this.discardTerminalValue(owner);
-        reject();
-      };
-      signal.addEventListener('abort', abort, { once: true });
-      try {
-        this.terminalProposals.delete(owner);
-        capturedCatalog = this.sourceCatalog(
-          msg,
-          z.string().parse(msg.generation),
-        );
-        check();
-        const slot = z.number().int().nonnegative().safe().parse(msg.slot);
-        const declaration = capturedCatalog.tools[slot];
-        const identity = z
-          .object({ name: z.string(), namespace: z.string().nullable() })
-          .parse(msg.tool);
-        if (
-          !declaration ||
-          declaration.kind === 'manual' ||
-          !declaration.finishTurn ||
-          declaration.name !== identity.name ||
-          (toolNamespace(declaration) ?? 'functions') !==
-            (identity.namespace ?? 'functions')
-        )
-          throw new NativeError(
-            'Terminal proposal does not match its captured declaration',
-          );
-        const attempt = {
-          requestId: z.string().parse(msg.request_id),
-          nativeStep: z.string().parse(msg.native_step),
-          generation: capturedCatalog.generation,
-          callId: z.string().parse(msg.call_id),
-          name: declaration.name,
-          namespace: toolNamespace(declaration),
-        };
-        this.terminalProposals.set(owner, { ...attempt, accepted: false });
-        let output: PreparedOutput = this.childOutput;
-        if (!child) {
-          const submission = submissions.get(owner)!;
-          const source = this.messageProfile(msg);
-          output = submission.output;
-          if (
-            source &&
-            !submission.outputOverride &&
-            !submission.compaction &&
-            !submission.review &&
-            !submission.realtimeTools
-          )
-            output = this.profileRuntimes.get(source.profile_id)!.output;
-        }
-        const converted = parseToolCompletion(output, msg.output);
-        check();
-        this.terminalProposals.set(owner, {
-          ...attempt,
-          accepted: true,
-          value: converted.value,
-          json: converted.json,
-        });
-        check();
-        if (
-          !native._reply_tool_completion(
-            JSON.stringify(
-              losslessJsonValueSchema.parse({
-                ...receipt,
-                final_output: converted.json,
-              }),
-            ),
-          )
-        )
-          throw new NativeError('Terminal proposal reply expired');
-        replied = true;
-      } catch (error) {
-        this.discardTerminalValue(owner);
-        reject();
-        // Preserve the owning OutputValidationError for result and stream settlement.
-        owner.failure ??= error;
-        throw error;
-      } finally {
-        signal.removeEventListener('abort', abort);
-        if (!replied) reject();
-      }
-    });
+          const { beforeComplete, beforeCompact, transformContext } =
+            this.sourceModelCallbacks(msg);
+          let replied = false;
+          const reply = (result: Record<string, unknown>, failed = false) => {
+            if (replied) return;
+            const envelope = { owner: receipt, ...result, failed };
+            const data = contextEdit
+              ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
+              : encode(envelope);
+            if (compact) sourceNative._reply_compaction(data);
+            else if (contextEdit) sourceNative._reply_model_context(data);
+            else sourceNative._reply_natural_completion(data);
+            replied = true;
+          };
+          const reject = () => {
+            if (replied) return;
+            try {
+              reply({}, true);
+            } catch {
+              /* The exact native waiter may have retired. */
+            }
+          };
+          const check = () => {
+            signal.throwIfAborted();
+            if (
+              !this.current(owner) ||
+              sourceNative !== this.#native ||
+              msg.thread !== receipt.thread ||
+              msg.turn_id !== receipt.turn_id ||
+              this.sourceCatalog(msg, msg.generation as string) !==
+                sourceCatalog ||
+              !sourceNative._check_step(encode(receipt))
+            )
+              throw new NativeError('Expired model callback owner');
+          };
+          signal.addEventListener('abort', reject, { once: true });
+          try {
+            check();
+            const base = {
+              context: this.options.context,
+              sessionId: this.id,
+              turnId: z.string().parse(receipt.turn_id),
+              ...(child ? { subagentId: owner.childId } : {}),
+              model: z.string().parse(msg.model),
+              signal,
+            };
+            if (compact) {
+              const items = z.array(losslessJsonObjectSchema).parse(msg.items);
+              const returned = beforeCompact?.(
+                Object.freeze({
+                  ...base,
+                  items: Object.freeze(items),
+                  requestId: z.string().parse(msg.request_id),
+                  automatic: z.boolean().parse(msg.automatic),
+                }),
+              );
+              const settled =
+                returned &&
+                typeof (returned as Promise<unknown>).then === 'function'
+                  ? await returned
+                  : returned;
+              if (
+                settled !== undefined &&
+                (typeof settled !== 'string' || !settled.trim())
+              )
+                throw new TypeError(
+                  'beforeCompact must return a nonempty summary or undefined',
+                );
+              check();
+              reply(settled === undefined ? {} : { summary: settled });
+            } else if (contextEdit) {
+              const items = z.array(losslessJsonObjectSchema).parse(msg.items);
+              const returned = transformContext?.(
+                Object.freeze({
+                  ...base,
+                  items: Object.freeze(items),
+                  requestId: z.string().parse(msg.request_id),
+                  purpose:
+                    msg.compaction === true
+                      ? 'compaction'
+                      : (this.options.contextTransformPurpose ?? 'turn'),
+                }),
+              );
+              const settled =
+                returned &&
+                typeof (returned as Promise<unknown>).then === 'function'
+                  ? await returned
+                  : returned;
+              const replacement =
+                settled === undefined
+                  ? undefined
+                  : z.array(losslessJsonObjectSchema).parse(settled);
+              check();
+              reply(replacement === undefined ? {} : { items: replacement });
+            } else {
+              const returned = beforeComplete?.(
+                Object.freeze({
+                  ...base,
+                  text: z.string().nullable().parse(msg.text),
+                  continuationCount: z
+                    .number()
+                    .int()
+                    .nonnegative()
+                    .safe()
+                    .parse(msg.continuation_count),
+                }),
+              );
+              const settled =
+                returned &&
+                typeof (returned as Promise<unknown>).then === 'function'
+                  ? await returned
+                  : returned;
+              const decision = captureCompletionDecision(settled);
+              check();
+              reply(decision === undefined ? {} : { decision });
+            }
+          } catch (error) {
+            reject();
+            owner.failure ??= error;
+            throw error;
+          } finally {
+            signal.removeEventListener('abort', reject);
+            if (!replied) reject();
+          }
+        }),
+      typeof event.msg.tracing_context === 'string'
+        ? event.msg.tracing_context
+        : undefined,
+    );
   }
 
   private prepareRequest(run: NativeTurn, event: NativeEvent): Promise<void> {
@@ -8620,17 +8982,22 @@ export class Session<OutputT = string, Context = unknown> {
         return;
       }
       for (const server of next.mcp) {
-        if (
-          !this.hasOperationMcp &&
-          !(server instanceof HttpMCP && server.activation === 'operation')
-        )
-          continue;
         const opening = this.openingMcpTools.find(
           (original) => original.name === server.name,
         );
         if (
           !opening ||
-          server.tools.some((raw) => !opening.tools.includes(raw)) ||
+          server.tools.some((raw) => !opening.tools.includes(raw))
+        )
+          throw new TypeError(
+            'Updated MCP raw identities and activation must match Session opening',
+          );
+        if (
+          !this.hasOperationMcp &&
+          !(server instanceof HttpMCP && server.activation === 'operation')
+        )
+          continue;
+        if (
           (opening instanceof HttpMCP &&
             opening.activation === 'operation' &&
             !(server instanceof HttpMCP)) ||

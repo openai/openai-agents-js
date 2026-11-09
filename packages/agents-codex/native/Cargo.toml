@@ -79,8 +79,8 @@ codex-execpolicy = { path = ".upstream/reviewed-codex/codex-rs/execpolicy" }
 codex-utils-path-uri = { path = ".upstream/reviewed-codex/codex-rs/utils/path-uri" }
 futures-core = "0.3"
 futures-util = "0.3"
-napi = { version = "3", default-features = false, features = ["napi8", "async-runtime", "serde-json", "dyn-symbols"] }
-napi-derive = "3"
+napi = { version = "3.16.1", default-features = false, features = ["napi8", "async-runtime", "serde-json", "dyn-symbols"] }
+napi-derive = "3.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_ignored = "0.1.14"

@@ -1,5 +1,9 @@
 import type { Session } from '../runtime/public-agent';
-import type { OperationOptions, Turn } from '../runtime/session';
+import type {
+  OperationOptions,
+  Turn,
+  Session as CoreSession,
+} from '../runtime/session';
 
 export interface VoiceWorkflow {
   run(
@@ -106,7 +110,11 @@ export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
         active.controller.signal.throwIfAborted();
         return this.tools === undefined
           ? this.session.submit(transcription)
-          : this.session.submit(transcription, { tools: this.tools });
+          : this.session.submit(transcription, {
+              tools: (this.session as CoreSession<string>)._voiceFunctionTools(
+                this.tools,
+              ),
+            });
       });
       const turn = await beforeGraphClose(active, active.submission);
       active.controller.signal.throwIfAborted();

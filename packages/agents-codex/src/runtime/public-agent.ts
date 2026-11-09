@@ -1,3 +1,8 @@
+import type {
+  BeforeCompact,
+  BeforeComplete,
+  ContextTransform,
+} from './model-callbacks';
 import {
   captureProfileRuntimes,
   profileRoster,
@@ -89,6 +94,16 @@ export type AgentOptions<Context = undefined, Output = string> = {
   name?: string;
   model?: string;
   modelSettings?: ModelSettings;
+  /** Await completion policy before accepting a root or native child result.
+   * Feedback continues the same turn. Stop affects only its issuing owner.
+   * Cancellation and close join entered callbacks. Do not mutate this Session.
+   */
+  beforeComplete?: BeforeComplete<Context>;
+  beforeCompact?: BeforeCompact<Context>;
+  /** Replace detached model input for turns, children, compaction and output repair.
+   * Transport retries reuse its result; canonical history and tool authority stay intact.
+   */
+  transformContext?: ContextTransform<Context>;
   provider?: NativeProvider;
   tools?: readonly Tool<Context>[];
   /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
@@ -196,6 +211,10 @@ interface CapturedOpening {
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
   readonly maxFunctionConcurrency?: number;
+  readonly contextTransformPurpose: 'turn' | 'output_repair';
+  readonly beforeComplete?: BeforeComplete<any>;
+  readonly beforeCompact?: BeforeCompact<any>;
+  readonly transformContext?: ContextTransform<any>;
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
@@ -284,6 +303,9 @@ export class Agent<Context = undefined, Output = string> {
   name?: string;
   model?: string;
   modelSettings?: ModelSettings;
+  beforeComplete?: BeforeComplete<Context>;
+  beforeCompact?: BeforeCompact<Context>;
+  transformContext?: ContextTransform<Context>;
   provider: NativeProvider;
   outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
@@ -302,6 +324,16 @@ export class Agent<Context = undefined, Output = string> {
       options.modelSettings === undefined
         ? undefined
         : captureModelSettings(options.modelSettings);
+    for (const name of [
+      'beforeComplete',
+      'beforeCompact',
+      'transformContext',
+    ] as const)
+      if (options[name] !== undefined && typeof options[name] !== 'function')
+        throw new TypeError(`${name} must be callable`);
+    this.beforeComplete = options.beforeComplete;
+    this.beforeCompact = options.beforeCompact;
+    this.transformContext = options.transformContext;
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
       implicitProviders.set(this.provider, new WeakSet([this]));
@@ -543,6 +575,25 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const beforeComplete = opening
+      ? opening.beforeComplete
+      : this.beforeComplete;
+    const beforeCompact = opening ? opening.beforeCompact : this.beforeCompact;
+    const transformContext = opening
+      ? opening.transformContext
+      : this.transformContext;
+    const contextTransformPurpose =
+      opening?.contextTransformPurpose ??
+      ((options as OwnedSessionOptions<Context>)[correctionOpening]
+        ? 'output_repair'
+        : 'turn');
+    for (const [name, callback] of [
+      ['beforeComplete', beforeComplete],
+      ['beforeCompact', beforeCompact],
+      ['transformContext', transformContext],
+    ] as const)
+      if (callback !== undefined && typeof callback !== 'function')
+        throw new TypeError(`${name} must be a function`);
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -678,6 +729,9 @@ export class Agent<Context = undefined, Output = string> {
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
               programmaticToolCalling,
+              beforeComplete,
+              beforeCompact,
+              transformContext,
             } as AgentOptions<Context, Output>),
           )
         : undefined;
@@ -914,15 +968,7 @@ export class Agent<Context = undefined, Output = string> {
           )
             selected.push(identity);
       }
-    const selectedPairs = new Set<string>();
-    for (const identity of selected) {
-      const key = JSON.stringify([identity.namespace, identity.name]);
-      if (selectedPairs.has(key))
-        throw new TypeError(
-          `Duplicate selected tool ${identity.namespace}.${identity.name}`,
-        );
-      selectedPairs.add(key);
-    }
+    assertUniqueToolIdentities(selected);
     const config: JsonObject = {
       include_permissions_instructions: !!environment,
       include_environment_context: !!environment,
@@ -1114,6 +1160,26 @@ export class Agent<Context = undefined, Output = string> {
                 },
               }
             : {}),
+          _context_callbacks: {
+            before_compact:
+              beforeCompact !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.before_compact === true,
+              ) ??
+                false),
+            before_complete:
+              beforeComplete !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.before_complete === true,
+              ) ??
+                false),
+            transform_context:
+              transformContext !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.transform_context === true,
+              ) ??
+                false),
+          },
           _hosted_tools: hostedToolSpecs(declarations.hostedTools),
           ...(provider.responseMode === 'buffered'
             ? { _buffered_responses: true }
@@ -1158,6 +1224,10 @@ export class Agent<Context = undefined, Output = string> {
         context,
         onInteraction: options.onInteraction,
         applicationAgent: this,
+        beforeComplete,
+        beforeCompact,
+        transformContext,
+        contextTransformPurpose,
         agentGraph: completedGraph,
         output,
         restoredOutput: selection?.restoredOutput,
@@ -1176,6 +1246,7 @@ export class Agent<Context = undefined, Output = string> {
           modelSettings,
           retainOpening,
           parentTrace,
+          repairTransformContext,
         ) => {
           // Native fallback may read a later environment key; repair needs this snapshot.
           if (apiKey === undefined)
@@ -1187,6 +1258,14 @@ export class Agent<Context = undefined, Output = string> {
             model,
             modelSettings,
             tools: [],
+            transformContext:
+              repairTransformContext === undefined
+                ? undefined
+                : (request) =>
+                    repairTransformContext({
+                      ...request,
+                      context: context as Context,
+                    }),
           });
           const correctionOptions: OwnedSessionOptions<undefined> = {
             parentTrace,
@@ -1217,6 +1296,10 @@ export class Agent<Context = undefined, Output = string> {
           context,
           onInteraction: options.onInteraction,
           maxFunctionConcurrency,
+          contextTransformPurpose,
+          beforeComplete,
+          beforeCompact,
+          transformContext,
         });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
@@ -1276,6 +1359,20 @@ export class Agent<Context = undefined, Output = string> {
   }
 }
 
+function assertUniqueToolIdentities(
+  identities: readonly { namespace: string; name: string }[],
+): void {
+  const selectedPairs = new Set<string>();
+  for (const identity of identities) {
+    const key = JSON.stringify([identity.namespace, identity.name]);
+    if (selectedPairs.has(key))
+      throw new TypeError(
+        `Duplicate selected tool ${identity.namespace}.${identity.name}`,
+      );
+    selectedPairs.add(key);
+  }
+}
+
 /** @internal Resolve a graph synchronously, before any provider/native acquisition. */
 export function captureAgentProfiles<Context, Output>(
   root: Agent<Context, Output>,
@@ -1312,8 +1409,13 @@ export function captureAgentProfiles<Context, Output>(
   const profiles: CapturedAgentProfile<Context, Output>[] = [];
   for (const agent of agents) {
     const source = agent === root ? rootDeclaration : agent;
-    const plain = splitToolDeclarations(source.tools).tools;
+    const declarations = splitToolDeclarations(source.tools);
+    const plain = declarations.tools;
     const capturedTools = captureTools(plain).tools;
+    assertUniqueToolIdentities([
+      ...capturedTools.map(toolIdentity),
+      ...mcpToolNames(declarations.mcp),
+    ]);
     const replacements = new Map(
       plain.map((tool, index) => [tool, capturedTools[index]]),
     );
@@ -1333,6 +1435,9 @@ export function captureAgentProfiles<Context, Output>(
       ),
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
+      beforeComplete: source.beforeComplete,
+      beforeCompact: source.beforeCompact,
+      transformContext: source.transformContext,
     } as AgentOptions<Context, Output>);
     if (wireIdentity(declaration) !== output)
       throw new TypeError(
