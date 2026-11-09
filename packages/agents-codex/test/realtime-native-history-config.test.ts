@@ -1073,3 +1073,155 @@ nativeIt(
   },
   25000,
 );
+
+nativeIt.each(['rows', 'parts'] as const)(
+  'bounds cumulative decoded image work across repeated URI %s before history writes',
+  async (placement) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Keep existing context on oversized edit plans.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const original = userItem('original', 'Preserve this message.');
+        await observe(peer, seen, original);
+        peer.retrievals.set('original', original);
+        const part = { type: 'input_image', image_url: solidPngImage(4096) };
+        const images =
+          placement === 'rows'
+            ? [
+                {
+                  id: 'image-one',
+                  type: 'message',
+                  role: 'user',
+                  content: [part],
+                },
+                {
+                  id: 'image-two',
+                  type: 'message',
+                  role: 'user',
+                  content: [part],
+                },
+              ]
+            : [
+                {
+                  id: 'image-parts',
+                  type: 'message',
+                  role: 'user',
+                  content: [part, part],
+                },
+              ];
+        const after = peer.frames.length;
+        await expect(voice.updateHistory(images)).rejects.toThrow();
+        expect(
+          peer.frames
+            .slice(after)
+            .filter((frame) =>
+              ['conversation.item.delete', 'conversation.item.create'].includes(
+                frame.type,
+              ),
+            ),
+        ).toEqual([]);
+        await expect(voice.updateHistory([original])).resolves.toBeUndefined();
+        expect(
+          peer.frames
+            .slice(after)
+            .filter((frame) =>
+              ['conversation.item.delete', 'conversation.item.create'].includes(
+                frame.type,
+              ),
+            ),
+        ).toEqual([]);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'retains an unchanged opaque provider image while rebuilding text around it',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Preserve opaque retained provider media.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const image = {
+          id: 'opaque-image',
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_image', image_url: 'data:image/png;base64,AQID' },
+          ],
+        };
+        const text = userItem(
+          'movable-text',
+          'Move this before the retained image.',
+        );
+        for (const item of [image, text]) {
+          await observe(peer, seen, item);
+          peer.retrievals.set(item.id as string, item);
+        }
+        const after = peer.frames.length;
+        const updating = voice.updateHistory([text, image]);
+        void updating.catch(() => {});
+        const deletion = await peer.frame('conversation.item.delete', after);
+        expect(deletion.item_id).toBe(text.id);
+        peer.send({ type: 'conversation.item.deleted', item_id: text.id });
+        const creation = await peer.frame('conversation.item.create', after);
+        expect(creation.item).toEqual(text);
+        expect(creation.previous_item_id).toBe('root');
+        peer.send({
+          type: 'conversation.item.added',
+          item: text,
+          previous_item_id: null,
+        });
+        await updating;
+        expect(
+          peer.frames
+            .slice(after)
+            .filter((frame) => frame.type === 'conversation.item.delete')
+            .map((frame) => frame.item_id),
+        ).toEqual([text.id]);
+        expect(
+          peer.frames
+            .slice(after)
+            .filter((frame) => frame.type === 'conversation.item.create')
+            .map((frame) => frame.item.id),
+        ).toEqual([text.id]);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  25000,
+);
