@@ -259,6 +259,8 @@ export interface TraceEvent {
  */
 export interface TraceProcessor {
   onEvent(event: TraceEvent): void | Promise<void>;
+  /** Optional native-drain batch callback; acknowledgement waits for completion. */
+  onEvents?(events: readonly TraceEvent[]): void | Promise<void>;
 }
 
 /** Private credential storage; headers never enter span records or saved state. */
@@ -351,14 +353,32 @@ async function route(
         while (processors.size) {
           const batch = JSON.parse(await native.drain_trace_events(128));
           let failures = 0;
+          const routes = new Map<string, TraceEvent[]>();
           for (const event of batch.events as TraceEvent[]) {
+            const snapshot = freezeSnapshot(event);
             for (const id of event.processor_ids) {
+              const events = routes.get(id) ?? [];
+              events.push(snapshot);
+              routes.set(id, events);
+            }
+          }
+          for (const [id, events] of routes) {
+            const processor = processors.get(id);
+            if (typeof processor?.onEvents === 'function') {
               try {
                 await suppressTracing(() =>
-                  processors.get(id)?.onEvent(freezeSnapshot(event)),
+                  processor.onEvents!(Object.freeze(events)),
                 );
               } catch {
-                failures++;
+                failures += events.length;
+              }
+            } else {
+              for (const event of events) {
+                try {
+                  await suppressTracing(() => processor?.onEvent(event));
+                } catch {
+                  failures++;
+                }
               }
             }
           }

@@ -95,3 +95,25 @@ it('supports dynamic responders, queue mutation and explicit raw-event identifie
     expect(peer.requests).toHaveLength(2);
   });
 });
+
+it('retains dynamic assertion failures locally without sending them to the provider', async () => {
+  const failure = new Error('synthetic-private-callback-error');
+  await expect(
+    withScriptedResponses(
+      [
+        async () => {
+          throw failure;
+        },
+      ],
+      async (peer) => {
+        const response = await fetch(`${peer.provider.baseUrl}/responses`, {
+          method: 'POST',
+          body: JSON.stringify({ input: 'synthetic' }),
+        });
+        expect(response.status).toBe(500);
+        expect(await response.text()).not.toContain(failure.message);
+        throw new Error('provider failure caused by HTTP500');
+      },
+    ),
+  ).rejects.toBe(failure);
+});

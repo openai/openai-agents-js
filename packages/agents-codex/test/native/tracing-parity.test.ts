@@ -193,3 +193,32 @@ it('qualifies native capture controls, OpenAI export and dynamic fixtures', asyn
     await rm(directory, { recursive: true, force: true });
   }
 }, 60_000);
+
+it('releases the collector and preserves a child fixture primary failure', async () => {
+  await expect(
+    execute(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(fixtures, 'tracing-capture-controls-child.ts'),
+        '--fail-after-configure',
+      ],
+      { timeout: 5000 },
+    ),
+  ).rejects.toMatchObject({
+    code: 1,
+    stderr: expect.stringContaining('synthetic fixture primary failure'),
+  });
+}, 10000);
+
+it('batches real native spans while keeping flush acknowledgement after HTTP delivery', async () => {
+  const result = await execute(
+    process.execPath,
+    ['--import', 'tsx', join(fixtures, 'tracing-export-batch-child.ts')],
+    { timeout: 15000, maxBuffer: 2_097_152 },
+  );
+  expect(result.stdout).toContain(
+    'PASS native batch export and acknowledgement',
+  );
+}, 20000);

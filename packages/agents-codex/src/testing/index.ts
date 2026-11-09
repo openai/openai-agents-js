@@ -206,6 +206,7 @@ class Peer implements ScriptedResponses {
   private next = 0;
   private unexpected = 0;
   private failures = 0;
+  private callbackFailure: { error: unknown } | undefined;
   private readonly sockets = new Set<Socket>();
   private readonly reads = new Set<BodyRead>();
   private readonly handlers = new Set<Promise<void>>();
@@ -277,7 +278,11 @@ class Peer implements ScriptedResponses {
     }
     return undefined;
   }
+  primaryError(fallback: unknown): unknown {
+    return this.callbackFailure ? this.callbackFailure.error : fallback;
+  }
   assertExhausted(): void {
+    if (this.callbackFailure) throw this.callbackFailure.error;
     const remaining = this.responses.length - this.next;
     if (remaining || this.unexpected || this.failures)
       throw new AssertionError({
@@ -342,10 +347,16 @@ class Peer implements ScriptedResponses {
         return;
       }
       this.next++;
-      const selected =
-        typeof script === 'function'
-          ? responseSchema.parse(await script(structuredClone(body)))
-          : script;
+      let selected: ScriptedResult;
+      try {
+        selected =
+          typeof script === 'function'
+            ? responseSchema.parse(await script(structuredClone(body)))
+            : script;
+      } catch (error) {
+        this.callbackFailure ??= { error };
+        throw error;
+      }
       if ('kind' in selected) {
         const error = selected;
         response
@@ -471,16 +482,17 @@ export async function withScriptedResponses<T>(
     await peer.start();
     result = await run(peer);
   } catch (error) {
+    const primary = peer.primaryError(error);
     try {
       await peer.close();
     } catch (cleanupError) {
       throw new AggregateError(
-        [error, cleanupError],
+        [primary, cleanupError],
         'Scripted scope and cleanup failed',
-        { cause: error },
+        { cause: primary },
       );
     }
-    throw error;
+    throw primary;
   }
   await peer.close();
   peer.assertExhausted();

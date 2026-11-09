@@ -12,18 +12,43 @@ function spanId(value: string | null): string | null {
   return value === null ? null : `span_${value.padStart(24, '0')}`;
 }
 
+type TraceDescriptor = Record<string, unknown>;
+interface TraceState {
+  descriptor: TraceDescriptor;
+  root: boolean;
+  deliveredTo?: number;
+}
+function descriptor(event: TraceEvent): TraceDescriptor {
+  const metadata = Object.fromEntries(
+    Object.entries(event.attributes)
+      .filter(([key]) => key.startsWith('sdk.metadata.'))
+      .map(([key, value]) => [key.slice('sdk.metadata.'.length), value]),
+  );
+  return {
+    object: 'trace',
+    id: `trace_${event.trace_id}`,
+    workflow_name: event.name,
+    group_id: event.attributes['sdk.group_id'] ?? null,
+    metadata: { ...metadata, runtime: 'native' },
+  };
+}
+
 /**
  * Serialize real native lifecycle records for the OpenAI traces-ingest API.
  * Register in configure({ traceProcessors: [...] }); native flush barriers wait
  * for delivery. Native spans appear as custom spans with their native attributes,
- * parent IDs and exact timestamps. No Classic runtime or separate queue is used.
+ * parent IDs and exact timestamps. Native-drain batches share one HTTP request;
+ * acknowledgement waits for delivery. No Classic runtime or separate queue is used.
+ * Up to1024 recent root descriptors survive failed deliveries. Metadata preserves
+ * native flattened values; runtime is reserved for the native marker.
  */
 export class OpenAITraceExporter implements TraceProcessor {
   readonly #endpoint: URL;
   readonly #headers: Record<string, string>;
   readonly #timeoutMs: number;
   readonly #maxRetries: number;
-  readonly #traces = new Set<string>();
+  readonly #traces = new Map<string, TraceState>();
+  #credentialRevision = 0;
 
   constructor(options: {
     apiKey: string;
@@ -85,38 +110,68 @@ export class OpenAITraceExporter implements TraceProcessor {
   setApiKey(apiKey: string): void {
     this.validateHeader(apiKey);
     this.#headers.Authorization = `Bearer ${apiKey}`;
+    this.#credentialRevision++;
   }
   async onEvent(event: TraceEvent): Promise<void> {
-    const traceId = `trace_${event.trace_id}`;
-    const records: Record<string, unknown>[] = [];
-    if (!this.#traces.has(traceId))
-      records.push({
-        object: 'trace',
-        id: traceId,
-        workflow_name: event.name,
-        group_id: event.attributes['sdk.group_id'] ?? null,
-        metadata: { runtime: 'native' },
-      });
-    if (event.lifecycle === 'end')
-      records.push({
-        object: 'trace.span',
-        id: spanId(event.span_id),
-        trace_id: traceId,
-        parent_id: spanId(event.parent_span_id),
-        started_at: timestamp(event.start_time_unix_nanos),
-        ended_at: timestamp(event.end_time_unix_nanos!),
-        span_data: { type: 'custom', name: event.name, data: event.attributes },
-        error:
-          event.outcome === 'error'
-            ? {
-                message: 'Native span failed',
-                data: { outcome: event.outcome },
-              }
-            : null,
-      });
+    await this.onEvents([event]);
+  }
+  /** Deliver one native-owned batch before its records can be acknowledged. */
+  async onEvents(events: readonly TraceEvent[]): Promise<void> {
+    const revision = this.#credentialRevision;
+    const headers = { ...this.#headers };
+    const states = new Map<string, TraceState>();
+    for (const event of events) {
+      const traceId = `trace_${event.trace_id}`;
+      const root = event.parent_span_id === null;
+      let state = this.#traces.get(traceId);
+      if (!state) {
+        state = { descriptor: descriptor(event), root };
+      } else if (root && !state.root) {
+        state.descriptor = descriptor(event);
+        state.root = true;
+        state.deliveredTo = undefined;
+      }
+      this.#traces.delete(traceId);
+      this.#traces.set(traceId, state);
+      if (this.#traces.size > 1024)
+        this.#traces.delete(this.#traces.keys().next().value!);
+      states.set(traceId, state);
+    }
+    const pending = [...states]
+      .filter(([, state]) => state.deliveredTo !== revision)
+      .map(([traceId, state]) => ({
+        traceId,
+        state,
+        descriptor: state.descriptor,
+      }));
+    const records: Record<string, unknown>[] = pending.map(
+      (item) => item.descriptor,
+    );
+    for (const event of events) {
+      if (event.lifecycle === 'end')
+        records.push({
+          object: 'trace.span',
+          id: spanId(event.span_id),
+          trace_id: `trace_${event.trace_id}`,
+          parent_id: spanId(event.parent_span_id),
+          started_at: timestamp(event.start_time_unix_nanos),
+          ended_at: timestamp(event.end_time_unix_nanos!),
+          span_data: {
+            type: 'custom',
+            name: event.name,
+            data: event.attributes,
+          },
+          error:
+            event.outcome === 'error'
+              ? {
+                  message: 'Native span failed',
+                  data: { outcome: event.outcome },
+                }
+              : null,
+        });
+    }
     if (!records.length) return;
     const body = JSON.stringify({ data: records });
-    const headers = { ...this.#headers };
     const signal = AbortSignal.timeout(this.#timeoutMs);
     for (
       let attempt = 0;
@@ -134,10 +189,15 @@ export class OpenAITraceExporter implements TraceProcessor {
         });
         await response.body?.cancel();
         if (response.ok) {
-          this.#traces.delete(traceId);
-          this.#traces.add(traceId);
-          if (this.#traces.size > 1024)
-            this.#traces.delete(this.#traces.values().next().value!);
+          if (this.#credentialRevision === revision) {
+            for (const item of pending) {
+              if (
+                this.#traces.get(item.traceId) === item.state &&
+                item.state.descriptor === item.descriptor
+              )
+                item.state.deliveredTo = revision;
+            }
+          }
           return;
         }
         retry = response.status >= 500;
