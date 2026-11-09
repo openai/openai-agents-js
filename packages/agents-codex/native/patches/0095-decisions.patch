@@ -902,18 +902,6 @@ index 5188fd100baacaf82d395bec206d581bf3d8333c..087659a5a38b151acb92eb74d71691e3
  pub(crate) mod endpoint;
  pub(crate) mod error;
  pub(crate) mod files;
-diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
-index 87d8f1b39f06547160ff9258ed45a1221df45d1b..2e061540f27bb190606bbbce3c4c01fef7773084 100644
---- a/codex-rs/codex-api/src/sse/responses.rs
-+++ b/codex-rs/codex-api/src/sse/responses.rs
-@@ -324,6 +324,7 @@ impl ResponsesStreamEvent {
-                 .and_then(|r| r.get("id"))
-                 .and_then(Value::as_str)
-                 .map(str::to_owned),
-+            upstream_request_id: None,
-             status,
-             incomplete_reason,
-             usage,
 diff --git a/codex-rs/core/src/auxiliary_response.rs b/codex-rs/core/src/auxiliary_response.rs
 new file mode 100644
 index 0000000000000000000000000000000000000000..579b75b4c1f38a5eff6b8a23fc66aeb859236739
