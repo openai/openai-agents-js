@@ -8,6 +8,12 @@ import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
 
 export interface NativeProviderOptions {
+  /** Native retry budgets; Core caps each at 100. Zero disables retries. */
+  requestMaxRetries?: number;
+  streamMaxRetries?: number;
+  /** Native phase timeouts in integer milliseconds; zero expires immediately. */
+  streamIdleTimeoutMs?: number;
+  websocketConnectTimeoutMs?: number;
   baseUrl?: string;
   apiKey?: string;
   supportsWebsockets?: boolean;
@@ -60,6 +66,16 @@ export class NativeProvider {
   }>;
 
   constructor(options: NativeProviderOptions = {}) {
+    for (const key of [
+      'requestMaxRetries',
+      'streamMaxRetries',
+      'streamIdleTimeoutMs',
+      'websocketConnectTimeoutMs',
+    ] as const) {
+      const value = options[key];
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+        throw new TypeError(`${key} must be a nonnegative safe integer`);
+    }
     for (const key of ['baseUrl', 'apiKey'] as const) {
       if (
         options[key] !== undefined &&
@@ -152,6 +168,14 @@ export class NativeProvider {
           requires_openai_auth: true,
           supports_websockets: websocketsAllowed,
           ...this.#routing,
+          ...Object.fromEntries(
+            Object.entries({
+              request_max_retries: options.requestMaxRetries,
+              stream_max_retries: options.streamMaxRetries,
+              stream_idle_timeout_ms: options.streamIdleTimeoutMs,
+              websocket_connect_timeout_ms: options.websocketConnectTimeoutMs,
+            }).filter(([, value]) => value !== undefined),
+          ),
         },
       },
       async open() {
