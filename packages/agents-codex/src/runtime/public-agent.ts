@@ -287,6 +287,8 @@ export type Session<Output = string, Context = any> = Pick<
   | 'checklist'
   | 'update'
   | 'interrupt'
+  | 'historySnapshot'
+  | 'transactHistory'
   | 'modelContext'
   | 'compact'
   | 'executeCommand'

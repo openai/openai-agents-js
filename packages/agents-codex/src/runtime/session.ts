@@ -222,6 +222,7 @@ import {
   type RepairTurnWire,
   type RepairItemWire,
   type RecordedTurn,
+  type CanonicalHistorySnapshot,
 } from './history';
 import type { ThreadOptions } from './options';
 import {
@@ -9701,6 +9702,61 @@ export class Session<OutputT = string, Context = unknown> {
   /** @internal Read the root rollout, including records omitted from Model input. */
   _rootHistory() {
     return this.#readHistory();
+  }
+
+  /** Read canonical input from an idle Session. A limit returns its latest items.
+   * Zero returns only the content revision and full count. Raw audit records
+   * and projected items() are separate views. Core truncation is not reversed. */
+  async historySnapshot(
+    options: { limit?: number } = {},
+  ): Promise<CanonicalHistorySnapshot> {
+    this.checkCallbackOperation('read canonical history from');
+    this.idle('historySnapshot');
+    const { limit } = options;
+    if (
+      limit !== undefined &&
+      (!Number.isSafeInteger(limit) || limit < 0 || limit > 0xffffffff)
+    )
+      throw new RangeError('limit must be a nonnegative 32-bit integer');
+    return this.mutate(async () =>
+      JSON.parse(await this.#native._canonical_history(limit ?? null)),
+    );
+  }
+
+  /** Atomically retain a prefix and replace its suffix with native response items.
+   * Use the entire snapshot revision, keep=total to append, or keep=0 to replace.
+   * Core rejects conflicts and invalid batches before committing. Acknowledged
+   * changes survive canonical restore; old raw audit records remain stored.
+   * Pending work, child graphs and goals require their dedicated APIs. */
+  async transactHistory(options: {
+    expectedRevision: string;
+    keep: number;
+    items?: readonly Record<string, unknown>[];
+  }): Promise<string> {
+    this.checkCallbackOperation('edit canonical history in');
+    this.idle('transactHistory');
+    if (
+      typeof options.expectedRevision !== 'string' ||
+      !options.expectedRevision
+    )
+      throw new TypeError('expectedRevision must be nonempty text');
+    if (
+      !Number.isSafeInteger(options.keep) ||
+      options.keep < 0 ||
+      options.keep > 0xffffffff
+    )
+      throw new RangeError('keep must be a nonnegative 32-bit integer');
+    const captured = JSON.stringify(options.items ?? []);
+    return this.mutate(async () => {
+      const value = JSON.parse(
+        await this.#native._transact_history(
+          options.expectedRevision,
+          options.keep,
+          captured,
+        ),
+      );
+      return value.revision;
+    });
   }
 
   /** Read the settled root model context for use with supplied compaction. */

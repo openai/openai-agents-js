@@ -120,6 +120,12 @@ export class NativeThread {
   /** Negative retirement only. Positive replies require a captured question. */
   _respond_native_question(response_json: string): Promise<void>;
   _read_model_context(): Promise<string>;
+  _canonical_history(limit?: number | null): Promise<string>;
+  _transact_history(
+    expectedRevision: string,
+    keep: number,
+    itemsJson: string,
+  ): Promise<string>;
   _begin_context_change(): Promise<_ContextChange>;
   _application_instructions(): string | null;
   private constructor();

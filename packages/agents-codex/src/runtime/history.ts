@@ -1809,3 +1809,10 @@ export function projectNativeHostedToolItem(
     );
   }
 }
+
+/** Effective canonical response items; raw rollout audit records remain separate. */
+export interface CanonicalHistorySnapshot {
+  readonly revision: string;
+  readonly total: number;
+  readonly items: readonly Record<string, unknown>[];
+}

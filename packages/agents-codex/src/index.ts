@@ -177,6 +177,7 @@ export type {
   ExecutionItem,
   PatchChange,
   RecordedTurn,
+  CanonicalHistorySnapshot,
   Failure,
   RecordedTokenUsage,
   ReceivedTokenUsage,

@@ -379,7 +379,11 @@
     {
       "path": "0097-provider-owned-request-validation.patch",
       "sha256": "43ee308eaad0e9a518ecb1e8c00b80c7ab8151197e6b3c75635a50d1a9d1d495"
+    },
+    {
+      "path": "0170-canonical-history-transactions.patch",
+      "sha256": "09cbf1fb14cf94c476a53f30e6c7061ca329f6b13e686f4981cd2864405ca78d"
     }
   ],
-  "result_tree": "c7782675ee2dd7a63db79dee741e4c677b573c0f"
+  "result_tree": "5fc9a8bc5ceae6b8adf082a2ea4030116527cb0e"
 }
