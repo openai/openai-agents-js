@@ -620,6 +620,7 @@ export type ModelRequest = {
    */
   _internal?: {
     runnerManagedRetry?: boolean;
+    // Undefined when the merged settings supplied no effort before legacy cleanup.
     reasoningEffortImplicit?: boolean;
     tracingParent?: Span<any> | Trace;
     toolNameCollisionPolicy?: 'warn' | 'error';

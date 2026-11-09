@@ -3765,21 +3765,26 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             explicitlyModelSet,
             resolvedModelName,
           );
-    const modelRequestInternal = {
-      reasoningEffortImplicit:
-        implicitModelSettings?.reasoning?.effort !== undefined &&
-        !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
-        !hasExplicitTopLevelReasoningEffort(agentModelSettings),
-      tracingParent:
-        getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
-      toolNameCollisionPolicy: options.toolNameCollisionPolicy ?? 'warn',
-    };
-
     let modelSettings = mergeModelSettings(
       implicitModelSettings,
       this.config.modelSettings,
     );
     modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
+    // Record effort ownership before legacy model cleanup can remove an explicit choice.
+    const hasReasoningEffort =
+      modelSettings.reasoning?.effort !== undefined ||
+      modelSettings.providerData?.reasoning_effort !== undefined;
+    const modelRequestInternal = {
+      reasoningEffortImplicit: hasReasoningEffort
+        ? implicitModelSettings?.reasoning?.effort !== undefined &&
+          !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
+          !hasExplicitTopLevelReasoningEffort(agentModelSettings)
+        : undefined,
+      tracingParent:
+        getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+      toolNameCollisionPolicy: options.toolNameCollisionPolicy ?? 'warn',
+    };
+
     modelSettings = adjustModelSettingsForLegacyModel(
       explicitlyModelSet,
       agentModelSettings ?? implicitModelSettings ?? {},

@@ -120,7 +120,7 @@ export type PreparedModelCall<TContext = UnknownContext> =
     model: Model;
     explicitlyModelSet: boolean;
     modelRequestInternal: {
-      reasoningEffortImplicit: boolean;
+      reasoningEffortImplicit?: boolean;
       tracingParent?: Span<any> | Trace;
       toolNameCollisionPolicy: ToolNameCollisionPolicy;
     };
