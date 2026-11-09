@@ -3,6 +3,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -827,7 +828,11 @@ describe('UnixLocalSandboxClient', () => {
       }),
     );
 
+    const assets = join(session.state.workspaceRootPath, 'assets');
+    await mkdir(join(assets, 'empty'), { recursive: true });
+    await writeFile(join(assets, 'image.png'), ONE_BY_ONE_PNG);
     const archive = await session.persistWorkspace();
+    await rm(assets, { recursive: true });
     await writeFile(
       join(session.state.workspaceRootPath, 'keep.txt'),
       'mutated\n',
@@ -839,6 +844,10 @@ describe('UnixLocalSandboxClient', () => {
 
     await session.hydrateWorkspace(archive);
 
+    expect(await readFile(join(assets, 'image.png'))).toEqual(
+      Buffer.from(ONE_BY_ONE_PNG),
+    );
+    expect(await readdir(join(assets, 'empty'))).toEqual([]);
     await expect(
       readFile(join(session.state.workspaceRootPath, 'keep.txt'), 'utf8'),
     ).resolves.toBe('keep\n');
@@ -852,6 +861,54 @@ describe('UnixLocalSandboxClient', () => {
 
     await session.close();
   });
+
+  it.each([
+    ['invalid file data', [], [{ path: 'bad', data: null }]],
+    ['invalid directory list', 'bad', []],
+    ['escaping directory', ['../outside'], []],
+    ['absolute file path', [], [{ path: '/bad', data: '' }]],
+    ['file with a directory suffix', [], [{ path: 'bad/', data: '' }]],
+    ['file at a directory path', ['incoming/child'], []],
+    [
+      'file below another file',
+      [],
+      [
+        { path: 'incoming!', data: '' },
+        { path: 'incoming/child', data: '' },
+      ],
+    ],
+    [
+      'file at an implicit directory',
+      [],
+      [
+        { path: 'nested/child', data: '' },
+        { path: 'nested', data: '' },
+      ],
+    ],
+  ] as const)(
+    'preserves the workspace on %s',
+    async (_case, directories, files) => {
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+      const session = await client.create(new Manifest());
+      const root = session.state.workspaceRootPath;
+      await mkdir(join(root, 'original'));
+      await writeFile(join(root, 'original', 'note'), 'keep');
+      const archive = JSON.stringify({
+        version: 1,
+        directories,
+        files: [{ path: 'incoming', data: '' }, ...files],
+      });
+
+      await expect(
+        session.hydrateWorkspace(archive, { archiveLimits: null }),
+      ).rejects.toThrow();
+      expect(await readdir(root)).toEqual(['original']);
+      expect(await readFile(join(root, 'original', 'note'), 'utf8')).toBe(
+        'keep',
+      );
+      await session.close();
+    },
+  );
 
   it('rejects local workspace archive hydration over resource limits', async () => {
     const client = new UnixLocalSandboxClient({

@@ -28,7 +28,7 @@ import {
 } from 'node:fs/promises';
 import { constants, type Dirent, type Stats } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Manifest } from '../../manifest';
 import type { WorkspaceArchiveData } from '../../session';
 import { stableJsonStringify } from '../../shared/stableJson';
@@ -458,13 +458,11 @@ export async function restoreWorkspaceArchive(
   const archiveLimits = resolveSandboxArchiveLimits(options.archiveLimits);
   checkWorkspaceArchiveInputBytes(bytes.byteLength, archiveLimits);
 
-  const archive = JSON.parse(
-    new TextDecoder().decode(bytes),
-  ) as WorkspaceArchiveV1;
-  if (archive.version !== 1) {
-    throw new UserError('Unsupported remote snapshot archive version.');
-  }
-  validateWorkspaceArchiveLimits(archive, archiveLimits);
+  const archive = prepareWorkspaceArchive(
+    JSON.parse(new TextDecoder().decode(bytes)),
+    destinationRoot,
+    archiveLimits,
+  );
 
   await mkdir(destinationRoot, { recursive: true });
   await clearDirectory(destinationRoot);
@@ -502,27 +500,80 @@ function checkWorkspaceArchiveInputBytes(
   }
 }
 
-function validateWorkspaceArchiveLimits(
-  archive: WorkspaceArchiveV1,
+function prepareWorkspaceArchive(
+  archive: unknown,
+  destinationRoot: string,
   limits: ReturnType<typeof resolveSandboxArchiveLimits>,
-): void {
-  if (limits == null) {
-    return;
+): Pick<WorkspaceArchiveV1, 'directories' | 'files'> {
+  if (!isRecord(archive) || archive.version !== 1) {
+    throw new UserError('Unsupported remote snapshot archive version.');
+  }
+  if (!Array.isArray(archive.directories) || !Array.isArray(archive.files)) {
+    throw new UserError('Invalid remote snapshot archive members.');
   }
 
+  const memberKinds = new Map<string, 'file' | 'directory'>();
+  const parentSegment =
+    sep === '/' ? /(?:^|\/)\.\.(?:\/|$)/u : /(?:^|[\\/])\.\.(?:[\\/]|$)/u;
   let memberCount = 0;
-  for (const directory of archive.directories) {
+  function memberPath(path: unknown, kind: 'file' | 'directory'): string {
+    if (typeof path !== 'string') {
+      throw new UserError('Invalid remote snapshot archive member path.');
+    }
     memberCount += 1;
-    checkWorkspaceArchiveMemberCount(memberCount, directory, limits);
+    checkWorkspaceArchiveMemberCount(memberCount, path, limits);
+    const destination = join(destinationRoot, path);
+    if (
+      isAbsolute(path) ||
+      path.includes('\0') ||
+      parentSegment.test(path) ||
+      (kind === 'file' && (path.endsWith('/') || path.endsWith(sep))) ||
+      !isHostPathStrictlyWithinRoot(destinationRoot, destination)
+    ) {
+      throw new UserError(`Invalid remote snapshot archive path: ${path}`);
+    }
+
+    // Use the writer's UTF-8 path and a trailing separator to group descendants.
+    const key =
+      Buffer.from(relative(destinationRoot, destination)).toString() + sep;
+    const existing = memberKinds.get(key);
+    if (existing !== undefined && existing !== kind) {
+      throw new UserError(`Conflicting remote snapshot archive path: ${path}`);
+    }
+    memberKinds.set(key, kind);
+    return destination;
   }
 
+  const directories = archive.directories.map((path) =>
+    memberPath(path, 'directory'),
+  );
   let extractedBytes = 0;
-  for (const file of archive.files) {
-    memberCount += 1;
-    checkWorkspaceArchiveMemberCount(memberCount, file.path, limits);
-    extractedBytes += Buffer.byteLength(file.data, 'base64');
-    checkWorkspaceArchiveExtractedBytes(extractedBytes, file.path, limits);
+  const files = archive.files.map((file: unknown) => {
+    if (
+      !isRecord(file) ||
+      typeof file.path !== 'string' ||
+      typeof file.data !== 'string'
+    ) {
+      throw new UserError('Invalid remote snapshot archive file.');
+    }
+    const path = memberPath(file.path, 'file');
+    if (limits?.maxExtractedBytes != null) {
+      extractedBytes += Buffer.byteLength(file.data, 'base64');
+      checkWorkspaceArchiveExtractedBytes(extractedBytes, file.path, limits);
+    }
+    return { path, data: file.data };
+  });
+  // In this order, a file with any descendants is followed by its first descendant.
+  let previousFile: string | undefined;
+  for (const key of [...memberKinds.keys()].sort()) {
+    if (previousFile !== undefined && key.startsWith(previousFile)) {
+      throw new UserError(
+        `Conflicting remote snapshot archive path: ${key.slice(0, -1)}`,
+      );
+    }
+    previousFile = memberKinds.get(key) === 'file' ? key : undefined;
   }
+  return { directories, files };
 }
 
 function checkWorkspaceArchiveMemberCount(
@@ -565,9 +616,8 @@ function checkWorkspaceArchiveExtractedBytes(
 
 async function writeSafeArchiveDirectory(
   destinationRoot: string,
-  relativePath: string,
+  destinationPath: string,
 ): Promise<void> {
-  const destinationPath = safeArchivePath(destinationRoot, relativePath);
   await assertSafeSnapshotDestinationPath(destinationRoot, destinationPath);
   await mkdir(destinationPath, { recursive: true });
   await assertSafeSnapshotDestinationPath(destinationRoot, destinationPath);
@@ -575,10 +625,9 @@ async function writeSafeArchiveDirectory(
 
 async function writeSafeArchiveFile(
   destinationRoot: string,
-  relativePath: string,
+  destinationPath: string,
   base64Data: string,
 ): Promise<void> {
-  const destinationPath = safeArchivePath(destinationRoot, relativePath);
   await assertSafeSnapshotDestinationPath(
     destinationRoot,
     dirname(destinationPath),
@@ -593,19 +642,6 @@ async function writeSafeArchiveFile(
     destinationPath,
     Buffer.from(base64Data, 'base64'),
   );
-}
-
-function safeArchivePath(
-  destinationRoot: string,
-  relativePath: string,
-): string {
-  const destinationPath = join(destinationRoot, relativePath);
-  if (!isHostPathStrictlyWithinRoot(destinationRoot, destinationPath)) {
-    throw new UserError(
-      `Remote snapshot archive path escapes root: ${relativePath}`,
-    );
-  }
-  return destinationPath;
 }
 
 async function replaceDirectoryContents(
