@@ -161,27 +161,18 @@ jobs:
       - name: Build all packages
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm build:ci
-      - name: Check generated declarations
-        if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm -r -F "@openai/*" dist:check
       - name: Check released API against build output
         if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
         run: pnpm api-contract:dist
-      - name: Run linter
-        if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm lint
       - name: Type-check docs scripts
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm docs:scripts:check
-      - name: Compile examples
-        if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm -r build-check
       - name: Run SQLite memory regression tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm --filter memory test:sqlite
-      - name: Run tests
+      - name: Check declarations, types, lint, and tests in parallel
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm test
+        run: pnpm --filter openai-agents-js run --parallel '/^verify:(dist|types|lint|test)$/'
       - name: Check locally published API contract
         if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.node-version == '22' }}
         shell: bash

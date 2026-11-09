@@ -138,8 +138,7 @@ describe('code-change verification policy', () => {
     }
     for (const command of [
       'pnpm docs:scripts:check',
-      'pnpm -r build-check',
-      'pnpm test',
+      "pnpm --filter openai-agents-js run --parallel '/^verify:(dist|types|lint|test)$/'",
       'pnpm test:integration:api-contract',
     ]) {
       const step = workflow
@@ -157,6 +156,21 @@ describe('code-change verification policy', () => {
     }
     expect(workflow).not.toContain('pnpm docs:build');
     expect(workflow).not.toContain('pnpm -F docs-code build-check');
+  });
+
+  it('keeps the four parallel CI checks mapped to their original commands', () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve(rootDir, 'package.json'), 'utf8'),
+    );
+    expect(manifest).toMatchObject({
+      name: 'openai-agents-js',
+      scripts: {
+        'verify:dist': 'pnpm -r -F "@openai/*" dist:check',
+        'verify:types': 'pnpm -r build-check',
+        'verify:lint': 'pnpm lint',
+        'verify:test': 'pnpm test',
+      },
+    });
   });
 
   it('typechecks MDX snippet wiring without widening docs deployment eligibility', () => {
