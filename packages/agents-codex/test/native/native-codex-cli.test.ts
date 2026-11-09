@@ -107,7 +107,7 @@ it.skipIf(process.platform === 'win32')(
 );
 
 it.skipIf(process.platform === 'win32')(
-  'joins the external CLI subprocess when the native turn is cancelled',
+  'joins CLI cancellation and terminates the external subprocess',
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'native-codex-cancel-'));
     roots.push(root);
@@ -155,7 +155,11 @@ it.skipIf(process.platform === 'win32')(
     await turn.cancel();
     await settled;
     const pid = Number(await readFile(pidPath, 'utf8'));
-    expect(() => process.kill(pid, 0)).toThrow();
+    // The SDK joins its stream; OS process exit can follow by an event-loop turn.
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
+      timeout: 2_000,
+      interval: 10,
+    });
     expect(server.requests).toHaveLength(1);
   },
 );
