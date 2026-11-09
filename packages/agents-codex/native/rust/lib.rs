@@ -653,7 +653,7 @@ impl Engine {
             return Ok(false);
         }
         let home = std::path::PathBuf::from(home);
-        if home != current.service_config.codex_home {
+        if home.as_path() != current.service_config.codex_home.as_path() {
             return Err(native_error(
                 "Private Engine home does not match its configuration",
             ));
