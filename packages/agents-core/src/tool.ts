@@ -1743,7 +1743,7 @@ type ToolGuardrailOptions<Context = UnknownContext> = {
  * `errorFunction` to return application-approved details to the model.
  */
 function defaultToolErrorFunction() {
-  return 'An error occurred while running the tool. Please try again.';
+  return 'An error occurred while running the tool.';
 }
 
 function defaultFunctionToolTimeoutErrorMessage(args: {

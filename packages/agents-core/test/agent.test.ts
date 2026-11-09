@@ -786,9 +786,7 @@ describe('Agent', () => {
     expect(tool.description).toEqual('You act as a tool.');
 
     const result1 = await tool.invoke({} as any, 'hey how are you?');
-    expect(result1).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result1).toBe('An error occurred while running the tool.');
     setDefaultModelProvider(new ScriptedModelProvider());
     const result2 = await tool.invoke(
       {} as any,
@@ -820,9 +818,7 @@ describe('Agent', () => {
         JSON.stringify({ value: secret }),
       );
 
-      expect(output).toBe(
-        'An error occurred while running the tool. Please try again.',
-      );
+      expect(output).toBe('An error occurred while running the tool.');
       if (dontLogToolData) {
         expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
       } else {
@@ -1791,9 +1787,7 @@ describe('Agent', () => {
       new RunContext(),
       JSON.stringify({ input: 'hi' }),
     );
-    expect(result).toBe(
-      'An error occurred while running the tool. Please try again.',
-    );
+    expect(result).toBe('An error occurred while running the tool.');
   });
 
   it('includes JSON Schema when includeInputSchema is true', async () => {

@@ -7900,7 +7900,7 @@ describe('executeShellActions', () => {
 
       expect(result).toMatchObject({
         type: 'function_output',
-        output: 'An error occurred while running the tool. Please try again.',
+        output: 'An error occurred while running the tool.',
       });
     });
 
@@ -9764,7 +9764,7 @@ describe('executeShellActions', () => {
       expect(execute).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         type: 'function_output',
-        output: 'An error occurred while running the tool. Please try again.',
+        output: 'An error occurred while running the tool.',
       });
     });
 
@@ -9807,7 +9807,7 @@ describe('executeShellActions', () => {
       expect(innerExecute).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         type: 'function_output',
-        output: 'An error occurred while running the tool. Please try again.',
+        output: 'An error occurred while running the tool.',
       });
     });
 
