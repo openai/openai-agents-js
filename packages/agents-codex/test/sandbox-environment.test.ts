@@ -783,3 +783,50 @@ it('holds borrowed inspection through gateway acquisition against actual local m
     await session.delete();
   }
 });
+
+it.each([
+  ['daytona', '/home/daytona/workspace'],
+  ['vercel', '/vercel/sandbox'],
+])(
+  'normalizes borrowed %s authority using the current provider configuration',
+  async (backend, root) => {
+    const provider =
+      backend === 'daytona'
+        ? new (
+            await import('../../agents-extensions/src/sandbox/daytona')
+          ).DaytonaSandboxClient()
+        : new (
+            await import('../../agents-extensions/src/sandbox/vercel')
+          ).VercelSandboxClient();
+    const f = fixture();
+    f.resource.state.manifest = new Manifest({ root });
+    const client: SandboxClient = {
+      ...f.client,
+      resolveTrustedManifestForResume:
+        provider.resolveTrustedManifestForResume.bind(provider),
+    };
+    const owner = await acquireEnvironment(
+      sandboxEnvironment({
+        ...f,
+        client,
+        session: f.resource,
+        manifest: new Manifest(),
+      }),
+    );
+    expect(f.connect).toHaveBeenCalledOnce();
+    await owner.dispose();
+    expect(f.resource.close).not.toHaveBeenCalled();
+    f.connect.mockClear();
+    await expect(
+      acquireEnvironment(
+        sandboxEnvironment({
+          ...f,
+          client,
+          session: f.resource,
+          manifest: new Manifest({ root: '/different-authority' }),
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(f.connect).not.toHaveBeenCalled();
+  },
+);

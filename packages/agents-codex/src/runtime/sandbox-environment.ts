@@ -106,7 +106,7 @@ export function sandboxEnvironment<
     options.options === undefined ? undefined : captureOptions(options.options);
   const capturedManifest = cloneManifest(requireManifest(options.manifest));
   const manifest =
-    resume && client.resolveTrustedManifestForResume
+    (borrowed || resume) && client.resolveTrustedManifestForResume
       ? client.resolveTrustedManifestForResume(
           capturedManifest,
           providerOptions,
