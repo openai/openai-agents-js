@@ -131,6 +131,52 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       model.assertExhausted();
     }, 30_000);
 
+    it('captures only current model callbacks on consecutive private roots', async () => {
+      const model = new ModelServer([[message('before')], [message('after')]]);
+      await using provider = await providerFor(model);
+      const firstComplete = vi.fn();
+      const nextComplete = vi.fn();
+      const firstTransform = vi.fn(() => [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'first callback marker' }],
+        },
+      ]);
+      const nextTransform = vi.fn(() => [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'next callback marker' }],
+        },
+      ]);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Answer.',
+        beforeComplete: firstComplete,
+        transformContext: firstTransform,
+      });
+      const rows = await starts();
+      expect((await agent.run('first')).finalOutput).toBe('before');
+      agent.beforeComplete = nextComplete;
+      agent.transformContext = nextTransform;
+      expect((await agent.run('second')).finalOutput).toBe('after');
+      expect(rows.map((row) => row.kind)).toEqual(['ordinary', 'private']);
+      expect(rows[1].engine).toBe(rows[0].engine);
+      expect(firstComplete).toHaveBeenCalledTimes(1);
+      expect(nextComplete).toHaveBeenCalledTimes(1);
+      expect(firstTransform).toHaveBeenCalledTimes(1);
+      expect(nextTransform).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(model.requests[1].input)).toContain(
+        'next callback marker',
+      );
+      expect(JSON.stringify(model.requests[1].input)).not.toContain(
+        'first callback marker',
+      );
+      model.assertExhausted();
+    }, 30_000);
+
     it('applies changed per-root instructions while retaining the Engine', async () => {
       const model = new ModelServer([[message('before')], [message('after')]]);
       await using provider = await providerFor(model);
