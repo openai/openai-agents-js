@@ -418,7 +418,7 @@ export class ObservationBuffer {
             for (const { event } of this.records) {
               if (event.sequence <= after) continue;
               after = event.sequence;
-              if (!scope || scope.includes(event))
+              if (event.type === 'gap' || !scope || scope.includes(event))
                 return {
                   done: false,
                   value: projectObservation(event, includeExecutionDetails),

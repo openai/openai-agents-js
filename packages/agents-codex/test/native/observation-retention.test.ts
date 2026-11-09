@@ -107,3 +107,51 @@ it('preserves observations before a source gap in all mode', async () => {
   ]);
   expect(events[1]).toMatchObject({ firstSequence: 2, sequence: 2 });
 });
+
+it.each(['root', 'child'])(
+  'exposes retained source gaps to %s scopes',
+  async (owner) => {
+    const buffer = new ObservationBuffer('all', { retention: 'all' });
+    buffer.gap();
+    buffer.finish('closed');
+    const events = await Array.fromAsync(
+      buffer.events(
+        {},
+        {
+          includes: (event) =>
+            'submissionId' in event && event.submissionId === owner,
+          phase: () => 'ended',
+        },
+      ),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'gap',
+      firstSequence: 1,
+      sequence: 1,
+    });
+  },
+);
+
+it('replays a retained source gap through native Turn.events', async () => {
+  const server = new ModelServer([[message('done')]]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'fixture',
+  });
+  await using session = await new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  }).session({ observationRetention: 'all' });
+  const turn = await session.submit('begin');
+  expect((await turn.wait()).finalOutput).toBe('done');
+  (
+    session as unknown as { observations: ObservationBuffer }
+  ).observations.gap();
+  const events = await Array.fromAsync(turn.events());
+  expect(events.some((event) => event.type === 'gap')).toBe(true);
+  server.assertExhausted();
+});

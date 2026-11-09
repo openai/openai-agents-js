@@ -121,6 +121,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
 
 export interface SessionBaseOptions<Context = undefined> {
   /** Retain all emitted observations in memory for this Session lifetime.
+   * Memory grows with emitted payloads until Session references are released.
    * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
   observationRetention?: 'bounded' | 'all';
   /**
@@ -214,6 +215,7 @@ interface CapturedOpening {
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
   readonly maxFunctionConcurrency?: number;
+  readonly observationRetention?: 'bounded' | 'all';
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
   readonly beforeCompact?: BeforeCompact<any>;
@@ -604,6 +606,9 @@ export class Agent<Context = undefined, Output = string> {
     ] as const)
       if (callback !== undefined && typeof callback !== 'function')
         throw new TypeError(`${name} must be a function`);
+    const observationRetention = opening
+      ? opening.observationRetention
+      : options.observationRetention;
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -1223,7 +1228,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
-        observationRetention: options.observationRetention,
+        observationRetention,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         parentTrace: captureTraceContext(options.parentTrace),
@@ -1307,6 +1312,7 @@ export class Agent<Context = undefined, Output = string> {
           context,
           onInteraction: options.onInteraction,
           maxFunctionConcurrency,
+          observationRetention,
           contextTransformPurpose,
           beforeComplete,
           beforeCompact,
