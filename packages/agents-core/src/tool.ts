@@ -1,4 +1,5 @@
 import type { Agent } from './agent';
+import type { MCPTool } from './mcpShared';
 import type { Computer } from './computer';
 import type { Shell, ShellAction } from './shell';
 import type { Editor, ApplyPatchOperation } from './editor';
@@ -476,6 +477,14 @@ export type FunctionTool<
    * Responses API only. Hides a top-level function tool definition until tool search loads it.
    */
   deferLoading?: boolean;
+
+  /**
+   * A fresh copy of the untrusted annotations supplied by the MCP server at discovery.
+   * Absent for ordinary function tools and when the server omits annotations.
+   * Missing hints stay omitted. The application decides which servers to trust
+   * and when to approve or retry a call.
+   */
+  readonly mcpAnnotations?: Readonly<NonNullable<MCPTool['annotations']>>;
 
   /**
    * Additional provider-specific metadata forwarded with the function tool definition.

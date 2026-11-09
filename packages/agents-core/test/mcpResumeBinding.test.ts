@@ -5,7 +5,7 @@ import {
   getAllMcpTools,
   mcpToFunctionTool,
   type MCPServer,
-  type MCPTool,
+  MCPTool,
 } from '../src/mcp';
 import { ScriptedModel } from '../src/testing';
 import type { FunctionTool } from '../src/tool';
@@ -92,6 +92,70 @@ async function execute(
   }
   return new Runner({ tracingDisabled: true }).run(a, input);
 }
+
+describe('local MCP tool annotations', () => {
+  it.each([false, true])(
+    'isolates discovery annotations on converted and namespaced tools (strict=%s)',
+    (strict) => {
+      const listed = MCPTool.parse({
+        ...definition(),
+        annotations: { readOnlyHint: false, labels: ['first'] },
+      });
+      const source = server('annotations');
+      const convertedTool = mcpToFunctionTool(listed, source, strict);
+      expect(convertedTool.strict).toBe(strict);
+      const [namespaced] = toolNamespace({
+        name: 'catalog',
+        description: 'Catalog tools',
+        tools: [convertedTool],
+      });
+      (listed.annotations!.labels as string[]).push('server mutation');
+      (namespaced.mcpAnnotations!.labels as string[]).push('caller mutation');
+      const expected = { readOnlyHint: false, labels: ['first'] };
+      expect(convertedTool.mcpAnnotations).toEqual(expected);
+      expect(namespaced.mcpAnnotations).toEqual(expected);
+      expect(
+        mcpToFunctionTool(definition(), source, strict).mcpAnnotations,
+      ).toBeUndefined();
+      expect(
+        mcpToFunctionTool({ ...definition(), annotations: {} }, source, strict)
+          .mcpAnnotations,
+      ).toEqual({});
+    },
+  );
+
+  it('exposes annotations to application hooks across approval without forwarding or saving them', async () => {
+    const hints = { title: 'Application-only title', idempotentHint: true };
+    const original = mcpToFunctionTool(
+      { ...definition(), annotations: hints },
+      server('annotated'),
+      false,
+    );
+    original.needsApproval = async () => true;
+    const model = new ScriptedModel([[call()]]);
+    const current = new Agent({
+      name: 'LookupAgent',
+      tools: [original],
+      model,
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const onStart = vi.fn();
+    current.on('agent_tool_start', (_context, started) => {
+      if (started.type === 'function') onStart(started.mcpAnnotations);
+    });
+    const first = await execute(current, 'lookup', false);
+    expect(first.interruptions).toHaveLength(1);
+    const modelTools = model.firstCall!.request.tools;
+    expect(modelTools).toMatchObject([{ name: 'search' }]);
+    expect(JSON.stringify(modelTools)).not.toContain(hints.title);
+    const saved = first.state.toString();
+    expect(saved).not.toContain(hints.title);
+    const restored = await RunState.fromString(current, saved);
+    restored.approve(restored.getInterruptions()[0]);
+    await execute(current, restored, false);
+    expect(onStart).toHaveBeenCalledExactlyOnceWith(hints);
+  });
+});
 
 describe('local MCP approval recipient binding', () => {
   it.each([false, true])(

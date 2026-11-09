@@ -199,6 +199,7 @@ describe('mcpToFunctionTool', () => {
         {
           name: 'strict',
           description: '',
+          annotations: { destructiveHint: false },
           inputSchema: {
             type: 'object',
             properties: { foo: { type: 'string' } },
@@ -212,6 +213,9 @@ describe('mcpToFunctionTool', () => {
     );
 
     expect(explicitlyOpenTool.strict).toBe(false);
+    expect(explicitlyOpenTool.mcpAnnotations).toEqual({
+      destructiveHint: false,
+    });
     expect(explicitlyOpenTool.parameters.additionalProperties).toBe(true);
 
     const nonStrictTool = mcpToFunctionTool(

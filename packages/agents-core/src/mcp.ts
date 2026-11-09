@@ -1217,6 +1217,20 @@ export function mcpToFunctionTool(
     toolName: rawToolName,
     serverIndex: null,
   };
+  const annotations =
+    mcpTool.annotations === undefined
+      ? undefined
+      : structuredClone(mcpTool.annotations);
+  function finishConversion<T extends FunctionTool<any, any, any>>(
+    converted: T,
+  ): T {
+    if (annotations !== undefined) {
+      Object.defineProperty(converted, 'mcpAnnotations', {
+        get: () => structuredClone(annotations),
+      });
+    }
+    return bindMcpTool(converted, binding);
+  }
   const inputGuardrails = server.toolInputGuardrails
     ? [...server.toolInputGuardrails]
     : undefined;
@@ -1347,7 +1361,7 @@ export function mcpToFunctionTool(
   if (convertSchemasToStrict || schema.additionalProperties === true) {
     try {
       assertOpenAIStrictToolSchemaPreservesOpenObjects(strictSchema);
-      return bindMcpTool(
+      return finishConversion(
         tool({
           name: toolName,
           description: mcpTool.description || '',
@@ -1359,7 +1373,6 @@ export function mcpToFunctionTool(
           outputGuardrails,
           customDataExtractor: extractCustomData,
         }),
-        binding,
       );
     } catch (e) {
       if (convertSchemasToStrict && isJsonSchemaDepthError(e)) {
@@ -1381,7 +1394,7 @@ export function mcpToFunctionTool(
         ? schema.additionalProperties
         : true,
   } as JsonObjectSchemaNonStrict<any>;
-  return bindMcpTool(
+  return finishConversion(
     tool({
       name: toolName,
       description: mcpTool.description || '',
@@ -1393,7 +1406,6 @@ export function mcpToFunctionTool(
       outputGuardrails,
       customDataExtractor: extractCustomData,
     }),
-    binding,
   );
 }
 
