@@ -152,6 +152,8 @@ export type ObservedEvent = Observation | ManualToolRequest;
 /** Publication belongs to the producer, independently of result consumption. */
 export type ObservationPhase = 'open' | 'finishing' | 'ended';
 export type TurnObservationScope = {
+  /** Negative until a queued root dispatches; readers consult the live value. */
+  after?: number;
   includes: (event: Observation) => boolean;
   phase: () => ObservationPhase;
 };
@@ -195,7 +197,7 @@ function projectObservation(
   });
 }
 
-/** One passive bounded suffix, shared by independent readers. */
+/** One passive event log, bounded by default, shared by independent readers. */
 export class ObservationBuffer {
   private records: Array<{
     event: RetainedObservation;
@@ -215,10 +217,16 @@ export class ObservationBuffer {
   constructor(
     readonly sessionId: string,
     private readonly options: {
+      retention?: 'bounded' | 'all';
       validate?: () => void;
       pendingManual?: () => Iterable<ManualToolRequest>;
     } = {},
   ) {}
+
+  /** @internal Sequence captured by existing turn owners at admission. */
+  get currentSequence(): number {
+    return this.sequence;
+  }
 
   /** Wake readers when requests or their producers change. */
   notify(): void {
@@ -268,6 +276,21 @@ export class ObservationBuffer {
   gap(): void {
     if (this.closed) return;
     this.sequence++;
+    this.repairParent?.buffer.gap();
+    if (this.options.retention === 'all') {
+      this.records.push({
+        event: Object.freeze({
+          type: 'gap',
+          sessionId: this.sessionId,
+          sequence: this.sequence,
+          firstSequence: this.sequence,
+        }),
+        size: 0,
+        payloadSize: 0,
+      });
+      this.notify();
+      return;
+    }
     this.records = [];
     this.characters = 0;
     this.payloadCharacters = 0;
@@ -309,7 +332,10 @@ export class ObservationBuffer {
               ).length
             : 0,
     );
-    if (size > 65_536 || payloadSize > 16 * 1024 * 1024) {
+    if (
+      this.options.retention !== 'all' &&
+      (size > 65_536 || payloadSize > 16 * 1024 * 1024)
+    ) {
       this.records = [];
       this.characters = 0;
       this.payloadCharacters = 0;
@@ -318,9 +344,10 @@ export class ObservationBuffer {
       this.characters += size;
       this.payloadCharacters += payloadSize;
       while (
-        this.records.length > 256 ||
-        this.characters > 65_536 ||
-        this.payloadCharacters > 32 * 1024 * 1024
+        this.options.retention !== 'all' &&
+        (this.records.length > 256 ||
+          this.characters > 65_536 ||
+          this.payloadCharacters > 32 * 1024 * 1024)
       ) {
         const removed = this.records.shift()!;
         this.characters -= removed.size;
@@ -356,6 +383,7 @@ export class ObservationBuffer {
       throw new RangeError(
         'after must be a sequence between zero and the current event',
       );
+    let index = this.options.retention === 'all' ? after : 0;
     let closed = false;
     let reading = false;
     const seen = scope ? undefined : new WeakSet<ManualToolRequest>();
@@ -374,6 +402,16 @@ export class ObservationBuffer {
         try {
           while (!closed) {
             const changed = this.changed.promise;
+            if (this.options.retention === 'all' && scope) {
+              const floor = scope.after ?? 0;
+              if (floor < 0) {
+                if (scope.phase() === 'ended' || this.closed) break;
+                await changed;
+                continue;
+              }
+              after = Math.max(after, floor);
+              index = Math.max(index, after);
+            }
             if (seen) {
               for (const request of this.options.pendingManual?.() ?? []) {
                 if (!seen.has(request)) {
@@ -396,10 +434,12 @@ export class ObservationBuffer {
                 }),
               };
             }
-            for (const { event } of this.records) {
+            if (this.options.retention !== 'all') index = 0;
+            while (index < this.records.length) {
+              const { event } = this.records[index++];
               if (event.sequence <= after) continue;
               after = event.sequence;
-              if (!scope || scope.includes(event))
+              if (event.type === 'gap' || !scope || scope.includes(event))
                 return {
                   done: false,
                   value: projectObservation(event, includeExecutionDetails),

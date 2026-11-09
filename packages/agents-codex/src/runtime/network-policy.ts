@@ -12,6 +12,20 @@ export interface NetworkPolicy {
   readonly allowLocalBinding?: boolean;
 }
 
+export const NetworkPolicy = {
+  /**
+   * Allow outbound connections to any public host through the managed proxy.
+   * Explicit denied domains still take precedence. Unix sockets and local
+   * binding require separate opt-ins.
+   */
+  allowAll(options: Omit<NetworkPolicy, 'allowedDomains'> = {}): NetworkPolicy {
+    return captureNetworkPolicy({
+      ...allowAllOptionsSchema.parse(options),
+      allowedDomains: ['**'],
+    });
+  },
+};
+
 export type CapturedNetworkPolicy = Readonly<{
   allowedDomains: readonly string[];
   deniedDomains: readonly string[];
@@ -27,6 +41,7 @@ const declarationSchema = z
     allowLocalBinding: z.boolean().default(false),
   })
   .strict();
+const allowAllOptionsSchema = declarationSchema.omit({ allowedDomains: true });
 
 /** @internal Wire fields consumed by the native managed proxy adapter. */
 export const networkPolicyWireSchema = z
