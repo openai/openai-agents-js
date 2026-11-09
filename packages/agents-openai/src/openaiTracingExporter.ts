@@ -30,6 +30,21 @@ export type OpenAITracingExporterOptions = {
 const OPENAI_TRACING_INGEST_ENDPOINT =
   'https://api.openai.com/v1/traces/ingest';
 
+function isHostedTracingEndpoint(endpoint: string): boolean {
+  try {
+    const url = new URL(endpoint);
+    const hosted = new URL(OPENAI_TRACING_INGEST_ENDPOINT);
+    return (
+      url.protocol === hosted.protocol &&
+      url.hostname.replace(/\.$/, '') === hosted.hostname &&
+      url.port === hosted.port &&
+      url.pathname.replace(/\/+$/, '') === hosted.pathname
+    );
+  } catch {
+    return false;
+  }
+}
+
 function retryAfterMs(headers: Headers): number | undefined {
   const milliseconds = headers.get('retry-after-ms')?.trim();
   if (milliseconds) {
@@ -171,10 +186,16 @@ function omitGenerationReasoning(value: unknown): unknown {
  */
 function sanitizeSpanDataForTracesIngest(
   spanData: Record<string, unknown>,
-  omitReasoning: boolean,
+  hosted: boolean,
 ): Record<string, unknown> {
   let sanitizedSpanData = spanData;
   let didMutate = false;
+
+  if (hosted && isGenerationSpanData(spanData) && 'tools' in spanData) {
+    sanitizedSpanData = cloneRecordSafely(spanData);
+    delete sanitizedSpanData.tools;
+    didMutate = true;
+  }
 
   for (const fieldName of ['input', 'output']) {
     if (!(fieldName in spanData)) {
@@ -188,7 +209,7 @@ function sanitizeSpanDataForTracesIngest(
       // Filter before truncation so reasoning does not consume the field budget.
       // Work on export-only copies: custom processors retain the original spans.
       exportValue =
-        omitReasoning && isGenerationSpanData(spanData)
+        hosted && isGenerationSpanData(spanData)
           ? omitGenerationReasoning(fieldValue)
           : fieldValue;
     } catch {
@@ -244,7 +265,7 @@ function sanitizeSpanDataForTracesIngest(
 
 function sanitizePayloadItemForTracesIngest(
   payloadItem: Record<string, unknown>,
-  omitReasoning: boolean,
+  hosted: boolean,
 ): Record<string, unknown> {
   if (payloadItem.object !== 'trace.span' || !isRecord(payloadItem.span_data)) {
     return payloadItem;
@@ -252,10 +273,7 @@ function sanitizePayloadItemForTracesIngest(
 
   return {
     ...payloadItem,
-    span_data: sanitizeSpanDataForTracesIngest(
-      payloadItem.span_data,
-      omitReasoning,
-    ),
+    span_data: sanitizeSpanDataForTracesIngest(payloadItem.span_data, hosted),
   };
 }
 
@@ -282,6 +300,7 @@ export class OpenAITracingExporter implements TracingExporter {
     signal?: AbortSignal,
   ): Promise<void> {
     const defaultApiKey = this.#options.apiKey ?? getTracingExportApiKey();
+    const hosted = isHostedTracingEndpoint(this.#options.endpoint);
     const itemsByKey = new Map<string | undefined, (Trace | Span<any>)[]>();
 
     for (const item of items) {
@@ -301,9 +320,6 @@ export class OpenAITracingExporter implements TracingExporter {
         continue;
       }
 
-      const omitReasoning =
-        this.#options.endpoint.replace(/\/$/, '') ===
-        OPENAI_TRACING_INGEST_ENDPOINT;
       const encodedItems: string[] = [];
       let skipped = 0;
       for (const entry of groupedItems) {
@@ -311,7 +327,7 @@ export class OpenAITracingExporter implements TracingExporter {
           const item = entry.toJSON();
           if (item) {
             const prepared = isRecord(item)
-              ? sanitizePayloadItemForTracesIngest(item, omitReasoning)
+              ? sanitizePayloadItemForTracesIngest(item, hosted)
               : item;
             encodedItems.push(JSON.stringify(prepared));
           }

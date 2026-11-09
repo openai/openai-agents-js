@@ -2,9 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 
 import { agent } from '@/agents';
-import { Runner, RunState, RunToolApprovalItem } from '@openai/agents';
+import {
+  protocol,
+  Runner,
+  RunState,
+  RunToolApprovalItem,
+} from '@openai/agents';
 import type { AgentInputItem } from '@openai/agents';
 import { db } from '@/db';
+
+const messageHistorySchema = protocol.ModelItem.array();
 
 function generateConversationId() {
   return `conv_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
@@ -13,20 +20,13 @@ function generateConversationId() {
 export async function POST(req: NextRequest) {
   try {
     const data = await req.json();
-    let { messages, conversationId, decisions } = data;
-
-    if (!messages) {
-      messages = [];
-    }
+    const { messages, decisions } = data;
+    let { conversationId } = data;
 
     if (!conversationId) {
       // we will generate a conversation ID so we can keep track of the state in case of conversations
       // this is just a key that we can use to store information in the database
       conversationId = generateConversationId();
-    }
-
-    if (!decisions) {
-      decisions = null;
     }
 
     const runner = new Runner({
@@ -35,6 +35,7 @@ export async function POST(req: NextRequest) {
 
     let input: AgentInputItem[] | RunState<any, any>;
     if (
+      decisions &&
       Object.keys(decisions).length > 0 &&
       data.conversationId /* original conversationId */
     ) {
@@ -69,9 +70,14 @@ export async function POST(req: NextRequest) {
       // We will use the new updated state to continue the run
       input = state;
     } else {
-      // If we don't have any decisions, we will just assume this is a regular chat and use the messages
-      // as input for the next run
-      input = messages;
+      const parsedMessages = messageHistorySchema.safeParse(messages ?? []);
+      if (!parsedMessages.success) {
+        return NextResponse.json(
+          { error: 'Invalid messages' },
+          { status: 400 },
+        );
+      }
+      input = parsedMessages.data;
     }
 
     const result = await runner.run(agent, input);

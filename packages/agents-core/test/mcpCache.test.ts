@@ -94,7 +94,9 @@ describe('MCP tools cache invalidation', () => {
     'reevaluates callable filters for each run context with prefixed names=%s',
     async (includeServerInToolNames) => {
       await invalidateServerToolsCache('current-context');
-      const server = new StubServer('current-context', [toolNamed('select')]);
+      const server = new StubServer('current-context', [
+        { ...toolNamed('select'), annotations: { readOnlyHint: true } },
+      ]);
       const listTools = vi.spyOn(server, 'listTools');
       server.toolFilter = async ({ runContext }) =>
         (runContext.context as { allowSelection: boolean }).allowSelection ===
@@ -112,8 +114,10 @@ describe('MCP tools cache invalidation', () => {
         const tools = await agent.getAllTools(
           new RunContext({ allowSelection }),
         );
-        expect(tools.map((tool) => tool.name)).toEqual(
-          allowSelection ? [expectedName] : [],
+        expect(tools).toMatchObject(
+          allowSelection
+            ? [{ name: expectedName, mcpAnnotations: { readOnlyHint: true } }]
+            : [],
         );
       }
       expect(listTools).toHaveBeenCalledTimes(1);
@@ -409,6 +413,7 @@ describe('MCP tools cache invalidation', () => {
       let tools = [
         {
           name: 'alpha',
+          annotations: { title: 'Initial listing' },
           description: '',
           inputSchema: { type: 'object', properties: {}, required: [] },
         },
@@ -446,6 +451,7 @@ describe('MCP tools cache invalidation', () => {
       tools = [
         {
           name: 'beta',
+          annotations: { title: 'New listing' },
           description: '',
           inputSchema: { type: 'object', properties: {}, required: [] },
         },
@@ -458,6 +464,12 @@ describe('MCP tools cache invalidation', () => {
         agent,
       });
       expect(refreshed.map((tool) => tool.name)).toEqual(['beta']);
+      expect(initial[0]).toMatchObject({
+        mcpAnnotations: { title: 'Initial listing' },
+      });
+      expect(refreshed[0]).toMatchObject({
+        mcpAnnotations: { title: 'New listing' },
+      });
     });
   });
 
