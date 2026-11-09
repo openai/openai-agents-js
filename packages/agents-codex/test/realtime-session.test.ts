@@ -420,3 +420,95 @@ it.each(['inherited', 'explicit'] as const)(
     await f.session.close();
   },
 );
+
+it('rejects oversized provider history before native dispatch', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const calls = f.native.call.mock.calls.length;
+  await expect(
+    voice.updateHistory([
+      {
+        id: 'oversized',
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_audio', audio: 'A'.repeat(3 * 1024 * 1024) }],
+      },
+    ]),
+  ).rejects.toThrow(/history.*input queue.*budget/);
+  expect(f.native.call.mock.calls).toHaveLength(calls);
+  await voice.close();
+  await f.session.close();
+});
+
+it.each([false, true])(
+  'charges queued provider history allocations and releases capacity (failure=%s)',
+  async (failure) => {
+    const f = fixture();
+    await f.session._start();
+    const voice = await f.session.realtime();
+    const blocked = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    f.native.call.mockImplementationOnce(async (operation) => {
+      expect(operation).toBe('realtime_conversation_update_history_sdk');
+      entered.resolve();
+      await blocked.promise;
+      if (failure) throw new Error('provider rejected history');
+      return 'null';
+    });
+    const items = [
+      {
+        id: 'recording',
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_audio', audio: 'A'.repeat((3 * 1024 * 1024) / 4) },
+        ],
+      },
+    ];
+    const first = voice.updateHistory(items);
+    const firstResult = first.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await entered.promise;
+    const queued = voice.updateHistory(items);
+    const calls = f.native.call.mock.calls.length;
+    await expect(voice.updateHistory(items)).rejects.toThrow(
+      /history.*input queue.*budget/,
+    );
+    expect(f.native.call.mock.calls).toHaveLength(calls);
+    blocked.resolve();
+    const result = await firstResult;
+    if (failure) expect(result).toEqual(new Error('provider rejected history'));
+    else expect(result).toBeUndefined();
+    await queued;
+    await expect(voice.updateHistory(items)).resolves.toBeUndefined();
+    await voice.close();
+    await f.session.close();
+  },
+);
+
+it('releases the input reservation when provider history cannot be copied as JSON', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const recording = {
+    id: 'recording',
+    type: 'message',
+    role: 'user',
+    content: [
+      { type: 'input_audio', audio: 'A'.repeat((3 * 1024 * 1024) / 4) },
+    ],
+  };
+  const calls = f.native.call.mock.calls.length;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await expect(
+      voice.updateHistory([{ ...recording, invalid: undefined }] as never),
+    ).rejects.toThrow('finite JSON');
+  }
+  expect(f.native.call.mock.calls).toHaveLength(calls);
+  await expect(voice.updateHistory([recording])).resolves.toBeUndefined();
+  await voice.close();
+  await f.session.close();
+});

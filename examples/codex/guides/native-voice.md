@@ -89,15 +89,29 @@ Use `await voice.retrieveConversationItem(providerItemId)` to retrieve a known p
 
 Created or changed messages use the provider's role-specific content types: `input_text` for system messages; `input_text`, `input_audio`, or `input_image` for user messages; and `output_text` for assistant messages. Existing assistant audio can be retained but cannot be created through this API. Keep existing provider item IDs and give new messages unique IDs.
 
-Edits preserve known provider predecessors. An edit that needs an unknown insertion position fails before sending changes. Adding items to an empty observed history appends them to the provider conversation.
+Edits preserve known provider predecessors. An edit that needs an unknown insertion position fails before sending changes. If provider events leave the order incomplete, ordered history retrieval and replacement are unavailable. You can still retrieve a known item by ID. Adding items to an empty observed history appends them to the provider conversation.
 
-Each history operation has an 8 MiB budget for estimated retained JSON storage, including string and container overhead. An update counts its requested replacement and retrieved provider items together. Exceeding this budget rejects the operation before writes and leaves the call active.
+Each history operation has an 8 MiB budget for estimated retained JSON storage, including string and container overhead. An update counts its requested replacement and retrieved provider items together. Exceeding this budget rejects the operation before writes and leaves the call active. Queued replacements also count toward the connection's input queue limits.
 
-History validation errors and interruptions caused by concurrent input or responses leave the call active. Provider errors, transport failures, and acknowledgement timeouts close the voice owner; the closed owner cannot retrieve history.
+Validation failures and interruptions caused by concurrent input or responses leave the connection active. A timeout while reading history also leaves the connection active. New history requests stay blocked until the outstanding reply arrives. If it never arrives, history requests remain unavailable for that connection. Provider errors, transport failures, and timeouts waiting for a write acknowledgement close the native voice connection. A closed connection cannot retrieve history.
 
 Native execution runs on the server. Browser code can import `NativeVoiceWebRTC` from `@openai/agents/voice/browser`. Its `connect({exchangeSdp})` callback sends the offer to your authenticated server and returns the server's answer. The helper owns browser media only; its data-channel observations cannot execute native tools or approve work. Keep server credentials out of the browser. Close the server owner when the application call ends; closing browser media alone does not replace server cleanup.
 
 SIP calls must be accepted and configured before attachment. On your server, call `await session.buildRealtimeSipConfig({ model, voice, instructions })` to build the call-accept request body from the same native configuration pipeline as `session.realtime()`. The builder includes the captured Agent instructions, tools, and handoffs, and prepares Session-owned MCP tools when `tools` is omitted. It does not accept the call, open voice media, or resolve voice credentials. Send its result to your call-accept endpoint, then attach the same Session with `await session.realtime({ transport: { type: 'sip', callId } })`. Regenerate the body if you change the Session or its configuration before accepting the call. The builder preserves supported SIP VAD tuning, including `threshold`, `prefixPaddingMs`, and `silenceDurationMs`.
+
+If you pass an explicit `tools` selection to the builder, pass the same selection to `session.realtime()` when attaching. The accept body controls the tools advertised to the provider. The attachment selection also limits the tools available to delegated native work. The builder does not save the selection for a later attachment.
+
+Reuse one selection object for both steps. This empty selection excludes the Agent's tools:
+
+```ts
+const selection = { tools: [] };
+const acceptance = await session.buildRealtimeSipConfig(selection);
+// Send acceptance to the provider's call-accept endpoint before attaching.
+await using voice = await session.realtime({
+  ...selection,
+  transport: { type: 'sip', callId },
+});
+```
 
 Configure hosted MCP follow-ups by passing `automaticallyTriggerResponseForMcpToolCalls` when attaching with `session.realtime()`. The HTTP accept body cannot carry this SDK option, so `buildRealtimeSipConfig()` does not accept it.
 

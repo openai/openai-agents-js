@@ -307,14 +307,15 @@ const PENDING_LIMIT = 16;
 const MAX_HOSTED_MCP_TOOLS = 1024;
 
 /** Estimate structured JSON allocations before cloning or serializing them. */
-function jsonAllocationBytes(value: unknown, remaining: number): number {
+function jsonAllocationBytes(
+  value: unknown,
+  remaining: number,
+  budgetErrorMessage = 'Hosted MCP structured JSON exceeds the event buffer budget',
+): number {
   let bytes = 0;
   const charge = (amount: number) => {
     bytes += amount;
-    if (bytes > remaining)
-      throw new RangeError(
-        'Hosted MCP structured JSON exceeds the event buffer budget',
-      );
+    if (bytes > remaining) throw new RangeError(budgetErrorMessage);
   };
   const string = (value: unknown) => {
     if (typeof value === 'string') charge(4 * value.length);
@@ -872,7 +873,11 @@ class NativeRealtimeOwner {
     }
   }
 
-  private enqueueInput(send: () => Promise<void>, bytes = 0): Promise<void> {
+  private enqueueInput(
+    send: () => Promise<void>,
+    bytes = 0,
+    capture?: () => void,
+  ): Promise<void> {
     if (this.pendingCommittedAudio)
       this.session._checkVoiceAdapterOperation(
         this,
@@ -887,6 +892,13 @@ class NativeRealtimeOwner {
       );
     this.inputCount++;
     this.inputBytes += bytes;
+    try {
+      capture?.();
+    } catch (error) {
+      this.inputCount--;
+      this.inputBytes -= bytes;
+      throw error;
+    }
     const pending = this.inputTail
       .then(() => {
         this.checkLive();
@@ -1055,10 +1067,21 @@ class NativeRealtimeOwner {
       throw new TypeError(
         'Realtime history must be an array of provider items',
       );
-    const snapshot = copyJsonValue(items) as JsonObject[];
-    await this.enqueueInput(async () => {
-      await this.call('update_history', { items: snapshot });
-    });
+    const bytes = jsonAllocationBytes(
+      items,
+      INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,
+      'Realtime history exceeds the 8 MiB input queue allocation budget',
+    );
+    let snapshot: JsonObject[];
+    await this.enqueueInput(
+      async () => {
+        await this.call('update_history', { items: snapshot });
+      },
+      bytes,
+      () => {
+        snapshot = copyJsonValue(items) as JsonObject[];
+      },
+    );
   }
   /**
    * Retrieve a known provider item with available media, even if it predates SIP
