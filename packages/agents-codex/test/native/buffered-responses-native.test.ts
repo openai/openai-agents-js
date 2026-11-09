@@ -127,7 +127,9 @@ it('retains buffered refusal facts before an error and never admits a later tool
     ],
   }).session();
   const turn = await session.submit('one');
-  await expect(turn.wait()).rejects.toMatchObject({ code: 'provider_refusal' });
+  await expect(turn.wait()).rejects.toMatchObject({
+    responseIntegrityReason: 'provider_refusal',
+  });
   expect(effects).toEqual([]);
   const turns = [];
   for await (const recorded of session.turns()) turns.push(recorded);
@@ -239,3 +241,48 @@ it.each(['content-length', 'chunked', 'error-body'] as const)(
     expect(server.requests[0].stream).toBe(false);
   },
 );
+
+it('keeps buffered transport through real local compaction and the following turn', async () => {
+  const server = new ModelServer([
+    reply([message('Remember alpha.')], 'before-compact'),
+    reply([message('Native summary: alpha.')], 'local-compact'),
+    reply([message('alpha')], 'after-compact'),
+  ]);
+  const paths: string[] = [];
+  server.onRecord = (phase, detail) => {
+    if (phase === 'MODEL_REQUEST')
+      paths.push((detail as { path: string }).path);
+  };
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: MODEL,
+    instructions: 'Answer.',
+    provider,
+  }).session();
+  expect(
+    (await (await session.submit('Remember alpha.')).wait()).finalOutput,
+  ).toBe('Remember alpha.');
+  await session.compact();
+  expect(
+    (await session.saveState()).history.some(
+      (record) => record.type === 'compacted',
+    ),
+  ).toBe(true);
+  expect((await (await session.submit('What label?')).wait()).finalOutput).toBe(
+    'alpha',
+  );
+  expect(server.requests).toHaveLength(3);
+  expect(paths).toHaveLength(3);
+  expect(paths.every((path) => /\/responses$/.test(path))).toBe(true);
+  for (const request of server.requests) {
+    expect(request.stream).toBe(false);
+    expect(request).not.toHaveProperty('stream_options');
+  }
+  expect(JSON.stringify(server.requests[1].input)).toContain(
+    'CONTEXT CHECKPOINT COMPACTION',
+  );
+  expect(JSON.stringify(server.requests[2].input)).toContain(
+    'Native summary: alpha.',
+  );
+  server.assertExhausted();
+}, 30000);

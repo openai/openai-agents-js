@@ -22,6 +22,7 @@ describe('image input example without an addon', () => {
       {
         type: 'image',
         image_url: expect.stringMatching(/^data:image\/png;base64,/),
+        detail: 'auto',
       },
     ]);
     // Decode the fixed fixture independently of the message constructor.

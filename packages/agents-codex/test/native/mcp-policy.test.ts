@@ -6,6 +6,7 @@ import {
   type ToolRef,
   type MCPBeforeDecision,
   type MCPCallContext,
+  type MCPResultContext,
 } from '../../src';
 import {
   applyMcpPrePolicy,
@@ -13,6 +14,7 @@ import {
   mcpPrePolicyRules,
   mcpConfig,
   resourceMcpBinding,
+  transformMcpResult,
   splitToolDeclarations as splitResourceDeclarations,
 } from '../../src/runtime/mcp';
 import type {
@@ -572,7 +574,7 @@ it.each(['before', 'result'] as const)(
   },
 );
 
-it('preserves arbitrary structured MCP JSON keys without changing prototypes', () => {
+it('preserves arbitrary structured MCP JSON keys through result transforms', async () => {
   const result = JSON.parse(
     '{"content":[],"structuredContent":{"__proto__":{"ownKeyRetained":true},"constructor":{"prototype":"data"}}}',
   );
@@ -589,7 +591,26 @@ it('preserves arbitrary structured MCP JSON keys without changing prototypes', (
     arguments: {},
     result,
   });
-  const structured = parsed.result.structuredContent as JsonObject;
+  expect(parsed.result).toBeDefined();
+  const transformResult = vi.fn(
+    (_context: MCPResultContext, value: JsonObject) => value,
+  );
+  const server = new HttpMCP({
+    name: 'records',
+    tools: ['lookup'],
+    url: 'http://127.0.0.1:1/mcp',
+    transformResult,
+  });
+  const transformed = await transformMcpResult(
+    [server],
+    1n,
+    undefined,
+    submission,
+    { ...parsed, generation: '1' },
+  );
+  expect(transformResult).toHaveBeenCalledOnce();
+  expect(transformed).toEqual(result);
+  const structured = transformed.structuredContent as JsonObject;
   expect(Object.hasOwn(structured, '__proto__')).toBe(true);
   expect(structured).toEqual(result.structuredContent);
   expect(Object.getPrototypeOf(structured)).toBe(Object.prototype);

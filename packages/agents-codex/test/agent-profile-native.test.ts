@@ -172,6 +172,7 @@ nativeIt.each([false, true])(
   async (explicit) => {
     const model = new ModelServer([
       (request) => {
+        expect(request.model).toBe('gpt-5.5');
         expect(request.max_output_tokens).toBe(41);
         expect(request.metadata).toEqual({ source: 'A' });
         expect(request.tool_choice).toBe('required');
@@ -181,6 +182,7 @@ nativeIt.each([false, true])(
         ];
       },
       (request) => {
+        expect(request.model).toBe('gpt-5.5');
         if (explicit) {
           expect(request.max_output_tokens).toBe(83);
           expect(request.top_p).toBe(0.75);
@@ -206,6 +208,8 @@ nativeIt.each([false, true])(
       const destination = new Agent({
         name: 'B',
         instructions: 'Answer after the handoff.',
+        model: 'gpt-5.5',
+        provider,
         modelSettings: explicit
           ? {
               invocationTimeoutMs: 20000,
@@ -219,7 +223,7 @@ nativeIt.each([false, true])(
       await using session = await new Agent({
         name: 'A',
         instructions: 'Transfer to B.',
-        model: 'fixture-unlisted-profile-controls',
+        model: 'gpt-5.5',
         modelSettings: {
           invocationTimeoutMs: 10000,
           maxOutputTokens: 41,
@@ -297,12 +301,14 @@ nativeIt.each(['root', 'destination', 'replacement', 'cleared'] as const)(
       const target = new Agent({
         name: 'B',
         instructions: 'B',
+        model: mode === 'destination' ? 'gpt-5.5' : 'gpt-5',
+        provider,
         tools: mode === 'destination' ? [finish(true)] : [],
       });
       await using session = await new Agent({
         name: 'A',
         instructions: 'A',
-        model: 'gpt-5',
+        model: mode === 'destination' ? 'gpt-5.5' : 'gpt-5',
         provider,
         tools: mode === 'destination' ? [] : [finish(mode !== 'replacement')],
         handoffs: [target],

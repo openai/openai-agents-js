@@ -1498,13 +1498,16 @@ impl PythonTools {
         ensure!(
             key.reply.thread == owner
                 && key.reply.instance == self.instance
-                && key.reply.generation == self.snapshot().id,
+                && self.resolve_generation(key.reply.generation).is_some(),
             "Expired or invalid managed JavaScript tool request"
         );
         let pending = self.pending.lock().expect("JavaScript replies poisoned");
         let Some(call) = pending.get(key) else {
             return Ok(false);
         };
+        if call.retired || call.sender.is_closed() {
+            return Ok(false);
+        }
         Ok(match &call.deadline {
             Some(state) => state.admit(|| true).unwrap_or(false),
             None => true,
@@ -1614,12 +1617,17 @@ impl PythonTools {
     }
 
     /// Data from the exact native pending receipt, never SDK-observed call metadata.
-    pub(crate) fn native_media(&self, key: &PendingKey) -> Option<NativeMediaContext> {
+    // Match take_reply liveness without consuming the exact sender. Some(None)
+    // is a valid pending text reply; None is a missing or already-taken reply.
+    // Entered effects may still settle after a model deadline, so this is not
+    // the callback admission gate.
+    pub(crate) fn native_media(&self, key: &PendingKey) -> Option<Option<NativeMediaContext>> {
         self.pending
             .lock()
             .expect("managed replies poisoned")
             .get(key)
-            .and_then(|call| call.media.clone())
+            .filter(|call| call.callback.is_none() || !call.sender.is_closed())
+            .map(|call| call.media.clone())
     }
 
     // Take the live sender only once. The binding retains it while its writer
@@ -3129,7 +3137,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
             };
             if response.response.success
                 && call.source == ToolCallSource::Direct
-                && Arc::ptr_eq(&self.generation, &self.tools.snapshot())
+                && self.tools.admits_generation(&self.generation)
                 && self.tools.current_completion_owner(&self.thread)
                 && let Some(receipts) = &self.receipts
             {
@@ -3593,7 +3601,7 @@ mod pending_tests {
             )
             .unwrap();
         // The existing pending owner retains data without a live root-turn query.
-        let captured = tools.native_media(&key).unwrap();
+        let captured = tools.native_media(&key).unwrap().unwrap();
         assert!(Arc::ptr_eq(&captured.model_info, &model));
         assert!(captured.inline_data_url_low_detail_supported);
         let _sender = tools.take_reply("root", &key).unwrap().unwrap();
@@ -3601,6 +3609,56 @@ mod pending_tests {
         assert!(tools.take_reply("root", &key).unwrap().is_none());
         // A detached metadata clone still carries no publication capability.
         assert_eq!(captured.model_info.slug, "gpt-5.5");
+    }
+
+    #[tokio::test]
+    async fn pending_text_media_is_distinct_from_an_expired_media_reply() {
+        let tools = tools();
+        let (key, _receiver) = tools
+            .enqueue(
+                "root",
+                &tools.snapshot(),
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &ToolCallSource::Direct,
+                "gpt-5.5",
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(tools.native_media(&key), Some(None)));
+        let sender = tools.take_reply("root", &key).unwrap().unwrap();
+        assert!(tools.native_media(&key).is_none());
+        assert!(tools.take_reply("root", &key).unwrap().is_none());
+        drop(sender);
+
+        let (cancelled, receiver) = tools
+            .enqueue(
+                "root",
+                &tools.snapshot(),
+                0,
+                "turn",
+                "cancelled",
+                json!({}),
+                &ToolCallSource::Direct,
+                "gpt-5.5",
+                None,
+                None,
+            )
+            .unwrap();
+        tools
+            .pending
+            .lock()
+            .unwrap()
+            .get_mut(&cancelled)
+            .unwrap()
+            .callback = Some(CallbackRelease::new(json!({})));
+        assert!(matches!(tools.native_media(&cancelled), Some(None)));
+        drop(receiver);
+        assert!(tools.native_media(&cancelled).is_none());
+        assert!(tools.take_reply("root", &cancelled).unwrap().is_none());
     }
 
     fn configure(tools: &PythonTools) {
@@ -4943,6 +5001,47 @@ mod pending_tests {
     }
 
     #[test]
+    fn callback_admission_accepts_only_a_live_captured_profile_and_exact_pending_owner() {
+        let tools = tools();
+        let source = tools
+            .profile_catalog(
+                tools.snapshot().specs.clone(),
+                &[],
+                &[],
+                None,
+                [false; 4],
+                false,
+            )
+            .unwrap();
+        assert_ne!(source.generation.id, tools.snapshot().id);
+        let (key, receive) = tools
+            .enqueue(
+                "root",
+                &source.generation,
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &ToolCallSource::Direct,
+                "model",
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(tools.admit_callback("root", &key).unwrap());
+        assert!(tools.admit_callback("another-root", &key).is_err());
+        let mut changed = key.clone();
+        changed.reply.generation = source.generation.id + 1;
+        assert!(tools.admit_callback("root", &changed).is_err());
+        drop(receive);
+        assert!(!tools.admit_callback("root", &key).unwrap());
+        tools.pending.lock().unwrap().remove(&key);
+        assert!(!tools.admit_callback("root", &key).unwrap());
+        drop(source);
+        assert!(tools.admit_callback("root", &key).is_err());
+    }
+
+    #[test]
     fn captured_profile_terminal_slots_survive_startup_and_idempotent_configuration() {
         let tools = tools();
         let source = tools
@@ -4955,6 +5054,23 @@ mod pending_tests {
                 false,
             )
             .unwrap();
+        let default = tools.snapshot();
+        tools
+            .configure_terminal(TerminalSlots {
+                generation: source.generation.id.to_string(),
+                slots: vec![0],
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&default, &tools.snapshot()));
+        assert!(
+            tools
+                .configure_terminal(TerminalSlots {
+                    generation: source.generation.id.to_string(),
+                    slots: vec![],
+                })
+                .is_err()
+        );
+        assert_eq!(source.generation.terminal_slots, HashSet::from([0]));
         *tools.current.write().unwrap() = Arc::clone(&source.generation);
         tools
             .configure_terminal(TerminalSlots {

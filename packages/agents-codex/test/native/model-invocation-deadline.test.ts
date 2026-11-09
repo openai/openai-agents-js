@@ -416,6 +416,17 @@ it.each(['owner', 'generation', 'instance'] as const)(
   },
 );
 
+// Test-only decoding of the version1 append journal owned by native/rust/custom_storage.rs.
+// SessionStore snapshots remain opaque to application code.
+function committedItems(snapshot: string): Array<Record<string, any>> {
+  const document = JSON.parse(snapshot);
+  expect(document.version).toBe(1);
+  expect(Array.isArray(document.mutations)).toBe(true);
+  return document.mutations.flatMap((mutation: Record<string, any>) =>
+    mutation.operation === 'append' ? mutation.items : [],
+  );
+}
+
 it.each([
   ['response_observation_record', true],
   ['token_usage_record', false],
@@ -432,9 +443,7 @@ it.each([
     const storage: SessionStore = {
       ...durable,
       async commit(...args) {
-        const snapshot = JSON.parse(args[4]) as {
-          items: Array<{ type: string }>;
-        };
+        const snapshot = { items: committedItems(args[4]) };
         if (!fired && snapshot.items.some((item) => item.type === boundary)) {
           fired = true;
           held.entered.resolve();
@@ -541,9 +550,7 @@ it.each([false, true])(
     const storage: SessionStore = {
       ...durable,
       async commit(...args) {
-        const snapshot = JSON.parse(args[4]) as {
-          items: Array<Record<string, any>>;
-        };
+        const snapshot = { items: committedItems(args[4]) };
         if (
           !fired &&
           snapshot.items.some(
@@ -822,7 +829,7 @@ it('starts the clock after initial user-history durability, before model transpo
   const storage: SessionStore = {
     ...durable,
     async commit(...args) {
-      const snapshot = JSON.parse(args[4]) as { items: Array<any> };
+      const snapshot = { items: committedItems(args[4]) };
       if (
         !fired &&
         snapshot.items.some(

@@ -364,6 +364,7 @@ it('emits a delayed code-mode file through the existing file primitive and retai
   });
   let state;
   const expected = [
+    { type: 'input_text', text: expect.stringMatching(/^Script completed\n/) },
     { type: 'input_text', text: 'before-file' },
     { type: 'input_file', file_id: 'opaque-code-file', filename: 'code.pdf' },
     { type: 'input_text', text: 'after-file' },

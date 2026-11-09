@@ -346,16 +346,20 @@
     },
     {
       "path": "0093-native-voice-parity.patch",
-      "sha256": "dfe002f762b7c55ae900a3b5fc8fe42e7953abf8607cf7da54eb5d45edae8bd5"
+      "sha256": "0fc0c6de83a103c77a928e8c53f423aa81a54e3e18d420ee4c461aac785d4e0e"
     },
     {
       "path": "0091-mcp-windows-env-precedence.patch",
       "sha256": "dbb4d10ce9a81028bf2d09a7d478b73805b337d74c328df567e68b373e2fb422"
     },
     {
+      "path": "0094-reject-ambiguous-code-mode-names.patch",
+      "sha256": "4e2bb732edab48888aa9bdca723f591caaf87465c86c0ce0a76ea5baa60c1081"
+    },
+    {
       "path": "0090-native-session-media-history.patch",
-      "sha256": "e1aed07234b81a313d7bf69d321fd37aa0132b395c428466a9d0a6c669a8419d"
+      "sha256": "ecf7709fb518bcf8568e5341c1d7cb046f104fb38629836160a360e561854025"
     }
   ],
-  "result_tree": "27e26222abc7d21884bd49a68ddae56ccbfa9fd9"
+  "result_tree": "c34a436b3e8724d26e323efceaf54c0d5bd5af48"
 }

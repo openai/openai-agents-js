@@ -106,8 +106,14 @@ it.each(['same', 'foreign'] as const)(
         body: 'synthetic redirect',
         headers: { location },
       }),
+      [message('original endpoint retry')],
     ]);
     const foreign = new ModelServer([]);
+    const paths: string[] = [];
+    source.onRecord = (phase, detail) => {
+      if (phase === 'MODEL_REQUEST')
+        paths.push((detail as { path: string }).path);
+    };
     location =
       (origin === 'same' ? await urlFor(source) : await urlFor(foreign)) +
       '/redirected';
@@ -117,19 +123,19 @@ it.each(['same', 'foreign'] as const)(
       supportsWebsockets: false,
       headers: { 'X-Route': 'redirect-header-canary' },
     });
-    await expect(
-      new Agent({
-        model: 'fixture-unlisted-routing',
-        instructions: 'Answer.',
-        provider,
-      }).run('do not follow'),
-    ).rejects.toThrow();
-    expect(source.requests).toHaveLength(1);
+    const result = await new Agent({
+      model: 'fixture-unlisted-routing',
+      instructions: 'Answer.',
+      provider,
+    }).run('do not follow');
+    expect(result.finalOutput).toBe('original endpoint retry');
+    expect(source.requests).toHaveLength(2);
+    expect(paths).toEqual(['/v1/responses', '/v1/responses']);
     expect(foreign.requests).toHaveLength(0);
-    expect(source.requestHeaders[0]?.['x-route']).toBe(
-      'redirect-header-canary',
-    );
-    expect(source.requestHeaders[0]).not.toHaveProperty('x-sdk-sentinel-grant');
+    for (const headers of source.requestHeaders) {
+      expect(headers['x-route']).toBe('redirect-header-canary');
+      expect(headers).not.toHaveProperty('x-sdk-sentinel-grant');
+    }
     source.assertExhausted();
     foreign.assertExhausted();
   },

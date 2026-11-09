@@ -16,6 +16,7 @@ function fixture({
   graphEnabled = true,
   restoredMcp = false,
   restoredEmptyDefaults = false,
+  terminal = false,
 }: {
   structured?: boolean;
   shared?: boolean;
@@ -23,10 +24,14 @@ function fixture({
   graphEnabled?: boolean;
   restoredMcp?: boolean;
   restoredEmptyDefaults?: boolean;
+  terminal?: boolean;
 } = {}) {
+  const rootOutput = vi.fn((value: string) => `A:${value}`);
+  const targetOutput = vi.fn((value: string) => `B:${value}`);
   const first = tool({
     name: 'lookup',
     description: matchingSpecs ? 'lookup' : 'A lookup',
+    finishTurn: terminal,
     parameters: z.object({}),
     execute: () => 'A',
   });
@@ -39,14 +44,32 @@ function fixture({
         execute: () => 'B',
       });
   const b = new Agent({
-    ...(structured ? { outputType: z.string() } : {}),
+    ...(terminal
+      ? {
+          outputType: {
+            mode: 'prompted' as const,
+            schema: z.string().transform(targetOutput),
+          },
+        }
+      : structured
+        ? { outputType: z.string() }
+        : {}),
     name: 'B',
     instructions: 'B instructions',
     tools: [second],
     handoffs: [() => a],
   });
   const a: Agent = new Agent({
-    ...(structured ? { outputType: z.string() } : {}),
+    ...(terminal
+      ? {
+          outputType: {
+            mode: 'prompted' as const,
+            schema: z.string().transform(rootOutput),
+          },
+        }
+      : structured
+        ? { outputType: z.string() }
+        : {}),
     name: 'A',
     instructions: 'A instructions',
     tools: [
@@ -100,6 +123,9 @@ function fixture({
       active = { ...active, epoch: active.epoch + 1 };
       return generation;
     }),
+    _configure_tool_completion: vi.fn(),
+    _check_tool_completion: vi.fn(() => true),
+    _reply_tool_completion: vi.fn((_wire: string) => true),
     _configure_manual_tools: vi.fn(),
     _enable_native_mcp_results: vi.fn(),
     _next_native_mcp_result: async () => 'null',
@@ -214,6 +240,8 @@ function fixture({
   return {
     a,
     b,
+    rootOutput,
+    targetOutput,
     first,
     second,
     session,
@@ -535,6 +563,129 @@ it('cancels only a passive retry wait without restarting its retired batch', asy
     });
     expect((await first.wait()).finalOutput).toBe('A accepted');
     expect(f.native._submit_realtime_tools).toHaveBeenCalledTimes(2);
+  } finally {
+    await f.session.close();
+  }
+});
+
+// Controlled native receipts verify SDK source policy, not native execution.
+it.each([
+  ['before proposal', false],
+  ['before proposal', true],
+  ['before acknowledgement', false],
+  ['before acknowledgement', true],
+] as const)(
+  'retains terminal source policy across another profile (%s, override=%s)',
+  async (changeAt, override) => {
+    const f = fixture({ terminal: true });
+    const validateOverride = vi.fn((value: string) => `override:${value}`);
+    await f.session._start();
+    try {
+      const turn = await f.session.submit(
+        'finish',
+        override
+          ? {
+              outputType: {
+                mode: 'prompted' as const,
+                schema: z.string().transform(validateOverride),
+              },
+            }
+          : {},
+      );
+      const changeProfile = () => {
+        f.commitDestination();
+        (
+          f.session as unknown as { adoptProfile(receipt: unknown): void }
+        ).adoptProfile({ profile_id: 'agent_1', epoch: '2' });
+      };
+      if (changeAt === 'before proposal') changeProfile();
+      f.emit('ordinary', '_sdk_tool_completion', {
+        thread: 'root',
+        instance: null,
+        turn_id: 'ordinary',
+        generation: '1',
+        request_id: '17',
+        native_step: 'step',
+        slot: 0,
+        tool: { name: 'lookup', namespace: null },
+        call_id: 'terminal-call',
+        output: '"accepted"',
+        profile_id: 'agent_0',
+        profile_epoch: '1',
+      });
+      await vi.waitFor(() =>
+        expect(f.native._reply_tool_completion).toHaveBeenCalledTimes(1),
+      );
+      const expected = `${override ? 'override' : 'A'}:accepted`;
+      const reply = JSON.parse(
+        f.native._reply_tool_completion.mock.calls[0][0],
+      );
+      expect(reply).toMatchObject({
+        thread: 'root',
+        turn_id: 'ordinary',
+        generation: '1',
+        request_id: '17',
+        native_step: 'step',
+        final_output: expected,
+      });
+      expect(f.rootOutput).toHaveBeenCalledTimes(override ? 0 : 1);
+      expect(f.targetOutput).not.toHaveBeenCalled();
+      expect(validateOverride).toHaveBeenCalledTimes(override ? 1 : 0);
+      if (changeAt === 'before acknowledgement') changeProfile();
+      f.emit('ordinary', 'task_complete', {
+        tool_completion: {
+          call_id: 'terminal-call',
+          name: 'lookup',
+          namespace: null,
+          final_output: expected,
+        },
+      });
+      expect((await turn.wait()).finalOutput).toBe(expected);
+      expect(f.rootOutput).toHaveBeenCalledTimes(override ? 0 : 1);
+      expect(f.targetOutput).not.toHaveBeenCalled();
+    } finally {
+      await f.session.close();
+    }
+  },
+);
+
+it('settles an exact failed terminal attempt after the active profile changes', async () => {
+  const f = fixture({ terminal: true });
+  await f.session._start();
+  try {
+    const turn = await f.session.submit('finish');
+    f.emit('ordinary', '_sdk_tool_completion', {
+      thread: 'root',
+      instance: null,
+      turn_id: 'ordinary',
+      generation: '1',
+      request_id: '17',
+      native_step: 'step',
+      slot: 0,
+      tool: { name: 'lookup', namespace: null },
+      call_id: 'terminal-call',
+      output: '"accepted"',
+      profile_id: 'agent_0',
+      profile_epoch: '1',
+    });
+    await vi.waitFor(() =>
+      expect(f.native._reply_tool_completion).toHaveBeenCalledTimes(1),
+    );
+    f.commitDestination();
+    (
+      f.session as unknown as { adoptProfile(receipt: unknown): void }
+    ).adoptProfile({ profile_id: 'agent_1', epoch: '2' });
+    f.emit('ordinary', '_sdk_tool_completion_failed', {
+      thread: 'root',
+      instance: null,
+      turn_id: 'ordinary',
+      generation: '1',
+      request_id: '17',
+      native_step: 'step',
+    });
+    await expect(turn.wait()).rejects.toThrow('before durable publication');
+    expect(f.rootOutput).toHaveBeenCalledTimes(1);
+    expect(f.targetOutput).not.toHaveBeenCalled();
   } finally {
     await f.session.close();
   }

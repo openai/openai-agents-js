@@ -8,6 +8,7 @@ import {
   readFile,
   rm,
   symlink,
+  truncate,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -15,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DockerSandboxSession,
   Manifest,
+  SandboxWorkspaceReadNotFoundError,
   dockerVolumeMountStrategy,
 } from '../../src/sandbox/local';
 
@@ -261,6 +263,16 @@ describe.skipIf(process.platform === 'win32')(
           await expect(
             session.viewImage({ path: 'private/image.png', runAs: 'reader' }),
           ).rejects.toThrow(/permission denied/iu);
+          // Restore resolver access before the file transfer applies the denial.
+          await chmod(directory, 0o700);
+          const failure = await session
+            .readFile({ path: 'private/image.png', maxBytes: 0 })
+            .catch((error: unknown) => error);
+          expect(failure).not.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
+          expect(failure).toHaveProperty(
+            'message',
+            expect.stringMatching(/permission denied/iu),
+          );
         } finally {
           fixture.beforeCommand = undefined;
           await chmod(directory, 0o700);
@@ -331,6 +343,88 @@ describe.skipIf(process.platform === 'win32')(
         'host sentinel\n',
       );
     });
+
+    it('bounds the Docker transfer for a capped read', async () => {
+      const path = join(workspace, 'large.bin');
+      await writeFile(path, Buffer.from([0, 255, 128, 10]));
+      await truncate(path, 8 * 1024 * 1024);
+      const originalSpawn = vi
+        .mocked(childProcess.spawn)
+        .getMockImplementation()!;
+      let transferred = 0;
+      vi.mocked(childProcess.spawn).mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnOptions,
+      ) => {
+        const child = originalSpawn(command, args, options);
+        if (args.at(-1)?.includes('base64')) {
+          child.stdout?.on('data', (chunk: Buffer) => {
+            transferred += chunk.length;
+          });
+        }
+        return child;
+      }) as typeof childProcess.spawn);
+
+      expect(
+        await session.readFile({ path: 'large.bin', maxBytes: 4 }),
+      ).toEqual(Buffer.from([0, 255, 128, 10]));
+      expect(transferred).toBeLessThan(32);
+      await expect(
+        session.readFile({ path: 'missing.bin', maxBytes: 0 }),
+      ).rejects.toBeInstanceOf(SandboxWorkspaceReadNotFoundError);
+    });
+
+    it.each(['stdout', 'stderr'] as const)(
+      'bounds %s from path validation for capped reads and images',
+      async (stream) => {
+        const native =
+          await vi.importActual<typeof childProcess>('node:child_process');
+        const originalSpawn = vi
+          .mocked(childProcess.spawn)
+          .getMockImplementation()!;
+        const validators: childProcess.ChildProcess[] = [];
+        vi.mocked(childProcess.spawn).mockImplementation(((
+          command: string,
+          args: string[],
+          options: childProcess.SpawnOptions,
+        ) => {
+          if (!args.includes('/usr/bin/realpath')) {
+            return originalSpawn(command, args, options);
+          }
+          const child = native.spawn(
+            process.execPath,
+            [
+              '-e',
+              `process.${stream}.write(Buffer.alloc(4 * 1024 * 1024, 120)); process.stdout.write(process.argv[1] + '\\n');`,
+              args.at(-1)!,
+            ],
+            options,
+          );
+          validators.push(child);
+          return child;
+        }) as typeof childProcess.spawn);
+
+        await expect(
+          session.readFile({ path: 'note.txt', maxBytes: 0 }),
+        ).rejects.toThrow('failed to resolve a filesystem path');
+        await expect(session.viewImage({ path: 'image.png' })).rejects.toThrow(
+          'failed to resolve a filesystem path',
+        );
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'note.txt',
+            diff: '@@\n-before\n+after\n',
+          }),
+        ).rejects.toThrow('failed to resolve a filesystem path');
+        expect(validators).toHaveLength(3);
+        expect(
+          validators.every((child) => child.signalCode === 'SIGKILL'),
+        ).toBe(true);
+        expect(commands).toHaveLength(0);
+      },
+    );
 
     it('creates, patches, moves and unlinks container files without touching host files', async () => {
       const editor = session.createEditor();

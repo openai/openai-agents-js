@@ -21,6 +21,13 @@ import {
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
 import { z } from 'zod';
+import { execFile } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { ReadableStream as NodeReadableStream } from 'node:stream/web';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   decodeNativeSnapshotRef,
   encodeNativeSnapshotRef,
@@ -40,6 +47,7 @@ const getMock = vi.fn();
 const runCommandMock = vi.fn();
 const mkDirMock = vi.fn();
 const readFileToBufferMock = vi.fn();
+const readFileMock = vi.fn();
 const writeFilesMock = vi.fn();
 const stopMock = vi.fn();
 const snapshotMock = vi.fn();
@@ -58,13 +66,25 @@ type MockRunCommandParams = {
   args?: string[];
 };
 
+let commandSequence = 0;
+
 function commandResult(
   exitCode: number,
   stdout: string = '',
   stderr: string = '',
 ) {
   const result = {
+    cmdId: `cmd_mock_${++commandSequence}`,
     exitCode,
+    logs: vi.fn(() =>
+      Object.assign(
+        (async function* () {
+          if (stdout) yield { stream: 'stdout' as const, data: stdout };
+          if (stderr) yield { stream: 'stderr' as const, data: stderr };
+        })(),
+        { close: vi.fn() },
+      ),
+    ),
     output: vi.fn(async (stream?: 'stdout' | 'stderr' | 'both') => {
       if (stream === 'stderr') {
         return stderr;
@@ -166,6 +186,7 @@ function makeSandbox(
     runCommand: runCommandMock,
     mkDir: mkDirMock,
     readFileToBuffer: readFileToBufferMock,
+    readFile: readFileMock,
     writeFiles: writeFilesMock,
     stop: stopMock,
     snapshot: snapshotMock,
@@ -230,6 +251,7 @@ describe('VercelSandboxClient', () => {
     runCommandMock.mockReset();
     mkDirMock.mockReset();
     readFileToBufferMock.mockReset();
+    readFileMock.mockReset();
     writeFilesMock.mockReset();
     stopMock.mockReset();
     snapshotMock.mockReset();
@@ -242,6 +264,9 @@ describe('VercelSandboxClient', () => {
     runCommandMock.mockImplementation(defaultRunCommand);
     mkDirMock.mockResolvedValue(undefined);
     readFileToBufferMock.mockResolvedValue(Buffer.from(ONE_BY_ONE_PNG));
+    readFileMock.mockImplementation(async () =>
+      Readable.from([Buffer.from(ONE_BY_ONE_PNG)]),
+    );
     writeFilesMock.mockImplementation(
       async (files: Array<{ path?: unknown }> = []) => {
         for (const file of files) {
@@ -258,7 +283,477 @@ describe('VercelSandboxClient', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
+
+  test('preserves native file authority for a capped read when command reads are denied', async () => {
+    const session = await new VercelSandboxClient().create(new Manifest());
+    const content = Buffer.from([0, 255, 128, 13, 10, 42]);
+    readFileMock.mockImplementation(async () => Readable.from([content]));
+    readFileToBufferMock.mockResolvedValue(content);
+    const original = runCommandMock.getMockImplementation()!;
+    runCommandMock.mockImplementation(async (params) =>
+      resolvedRemotePathFromValidationCommand(params.args?.[1] ?? '')
+        ? await original(params)
+        : commandResult(1, '', 'Permission denied'),
+    );
+    await expect(
+      session.readFile({ path: 'native-only', maxBytes: 4 }),
+    ).resolves.toEqual(new Uint8Array([0, 255, 128, 13]));
+    await expect(session.readFile({ path: 'native-only' })).resolves.toEqual(
+      new Uint8Array(content),
+    );
+    expect(readFileMock).toHaveBeenCalledWith({
+      path: '/vercel/sandbox/native-only',
+    });
+    expect(readFileToBufferMock).toHaveBeenCalledWith({
+      path: '/vercel/sandbox/native-only',
+    });
+  });
+
+  test.each(['stdout', 'stderr'])(
+    'bounds hostile validation %s before collection and kills only its command',
+    async (phase) => {
+      const session = await new VercelSandboxClient().create(new Manifest());
+      const originalRun = runCommandMock.getMockImplementation()!;
+      let delivered = 0;
+      const result = commandResult(0);
+      const closed = vi.fn();
+      result.kill.mockRejectedValue(new Error('cleanup failed'));
+      result.logs.mockImplementation(() =>
+        Object.assign(
+          (async function* () {
+            for (let index = 0; index < 100; index++) {
+              delivered++;
+              yield {
+                stream: phase.endsWith('stderr')
+                  ? ('stderr' as const)
+                  : ('stdout' as const),
+                data: 'x'.repeat(32768),
+              };
+            }
+          })(),
+          { close: closed },
+        ),
+      );
+      runCommandMock.mockImplementation(async (params) => {
+        return resolvedRemotePathFromValidationCommand(params.args?.[1] ?? '')
+          ? result
+          : await originalRun(params);
+      });
+      await expect(
+        session.readFile({ path: 'notes.txt', maxBytes: 4 }),
+      ).rejects.toThrow(/exceeded its output limit/u);
+      expect(delivered).toBeLessThanOrEqual(3);
+      expect(closed).toHaveBeenCalledOnce();
+      expect(result.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(result.output).not.toHaveBeenCalled();
+      expect(stopMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([0, 4, 200000, 2097152])(
+    'returns a native capped prefix for maxBytes=%s without buffering the full file',
+    async (maxBytes) => {
+      const session = await new VercelSandboxClient().create(new Manifest());
+      const content = Buffer.alloc(1024 * 1024);
+      for (let index = 0; index < content.length; index++)
+        content[index] = index % 256;
+      const stream = Readable.from([content]);
+      readFileMock.mockResolvedValue(stream);
+      const bytes = await session.readFile({ path: 'notes.bin', maxBytes });
+      expect(bytes.byteLength).toBe(Math.min(maxBytes, content.length));
+      expect(Buffer.compare(bytes, content.subarray(0, maxBytes))).toBe(0);
+      expect(bytes.buffer.byteLength).toBe(bytes.byteLength);
+      expect(stream.destroyed).toBe(true);
+      expect(readFileToBufferMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('copies a large multi-chunk native prefix and destroys an endless stream', async () => {
+    const session = await new VercelSandboxClient().create(new Manifest());
+    let pulled = 0;
+    const destroyed = vi.fn();
+    const stream = new Readable({
+      read() {
+        pulled++;
+        this.push(Buffer.alloc(65536, 255));
+      },
+      destroy(error, callback) {
+        destroyed();
+        callback(error);
+      },
+    });
+    readFileMock.mockResolvedValue(stream);
+    const bytes = await session.readFile({
+      path: 'large.bin',
+      maxBytes: 131072,
+    });
+    expect(bytes.byteLength).toBe(131072);
+    expect(Buffer.compare(bytes, Buffer.alloc(131072, 255))).toBe(0);
+    expect(pulled).toBeLessThan(5);
+    expect(destroyed).toHaveBeenCalledOnce();
+  });
+
+  test.each([0, 4])(
+    'preserves native missing handling for maxBytes=%s',
+    async (maxBytes) => {
+      const session = await new VercelSandboxClient().create(new Manifest());
+      readFileMock.mockResolvedValue(null);
+      await expect(
+        session.readFile({ path: 'missing', maxBytes }),
+      ).rejects.toThrow('Sandbox path not found: /vercel/sandbox/missing');
+      expect(readFileMock).toHaveBeenCalledWith({
+        path: '/vercel/sandbox/missing',
+      });
+    },
+  );
+
+  test('still opens the native target for a zero-byte cap and preserves open errors', async () => {
+    const session = await new VercelSandboxClient().create(new Manifest());
+    const failure = new Error('native open denied');
+    readFileMock.mockRejectedValue(failure);
+    await expect(
+      session.readFile({ path: 'private', maxBytes: 0 }),
+    ).rejects.toBe(failure);
+    expect(readFileMock).toHaveBeenCalledOnce();
+  });
+
+  test('preserves native stream read errors and destroys the reader', async () => {
+    const session = await new VercelSandboxClient().create(new Manifest());
+    const failure = new Error('native stream read failed');
+    const stream = new Readable({
+      read() {
+        this.destroy(failure);
+      },
+    });
+    readFileMock.mockResolvedValue(stream);
+    await expect(
+      session.readFile({ path: 'broken', maxBytes: 4 }),
+    ).rejects.toBe(failure);
+    expect(stream.destroyed).toBe(true);
+  });
+
+  test.each([0, 4])(
+    'contains native cancellation errors and closes the stream for maxBytes=%s',
+    async (maxBytes) => {
+      const session = await new VercelSandboxClient().create(new Manifest());
+      const cancelled = vi.fn(async () => {
+        throw new Error('native cancel failed');
+      });
+      const content = Buffer.from([0, 255, 128, 13, 10, 42]);
+      const stream = Readable.fromWeb(
+        new NodeReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(content);
+          },
+          cancel: cancelled,
+        }),
+      );
+      const closed = new Promise<void>((resolve) =>
+        stream.once('close', resolve),
+      );
+      readFileMock.mockResolvedValue(stream);
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes }),
+      ).resolves.toEqual(new Uint8Array(content.subarray(0, maxBytes)));
+      await closed;
+      expect(cancelled).toHaveBeenCalledOnce();
+      expect(stream.destroyed).toBe(true);
+    },
+  );
+
+  test.each([
+    'unterminated record',
+    'tiny empty records',
+    'HTTP error body',
+    'oversized chunk',
+  ])(
+    'bounds %s before the real Vercel SDK parser or error collector',
+    async (attack) => {
+      const actual =
+        await vi.importActual<typeof import('@vercel/sandbox')>(
+          '@vercel/sandbox',
+        );
+      const metadata = {
+        id: 'sbx_transport',
+        memory: 2048,
+        vcpus: 1,
+        region: 'iad1',
+        runtime: 'node22',
+        timeout: 300000,
+        status: 'running',
+        requestedAt: 1,
+        createdAt: 1,
+        cwd: '/vercel/sandbox',
+        updatedAt: 1,
+      };
+      const commands = new Map<
+        string,
+        {
+          id: string;
+          name: string;
+          args: string[];
+          cwd: string;
+          sandboxId: string;
+          exitCode: number;
+          startedAt: number;
+        }
+      >();
+      let delivered = 0;
+      let cancelled = 0;
+      let killed = 0;
+      let stopped = 0;
+      let wrongAuthentication = false;
+      let attacking = false;
+      let validationCommandId = '';
+      const storedOutput = 'stored logs'.repeat(65536);
+      const fakeFetch: typeof fetch = async (input, init) => {
+        const url = new URL(String(input));
+        wrongAuthentication ||=
+          new Headers(init?.headers).get('Authorization') !==
+          'Bearer synthetic_transport_token';
+        if (url.pathname.endsWith('/logs')) {
+          const command = commands.get(url.pathname.split('/').at(-2)!)!;
+          if (
+            attacking &&
+            resolvedRemotePathFromValidationCommand(command.args[1] ?? '')
+          ) {
+            validationCommandId = command.id;
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                pull(controller) {
+                  delivered++;
+                  if (delivered > 100) {
+                    controller.close();
+                    return;
+                  }
+                  const chunk =
+                    attack === 'tiny empty records'
+                      ? `${JSON.stringify({ stream: 'stdout', data: '' })}\n`.repeat(
+                          1024,
+                        )
+                      : 'x'.repeat(
+                          attack === 'oversized chunk'
+                            ? 2 * 1024 * 1024
+                            : 32768,
+                        );
+                  const prefix =
+                    delivered === 1 && attack === 'unterminated record'
+                      ? '{"stream":"stdout","data":"'
+                      : '';
+                  controller.enqueue(new TextEncoder().encode(prefix + chunk));
+                },
+                cancel() {
+                  cancelled++;
+                },
+              }),
+              {
+                status: attack === 'HTTP error body' ? 403 : 200,
+                headers: {
+                  'content-type':
+                    attack === 'HTTP error body'
+                      ? 'application/json'
+                      : 'application/x-ndjson',
+                },
+              },
+            );
+          }
+          if (command.id === validationCommandId) {
+            return new Response(
+              `${JSON.stringify({ stream: 'stdout', data: storedOutput })}\n`,
+              { headers: { 'content-type': 'application/x-ndjson' } },
+            );
+          }
+          const resolved = resolvedRemotePathFromValidationCommand(
+            command.args[1] ?? '',
+          );
+          return new Response(
+            resolved
+              ? `${JSON.stringify({ stream: 'stdout', data: `${resolved}\n` })}\n`
+              : '',
+            { headers: { 'content-type': 'application/x-ndjson' } },
+          );
+        }
+        if (url.pathname.endsWith('/kill')) {
+          killed++;
+          return Response.json({
+            command: commands.get(url.pathname.split('/').at(-2)!),
+          });
+        }
+        if (url.pathname.endsWith('/stop')) {
+          stopped++;
+          return Response.json({ sandbox: metadata });
+        }
+        if (url.pathname.endsWith('/cmd')) {
+          const body = JSON.parse(String(init?.body));
+          const command = {
+            id: `cmd_transport_${commands.size}`,
+            name: body.command,
+            args: body.args,
+            cwd: body.cwd ?? metadata.cwd,
+            sandboxId: metadata.id,
+            exitCode: 0,
+            startedAt: 1,
+          };
+          commands.set(command.id, command);
+          return body.wait
+            ? new Response(
+                `${JSON.stringify({ command })}\n${JSON.stringify({ command })}\n`,
+                { headers: { 'content-type': 'application/x-ndjson' } },
+              )
+            : Response.json({ command });
+        }
+        const commandId = url.pathname.match(/\/cmd\/([^/]+)$/u)?.[1];
+        if (commandId)
+          return Response.json({ command: commands.get(commandId) });
+        if (url.pathname.endsWith('/mkdir')) return Response.json({});
+        return Response.json({ sandbox: metadata, routes: [] });
+      };
+      vi.stubGlobal('fetch', fakeFetch);
+      let nativeSandbox!: import('@vercel/sandbox').Sandbox;
+      createMock.mockImplementation(async (params) => {
+        nativeSandbox = await actual.Sandbox.get({
+          ...params,
+          sandboxId: metadata.id,
+        });
+        return nativeSandbox;
+      });
+      const session = await new VercelSandboxClient({
+        projectId: 'project_transport',
+        teamId: 'team_transport',
+        token: 'synthetic_transport_token',
+      }).create(new Manifest());
+      attacking = true;
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes: 0 }),
+      ).rejects.toThrow(/exceeded its output limit/u);
+      expect(delivered).toBeLessThan(30);
+      expect(cancelled).toBe(1);
+      expect(killed).toBe(1);
+      expect(stopped).toBe(0);
+      expect(wrongAuthentication).toBe(false);
+      // The same original SDK client can read stored logs without the capped
+      // owner after cleanup; no budget leaks into subsequent ordinary work.
+      attacking = false;
+      const storedCommand = await nativeSandbox.getCommand(validationCommandId);
+      expect((await storedCommand.output()).length).toBe(storedOutput.length);
+    },
+  );
+
+  test('isolates a pending native capped read from uncapped reads and application commands', async () => {
+    const session = await new VercelSandboxClient().create(new Manifest());
+    const entered = deferred();
+    const release = deferred();
+    readFileMock.mockResolvedValue(
+      Readable.from(
+        (async function* () {
+          entered.resolve();
+          await release.promise;
+          yield Buffer.from('a');
+        })(),
+      ),
+    );
+    const capped = session.readFile({ path: 'tiny', maxBytes: 1 });
+    await entered.promise;
+    readFileToBufferMock.mockResolvedValue(Buffer.from('complete'));
+    await expect(session.readFile({ path: 'tiny' })).resolves.toEqual(
+      new TextEncoder().encode('complete'),
+    );
+    await session.execCommand({ cmd: 'application' });
+    expect(runCommandMock.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+      'detached',
+    );
+    release.resolve();
+    await expect(capped).resolves.toEqual(new TextEncoder().encode('a'));
+  });
+
+  test('preserves validation log transport errors when command cleanup also fails', async () => {
+    const session = await new VercelSandboxClient().create(new Manifest());
+    const failure = new Error('synthetic log transport failure');
+    const result = commandResult(0);
+    result.logs.mockImplementation(() =>
+      Object.assign(
+        (async function* () {
+          yield { stream: 'stdout' as const, data: '' };
+          throw failure;
+        })(),
+        {
+          close: vi.fn(() => {
+            throw new Error('close failed');
+          }),
+        },
+      ),
+    );
+    result.kill.mockRejectedValue(new Error('kill failed'));
+    runCommandMock.mockResolvedValue(result);
+    await expect(session.readFile({ path: 'tiny', maxBytes: 1 })).rejects.toBe(
+      failure,
+    );
+    expect(result.kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  test.each(['root', 'sandbox-user'])(
+    'retains filesystem runAs rejection for %s before capped-read side effects',
+    async (runAs) => {
+      const session = await new VercelSandboxClient().create(new Manifest());
+      runCommandMock.mockClear();
+      await expect(
+        session.readFile({ path: 'tiny', maxBytes: 1, runAs }),
+      ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+      expect(runCommandMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'keeps Vercel capped reads and their path validation out of login startup',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'vercel-file-startup-'));
+      try {
+        await writeFile(join(root, 'tiny'), 'ABCD');
+        await writeFile(
+          join(root, '.profile'),
+          'printf "login-profile-loaded\\n"\ncommand() { cat; }\ntest() { return 0; }\n',
+        );
+        const session = await new VercelSandboxClient().create(
+          new Manifest({ environment: { HOME: root } }),
+        );
+        const execute = promisify(execFile);
+        readFileMock.mockImplementation(async () =>
+          Readable.from([Buffer.from('ABCD')]),
+        );
+        runCommandMock.mockImplementation(async (params) => {
+          const { stdout, stderr } = await execute(
+            params.cmd,
+            params.args.map((arg: string) =>
+              arg.replaceAll('/vercel/sandbox', root),
+            ),
+            {
+              env: { ...process.env, HOME: root, ...params.env },
+            },
+          );
+          return commandResult(
+            0,
+            stdout.replaceAll(root, '/vercel/sandbox'),
+            stderr,
+          );
+        });
+        expect(
+          Array.from(await session.readFile({ path: 'tiny', maxBytes: 4 })),
+        ).toEqual([65, 66, 67, 68]);
+        expect(readFileMock).toHaveBeenCalledOnce();
+        // The omitted-cap route keeps its original login-shell validation.
+        await writeFile(join(root, '.profile'), '');
+        readFileToBufferMock.mockResolvedValue(Buffer.from('ABCD'));
+        expect(Array.from(await session.readFile({ path: 'tiny' }))).toEqual([
+          65, 66, 67, 68,
+        ]);
+        expect(readFileMock).toHaveBeenCalledOnce();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test.each(['constructor', 'create options', 'undefined override'] as const)(
     'enforces archive limits from %s before hydration side effects',
@@ -1845,6 +2340,7 @@ describe('VercelSandboxClient', () => {
     });
 
     expect(getMock).toHaveBeenCalledWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_test',
       projectId: 'prj_env',
       teamId: 'team_env',
@@ -1913,12 +2409,14 @@ describe('VercelSandboxClient', () => {
     });
 
     expect(getMock).toHaveBeenNthCalledWith(1, {
+      fetch: expect.any(Function),
       sandboxId: 'vercel_existing',
       projectId: 'prj_serialized',
       teamId: 'team_serialized',
       token: 'serialized_token',
     });
     expect(getMock).toHaveBeenNthCalledWith(2, {
+      fetch: expect.any(Function),
       sandboxId: 'vercel_existing',
     });
     expect(snapshotMock).toHaveBeenCalledOnce();
@@ -2426,6 +2924,7 @@ describe('VercelSandboxClient', () => {
       getMock.mockRejectedValueOnce(vercelHttpError(401));
       await expect(client.resume(state)).rejects.toThrow();
       expect(getMock).toHaveBeenCalledExactlyOnceWith({
+        fetch: expect.any(Function),
         sandboxId: 'vercel_original',
         projectId: 'prj_current',
         teamId: 'team_current',
@@ -2456,6 +2955,7 @@ describe('VercelSandboxClient', () => {
       'old_token',
     );
     expect(getMock).toHaveBeenCalledExactlyOnceWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_original',
       projectId: 'prj_current',
       teamId: 'team_current',
@@ -2484,6 +2984,7 @@ describe('VercelSandboxClient', () => {
       getMock.mockRejectedValueOnce(vercelHttpError(401));
       await expect(client.resume(state)).rejects.toThrow();
       expect(getMock).toHaveBeenCalledExactlyOnceWith({
+        fetch: expect.any(Function),
         sandboxId: 'vercel_original',
       });
     },
@@ -2539,6 +3040,7 @@ describe('VercelSandboxClient', () => {
       clientOptions: { token: '' },
     });
     expect(getMock).toHaveBeenCalledExactlyOnceWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_test',
     });
     // A later serialize cannot reinstate the client's explicit credentials.
@@ -2546,7 +3048,10 @@ describe('VercelSandboxClient', () => {
       'current_token',
     );
     await client.resume(session.state);
-    expect(getMock).toHaveBeenLastCalledWith({ sandboxId: 'vercel_test' });
+    expect(getMock).toHaveBeenLastCalledWith({
+      fetch: expect.any(Function),
+      sandboxId: 'vercel_test',
+    });
   });
 
   test('preserves the original live credentials after a failed per-run resume', async () => {
@@ -2615,7 +3120,10 @@ describe('VercelSandboxClient', () => {
     expect(state.authenticationMode).toBe('sdk');
     expect(state).not.toHaveProperty('token');
     await new VercelSandboxClient().resume(state);
-    expect(getMock).toHaveBeenLastCalledWith({ sandboxId: 'vercel_original' });
+    expect(getMock).toHaveBeenLastCalledWith({
+      fetch: expect.any(Function),
+      sandboxId: 'vercel_original',
+    });
   });
 
   test('preserves provided live session authentication when a run serializes through another client', async () => {
@@ -2693,6 +3201,7 @@ describe('VercelSandboxClient', () => {
       willCloseAfterSerialize: true,
     });
     expect(getMock).toHaveBeenCalledExactlyOnceWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_test',
     });
     expect(serialized.authenticationMode).toBe('sdk');
@@ -2722,6 +3231,7 @@ describe('VercelSandboxClient', () => {
       willCloseAfterSerialize: true,
     });
     expect(getMock).toHaveBeenCalledExactlyOnceWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_test',
       projectId: 'prj_create',
       teamId: 'team_create',
@@ -2774,12 +3284,14 @@ describe('VercelSandboxClient', () => {
     await client.resume(state);
 
     expect(getMock).toHaveBeenNthCalledWith(1, {
+      fetch: expect.any(Function),
       sandboxId: 'vercel_existing',
       projectId: 'prj_serialized',
       teamId: 'team_serialized',
       token: 'serialized_token',
     });
     expect(getMock).toHaveBeenNthCalledWith(2, {
+      fetch: expect.any(Function),
       sandboxId: 'vercel_existing',
     });
     expect(state.authenticationMode).toBe('sdk');
@@ -2891,6 +3403,7 @@ describe('VercelSandboxClient', () => {
     await client.resume(state);
 
     expect(getMock).toHaveBeenCalledWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_existing',
       projectId: 'prj_env',
       teamId: 'team_env',
@@ -2917,6 +3430,7 @@ describe('VercelSandboxClient', () => {
     await client.resume(state);
 
     expect(getMock).toHaveBeenCalledWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_existing',
       projectId: 'prj_current',
       teamId: 'team_current',
@@ -3056,6 +3570,7 @@ describe('VercelSandboxClient', () => {
 
     expect(createMock).not.toHaveBeenCalled();
     expect(getMock).toHaveBeenCalledWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_live',
     });
     expect(session.state.sandboxId).toBe('vercel_live');
@@ -3373,6 +3888,7 @@ describe('VercelSandboxClient', () => {
     });
 
     expect(getMock).toHaveBeenCalledWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_test',
       projectId: 'prj_create',
       teamId: 'team_create',
@@ -3403,6 +3919,7 @@ describe('VercelSandboxClient', () => {
     });
 
     expect(getMock).toHaveBeenCalledWith({
+      fetch: expect.any(Function),
       sandboxId: 'vercel_test',
       projectId: 'prj_create',
       teamId: 'team_create',

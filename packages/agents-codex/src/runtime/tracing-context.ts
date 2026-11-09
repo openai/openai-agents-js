@@ -6,12 +6,24 @@ type Native = Awaited<ReturnType<typeof binding>>;
 
 const ambient = new AsyncLocalStorage<TraceSpan | undefined>();
 const processorSuppressed = new AsyncLocalStorage<boolean>();
+const workflows = new Map<string, WeakRef<TraceSpan>>();
 const contextFinalizer = new FinalizationRegistry<{
   native: Native;
   token: string;
-}>(({ native, token }) => {
+  workflow?: { key: string; reference: WeakRef<TraceSpan> };
+}>(({ native, token, workflow }) => {
   native.release_trace_context(token);
+  if (workflow && workflows.get(workflow.key) === workflow.reference)
+    workflows.delete(workflow.key);
 });
+
+/** @internal Native carriers own ancestry; this only resolves a still-live JS workflow alias. */
+export function workflowForTrace(
+  traceId: string,
+  workflowSpanId: string,
+): TraceSpan | undefined {
+  return workflows.get(`${traceId}:${workflowSpanId}`)?.deref();
+}
 
 /** @internal Suppress tracing in processor work, including its asynchronous descendants. */
 export function suppressTracing<T>(callback: () => T): T {
@@ -41,7 +53,15 @@ export class TraceSpan {
     let token: string | undefined;
     try {
       token = native.retain_trace_context(handle);
-      contextFinalizer.register(this, { native, token });
+      const workflow =
+        kind === 'workflow'
+          ? {
+              key: `${context.traceId}:${context.spanId}`,
+              reference: new WeakRef(this),
+            }
+          : undefined;
+      if (workflow) workflows.set(workflow.key, workflow.reference);
+      contextFinalizer.register(this, { native, token, workflow });
       this.#contextToken = token;
     } catch (error) {
       if (token !== undefined) native.release_trace_context(token);

@@ -60,7 +60,7 @@ impl PythonTools {
             .lock()
             .expect("terminal proposal poisoned")
             .as_mut()
-            && Arc::ptr_eq(&self.snapshot(), &proposal.generation)
+            && self.admits_generation(&proposal.generation)
             && self.current_completion_owner(&proposal.key.reply.thread)
         {
             proposal.failed = true;
@@ -76,7 +76,7 @@ impl PythonTools {
         let Some(proposal) = proposal.filter(|proposal| proposal.failed) else {
             return;
         };
-        if !Arc::ptr_eq(&self.snapshot(), &proposal.generation) {
+        if !self.admits_generation(&proposal.generation) {
             return;
         }
         let mut request = json!({"id":proposal.key.turn,"msg":{
@@ -111,7 +111,7 @@ impl PythonTools {
             return false;
         };
         self.current_completion_owner(&proposal.key.reply.thread)
-            && Arc::ptr_eq(&self.snapshot(), &proposal.generation)
+            && self.admits_generation(&proposal.generation)
             && turn.tool_failure_ready()
             && request["msg"]["request_id"] == proposal.request_id.to_string()
             && proposal
@@ -123,10 +123,10 @@ impl PythonTools {
 
     pub(crate) fn configure_terminal(&self, config: TerminalSlots) -> Result<()> {
         let current = self.snapshot();
-        ensure!(
-            current.id.to_string() == config.generation,
-            "Expired terminal configuration generation"
-        );
+        let configured = self
+            .resolve_generation(config.generation.parse()?)
+            .filter(|generation| generation.id.to_string() == config.generation)
+            .context("Expired terminal configuration generation")?;
         ensure!(
             self.pending
                 .lock()
@@ -144,13 +144,18 @@ impl PythonTools {
         let mut slots = HashSet::new();
         for slot in config.slots {
             ensure!(
-                slot < current.entries.len() && slots.insert(slot),
+                slot < configured.entries.len() && slots.insert(slot),
                 "Invalid terminal tool slot"
             );
         }
-        if current.terminal_slots == slots {
+        if configured.terminal_slots == slots {
             return Ok(());
         }
+        // Captured profiles are immutable; replacement creates a new registered catalog.
+        ensure!(
+            Arc::ptr_eq(&configured, &current),
+            "Cannot change captured profile terminal configuration"
+        );
         let mut generation = (*current).clone();
         generation.terminal_slots = slots;
         let generation = Arc::new(generation);
@@ -184,7 +189,7 @@ impl PythonTools {
             && response.turn_id == pending.key.turn
             && response.generation == pending.generation.id.to_string()
             && response.native_step == pending.step
-            && Arc::ptr_eq(&self.snapshot(), &pending.generation)
+            && self.admits_generation(&pending.generation)
             && !pending.sender.is_closed()
     }
 
@@ -205,7 +210,7 @@ impl PythonTools {
             .get(&id)
             .is_some_and(|pending| {
                 self.current_completion_owner(&pending.key.reply.thread)
-                    && Arc::ptr_eq(&self.snapshot(), &pending.generation)
+                    && self.admits_generation(&pending.generation)
                     && !pending.sender.is_closed()
             })
     }
@@ -278,7 +283,7 @@ pub(super) async fn propose(
         return Ok(None);
     }
     if !tools.current_completion_owner(input.thread_store.level_id())
-        || !Arc::ptr_eq(&tools.snapshot(), &catalog.generation)
+        || !tools.admits_generation(&catalog.generation)
     {
         return Err("Expired terminal tool generation".into());
     }
@@ -320,6 +325,13 @@ pub(super) async fn propose(
         "tool":{"name":entry.name.name,"namespace":entry.name.namespace},
         "call_id":call_id, "output":output.body
     }});
+    if let Some(profile) = tools
+        .source_profile(Some(input.step_store))
+        .map_err(|error| error.to_string())?
+    {
+        request["msg"]["profile_id"] = json!(profile.profile_id);
+        request["msg"]["profile_epoch"] = json!(profile.epoch);
+    }
     if let Some(instance) = &tools.instance {
         request["subagent_id"] = json!(input.thread_store.level_id());
         request["subagent_incarnation"] = json!(instance);
@@ -372,7 +384,7 @@ pub(super) async fn propose(
         .await
         .map_err(|_| "Terminal completion cancelled")??;
     if !tools.current_completion_owner(input.thread_store.level_id())
-        || !Arc::ptr_eq(&tools.snapshot(), &catalog.generation)
+        || !tools.admits_generation(&catalog.generation)
     {
         return Err("Expired terminal tool generation".into());
     }
@@ -415,22 +427,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn captured_completion_rejects_a_different_arc_even_with_the_same_generation_id() {
+        let tools = super::super::pending_tests::tools();
+        let source = tools
+            .profile_catalog(
+                tools.snapshot().specs.clone(),
+                &[],
+                &[0],
+                None,
+                [false; 4],
+                false,
+            )
+            .unwrap();
+        let receive = pending(&tools);
+        let mut value = envelope();
+        value["generation"] = json!(source.generation.id.to_string());
+        value["final_output"] = json!("accepted");
+        {
+            let mut pending = tools.completion_replies.lock().unwrap();
+            let captured = pending.get_mut(&17).unwrap();
+            captured.generation = source.generation.clone();
+            captured.key.reply.generation = source.generation.id;
+        }
+        assert!(tools.completion_queued(17));
+        assert!(tools.check_tool_completion(&reply(value.clone())).unwrap());
+        tools
+            .completion_replies
+            .lock()
+            .unwrap()
+            .get_mut(&17)
+            .unwrap()
+            .generation = Arc::new((*source.generation).clone());
+        assert!(!tools.completion_queued(17));
+        assert!(!tools.check_tool_completion(&reply(value.clone())).unwrap());
+        assert!(!tools.reply_tool_completion(reply(value.clone())).unwrap());
+        tools
+            .completion_replies
+            .lock()
+            .unwrap()
+            .get_mut(&17)
+            .unwrap()
+            .generation = source.generation.clone();
+        assert!(tools.reply_tool_completion(reply(value)).unwrap());
+        assert_eq!(receive.await.unwrap().unwrap(), json!("accepted"));
+        assert_eq!(tools.snapshot().id, 0);
+    }
+
+    #[tokio::test]
     async fn proposal_requires_current_step_receipt_and_uses_settled_body() {
+        assert_proposal_receipt(false).await;
+    }
+
+    #[tokio::test]
+    async fn captured_profile_proposal_queues_matches_and_accepts_without_default_catalog_mutation()
+    {
+        assert_proposal_receipt(true).await;
+    }
+
+    async fn assert_proposal_receipt(captured: bool) {
         let thread = ExtensionData::new("root");
         let tools = thread.get_or_init(|| {
             Arc::try_unwrap(super::super::pending_tests::tools())
                 .ok()
                 .unwrap()
         });
-        tools
-            .configure_terminal(TerminalSlots {
-                generation: "0".into(),
-                slots: vec![0],
-            })
-            .unwrap();
+
         let session = ExtensionData::new("session");
         let turn = ExtensionData::new("turn");
         let step = ExtensionData::new("step");
+        if captured {
+            let source = tools
+                .profile_catalog(
+                    tools.snapshot().specs.clone(),
+                    &[],
+                    &[0],
+                    None,
+                    [false; 4],
+                    false,
+                )
+                .unwrap();
+            assert_ne!(source.generation.id, tools.snapshot().id);
+            step.get_or_init(|| source);
+        } else {
+            tools
+                .configure_terminal(TerminalSlots {
+                    generation: "0".into(),
+                    slots: vec![0],
+                })
+                .unwrap();
+        }
         PythonContributor::default().tools_for_step(&session, &thread, &step);
         let call: ResponseItem = serde_json::from_value(
             json!({"type":"function_call", "name":"decision", "arguments":"{}", "call_id":"call"}),
@@ -452,7 +537,7 @@ mod tests {
             reply: ReplyKey {
                 thread: "root".into(),
                 instance: None,
-                generation: 0,
+                generation: catalog.generation.id,
                 slot: 0,
                 manual_grant: None,
             },
@@ -465,7 +550,7 @@ mod tests {
         let event = tools.next_request().await;
         assert_eq!(event["msg"]["output"], json!("settled after hooks"));
         let msg = &event["msg"];
-        let response = json!({"thread":"root", "instance":null, "turn_id":"turn", "generation":"0",
+        let response = json!({"thread":"root", "instance":null, "turn_id":"turn", "generation":catalog.generation.id.to_string(),
             "request_id":msg["request_id"], "native_step":"step", "final_output":{"answer":7}});
         assert!(tools.reply_tool_completion(reply(response)).unwrap());
         let result = proposing.await.unwrap().unwrap();
@@ -477,6 +562,15 @@ mod tests {
 
     #[tokio::test]
     async fn proposal_error_needs_failed_idle_and_exact_native_owner_before_failure_notice() {
+        assert_failed_proposal(false).await;
+    }
+
+    #[tokio::test]
+    async fn captured_profile_failure_is_delivered_only_after_exact_failed_idle() {
+        assert_failed_proposal(true).await;
+    }
+
+    async fn assert_failed_proposal(captured: bool) {
         let thread = ExtensionData::new("root");
         let tools = thread.get_or_init(|| {
             Arc::try_unwrap(super::super::pending_tests::tools())
@@ -498,13 +592,28 @@ mod tests {
             .await;
         let turn = turn_store.get::<crate::turn_settlement::Turn>().unwrap();
         let settlement = thread.get::<crate::turn_settlement::Settlement>().unwrap();
+        let generation = if captured {
+            tools
+                .profile_catalog(
+                    tools.snapshot().specs.clone(),
+                    &[],
+                    &[0],
+                    None,
+                    [false; 4],
+                    false,
+                )
+                .unwrap()
+                .generation
+        } else {
+            tools.snapshot()
+        };
         *turn.tool_proposal.lock().unwrap() = Some(TerminalProposal {
-            generation: tools.snapshot(),
+            generation: generation.clone(),
             key: PendingKey {
                 reply: ReplyKey {
                     thread: "root".into(),
                     instance: None,
-                    generation: 0,
+                    generation: generation.id,
                     slot: 0,
                     manual_grant: None,
                 },
@@ -533,7 +642,9 @@ mod tests {
                 thread_store: &thread,
             })
             .await;
-        let notice = tools.next_request().await;
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(1), tools.next_request())
+            .await
+            .unwrap();
         assert_eq!(notice["msg"]["type"], "_sdk_tool_completion_failed");
         assert_eq!(notice["msg"]["request_id"], "17");
         assert_eq!(notice["msg"]["native_step"], "step");

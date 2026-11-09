@@ -11,6 +11,8 @@ import {
 } from './openaiSessionApi';
 import type { OpenAIClient } from '../openaiClient';
 
+const MAX_ITEMS_PER_REQUEST = 20;
+
 export type OpenAIConversationsSessionOptions = {
   conversationId?: string;
   client?: OpenAIClient;
@@ -215,6 +217,10 @@ export class OpenAIConversationsSession
     return true;
   }
 
+  /**
+   * Appends items in ordered requests of at most 20 items. If a later request
+   * fails, earlier successful batches remain in the conversation.
+   */
   async addItems(items: AgentInputItem[]): Promise<void> {
     if (!items.length) {
       return;
@@ -225,9 +231,15 @@ export class OpenAIConversationsSession
       if (!sanitizedItems.length) {
         return;
       }
-      await this.#client.conversations.items.create(conversationId, {
-        items: sanitizedItems,
-      });
+      for (
+        let offset = 0;
+        offset < sanitizedItems.length;
+        offset += MAX_ITEMS_PER_REQUEST
+      ) {
+        await this.#client.conversations.items.create(conversationId, {
+          items: sanitizedItems.slice(offset, offset + MAX_ITEMS_PER_REQUEST),
+        });
+      }
     });
   }
 

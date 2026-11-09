@@ -11,6 +11,7 @@ import {
   fileSessionStore,
   tool,
   type SessionState,
+  type SessionStore,
 } from '../../src';
 import { binding, type NativeThread } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -36,6 +37,21 @@ function terminalRows(state: SessionState) {
       ? [payload.tool_completion]
       : [];
   });
+}
+function storedTerminalRows(snapshot: string | null) {
+  expect(snapshot).not.toBeNull();
+  const document = JSON.parse(snapshot!);
+  expect(document.version).toBe(1);
+  return document.mutations.flatMap(
+    (mutation: { operation: string; items?: Array<Record<string, any>> }) =>
+      mutation.operation === 'append'
+        ? (mutation.items ?? []).flatMap((row) =>
+            row.type === 'event_msg' && row.payload?.tool_completion
+              ? [row.payload.tool_completion]
+              : [],
+          )
+        : [],
+  );
 }
 async function providerFor(server: ModelServer) {
   const config = await server.config();
@@ -71,30 +87,48 @@ it('retains durable terminal success after the original model deadline and resto
     ],
     modelSettings: { invocationTimeoutMs: MS },
   });
-  let after: SessionState;
+  const durable = fileSessionStore(directory);
+  let committed: string | null = null;
+  let flushed: string | null = null;
+  let reopened: string | null = null;
+  const storage: SessionStore = {
+    ...durable,
+    async commit(...args) {
+      await durable.commit(...args);
+      committed = args[4];
+    },
+    async flush(...args) {
+      await durable.flush?.(...args);
+      flushed = await durable.read(...args);
+    },
+    async read(...args) {
+      const snapshot = await durable.read(...args);
+      if (snapshot !== null) reopened = snapshot;
+      return snapshot;
+    },
+  };
+  let identity: string;
+  let before: unknown[];
   {
-    await using session = await agent.session({
-      storage: fileSessionStore(directory),
-    });
+    await using session = await agent.session({ storage });
     const turn = await session.submit('one');
     const result = await turn.wait();
     expect(result.finalOutput).toBe('terminal success');
     expect(result.toolCall).toBeDefined();
-    const before = await session.saveState();
-    expect(terminalRows(before)).toHaveLength(1);
-    expect(terminalRows(before)[0]).toMatchObject({
-      final_output: 'terminal success',
-    });
+    identity = session.id;
+    before = storedTerminalRows(flushed);
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({ final_output: 'terminal success' });
     // Actual public success and a canonical persisted value establish acceptance.
     await delay(MS + 300);
-    after = await session.saveState();
-    expect(terminalRows(after)).toEqual(terminalRows(before));
+    expect(storedTerminalRows(committed)).toEqual(before);
+    expect(storedTerminalRows(flushed)).toEqual(before);
     expect((await turn.wait()).finalOutput).toBe('terminal success');
   }
-  await using restored = await agent.session({ state: after! });
-  expect(terminalRows(await restored.saveState())).toEqual(
-    terminalRows(after!),
-  );
+  reopened = null;
+  await using restored = await agent.session({ storage, resume: identity! });
+  expect(restored.id).toBe(identity!);
+  expect(storedTerminalRows(reopened)).toEqual(before!);
   expect(effects).toEqual(['once']);
   expect(model.requests).toHaveLength(1);
 });

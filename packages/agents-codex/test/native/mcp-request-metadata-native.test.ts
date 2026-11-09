@@ -74,7 +74,8 @@ async function setup(
     name: 'fixture',
     tools: ['lookup'],
     approvalMode: 'preapproved',
-    ...(family ? { location: 'host' as const } : {}),
+    // Child settlement uses the selected executor's actual stdio peer.
+    ...(family ? { location: 'environment' as const } : {}),
     command: process.execPath,
     args: [resolve(import.meta.dirname, 'mcp-peer.mjs'), roster, calls, starts],
     ...(policies
@@ -135,13 +136,23 @@ async function setup(
     ? new Agent({
         name: 'B',
         instructions: 'Read in B.',
+        model: family
+          ? 'gpt-5.6-terra'
+          : profile === 'destination'
+            ? 'gpt-5.5'
+            : 'gpt-5',
+        provider,
         tools: profile === 'destination' ? [declaration] : [],
       })
     : undefined;
   const agent = new Agent({
     name: 'A',
     instructions: 'Read the record.',
-    model: family ? 'gpt-5.6-terra' : 'gpt-5',
+    model: family
+      ? 'gpt-5.6-terra'
+      : profile === 'destination'
+        ? 'gpt-5.5'
+        : 'gpt-5',
     provider,
     programmaticToolCalling: inCode,
     tools:
@@ -257,7 +268,7 @@ it.each([undefined, null, {}, { 'app/value': [null, true, 2, 'ok'] }])(
     expect(actual).toHaveLength(1);
     expect(typeof actual[0]._meta.callId).toBe('string');
     expect(seen).toBe(1);
-    expect(model.requests).toHaveLength(1);
+    expect(model.requests).toHaveLength(2);
   },
 );
 it.each([
@@ -292,11 +303,8 @@ it.each([
     expect(failure).toBeInstanceOf(Error);
     expect(String(failure)).not.toContain(secret);
     expect(await records(calls)).toEqual([]);
-    // Native reserved/size rejection is reported at turn end; SDK JSON/exception
-    // failures already stop their callback owner before another sample.
-    expect(model.requests).toHaveLength(
-      RESERVED.includes(kind) || kind === 'oversized' ? 2 : 1,
-    );
+    // Every rejected metadata result fences sampling before the answer request.
+    expect(model.requests).toHaveLength(1);
     expect(JSON.stringify(model.requests)).not.toContain(secret);
   },
   20_000,
@@ -495,16 +503,31 @@ it('redacts late metadata callback errors while cancellation joins entered work'
   });
   const { binding } = await import('../../src/runtime/binding');
   const { NativeThread: Thread } = await binding();
-  const interrupt = Thread.prototype._interrupt_session;
-  let nativeStopped = false;
-  const observer = vi
-    .spyOn(Thread.prototype, '_interrupt_session')
-    .mockImplementation(function (this: NativeThread) {
-      return interrupt.call(this).then((value) => {
-        nativeStopped = true;
-        return value;
-      });
-    });
+  const requestStop = Thread.prototype._request_graph_stop;
+  const observers: Array<{ mockRestore(): void }> = [];
+  const requestedStops: Array<{ scope: string; mode: string }> = [];
+  let settlementEntered = false;
+  let nativeSettled = false;
+  observers.push(
+    vi
+      .spyOn(Thread.prototype, '_request_graph_stop')
+      .mockImplementation(function (this: NativeThread, scope, mode) {
+        const receipt = requestStop.call(this, scope, mode);
+        const settle = receipt.settle.bind(receipt);
+        observers.push(
+          vi.spyOn(receipt, 'settle').mockImplementation(() => {
+            const pending = settle();
+            settlementEntered = true;
+            return pending.then((value) => {
+              nativeSettled = true;
+              return value;
+            });
+          }),
+        );
+        requestedStops.push({ scope, mode });
+        return receipt;
+      }),
+  );
   const turn = await session.submit('Read.');
   let resultSettled = false;
   const result = turn
@@ -523,14 +546,17 @@ it('redacts late metadata callback errors while cancellation joins entered work'
       .finally(() => {
         settled = true;
       });
-    await vi.waitFor(() => expect(nativeStopped).toBe(true));
+    await vi.waitFor(() => expect(settlementEntered).toBe(true));
+    expect(requestedStops).toEqual([{ scope: 'root', mode: 'force' }]);
+    await vi.waitFor(() => expect(nativeSettled).toBe(true));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
     expect(resultSettled).toBe(false);
     expect(await records(calls)).toEqual([]);
     expect(model.requests).toHaveLength(1);
   } finally {
     release.resolve();
-    observer.mockRestore();
+    for (const observer of observers.reverse()) observer.mockRestore();
   }
   expect(inspect(await result, { depth: 12 })).not.toContain(secret);
   expect(inspect(await cancellation, { depth: 12 })).not.toContain(secret);
@@ -540,7 +566,7 @@ it('redacts late metadata callback errors while cancellation joins entered work'
   if (index >= 0) sessions.splice(index, 1);
 }, 30000);
 
-it('fences child metadata rejection without continuing its model and joins its entered callback', async () => {
+it('fences child metadata rejection through environment stdio without continuing its model and joins its entered callback', async () => {
   const { startPublicExecutor } = await import('./fixtures/public-executor');
   const executor = await startPublicExecutor();
   const childCaptured = Promise.withResolvers<void>();

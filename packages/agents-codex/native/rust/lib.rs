@@ -1116,7 +1116,7 @@ impl ContextChange {
         tokio::select! {
             biased;
             _ = self.candidate_publication_stop.cancelled() => Err(native_error("candidate MCP publication cancelled")),
-            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None, None) => receipt,
+            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None, None, None) => receipt,
         }
     }
 
@@ -2679,6 +2679,7 @@ impl NativeThread {
         startup_boundary: Option<String>,
         cancel_on_resource_close: Option<bool>,
         terminal_slots_json: Option<String>,
+        default_slots_json: Option<String>,
     ) -> napi::Result<String> {
         let servers_json = servers_json.as_str();
         if startup_boundary
@@ -2732,6 +2733,13 @@ impl NativeThread {
             return Err(input_error(
                 "Terminal replacement requires a function catalog",
             ));
+        }
+        let defaults = default_slots_json
+            .map(|json| serde_json::from_str::<Vec<usize>>(&json))
+            .transpose()
+            .map_err(input_error)?;
+        if defaults.is_some() && tool_generation.is_none() {
+            return Err(input_error("Default tool slots require a function update"));
         }
         let function_update = match (tool_generation, specs_json) {
             (Some(generation), Some(specs)) => Some((
@@ -2838,7 +2846,7 @@ impl NativeThread {
                 }
                 // An uncertain function publication cannot reopen the old policy.
                 let published = tools
-                    .replace(&inner.thread, generation, specs, None, terminal)
+                    .replace(&inner.thread, generation, specs, defaults, terminal)
                     .await
                     .map_err(native_error)?;
                 function_generation = Some(published.to_string());
@@ -2983,11 +2991,7 @@ impl NativeThread {
                 let Some(tools) = tools.owner(&inner.id.to_string(), &request) else {
                     return Ok(false);
                 };
-                let native_media = tools.native_media(&request);
-                let Some(sender) = tools
-                    .take_reply(&request.reply.thread, &request)
-                    .map_err(native_error)?
-                else {
+                let Some(native_media) = tools.native_media(&request) else {
                     return Ok(false);
                 };
                 inner
@@ -3002,6 +3006,15 @@ impl NativeThread {
                     )
                     .await
                     .map_err(native_error)?;
+                // Rejected media must leave the exact live sender parked until the
+                // owning host failure requests stop. Taking it before validation
+                // could wake Core before that fatal failure is recorded.
+                let Some(sender) = tools
+                    .take_reply(&request.reply.thread, &request)
+                    .map_err(native_error)?
+                else {
+                    return Ok(false);
+                };
                 if let Some(store) = &inner.engine.local_checklist_store {
                     let receipt_thread =
                         codex_protocol::ThreadId::from_string(&request.reply.thread)

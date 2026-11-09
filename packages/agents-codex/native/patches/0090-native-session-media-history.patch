@@ -26330,7 +26330,19 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
      pub fn rollout_path(&self) -> Option<PathBuf> {
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
-@@ -295,6 +295,8 @@
+@@ -288,6 +288,11 @@
+             .attach_to_compaction_prompt(&mut turn_input);
+         let turn_input_len = turn_input.len();
+         let prompt = Prompt {
++            prefer_buffered_response: sess
++                .services
++                .thread_extension_data
++                .get::<crate::BufferedResponsesPreference>()
++                .is_some_and(|mode| mode.0),
+             tool_admission: Some(crate::model_request::compaction_source_admission(
+                 sess.thread_id.to_string(),
+                 Arc::clone(&source_step_context),
+@@ -295,6 +300,8 @@
              input: turn_input,
              base_instructions: sess.get_prompt_base_instructions().await,
              sampling_stop: sampling_stop.clone(),
@@ -26339,7 +26351,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              cyber_access_program: turn_context.cyber_access_program,
              ..Default::default()
          };
-@@ -423,7 +425,7 @@
+@@ -423,7 +430,7 @@
      reason: CompactionReason,
      implementation: CompactionImplementation,
      phase: CompactionPhase,
@@ -26348,7 +26360,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
      started_at: u64,
      start_instant: Instant,
  }
-@@ -475,7 +477,7 @@
+@@ -475,7 +482,7 @@
              cache_write_input_tokens,
          } = details;
          let active_context_tokens_before =
@@ -26357,7 +26369,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          let active_context_tokens_after = sess.get_total_token_usage().await;
          sess.services
              .analytics_events_client
-@@ -534,7 +536,9 @@
+@@ -534,7 +541,9 @@
                      pieces.push(text.as_str());
                  }
              }
@@ -26368,7 +26380,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          }
      }
      if pieces.is_empty() {
-@@ -812,6 +816,7 @@
+@@ -812,6 +821,7 @@
          .await?;
      let mut output = Vec::new();
      let mut response_observation_id = None;
@@ -26376,7 +26388,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
      loop {
          let maybe_event = stream.next().await;
          let Some(event) = maybe_event else {
-@@ -852,6 +857,17 @@
+@@ -852,6 +862,17 @@
              Ok(ResponseEvent::RateLimits(snapshot)) => {
                  sess.update_rate_limits(turn_context, snapshot).await;
              }
@@ -27932,16 +27944,26 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
      call_id: &str,
      originating_call: Option<&ToolCallOrigin>,
      invocation: McpInvocation,
-@@ -476,6 +479,60 @@
+@@ -476,6 +479,70 @@
              async {
                  let mut result = prepared_call
                      .call_with_preparation(/*requested_timeout*/ None, || async {
 +                        // Resolve application data inside this exact catalog lease, after
 +                        // approval but before persistent decisions, uploads or tools/call.
-+                        let mcp_tool = McpToolContext::from_prepared_call(
-+                            &prepared_call,
-+                            turn_context.config.mcp_servers.get().get(&server),
-+                        );
++                        let server_config =
++                            if crate::realtime_conversation::uses_retained_mcp_binding(
++                                &step_context,
++                            ) {
++                                prepared_call
++                                    .config()
++                                    .mcp_server_catalog
++                                    .server(&server)
++                                    .map(|registration| registration.config())
++                            } else {
++                                turn_context.config.mcp_servers.get().get(&server)
++                            };
++                        let mcp_tool =
++                            McpToolContext::from_prepared_call(&prepared_call, server_config);
 +                        let is_cancelled: Arc<dyn Fn() -> bool + Send + Sync> = {
 +                            let token = cancellation_token.clone();
 +                            Arc::new(move || token.is_cancelled())
@@ -27993,7 +28015,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
                          if let McpToolApprovalApplication::Apply { decision, policy } =
                              &approval_application
                          {
-@@ -531,6 +588,11 @@
+@@ -531,6 +598,11 @@
                              call_id,
                              Some(&metadata),
                          );
@@ -30659,7 +30681,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
  #[path = "notification_tests.rs"]
  mod notification_tests;
  
-@@ -4250,6 +4250,7 @@
+@@ -4251,6 +4251,7 @@
          | RolloutItem::RetainedContext(_)
          | RolloutItem::SecurityRiskScore(_)
          | RolloutItem::ResponseObservationRecord(_)
@@ -30667,7 +30689,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          | RolloutItem::TokenUsageRecord(_)
          | RolloutItem::RealtimeItem(_)
          | RolloutItem::EventMsg(_) => None,
-@@ -4346,6 +4347,7 @@
+@@ -4347,6 +4348,7 @@
          | RolloutItem::RetainedContext(_)
          | RolloutItem::SecurityRiskScore(_)
          | RolloutItem::ResponseObservationRecord(_)
@@ -30675,7 +30697,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          | RolloutItem::TokenUsageRecord(_)
          | RolloutItem::RealtimeItem(_)
          | RolloutItem::EventMsg(_) => None,
-@@ -4552,6 +4554,7 @@
+@@ -4553,6 +4555,7 @@
          RolloutItem::TurnContext(previous_context_item.clone()),
          RolloutItem::EventMsg(EventMsg::TurnComplete(
              codex_protocol::protocol::TurnCompleteEvent {
@@ -30683,7 +30705,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
                  turn_id,
                  last_agent_message: None,
                  error: None,
-@@ -4609,7 +4612,9 @@
+@@ -4610,7 +4613,9 @@
          provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
          environments: Vec::new(),
          step_settings: Arc::new(StepSettings {
@@ -30693,7 +30715,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -4734,7 +4739,9 @@
+@@ -4735,7 +4740,9 @@
          provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
          environments: Vec::new(),
          step_settings: Arc::new(StepSettings {
@@ -30703,7 +30725,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -5361,7 +5368,9 @@
+@@ -5362,7 +5369,9 @@
          provider: create_model_provider(config.model_provider.clone(), /*auth_manager*/ None),
          environments: Vec::new(),
          step_settings: Arc::new(StepSettings {
@@ -30713,7 +30735,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -6747,7 +6756,9 @@
+@@ -6748,7 +6757,9 @@
          ),
          environments: Vec::new(),
          step_settings: Arc::new(StepSettings {
@@ -30723,7 +30745,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -6977,7 +6988,9 @@
+@@ -6978,7 +6989,9 @@
              Some(Arc::clone(&auth_manager)),
          ),
          step_settings: Arc::new(StepSettings {
@@ -30733,7 +30755,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -7175,6 +7188,7 @@
+@@ -7176,6 +7189,7 @@
          features: config.features.clone(),
  
          isolation: codex_extension_api::SessionIsolation::Inherit,
@@ -30741,7 +30763,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          tool_policy: Arc::default(),
          windows_sandbox_proxy_settings_mode:
              codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
-@@ -7306,7 +7320,9 @@
+@@ -7307,7 +7321,9 @@
              Some(Arc::clone(&auth_manager)),
          ),
          step_settings: Arc::new(StepSettings {
@@ -30751,7 +30773,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -7441,7 +7457,9 @@
+@@ -7442,7 +7458,9 @@
              Some(Arc::clone(&auth_manager)),
          ),
          step_settings: Arc::new(StepSettings {
@@ -30761,7 +30783,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -9262,7 +9280,9 @@
+@@ -9263,7 +9281,9 @@
              Some(Arc::clone(&auth_manager)),
          ),
          step_settings: Arc::new(StepSettings {
@@ -30771,7 +30793,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              collaboration_mode,
              reasoning_summary: config.model_reasoning_summary,
              service_tier: None,
-@@ -9459,6 +9479,7 @@
+@@ -9460,6 +9480,7 @@
          features: config.features.clone(),
  
          isolation: codex_extension_api::SessionIsolation::Inherit,
@@ -30779,7 +30801,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          tool_policy: Arc::default(),
          windows_sandbox_proxy_settings_mode:
              codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
-@@ -12893,6 +12914,7 @@
+@@ -12894,6 +12915,7 @@
      assert!(matches!(
          fifth.msg,
          EventMsg::TurnComplete(TurnCompleteEvent {
@@ -30787,7 +30809,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              turn_id,
              last_agent_message: None,
              error: None,
-@@ -14172,3 +14194,6 @@
+@@ -14173,3 +14195,6 @@
      .await
      .expect("cancelled root termination wait test timed out");
  }
@@ -31276,10 +31298,10 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
 +    {
 +        return Err(CodexErr::Fatal(error));
 +    }
+     step_context.tool_router.validate_code_mode_names()?;
      let turn_context = Arc::clone(&step_context.turn);
      let preempt = step_context.preempt.clone().unwrap_or_default();
-     let _input_watch = if let Some(preempt) = &step_context.preempt {
-@@ -1696,161 +1880,239 @@
+@@ -1697,161 +1881,239 @@
      let mut initial_input = Some(input);
      let mut original_input = None;
      let mut executed_tool_calls_by_output = HashMap::new();
@@ -31665,7 +31687,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
  }
  
  pub(crate) struct PreparedToolRecommendations {
-@@ -1908,6 +2170,7 @@
+@@ -1909,6 +2171,7 @@
  )]
  pub(crate) async fn built_tools(
      sess: &Session,
@@ -31673,7 +31695,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
      turn_context: &TurnContext,
      model_info: &codex_protocol::openai_models::ModelInfo,
      environments: &TurnEnvironmentSnapshot,
-@@ -1978,6 +2241,7 @@
+@@ -1979,6 +2242,7 @@
      Ok(Arc::new(
          build_tool_router(
              sess,
@@ -31681,7 +31703,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              turn_context,
              model_info,
              environments,
-@@ -1992,9 +2256,285 @@
+@@ -1993,9 +2257,285 @@
  
  #[derive(Debug)]
  struct SamplingRequestResult {
@@ -31967,7 +31989,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
  }
  
  /// Ephemeral per-response state for streaming a single proposed plan.
-@@ -2171,6 +2711,7 @@
+@@ -2172,6 +2712,7 @@
  
  pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventText> {
      match msg {
@@ -31975,7 +31997,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          EventMsg::ElicitationRequest(request)
              if matches!(
                  &request.request,
-@@ -2584,11 +3125,14 @@
+@@ -2585,11 +3126,14 @@
      in_flight: &mut FuturesOrdered<InFlightFuture<'static>>,
      sess: Arc<Session>,
      step_context: &StepContext,
@@ -31990,7 +32012,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
                  mark_thread_memory_mode_polluted_if_external_context(
                      sess.as_ref(),
                      turn_context.as_ref(),
-@@ -2637,6 +3181,7 @@
+@@ -2638,6 +3182,7 @@
      turn_diff_tracker: SharedTurnDiffTracker,
      prompt: &Prompt,
      cancellation_token: CancellationToken,
@@ -31998,7 +32020,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
  ) -> CodexResult<SamplingRequestResult> {
      let turn_context = Arc::clone(&step_context.turn);
      feedback_tags!(
-@@ -2700,27 +3245,7 @@
+@@ -2701,27 +3246,7 @@
      }
      // Every request, including a stream retry, depends on accepted durable history.
      sess.ensure_rollout_durable().await?;
@@ -32027,7 +32049,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
      let mut in_flight: FuturesOrdered<InFlightFuture<'static>> = FuturesOrdered::new();
      let mut needs_follow_up = false;
      let mut last_agent_message: Option<String> = None;
-@@ -2751,576 +3276,698 @@
+@@ -2752,576 +3277,698 @@
          !sess.services.extensions.turn_item_contributors().is_empty();
      let mut active_item_is_streaming_to_client = false;
      let receiving_span = trace_span!("receiving_stream");
@@ -33252,7 +33274,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
      drop(sampling_span);
      drop(sampling_timing_guard);
  
-@@ -3332,7 +3979,17 @@
+@@ -3333,7 +3980,17 @@
      )
      .await;
  
@@ -33271,7 +33293,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
          let _tool_blocking_timing_guard = turn_context.turn_timing_state.begin_tool_blocking();
          let _tool_blocking_span = trace_span!(
              "codex.tool_blocking",
-@@ -3340,8 +3997,64 @@
+@@ -3341,8 +3998,64 @@
              conversation.id = %sess.thread_id,
              turn.id = %turn_context.sub_id,
          );
@@ -33338,7 +33360,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
  
      // Tool effects have completed. Save their results before any dependent work.
      sess.ensure_rollout_durable().await?;
-@@ -3370,6 +4083,7 @@
+@@ -3371,6 +4084,7 @@
      }
  
      outcome.map(|mut result| {
@@ -36721,7 +36743,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              step_context.turn.as_ref(),
              &step_context.settings.model_info,
              &step_context.environments,
-@@ -3259,6 +3263,7 @@
+@@ -3239,6 +3243,7 @@
      for _ in 0..2 {
          let router = super::build_tool_router(
              &session,
@@ -36729,7 +36751,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              step.turn.as_ref(),
              &step.settings.model_info,
              &step.environments,
-@@ -3290,6 +3295,7 @@
+@@ -3270,6 +3275,7 @@
      assert!(
          super::build_tool_router(
              &session,
@@ -36737,7 +36759,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              step.turn.as_ref(),
              &step.settings.model_info,
              &step.environments,
-@@ -3333,6 +3339,7 @@
+@@ -3313,6 +3319,7 @@
          }
          let router = super::build_tool_router(
              &session,
@@ -36745,7 +36767,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              step.turn.as_ref(),
              &step.settings.model_info,
              &step.environments,
-@@ -3370,6 +3377,7 @@
+@@ -3350,6 +3357,7 @@
      let step = StepContext::for_test(Arc::new(turn));
      let result = super::build_tool_router(
          &session,
@@ -38622,7 +38644,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              error: Some(event),
 --- /dev/null
 +++ b/codex-rs/protocol/src/input_file.rs
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,423 @@
 +//! Provider-owned file references shared by user input and tool output.
 +//! Validation performs no host file access, network access, upload, or content estimation.
 +
@@ -38931,7 +38953,9 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
 +        for suffix in ["Zg==", "Zg", "Zm8=", "Zm8"] {
 +            let source = format!("{prefix}{suffix}");
 +            let file = InputFile::from_file_data(source.clone(), None).unwrap();
-+            assert_eq!(file.source(), &InputFileSource::Data { file_data: source });
++            assert!(
++                matches!(file.source(), InputFileSource::Data { file_data } if file_data == &source)
++            );
 +            assert!(
 +                InputFile::from_file_data(
 +                    format!("DATA:application/pdf;BASE64,{prefix}{suffix}"),

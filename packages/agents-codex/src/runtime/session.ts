@@ -29,6 +29,7 @@ import {
 import {
   captureTracing,
   getCurrentSpan,
+  workflowForTrace,
   withoutTracing,
   TraceCapture,
   type TraceSpan,
@@ -1529,6 +1530,9 @@ export class Session<OutputT = string, Context = unknown> {
     NativeRunResult,
     Completed<unknown>
   >();
+  // Close must release tracing on surviving handles without retaining old results.
+  private readonly runs = new Set<WeakRef<NativeTurn>>();
+  private readonly runFinalizer: FinalizationRegistry<WeakRef<NativeTurn>>;
   private readonly callbackDeliveries = new Map<
     string,
     NativeCallbackDelivery
@@ -1537,7 +1541,6 @@ export class Session<OutputT = string, Context = unknown> {
     NativeEvent,
     NativeCallbackDelivery
   >();
-  private readonly issuedRuns = new Map<string, NativeTurn>();
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
   private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
@@ -1703,6 +1706,10 @@ export class Session<OutputT = string, Context = unknown> {
     private readonly oneShot?: OneShotOptions,
     modelApiKey?: string,
   ) {
+    const runs = this.runs;
+    this.runFinalizer = new FinalizationRegistry((reference) =>
+      runs.delete(reference),
+    );
     this.profileRuntimes = options.agentGraph?.profiles ?? new Map();
     this.defaultOutput = options.output ?? prepareOutput(undefined);
     this.openingCatalog = catalog;
@@ -2444,8 +2451,7 @@ export class Session<OutputT = string, Context = unknown> {
             return this.admitNativeQuestion(run, event);
           },
           run.controller.signal,
-          (traceId, workflowSpanId) =>
-            this.workflowForTrace(traceId, workflowSpanId),
+          workflowForTrace,
         );
       } catch (error) {
         if (!entered && !(await pending())) return;
@@ -3035,7 +3041,6 @@ export class Session<OutputT = string, Context = unknown> {
   private issuedTurn(step: NativeTurn): Turn<unknown, string | null> {
     if (step.id) {
       step.issuedTracing ??= step.tracing;
-      this.issuedRuns.set(step.id, step);
     }
     const run = this.rootRun(step);
     let turn = this.turnHandles.get(run);
@@ -3049,7 +3054,7 @@ export class Session<OutputT = string, Context = unknown> {
         () => {
           this.assertCanWait(run);
           return (completion ??= this.#waitResult(run).then((value) =>
-            this.#complete(value),
+            this.#complete(run, value),
           ));
         },
         (options) => this.observations.events(options, scope),
@@ -3082,10 +3087,12 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /** @internal Decode each exact result once, independently of later turns. */
-  #complete(result: NativeRunResult): Completed<unknown> {
+  #complete(root: NativeTurn, result: NativeRunResult): Completed<unknown> {
     const saved = this.completedResults.get(result);
     if (saved) return saved;
-    const run = this.issuedRuns.get(result.turnId);
+    const run = [...this.rootSteps(root)].find(
+      (step) => step.id === result.turnId,
+    );
     if (!run) throw new NativeError('Result has no issued turn');
     const completed = Object.freeze({
       turn: this.#turnFor(run),
@@ -3277,22 +3284,28 @@ export class Session<OutputT = string, Context = unknown> {
   /** Register FIFO new work and issue its exact handle before native admission. */
   enqueue(
     input: UserInput,
-    options?: SubmitOptions<Context>,
+    options?: Omit<SubmitOptions<Context>, 'ifBusy'>,
   ): Promise<Turn<OutputT, string | null>>;
   enqueue<Next>(
     input: UserInput,
-    options: SubmitOptions<Context, Next> & { outputType: OutputSpec<Next> },
+    options: Omit<SubmitOptions<Context, Next>, 'ifBusy'> & {
+      outputType: OutputSpec<Next>;
+    },
   ): Promise<Turn<Next, string | null>>;
   enqueue<Next>(
     input: UserInput,
-    options?: SubmitOptions<Context, Next>,
+    options?: Omit<SubmitOptions<Context, Next>, 'ifBusy'>,
   ): Promise<Turn<OutputT | Next, string | null>>;
   async enqueue<Next>(
     input: UserInput,
-    options?: SubmitOptions<Context, Next>,
+    options?: Omit<SubmitOptions<Context, Next>, 'ifBusy'>,
   ): Promise<Turn<OutputT | Next, string | null>> {
-    const outputType = options?.outputType;
     this.checkCallbackOperation('enqueue on');
+    if (options && 'ifBusy' in options && options.ifBusy !== undefined)
+      throw new TypeError(
+        'enqueue queues work; use submit to reject busy work',
+      );
+    const outputType = options?.outputType;
     if (
       !this.isOpen ||
       this.lifecycle.kind === 'mutation' ||
@@ -4362,6 +4375,9 @@ export class Session<OutputT = string, Context = unknown> {
       () => this.discardTerminalValue(run),
       { once: true },
     );
+    const reference = new WeakRef(run);
+    this.runs.add(reference);
+    this.runFinalizer.register(run, reference, reference);
     submissions.set(run, { output, outputOverride, observation: 'open' });
     void run.completion.promise.then(
       () => run.tracing?.finish(),
@@ -5288,36 +5304,6 @@ export class Session<OutputT = string, Context = unknown> {
     return owner;
   }
 
-  private workflowForTrace(
-    traceId: string,
-    workflowSpanId: string,
-  ): TraceSpan | undefined {
-    const current =
-      this.lifecycle.kind === 'turn'
-        ? this.lifecycle.run.tracing?.workflow
-        : this.lastRun?.tracing?.workflow;
-    if (
-      current?.context.traceId === traceId &&
-      current.context.spanId === workflowSpanId
-    )
-      return current;
-    // Issued turns already retain exact result owners, including completed and
-    // retained steps. A child may first reach JS after a later root starts.
-    for (const run of this.issuedRuns.values()) {
-      const workflow = (run.issuedTracing ?? run.tracing)?.workflow;
-      if (
-        workflow?.context.traceId === traceId &&
-        workflow.context.spanId === workflowSpanId
-      )
-        return workflow;
-    }
-    const opening = this.options.tracingCapture?.workflow;
-    return opening?.context.traceId === traceId &&
-      opening.context.spanId === workflowSpanId
-      ? opening
-      : undefined;
-  }
-
   private processChild(
     event: NativeEvent,
     native: NativeThread,
@@ -6097,7 +6083,6 @@ export class Session<OutputT = string, Context = unknown> {
           if (
             !proposal ||
             !proposal.accepted ||
-            proposal.generation !== this.catalog.generation ||
             proposal.callId !== fact.call_id ||
             proposal.name !== fact.name ||
             (proposal.namespace ?? 'functions') !==
@@ -6193,7 +6178,6 @@ export class Session<OutputT = string, Context = unknown> {
       (msg.instance ?? null) !== (child ? owner.incarnation : null) ||
       msg.turn_id !== (child ? owner.turnId : owner.id) ||
       msg.generation !== proposal.generation.toString() ||
-      proposal.generation !== this.catalog.generation ||
       msg.request_id !== proposal.requestId ||
       msg.native_step !== proposal.nativeStep
     )
@@ -6251,6 +6235,7 @@ export class Session<OutputT = string, Context = unknown> {
       };
       const signal = owner.controller.signal;
       let replied = false;
+      let capturedCatalog: ToolCatalog | undefined;
       const reject = () => {
         if (replied) return;
         replied = true;
@@ -6270,7 +6255,9 @@ export class Session<OutputT = string, Context = unknown> {
           msg.thread !== receipt.thread ||
           msg.turn_id !== turnId ||
           (child && msg.instance !== owner.incarnation) ||
-          msg.generation !== this.catalog.generation.toString() ||
+          !capturedCatalog ||
+          this.sourceCatalog(msg, z.string().parse(msg.generation)) !==
+            capturedCatalog ||
           !native._check_tool_completion(encode(receipt))
         )
           throw new NativeError('Expired terminal proposal owner');
@@ -6282,9 +6269,13 @@ export class Session<OutputT = string, Context = unknown> {
       signal.addEventListener('abort', abort, { once: true });
       try {
         this.terminalProposals.delete(owner);
+        capturedCatalog = this.sourceCatalog(
+          msg,
+          z.string().parse(msg.generation),
+        );
         check();
         const slot = z.number().int().nonnegative().safe().parse(msg.slot);
-        const declaration = this.catalog.tools[slot];
+        const declaration = capturedCatalog.tools[slot];
         const identity = z
           .object({ name: z.string(), namespace: z.string().nullable() })
           .parse(msg.tool);
@@ -6302,16 +6293,27 @@ export class Session<OutputT = string, Context = unknown> {
         const attempt = {
           requestId: z.string().parse(msg.request_id),
           nativeStep: z.string().parse(msg.native_step),
-          generation: this.catalog.generation,
+          generation: capturedCatalog.generation,
           callId: z.string().parse(msg.call_id),
           name: declaration.name,
           namespace: toolNamespace(declaration),
         };
         this.terminalProposals.set(owner, { ...attempt, accepted: false });
-        const converted = parseToolCompletion(
-          child ? this.childOutput : submissions.get(owner)!.output,
-          msg.output,
-        );
+        let output: PreparedOutput = this.childOutput;
+        if (!child) {
+          const submission = submissions.get(owner)!;
+          const source = this.messageProfile(msg);
+          output = submission.output;
+          if (
+            source &&
+            !submission.outputOverride &&
+            !submission.compaction &&
+            !submission.review &&
+            !submission.realtimeTools
+          )
+            output = this.profileRuntimes.get(source.profile_id)!.output;
+        }
+        const converted = parseToolCompletion(output, msg.output);
         check();
         this.terminalProposals.set(owner, {
           ...attempt,
@@ -6587,10 +6589,6 @@ export class Session<OutputT = string, Context = unknown> {
     delivery?: NativeCallbackDelivery,
   ): Promise<void> {
     const beforeStep = this.options.nativeAgents?.beforeStep;
-    if (!beforeStep)
-      return Promise.reject(
-        new NativeError('Child step selection is disabled'),
-      );
     let selection = this.childSelections.get(owner);
     if (!selection) {
       selection = {
@@ -6691,10 +6689,9 @@ export class Session<OutputT = string, Context = unknown> {
         typeof event.msg.tracing_context === 'string'
           ? event.msg.tracing_context
           : undefined,
-        () => beforeStep(context),
+        () => beforeStep?.(context),
         signal,
-        (traceId, workflowSpanId) =>
-          this.workflowForTrace(traceId, workflowSpanId),
+        workflowForTrace,
       );
       signal.throwIfAborted();
       if (
@@ -6881,8 +6878,7 @@ export class Session<OutputT = string, Context = unknown> {
                 tracingContext,
                 callback,
                 signal,
-                (traceId, workflowSpanId) =>
-                  this.workflowForTrace(traceId, workflowSpanId),
+                workflowForTrace,
               )
             : tracing
               ? tracing.run('host.callback', 'callback', callback)
@@ -7975,8 +7971,7 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined,
           execute,
           signal,
-          (traceId, workflowSpanId) =>
-            this.workflowForTrace(traceId, workflowSpanId),
+          workflowForTrace,
         );
     } catch (error) {
       if (
@@ -8598,8 +8593,23 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TypeError(
             'Updated MCP tools must have been declared when the Session opened',
           );
+      const replacements = captureTools(next.tools);
+      const byName = new Map(
+        replacements.tools.map((tool) => [
+          JSON.stringify(toolIdentity(tool)),
+          tool,
+        ]),
+      );
+      const candidate = captureTools(
+        this.catalog.tools.map(
+          (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
+        ),
+        (this.options.agentGraph
+          ? this.profileHighWater
+          : this.catalog.generation) + 1n,
+      );
       if (!this.openingMcpTools.length) {
-        await this.#replaceTools(next.tools);
+        await this.publishCatalog(async () => candidate, replacements.tools);
         await this.realtimeOwner?._syncProfile(true);
         return;
       }
@@ -8640,12 +8650,7 @@ export class Session<OutputT = string, Context = unknown> {
           (!(server instanceof HttpMCP) || server.activation !== 'operation'),
       );
       const guarded = hasMcpPrePolicy(this.mcpTools) || hasMcpPrePolicy(active);
-      const candidate = captureTools(
-        next.tools,
-        (this.options.agentGraph
-          ? this.profileHighWater
-          : this.catalog.generation) + 1n,
-      );
+      const slots = this.catalogSlots(candidate, replacements.tools);
       const generation =
         (this.options.agentGraph ? this.profileHighWater : this.mcpGeneration) +
         1n;
@@ -8671,6 +8676,7 @@ export class Session<OutputT = string, Context = unknown> {
                 undefined,
                 undefined,
                 this.terminalSlots(candidate),
+                encode(slots),
               ),
             );
             // The combined ingress owns function and MCP publication. Any
@@ -8687,7 +8693,7 @@ export class Session<OutputT = string, Context = unknown> {
             const accepted = await this.#native._replace_tools(
               candidate.generation.toString(),
               candidate.specsJson,
-              undefined,
+              encode(slots),
               this.terminalSlots(candidate),
             );
             if (accepted !== candidate.generation.toString())
@@ -8712,9 +8718,7 @@ export class Session<OutputT = string, Context = unknown> {
             );
           }
           checkMcpPublication(receipt, active, generation, bindings);
-          this.catalog = candidate;
-          this.rememberProfileBindings();
-          this.defaultTools = candidate.tools;
+          this.acceptCatalog(candidate, replacements.tools, slots);
           this.mcpTools = active;
           this.defaultMcpTools = Object.freeze([...next.mcp]);
           this.mcpBindings = Object.freeze(bindings);
@@ -8760,23 +8764,39 @@ export class Session<OutputT = string, Context = unknown> {
     if (categories) await this.realtimeOwner?._syncProfile(true);
   }
 
-  async #replaceTools(tools: readonly SessionTool[]): Promise<void> {
-    const replacements = captureTools(tools);
-    const byName = new Map(
-      replacements.tools.map((tool) => [
-        JSON.stringify(toolIdentity(tool)),
-        tool,
-      ]),
+  private catalogSlots(
+    catalog: ToolCatalog,
+    defaults: readonly SessionTool[],
+  ): number[] {
+    return defaults.map((tool) => {
+      const identity = toolIdentity(tool);
+      return catalog.tools.findIndex((binding) => {
+        const current = toolIdentity(binding);
+        return (
+          current.name === identity.name &&
+          current.namespace === identity.namespace
+        );
+      });
+    });
+  }
+  private acceptCatalog(
+    candidate: ToolCatalog,
+    defaults: readonly SessionTool[],
+    slots: readonly number[],
+  ): void {
+    this.catalog = candidate;
+    this.rememberProfileBindings();
+    this.defaultTools = Object.freeze(
+      slots.map((slot) => candidate.tools[slot]),
     );
-    const candidate = captureTools(
-      this.catalog.tools.map(
-        (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
-      ),
-      (this.options.agentGraph
-        ? this.profileHighWater
-        : this.catalog.generation) + 1n,
-    );
-    await this.publishCatalog(async () => candidate, replacements.tools);
+    for (const tool of defaults) {
+      const identity = toolIdentity(tool);
+      const key = JSON.stringify([identity.namespace, identity.name]);
+      let admitted = this.admittedDeclarations.get(key);
+      if (!admitted)
+        this.admittedDeclarations.set(key, (admitted = new WeakSet()));
+      admitted.add(toolDeclarationIdentity(tool));
+    }
   }
   private async publishCatalog(
     create: () => Promise<ToolCatalog>,
@@ -8785,16 +8805,7 @@ export class Session<OutputT = string, Context = unknown> {
     let confirmed = false;
     await this.mutate(async () => {
       const candidate = await create();
-      const slots = defaults.map((tool) => {
-        const identity = toolIdentity(tool);
-        return candidate.tools.findIndex((binding) => {
-          const current = toolIdentity(binding);
-          return (
-            current.name === identity.name &&
-            current.namespace === identity.namespace
-          );
-        });
-      });
+      const slots = this.catalogSlots(candidate, defaults);
       const accepted = await this.#native._replace_tools(
         candidate.generation.toString(),
         candidate.specsJson,
@@ -8803,19 +8814,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
       confirmed = accepted === candidate.generation.toString();
       if (confirmed) {
-        this.catalog = candidate;
-        this.rememberProfileBindings();
-        this.defaultTools = Object.freeze(
-          slots.map((slot) => candidate.tools[slot]),
-        );
-        for (const tool of defaults) {
-          const identity = toolIdentity(tool);
-          const key = JSON.stringify([identity.namespace, identity.name]);
-          let admitted = this.admittedDeclarations.get(key);
-          if (!admitted)
-            this.admittedDeclarations.set(key, (admitted = new WeakSet()));
-          admitted.add(toolDeclarationIdentity(tool));
-        }
+        this.acceptCatalog(candidate, defaults, slots);
         await this.configureManualTools();
         await this.acknowledgeProfilePublication();
       }
@@ -9188,7 +9187,6 @@ export class Session<OutputT = string, Context = unknown> {
           if (
             !proposal ||
             !proposal.accepted ||
-            proposal.generation !== this.catalog.generation ||
             proposal.callId !== fact.call_id ||
             proposal.name !== fact.name ||
             (proposal.namespace ?? 'functions') !==
@@ -10428,8 +10426,7 @@ export class Session<OutputT = string, Context = unknown> {
               tracing_context,
               transform,
               owner.controller.signal,
-              (traceId, workflowSpanId) =>
-                this.workflowForTrace(traceId, workflowSpanId),
+              workflowForTrace,
             );
           }
           if (!requestExpired && this.current(owner)) {
@@ -10554,8 +10551,7 @@ export class Session<OutputT = string, Context = unknown> {
                 tracingContext,
                 callback,
                 owner.controller.signal,
-                (traceId, workflowSpanId) =>
-                  this.workflowForTrace(traceId, workflowSpanId),
+                workflowForTrace,
               ),
             );
             pending.resolve();
@@ -11461,16 +11457,15 @@ export class Session<OutputT = string, Context = unknown> {
         } finally {
           // Native, readers and child callbacks have joined; late discovery is now impossible.
           this.options.tracingCapture = undefined;
-          for (const owned of [
-            run,
-            this.lastRun,
-            ...this.issuedRuns.values(),
-          ]) {
+          for (const reference of this.runs) {
+            const owned = reference.deref();
             if (owned) {
               owned.tracing = undefined;
               owned.issuedTracing = undefined;
             }
+            this.runFinalizer.unregister(reference);
           }
+          this.runs.clear();
         }
       }
       await joinRealtimeShutdown();

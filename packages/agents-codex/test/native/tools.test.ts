@@ -202,9 +202,7 @@ describe('function tools', () => {
     'data:image/png,ignored;base64,aW1hZ2U=',
     null,
   ])('rejects an unsupported image factory input: %s', (imageUrl) => {
-    expect(() => ToolOutput.image(imageUrl as string)).toThrow(
-      /image|Image|Media/,
-    );
+    expect(() => ToolOutput.image(imageUrl as string)).toThrow(TypeError);
   });
 
   it('preserves the general image constructor without applying factory restrictions', () => {

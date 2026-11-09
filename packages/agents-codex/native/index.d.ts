@@ -235,6 +235,7 @@ export class NativeThread {
     startup_boundary?: string,
     cancel_on_resource_close?: boolean,
     terminal_slots_json?: string,
+    default_slots_json?: string,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(response_json: string): Promise<boolean>;

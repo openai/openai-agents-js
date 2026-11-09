@@ -412,6 +412,155 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       },
     );
 
+    it.each([false, true])(
+      'keeps a settled child terminal result valid after an admitted root profile change (beforeStep=%s)',
+      async (withBeforeStep) => {
+        const { Agent, NativeAgents, Environment, tool } =
+          await import('../../src');
+        const { startPublicExecutor } =
+          await import('./fixtures/public-executor');
+        const executor = await startPublicExecutor();
+        const release = Promise.withResolvers<void>();
+        try {
+          let rootId: string | undefined;
+          let rootRequests = 0;
+          let childRequests = 0;
+          const respond = (request: Record<string, any>) => {
+            const id = JSON.parse(
+              request.client_metadata['x-codex-turn-metadata'],
+            ).thread_id as string;
+            rootId ??= id;
+            if (id !== rootId) {
+              childRequests++;
+              return [call('finish', {}, { callId: 'delayed-child-call' })];
+            }
+            rootRequests++;
+            if (rootRequests === 1)
+              return [
+                call(
+                  'spawn_agent',
+                  { task_name: 'delayed_terminal_child', message: 'Finish.' },
+                  { namespace: 'collaboration', callId: 'spawn' },
+                ),
+              ];
+            return [message('root done')];
+          };
+          const { server, provider: resource } = await fixture(
+            Array.from({ length: 5 }, () => respond),
+          );
+          await using provider = resource;
+          const effect = vi.fn(async () => {
+            await release.promise;
+            return 'settled child';
+          });
+          const replacement = vi.fn(() => 'replacement must not replay');
+          const nativeAgents = new NativeAgents(
+            withBeforeStep ? { beforeStep: () => undefined } : {},
+          );
+          const finish = tool({
+            name: 'finish',
+            parameters: z.object({}),
+            finishTurn: true,
+            execute: effect,
+          });
+          const destination = new Agent({
+            name: 'Replacement',
+            instructions: 'Use the replacement root catalog.',
+            provider,
+            model: 'gpt-5.6-terra',
+            tools: [
+              nativeAgents,
+              tool({
+                name: 'finish',
+                parameters: z.object({}),
+                execute: replacement,
+              }),
+            ],
+          });
+          const agent = new Agent({
+            name: 'Original',
+            instructions: 'Delegate.',
+            model: 'gpt-5.6-terra',
+            provider,
+            tools: [nativeAgents, finish],
+            handoffs: [destination],
+          });
+          const environment = new Environment({
+            url: executor.url,
+            cwd: executor.cwd,
+            headers: executor.headers,
+            tools: ['exec_command', 'write_stdin', 'apply_patch'],
+          });
+          await using session = await agent.session({ environment });
+          try {
+            const rootResult = (await session.submit('Delegate.')).wait();
+            let rootFailure: unknown;
+            void rootResult.catch((error) => {
+              rootFailure = error;
+            });
+            await vi.waitUntil(
+              () => {
+                if (rootFailure) throw rootFailure;
+                return effect.mock.calls.length === 1;
+              },
+              { timeout: 10_000 },
+            );
+            const child = await vi.waitUntil(async () => {
+              const members = await Array.fromAsync(session.subagents());
+              return members.length === 1 && members[0].turn
+                ? members[0]
+                : false;
+            });
+            const childId = child.id;
+            const captured = child.turn!;
+            const terminal = (async () => {
+              for await (const event of captured.events())
+                if (event.type === 'turn_finished') return event;
+              throw new Error('Expected child terminal observation');
+            })();
+            release.resolve();
+            expect(await terminal).toMatchObject({ status: 'completed' });
+            expect((await rootResult).finalOutput).toBe('root done');
+            // Activate a separately admitted catalog; do not mutate the live child's catalog.
+            await session.update({ agent: destination });
+            expect(await session.getActiveAgent()).toBe(destination);
+            // Passive terminal observation does not consume the first result wait.
+            const result = await captured.wait();
+            expect(result.finalOutput).toBe('settled child');
+            expect(result.toolCall).toMatchObject({
+              callId: 'delayed-child-call',
+              childId,
+              turnId: captured.turnId,
+            });
+            expect(await captured.wait()).toBe(result);
+            expect(effect).toHaveBeenCalledTimes(1);
+            expect(effect).toHaveBeenCalledWith(
+              {},
+              expect.objectContaining({
+                call: expect.objectContaining({
+                  sessionId: session.id,
+                  callId: 'delayed-child-call',
+                  childId,
+                  turnId: captured.turnId,
+                  childIncarnation: result.toolCall!.childIncarnation,
+                }),
+              }),
+            );
+            expect(replacement).not.toHaveBeenCalled();
+            expect(rootRequests).toBe(2);
+            expect(childRequests).toBe(1);
+            expect(server.requests).toHaveLength(3);
+          } finally {
+            release.resolve();
+          }
+        } finally {
+          release.resolve();
+          await executor.close();
+        }
+      },
+      30_000,
+    );
+
     it('T02/T10/T12/T14 isolates failed and saved child proposals from current owners', async () => {
       const { Agent, NativeAgents, Environment, ToolOutput, tool } =
         await import('../../src');

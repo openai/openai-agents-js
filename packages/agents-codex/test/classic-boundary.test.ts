@@ -1,5 +1,5 @@
 import { tool as classicTool } from '@openai/agents/classic';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent } from '../src/runtime/public-agent';
 import { NativeProvider } from '../src/runtime/provider';
@@ -11,6 +11,25 @@ import {
   type FunctionTool,
   type Tool,
 } from '../src/runtime/tools';
+
+// These host-only checks stop at provider acquisition. Keep only the native
+// declaration preflight validators; the native suite covers their implementation.
+vi.mock('../src/runtime/binding', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/runtime/binding')>()),
+  binding: async () => ({
+    _validate_python_tool_declarations: () => undefined,
+    _validate_application_instructions: () => undefined,
+  }),
+}));
+
+const nativeLoad = vi.hoisted(() => vi.fn());
+vi.mock('../native/index.js', () => {
+  nativeLoad();
+  throw new Error('Host-only boundary test attempted to load the native addon');
+});
+afterEach(() => {
+  expect(nativeLoad).not.toHaveBeenCalled();
+});
 
 function openingProbe() {
   const provider = new NativeProvider({ apiKey: 'synthetic-test-key' });
