@@ -293,3 +293,74 @@ it('releases concurrent admission after a successful callback in recorded order'
   });
   expect(called).toEqual([1, 2, 3]);
 });
+
+it.each([
+  { explicitCause: false, cleanupFails: false },
+  { explicitCause: true, cleanupFails: false },
+  { explicitCause: false, cleanupFails: true },
+])(
+  'retains late callback diagnostics after joined close (%j)',
+  async ({ explicitCause, cleanupFails }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const originalCause = new Error('synthetic-original-cause');
+    const primary = new Error(
+      'synthetic-primary-before-callback',
+      explicitCause ? { cause: originalCause } : undefined,
+    );
+    const callback = new Error('synthetic-late-callback');
+    const cleanup = new Error('synthetic-cleanup-failure');
+    let callbackSettled = false;
+    let request: Promise<unknown> | undefined;
+    try {
+      await withScriptedResponses(
+        [
+          async () => {
+            entered();
+            try {
+              await gate;
+              throw callback;
+            } finally {
+              callbackSettled = true;
+            }
+          },
+        ],
+        async (peer) => {
+          if (cleanupFails) {
+            const close = peer.provider.close.bind(peer.provider);
+            peer.provider.close = async () => {
+              await close();
+              throw cleanup;
+            };
+          }
+          request = fetch(`${peer.provider.baseUrl}/responses`, {
+            method: 'POST',
+            body: JSON.stringify({ input: [] }),
+          }).catch(() => undefined);
+          await started;
+          // The callback fails only after the body has failed and close has begun.
+          setTimeout(release, 20);
+          throw primary;
+        },
+      );
+      throw new Error('scripted body failure was lost');
+    } catch (error) {
+      expect(callbackSettled).toBe(true);
+      if (cleanupFails) {
+        expect(error).toBeInstanceOf(AggregateError);
+        expect((error as AggregateError).errors).toEqual([primary, cleanup]);
+        expect((error as Error).cause).toBe(primary);
+      } else expect(error).toBe(primary);
+      expect(primary.cause).toBe(explicitCause ? originalCause : callback);
+    } finally {
+      release();
+      await request;
+    }
+  },
+);

@@ -517,7 +517,6 @@ export async function withScriptedResponses<T>(
     result = await run(peer);
   } catch (error) {
     const primary = error;
-    peer.retainCallbackFailure(primary);
     try {
       await peer.close();
     } catch (cleanupError) {
@@ -526,6 +525,8 @@ export async function withScriptedResponses<T>(
         'Scripted scope and cleanup failed',
         { cause: primary },
       );
+    } finally {
+      peer.retainCallbackFailure(primary);
     }
     throw primary;
   }
