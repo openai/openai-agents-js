@@ -377,4 +377,23 @@ describe('native computer callback adapter', () => {
     expect(calls.some(([kind]) => kind === 'type')).toBe(false);
     await closeComputerResources(owner);
   });
+  it('preserves own prototype-named safety fields through the acknowledgment', async () => {
+    const owner = {};
+    const check = JSON.parse('{"id":"s1","__proto__":{"keep":true}}');
+    const tool = computerTool({
+      computer: driver().device,
+      onSafetyCheck(_context, checks) {
+        expect(Object.hasOwn(checks[0], '__proto__')).toBe(true);
+        return true;
+      },
+    });
+    const response = await invoke(tool, owner, {
+      pending_safety_checks: [check],
+    });
+    expect(
+      JSON.parse((response.contentItems[0] as { text: string }).text)
+        .acknowledged_safety_checks,
+    ).toEqual([check]);
+    await closeComputerResources(owner);
+  });
 });

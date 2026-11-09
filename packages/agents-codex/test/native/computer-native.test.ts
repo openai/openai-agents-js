@@ -72,12 +72,9 @@ for (const toolType of ['computer', 'computer_use_preview'] as const) {
         create = vi.fn(() => computer),
         dispose = vi.fn();
       const checks = [
-        {
-          id: 'safety-1',
-          code: 'domain',
-          message: 'confirm',
-          future: { keep: true },
-        },
+        JSON.parse(
+          '{"id":"safety-1","code":"domain","message":"confirm","future":{"keep":true},"__proto__":{"preserve":true}}',
+        ) as JsonObject,
       ];
       const action = { type: 'click', x: 1, y: 2, button: 'left' };
       const original = computerCall({

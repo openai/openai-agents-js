@@ -6,7 +6,7 @@ import {
   type FunctionTool,
   type ToolCallContext,
 } from './tools';
-import type { JsonValue } from './binding';
+import { losslessJsonObjectSchema, type JsonValue } from './binding';
 
 type MaybePromise<T> = T | Promise<T>;
 export type ComputerButton = 'left' | 'right' | 'wheel' | 'back' | 'forward';
@@ -95,7 +95,7 @@ const callSchema = z.object({
   call_id: z.string().min(1),
   action: actionSchema.nullish(),
   actions: z.array(actionSchema).nullish(),
-  pending_safety_checks: z.array(z.record(z.string(), z.unknown())).default([]),
+  pending_safety_checks: z.array(losslessJsonObjectSchema).default([]),
 });
 
 export interface ComputerToolOptions<Context = unknown> {
@@ -286,7 +286,7 @@ export function computerTool<Context = unknown>(
             type: 'computer_screenshot',
             image_url: `data:image/png;base64,${screenshot}`,
           },
-          acknowledged_safety_checks: pending as JsonValue[],
+          acknowledged_safety_checks: pending,
         };
         return {
           success: true,
