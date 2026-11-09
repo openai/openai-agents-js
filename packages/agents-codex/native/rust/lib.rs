@@ -596,7 +596,7 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<NativeThread> {
-        self.start_native_thread(&options_json, &specs_json, None)
+        Box::pin(self.start_native_thread(&options_json, &specs_json, None))
             .await
             .map_err(native_error)
     }
