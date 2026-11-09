@@ -4,9 +4,16 @@ import { ModelServer, message } from './fixtures/model-server';
 
 const MODEL = 'fixture-unlisted-metadata-json';
 function metadata(phase: string): Record<string, string> {
-  return JSON.parse(
-    `{"__proto__":"${phase}-proto","constructor":"${phase}-constructor","prototype":"${phase}-prototype"}`,
-  );
+  return Object.fromEntries([
+    ['__proto__', `${phase}-proto`],
+    ['constructor', `${phase}-constructor`],
+    ['prototype', `${phase}-prototype`],
+    ...Array.from({ length: 17 }, (_, index) => [
+      `field_${index}`,
+      `${phase}-${index}`,
+    ]),
+    ['k'.repeat(65), `${phase}-${'v'.repeat(513)}`],
+  ]);
 }
 function expectMetadata(value: unknown, phase: string) {
   expect(value).toEqual(metadata(phase));

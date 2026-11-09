@@ -40,12 +40,12 @@ Native `modelSettings` accepts these fields:
 | --- | --- |
 | `reasoningEffort` | A string selecting the model's reasoning effort. |
 | `reasoningSummary` | A string selecting the model's reasoning summary setting. |
-| `serviceTier` | A string selecting a service tier, or `null` to clear an inherited override. |
+| `serviceTier` | Native routing normalizes `fast` to `priority` and may omit a tier under its model/catalog policy; `null` clears an inherited override. |
 | `toolChoice` | `'auto'`, `'none'`, `'required'`, a `toolRef(name, namespace?)`, or `null` to clear a named choice. A named target narrows the already admitted catalog; it does not grant execution authority or widen a selected subset. |
 | `invocationTimeoutMs` | Positive uint32 milliseconds for one model invocation, including preparation waits and retries; `null` clears the override. Accepted terminal responses disarm it before result settlement. Owned cleanup can finish after expiry. |
-| `maxOutputTokens` | Positive safe integer for ordinary generation; `null` clears the override. |
+| `maxOutputTokens` | Nonnegative safe integer for ordinary generation; `null` clears the override. |
 | `temperature`, `topP` | Provider-supported sampling values; `null` clears an override. |
-| `topLogprobs` | Integer from zero to 20; requests probabilities and alternatives reported as [received response facts](request-metadata.md#received-response-facts). |
+| `topLogprobs` | Integer from zero to 255; requests probabilities and alternatives reported as [received response facts](request-metadata.md#received-response-facts). |
 | `parallelToolCalls`, `verbosity` | A boolean for parallel calls; `'low'`, `'medium'`, or `'high'` for verbosity. |
 | `metadata` | A captured string map sent with the request. |
 | `store` | A boolean sent as the provider storage preference; `null` clears the override. |

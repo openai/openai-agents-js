@@ -52,7 +52,7 @@ for (const value of [0, 20, null])
       topLogprobs: value,
     });
   });
-for (const value of [-1, 21, 1.5, true, '1'])
+for (const value of [-1, 256, 1.5, true, '1'])
   it(`rejects malformed topLogprobs ${String(value)}`, () => {
     expect(() =>
       captureModelSettings({ topLogprobs: value as number }),

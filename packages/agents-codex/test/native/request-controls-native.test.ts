@@ -1,4 +1,7 @@
 import { once } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { z } from 'zod';
@@ -10,6 +13,7 @@ import {
   type ModelSettings,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { binding } from '../../src/runtime/binding';
 
 const MODEL = 'fixture-unlisted-request-controls';
 async function providerFor(server: ModelServer) {
@@ -125,6 +129,78 @@ it('captures actual wire controls, preserves sparse updates and restores values 
   server.assertExhausted();
 }, 40_000);
 
+it('forwards provider-owned numeric controls and explicit verbosity', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agents-verbosity-catalog-'));
+  const native = await binding();
+  const descriptor = Object.getOwnPropertyDescriptor(native, 'create_engine')!;
+  const original = native.create_engine;
+  try {
+    const catalog = JSON.parse(
+      await readFile(
+        new URL('./fixtures/history-counter-models.json', import.meta.url),
+        'utf8',
+      ),
+    );
+    expect(catalog.models).toHaveLength(1);
+    expect(catalog.models[0].slug).toBe('gpt-5.5');
+    expect(catalog.models[0].use_responses_lite).toBe(false);
+    // A matching catalog entry is authoritative; do not fake the fallback marker.
+    catalog.models[0].support_verbosity = false;
+    const catalogPath = join(directory, 'models.json');
+    await writeFile(catalogPath, JSON.stringify(catalog));
+    Object.defineProperty(native, 'create_engine', {
+      ...descriptor,
+      value: function (
+        this: unknown,
+        ...args: Parameters<typeof original>
+      ): ReturnType<typeof original> {
+        const text = args[0];
+        const parsed = JSON.parse(text);
+        expect(parsed).not.toHaveProperty('model_catalog_json');
+        const closing = /}\s*$/.exec(text)!;
+        const added = `${Object.keys(parsed).length ? ',' : ''}"model_catalog_json":${JSON.stringify(catalogPath)}`;
+        const forwarded: Parameters<typeof original> = [...args];
+        forwarded[0] =
+          text.slice(0, closing.index) + added + text.slice(closing.index);
+        return Reflect.apply(original, this, forwarded);
+      },
+    });
+    const server = new ModelServer([
+      [message('explicit verbosity')],
+      [message('numeric controls')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      model: 'gpt-5.5',
+      instructions: 'Answer.',
+      provider,
+      modelSettings: { verbosity: 'high' },
+    }).session();
+    await (await session.submit('Forward explicit verbosity.')).wait();
+    expect(server.requests[0]).toMatchObject({ text: { verbosity: 'high' } });
+    await session.update({
+      modelSettings: {
+        maxOutputTokens: 0,
+        temperature: 2.01,
+        topP: -0.1,
+        topLogprobs: 255,
+      },
+    });
+    await (await session.submit('Forward numeric settings.')).wait();
+    expect(server.requests[1]).toMatchObject({
+      max_output_tokens: 0,
+      temperature: 2.01,
+      top_p: -0.1,
+      top_logprobs: 255,
+      text: { verbosity: 'high' },
+    });
+    server.assertExhausted();
+  } finally {
+    Object.defineProperty(native, 'create_engine', descriptor);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it.each([
   [undefined, undefined],
   ['30m', 'in_memory'],
@@ -159,15 +235,14 @@ it.each([
 );
 
 it.each([
-  { maxOutputTokens: 0 },
+  { maxOutputTokens: -1 },
   { maxOutputTokens: true },
   { maxOutputTokens: 2 ** 53 },
   { temperature: NaN },
-  { temperature: 2.01 },
-  { topP: -0.1 },
+  { topP: Infinity },
   { parallelToolCalls: 1 },
   { store: 'true' },
-  { metadata: { x: 'v'.repeat(513) } },
+  { metadata: { x: 1 } },
 ])('rejects invalid controls before resource opening: %j', (settings) => {
   expect(
     () =>

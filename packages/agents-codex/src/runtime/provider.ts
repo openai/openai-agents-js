@@ -244,11 +244,11 @@ export interface ModelSettings {
   /** Outer choice, or a captured eager ToolRef. A named target only narrows
    * the current admitted catalog; null clears it to auto. */
   toolChoice?: 'auto' | 'none' | 'required' | ToolRef | null;
-  /** Positive safe integer for ordinary sampling; null clears the SDK override. */
+  /** Nonnegative safe integer for ordinary sampling; null clears the SDK override. */
   maxOutputTokens?: number | null;
   temperature?: number | null;
   topP?: number | null;
-  /** Request probabilities and zero to 20 alternatives per chosen token. */
+  /** Request probabilities and zero to 255 alternatives per chosen token. */
   topLogprobs?: number | null;
   parallelToolCalls?: boolean | null;
   verbosity?: 'low' | 'medium' | 'high' | null;
@@ -299,30 +299,22 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
             'invocationTimeoutMs must be an integer in the range 1..4294967295 or null',
           );
       } else if (key === 'maxOutputTokens') {
-        if (!Number.isSafeInteger(value) || (value as number) < 1)
+        if (!Number.isSafeInteger(value) || (value as number) < 0)
           throw new TypeError(
-            'maxOutputTokens must be a positive safe integer',
+            'maxOutputTokens must be a nonnegative safe integer',
           );
       } else if (key === 'topLogprobs') {
         if (
           !Number.isInteger(value) ||
           (value as number) < 0 ||
-          (value as number) > 20
+          (value as number) > 255
         )
           throw new TypeError(
-            'topLogprobs must be an integer between zero and 20',
+            'topLogprobs must be an integer between zero and 255',
           );
       } else if (key === 'temperature' || key === 'topP') {
-        const upper = key === 'temperature' ? 2 : 1;
-        if (
-          typeof value !== 'number' ||
-          !Number.isFinite(value) ||
-          value < 0 ||
-          value > upper
-        )
-          throw new TypeError(
-            `${key} must be finite and between zero and ${upper}`,
-          );
+        if (typeof value !== 'number' || !Number.isFinite(value))
+          throw new TypeError(`${key} must be a finite number or null`);
       } else if (key === 'parallelToolCalls' || key === 'store') {
         if (typeof value !== 'boolean')
           throw new TypeError(`${key} must be boolean or null`);
@@ -330,18 +322,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         if (typeof value !== 'object' || Array.isArray(value))
           throw new TypeError('metadata must be a string map');
         const pairs = Object.entries(value);
-        if (
-          pairs.length > 16 ||
-          pairs.some(
-            ([k, v]) =>
-              typeof v !== 'string' ||
-              [...k].length > 64 ||
-              [...v].length > 512,
-          )
-        )
-          throw new TypeError(
-            'metadata allows at most 16 string pairs, 64 characters per key and 512 per value',
-          );
+        if (pairs.some(([, v]) => typeof v !== 'string'))
+          throw new TypeError('metadata must be a string map');
         value = Object.freeze(Object.fromEntries(pairs));
       } else if (key === 'toolChoice') {
         if (typeof value === 'object' && value !== null) {
@@ -365,7 +347,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           });
         } else if (!['auto', 'none', 'required'].includes(value as string))
           throw new TypeError('toolChoice must be an outer mode or ToolRef');
-      } else if (typeof value !== 'string' || !value.trim()) {
+      } else if (typeof value !== 'string') {
         throw new TypeError(`Invalid model setting: ${key}`);
       }
     } else if (
