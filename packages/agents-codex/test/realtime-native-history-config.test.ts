@@ -10,8 +10,8 @@ type Frame = Record<string, any>;
 const PNG_IMAGE =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==';
 
-// One-bit grayscale keeps fixture construction near 2 MiB even when decoded
-// dimensions would require more than the native 64 MiB RGBA budget.
+// One-bit grayscale keeps fixture construction near 2 MiB; decoding expands
+// each pixel to one byte.
 function solidPngImage(side: number): string {
   const chunk = (name: string, data: Buffer) => {
     const body = Buffer.concat([Buffer.from(name), data]);
@@ -1097,30 +1097,24 @@ nativeIt.each(['rows', 'parts'] as const)(
         const part = { type: 'input_image', image_url: solidPngImage(4096) };
         const images =
           placement === 'rows'
-            ? [
-                {
-                  id: 'image-one',
-                  type: 'message',
-                  role: 'user',
-                  content: [part],
-                },
-                {
-                  id: 'image-two',
-                  type: 'message',
-                  role: 'user',
-                  content: [part],
-                },
-              ]
+            ? Array.from({ length: 5 }, (_, index) => ({
+                id: `image-${index}`,
+                type: 'message',
+                role: 'user',
+                content: [part],
+              }))
             : [
                 {
                   id: 'image-parts',
                   type: 'message',
                   role: 'user',
-                  content: [part, part],
+                  content: Array.from({ length: 5 }, () => part),
                 },
               ];
         const after = peer.frames.length;
-        await expect(voice.updateHistory(images)).rejects.toThrow();
+        await expect(voice.updateHistory(images)).rejects.toThrow(
+          /work budget/,
+        );
         expect(
           peer.frames
             .slice(after)
