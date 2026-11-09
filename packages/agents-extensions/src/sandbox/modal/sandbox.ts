@@ -1257,7 +1257,11 @@ export class ModalSandboxSession implements SandboxSession<ModalSandboxSessionSt
     options: { runAs?: string } = {},
   ) {
     const process = await this.sandbox.exec(
-      ['/bin/sh', '-lc', sandboxUserShellCommand(command, options.runAs)],
+      [
+        '/bin/sh',
+        '-c',
+        sandboxUserShellCommand(command, options.runAs, { login: false }),
+      ],
       {
         mode: 'text',
         workdir: this.state.manifest.root,

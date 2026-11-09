@@ -248,7 +248,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       ),
       args.runAs,
     );
-    const result = await this.execShell(wrapped);
+    const result = await this.execShell(wrapped, { login: true });
     const output = truncateOutput(result.output, args.maxOutputTokens);
 
     return formatExecResponse({
@@ -801,7 +801,10 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     });
   }
 
-  private async execShell(shellCommand: string): Promise<{
+  private async execShell(
+    shellCommand: string,
+    options: { login?: boolean } = {},
+  ): Promise<{
     exitCode: number;
     output: string;
     stdout: string;
@@ -815,7 +818,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          argv: ['/bin/sh', '-lc', shellCommand],
+          argv: ['/bin/sh', options.login ? '-lc' : '-c', shellCommand],
           ...(typeof this.state.timeouts?.execTimeoutMs === 'number' ||
           typeof this.state.timeoutMs === 'number'
             ? {
@@ -959,7 +962,7 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     options: { runAs?: string } = {},
   ) {
     const result = await this.execShell(
-      sandboxUserShellCommand(command, options.runAs),
+      sandboxUserShellCommand(command, options.runAs, { login: false }),
     );
     return {
       status: result.exitCode,

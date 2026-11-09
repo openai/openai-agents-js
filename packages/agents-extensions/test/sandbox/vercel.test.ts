@@ -3495,9 +3495,13 @@ describe('VercelSandboxClient', () => {
     });
     const session = await client.create(new Manifest());
 
+    runCommandMock.mockClear();
     await expect(session.persistWorkspace()).resolves.toEqual(archive);
     await session.hydrateWorkspace(archive);
 
+    for (const [params] of runCommandMock.mock.calls) {
+      expect(params.args?.[0]).toBe('-c');
+    }
     expect(
       runCommandMock.mock.calls.some(([params]) =>
         String(params.args?.[1]).includes('tar -C'),
@@ -4265,7 +4269,7 @@ describe('VercelSandboxClient', () => {
     expect(exists).toBe(true);
     expect(runCommandMock).toHaveBeenCalledWith({
       cmd: '/bin/sh',
-      args: ['-lc', "test -e '/vercel/sandbox/README.md'"],
+      args: ['-c', "test -e '/vercel/sandbox/README.md'"],
       cwd: '/vercel/sandbox',
       env: {},
     });

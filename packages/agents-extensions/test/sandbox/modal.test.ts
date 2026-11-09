@@ -447,6 +447,22 @@ describe('ModalSandboxClient', () => {
     } satisfies ModalSandboxClientOptions);
     sandboxExecMock.mockClear();
 
+    const defaultExec = sandboxExecMock.getMockImplementation()!;
+    sandboxExecMock.mockImplementation(async (argv, options) => {
+      if (argv[2]?.includes('base64 --')) {
+        const loadsProfile = argv[1] === '-lc' || argv[2].includes('sh -lc');
+        return {
+          stdout: textStream(loadsProfile ? 'profile output!' : 'b2s='),
+          stderr: textStream(''),
+          wait: async () => 0,
+        };
+      }
+      return defaultExec(argv, options);
+    });
+
+    await expect(
+      session.readFile({ path: 'README.md', runAs: 'root' }),
+    ).resolves.toEqual(new TextEncoder().encode('ok'));
     expect(() => session.createEditor('root')).not.toThrow();
     await expect(
       session.pathExists('/workspace/README.md', 'root'),

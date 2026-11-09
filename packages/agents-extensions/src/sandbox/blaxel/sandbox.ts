@@ -701,8 +701,9 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       command,
       options.environment ?? this.state.environment,
     );
+    const shell = options.kind === 'exec' ? 'sh -lc' : '/bin/sh -c';
     const commandForUser = options.runAs
-      ? `sudo -n -u ${shellQuote(options.runAs)} -- sh -lc ${shellQuote(shellCommand)}`
+      ? `sudo -n -u ${shellQuote(options.runAs)} -- ${shell} ${shellQuote(shellCommand)}`
       : shellCommand;
     const result = await this.sandbox.process.exec({
       command: commandForUser,

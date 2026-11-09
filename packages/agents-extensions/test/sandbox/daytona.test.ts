@@ -219,6 +219,9 @@ describe('DaytonaSandboxClient', () => {
     await expect(session.pathExists('README.md', 'root')).resolves.toBe(true);
     await expect(session.directoryExists('.', 'root')).resolves.toBe(true);
 
+    for (const [command] of executeCommandMock.mock.calls) {
+      expect(command).not.toContain('sh -lc');
+    }
     expect(
       executeCommandMock.mock.calls.some(([command]) =>
         String(command).includes("target_user='root'"),

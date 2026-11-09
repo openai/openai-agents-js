@@ -1054,7 +1054,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     options: { runAs?: string } = {},
   ) {
     const result = await this.sandbox.process.executeCommand(
-      commandForDaytonaUser(command, options.runAs),
+      sandboxUserShellCommand(command, options.runAs, { login: false }),
       this.state.manifest.root,
       this.state.environment,
       this.state.timeoutSec,

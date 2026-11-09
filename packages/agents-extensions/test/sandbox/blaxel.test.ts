@@ -176,6 +176,22 @@ describe('BlaxelSandboxClient', () => {
     },
   );
 
+  test('uses a non-login runAs shell for file probes and a login shell for explicit commands', async () => {
+    const session = await new BlaxelSandboxClient().create(new Manifest());
+    await expect(session.pathExists('README.md', 'reader')).resolves.toBe(true);
+    expect(processExecMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.stringContaining("sudo -n -u 'reader' -- /bin/sh -c "),
+      }),
+    );
+    await session.execCommand({ cmd: 'id', runAs: 'reader' });
+    expect(processExecMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        command: expect.stringContaining("sudo -n -u 'reader' -- sh -lc "),
+      }),
+    );
+  });
+
   test('rejects unsupported core create options instead of ignoring them', async () => {
     const client = new BlaxelSandboxClient();
 
