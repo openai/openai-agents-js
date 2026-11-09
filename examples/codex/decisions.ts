@@ -11,7 +11,7 @@ const decisions = new OpenAIDecisions({
     : {}),
 });
 const support = new Agent({
-  model: process.env.SUPPORT_MODEL ?? 'gpt-5.5',
+  ...(process.env.SUPPORT_MODEL ? { model: process.env.SUPPORT_MODEL } : {}),
   instructions: 'Help the customer. Give them a concrete next step.',
   decisions,
   async beforeComplete(context) {

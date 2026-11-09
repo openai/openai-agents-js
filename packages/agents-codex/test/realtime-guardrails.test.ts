@@ -53,6 +53,48 @@ function fixture(
 }
 
 describe('native Realtime guardrails', () => {
+  it('bounds cumulative prefix work before the retained text limit', async () => {
+    const { helper, events } = fixture(() => allowed, null);
+    const fragment = 'x'.repeat(4096);
+    for (let index = 0; index < 180; index++)
+      helper.observe(raw('A', fragment), false);
+    expect(() => helper.observe(raw('A', fragment), false)).toThrow(
+      'guardrail transcript work capacity',
+    );
+    expect(events).toEqual([]);
+    await helper.join(helper.stop());
+  });
+
+  it('retains shared prefix work while a retired callback still owns its item', async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const { helper, fail } = fixture(async (input) => {
+      if (input.responseId === 'A') {
+        entered.resolve();
+        await release.promise;
+      }
+      return allowed;
+    });
+    const fragment = 'x'.repeat(2048);
+    helper.observe(raw('A', fragment), false);
+    await entered.promise;
+    for (let index = 1; index < 255; index++)
+      helper.observe(raw('A', fragment), false);
+    // Replacing the transcript must not refund work still owned by this callback.
+    helper.observe(raw('A', 'final'), true);
+    const retired = helper.retire(new Set(['A']));
+    helper.observe(raw('B', 'b'.repeat(128 * 1024)), false);
+    helper.observe(raw('B', 'b'.repeat(128 * 1024)), false);
+    expect(() => helper.observe(raw('B', '!'), false)).toThrow(
+      'guardrail transcript work capacity',
+    );
+    release.resolve();
+    await helper.join(retired);
+    expect(() => helper.observe(raw('B', '!'), false)).not.toThrow();
+    await helper.join(helper.stop());
+    expect(fail).not.toHaveBeenCalled();
+  });
+
   it('coalesces one blocked item while another source completes independently', async () => {
     const release = Promise.withResolvers<void>();
     const seen: NativeRealtimeGuardrailInput[] = [];

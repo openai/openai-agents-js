@@ -50,6 +50,7 @@ interface Worker extends NativeRealtimeGuardrailWork {
 
 interface Item {
   input: NativeRealtimeGuardrailInput;
+  transcriptWork: number;
   thresholdCount: number;
   pending?: NativeRealtimeGuardrailInput;
   worker?: Worker;
@@ -79,6 +80,7 @@ interface Options {
 const MAX_ITEMS = 1024;
 const MAX_WORKERS = 16;
 const MAX_TEXT = 1_048_576;
+const MAX_TRANSCRIPT_WORK = 64 * 1024 * 1024;
 const MAX_IDENTITY_BYTES = 8 * 1024 * 1024;
 
 function fingerprint(value: string): string {
@@ -96,6 +98,7 @@ export class NativeRealtimeGuardrails {
   private activeWorkers = 0;
   private identityBytes = 0;
   private textSize = 0;
+  private transcriptWork = 0;
   private stopped = false;
 
   constructor(private readonly options: Options) {
@@ -186,6 +189,7 @@ export class NativeRealtimeGuardrails {
       const controller = new AbortController();
       item = {
         thresholdCount: 0,
+        transcriptWork: 0,
         controller,
         input: Object.freeze({
           text: '',
@@ -210,15 +214,26 @@ export class NativeRealtimeGuardrails {
     const fragment = final ? value.text : value.delta;
     if (typeof fragment !== 'string')
       throw new Error('Realtime guardrail output text is invalid');
-    const text = final ? fragment : item.input.text + fragment;
     if (item.input.final) {
-      if (final && item.input.text === text) return;
+      if (final && item.input.text === fragment) return;
       throw new Error('Realtime output changed after its final transcript');
     }
-    const textSize = this.textSize + text.length - item.input.text.length;
+    const length = final
+      ? fragment.length
+      : item.input.text.length + fragment.length;
+    const textSize = this.textSize + length - item.input.text.length;
     if (textSize > MAX_TEXT)
       throw new Error('Realtime guardrail text capacity exceeded');
+    // Bound prefix construction even when callbacks coalesce their snapshots.
+    // Empty operands and authoritative final replacements do not copy a prefix.
+    const work =
+      !final && item.input.text.length && fragment.length ? length : 0;
+    if (this.transcriptWork + work > MAX_TRANSCRIPT_WORK)
+      throw new Error('Realtime guardrail transcript work capacity exceeded');
+    this.transcriptWork += work;
+    item.transcriptWork += work;
     this.textSize = textSize;
+    const text = final ? fragment : item.input.text + fragment;
     item.input = Object.freeze({ ...item.input, text, final });
     const crossed =
       this.threshold === null ? 0 : Math.floor(text.length / this.threshold);
@@ -312,6 +327,7 @@ export class NativeRealtimeGuardrails {
     if (this.items.get(key) !== item) return;
     this.items.delete(key);
     this.textSize -= item.input.text.length;
+    this.transcriptWork -= item.transcriptWork;
     this.identityBytes -=
       (key.length + item.input.responseId.length + item.input.itemId.length) *
       2;
