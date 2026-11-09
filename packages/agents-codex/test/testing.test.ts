@@ -110,10 +110,39 @@ it('retains dynamic assertion failures locally without sending them to the provi
           method: 'POST',
           body: JSON.stringify({ input: 'synthetic' }),
         });
-        expect(response.status).toBe(500);
+        expect(response.status).toBe(400);
         expect(await response.text()).not.toContain(failure.message);
-        throw new Error('provider failure caused by HTTP500');
+        throw new Error('provider failure caused by HTTP400');
       },
     ),
   ).rejects.toBe(failure);
+});
+
+it('fences scripted dequeues after a callback failure even for an explicit later request', async () => {
+  const failure = new Error('synthetic-private-callback-fence');
+  let following = 0;
+  await expect(
+    withScriptedResponses(
+      [
+        async () => {
+          throw failure;
+        },
+        async () => {
+          following++;
+          return [text('must stay queued')];
+        },
+      ],
+      async (peer) => {
+        for (let index = 0; index < 2; index++) {
+          const response = await fetch(`${peer.provider.baseUrl}/responses`, {
+            method: 'POST',
+            body: JSON.stringify({ input: 'synthetic' }),
+          });
+          expect(response.status).toBe(400);
+          expect(await response.text()).not.toContain(failure.message);
+        }
+      },
+    ),
+  ).rejects.toBe(failure);
+  expect(following).toBe(0);
 });

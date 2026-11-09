@@ -222,3 +222,14 @@ it('batches real native spans while keeping flush acknowledgement after HTTP del
     'PASS native batch export and acknowledgement',
   );
 }, 20000);
+
+it('retains native active roots across cache churn and fences callback retries', async () => {
+  const result = await execute(
+    process.execPath,
+    ['--import', 'tsx', join(fixtures, 'tracing-review-regressions-child.ts')],
+    { timeout: 30000, maxBuffer: 2097152 },
+  );
+  expect(result.stdout).toContain(
+    'PASS native active-root churn and callback retry fence',
+  );
+}, 35000);

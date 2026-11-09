@@ -15,7 +15,8 @@ function spanId(value: string | null): string | null {
 type TraceDescriptor = Record<string, unknown>;
 interface TraceState {
   descriptor: TraceDescriptor;
-  root: boolean;
+  activeSpans: number;
+  rootEnded: boolean;
   deliveredTo?: number;
 }
 function descriptor(event: TraceEvent): TraceDescriptor {
@@ -39,7 +40,9 @@ function descriptor(event: TraceEvent): TraceDescriptor {
  * for delivery. Native spans appear as custom spans with their native attributes,
  * parent IDs and exact timestamps. Native-drain batches share one HTTP request;
  * acknowledgement waits for delivery. No Classic runtime or separate queue is used.
- * Up to1024 recent root descriptors survive failed deliveries. Metadata preserves
+ * Up to1024 root descriptors are retained; active roots/descendants prevent
+ * eviction. Completed traces retire first; full active capacity rejects new roots.
+ * Unknown child records never fabricate a root descriptor. Metadata preserves
  * native flattened values; runtime is reserved for the native marker.
  */
 export class OpenAITraceExporter implements TraceProcessor {
@@ -125,16 +128,29 @@ export class OpenAITraceExporter implements TraceProcessor {
       const root = event.parent_span_id === null;
       let state = this.#traces.get(traceId);
       if (!state) {
-        state = { descriptor: descriptor(event), root };
-      } else if (root && !state.root) {
-        state.descriptor = descriptor(event);
-        state.root = true;
-        state.deliveredTo = undefined;
+        if (!root)
+          throw new Error('Native trace root descriptor is unavailable');
+        if (this.#traces.size >= 1024) {
+          const completed = [...this.#traces].find(
+            ([, entry]) => entry.rootEnded && entry.activeSpans === 0,
+          );
+          if (!completed)
+            throw new Error('Native active trace descriptor capacity reached');
+          this.#traces.delete(completed[0]);
+        }
+        state = {
+          descriptor: descriptor(event),
+          activeSpans: 0,
+          rootEnded: false,
+        };
+      }
+      if (event.lifecycle === 'start') state.activeSpans++;
+      else {
+        state.activeSpans = Math.max(0, state.activeSpans - 1);
+        if (root) state.rootEnded = true;
       }
       this.#traces.delete(traceId);
       this.#traces.set(traceId, state);
-      if (this.#traces.size > 1024)
-        this.#traces.delete(this.#traces.keys().next().value!);
       states.set(traceId, state);
     }
     const pending = [...states]

@@ -10,7 +10,7 @@ const event: TraceEvent = {
   lifecycle: 'end',
   trace_id: 'a'.repeat(32),
   span_id: 'b'.repeat(16),
-  parent_span_id: 'c'.repeat(16),
+  parent_span_id: null,
   name: 'synthetic operation',
   kind: 'custom',
   start_time_unix_nanos: '1700000000123456789',
@@ -52,7 +52,7 @@ for (const status of [302, 403, 429, 503]) {
         const [trace, span] = requests[1].body.data;
         expect(trace.id).toBe(`trace_${'a'.repeat(32)}`);
         expect(span.id).toBe(`span_${'0'.repeat(8)}${'b'.repeat(16)}`);
-        expect(span.parent_id).toBe(`span_${'0'.repeat(8)}${'c'.repeat(16)}`);
+        expect(span.parent_id).toBeNull();
         expect(span.started_at).toBe('2023-11-14T22:13:20.123456789Z');
         expect(span.ended_at).toBe('2023-11-14T22:13:21.987654321Z');
         expect(requests[1].headers.authorization).toBe(
@@ -179,6 +179,7 @@ it('resends the root under a new key after rotation during an in-flight delivery
       Array.from({ length: 30 }, (_, index) => ({
         ...event,
         name: `span-${index}`,
+        parent_span_id: 'b'.repeat(16),
         span_id: index.toString(16).padStart(16, '0'),
       })),
     );
@@ -222,7 +223,7 @@ it('bounds remembered trace descriptors and re-admits an evicted trace', async (
     });
     const roots = Array.from({ length: 1100 }, (_, index): TraceEvent => ({
       ...event,
-      lifecycle: 'start',
+      lifecycle: 'end',
       parent_span_id: null,
       trace_id: index.toString(16).padStart(32, '0'),
       name: `root-${index}`,
@@ -231,13 +232,91 @@ it('bounds remembered trace descriptors and re-admits an evicted trace', async (
     await exporter.onEvents(roots);
     expect(requests).toHaveLength(1);
     await exporter.onEvent(roots[1099]);
-    expect(requests).toHaveLength(1);
+    expect(requests[1].filter((row) => row.object === 'trace')).toHaveLength(0);
     await exporter.onEvent(roots[0]);
-    expect(requests).toHaveLength(2);
-    expect(requests[1][0]).toMatchObject({
+    expect(requests).toHaveLength(3);
+    expect(requests[2][0]).toMatchObject({
       object: 'trace',
       workflow_name: 'root-0',
     });
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+it('retains active descendants during completed trace churn and bounds active admission', async () => {
+  const requests: Record<string, any>[][] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    requests.push(JSON.parse(Buffer.concat(chunks).toString()).data);
+    response.writeHead(200).end();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string')
+    throw new Error('collector missing');
+  try {
+    const exporter = new OpenAITraceExporter({
+      apiKey: 'synthetic',
+      endpoint: `http://127.0.0.1:${address.port}/ingest`,
+    });
+    const root: TraceEvent = {
+      ...event,
+      lifecycle: 'start',
+      parent_span_id: null,
+      name: 'retained-root',
+      attributes: { 'sdk.group_id': 'retained-group' },
+    };
+    const child: TraceEvent = {
+      ...event,
+      lifecycle: 'start',
+      parent_span_id: root.span_id,
+      span_id: 'd'.repeat(16),
+    };
+    await exporter.onEvents([root, child, { ...root, lifecycle: 'end' }]);
+    await exporter.onEvents(
+      Array.from({ length: 1100 }, (_, index): TraceEvent => ({
+        ...root,
+        lifecycle: 'end',
+        trace_id: index.toString(16).padStart(32, '0'),
+        name: 'completed-churn',
+      })),
+    );
+    await exporter.onEvent({ ...child, lifecycle: 'end' });
+    const descriptors = requests
+      .flat()
+      .filter(
+        (row) => row.object === 'trace' && row.id === `trace_${root.trace_id}`,
+      );
+    expect(descriptors.length).toBeGreaterThan(0);
+    expect(
+      descriptors.every(
+        (row) =>
+          row.workflow_name === 'retained-root' &&
+          row.group_id === 'retained-group',
+      ),
+    ).toBe(true);
+    const full = new OpenAITraceExporter({
+      apiKey: 'synthetic',
+      endpoint: `http://127.0.0.1:${address.port}/ingest`,
+    });
+    const roots = Array.from({ length: 1024 }, (_, index): TraceEvent => ({
+      ...root,
+      trace_id: index.toString(16).padStart(32, '0'),
+    }));
+    await full.onEvents(roots);
+    await expect(
+      full.onEvent({ ...root, trace_id: 'f'.repeat(32) }),
+    ).rejects.toThrow('capacity');
+    await expect(
+      full.onEvent({ ...child, trace_id: 'f'.repeat(32) }),
+    ).rejects.toThrow('descriptor');
+    await full.onEvent({ ...roots[0], lifecycle: 'end' });
+    await full.onEvent({ ...root, trace_id: 'f'.repeat(32) });
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

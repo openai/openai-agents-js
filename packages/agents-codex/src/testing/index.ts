@@ -340,6 +340,11 @@ class Peer implements ScriptedResponses {
         return;
       }
       this.bodies.push(body);
+      if (this.callbackFailure) {
+        this.unexpected++;
+        this.reject(response);
+        return;
+      }
       const script = this.responses[this.next];
       if (script === undefined) {
         this.unexpected++;
@@ -403,7 +408,9 @@ class Peer implements ScriptedResponses {
     } catch {
       this.failures++;
       if (!response.headersSent && !response.destroyed)
-        response.writeHead(500).end('Scripted provider failed');
+        response
+          .writeHead(this.callbackFailure ? 400 : 500)
+          .end('Scripted provider failed');
       else response.destroy();
     } finally {
       this.reads.delete(read);
