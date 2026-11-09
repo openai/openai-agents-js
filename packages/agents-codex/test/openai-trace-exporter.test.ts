@@ -323,3 +323,69 @@ it('retains active descendants during completed trace churn and bounds active ad
     );
   }
 });
+
+it.each([false, true])(
+  'accounts for later completions in a failed batch (unknown child=%s)',
+  async (rejectedChild) => {
+    const requests: Record<string, any>[][] = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString()).data);
+      response.writeHead(200).end();
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('collector missing');
+    try {
+      const exporter = new OpenAITraceExporter({
+        apiKey: 'synthetic',
+        endpoint: `http://127.0.0.1:${address.port}/ingest`,
+      });
+      const roots = Array.from({ length: 1024 }, (_, index): TraceEvent => ({
+        ...event,
+        lifecycle: 'start',
+        trace_id: index.toString(16).padStart(32, '0'),
+        name: `original-root-${index}`,
+        attributes: { 'sdk.group_id': 'original-group' },
+      }));
+      const overflow: TraceEvent = {
+        ...roots[0],
+        trace_id: 'f'.repeat(32),
+        name: 'overflow-root',
+      };
+      const rejected = rejectedChild
+        ? { ...overflow, parent_span_id: 'c'.repeat(16) }
+        : overflow;
+      await exporter.onEvents(roots);
+      await expect(
+        exporter.onEvents([
+          rejected,
+          { ...roots[0], lifecycle: 'end' },
+          overflow,
+        ]),
+      ).rejects.toThrow(rejectedChild ? 'descriptor' : 'capacity');
+      expect(requests).toHaveLength(1);
+      await exporter.onEvent({
+        ...overflow,
+        lifecycle: 'end',
+        name: 'renamed-end',
+      });
+      expect(requests.at(-1)![0]).toMatchObject({
+        workflow_name: 'overflow-root',
+      });
+      exporter.setApiKey('synthetic-rotated');
+      await exporter.onEvent({ ...roots[1], lifecycle: 'end' });
+      expect(requests.at(-1)![0]).toMatchObject({
+        workflow_name: 'original-root-1',
+        group_id: 'original-group',
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+);

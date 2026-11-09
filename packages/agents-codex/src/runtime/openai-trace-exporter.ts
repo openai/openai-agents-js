@@ -123,19 +123,25 @@ export class OpenAITraceExporter implements TraceProcessor {
     const revision = this.#credentialRevision;
     const headers = { ...this.#headers };
     const states = new Map<string, TraceState>();
+    let admissionError: string | undefined;
     for (const event of events) {
       const traceId = `trace_${event.trace_id}`;
       const root = event.parent_span_id === null;
       let state = this.#traces.get(traceId);
       if (!state) {
-        if (!root)
-          throw new Error('Native trace root descriptor is unavailable');
+        if (!root) {
+          admissionError ??= 'Native trace root descriptor is unavailable';
+          continue;
+        }
         if (this.#traces.size >= 1024) {
           const completed = [...this.#traces].find(
             ([, entry]) => entry.rootEnded && entry.activeSpans === 0,
           );
-          if (!completed)
-            throw new Error('Native active trace descriptor capacity reached');
+          if (!completed) {
+            admissionError ??=
+              'Native active trace descriptor capacity reached';
+            continue;
+          }
           this.#traces.delete(completed[0]);
         }
         state = {
@@ -153,6 +159,9 @@ export class OpenAITraceExporter implements TraceProcessor {
       this.#traces.set(traceId, state);
       states.set(traceId, state);
     }
+    // Failed native batches are acknowledged too. Account for every admitted
+    // completion before rejecting, so an unavailable root cannot strand capacity.
+    if (admissionError) throw new Error(admissionError);
     const pending = [...states]
       .filter(([, state]) => state.deliveredTo !== revision)
       .map(([traceId, state]) => ({
