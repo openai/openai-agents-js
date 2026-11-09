@@ -134,7 +134,7 @@ describe('historical RunState compatibility corpus', () => {
       manifest.schemas
         .filter((entry) => entry.status === 'current_unreleased')
         .map((entry) => entry.schemaVersion),
-    ).toEqual(['1.24']);
+    ).toEqual(['1.24', '1.25']);
   });
 
   it('pins every fixture to immutable bytes and complete writer provenance', () => {

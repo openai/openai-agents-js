@@ -1,6 +1,7 @@
 import { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
-import { RunInputItem, RunItem, RunToolSearchOutputItem } from '../items';
+import { RunInputItem, RunItem } from '../items';
+import { getToolCallQualifiedName } from '../toolIdentity';
 import { ModelResponse } from '../model';
 import { RunContext } from '../runContext';
 import { AgentInputItem } from '../types';
@@ -366,6 +367,20 @@ function getServerItemKey(item: AgentInputItem): string {
   return getAgentInputItemKey(item);
 }
 
+function matchesServerItem(
+  item: AgentInputItem,
+  serverKeys: Set<string>,
+): boolean {
+  if (serverKeys.has(getServerItemKey(item))) return true;
+  if (item.type !== 'function_call' || !item.namespace) return false;
+
+  // Tool routing can expand a flattened wire name into a name and namespace for storage.
+  const { namespace: _namespace, ...call } = item;
+  return serverKeys.has(
+    getServerItemKey({ ...call, name: getToolCallQualifiedName(item)! }),
+  );
+}
+
 /**
  * Tracks which items have already been sent to or received from the Responses API when the caller
  * supplies `conversationId`/`previousResponseId`. This ensures we only send the delta each turn.
@@ -465,12 +480,14 @@ export class ServerConversationTracker {
         if (!rawItem || typeof rawItem !== 'object') {
           continue;
         }
-        const rawItemKey = getServerItemKey(rawItem as AgentInputItem);
         if (item instanceof RunInputItem) {
           this.sentItems.add(rawItem);
           continue;
         }
-        if (this.serverItems.has(rawItem) || serverItemKeys.has(rawItemKey)) {
+        if (
+          this.serverItems.has(rawItem) ||
+          matchesServerItem(rawItem, serverItemKeys)
+        ) {
           this.sentItems.add(rawItem);
           continue;
         }
@@ -504,22 +521,12 @@ export class ServerConversationTracker {
         this.serverItems.add(item);
       }
     }
-    const searchOutputs = processedItems.filter(
-      (item): item is RunToolSearchOutputItem =>
-        item instanceof RunToolSearchOutputItem,
-    );
-    if (searchOutputs.length > 0) {
-      const serverSearchKeys = new Set(
-        modelResponse.output
-          .filter((item) => item.type === 'tool_search_output')
-          .map(getServerItemKey),
-      );
-      // A client-generated result is unsent unless the response actually contains that output.
-      for (const item of searchOutputs) {
-        if (serverSearchKeys.has(getServerItemKey(item.rawItem))) {
-          this.serverItems.add(item.rawItem);
-        }
-      }
+    let serverKeys: Set<string> | undefined;
+    for (const { rawItem } of processedItems) {
+      if (!rawItem || this.serverItems.has(rawItem)) continue;
+      // Restored or normalized wrappers can have a different object identity.
+      serverKeys ??= new Set(modelResponse.output.map(getServerItemKey));
+      if (matchesServerItem(rawItem, serverKeys)) this.serverItems.add(rawItem);
     }
     if (!this.conversationId && modelResponse.responseId) {
       this.previousResponseId = modelResponse.responseId;

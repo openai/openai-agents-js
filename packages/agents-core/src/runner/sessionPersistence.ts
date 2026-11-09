@@ -80,6 +80,7 @@ export type ResumedSessionWritePreparation = {
   readonly session: Session;
   readonly state: RunState<any, any>;
   readonly sessionId: string;
+  readonly persistedCountBeforeResume: number;
   readonly reasoningItemIdPolicy: ReasoningItemIdPolicy;
   handoffInput?: PendingSessionWrite['handoffInput'];
 };
@@ -369,6 +370,7 @@ export async function prepareResumedSessionWrite(
     session,
     state,
     sessionId,
+    persistedCountBeforeResume: state._currentTurnPersistedItemCount,
     reasoningItemIdPolicy: getEffectiveSessionReasoningItemIdPolicy(
       session,
       state,
@@ -458,13 +460,43 @@ function checkpointPreparedResumedSessionWrite(options: {
       'Resumed Session write items do not match their canonical RunState owners.',
     );
   }
+  return recordPreparedResumedSessionWrite(preparation, pendingItems);
+}
+
+/**
+ * Prepare only the newly retained suffix against the history that survived the failed resume.
+ * A speculative rewind belongs to the filtered turn that was never applied.
+ */
+export function checkpointFailedFunctionToolAppend(
+  preparation: ResumedSessionWritePreparation,
+): void {
+  const { state, persistedCountBeforeResume } = preparation;
+  state._currentTurnPersistedItemCount = persistedCountBeforeResume;
+  state._currentTurnSessionWriteCompactedItemCount = undefined;
+  recordPreparedResumedSessionWrite(preparation, {
+    alreadyPersistedCount: persistedCountBeforeResume,
+    persistedItemCount: state._generatedItems.length,
+  });
+}
+
+function recordPreparedResumedSessionWrite(
+  preparation: ResumedSessionWritePreparation,
+  pendingItems: Pick<
+    PendingSessionWrite,
+    'alreadyPersistedCount' | 'persistedItemCount'
+  >,
+): Extract<PendingSessionWrite, { phase: 'prepared' }> {
+  const { state, sessionId, reasoningItemIdPolicy } = preparation;
   const pending: Extract<PendingSessionWrite, { phase: 'prepared' }> = {
     phase: 'prepared',
+    sessionId,
+    reasoningItemIdPolicy,
     ...pendingItems,
     handoffInput: preparation.handoffInput,
     terminalToolFinalization:
       capturePendingSessionWriteTerminalFinalization(state),
   };
+  // Keep the attempted append on the state when its terminal owner has changed.
   state._pendingSessionWrite = structuredClone(pending);
   assertPendingSessionWriteOwnership(state, pending);
   return pending;
