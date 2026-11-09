@@ -282,6 +282,7 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
   beforeCompact?: BeforeCompact<any>;
   transformContext?: ContextTransform<any>;
@@ -1829,6 +1830,7 @@ export class Session<OutputT = string, Context = unknown> {
       }),
     );
     this.observations = new ObservationBuffer(native.id, {
+      retention: options.observationRetention,
       validate: () => this.checkCallbackOperation('observe'),
       pendingManual: () =>
         [...this.manualCalls.values()].flatMap((call) => {

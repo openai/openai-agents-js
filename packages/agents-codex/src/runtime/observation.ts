@@ -195,7 +195,7 @@ function projectObservation(
   });
 }
 
-/** One passive bounded suffix, shared by independent readers. */
+/** One passive event log, bounded by default, shared by independent readers. */
 export class ObservationBuffer {
   private records: Array<{
     event: RetainedObservation;
@@ -215,6 +215,7 @@ export class ObservationBuffer {
   constructor(
     readonly sessionId: string,
     private readonly options: {
+      retention?: 'bounded' | 'all';
       validate?: () => void;
       pendingManual?: () => Iterable<ManualToolRequest>;
     } = {},
@@ -268,6 +269,20 @@ export class ObservationBuffer {
   gap(): void {
     if (this.closed) return;
     this.sequence++;
+    if (this.options.retention === 'all') {
+      this.records.push({
+        event: Object.freeze({
+          type: 'gap',
+          sessionId: this.sessionId,
+          sequence: this.sequence,
+          firstSequence: this.sequence,
+        }),
+        size: 0,
+        payloadSize: 0,
+      });
+      this.notify();
+      return;
+    }
     this.records = [];
     this.characters = 0;
     this.payloadCharacters = 0;
@@ -309,7 +324,10 @@ export class ObservationBuffer {
               ).length
             : 0,
     );
-    if (size > 65_536 || payloadSize > 16 * 1024 * 1024) {
+    if (
+      this.options.retention !== 'all' &&
+      (size > 65_536 || payloadSize > 16 * 1024 * 1024)
+    ) {
       this.records = [];
       this.characters = 0;
       this.payloadCharacters = 0;
@@ -318,9 +336,10 @@ export class ObservationBuffer {
       this.characters += size;
       this.payloadCharacters += payloadSize;
       while (
-        this.records.length > 256 ||
-        this.characters > 65_536 ||
-        this.payloadCharacters > 32 * 1024 * 1024
+        this.options.retention !== 'all' &&
+        (this.records.length > 256 ||
+          this.characters > 65_536 ||
+          this.payloadCharacters > 32 * 1024 * 1024)
       ) {
         const removed = this.records.shift()!;
         this.characters -= removed.size;

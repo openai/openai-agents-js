@@ -120,6 +120,9 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Retain all emitted observations in memory for this Session lifetime.
+   * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
+  observationRetention?: 'bounded' | 'all';
   /**
    * Seed settled user messages and assistant text without starting a model turn.
    * Requires a fresh opening without state or resume, including for []. Core
@@ -421,6 +424,12 @@ export class Agent<Context = undefined, Output = string> {
       ...(args[0] ?? {}),
       parentTrace: captureTraceContext(args[0]?.parentTrace),
     };
+    if (
+      options.observationRetention !== undefined &&
+      options.observationRetention !== 'bounded' &&
+      options.observationRetention !== 'all'
+    )
+      throw new TypeError('observationRetention must be "bounded" or "all"');
     options.initialMessages = captureInitialMessages(
       options.initialMessages,
       options.state,
@@ -532,6 +541,7 @@ export class Agent<Context = undefined, Output = string> {
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
+      observationRetention: options.observationRetention,
       context: options.context,
       onInteraction: options.onInteraction,
       tracing: options.tracing,
@@ -1213,6 +1223,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        observationRetention: options.observationRetention,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         parentTrace: captureTraceContext(options.parentTrace),
