@@ -1,3 +1,8 @@
+import {
+  attachPrivateRuntime,
+  privateRuntime,
+  finishPrivateRuntime,
+} from './private-engine-reuse';
 import { RunCleanupError } from './native-error';
 import { captureInitialMessages } from './initial-messages';
 import { projectProfileCatalog } from './agent-profiles';
@@ -131,7 +136,7 @@ export async function openSession(
     : (options.mcpTools ?? []);
   const { _sdk_project_search: _previousSearch, ...baseRuntime } =
     setup.runtime;
-  const runtime: RuntimeOptions = {
+  let runtime: RuntimeOptions = {
     ...native._packaged_runtime(),
     ...baseRuntime,
     ...(model === undefined ? {} : { model }),
@@ -141,7 +146,7 @@ export async function openSession(
   const parentTrace = captureTraceContext(options.parentTrace);
   const { _sdk_reconciled_calls, ...capturedThreadOptions } =
     setup.threadOptions;
-  const threadOptions: ThreadOptions = {
+  let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
     ...(options.localStorage
@@ -262,8 +267,10 @@ export async function openSession(
     ? encodeReceipt(nativeCheckpoint(saved))
     : undefined;
   const freshManual = isManualSessionState(saved);
-  const carrier = new NativeProviderRoutes();
-  let engine: import('./binding').Engine | undefined = undefined;
+  const borrow = lease.privateRuntime;
+  const idle = borrow?.peek();
+  let carrier = idle?.carrier ?? new NativeProviderRoutes();
+  let engine: import('./binding').Engine | undefined = idle?.engine;
   let thread: import('./binding').NativeThread | undefined;
   let phase: 'native' | 'engine' | 'carrier' | 'provider' = 'native';
   let completedFailure: NativeError | undefined;
@@ -274,9 +281,14 @@ export async function openSession(
       phase = 'engine';
     }
     if (phase === 'engine') {
-      const message = await engine?._close_report();
-      if (message) completedFailure ??= new NativeError(message);
-      phase = 'carrier';
+      if (borrow?.peek()) {
+        await borrow.finish(false);
+        phase = 'provider';
+      } else {
+        const message = await engine?._close_report();
+        if (message) completedFailure ??= new NativeError(message);
+        phase = 'carrier';
+      }
     }
     if (phase === 'carrier') {
       await carrier.close();
@@ -288,71 +300,106 @@ export async function openSession(
     );
     if (completedFailure) throw completedFailure;
   });
-  await carrier.start(config, runtime, apiKey);
-  options.environmentOwner?.signal.throwIfAborted();
-  engine = saved
-    ? await native.create_checkpoint_engine(
-        encode(initialConfig),
-        encode(runtime),
-        apiKey ?? null,
-        checkpointJson,
-        catalog.specsJson,
-        freshManual,
-        setup.applicationAppsJson ?? null,
-      )
-    : options.customStore
-      ? await native.create_store_engine(
+  if (idle) {
+    const holder = lease.httpTransports(
+      native._create_provider_http_transports,
+      idle.engine,
+    );
+    const binding = idle.carrier.reuseBinding(idle.engine);
+    thread =
+      holder === idle.transports && apiKey === idle.apiKey && binding
+        ? ((await idle.engine._private_start_thread(
+            encode(initialConfig),
+            encode(runtime),
+            binding.origin,
+            binding.grant,
+            encode({ ...threadOptions, config: initialConfig }),
+            catalog.specsJson,
+          )) ?? undefined)
+        : undefined;
+    if (!thread) {
+      const home = await borrow!.reset();
+      runtime = { ...runtime, ...home };
+      carrier = new NativeProviderRoutes();
+      engine = undefined;
+    }
+    threadOptions = { ...threadOptions, runtime };
+  }
+  if (!engine) {
+    await carrier.start(config, runtime, apiKey);
+    options.environmentOwner?.signal.throwIfAborted();
+    engine = saved
+      ? await native.create_checkpoint_engine(
           encode(initialConfig),
           encode(runtime),
           apiKey ?? null,
-          options.customStore,
+          checkpointJson,
+          catalog.specsJson,
+          freshManual,
           setup.applicationAppsJson ?? null,
         )
-      : await native.create_engine(
-          encode(initialConfig),
-          encode(runtime),
-          apiKey ?? null,
-          setup.applicationAppsJson ?? null,
-        );
-  options.environmentOwner?.signal.throwIfAborted();
-  await carrier.bindEngine(
-    engine,
-    lease.httpTransports(native._create_provider_http_transports, engine),
-  );
-  options.environmentOwner?.signal.throwIfAborted();
-  if (saved) {
-    thread = await engine.restore_checkpoint(
-      checkpointJson!,
-      encode({ ...threadOptions, config: initialConfig }),
-      catalog.specsJson,
-      freshManual,
-    );
-  } else if (threadOptions._sdk_resume_thread_id !== undefined) {
-    const opened = await engine._start_local_resume(
-      encode({
-        ...threadOptions,
-        config: initialConfig,
-        ...(_sdk_reconciled_calls === undefined
-          ? {}
-          : { _sdk_reconciled_calls }),
-      }),
-      catalog.specsJson,
-    );
-    if (typeof opened === 'string')
-      throw localRecoveryRequired(opened, threadOptions._sdk_resume_thread_id);
-    thread = opened;
-  } else {
-    thread =
-      capturedInitialMessages === undefined
-        ? await engine.start_replaceable_thread(
-            encode({ ...threadOptions, config: initialConfig }),
-            catalog.specsJson,
+      : options.customStore
+        ? await native.create_store_engine(
+            encode(initialConfig),
+            encode(runtime),
+            apiKey ?? null,
+            options.customStore,
+            setup.applicationAppsJson ?? null,
           )
-        : await engine._start_seeded_replaceable_thread(
-            encode({ ...threadOptions, config: initialConfig }),
-            catalog.specsJson,
-            encode(capturedInitialMessages),
+        : await native.create_engine(
+            encode(initialConfig),
+            encode(runtime),
+            apiKey ?? null,
+            setup.applicationAppsJson ?? null,
           );
+    options.environmentOwner?.signal.throwIfAborted();
+    const transports = lease.httpTransports(
+      native._create_provider_http_transports,
+      engine,
+    );
+    await carrier.bindEngine(engine, transports);
+    if (borrow && transports && engine._private_reuse_ready)
+      borrow.bind(engine, carrier, transports);
+  }
+  options.environmentOwner?.signal.throwIfAborted();
+  if (!thread) {
+    if (saved) {
+      thread = await engine.restore_checkpoint(
+        checkpointJson!,
+        encode({ ...threadOptions, config: initialConfig }),
+        catalog.specsJson,
+        freshManual,
+      );
+    } else if (threadOptions._sdk_resume_thread_id !== undefined) {
+      const opened = await engine._start_local_resume(
+        encode({
+          ...threadOptions,
+          config: initialConfig,
+          ...(_sdk_reconciled_calls === undefined
+            ? {}
+            : { _sdk_reconciled_calls }),
+        }),
+        catalog.specsJson,
+      );
+      if (typeof opened === 'string')
+        throw localRecoveryRequired(
+          opened,
+          threadOptions._sdk_resume_thread_id,
+        );
+      thread = opened;
+    } else {
+      thread =
+        capturedInitialMessages === undefined
+          ? await engine.start_replaceable_thread(
+              encode({ ...threadOptions, config: initialConfig }),
+              catalog.specsJson,
+            )
+          : await engine._start_seeded_replaceable_thread(
+              encode({ ...threadOptions, config: initialConfig }),
+              catalog.specsJson,
+              encode(capturedInitialMessages),
+            );
+    }
   }
   const session = new Session(
     engine,
@@ -366,13 +413,26 @@ export async function openSession(
     oneShot,
     apiKey,
   );
-  lease.retainOpeningCleanup(() => session.close());
+  if (borrow?.peek()) attachPrivateRuntime(session, borrow);
+  lease.retainOpeningCleanup(() =>
+    privateRuntime(session)
+      ? closePrivateOwnedRuntime(session, false)
+      : session.close(),
+  );
   options.environmentOwner?.attachSession(session);
   options.environmentOwner?.signal.throwIfAborted();
   await session._start();
   if (isManualSessionState(saved))
     await session._restoreManualContinuation(saved);
   return session;
+}
+
+async function closePrivateOwnedRuntime(
+  session: Session<any>,
+  keep: boolean,
+): Promise<void> {
+  await session.close();
+  await finishPrivateRuntime(session, keep);
 }
 
 interface OwnedRunOptions {
@@ -412,6 +472,10 @@ async function completeOwnedSession<Output>(
   options: OwnedRunOptions,
   cancellation: { rejection?: unknown; reason?: unknown },
 ): Promise<Completed<Output>> {
+  const closeOwned = () =>
+    privateRuntime(session)
+      ? closePrivateOwnedRuntime(session, false)
+      : session.close();
   const originalFailure = (error: unknown) =>
     cancellation.rejection !== undefined &&
     Object.is(error, cancellation.rejection)
@@ -419,12 +483,12 @@ async function completeOwnedSession<Output>(
       : error;
   if (options.signal?.aborted) {
     try {
-      await session.close();
+      await closeOwned();
     } catch (cleanupError) {
       throw new RunCleanupError(
         [options.signal.reason, cleanupError],
         'Native run cancelled and cleanup failed',
-        () => session.close(),
+        closeOwned,
         { cause: options.signal.reason },
       );
     }
@@ -439,12 +503,12 @@ async function completeOwnedSession<Output>(
   ).catch(async (error) => {
     const primary = originalFailure(error);
     try {
-      await session.close();
+      await closeOwned();
     } catch (cleanupError) {
       throw new RunCleanupError(
         [primary, cleanupError],
         'Native run failed and its owned cleanup is incomplete',
-        () => session.close(),
+        closeOwned,
         { cause: primary },
       );
     }
@@ -457,16 +521,17 @@ async function completeOwnedSession<Output>(
       : result;
     await session.close();
     options.signal?.throwIfAborted();
+    if (privateRuntime(session)) await finishPrivateRuntime(session, true);
     return completed;
   } catch (error) {
     const primary = originalFailure(error);
     try {
-      await session.close();
+      await closeOwned();
     } catch (cleanupError) {
       throw new RunCleanupError(
         [primary, cleanupError],
         'Run completion and cleanup failed',
-        () => session.close(),
+        closeOwned,
         { cause: primary },
       );
     }

@@ -67,7 +67,7 @@ After the turn completes, pass review findings or an answer as the next task. Th
 
 ### Wait for work that needs attention
 
-Use [`waitForWorkerAttention`](supervision.ts) when your application owns a root Turn. The wait returns a completed Turn, live requests, a native stop, or an account quota block. A settled native result takes precedence over an account block. Ordinary tool events stay inside the worker.
+Use [`waitForWorkerAttention`](supervision.ts) when your application owns a root Turn. This example helper calls an internal Turn method and must stay paired with the matching source build; it is not a public SDK API. The wait returns a completed Turn, live requests, a native stop, or an account quota block. A settled native result takes precedence over an account block. Ordinary tool events stay inside the worker.
 
 Choose the next action from the result.
 

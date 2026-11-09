@@ -16,6 +16,11 @@ import {
   checkProfileReceipt,
   type CapturedAgentProfile,
 } from './agent-profiles';
+import {
+  privateOwnedGrant,
+  consumePrivateOwnedGrant,
+  revokePrivateOwnedGrant,
+} from './private-engine-reuse';
 import type { SessionPersistenceOptions } from './persistence-options';
 import { captureTracing } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -316,6 +321,9 @@ export type Session<Output = string, Context = any> = Pick<
 
 /** A declaration; opening a Session captures its current configuration. */
 export class Agent<Context = undefined, Output = string> {
+  static readonly #canonicalSession = this.prototype.session;
+  static readonly #canonicalPrepare = this.prototype.prepare;
+  static readonly #canonicalApply = Function.prototype.apply;
   instructions: string;
   name?: string;
   model?: string;
@@ -465,14 +473,28 @@ export class Agent<Context = undefined, Output = string> {
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
     try {
-      const { setup, session, lease, environmentOwner } = await this.prepare(
-        options,
-        (owner) => {
-          acquiredEnvironment = owner;
-        },
-        () => {
-          providerOwnsCleanup = true;
-        },
+      const prepare = this.prepare;
+      if (
+        prepare !== Agent.#canonicalPrepare ||
+        tracingCapture !== undefined ||
+        options.parentTrace
+      )
+        revokePrivateOwnedGrant(
+          (options as OwnedSessionOptions<Context>)[ownedRun]
+            ?.privateEngineGrant,
+        );
+      const { setup, session, lease, environmentOwner } = await Reflect.apply(
+        prepare,
+        this,
+        [
+          options,
+          (owner: EnvironmentAcquisition) => {
+            acquiredEnvironment = owner;
+          },
+          () => {
+            providerOwnsCleanup = true;
+          },
+        ],
       );
       let openingError: unknown;
       try {
@@ -590,9 +612,25 @@ export class Agent<Context = undefined, Output = string> {
         beforeStep,
       },
     };
-    const session = await factory.apply(this, [
-      sessionOptions,
-    ] as SessionArguments<Context>);
+    const factoryApply = factory.apply;
+    if (
+      factoryApply === Agent.#canonicalApply &&
+      factory === Agent.#canonicalSession &&
+      this.constructor === Agent &&
+      typeof input === 'string' &&
+      maxModelSteps === undefined &&
+      budget === undefined &&
+      options.returnState !== true &&
+      options.prepareRequest === undefined &&
+      options.onInteraction === undefined &&
+      options.context === undefined &&
+      (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
+    )
+      sessionOptions[ownedRun]!.privateEngineGrant = privateOwnedGrant();
+    const session = await Reflect.apply(factoryApply, factory, [
+      this,
+      [sessionOptions] as SessionArguments<Context>,
+    ]);
     return runOwnedSession(session as CoreSession<Output>, preparedInput, {
       maxModelSteps,
       budget,
@@ -606,6 +644,9 @@ export class Agent<Context = undefined, Output = string> {
     acquiredEnvironment: (owner: EnvironmentAcquisition) => void,
     cleanupAcquired: () => void,
   ) {
+    const privateOwned = consumePrivateOwnedGrant(
+      (options as OwnedSessionOptions<Context>)[ownedRun]?.privateEngineGrant,
+    );
     const projectGuidance = options.projectGuidance;
     if (projectGuidance !== undefined && typeof projectGuidance !== 'boolean')
       throw new TypeError('projectGuidance must be a boolean');
@@ -1109,7 +1150,28 @@ export class Agent<Context = undefined, Output = string> {
       native._validate_python_tool_declarations(profile.catalog.specsJson);
     native._validate_python_tool_declarations(catalog.specsJson);
     environmentOwner.signal.throwIfAborted();
-    const lease = provider._acquire(correction ?? opening);
+    const privateRun =
+      privateOwned &&
+      options.initialMessages === undefined &&
+      !graph &&
+      !selection &&
+      !persistent &&
+      state == null &&
+      !environment &&
+      !projectGuidance &&
+      files.length === 0 &&
+      !programmaticToolCalling &&
+      selected.length === 0 &&
+      declarations.tools.length === 0 &&
+      declarations.mcp.length === 0 &&
+      declarations.hostedTools.length === 0 &&
+      !declarations.nativeGoals &&
+      !declarations.checklist &&
+      !nativeAgents &&
+      !search &&
+      correction === undefined &&
+      outputType === undefined;
+    const lease = provider._acquire(correction ?? opening, privateRun);
     const previousOpeningCleanup: (() => Promise<void>) | undefined =
       lease.retainOpeningCleanup(() =>
         releaseEnvironmentBeforeProvider(

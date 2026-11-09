@@ -94,7 +94,7 @@ The SDK provides these tools for execution outside the model response:
 
 The model requests the tool calls. Your application or configured execution environment performs the work.
 
-Sandbox capability tools are different from process-wide built-in tools: they are bound to the live sandbox session for the current `SandboxAgent` run. Use [Sandbox agents](/openai-agents-js/guides/sandbox-agents) when the tool should operate on the agent's isolated workspace instead of your application process.
+Sandbox capability tools are different from process-wide built-in tools: they are bound to the live sandbox session for the current `SandboxAgent` run. Use [Sandbox agents](/openai-agents-js/guides/sandbox-agents) when the tool should operate on the agent's managed workspace. Isolation depends on the sandbox client and configuration; Unix-local commands run as host processes.
 
 <Code
   lang="typescript"
@@ -342,7 +342,13 @@ For a complete example, see [`filesystem-example.ts`](https://github.com/openai/
 
 ---
 
-### 6. Experimental: Codex tool
+### 6. Sandbox capabilities
+
+Configure a `SandboxAgent` with `filesystem()`, `shell()`, `skills()`, `memory()`, or `compaction()` when the workflow needs a persistent workspace. The runner binds these tools to the active sandbox session. Follow the [sandbox quickstart](/openai-agents-js/guides/sandbox-agents) for a complete example, then choose a [sandbox client](/openai-agents-js/guides/sandbox-agents/clients) for your execution environment and isolation requirements.
+
+---
+
+### 7. Experimental: Codex tool
 
 `@openai/agents-extensions/experimental/codex` provides `codexTool()`, a function tool that routes model tool calls to the Codex SDK so the agent can run workspace-scoped tasks (shell, file edits, MCP tools) autonomously. This API is experimental and may change.
 

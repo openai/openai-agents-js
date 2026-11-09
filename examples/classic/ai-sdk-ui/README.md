@@ -16,11 +16,38 @@ pnpm -F ai-sdk-ui dev
 
 Open http://localhost:3000 for the UI message stream (tool calls and reasoning parts are rendered). Open http://localhost:3000/text for the text-only stream. When the browser prompts for credentials, enter `demo` as the username and the configured access token as the password.
 
-The access token admits one demo operator. Keep it on the server and use HTTPS outside localhost. Both pages and all API routes require these credentials, including when the browser already owns a conversation. The server rejects browser requests from other origins, including other ports on localhost, even after sign-in. Links or embedded requests from another site return HTTP 403; open the demo URL directly in the address bar to sign in or resume. Same-origin navigation and direct CLI requests remain supported.
+### Sign in and open a conversation
 
-This local demo binds each conversation to its own HttpOnly browser cookie. Opening a conversation link in another browser starts a new conversation, and clearing cookies loses access. Both stream views share ownership for a given conversation, and separate tabs can create conversations independently. Before hosting this for other users, add your application's authentication and authorization.
+The access token admits one demo operator. Keep it on the server and use HTTPS outside localhost. Both pages and all API routes require these credentials, including when the browser already owns a conversation.
 
-Each server process allows 32 retained or pending conversations and 32 creation attempts per hour, including failed attempts. Conversations expire one hour after creation. The next admitted session request deletes expired provider conversations once their active streams and history reads finish. Failed deletions retain their slots and retry after one minute. The demo also allows 20 model runs per conversation, 60 per hour across conversations, four concurrent runs, and one active run per conversation. Chat request bodies are limited to 64 KiB. Exhausted limits return HTTP 429; expired conversations return HTTP 404. The in-memory ownership records and limits reset on server restart and do not coordinate across instances. Restarting loses access to existing conversations and their cleanup records; it does not delete those provider conversations. These controls are not a deployment-wide spending limit. Use provider project budgets for an additional cost boundary.
+Open the demo URL directly in the address bar to sign in or resume. The server rejects browser requests from other origins, including other ports on localhost, even after sign-in. Links or embedded requests from another site return HTTP 403. Same-origin navigation and direct CLI requests remain supported.
+
+Each conversation has its own HttpOnly browser cookie. Both stream views share ownership for that conversation, and separate tabs can create conversations independently. Opening a conversation link in another browser starts a new conversation. Clearing cookies loses access to existing conversations.
+
+Before hosting this for other users, add your application's authentication and authorization.
+
+### Demo limits
+
+The server enforces these limits:
+
+| Resource | Limit |
+| --- | --- |
+| Retained or pending conversations | 32 per server process |
+| Conversation creation attempts, including failed attempts | 32 per hour per server process |
+| Model runs for one conversation | 20 |
+| Model runs across conversations | 60 per hour per server process |
+| Concurrent model runs | Four per server process; one per conversation |
+| Chat request body | 64 KiB |
+
+Exhausted conversation and model-run limits return HTTP 429. Oversized chat bodies return HTTP 413. Conversations expire one hour after creation; requests for expired conversations return HTTP 404.
+
+### Expiry, cleanup, and server restarts
+
+Admitted conversation-creation requests trigger cleanup of expired provider conversations once their active streams and history reads finish. Failed deletions retain their slots. Cleanup can retry after one minute when another conversation-creation request is admitted.
+
+The ownership records and limits live in memory. They reset on server restart and do not coordinate across instances. Restarting loses access to existing conversations and their cleanup records, while those provider conversations remain stored.
+
+These controls apply to individual demo processes. Use provider project budgets for an additional cost boundary across your deployment.
 
 ## Run the Node.js text stream samples
 

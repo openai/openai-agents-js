@@ -1,6 +1,6 @@
 # Discover and run embedded commands
 
-Read the command catalog to discover supported forms, then execute a selected command on an application-owned Session.
+Read the command catalog to discover supported forms, then execute a selected command on an application-owned Session. Use Node.js 24 and [build the matching SDK and native runtime](../guides/building.md). The catalog needs the native addon even though it starts no model work.
 
 ## Read the catalog
 
@@ -33,7 +33,7 @@ The catalog keeps native order: `review`, `rename`, `compact`, `stop-background-
 
 Copy [embedded-commands.ts](../embedded-commands.ts) beside the application file that will run commands. Compile both in the same TypeScript project so they use the same SDK types. The helper waits for compaction or review, then returns the receipt and result.
 
-Pass an open Session to the helper. For Agent and provider setup, see [the basic example](../basic.ts).
+Pass an open Session to the helper. In the following excerpt, keep the import at module scope and run the calls inside an asynchronous handler that already holds `session`. For Agent and provider setup, see [the basic example](../basic.ts).
 
 ```ts
 import { runEmbeddedCommand } from './embedded-commands.js';
