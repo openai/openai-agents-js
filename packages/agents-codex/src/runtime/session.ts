@@ -9735,25 +9735,15 @@ export class Session<OutputT = string, Context = unknown> {
   }): Promise<string> {
     this.checkCallbackOperation('edit canonical history in');
     this.idle('transactHistory');
-    if (
-      typeof options.expectedRevision !== 'string' ||
-      !options.expectedRevision
-    )
+    const { expectedRevision, keep } = options;
+    if (typeof expectedRevision !== 'string' || !expectedRevision)
       throw new TypeError('expectedRevision must be nonempty text');
-    if (
-      !Number.isSafeInteger(options.keep) ||
-      options.keep < 0 ||
-      options.keep > 0xffffffff
-    )
+    if (!Number.isSafeInteger(keep) || keep < 0 || keep > 0xffffffff)
       throw new RangeError('keep must be a nonnegative 32-bit integer');
     const captured = JSON.stringify(options.items ?? []);
     return this.mutate(async () => {
       const value = JSON.parse(
-        await this.#native._transact_history(
-          options.expectedRevision,
-          options.keep,
-          captured,
-        ),
+        await this.#native._transact_history(expectedRevision, keep, captured),
       );
       return value.revision;
     });

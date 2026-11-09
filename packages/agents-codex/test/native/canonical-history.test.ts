@@ -83,3 +83,52 @@ it('atomically replaces canonical history and restores it into the next native r
   expect(input).toContain('call-history');
   server.assertExhausted();
 });
+
+it('captures the admitted prefix, revision and items before scheduling a history transaction', async () => {
+  const server = new ModelServer([]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-history-key',
+  });
+  const session = await new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  }).session({
+    initialMessages: [{ role: 'user', content: 'retained prefix' }],
+  });
+  try {
+    const before = await session.historySnapshot();
+    const options = {
+      expectedRevision: before.revision,
+      keep: before.total,
+      items: [
+        {
+          type: 'message',
+          id: 'msg_admitted_append',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'admitted append' }],
+        },
+      ],
+    };
+    const pending = session.transactHistory(options);
+    options.keep = 0;
+    options.expectedRevision = 'changed after admission';
+    options.items[0]!.content[0]!.text = 'changed after admission';
+    const revision = await pending;
+    const after = await session.historySnapshot();
+    expect(after.revision).toBe(revision);
+    expect(after.total).toBe(before.total + 1);
+    expect(after.items.slice(0, before.total)).toEqual(before.items);
+    expect(after.items.at(-1)).toMatchObject({
+      id: 'msg_admitted_append',
+      content: [{ type: 'output_text', text: 'admitted append' }],
+    });
+    expect(server.requests).toEqual([]);
+  } finally {
+    await session.close();
+  }
+  server.assertExhausted();
+});
