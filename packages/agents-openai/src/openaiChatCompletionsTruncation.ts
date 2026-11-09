@@ -3,35 +3,37 @@ import { ModelBehaviorError } from '@openai/agents-core';
 export const CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR =
   "Chat Completions response terminated with finish_reason='length' but produced no assistant text, tool call, or refusal.";
 
-const CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR_BRAND = Symbol(
-  'openaiChatCompletionsEmptyTruncationError',
+const CHAT_COMPLETIONS_TRUNCATION_ERROR_BRAND = Symbol(
+  'openaiChatCompletionsTruncationError',
 );
 
-export type TruncatedEmptyChatCompletionError = ModelBehaviorError & {
+export type ChatCompletionTruncationError = ModelBehaviorError & {
   readonly unsafeToReplay: true;
   readonly responseStarted: true;
-  readonly [CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR_BRAND]: true;
+  readonly [CHAT_COMPLETIONS_TRUNCATION_ERROR_BRAND]: true;
 };
 
-export function createTruncatedEmptyChatCompletionError(): TruncatedEmptyChatCompletionError {
+export function createChatCompletionTruncationError(
+  message = CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR,
+): ChatCompletionTruncationError {
   const error = new ModelBehaviorError(
-    CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR,
-  ) as TruncatedEmptyChatCompletionError;
+    message,
+  ) as ChatCompletionTruncationError;
   Object.defineProperties(error, {
     unsafeToReplay: { value: true },
     responseStarted: { value: true },
-    [CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR_BRAND]: { value: true },
+    [CHAT_COMPLETIONS_TRUNCATION_ERROR_BRAND]: { value: true },
   });
   return error;
 }
 
-export function isTruncatedEmptyChatCompletionError(
+export function isChatCompletionTruncationError(
   error: unknown,
-): error is TruncatedEmptyChatCompletionError {
+): error is ChatCompletionTruncationError {
   return (
     error instanceof ModelBehaviorError &&
-    (error as Partial<TruncatedEmptyChatCompletionError>)[
-      CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR_BRAND
+    (error as Partial<ChatCompletionTruncationError>)[
+      CHAT_COMPLETIONS_TRUNCATION_ERROR_BRAND
     ] === true
   );
 }

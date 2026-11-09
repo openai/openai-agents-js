@@ -51,7 +51,7 @@ import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
 import { snapshotRawUsage } from './utils/rawUsage';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
-import { StreamEventResponseCompleted } from './types/protocol';
+import { StreamEvent, StreamEventResponseCompleted } from './types/protocol';
 import type { Session, SessionInputCallback } from './memory/session';
 import type { SandboxRunConfig } from './sandbox/client';
 import { SandboxRuntimeManager } from './sandbox/runtime';
@@ -3026,7 +3026,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             createStreamAbortReconciliationState();
           let inputMarked = false;
           let responseAcceptedCheckpointed = false;
-          let receivedStreamEvent = false;
+          let streamEventCount = 0;
+          let lastStreamEventType: StreamEvent['type'] | undefined;
           let timedOutModelCallFailed = false;
           const markServerInputAccepted = (responseAvailable = true) => {
             if (!serverConversationTracker) {
@@ -3195,7 +3196,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   : {}),
               },
             )) {
-              receivedStreamEvent = true;
+              streamEventCount++;
+              lastStreamEventType = event.type;
               markServerInputAccepted(pendingInputItems.length === 0);
               await guardrailTracker.throwIfError();
               recordStreamEventForAbortReconciliation(
@@ -3260,7 +3262,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               return;
             }
             if (error instanceof ModelTimeoutError || timedOutModelCallFailed) {
-              if (receivedStreamEvent) {
+              if (streamEventCount > 0) {
                 markServerInputAccepted(false);
               }
               await awaitInputGuardrails();
@@ -3284,8 +3286,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           result.state._noActiveAgentRun = false;
 
           if (!finalResponse) {
+            const lastEventKind =
+              StreamEvent.options.find(
+                (schema) => schema.shape.type.value === lastStreamEventType,
+              )?.shape.type.value ??
+              (streamEventCount > 0 ? 'unknown' : 'none');
             throw new ModelBehaviorError(
-              'Model did not produce a final response!',
+              `Model did not produce a final response! Stream ended before response_done (event_count=${streamEventCount}, last_event_type=${lastEventKind}).`,
               result.state,
             );
           }

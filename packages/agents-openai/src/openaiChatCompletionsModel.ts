@@ -1,3 +1,4 @@
+import { isOfficialOpenAIEndpoint } from './utils/openaiEndpoint';
 import {
   Model,
   NoopSpan,
@@ -51,9 +52,9 @@ import {
 } from '@openai/agents-core/utils/internal';
 import { FAKE_ID } from './openaiItemIds';
 import {
-  createTruncatedEmptyChatCompletionError,
+  createChatCompletionTruncationError,
   isTruncatedEmptyChatCompletion,
-  isTruncatedEmptyChatCompletionError,
+  isChatCompletionTruncationError,
 } from './openaiChatCompletionsTruncation';
 
 export { FAKE_ID };
@@ -245,7 +246,7 @@ export class OpenAIChatCompletionsModel implements Model {
               ),
             })
           ) {
-            const error = createTruncatedEmptyChatCompletionError();
+            const error = createChatCompletionTruncationError();
             const failureUsage = toResponseUsage(
               response.usage ?? {
                 prompt_tokens: 0,
@@ -433,6 +434,11 @@ export class OpenAIChatCompletionsModel implements Model {
         response,
         stream,
         {
+          requireFinishReason: isOfficialOpenAIEndpoint(
+            this.#client.baseURL,
+            'http',
+          ),
+          signal: request.signal,
           strictFeatureValidation: this.#strictFeatureValidation,
           ...(request.modelSettings.preserveRawUsage === true
             ? { preserveRawUsage: true }
@@ -470,7 +476,7 @@ export class OpenAIChatCompletionsModel implements Model {
       }
     } catch (error) {
       const truncatedResponse =
-        response !== undefined && isTruncatedEmptyChatCompletionError(error)
+        response !== undefined && isChatCompletionTruncationError(error)
           ? response
           : undefined;
       if (truncatedResponse) {

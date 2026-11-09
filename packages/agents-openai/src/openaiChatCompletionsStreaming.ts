@@ -15,7 +15,7 @@ import {
   shouldSynthesizeContentFilterRefusal,
 } from './openaiChatCompletionsContentFilter';
 import {
-  createTruncatedEmptyChatCompletionError,
+  createChatCompletionTruncationError,
   isTruncatedEmptyChatCompletion,
 } from './openaiChatCompletionsTruncation';
 
@@ -140,6 +140,8 @@ export async function* convertChatCompletionsStreamToResponses(
   options: {
     strictFeatureValidation?: boolean;
     preserveRawUsage?: boolean;
+    requireFinishReason?: boolean;
+    signal?: AbortSignal;
   } = {},
 ): AsyncIterable<protocol.StreamEvent> {
   let usage: CompletionUsage | undefined = undefined;
@@ -177,9 +179,11 @@ export async function* convertChatCompletionsStreamToResponses(
       response.id = chunk.id;
     }
 
-    const audioDelta = chunk.choices?.find(
-      (choice) => choice.index === 0,
-    )?.delta;
+    const primaryChoice = chunk.choices?.find((choice) => choice.index === 0);
+    if (primaryChoice?.finish_reason) {
+      state.finishReason = primaryChoice.finish_reason;
+    }
+    const audioDelta = primaryChoice?.delta;
     if (
       audioDelta &&
       Object.prototype.hasOwnProperty.call(audioDelta, 'audio')
@@ -237,11 +241,7 @@ export async function* convertChatCompletionsStreamToResponses(
       }
     }
 
-    const primaryChoice = chunk.choices.find((choice) => choice.index === 0);
     if (!primaryChoice) continue;
-    if (primaryChoice.finish_reason) {
-      state.finishReason = primaryChoice.finish_reason;
-    }
     if (!primaryChoice.delta) continue;
     const delta = primaryChoice.delta;
 
@@ -334,6 +334,24 @@ export async function* convertChatCompletionsStreamToResponses(
     }
   }
 
+  response.usage = {
+    prompt_tokens: usage?.prompt_tokens ?? 0,
+    completion_tokens: usage?.completion_tokens ?? 0,
+    total_tokens: usage?.total_tokens ?? 0,
+    prompt_tokens_details: usage?.prompt_tokens_details,
+    completion_tokens_details: usage?.completion_tokens_details,
+  };
+
+  if (options.requireFinishReason && state.finishReason === null) {
+    // The provider iterator can end normally when the caller cancels the stream.
+    if (options.signal?.aborted) {
+      return;
+    }
+    throw createChatCompletionTruncationError(
+      'Chat Completions stream ended before receiving a finish_reason for choice 0.',
+    );
+  }
+
   // Final output message
   const outputs: protocol.OutputModelItem[] = [];
   const outputItemId = response.id || FAKE_ID;
@@ -417,13 +435,6 @@ export async function* convertChatCompletionsStreamToResponses(
 
   const traceChoice = buildTraceChoice(state);
   response.choices = traceChoice ? [traceChoice] : [];
-  response.usage = {
-    prompt_tokens: usage?.prompt_tokens ?? 0,
-    completion_tokens: usage?.completion_tokens ?? 0,
-    total_tokens: usage?.total_tokens ?? 0,
-    prompt_tokens_details: usage?.prompt_tokens_details,
-    completion_tokens_details: usage?.completion_tokens_details,
-  };
 
   if (
     isTruncatedEmptyChatCompletion({
@@ -435,7 +446,7 @@ export async function* convertChatCompletionsStreamToResponses(
       hasFunctionCall: Object.keys(state.function_calls).length > 0,
     })
   ) {
-    throw createTruncatedEmptyChatCompletionError();
+    throw createChatCompletionTruncationError();
   }
 
   // Compose final response
