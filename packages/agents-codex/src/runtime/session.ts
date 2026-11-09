@@ -1082,8 +1082,8 @@ export class Session<OutputT = string, Context = unknown> {
    * Agent instructions, tools, and handoffs. Send it to the Realtime calls accept
    * endpoint, then attach with
    * `realtime({ ...options, transport: { type: 'sip', callId } })` using the same
-   * model, voice, instructions, settings, and tool selection. The builder saves
-   * no configuration for a later attachment.
+   * model, voice, instructions, output modality, settings, and tool selection.
+   * The builder saves no configuration for a later attachment.
    * This prepares Session-owned MCP tools just as connecting does, but does not
    * connect media or resolve voice credentials.
    */
@@ -1103,7 +1103,14 @@ export class Session<OutputT = string, Context = unknown> {
       );
     for (const [name, value] of Object.entries(options)) {
       if (
-        !['model', 'voice', 'instructions', 'settings', 'tools'].includes(name)
+        ![
+          'model',
+          'voice',
+          'instructions',
+          'outputModality',
+          'settings',
+          'tools',
+        ].includes(name)
       )
         throw new TypeError(
           `Unsupported Realtime SIP configuration option: ${name}`,
@@ -1180,6 +1187,7 @@ export class Session<OutputT = string, Context = unknown> {
           'voice',
           'instructions',
           'signal',
+          'outputModality',
           'settings',
           'transport',
           'tools',

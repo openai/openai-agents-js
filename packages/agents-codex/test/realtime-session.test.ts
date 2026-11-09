@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import type { NativeRealtimeResponseOptions } from '../src';
 import { Session } from '../src/runtime/session';
 import { captureTools } from '../src/runtime/tools';
 import type { NativeRealtimeSipConfigOptions } from '../src/runtime/realtime';
@@ -111,6 +112,89 @@ it('routes native Realtime before passive observation and joins its real Session
   expect(f.engine._close_report).toHaveBeenCalledOnce();
   expect(f.carrier.close).toHaveBeenCalledOnce();
 });
+
+it.each([undefined, 'text'] as const)(
+  'forwards initial output modality %s through Session startup',
+  async (outputModality) => {
+    const f = fixture();
+    await f.session._start();
+    const voice = await f.session.realtime({ outputModality });
+    const prepare = f.native.call.mock.calls.find(
+      ([operation]) => operation === 'realtime_conversation_prepare_sdk',
+    );
+    expect(JSON.parse(prepare![1]).params.output_modality).toBe(
+      outputModality ?? 'audio',
+    );
+    await voice.close();
+    await f.session.close();
+  },
+);
+
+it('captures per-response options before enqueue and preserves the no-argument DTO', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const blocked = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  f.native.call.mockImplementationOnce(async () => {
+    entered.resolve();
+    await blocked.promise;
+    return 'null';
+  });
+  const text = voice.sendText('Before the response');
+  await entered.promise;
+  const options = {
+    instructions: 'Reply briefly.',
+    outputModality: 'text' as 'text' | 'audio',
+    maxOutputTokens: 32 as number | 'inf',
+  } satisfies NativeRealtimeResponseOptions;
+  const pending = voice.requestResponse(options);
+  options.instructions = 'Changed after enqueue';
+  options.outputModality = 'audio';
+  options.maxOutputTokens = 'inf';
+  blocked.resolve();
+  await Promise.all([text, pending]);
+  await voice.requestResponse();
+  await voice.requestResponse({ maxOutputTokens: 'inf' });
+  const calls = f.native.call.mock.calls
+    .filter(([operation]) => operation === 'realtime_conversation_response_sdk')
+    .map(([, raw]) => JSON.parse(raw));
+  expect(calls).toEqual([
+    {
+      generation: expect.any(String),
+      response: {
+        instructions: 'Reply briefly.',
+        output_modality: 'text',
+        max_output_tokens: 32,
+      },
+    },
+    { generation: calls[0].generation },
+    { generation: calls[0].generation, response: { max_output_tokens: 'inf' } },
+  ]);
+  await voice.close();
+  await f.session.close();
+});
+
+it.each([
+  { tools: [] },
+  { instructions: 1 },
+  { outputModality: 'video' },
+  { maxOutputTokens: 0 },
+  { maxOutputTokens: NaN },
+  { instructions: '界'.repeat(350000) },
+])(
+  'rejects invalid or oversized response options before dispatch: %o',
+  async (response) => {
+    const f = fixture();
+    await f.session._start();
+    const voice = await f.session.realtime();
+    const before = f.native.call.mock.calls.length;
+    await expect(voice.requestResponse(response as never)).rejects.toThrow();
+    expect(f.native.call.mock.calls).toHaveLength(before);
+    await voice.close();
+    await f.session.close();
+  },
+);
 
 it('native graph retirement releases a pending delegation even when later provider cleanup fails', async () => {
   const failure = new Error('provider release failed');
@@ -385,6 +469,7 @@ it.each(['inherited', 'explicit'] as const)(
       model: 'captured-model',
       voice: 'marin',
       instructions: 'Captured instructions.',
+      outputModality: 'text',
       settings,
       ...(selection === 'explicit' ? { tools } : {}),
     };
@@ -394,6 +479,7 @@ it.each(['inherited', 'explicit'] as const)(
     options.model = 'changed-model';
     options.voice = 'cedar';
     options.instructions = 'Changed instructions.';
+    options.outputModality = 'audio';
     options.tools = [];
     tools.push({ name: 'injected' } as never);
     settings.outputSpeed = 1.7;
@@ -406,6 +492,7 @@ it.each(['inherited', 'explicit'] as const)(
         model: 'captured-model',
         voice: 'marin',
         prompt: 'Captured instructions.',
+        output_modality: 'text',
       },
     });
     expect(params).not.toHaveProperty('hosted_mcp_auto_response');
