@@ -171,6 +171,10 @@ A function can return `backgroundResult(value)` to publish its accepted result w
 
 Incoming native Realtime events share an 8 MiB queue budget for wire text and estimated storage for decoded and derived values. Oversized frames, dense JSON structures, deeply nested values, or a full queue terminate the voice connection. Consume events promptly to release queue capacity.
 
+SDK output events share a 2 MiB queue budget with conservative string-storage estimates.
+
+Canonical transcript history has a separate 8 MiB estimated storage limit. History and guardrail transcripts also have cumulative work limits; exceeding a limit terminates the voice connection. History accounting lasts for the voice owner's lifetime, even when you consume events promptly.
+
 Hosted MCP catalogs are limited to 1,024 tools. Catalog events share a 2 MiB queue budget, including estimated storage for schema structures and strings. Oversized catalogs, deeply nested schemas, or a full queue terminate the voice connection. Keep server tool lists and schemas small, and consume events promptly to release queue capacity.
 
 Realtime speech itself streams before completion. Optional `outputGuardrails` check text and can interrupt the exact response, but some audio may already have played. Report actual playback with `reportPlayback()`. On `playback_interrupted`, discard queued audio for `retiredResponseIds`. This differs from the accepted-final-text rule for native backend delegation.
