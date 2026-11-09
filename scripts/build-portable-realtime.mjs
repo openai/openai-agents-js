@@ -85,6 +85,7 @@ function run(program, args) {
     throw new Error(`${program} failed (${result.status}).`);
   return result.stdout.toString();
 }
+run('rustup', ['target', 'add', 'wasm32-unknown-unknown']);
 const toolchain = run('rustc', ['-vV']);
 run('cargo', [
   'build',

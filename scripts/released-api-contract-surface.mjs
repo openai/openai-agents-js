@@ -1169,6 +1169,21 @@ export async function loadPackageSet(roots, mode) {
     for (const [subpath, exportNode] of Object.entries(
       manifest.exports ?? {},
     )) {
+      // A direct Wasm asset is resolved by the host's asset loader, not by
+      // TypeScript or Node's JavaScript module loader.
+      if (
+        subpath.endsWith('.wasm') &&
+        typeof exportNode === 'string' &&
+        exportNode.endsWith('.wasm')
+      ) {
+        const errors = validateExportLeafConditions(
+          exportNode,
+          packageKey(name, subpath),
+        );
+        if (errors.length) throw new Error(errors.join('\n'));
+        entries[subpath] = { exportNode, asset: 'wasm', declarations: [] };
+        continue;
+      }
       const declarationTargets = collectConditionTargets(exportNode, 'types');
       if (declarationTargets.length === 0) {
         throw new Error(
@@ -1809,7 +1824,9 @@ export async function assertAllTargetsExist(packages) {
           );
         }
       }
-      for (const condition of ['types', 'require', 'import']) {
+      for (const condition of entry.asset === 'wasm'
+        ? []
+        : ['types', 'require', 'import']) {
         const targets =
           condition === 'types'
             ? collectTargets(entry.exportNode, condition)
