@@ -2056,7 +2056,8 @@ impl NativeThread {
                 serde_json::to_value(subagents::list(&inner).await.map_err(native_error)?)
                     .map_err(native_error)?
             }
-            "list_mcp_resources"
+            "call_mcp_app_tool"
+            | "list_mcp_resources"
             | "list_mcp_resource_templates"
             | "read_mcp_resource"
             | "list_mcp_prompts"
@@ -2101,6 +2102,47 @@ impl NativeThread {
                     .clone();
                 let request = async {
                     match operation.as_str() {
+                        "call_mcp_app_tool" => {
+                            #[derive(serde::Deserialize)]
+                            #[serde(deny_unknown_fields)]
+                            struct ToolParams {
+                                name: String,
+                                arguments: serde_json::Map<String, Value>,
+                            }
+                            let params: ToolParams =
+                                serde_json::from_value(request.params).map_err(input_error)?;
+                            if !selected.is_local_environment()
+                                || !selected
+                                    .enabled_tools
+                                    .as_ref()
+                                    .is_some_and(|names| names.contains(&params.name))
+                                || selected
+                                    .disabled_tools
+                                    .as_ref()
+                                    .is_some_and(|names| names.contains(&params.name))
+                                || !selected.tools.get(&params.name).is_some_and(|tool| {
+                                    matches!(
+                                        tool.approval_mode,
+                                        Some(codex_config::AppToolApproval::Approve)
+                                    )
+                                })
+                            {
+                                return Err(input_error(
+                                    "MCP App actions require an explicitly selected preapproved ordinary local tool",
+                                ));
+                            }
+                            let result = inner
+                                .thread
+                                .call_mcp_tool(
+                                    &request.server,
+                                    &params.name,
+                                    Some(Value::Object(params.arguments)),
+                                    None,
+                                )
+                                .await
+                                .map_err(|error| native_error(format!("{error:#}")))?;
+                            serde_json::to_value(result).map_err(native_error)
+                        }
                         "read_mcp_resource" => inner
                             .thread
                             .read_mcp_resource(
