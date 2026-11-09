@@ -125,6 +125,10 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Retain all emitted observations in memory for this Session lifetime.
+   * Memory grows with emitted payloads until Session references are released.
+   * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
+  observationRetention?: 'bounded' | 'all';
   /**
    * Seed settled user messages and assistant text without starting a model turn.
    * Requires a fresh opening without state or resume, including for []. Core
@@ -216,6 +220,7 @@ interface CapturedOpening {
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
   readonly maxFunctionConcurrency?: number;
+  readonly observationRetention?: 'bounded' | 'all';
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
   readonly beforeCompact?: BeforeCompact<any>;
@@ -430,6 +435,12 @@ export class Agent<Context = undefined, Output = string> {
       ...(args[0] ?? {}),
       parentTrace: captureTraceContext(args[0]?.parentTrace),
     };
+    if (
+      options.observationRetention !== undefined &&
+      options.observationRetention !== 'bounded' &&
+      options.observationRetention !== 'all'
+    )
+      throw new TypeError('observationRetention must be "bounded" or "all"');
     options.initialMessages = captureInitialMessages(
       options.initialMessages,
       options.state,
@@ -555,6 +566,7 @@ export class Agent<Context = undefined, Output = string> {
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
+      observationRetention: options.observationRetention,
       context: options.context,
       onInteraction: options.onInteraction,
       tracing: options.tracing,
@@ -636,6 +648,9 @@ export class Agent<Context = undefined, Output = string> {
     ] as const)
       if (callback !== undefined && typeof callback !== 'function')
         throw new TypeError(`${name} must be a function`);
+    const observationRetention = opening
+      ? opening.observationRetention
+      : options.observationRetention;
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -1276,6 +1291,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        observationRetention,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         parentTrace: captureTraceContext(options.parentTrace),
@@ -1359,6 +1375,7 @@ export class Agent<Context = undefined, Output = string> {
           context,
           onInteraction: options.onInteraction,
           maxFunctionConcurrency,
+          observationRetention,
           contextTransformPurpose,
           beforeComplete,
           beforeCompact,
