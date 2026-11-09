@@ -10,6 +10,10 @@ const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 async function peer(toolNames = ['lookup']) {
   const effects: unknown[] = [];
   const server = createServer(async (request, response) => {
+    if (request.method !== 'POST') {
+      response.writeHead(405).end();
+      return;
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const rpc = JSON.parse(Buffer.concat(chunks).toString());
