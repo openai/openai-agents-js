@@ -135,13 +135,25 @@ export class ChatCompletionsModel implements NativeModel {
           function: { name: raw.name, arguments: raw.arguments },
         });
       } else if (raw.type === 'function_call_output') {
+        const output = raw.output as string | JsonObject[];
+        if (
+          typeof output !== 'string' &&
+          (!Array.isArray(output) ||
+            output.some(
+              (part) =>
+                part?.type !== 'input_text' || typeof part.text !== 'string',
+            ))
+        )
+          throw new TypeError(
+            'ChatCompletionsModel supports only text tool outputs',
+          );
         messages.push({
           role: 'tool',
           tool_call_id: raw.call_id,
           content:
-            typeof raw.output === 'string'
-              ? raw.output
-              : JSON.stringify(raw.output),
+            typeof output === 'string'
+              ? output
+              : output.map((part) => part.text).join(''),
         });
       } else if (
         raw.type !== 'reasoning' &&

@@ -9,6 +9,7 @@ import {
   Agent,
   ChatCompletionsModel,
   NativeProvider,
+  ToolOutput,
   tool,
   type ModelRequest,
   type ModelResponse,
@@ -842,6 +843,115 @@ it.each(['include', 'extraBody'] as const)(
       for await (const row of session.turns()) recorded.push(row);
       // Core requires its topLogprobs opt-in before persisting sensitive probabilities.
       expect(recorded[0].responseFacts ?? []).toEqual([]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+  20_000,
+);
+
+it.each([
+  'string',
+  'text-parts',
+  'image',
+  'file',
+  'mixed-image',
+  'mixed-file',
+] as const)(
+  'preserves text and rejects unsupported %s tool output before the next Chat call',
+  async (kind) => {
+    const requests: any[] = [];
+    const effects: string[] = [];
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          id: 'chat-tool-output',
+          object: 'chat.completion',
+          created: 1,
+          model: 'chat-model',
+          choices: [
+            {
+              index: 0,
+              finish_reason: requests.length === 1 ? 'tool_calls' : 'stop',
+              message:
+                requests.length === 1
+                  ? {
+                      role: 'assistant',
+                      content: null,
+                      tool_calls: [
+                        {
+                          id: 'call_content',
+                          type: 'function',
+                          function: { name: 'content', arguments: '{}' },
+                        },
+                      ],
+                    }
+                  : { role: 'assistant', content: 'finished' },
+            },
+          ],
+        }),
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address() as { port: number };
+    const client = new OpenAI({
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+      apiKey: 'synthetic',
+      maxRetries: 0,
+    });
+    try {
+      const content = tool({
+        name: 'content',
+        description: 'Return content.',
+        parameters: z.object({}),
+        execute: () => {
+          effects.push('called');
+          if (kind === 'string') return 'first\n second';
+          if (kind === 'text-parts')
+            return new ToolOutput([
+              { type: 'inputText', text: 'first\n' },
+              { type: 'inputText', text: ' second' },
+            ]);
+          const media = kind.endsWith('image')
+            ? ToolOutput.image('https://example.invalid/synthetic-image.png')
+            : ToolOutput.file({ file_id: 'file_synthetic' });
+          return kind.startsWith('mixed')
+            ? new ToolOutput([
+                { type: 'inputText', text: 'visible text' },
+                ...media.contentItems,
+              ])
+            : media;
+        },
+      });
+      await using provider = new NativeProvider({
+        modelBackend: new ChatCompletionsModel(client, 'chat-model'),
+      });
+      const pending = new Agent({
+        model: 'gpt-5.2',
+        instructions: 'Use content.',
+        tools: [content],
+        provider,
+      }).run('Get content.');
+      if (kind === 'string' || kind === 'text-parts') {
+        expect((await pending).finalOutput).toBe('finished');
+        expect(requests).toHaveLength(2);
+        expect(
+          requests[1].messages.find((message: any) => message.role === 'tool')
+            .content,
+        ).toBe('first\n second');
+      } else {
+        await expect(pending).rejects.toThrow('only text tool outputs');
+        expect(requests).toHaveLength(1);
+      }
+      expect(effects).toEqual(['called']);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
