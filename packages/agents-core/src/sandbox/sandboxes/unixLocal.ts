@@ -84,6 +84,10 @@ import {
   assertSandboxStateGenerationUnchanged,
   captureLiveMountCredentialAuthority,
   captureSandboxStateGeneration,
+  copySandboxStateRuntimeAuthority,
+  copyTrustedMountCredentialRebindProvenance,
+  isSandboxSessionStateUnsafe,
+  markSandboxSessionStateUnsafe,
   validateMountCredentialBoundaries,
   withExclusiveSandboxManifestMutation,
 } from '../mountSecurity';
@@ -1341,8 +1345,19 @@ export class UnixLocalSandboxClient implements SandboxClient<
     const currentOptions = (trustedConfig?.clientOptions ??
       options.clientOptions) as UnixLocalSandboxClientOptions | undefined;
     const resolvedOptions = { ...this.options, ...currentOptions };
+    // Restore and cleanup must not reread public path aliases after yielding.
+    const resumeState = {
+      ...state,
+      manifest: cloneManifest(state.manifest),
+      snapshot: state.snapshot ? { ...state.snapshot } : null,
+    };
+    copyTrustedMountCredentialRebindProvenance(
+      resumeState.manifest,
+      state.manifest,
+    );
+    copySandboxStateRuntimeAuthority(state, resumeState);
     const authorizedState = this.authorizeState(
-      state,
+      resumeState,
       resolvedOptions,
       trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined,
     );
@@ -1395,25 +1410,61 @@ export class UnixLocalSandboxClient implements SandboxClient<
       );
     }
     assertUnixLocalHostPathGrantsUnsupported(state.manifest);
-    const snapshotSpec = state.snapshotSpec ?? null;
-    const snapshot = await persistLocalSnapshot(
-      'UnixLocalSandboxClient',
-      state,
-      snapshotSpec,
-      (capture) => withUnixLocalFileAccess(inputState, capture),
-    );
+    const snapshotSpec = state.snapshotSpec ? { ...state.snapshotSpec } : null;
+    let snapshot: LocalSandboxSnapshot | null;
+    try {
+      snapshot = await persistLocalSnapshot(
+        'UnixLocalSandboxClient',
+        state,
+        snapshotSpec,
+        (capture) => withUnixLocalFileAccess(inputState, capture),
+        (published) => {
+          const authority = getLocalSandboxStateAuthority(state);
+          if (authority) {
+            setLocalSandboxStateAuthority(state, {
+              ...authority,
+              localSnapshotPath:
+                published?.type === 'local' ? published.path : undefined,
+            });
+          }
+        },
+      );
+    } catch (error) {
+      if (isSandboxSessionStateUnsafe(state)) {
+        markSandboxSessionStateUnsafe(inputState);
+      }
+      throw error;
+    }
     assertSandboxStateGenerationUnchanged(inputState, stateGeneration);
+    if (getLocalSandboxStateAuthority(state)) {
+      this.authorizeState(state, this.options, snapshotSpec ?? undefined);
+    }
+    const authority = getLocalSandboxStateAuthority(state);
     state.snapshotSpec = snapshotSpec;
-    rememberLocalStateAuthority(state);
+    assertSandboxStateGenerationUnchanged(inputState, stateGeneration);
+    if (authority) {
+      setLocalSandboxStateAuthority(state, {
+        workspaceRootPath: authority.workspaceRootPath,
+        workspaceRootOwned: authority.workspaceRootOwned,
+        localSnapshotPath: authority.localSnapshotPath,
+        snapshotSpec: snapshotSpec ? { ...snapshotSpec } : null,
+      });
+    } else {
+      rememberLocalStateAuthority(state);
+    }
     if (inputState !== state) {
+      const authority = getLocalSandboxStateAuthority(state);
       Object.assign(inputState, {
+        workspaceRootPath: state.workspaceRootPath,
         workspaceRootOwned: state.workspaceRootOwned,
         snapshotSpec,
         snapshot,
         snapshotFingerprint: state.snapshotFingerprint,
         snapshotFingerprintVersion: state.snapshotFingerprintVersion,
       });
-      rememberLocalStateAuthority(inputState);
+      // Public setters cannot turn changed paths/ownership into new authority.
+      assertSandboxStateGenerationUnchanged(inputState, stateGeneration);
+      if (authority) setLocalSandboxStateAuthority(inputState, authority);
     }
 
     const serialized = {

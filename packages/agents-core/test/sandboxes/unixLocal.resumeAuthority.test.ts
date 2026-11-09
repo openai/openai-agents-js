@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import * as filesystem from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import {
   mkdtemp,
   mkdir,
@@ -26,6 +28,7 @@ import {
   functionCall,
 } from '../../src/testing';
 import { markRunStateSessionState } from '../../src/sandbox/internal/sessionStateTrust';
+import * as snapshots from '../../src/sandbox/sandboxes/shared/localSnapshots';
 import {
   rebindPersistedMountCredentials,
   rebindPersistedPathGrants,
@@ -37,13 +40,641 @@ import {
   withExclusiveSandboxManifestMutation,
 } from '../../src/sandbox/mountSecurity';
 
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs/promises')>()),
+}));
+
 let base: string;
 beforeEach(async () => {
   base = await mkdtemp(join(tmpdir(), 'unix-resume-authority-'));
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await rm(base, { recursive: true, force: true });
 });
+
+it.each(['materializeEntry', 'applyManifest'] as const)(
+  'retries serialization after %s overlaps snapshot replacement',
+  async (mutation) => {
+    const { client, session, snapshotPath } = await fixture();
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const remove = filesystem.rm;
+    vi.spyOn(filesystem, 'rm').mockImplementation(async (path, options) => {
+      if (path === snapshotPath) {
+        entered();
+        await released;
+      }
+      return remove(path, options);
+    });
+    const pending = client.serializeSessionState(session.state);
+    const rejected = expect(pending).rejects.toThrow(/manifest changed/);
+    try {
+      await Promise.race([
+        waiting,
+        pending.then(() => {
+          throw new Error('Snapshot cleanup was not observed');
+        }),
+      ]);
+      const entry = { type: 'file' as const, content: 'changed' };
+      if (mutation === 'materializeEntry') {
+        await session.materializeEntry({ path: 'changed.txt', entry });
+      } else {
+        await session.applyManifest(
+          new Manifest({ entries: { 'changed.txt': entry } }),
+        );
+      }
+      release();
+      await rejected;
+      await expect(
+        client.serializeSessionState(session.state),
+      ).resolves.toMatchObject({
+        snapshot: { type: 'local' },
+      });
+      const resumed = await client.resume(session.state);
+      expect(
+        Buffer.from(await resumed.readFile({ path: 'changed.txt' })).toString(),
+      ).toBe('changed');
+      await resumed.close();
+    } finally {
+      release();
+      await pending.catch(() => {});
+      await session.close();
+    }
+  },
+);
+
+it('keeps a failed copied serialization stale while its original can recover', async () => {
+  const { client, session, snapshotPath } = await fixture();
+  const copied = rebindPersistedPathGrants(
+    session.state,
+    session.state.manifest,
+  );
+  const barrier = holdSnapshotRemoval(snapshotPath);
+  const pending = client.serializeSessionState(copied);
+  const rejected = expect(pending).rejects.toThrow(/manifest changed/);
+  try {
+    await barrier.entered;
+    await session.materializeEntry({
+      path: 'changed.txt',
+      entry: { type: 'file', content: 'changed' },
+    });
+    barrier.release();
+    await rejected;
+    await expect(client.serializeSessionState(copied)).rejects.toThrow(
+      /manifest changed/,
+    );
+    await expect(client.resume(copied)).rejects.toThrow(/manifest changed/);
+    expect(() =>
+      rebindPersistedPathGrants(copied, session.state.manifest),
+    ).toThrow(/manifest changed/);
+    await expect(
+      client.serializeSessionState(session.state),
+    ).resolves.toMatchObject({ snapshot: { type: 'local' } });
+  } finally {
+    barrier.release();
+    await pending.catch(() => {});
+    await session.close();
+  }
+});
+
+it('does not grant parsed state authority when a bound serialization is rejected', async () => {
+  const { client, session, saved, snapshotPath } = await fixture();
+  const state = await client.deserializeSessionState(saved);
+  const bound = boundSerializationClient(
+    session.state.workspaceRootPath,
+    snapshotPath,
+  );
+  const barrier = holdSnapshotRemoval(snapshotPath);
+  const pending = bound.serializeSessionState(state);
+  const rejected = expect(pending).rejects.toThrow(/manifest changed/);
+  try {
+    await barrier.entered;
+    await withExclusiveSandboxManifestMutation(state, async () => {});
+    barrier.release();
+    await rejected;
+    await expect(client.resume(state)).rejects.toThrow(
+      /trusted resumeAuthority/,
+    );
+    const copied = rebindPersistedPathGrants(state, state.manifest);
+    await expect(client.resume(copied)).rejects.toThrow(
+      /trusted resumeAuthority/,
+    );
+    await expect(bound.serializeSessionState(state)).resolves.toMatchObject({
+      snapshot: { type: 'local' },
+    });
+  } finally {
+    barrier.release();
+    await pending.catch(() => {});
+    await session.close();
+  }
+});
+
+it('keeps the new SDK snapshot authorized when old snapshot cleanup fails', async () => {
+  const { client, session, snapshotPath } = await fixture();
+  const remove = filesystem.rm;
+  let fail = true;
+  vi.spyOn(filesystem, 'rm').mockImplementation(async (path, options) => {
+    if (path === snapshotPath && fail) {
+      fail = false;
+      throw new Error('old snapshot cleanup failed');
+    }
+    return remove(path, options);
+  });
+  try {
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      'old snapshot cleanup failed',
+    );
+    expect(await stat(snapshotPath)).toBeTruthy();
+    await expect(
+      client.serializeSessionState(session.state),
+    ).resolves.toMatchObject({ snapshot: { type: 'local' } });
+  } finally {
+    await session.close();
+  }
+});
+
+it('does not advance authority when snapshot assignment fails', async () => {
+  const { client, session, snapshotPath } = await fixture();
+  Object.defineProperty(session.state, 'snapshot', { writable: false });
+  try {
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /read only|readonly/,
+    );
+    expect(session.state.snapshot).toMatchObject({ path: snapshotPath });
+    expect(await stat(snapshotPath)).toBeTruthy();
+    Object.defineProperty(session.state, 'snapshot', { writable: true });
+    await expect(
+      client.serializeSessionState(session.state),
+    ).resolves.toMatchObject({ snapshot: { type: 'local' } });
+  } finally {
+    Object.defineProperty(session.state, 'snapshot', { writable: true });
+    await session.close();
+  }
+});
+
+it.each(['live', 'parsed'] as const)(
+  'invalidates the caller when a %s publication observer fails',
+  async (kind) => {
+    const { client, session, saved, snapshotPath } = await fixture();
+    const state =
+      kind === 'live'
+        ? session.state
+        : await client.deserializeSessionState(saved);
+    const serializer =
+      kind === 'live'
+        ? client
+        : boundSerializationClient(
+            session.state.workspaceRootPath,
+            snapshotPath,
+          );
+    const persist = snapshots.persistLocalSnapshot;
+    vi.spyOn(snapshots, 'persistLocalSnapshot').mockImplementationOnce(
+      (provider, current, spec, capture, observer) =>
+        persist(provider, current, spec, capture, (published) => {
+          observer?.(published);
+          throw new Error('publication observer failed');
+        }),
+    );
+    try {
+      await expect(serializer.serializeSessionState(state)).rejects.toThrow(
+        'publication observer failed',
+      );
+      expect(await stat(snapshotPath)).toBeTruthy();
+      await expect(client.resume(state)).rejects.toThrow(/unavailable/);
+      await expect(serializer.serializeSessionState(state)).rejects.toThrow(
+        /unavailable/,
+      );
+      if (kind === 'parsed') {
+        // Rebinding untrusted bytes must not transfer a failed operation's capability.
+        const copied = rebindPersistedPathGrants(state, state.manifest);
+        await expect(client.resume(copied)).rejects.toThrow(
+          /trusted resumeAuthority/,
+        );
+      }
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+it('pins previous cleanup and output policy before asynchronous capture', async () => {
+  const { client, session, snapshotPath, victim } = await fixture();
+  const barrier = holdSnapshotRead(
+    join(session.state.workspaceRootPath, 'note.txt'),
+  );
+  const pending = client.serializeSessionState(session.state);
+  const forbiddenBase = join(victim, 'untrusted-output');
+  try {
+    await barrier.entered;
+    if (session.state.snapshot?.type !== 'local')
+      throw new Error('Expected local snapshot');
+    session.state.snapshot.path = victim;
+    Object.assign(session.state.snapshotSpec!, { baseDir: forbiddenBase });
+    barrier.release();
+    const saved = await pending;
+    expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+      'synthetic host data',
+    );
+    await expect(stat(snapshotPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(forbiddenBase)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((saved.snapshot as { path: string }).path.startsWith(base)).toBe(
+      true,
+    );
+  } finally {
+    barrier.release();
+    await pending.catch(() => {});
+    await session.close();
+  }
+});
+
+it('does not capture a snapshot path changed by public-state publication', async () => {
+  const { client, session, victim } = await fixture();
+  const descriptor = Object.getOwnPropertyDescriptor(
+    session.state,
+    'snapshot',
+  )!;
+  let value = session.state.snapshot;
+  let createdPath: string | undefined;
+  Object.defineProperty(session.state, 'snapshot', {
+    configurable: true,
+    enumerable: true,
+    get: () => value,
+    set: (next) => {
+      value = next;
+      if (next?.type === 'local') {
+        createdPath = next.path;
+        next.path = victim;
+      }
+    },
+  });
+  try {
+    await expect(client.serializeSessionState(session.state)).rejects.toThrow(
+      /localSnapshotPath/,
+    );
+    await expect(client.resume(session.state)).rejects.toThrow(
+      /localSnapshotPath/,
+    );
+    expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+      'synthetic host data',
+    );
+    if (value?.type !== 'local' || !createdPath)
+      throw new Error('Expected published local snapshot');
+    value.path = createdPath;
+    Object.defineProperty(session.state, 'snapshot', { ...descriptor, value });
+    await expect(
+      client.serializeSessionState(session.state),
+    ).resolves.toMatchObject({ snapshot: { type: 'local' } });
+  } finally {
+    Object.defineProperty(session.state, 'snapshot', { ...descriptor, value });
+    await session.close();
+  }
+});
+
+it('does not capture snapshot paths changed during parsed-input propagation', async () => {
+  const { client, session, saved, snapshotPath, victim } = await fixture();
+  const state = await client.deserializeSessionState(saved);
+  const bound = boundSerializationClient(
+    session.state.workspaceRootPath,
+    snapshotPath,
+  );
+  let value = state.snapshot;
+  Object.defineProperty(state, 'snapshot', {
+    configurable: true,
+    get: () => value,
+    set: (next) => {
+      value = next;
+      if (next?.type === 'local') next.path = victim;
+    },
+  });
+  try {
+    await bound.serializeSessionState(state);
+    await expect(client.resume(state)).rejects.toThrow(/localSnapshotPath/);
+    expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+      'synthetic host data',
+    );
+  } finally {
+    await session.close();
+  }
+});
+
+it('retains trusted cleanup ownership through parsed-input setters', async () => {
+  const { client, session, saved, snapshotPath } = await fixture();
+  const root = session.state.workspaceRootPath;
+  const state = await client.deserializeSessionState(saved);
+  const bound = boundSerializationClient(root, snapshotPath);
+  let value = state.snapshot;
+  Object.defineProperty(state, 'snapshot', {
+    configurable: true,
+    get: () => value,
+    set: (next) => {
+      value = next;
+      state.workspaceRootOwned = true;
+    },
+  });
+  try {
+    await bound.serializeSessionState(state);
+    const resumed = await client.resume(state);
+    await resumed.close();
+    expect(await stat(root)).toBeTruthy();
+  } finally {
+    await session.close();
+  }
+});
+
+it('does not mint authority after reentrant parsed-input propagation', async () => {
+  const { client, session, saved, snapshotPath } = await fixture();
+  const state = await client.deserializeSessionState(saved);
+  const bound = boundSerializationClient(
+    session.state.workspaceRootPath,
+    snapshotPath,
+  );
+  let value = state.snapshot;
+  let mutation: Promise<void> | undefined;
+  Object.defineProperty(state, 'snapshot', {
+    configurable: true,
+    get: () => value,
+    set: (next) => {
+      value = next;
+      mutation = withExclusiveSandboxManifestMutation(state, async () => {});
+    },
+  });
+  try {
+    await expect(bound.serializeSessionState(state)).rejects.toThrow(
+      /manifest changed/,
+    );
+    await mutation;
+    await expect(client.resume(state)).rejects.toThrow(
+      /trusted resumeAuthority/,
+    );
+    await expect(
+      client.resume(rebindPersistedPathGrants(state, state.manifest)),
+    ).rejects.toThrow(/trusted resumeAuthority/);
+  } finally {
+    await mutation;
+    await session.close();
+  }
+});
+
+it('propagates the approved root rather than recapturing changed parsed input', async () => {
+  const { client, session, saved, snapshotPath, victim } = await fixture();
+  const root = session.state.workspaceRootPath;
+  const state = await client.deserializeSessionState(saved);
+  const bound = boundSerializationClient(root, snapshotPath);
+  const barrier = holdSnapshotRead(join(root, 'note.txt'));
+  const pending = bound.serializeSessionState(state);
+  try {
+    await barrier.entered;
+    state.workspaceRootPath = victim;
+    barrier.release();
+    await pending;
+    expect(state.workspaceRootPath).toBe(root);
+    expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+      'synthetic host data',
+    );
+    const resumed = await client.resume(state);
+    expect(
+      Buffer.from(await resumed.readFile({ path: 'note.txt' })).toString(),
+    ).toBe('snapshot contents');
+    await resumed.close();
+  } finally {
+    barrier.release();
+    await pending.catch(() => {});
+    await session.close();
+  }
+});
+
+it('rejects a live workspace path changed during snapshot capture', async () => {
+  const { client, session, victim } = await fixture();
+  const root = session.state.workspaceRootPath;
+  const barrier = holdSnapshotRead(join(root, 'note.txt'));
+  const pending = client.serializeSessionState(session.state);
+  const rejected = expect(pending).rejects.toThrow(
+    /workspace path does not match/,
+  );
+  try {
+    await barrier.entered;
+    session.state.workspaceRootPath = victim;
+    barrier.release();
+    await rejected;
+    await expect(client.resume(session.state)).rejects.toThrow(
+      /workspace path does not match/,
+    );
+    expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+      'synthetic host data',
+    );
+    session.state.workspaceRootPath = root;
+    await expect(
+      client.serializeSessionState(session.state),
+    ).resolves.toMatchObject({ snapshot: { type: 'local' } });
+  } finally {
+    barrier.release();
+    await pending.catch(() => {});
+    session.state.workspaceRootPath = root;
+    await session.close();
+  }
+});
+
+it.each(['live', 'copied'] as const)(
+  'pins the approved %s workspace during resume',
+  async (kind) => {
+    const { client, session, victim } = await fixture();
+    const root = session.state.workspaceRootPath;
+    const state =
+      kind === 'live'
+        ? session.state
+        : rebindPersistedPathGrants(session.state, session.state.manifest);
+    const pending = client.resume(state);
+    state.workspaceRootPath = victim;
+    let resumed: UnixLocalSandboxSession | undefined;
+    try {
+      resumed = await pending;
+      expect(resumed.state.workspaceRootPath).toBe(root);
+      expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+        'synthetic host data',
+      );
+      expect(
+        Buffer.from(await resumed.readFile({ path: 'note.txt' })).toString(),
+      ).toBe('snapshot contents');
+    } finally {
+      await resumed?.close();
+      await session.close();
+    }
+  },
+);
+
+it.each([
+  ['live', false],
+  ['live', true],
+  ['parsed', false],
+  ['parsed', true],
+  ['copied', false],
+  ['copied', true],
+] as const)(
+  'pins the approved %s snapshot during resume (drift: %s)',
+  async (kind, drift) => {
+    const { client, session, saved, snapshotPath, victim } = await fixture();
+    const root = session.state.workspaceRootPath;
+    const state =
+      kind === 'parsed'
+        ? await client.deserializeSessionState(saved)
+        : kind === 'copied'
+          ? rebindPersistedPathGrants(session.state, session.state.manifest)
+          : session.state;
+    if (drift) await writeFile(join(root, 'note.txt'), 'workspace drift');
+    const pending =
+      kind === 'parsed'
+        ? boundSerializationClient(root, snapshotPath).resume(state)
+        : client.resume(state);
+    if (state.snapshot?.type !== 'local')
+      throw new Error('Expected local snapshot');
+    state.snapshot.path = victim;
+    let resumed: UnixLocalSandboxSession | undefined;
+    try {
+      resumed = await pending;
+      expect(resumed.state.snapshot).toMatchObject({ path: snapshotPath });
+      expect(
+        Buffer.from(await resumed.readFile({ path: 'note.txt' })).toString(),
+      ).toBe('snapshot contents');
+      await expect(stat(join(root, 'secret.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+        'synthetic host data',
+      );
+    } finally {
+      await resumed?.close();
+      await session.close();
+    }
+  },
+);
+
+it('pins manifest mount sources during asynchronous resume', async () => {
+  const source = join(base, 'mount-source');
+  const victim = join(base, 'mount-victim');
+  await mkdir(source);
+  await mkdir(victim);
+  await writeFile(join(source, 'note.txt'), 'approved mount');
+  await writeFile(join(victim, 'secret.txt'), 'synthetic host data');
+  const client = new UnixLocalSandboxClient({
+    workspaceBaseDir: base,
+    snapshot: { type: 'local', baseDir: base },
+  });
+  const session = await client.create(
+    new Manifest({
+      entries: {
+        mount: {
+          type: 'mount',
+          source,
+          readOnly: false,
+          mountStrategy: { type: 'local_bind' },
+        },
+      },
+    }),
+  );
+  await client.serializeSessionState(session.state);
+  await writeFile(join(session.state.workspaceRootPath, 'drift.txt'), 'drift');
+  const pending = client.resume(session.state);
+  (session.state.manifest.entries.mount as { source: string }).source = victim;
+  let resumed: UnixLocalSandboxSession | undefined;
+  try {
+    resumed = await pending;
+    expect(
+      Buffer.from(
+        await resumed.readFile({ path: 'mount/note.txt' }),
+      ).toString(),
+    ).toBe('approved mount');
+    await expect(
+      resumed.readFile({ path: 'mount/secret.txt' }),
+    ).rejects.toThrow();
+  } finally {
+    await resumed?.close();
+    await session.close();
+  }
+});
+
+it('pins trusted resume policy and cleanup ownership before awaiting', async () => {
+  const { client, session, victim } = await fixture();
+  const root = session.state.workspaceRootPath;
+  const pending = client.resume(session.state);
+  session.state.workspaceRootOwned = false;
+  if (session.state.snapshotSpec?.type === 'local')
+    session.state.snapshotSpec.baseDir = victim;
+  let resumed: UnixLocalSandboxSession | undefined;
+  try {
+    resumed = await pending;
+    expect(resumed.state.workspaceRootOwned).toBe(true);
+    expect(resumed.state.snapshotSpec).toEqual({
+      type: 'local',
+      baseDir: base,
+    });
+    await resumed.close();
+    await expect(stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+      'synthetic host data',
+    );
+  } finally {
+    await resumed?.close();
+    await session.close();
+  }
+});
+
+function boundSerializationClient(
+  workspaceRootPath: string,
+  localSnapshotPath: string,
+) {
+  return new UnixLocalSandboxClient({
+    snapshot: { type: 'local', baseDir: base },
+    resumeAuthority: { workspaceRootPath, localSnapshotPath },
+  });
+}
+
+function holdSnapshotRemoval(target: string) {
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const remove = filesystem.rm;
+  vi.spyOn(filesystem, 'rm').mockImplementation(async (path, options) => {
+    if (path === target) {
+      enter();
+      await released;
+    }
+    return remove(path, options);
+  });
+  return { entered, release };
+}
+
+function holdSnapshotRead(target: string) {
+  const physicalTarget = realpathSync(target);
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const open = filesystem.open;
+  vi.spyOn(filesystem, 'open').mockImplementation(async (...args) => {
+    if (args[0] === target || args[0] === physicalTarget) {
+      enter();
+      await released;
+    }
+    return open(...args);
+  });
+  return { entered, release };
+}
 
 it.each(['created', 'resumed'])(
   'resumes %s live SDK state through the Runner explicit session-state path',
