@@ -33,6 +33,7 @@ import { RunContext } from './runContext';
 import { RunResult, StreamedRunResult } from './result';
 import {
   assertPendingSessionCompactionTerminalAuthority,
+  assertResumableCallbackOutputs,
   RunState,
 } from './runState';
 import { RunItem } from './items';
@@ -857,6 +858,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         'The same RunState cannot resume or reconcile a Session write concurrently.',
       );
     }
+    if (resumedState) assertResumableCallbackOutputs(resumedState);
     const resumedStateRequiresInputCompaction =
       resumedState !== undefined &&
       hasPendingApprovedToolInputCompaction(resumedState);

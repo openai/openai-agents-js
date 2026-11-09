@@ -1,5 +1,14 @@
 import type { AgentInputItem } from '../types';
-import { encodeUint8ArrayToBase64 } from '../utils/base64';
+import {
+  type FunctionCallResultItem,
+  type ToolCallStructuredOutput,
+} from '../types/protocol';
+import { projectStructuredToolOutput } from './toolOutputNormalization';
+import { toSmartString } from '../utils/smartString';
+import {
+  decodeBase64ToUint8Array,
+  encodeUint8ArrayToBase64,
+} from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
   deduplicateAgentInputItemsPreferringLatest,
@@ -109,6 +118,115 @@ export function normalizeItemsForSessionPersistence(
   );
 }
 
+/** Verifies a terminal string against the model-visible result retained by the Session. */
+export function storedToolOutputMatches(
+  selected: FunctionCallResultItem['output'],
+  stored: FunctionCallResultItem['output'],
+  finalOutput: string,
+  isMcpTool: boolean,
+  hasOutputSchema: boolean,
+): boolean {
+  if (!Array.isArray(stored)) {
+    if (Array.isArray(selected)) return false;
+    const text =
+      typeof stored === 'string'
+        ? stored
+        : stored.type === 'text'
+          ? stored.text
+          : undefined;
+    if (text === undefined) return false;
+    if (!hasOutputSchema) return text === finalOutput;
+    // Schema-backed results store JSON. Apply the same terminal formatter to its value.
+    try {
+      return toSmartString(JSON.parse(text)) === finalOutput;
+    } catch {
+      return false;
+    }
+  }
+
+  if (
+    !Array.isArray(selected) ||
+    !sessionValuesMatch(
+      selected.map(canonicalStoredBlock),
+      stored.map(canonicalStoredBlock),
+    )
+  )
+    return false;
+
+  let original: unknown;
+  try {
+    original = JSON.parse(finalOutput);
+  } catch {
+    return false;
+  }
+  if (toSmartString(original) !== finalOutput) return false;
+  // The MCP adapter returns content[0] for a single block. Generic function tools can
+  // return either a single block or a one-element list with the same model-visible content.
+  if (isMcpTool && stored.length === 1 && Array.isArray(original)) return false;
+  const blocks: unknown[] = Array.isArray(original) ? original : [original];
+  if (!blocks.length || blocks.length !== stored.length) return false;
+  return blocks.every((block, index) =>
+    structuredBlockMatches(block, stored[index]),
+  );
+}
+
+function structuredBlockMatches(
+  block: unknown,
+  stored: ToolCallStructuredOutput,
+): boolean {
+  const projection = projectStructuredToolOutput(block, (data) => {
+    // The SDK string contains a byte preview. Only Session bytes can witness that preview.
+    if (!data.startsWith('[byte array ')) return data;
+    const inline =
+      stored.type === 'input_image'
+        ? stored.image
+        : stored.type === 'input_file'
+          ? stored.file
+          : undefined;
+    if (typeof inline === 'string' && inline !== data) {
+      try {
+        const bytes = decodeBase64ToUint8Array(
+          inline.replace(/^data:[^,]*;base64,/, ''),
+        );
+        if (toSmartString(bytes) === data)
+          return encodeUint8ArrayToBase64(bytes);
+      } catch {
+        // The prefix can also occur in literal data.
+      }
+    }
+    return data;
+  });
+  return (
+    projection !== null &&
+    !projection.hasUnrepresentedFields &&
+    sessionValuesMatch(
+      canonicalStoredBlock(projection.item),
+      canonicalStoredBlock(stored),
+    )
+  );
+}
+
+// Conversations reads HTTP file URLs back as { url }. Preserve the exact URL and all metadata.
+function canonicalStoredBlock(
+  block: ToolCallStructuredOutput,
+): ToolCallStructuredOutput {
+  if (
+    block.type === 'input_file' &&
+    typeof block.file === 'string' &&
+    (block.file.startsWith('https://') || block.file.startsWith('http://'))
+  ) {
+    return { ...block, file: { url: block.file } };
+  }
+  return block;
+}
+
+function sessionValuesMatch(left: unknown, right: unknown): boolean {
+  return (
+    JSON.stringify(sortSessionReconciliationValue(left)) ===
+    JSON.stringify(sortSessionReconciliationValue(right))
+  );
+}
+
 export function sessionItemArraysMatch(
   items: AgentInputItem[],
   expected: AgentInputItem[],
@@ -127,10 +245,8 @@ export function agentItemRangeMatches(
   if (start < 0 || start + expected.length > items.length) {
     return false;
   }
-  return expected.every(
-    (item, offset) =>
-      getSessionReconciliationItemKey(items[start + offset]) ===
-      getSessionReconciliationItemKey(item),
+  return expected.every((item, offset) =>
+    sessionValuesMatch(items[start + offset], item),
   );
 }
 
@@ -242,10 +358,6 @@ function hasToolSearchCallId(record: Record<string, unknown>): boolean {
     : undefined;
   const providerCallId = providerData?.call_id ?? providerData?.callId;
   return typeof providerCallId === 'string' && providerCallId.length > 0;
-}
-
-function getSessionReconciliationItemKey(item: AgentInputItem): string {
-  return JSON.stringify(sortSessionReconciliationValue(item));
 }
 
 function sortSessionReconciliationValue(value: unknown): unknown {

@@ -16,6 +16,7 @@ import {
   type CallModelInputFilterArgs,
 } from '../src';
 import type { ModelRequest, ModelResponse } from '../src/model';
+import { interruptedAgentToolRunResults } from '../src/runner/turnResolution';
 import { RunContext } from '../src/runContext';
 import { RunToolApprovalItem } from '../src/items';
 import { MemorySession } from '../src/memory/memorySession';
@@ -391,6 +392,454 @@ describe('RunState pending input', () => {
       /tool result may end the run/,
     );
     expect(namespacedInterrupted.toString()).toBe(namespacedBefore);
+  });
+
+  it.each(['live', 'restore', 'run_llm_again'] as const)(
+    'returns the available nested result across successive approval interruptions (%s)',
+    async (mode) => {
+      const restore = mode === 'restore';
+      const child = new Agent({
+        name: 'Child',
+        model: new RecordingModel([
+          { output: [fakeModelMessage('child result')], usage: new Usage() },
+        ]),
+      });
+      const nested = child.asTool({
+        toolName: 'consult',
+        toolDescription: 'Consult child.',
+      });
+      const gated = tool({
+        name: 'gated',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'ok',
+      });
+      const model = new RecordingModel([
+        {
+          output: [
+            {
+              type: 'function_call',
+              name: 'consult',
+              status: 'completed',
+              callId: 'child',
+              arguments: '{"input":"hello"}',
+            },
+            {
+              type: 'function_call',
+              name: 'gated',
+              status: 'completed',
+              callId: 'gated',
+              arguments: '{}',
+            },
+            {
+              type: 'function_call',
+              name: 'gated',
+              status: 'completed',
+              callId: 'second-gate',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('finished')], usage: new Usage() },
+      ]);
+      const agent = new Agent({
+        name: 'Parent',
+        model,
+        tools: [nested, gated],
+        toolUseBehavior: async (_context, results) => {
+          const result = results[0];
+          expect(result.type).toBe('function_output');
+          if (result.type === 'function_output') {
+            expect(result.output).toBe('child result');
+            expect(result.agentRunResult?.finalOutput).toBe(
+              restore ? undefined : 'child result',
+            );
+          }
+          return {
+            isFinalOutput: true,
+            isInterrupted: undefined,
+            finalOutput: 'finished',
+          };
+        },
+      });
+      const first = await run<typeof agent, unknown>(agent, 'begin');
+      const state = restore
+        ? await RunState.fromString(agent, first.state.toString())
+        : first.state;
+      const firstStep = state._currentStep!;
+      expect(interruptedAgentToolRunResults.has(firstStep)).toBe(!restore);
+      state.approve(state.getInterruptions()[0]!);
+      const pending = await run(agent, state);
+      expect(pending.interruptions).toHaveLength(1);
+      const pendingStep = pending.state._currentStep!;
+      expect(interruptedAgentToolRunResults.has(firstStep)).toBe(false);
+      expect(interruptedAgentToolRunResults.has(pendingStep)).toBe(!restore);
+      if (mode === 'run_llm_again') agent.toolUseBehavior = 'run_llm_again';
+      pending.state.approve(pending.interruptions[0]!);
+      expect((await run(agent, pending.state)).finalOutput).toBe('finished');
+      expect(interruptedAgentToolRunResults.has(pendingStep)).toBe(false);
+      expect(model.calls).toHaveLength(mode === 'run_llm_again' ? 2 : 1);
+    },
+  );
+
+  function callbackSiblingRun(firstValue: unknown) {
+    const first = vi.fn(async () => firstValue);
+    const second = vi.fn(async () => ({ total: 3 }));
+    const model = new ScriptedModel([
+      [
+        {
+          type: 'function_call',
+          name: 'first',
+          callId: 'a',
+          status: 'completed',
+          arguments: '{}',
+        },
+        {
+          type: 'function_call',
+          name: 'second',
+          callId: 'b',
+          status: 'completed',
+          arguments: '{}',
+        },
+      ],
+    ]);
+    const seen: unknown[] = [];
+    const agent = new Agent({
+      name: 'Aggregate',
+      model,
+      tools: [
+        tool({
+          name: 'first',
+          description: 'First result.',
+          parameters: z.object({}),
+          execute: first,
+        }),
+        tool({
+          name: 'second',
+          description: 'Second result.',
+          parameters: z.object({}),
+          needsApproval: true,
+          execute: second,
+        }),
+      ],
+      toolUseBehavior: async (_context, results) => {
+        for (const result of results)
+          if (result.type === 'function_output') seen.push(result.output);
+        const sum = seen.reduce<number>(
+          (total, value) =>
+            total +
+            (typeof value === 'object' && value !== null && 'total' in value
+              ? Number(value.total)
+              : 0),
+          0,
+        );
+        return {
+          isFinalOutput: true,
+          isInterrupted: undefined,
+          finalOutput: String(sum),
+        };
+      },
+    });
+    return { agent, model, first, second, seen };
+  }
+
+  it.each(['live', 'serialized'] as const)(
+    'preserves object values for a callback on %s approval resume',
+    async (mode) => {
+      const { agent, model, first, second, seen } = callbackSiblingRun({
+        total: 2,
+      });
+      const paused = await run<typeof agent, unknown>(agent, 'aggregate');
+      const checkpoint = JSON.parse(paused.state.toString());
+      expect(checkpoint.$schemaVersion).toBe('1.23');
+
+      const state =
+        mode === 'live'
+          ? paused.state
+          : await RunState.fromString(agent, JSON.stringify(checkpoint));
+      state.approve(state.getInterruptions()[0]!);
+      expect((await run(agent, state)).finalOutput).toBe('5');
+      expect(seen).toEqual([{ total: 2 }, { total: 3 }]);
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(1);
+    },
+  );
+
+  it.each(['actual string', 'legacy string', 'display only'] as const)(
+    'distinguishes a callback result saved as %s before executing an approved sibling',
+    async (kind) => {
+      const value =
+        kind === 'display only' ? new Uint8Array([1, 2]) : '{"total":2}';
+      const { agent, model, first, second, seen } = callbackSiblingRun(value);
+      const paused = await run<typeof agent, unknown>(agent, 'aggregate');
+      const snapshot = JSON.parse(paused.state.toString());
+      expect(snapshot.$schemaVersion).toBe('1.24');
+      if (kind === 'legacy string') {
+        snapshot.$schemaVersion = '1.23';
+        for (const item of snapshot.generatedItems)
+          delete item.callbackOutputFormat;
+      }
+      const copy = await RunState.fromString(agent, JSON.stringify(snapshot));
+      const state = await RunState.fromString(agent, copy.toString());
+      state.approve(state.getInterruptions()[0]!);
+      if (kind === 'actual string') {
+        expect((await run(agent, state)).finalOutput).toBe('3');
+        expect(seen).toEqual([value, { total: 3 }]);
+      } else {
+        await expect(run(agent, state)).rejects.toThrow(
+          /original live RunState/,
+        );
+        expect(second).not.toHaveBeenCalled();
+        expect(seen).toEqual([]);
+        paused.state.approve(paused.interruptions[0]!);
+        await run(agent, paused.state);
+        expect(seen[0]).toBe(value);
+      }
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(second).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(1);
+    },
+  );
+
+  it('accepts input when an incomplete sibling prevents a completed named stop', async () => {
+    const controller = new AbortController();
+    const named = vi.fn(async () => 'named result');
+    const gated = vi.fn(async () => 'approved');
+    const cancelled = vi.fn(async () => {
+      controller.abort(new Error('stop this attempt'));
+      throw controller.signal.reason;
+    });
+    const model = new ScriptedModel([
+      ['named', 'gated', 'cancelled'].map((name) => ({
+        type: 'function_call' as const,
+        name,
+        callId: name,
+        status: 'completed' as const,
+        arguments: '{}',
+      })),
+      [fakeModelMessage('received follow-up')],
+    ]);
+    const agent = new Agent({
+      name: 'Named stop',
+      model,
+      toolUseBehavior: { stopAtToolNames: ['named'] },
+      tools: [
+        tool({
+          name: 'named',
+          description: 'Named result.',
+          parameters: z.object({}),
+          execute: named,
+        }),
+        tool({
+          name: 'gated',
+          description: 'Requires approval.',
+          parameters: z.object({}),
+          execute: gated,
+          needsApproval: true,
+        }),
+        tool({
+          name: 'cancelled',
+          description: 'Cancels the attempt.',
+          parameters: z.object({}),
+          execute: cancelled,
+        }),
+      ],
+    });
+    const state = new RunState(new RunContext(), 'start', agent, 4);
+    const runner = new Runner({
+      toolExecution: { maxFunctionToolConcurrency: 1 },
+    });
+    await expect(
+      runner.run(agent, state, { signal: controller.signal }),
+    ).rejects.toThrow('stop this attempt');
+    expect(state.getInterruptions()).toHaveLength(1);
+    state.addInput('follow-up');
+    state.approve(state.getInterruptions()[0]!);
+    expect((await runner.run(agent, state)).finalOutput).toBe(
+      'received follow-up',
+    );
+    expect(model.calls[1].request.input).toContainEqual(
+      expect.objectContaining({ role: 'user', content: 'follow-up' }),
+    );
+    expect(named).toHaveBeenCalledTimes(1);
+    expect(gated).toHaveBeenCalledTimes(1);
+    expect(cancelled).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes only current results in call order when an earlier invocation is repeated', async () => {
+    const done = vi.fn(async () => ({ submitted: true }));
+    const submit = tool({
+      name: 'submit',
+      description: 'Submit.',
+      parameters: z.object({}),
+      execute: done,
+    });
+    const notify = tool({
+      name: 'notify',
+      description: 'Notify.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: vi.fn(),
+    });
+    const call = (name: string, callId: string): protocol.FunctionCallItem => ({
+      type: 'function_call',
+      name,
+      callId,
+      status: 'completed',
+      arguments: '{}',
+    });
+    const previous = call('submit', 'prior-turn');
+    const model = new RecordingModel([
+      { output: [previous], usage: new Usage() },
+      {
+        output: [previous, call('notify', 'gated'), call('submit', 'current')],
+        usage: new Usage(),
+      },
+    ]);
+    const seen: unknown[][] = [];
+    const agent = new Agent({
+      name: 'Submitter',
+      model,
+      tools: [submit, notify],
+      toolUseBehavior: async (_context, results) => {
+        const outputs = results.flatMap((result) =>
+          result.type === 'function_output'
+            ? [[result.runItem.callId, result.output]]
+            : [],
+        );
+        seen.push(outputs);
+        return seen.length === 1
+          ? { isFinalOutput: false, isInterrupted: undefined }
+          : {
+              isFinalOutput: true,
+              isInterrupted: undefined,
+              finalOutput: 'finished',
+            };
+      },
+    });
+    const first = await run(agent, 'submit');
+    first.state.reject(first.interruptions[0]!, { message: 'declined' });
+    const completed = await run(agent, first.state);
+    expect(completed.finalOutput).toBe('finished');
+    expect(seen).toEqual([
+      [['prior-turn', { submitted: true }]],
+      [
+        ['gated', 'declined'],
+        ['current', { submitted: true }],
+      ],
+    ]);
+    expect(done).toHaveBeenCalledTimes(2);
+    expect(model.calls).toHaveLength(2);
+  });
+
+  it.each([false, true])(
+    'uses a completed named stop on approval resume (handoff=%s)',
+    async (withHandoff) => {
+      const execute = vi.fn(async () => 'submitted');
+      const submit = tool({
+        name: 'submit',
+        description: 'Submit.',
+        parameters: z.object({}),
+        execute,
+      });
+      const notify = tool({
+        name: 'notify',
+        description: 'Notify.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'notified',
+      });
+      const call = (name: string): protocol.FunctionCallItem => ({
+        type: 'function_call',
+        name,
+        callId: name,
+        status: 'completed',
+        arguments: '{}',
+      });
+      const delegate = new Agent({ name: 'Delegate' });
+      const transfer = handoff(delegate);
+      const model = new RecordingModel([
+        {
+          output: [
+            call('notify'),
+            call('submit'),
+            ...(withHandoff ? [call(transfer.toolName)] : []),
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('received')], usage: new Usage() },
+      ]);
+      delegate.model = model;
+      const agent = new Agent({
+        name: 'Submitter',
+        model,
+        tools: [submit, notify],
+        handoffs: [transfer],
+        toolUseBehavior: { stopAtToolNames: ['submit'] },
+      });
+      const first = await run(agent, 'submit');
+      const state = await RunState.fromString(agent, first.state.toString());
+      if (withHandoff) {
+        state.addInput('follow-up');
+      } else {
+        expect(() => state.addInput('follow-up')).toThrow(
+          /tool result may end the run/,
+        );
+        expect(state.pendingInput).toEqual([]);
+      }
+      state.reject(state.getInterruptions()[0]!);
+      const result = await run(agent, state);
+      expect(result.finalOutput).toBe(withHandoff ? 'received' : 'submitted');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(withHandoff ? 2 : 1);
+      if (withHandoff) {
+        expect(result.lastAgent).toBe(delegate);
+        expect(model.requests[1]?.input).toContainEqual(message('follow-up'));
+      }
+    },
+  );
+
+  it('delivers input staged before completed named stops were checked on admission', async () => {
+    const call = (name: string): protocol.FunctionCallItem => ({
+      type: 'function_call',
+      name,
+      callId: name,
+      status: 'completed',
+      arguments: '{}',
+    });
+    const model = new RecordingModel([
+      { output: [call('submit'), call('notify')], usage: new Usage() },
+      { output: [fakeModelMessage('heard')], usage: new Usage() },
+    ]);
+    const agent = new Agent({
+      name: 'Split turn',
+      model,
+      toolUseBehavior: { stopAtToolNames: ['submit'] },
+      tools: ['submit', 'notify'].map((name) =>
+        tool({
+          name,
+          description: name,
+          needsApproval: name === 'notify',
+          parameters: z.object({}),
+          execute: async () => name,
+        }),
+      ),
+    });
+    const first = await run(agent, 'submit');
+    // v0.21.0 accepted addInput at this checkpoint because only notify needed approval.
+    const snapshot = {
+      ...first.state.toJSON(),
+      pendingInput: [message('follow-up')],
+    };
+    const restored = await RunState.fromString(agent, JSON.stringify(snapshot));
+    restored.approve(restored.getInterruptions()[0]!);
+    const result = await run(agent, restored);
+    expect(result.finalOutput).toBe('heard');
+    expect(model.requests[1]?.input).toContainEqual(message('follow-up'));
+    expect(restored.pendingInput).toEqual([]);
   });
 
   it('admits staged input after an approved tool output', async () => {
