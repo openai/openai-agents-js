@@ -24,11 +24,12 @@ import {
   readdir,
   realpath,
   rm,
+  rmdir,
   stat,
 } from 'node:fs/promises';
 import { constants, type Dirent, type Stats } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Manifest } from '../../manifest';
 import type { WorkspaceArchiveData } from '../../session';
 import { stableJsonStringify } from '../../shared/stableJson';
@@ -465,6 +466,7 @@ export async function restoreWorkspaceArchive(
   );
 
   await mkdir(destinationRoot, { recursive: true });
+  await validateWorkspaceArchiveTree(destinationRoot, archive);
   await clearDirectory(destinationRoot);
   for (const directory of archive.directories) {
     await writeSafeArchiveDirectory(destinationRoot, directory);
@@ -512,7 +514,6 @@ function prepareWorkspaceArchive(
     throw new UserError('Invalid remote snapshot archive members.');
   }
 
-  const memberKinds = new Map<string, 'file' | 'directory'>();
   const parentSegment =
     sep === '/' ? /(?:^|\/)\.\.(?:\/|$)/u : /(?:^|[\\/])\.\.(?:[\\/]|$)/u;
   let memberCount = 0;
@@ -533,14 +534,6 @@ function prepareWorkspaceArchive(
       throw new UserError(`Invalid remote snapshot archive path: ${path}`);
     }
 
-    // Use the writer's UTF-8 path and a trailing separator to group descendants.
-    const key =
-      Buffer.from(relative(destinationRoot, destination)).toString() + sep;
-    const existing = memberKinds.get(key);
-    if (existing !== undefined && existing !== kind) {
-      throw new UserError(`Conflicting remote snapshot archive path: ${path}`);
-    }
-    memberKinds.set(key, kind);
     return destination;
   }
 
@@ -563,17 +556,162 @@ function prepareWorkspaceArchive(
     }
     return { path, data: file.data };
   });
-  // In this order, a file with any descendants is followed by its first descendant.
-  let previousFile: string | undefined;
-  for (const key of [...memberKinds.keys()].sort()) {
-    if (previousFile !== undefined && key.startsWith(previousFile)) {
-      throw new UserError(
-        `Conflicting remote snapshot archive path: ${key.slice(0, -1)}`,
-      );
-    }
-    previousFile = memberKinds.get(key) === 'file' ? key : undefined;
-  }
   return { directories, files };
+}
+
+type ArchiveMember = { path: string; offset: number; file: boolean };
+
+async function validateWorkspaceArchiveTree(
+  destinationRoot: string,
+  archive: Pick<WorkspaceArchiveV1, 'directories' | 'files'>,
+): Promise<void> {
+  if (archive.files.length === 0) return;
+  const groups: ArchiveMember[][] = [
+    [
+      ...archive.directories.map((path) => ({
+        path: relative(destinationRoot, path),
+        offset: 0,
+        file: false,
+      })),
+      ...archive.files.map(({ path }) => ({
+        path: relative(destinationRoot, path),
+        offset: 0,
+        file: true,
+      })),
+    ],
+  ];
+  let scratch: string | undefined;
+  try {
+    while (groups.length) {
+      const members = groups.pop()!;
+      if (members.length < 2) continue;
+      const directories = new Map<string, ArchiveMember[]>();
+      const files = new Set<string>();
+      for (const member of members) {
+        const end = member.path.indexOf(sep, member.offset);
+        const name =
+          end < 0
+            ? member.path.slice(member.offset)
+            : member.path.slice(member.offset, end);
+        if (end < 0 && member.file) {
+          files.add(name);
+          continue;
+        }
+        let children = directories.get(name);
+        if (!children) {
+          children = [];
+          directories.set(name, children);
+        }
+        if (end >= 0) {
+          member.offset = end + 1;
+          children.push(member);
+        }
+      }
+      if (!directories.size) continue;
+      for (const file of files) {
+        if (directories.has(file))
+          throw new UserError(
+            `Conflicting remote snapshot archive path: ${file}`,
+          );
+      }
+      if (directories.size === 1 && !files.size) {
+        groups.push(directories.values().next().value!);
+        continue;
+      }
+
+      // Compare only siblings. Descendants of aliased directories belong to the same group.
+      await assertSafeSnapshotDestinationPath(destinationRoot, destinationRoot);
+      let children: ArchiveMember[][];
+      try {
+        scratch ??= await createArchiveProbeDirectory(destinationRoot);
+        children = await probeSiblingNames(scratch, directories, files);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENAMETOOLONG')
+          throw error;
+        // Even one extra component can exceed PATH_MAX for a top-level name.
+        // Use the granted directory itself and remove only markers we created.
+        children = await probeSiblingNames(destinationRoot, directories, files);
+      }
+      for (const group of children) {
+        if (group.length > 1) groups.push(group);
+      }
+    }
+  } finally {
+    if (scratch) await rmdir(scratch);
+  }
+}
+
+async function probeSiblingNames(
+  root: string,
+  directories: Map<string, ArchiveMember[]>,
+  files: Set<string>,
+): Promise<ArchiveMember[][]> {
+  const aliases = new Map<string, ArchiveMember[]>();
+  const created: string[] = [];
+  try {
+    for (const [name, children] of directories) {
+      const path = join(root, name);
+      try {
+        await mkdir(path, { mode: 0o700 });
+        created.push(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      const key = await archiveEntryKey(path);
+      const group = aliases.get(key);
+      if (group) {
+        for (const child of children) group.push(child);
+      } else {
+        aliases.set(key, children);
+      }
+    }
+    for (const file of files) {
+      let key: string;
+      try {
+        key = await archiveEntryKey(join(root, file));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (aliases.has(key))
+        throw new UserError(
+          `Conflicting remote snapshot archive path: ${file}`,
+        );
+    }
+    return [...aliases.values()];
+  } finally {
+    for (const path of created) await rmdir(path);
+  }
+}
+
+async function archiveEntryKey(path: string): Promise<string> {
+  const info = await lstat(path, { bigint: true });
+  // Existing hard links have separate names when the workspace is replaced.
+  const id = `${info.dev}:${info.ino}`;
+  if (info.isDirectory() || info.nlink === 1n) return id;
+  const entries = await readdir(dirname(path));
+  const name = basename(path);
+  if (entries.includes(name)) return `${id}/${name}`;
+  if (info.isFile()) {
+    const canonical = basename(await realpath(path));
+    if (entries.includes(canonical)) return `${id}/${canonical}`;
+  }
+  throw new UserError(
+    `Cannot distinguish hard-linked workspace archive paths: ${name}`,
+  );
+}
+
+async function createArchiveProbeDirectory(root: string): Promise<string> {
+  // A single component keeps the probe usable even for deep workspace roots.
+  for (let index = 0; ; index++) {
+    const path = join(root, index.toString(36));
+    try {
+      await mkdir(path, { mode: 0o700 });
+      return path;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
 }
 
 function checkWorkspaceArchiveMemberCount(

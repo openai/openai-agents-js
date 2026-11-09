@@ -910,6 +910,126 @@ describe('UnixLocalSandboxClient', () => {
     },
   );
 
+  it('uses the workspace filesystem to detect aliased archive paths', async () => {
+    const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest());
+    const root = session.state.workspaceRootPath;
+    try {
+      await writeFile(join(root, 'Original'), 'keep');
+      const ignoresCase = await pathExists(join(root, 'original'));
+      const archive = JSON.stringify({
+        version: 1,
+        directories: ['Folder'],
+        files: [{ path: 'folder', data: 'AQI=' }],
+      });
+      if (ignoresCase) {
+        await expect(session.hydrateWorkspace(archive)).rejects.toThrow();
+        expect(await readdir(root)).toEqual(['Original']);
+        expect(await readFile(join(root, 'Original'), 'utf8')).toBe('keep');
+      } else {
+        await session.hydrateWorkspace(archive);
+        expect(await readdir(join(root, 'Folder'))).toEqual([]);
+        expect(await readFile(join(root, 'folder'))).toEqual(
+          Buffer.from([1, 2]),
+        );
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('compares descendants of directories with different spellings', async () => {
+    const session = await new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    }).create(new Manifest());
+    const root = session.state.workspaceRootPath;
+    try {
+      await writeFile(join(root, 'Original'), 'keep');
+      const archive = JSON.stringify({
+        version: 1,
+        directories: ['Folder/nested'],
+        files: [{ path: 'folder/nested', data: '' }],
+      });
+      if (await pathExists(join(root, 'original'))) {
+        await expect(session.hydrateWorkspace(archive)).rejects.toThrow();
+        expect(await readdir(root)).toEqual(['Original']);
+      } else {
+        await session.hydrateWorkspace(archive);
+        expect((await stat(join(root, 'Folder/nested'))).isDirectory()).toBe(
+          true,
+        );
+        expect((await stat(join(root, 'folder/nested'))).isFile()).toBe(true);
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    'restores an archive close to the macOS pathname limit',
+    async () => {
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+      const session = await client.create(new Manifest());
+      let parent = await realpath(session.state.workspaceRootPath);
+      try {
+        while (Buffer.byteLength(parent) < 800) {
+          parent = join(parent, 'd'.repeat(100));
+        }
+        await mkdir(parent, { recursive: true });
+        const file = join(parent, 'f'.repeat(1022 - Buffer.byteLength(parent)));
+        await writeFile(file, 'before');
+        const archive = await session.persistWorkspace();
+        await writeFile(file, 'after');
+        await chmod(rootDir, 0o555);
+        try {
+          await session.hydrateWorkspace(archive);
+          expect(await readFile(file, 'utf8')).toBe('before');
+        } finally {
+          await chmod(rootDir, 0o700);
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'darwin')(
+    'restores a nested file when the workspace root is near the pathname limit',
+    async () => {
+      let base = await realpath(rootDir);
+      while (Buffer.byteLength(base) < 800) base = join(base, 'd'.repeat(100));
+      const suffix = '/openai-agents-sandbox-XXXXXX';
+      base = join(
+        base,
+        'b'.repeat(1018 - Buffer.byteLength(base + suffix) - 1),
+      );
+      await mkdir(base, { recursive: true });
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: base });
+      const session = await client.create(new Manifest());
+      const root = session.state.workspaceRootPath;
+      try {
+        await mkdir(join(root, 'd'));
+        await mkdir(join(root, 'Long'));
+        await writeFile(join(root, 'note'), 'top level');
+        const file = join(root, 'd', 'f');
+        await writeFile(file, 'before');
+        const archive = await session.persistWorkspace();
+        await writeFile(file, 'after');
+        await chmod(base, 0o555);
+        try {
+          await session.hydrateWorkspace(archive);
+          expect(await readFile(file, 'utf8')).toBe('before');
+          expect(await readdir(join(root, 'Long'))).toEqual([]);
+          expect(await readFile(join(root, 'note'), 'utf8')).toBe('top level');
+        } finally {
+          await chmod(base, 0o700);
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
   it('rejects local workspace archive hydration over resource limits', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,
