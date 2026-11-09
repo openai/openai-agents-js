@@ -65,6 +65,8 @@ jobs:
         run: choco install protoc --yes --no-progress
 
       - name: Build the native runtime
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/agents-codex/scripts/native.mjs package
       - name: Test Windows project-search filename handling
         if: runner.os == 'Windows'

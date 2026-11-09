@@ -656,6 +656,7 @@ async fn native_local_start_and_mutation_reject_unsupported_authority_before_nat
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap_err();
