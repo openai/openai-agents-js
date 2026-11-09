@@ -1032,6 +1032,14 @@ impl MemoryAgentGraph {
         }
     }
 
+    pub(crate) async fn retire_closed_root_subscriptions(&self, root: ThreadId) {
+        self.state
+            .lock()
+            .await
+            .subscribers
+            .retain(|(owner, sender)| *owner != root || !sender.is_closed());
+    }
+
     pub async fn subscribe(&self, root: ThreadId) -> mpsc::UnboundedReceiver<GraphEvent> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let mut state = self.state.lock().await;
@@ -1391,5 +1399,55 @@ mod close_report_tests {
                 .is_cancelled()
         );
         drop(owned);
+    }
+}
+
+#[cfg(test)]
+mod private_graph_retirement_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn private_retirement_removes_only_closed_matching_subscriptions() {
+        let graph = MemoryAgentGraph::default();
+        let root = ThreadId::new();
+        let other = ThreadId::new();
+        let mut closed = graph.subscribe(root).await;
+        let live = graph.subscribe(root).await;
+        let mut unrelated = graph.subscribe(other).await;
+        closed.close();
+        unrelated.close();
+        graph.retire_closed_root_subscriptions(root).await;
+        let state = graph.state.lock().await;
+        assert_eq!(state.subscribers.len(), 2);
+        assert!(
+            state
+                .subscribers
+                .iter()
+                .any(|(id, sender)| *id == root && !sender.is_closed())
+        );
+        assert!(
+            state
+                .subscribers
+                .iter()
+                .any(|(id, sender)| *id == other && sender.is_closed())
+        );
+        drop(live);
+    }
+
+    #[tokio::test]
+    async fn private_retirement_bounds_repeated_text_only_subscriptions() {
+        let graph = MemoryAgentGraph::default();
+        let unrelated = ThreadId::new();
+        let _live = graph.subscribe(unrelated).await;
+        for _ in 0..64 {
+            let root = ThreadId::new();
+            let mut receiver = graph.subscribe(root).await;
+            receiver.close();
+            graph.retire_closed_root_subscriptions(root).await;
+            let state = graph.state.lock().await;
+            assert_eq!(state.subscribers.len(), 1);
+            assert_eq!(state.subscribers[0].0, unrelated);
+            assert!(state.edges.is_empty());
+        }
     }
 }
