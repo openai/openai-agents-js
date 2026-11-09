@@ -13,10 +13,11 @@ Use Node.js 24 on Linux or macOS with a private local POSIX filesystem. Complete
 From the repository root, start the service with a new private directory:
 
 ```sh
-pnpm exec tsx examples/codex/web-starter/server.ts --mode scripted --directory /tmp/agents-web-private --port 0
+WEB_DIRECTORY=$(mktemp -d)
+pnpm exec tsx examples/codex/web-starter/server.ts --mode scripted --directory "$WEB_DIRECTORY" --port 0
 ```
 
-The command prints `Web starter: http://127.0.0.1:PORT`. Open that address and keep the server terminal running. Use a new application-owned state directory for an independent demo; stopping the server does not delete retained state.
+The command prints `Web starter: http://127.0.0.1:PORT`. Open that address and keep the server terminal running. The `WEB_DIRECTORY` variable holds this demo's private state path. Reuse it to inspect restart recovery, or create a new directory for an independent demo. Stopping the server does not delete retained state.
 
 Choose Alice or Bob, then send a task. The worker calls the selected `reports.report` MCP tool and reads a local audience note. It validates a JSON presentation and asks for publication approval. Approve to commit the download, or deny to finish without an artifact. The final summary appears only after typed output settles. The downloaded `presentation.json` contains exactly the validated, stored bytes.
 

@@ -47,7 +47,7 @@ Run `npx tsx greeting.ts` from your application directory. The model requests th
 
 ## SDK guides
 
-These guides describe the native SDK in `0.22.0-alpha.2`. See the [alpha.2 release notes](CHANGELOG-alpha.md#0220-alpha2) for changes and upgrade actions. For the earlier alpha.1 starter, use the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md).
+These guides describe the current source checkout, which can include features added after the latest release. For the `0.22.0-alpha.2` starter, use the [guides at the alpha.2 tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.2/README.md#sdk-guides) and [alpha.2 release notes](CHANGELOG-alpha.md#0220-alpha2). Build the SDK and repository examples from the same checkout when following the guides below.
 
 | Task | Guide |
 | --- | --- |
