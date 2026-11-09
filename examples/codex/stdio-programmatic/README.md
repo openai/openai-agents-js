@@ -1,6 +1,6 @@
 # Trusted stdio and programmatic tools
 
-These two examples use synthetic data and native execution. They require Node.js 24, the checkout's pinned pnpm version, and matching native products, including the bundled Code Mode host. Scripted mode uses a local Responses peer and needs no model key.
+These two examples use synthetic data and native execution. They require Node.js 24, the checkout's pinned pnpm version, and [matching built packages and native products](../guides/building.md), including the bundled Code Mode host. Scripted mode uses a local Responses peer and needs no model key.
 
 The catalog example lets the application choose `process.execPath`, the exact peer file, its working directory and the raw tool name `lookup`. The model cannot choose a process or grant launch authority through saved state. The peer uses Node's standard library and supports only initialization, ping, listing and a synthetic lookup. Its `readOnlyHint` is metadata. The peer still has the host permissions of its process. Treat choosing a peer as a trust decision.
 
