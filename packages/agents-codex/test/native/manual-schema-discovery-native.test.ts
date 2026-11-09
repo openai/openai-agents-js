@@ -18,6 +18,7 @@ import {
 } from '../../src/experimental/deferred';
 import { deferredTool } from '../../src/experimental/deferred-tool';
 import { jsonObject, type JsonObject } from '../../src/runtime/binding';
+import { isManualSessionState } from '../../src/runtime/state';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 async function providerFor(model: ModelServer) {
@@ -260,6 +261,57 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(f.journal.saveResult).toHaveBeenCalledTimes(1);
       model.assertExhausted();
     }, 20_000);
+
+    it.each([false, true])(
+      'prepares a target-only deferred checkpoint with an unrelated root manual=%s',
+      async (rootManual) => {
+        const f = deferredFixture();
+        const model = new ModelServer([
+          [call('transfer_to_b', {}, { callId: 'handoff' })],
+          [search('target-schema')],
+          [call('render', { pages: 2 }, { callId: 'target-render' })],
+        ]);
+        await using provider = await providerFor(model);
+        const target = new Agent({
+          name: 'B',
+          instructions: 'Render.',
+          tools: [f.declaration],
+        });
+        const spare = manualTool({
+          name: 'spare',
+          description: 'An unrelated root tool.',
+          parameters: z.object({}),
+          result: z.number(),
+        });
+        const agent = new Agent({
+          name: 'A',
+          instructions: 'Hand off to B.',
+          model: 'gpt-5.5',
+          provider,
+          tools: rootManual ? [spare] : [],
+          handoffs: [target],
+        });
+        await using session = await agent.session();
+        const turn = await session.submit('Prepare two pages.');
+        const completion = turn.wait().catch((error: unknown) => error);
+        const request = await nextAction(session);
+        const state = await f.jobs.prepare(session, request);
+        if (!isManualSessionState(state))
+          throw new Error('Expected manual checkpoint');
+        expect(await completion).toBeInstanceOf(InteractionRequired);
+        expect(state.manual_continuation.pending_manual).toMatchObject([
+          { call_id: 'target-render', name: 'render' },
+        ]);
+        expect(
+          state.manual_context.result_schemas.map((entry) => entry.name),
+        ).toEqual(['render']);
+        expect(f.journal.prepare).toHaveBeenCalledTimes(1);
+        for (const operation of Object.values(f.backend))
+          expect(operation).not.toHaveBeenCalled();
+        model.assertExhausted();
+      },
+      20_000,
+    );
 
     it.each(['missing', 'wrong id', 'server', 'unfinished'] as const)(
       'rejects a %s native search receipt before restoring manual work',

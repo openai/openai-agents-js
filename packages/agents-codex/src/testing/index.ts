@@ -9,7 +9,10 @@ import {
 } from 'node:http';
 import type { Socket } from 'node:net';
 import { z } from 'zod';
-import { jsonObject, type JsonObject } from '../runtime/binding';
+import {
+  losslessJsonObjectSchema as jsonObject,
+  type JsonObject,
+} from '../runtime/binding';
 import { NativeProvider } from '../runtime/provider';
 
 export type ScriptedItem =

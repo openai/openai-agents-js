@@ -296,7 +296,7 @@ export function parseNative(source: string): unknown {
 
 /** Private operation selections use string catalog IDs and a numeric source epoch. */
 export function encodeOperationSelection(value: unknown): string {
-  const dto = jsonObject.parse(value);
+  const dto = losslessJsonObjectSchema.parse(value);
   const source = dto.operation_declaration_source;
   return JSON.stringify(dto, function (key, item: unknown) {
     if (this === source && key === 'epoch' && typeof item === 'string') {
@@ -321,7 +321,7 @@ export function encodeReceipt(value: unknown): string {
   const histories = checkpointHistoryOwners(value).map((owner) =>
     z.array(losslessJsonObjectSchema).parse(owner.history),
   );
-  const validated = jsonObject.parse(value);
+  const validated = losslessJsonObjectSchema.parse(value);
   // Canonical history is JSON data; the surrounding checkpoint keeps its checks.
   for (const [index, owner] of checkpointHistoryOwners(validated).entries())
     owner.history = histories[index];

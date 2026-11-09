@@ -87,7 +87,9 @@ On supported Code Mode models, native search replaces the initial request's defe
 
 `ToolOutput` explicitly returns text, image, or audio content to the model: construct it with a content-item array and an optional success flag (default `true`). The SDK returns other callback values as text or serialized JSON, including objects with `contentItems` or `success` fields.
 
-Use `ToolOutput.image(imageDataUrl)` for an inline base64 image data URL, or pass an HTTP or HTTPS image URL string. The reference-object overload also accepts a provider file ID and explicit detail setting, such as `ToolOutput.image({ fileId: 'file-example', detail: 'high' })`. Local paths reject. The helper checks the reference without fetching or uploading it; the native engine and provider process the image. Use the constructor to combine an image with text or other content items.
+Use `ToolOutput.image(imageDataUrl)` for an inline base64 image data URL, or pass an HTTP or HTTPS image URL string. The reference-object overload also accepts a provider file ID and explicit detail setting, such as `ToolOutput.image({ fileId: 'file-example', detail: 'high' })`. Local paths reject.
+
+HTTP(S) image URLs and provider file IDs require an API-key provider and a compatible standard Responses model. These references are unsupported with `CodexLogin` or Responses Lite. The helper checks the reference without fetching or uploading it; the native engine and provider process the image. Use the constructor to combine an image with text or other content items.
 
 Choose how to report a tool failure:
 
