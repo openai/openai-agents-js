@@ -497,6 +497,36 @@ it('sends controls on real native WebSocket generation frames', async () => {
   }
 }, 30_000);
 
+it('keeps empty extraBody as a no-wire patch on Lite', async () => {
+  const server = new ModelServer([
+    [message('empty body accepted')],
+    [message('empty patch accepted')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.6-sol',
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { extraBody: {} },
+  }).session();
+  expect((await (await session.submit('empty body')).wait()).finalOutput).toBe(
+    'empty body accepted',
+  );
+  await session.update({ modelSettings: { extraBody: {} } });
+  await expect(
+    session.update({
+      modelSettings: { extraBody: { provider_feature: null } },
+    }),
+  ).rejects.toThrow(/standard Responses|Responses Lite/);
+  expect((await (await session.submit('empty patch')).wait()).finalOutput).toBe(
+    'empty patch accepted',
+  );
+  expect(server.requests).toHaveLength(2);
+  for (const request of server.requests)
+    expect(request).not.toHaveProperty('provider_feature');
+  server.assertExhausted();
+}, 30_000);
+
 it('rejects known Lite before publishing a model or controls change', async () => {
   const server = new ModelServer([[message('still standard')]]);
   await using provider = await providerFor(server);
