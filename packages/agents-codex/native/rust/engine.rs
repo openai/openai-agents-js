@@ -871,8 +871,15 @@ impl EngineState {
             self.validate_seed_media(&mut startup, batch.items())
                 .await?;
         }
-        self.start_built_with_tools(startup, instructions, resume, reconciled_calls, specs, initial_messages)
-            .await
+        self.start_built_with_tools(
+            startup,
+            instructions,
+            resume,
+            reconciled_calls,
+            specs,
+            initial_messages,
+        )
+        .await
     }
 
     async fn start_built_with_tools(

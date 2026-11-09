@@ -171,3 +171,17 @@ it('retries a failed carrier phase without closing the Engine twice or removing 
     code: 'ENOENT',
   });
 });
+
+it('keeps buffered HTTP providers on fresh engines', async () => {
+  await using provider = new NativeProvider({
+    apiKey: 'synthetic',
+    responseMode: 'buffered',
+    supportsWebsockets: false,
+  });
+  const lease = provider._acquire(undefined, true);
+  try {
+    expect(lease.privateRuntime).toBeUndefined();
+  } finally {
+    await lease.release();
+  }
+});

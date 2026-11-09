@@ -72,6 +72,35 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private Engine fresh-root reuse',
   () => {
+    it.each([false, true])(
+      'keeps explicit initial messages on fresh seeded roots (empty=%s)',
+      async (empty) => {
+        const model = new ModelServer([
+          [message('warm answer')],
+          [message('seeded answer')],
+        ]);
+        await using provider = await providerFor(model);
+        const agent = new Agent({
+          provider,
+          model: 'gpt-5',
+          instructions: 'Answer.',
+        });
+        const rows = await starts();
+        await agent.run('warm isolated marker');
+        const result = await agent.run('current isolated marker', {
+          initialMessages: empty
+            ? []
+            : [{ role: 'assistant', content: 'seed isolation marker' }],
+        });
+        expect(result.finalOutput).toBe('seeded answer');
+        expect(rows.map((row) => row.kind)).toEqual(['ordinary']);
+        const input = JSON.stringify(model.requests[1].input);
+        expect(input).toContain('current isolated marker');
+        expect(input).not.toContain('warm isolated marker');
+        if (!empty) expect(input).toContain('seed isolation marker');
+      },
+    );
+
     it('uses one Engine for two distinct fresh roots and leaves a completed old Turn independent', async () => {
       const model = new ModelServer([
         [message('first answer')],
