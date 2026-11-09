@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-Add native canonical history snapshots and atomic suffix replacement for idle sessions. Add encrypted canonical storage and allow provider-hosted tools with custom canonical stores.
+feat: add native history snapshots, atomic transactions, encrypted storage, and hosted tools with custom canonical stores
