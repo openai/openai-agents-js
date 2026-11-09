@@ -102,7 +102,7 @@ async fn actual_engine_close_refuses_acquired_unpublished_writer_until_cleanup_j
         let (provider, profile, _work, engine, id) = setup().await;
         let state = engine.current().unwrap();
         let store = state.local_checklist_store.as_ref().unwrap().clone();
-        let probe = install(&store, Some(id), StartupClosePoint::RegisteredResume);
+        let probe = install(&store, Some(id), StartupClosePoint::PreparedNativeWriter);
         let _release_on_failure = ReleaseOnDrop(probe.clone());
         let mut opening = Box::pin(engine.start_replaceable_thread(options(Some(&id.to_string())), specs()));
         tokio::select! { biased;
@@ -114,10 +114,8 @@ async fn actual_engine_close_refuses_acquired_unpublished_writer_until_cleanup_j
         }
         drop(opening);
         assert!(state.manager.get_thread(id).await.is_err());
-        {
-            let writers = store.writers.lock().await;
-            assert!(!writers.get(&id).unwrap().resume_cleanup_pending);
-        }
+        // prepare_writer holds its writer-map lock at this probe. The entered acquisition
+        // plus independent file-lock rejection below prove ownership without peeking inside.
         let competitor = tests::store(profile.path()).await;
         assert!(competitor.inner.resume_thread(tests::resume(id, profile.path())).await.is_err());
         // Record the unsafe baseline result before cleanup, but never assert it
@@ -126,8 +124,7 @@ async fn actual_engine_close_refuses_acquired_unpublished_writer_until_cleanup_j
         let owner_retained = engine.inner.lock().unwrap().live.is_some();
         let marked_closed = state.closed.load(Ordering::Acquire);
         probe.release.add_permits(1);
-        let completed = tokio::time::timeout(Duration::from_secs(10), probe.completed.acquire()).await;
-        if let Ok(Ok(permit)) = completed { permit.forget(); }
+        // Prepared startup owns cleanup; the legacy resume completion counter is not entered.
         let cleanup = writer_removed(&store, id).await;
         let reopen = competitor.inner.resume_thread(tests::resume(id, profile.path())).await;
         let reopen_error = reopen.as_ref().err().map(ToString::to_string);

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jsonValue, parseNative } from './binding';
+import { jsonValue, losslessJsonValueSchema, parseNative } from './binding';
 
 export const nativeMarker = z.object({
   thread: z.string(),
@@ -14,6 +14,8 @@ export const nativeEventSchema = z
     msg: z
       .object({
         type: z.string(),
+        arguments: losslessJsonValueSchema.optional(),
+        tool_completion: losslessJsonValueSchema.optional(),
         _sdk_python_tool: nativeMarker.optional(),
       })
       .catchall(jsonValue),

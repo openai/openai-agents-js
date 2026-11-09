@@ -6324,7 +6324,12 @@ export class Session<OutputT = string, Context = unknown> {
         check();
         if (
           !native._reply_tool_completion(
-            encode({ ...receipt, final_output: converted.json }),
+            JSON.stringify(
+              losslessJsonValueSchema.parse({
+                ...receipt,
+                final_output: converted.json,
+              }),
+            ),
           )
         )
           throw new NativeError('Terminal proposal reply expired');
@@ -7045,8 +7050,8 @@ export class Session<OutputT = string, Context = unknown> {
         if (!this.current(run) || !this.manualCurrent(event)) return;
         const args =
           typeof msg.arguments === 'string'
-            ? decode(jsonValue, msg.arguments)
-            : jsonValue.parse(msg.arguments);
+            ? decode(losslessJsonValueSchema, msg.arguments)
+            : losslessJsonValueSchema.parse(msg.arguments);
         const grant = createManualRequest(
           tool,
           {
@@ -7555,8 +7560,8 @@ export class Session<OutputT = string, Context = unknown> {
           request: action,
           arguments:
             typeof call.event.msg.arguments === 'string'
-              ? decode(jsonValue, call.event.msg.arguments)
-              : jsonValue.parse(call.event.msg.arguments),
+              ? decode(losslessJsonValueSchema, call.event.msg.arguments)
+              : losslessJsonValueSchema.parse(call.event.msg.arguments),
         })),
       );
       signal?.throwIfAborted();
@@ -7675,7 +7680,7 @@ export class Session<OutputT = string, Context = unknown> {
     try {
       const context = tracing ? await tracing.context() : undefined;
       requests = decode(
-        z.array(jsonObject),
+        z.array(losslessJsonObjectSchema),
         await this.#native._restore_manual_continuation(
           encodeReceipt(state.manual_continuation),
           context,
@@ -7748,8 +7753,9 @@ export class Session<OutputT = string, Context = unknown> {
       output: restoredOutput.output,
     };
 
+    // Keep argument data intact while the event decoder validates its envelope.
     const events = requests.map((request) =>
-      parseEvent(encodeReceipt(request)),
+      parseEvent(JSON.stringify(request)),
     );
     for (const event of events) await this.handleRequest(run, event);
     // Register all saved requests before a handler can resolve the last grant
@@ -7856,8 +7862,8 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         const args =
           typeof msg.arguments === 'string'
-            ? decode(jsonValue, msg.arguments)
-            : jsonValue.parse(msg.arguments);
+            ? decode(losslessJsonValueSchema, msg.arguments)
+            : losslessJsonValueSchema.parse(msg.arguments);
         const response = await invokeFunctionTool(
           tool,
           args,
@@ -10111,8 +10117,8 @@ export class Session<OutputT = string, Context = unknown> {
       sourceSessionId: this.restored.source_session_id,
       arguments:
         typeof call.event.msg.arguments === 'string'
-          ? decode(jsonValue, call.event.msg.arguments)
-          : jsonValue.parse(call.event.msg.arguments),
+          ? decode(losslessJsonValueSchema, call.event.msg.arguments)
+          : losslessJsonValueSchema.parse(call.event.msg.arguments),
     };
   }
 
