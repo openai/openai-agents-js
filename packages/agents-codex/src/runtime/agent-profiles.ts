@@ -12,6 +12,7 @@ import {
 import { prepareOutput, type PreparedOutput } from './output';
 import type { Environment } from './environment';
 import type { JsonObject } from './binding';
+import { modelOverrides } from './provider';
 
 /** Immutable declarations and original identities for one native roster. */
 export interface CapturedAgentProfile<Context, Output> {
@@ -133,7 +134,8 @@ export function captureProfileRuntimes(
     const output = prepareOutput(declaration.outputType);
     const instructions =
       index === 0 ? rootInstructions : declaration.instructions;
-    const settings = declaration.modelSettings;
+    const model = modelOverrides(declaration.model, declaration.modelSettings);
+    const policies = JSON.parse(mcpPolicies(mcp, 0n));
     captured.set(
       profile.id,
       Object.freeze({
@@ -147,11 +149,13 @@ export function captureProfileRuntimes(
     roster.push({
       id: profile.id,
       model: {
-        model: declaration.model ?? '',
-        reasoning_effort: settings?.reasoningEffort ?? null,
-        reasoning_summary: settings?.reasoningSummary ?? null,
-        service_tier: settings?.serviceTier ?? null,
-        tool_choice: settings?.toolChoice ?? null,
+        model: model.model ?? '',
+        reasoning_effort: model.effort ?? null,
+        reasoning_summary: model.summary ?? null,
+        service_tier: model.service_tier ?? null,
+        tool_choice: model.tool_choice ?? null,
+        invocation_timeout_ms: model.invocation_timeout_ms ?? null,
+        request_controls: model.request_controls ?? {},
         personality: null,
       },
       instructions,
@@ -159,15 +163,19 @@ export function captureProfileRuntimes(
       manual_slots: catalog.tools.flatMap((tool, slot) =>
         tool.kind === 'manual' ? [slot] : [],
       ),
+      terminal_slots: catalog.tools.flatMap((tool, slot) =>
+        tool.kind !== 'manual' && tool.finishTurn ? [slot] : [],
+      ),
       step_defaults: catalog.tools.map((_, index) => index),
       handoffs: { ...profile.handoffs },
-      transform_context: false,
-      before_compact: false,
+      transform_context: declaration.transformContext !== undefined,
+      before_compact: declaration.beforeCompact !== undefined,
       before_complete: declaration.beforeComplete !== undefined,
       selecting_steps: false,
       output_fingerprint: output.identity.fingerprint,
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
-      mcp_result_tools: JSON.parse(mcpPolicies(mcp, 0n)).servers,
+      mcp_result_tools: policies.servers,
+      mcp_metadata_tools: policies.metadata_servers,
       mcp_tools: Object.fromEntries(
         mcp.map((server) => [
           server.name,

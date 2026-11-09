@@ -1,3 +1,4 @@
+import { toolCompletionSchema, type ToolCallInfo } from './call-metadata';
 import { z } from 'zod';
 import type { _NativeChildTurn } from '../../native/index.js';
 import { decode } from './binding';
@@ -142,6 +143,7 @@ export function issueChildTurn(
   native: _NativeChildTurn,
   callbacks: {
     beforeWait(): void;
+    toolCompletion?(fact: unknown): ToolCallInfo;
     drain(): Promise<void>;
     observations(
       options: ObservationOptions,
@@ -168,12 +170,19 @@ export function issueChildTurn(
       await callbacks.drain();
     }
     const result = decode(
-      z.object({ final_output: z.string(), usage: z.unknown() }),
+      z.object({
+        final_output: z.string(),
+        usage: z.unknown(),
+        tool_completion: toolCompletionSchema.nullish(),
+      }),
       wire,
     );
     return Object.freeze({
       turn,
       finalOutput: result.final_output,
+      ...(result.tool_completion
+        ? { toolCall: callbacks.toolCompletion!(result.tool_completion) }
+        : {}),
       threadUsage: tokenUsageInfo(result.usage),
       repairAttempts: Object.freeze([]),
     });

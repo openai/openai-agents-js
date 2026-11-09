@@ -5,11 +5,11 @@ import {
   Environment,
   isMount,
   Manifest,
+  normalizeSandboxClientCreateArgs,
   SandboxLifecycleError,
   SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
-  normalizeSandboxClientCreateArgs,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
@@ -72,8 +72,8 @@ import type { PreparedManifestMount } from '../shared/manifest';
 import {
   assertLiveMountCredentialAuthorityMatches,
   assertLiveMountEnvironmentAuthorityMatches,
-  assertSandboxStateGenerationUnchanged,
   captureLiveMountRuntimeAuthority,
+  assertSandboxStateGenerationUnchanged,
   captureSandboxStateGeneration,
   captureLiveMountCredentialAuthority,
   captureLiveMountCredentialAuthorityIfAbsent,
@@ -190,14 +190,7 @@ type VercelSandboxInstance = {
   runDetachedCommand(
     params: VercelSandboxRunCommandParams,
   ): Promise<VercelCommandLike>;
-  runBoundedReadCommand(
-    params: VercelSandboxRunCommandParams,
-  ): Promise<RemoteSandboxCommandResult>;
   mkDir(path: string): Promise<void>;
-  readFile(file: {
-    path: string;
-    cwd?: string;
-  }): Promise<VercelFileStream | null>;
   readFileToBuffer(file: {
     path: string;
     cwd?: string;
@@ -213,6 +206,20 @@ type VercelSandboxInstance = {
   stop?(): Promise<unknown>;
   snapshot?(params?: { expiration?: number }): Promise<{ snapshotId?: string }>;
 };
+
+type VercelBoundedReads = {
+  runCommand(
+    params: VercelSandboxRunCommandParams,
+  ): Promise<RemoteSandboxCommandResult>;
+  readFile(file: {
+    path: string;
+    cwd?: string;
+  }): Promise<VercelFileStream | null>;
+};
+const boundedVercelReaders = new WeakMap<
+  VercelSandboxInstance,
+  VercelBoundedReads
+>();
 
 type VercelCommandFinishedLike = {
   exitCode: number | null;
@@ -1212,18 +1219,25 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       throw new UserError('maxBytes must be a non-negative safe integer.');
     }
     return await this.runWorkspaceOperation(async () => {
+      const bounded = boundedVercelReaders.get(this.sandbox);
+      if (!bounded) {
+        throw new SandboxUnsupportedFeatureError(
+          'Bounded Vercel file reads require a session created by VercelSandboxClient.',
+          { provider: 'vercel' },
+        );
+      }
       const path = await validateRemoteSandboxPathForManifest({
         manifest: this.state.manifest,
         path: args.path,
         runCommand: async (command) =>
-          await this.sandbox.runBoundedReadCommand({
+          await bounded.runCommand({
             cmd: '/bin/sh',
             args: ['-c', command],
             cwd: this.state.manifest.root,
             env: {},
           }),
       });
-      return await this.readRemoteFilePrefixDirect(path, maxBytes);
+      return await this.readRemoteFilePrefixDirect(path, maxBytes, bounded);
     });
   }
 
@@ -1255,10 +1269,11 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   private async readRemoteFilePrefixDirect(
     path: string,
     maxBytes: number,
+    bounded: VercelBoundedReads,
   ): Promise<Uint8Array> {
     // This is the same native file API used by readFileToBuffer. Switching to
     // a command here would change the file authority and error behavior.
-    const stream = await this.sandbox.readFile({ path });
+    const stream = await bounded.readFile({ path });
     if (!stream) {
       throw new UserError(`Sandbox path not found: ${path}`);
     }
@@ -2223,7 +2238,12 @@ function adaptVercelSandbox(
           detached: true,
         }),
       ),
-    runBoundedReadCommand: async (params) => {
+    mkDir: async (path) => await sandbox.mkDir(path),
+    readFileToBuffer: async (file) => await sandbox.readFileToBuffer(file),
+    writeFiles: async (files) => await sandbox.writeFiles(files),
+  };
+  boundedVercelReaders.set(adapted, {
+    runCommand: async (params) => {
       const maxOutputBytes = 65536;
       const command = await sandbox.runCommand({
         ...(params as VercelSdkRunCommandParams),
@@ -2277,12 +2297,9 @@ function adaptVercelSandbox(
         }
       }
     },
-    mkDir: async (path) => await sandbox.mkDir(path),
     readFile: async (file) =>
       (await sandbox.readFile(file)) as VercelFileStream | null,
-    readFileToBuffer: async (file) => await sandbox.readFileToBuffer(file),
-    writeFiles: async (files) => await sandbox.writeFiles(files),
-  };
+  });
   if (typeof optionalSandbox.domain === 'function') {
     const domain = optionalSandbox.domain.bind(sandbox);
     adapted.domain = (port) => domain(port);

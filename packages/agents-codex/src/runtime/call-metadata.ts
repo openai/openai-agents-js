@@ -83,3 +83,30 @@ export function interceptedCallInfo(
     nestedCallId: (request.runtime_tool_call_id as string | null) ?? null,
   });
 }
+
+/** Canonical terminal facts are observations, never live call authority. */
+export const toolCompletionSchema = z.object({
+  call_id: z.string(),
+  name: z.string(),
+  namespace: z.string().nullable().optional(),
+  final_output: z.unknown(),
+});
+
+/** @internal Use only after the exact runtime and terminal proposal match. */
+export function terminalCallInfo(
+  owner: Owner & { turnId: string },
+  fact: z.infer<typeof toolCompletionSchema>,
+  namespace: string | null = fact.namespace ?? null,
+): ToolCallInfo {
+  return freezeCall({
+    ...owner,
+    tool: { name: fact.name, namespace },
+    callId: fact.call_id,
+    role: null,
+    model: null,
+    route: 'direct',
+    outerCallId: null,
+    cellId: null,
+    nestedCallId: null,
+  });
+}

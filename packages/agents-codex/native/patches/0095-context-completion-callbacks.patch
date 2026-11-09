@@ -1,0 +1,447 @@
+diff --git a/codex-rs/core-api/src/lib.rs b/codex-rs/core-api/src/lib.rs
+index b109bf950384d01e1ffce122567e561cff35d1d4..f368d4724e6c1678a65044cd46f0b4813d0381ae 100644
+--- a/codex-rs/core-api/src/lib.rs
++++ b/codex-rs/core-api/src/lib.rs
+@@ -148,3 +148,5 @@ pub use codex_protocol::protocol::W3cTraceContext;
+ pub use codex_protocol::user_input::UserInput;
+ pub use codex_state::SqliteConfig;
+ pub use codex_utils_absolute_path::AbsolutePathBuf;
++
++pub use codex_core::parse_model_context_items;
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index d8a39f942b03f45a6b26baf8e6a45e3576bcaae4..087aac519451e36c67e54d8a00c39ad6d69d9f38 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -2635,6 +2635,14 @@ impl ModelClientSession {
+         service_tier: Option<String>,
+         responses_metadata: &CodexResponsesMetadata,
+     ) -> Result<()> {
++        // A warmup can transmit the complete prompt before the application's
++        // request owner exists. Keep connection-only preconnect, but let the
++        // ordinary request run the awaited context policy before sending input.
++        if self.client.request_contributors.iter().any(|contributor| {
++            contributor.transforms_context(&self.client.state.thread_id.to_string())
++        }) {
++            return Ok(());
++        }
+         if !self.client.responses_websocket_enabled() {
+             return Ok(());
+         }
+@@ -2706,6 +2714,41 @@ impl ModelClientSession {
+                 "Buffered Responses requires HTTP without Responses Lite or WebSockets".into(),
+             ));
+         }
++        let thread_id = self.client.state.thread_id.to_string();
++        let mut transformed = None;
++        for contributor in &self.client.request_contributors {
++            if !contributor.transforms_context(&thread_id) {
++                continue;
++            }
++            let turn_id = responses_metadata
++                .turn_id
++                .as_deref()
++                .ok_or_else(|| CodexErr::InvalidRequest("Missing model context owner".into()))?;
++            let projected = transformed.get_or_insert_with(|| prompt.clone());
++            contributor
++                .transform_context(codex_extension_api::ModelContextInput {
++                    step_store: prompt
++                        .tool_admission
++                        .as_ref()
++                        .and_then(|admission| admission.step_store()),
++                    thread_id: &thread_id,
++                    turn_id,
++                    model: &model_info.slug,
++                    compaction: matches!(
++                        responses_metadata.request_kind,
++                        Some(crate::responses_metadata::CodexResponsesRequestKind::Compaction(_))
++                    ),
++                    items: &mut projected.input,
++                })
++                .await
++                .map_err(CodexErr::InvalidRequest)?;
++        }
++        if let Some(projected) = &transformed
++            && let Some(recorder) = &self.client.executed_tool_calls
++        {
++            recorder.invalidate_wire_inventory_loss(&prompt.input, &projected.input);
++        }
++        let prompt = transformed.as_ref().unwrap_or(prompt);
+         let wire_api = self.client.state.provider.info().wire_api;
+         match wire_api {
+             WireApi::Responses => {
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index a7a2d845284b925d6a8ae607b66a0ca8dd9c4b10..72087d77606165c210a0d4719b3f740bb5160edb 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -267,3 +267,5 @@ pub use environment_selection::TurnEnvironmentSnapshot;
+ pub use environment_selection::validate_environment_ids_and_cwds;
+ 
+ mod file_admission;
++
++pub use prepared_request::parse_model_context_items;
+diff --git a/codex-rs/core/src/prepared_request.rs b/codex-rs/core/src/prepared_request.rs
+index a70e5faf6d3b77f8fa6d90f9c92276aed1cb8ec0..dc208baca12712045232985d04e7c3505749febd 100644
+--- a/codex-rs/core/src/prepared_request.rs
++++ b/codex-rs/core/src/prepared_request.rs
+@@ -112,6 +112,18 @@ fn edit_tool(
+     Ok(())
+ }
+ 
++/// Decode only Responses items whose complete submitted shape survives the native codec.
++pub fn parse_model_context_items(values: Vec<Value>) -> Result<Vec<ResponseItem>, String> {
++    values
++        .into_iter()
++        .enumerate()
++        .map(|(index, value)| {
++            parse_preserving(value)
++                .map_err(|_| format!("model context input[{index}] is unsupported or lossy"))
++        })
++        .collect()
++}
++
+ pub(crate) fn apply(original: &Prompt, data: PreparedRequestData) -> Result<Prompt, String> {
+     let before = snapshot(original)?;
+     if before.tools.len() != data.tools.len() {
+@@ -287,3 +299,33 @@ mod tests {
+         assert!(!preserves(&json!(1), &json!(2)));
+     }
+ }
++
++#[cfg(test)]
++mod context_projection_tests {
++    use super::*;
++    use serde_json::json;
++
++    #[test]
++    fn context_projection_preserves_roles_and_matched_history_without_executing_it() {
++        let values = vec![
++            json!({"type":"message","role":"developer","content":[{"type":"input_text","text":"policy"}]}),
++            json!({"type":"function_call","name":"lookup","call_id":"old","arguments":"{}"}),
++            json!({"type":"function_call_output","call_id":"old","output":"historical"}),
++        ];
++        let parsed = parse_model_context_items(values.clone()).unwrap();
++        let encoded = serde_json::to_value(parsed).unwrap();
++        assert!(preserves(&json!(values), &encoded));
++    }
++
++    #[test]
++    fn context_projection_rejects_lossy_reference_and_unknown_fields_atomically() {
++        assert!(
++            parse_model_context_items(vec![json!({"type":"item_reference","id":"not-retained"})])
++                .is_err()
++        );
++        assert!(parse_model_context_items(vec![
++            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"valid"}]}),
++            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"valid"}],"unknown_authority":true}),
++        ]).is_err());
++    }
++}
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 6e68ef9438fc3f6b1d618be91232c5f7d406ab36..b30919a8bdec700c5ea743d322fda648eba795a9 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -393,6 +393,7 @@ pub(crate) async fn run_turn(
+ 
+     let mut last_agent_message: Option<String> = None;
+     let mut stop_hook_active = false;
++    let mut completion_continuations = 0;
+     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
+     // many turns, from the perspective of the user, it is a single turn.
+     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
+@@ -431,6 +432,7 @@ pub(crate) async fn run_turn(
+             &tools,
+             &cancellation_token,
+             &mut stop_hook_active,
++            &mut completion_continuations,
+         )
+         .await?
+         {
+@@ -639,25 +641,73 @@ pub(crate) async fn run_turn(
+                     &settled_tools,
+                     &cancellation_token,
+                     &mut stop_hook_active,
++                    &mut completion_continuations,
+                 )
+                 .await?
+                 {
+                     return Ok(None);
+                 }
+ 
+-                let (has_pending_input, token_status) = async {
+-                    let has_pending_input =
+-                        sess.input_queue.has_pending_input(&sess.active_turn).await;
+-                    let token_status = super::context_window::context_window_token_status(
+-                        sess.as_ref(),
+-                        turn_context.as_ref(),
+-                    )
+-                    .await;
+-                    (has_pending_input, token_status)
++                let has_pending_input = sess.input_queue.has_pending_input(&sess.active_turn).await;
++                let mut needs_follow_up = model_needs_follow_up || has_pending_input;
++                if !needs_follow_up {
++                    for contributor in sess.services.extensions.turn_lifecycle_contributors() {
++                        let feedback = contributor
++                            .before_turn_complete(codex_extension_api::TurnCompletionInput {
++                                step_store: Some(&step_context.extension_data),
++                                turn_id: &turn_context.sub_id,
++                                model: &step_context.settings.model_info.slug,
++                                last_assistant_message: sampling_request_last_agent_message
++                                    .as_deref(),
++                                continuation_count: completion_continuations,
++                                thread_store: &sess.services.thread_extension_data,
++                                turn_store: turn_context.extension_data.as_ref(),
++                            })
++                            .or_cancel(&cancellation_token)
++                            .await?
++                            .map_err(CodexErr::InvalidRequest)?;
++                        if cancellation_token.is_cancelled() {
++                            return Err(CodexErr::TurnAborted);
++                        }
++                        if let Some(feedback) = feedback {
++                            let item = build_hook_prompt_message(&[
++                                codex_protocol::items::HookPromptFragment::from_single_hook(
++                                    feedback,
++                                    uuid::Uuid::new_v4().to_string(),
++                                ),
++                            ])
++                            .ok_or_else(|| {
++                                CodexErr::InvalidRequest(
++                                    "Completion feedback must not be empty".to_owned(),
++                                )
++                            })?;
++                            sess.record_response_item_and_emit_turn_item(
++                                &turn_context,
++                                &step_context.settings.model_info,
++                                item,
++                            )
++                            .await;
++                            sess.input_queue
++                                .accept_mailbox_delivery_for_current_turn(
++                                    &sess.active_turn,
++                                    &turn_context.sub_id,
++                                )
++                                .await;
++                            completion_continuations += 1;
++                            needs_follow_up = true;
++                            break;
++                        }
++                    }
+                 }
++                // Policy can await while a caller steers this same active turn.
++                // Re-read the queue before choosing a terminal branch.
++                needs_follow_up |= sess.input_queue.has_pending_input(&sess.active_turn).await;
++                let token_status = super::context_window::context_window_token_status(
++                    sess.as_ref(),
++                    turn_context.as_ref(),
++                )
+                 .instrument(trace_span!("run_turn.collect_post_sampling_state"))
+                 .await;
+-                let needs_follow_up = model_needs_follow_up || has_pending_input;
+                 let token_limit_reached = token_status.token_limit_reached;
+ 
+                 trace!(
+@@ -2416,9 +2466,16 @@ async fn try_complete_tool_turn(
+     tools: &SettledDirectTools,
+     cancellation_token: &CancellationToken,
+     stop_hook_active: &mut bool,
++    completion_continuations: &mut usize,
+ ) -> CodexResult<bool> {
+-    if let Some(completion) =
+-        propose_tool_completion(sess, step_context, tools, cancellation_token).await?
++    if let Some(completion) = propose_tool_completion(
++        sess,
++        step_context,
++        tools,
++        cancellation_token,
++        completion_continuations,
++    )
++    .await?
+     {
+         let stop = run_turn_stop_hooks(sess, step_context, *stop_hook_active, None).await;
+         if stop.should_stop {
+@@ -2460,6 +2517,7 @@ async fn propose_tool_completion(
+     step: &StepContext,
+     tools: &SettledDirectTools,
+     cancellation: &CancellationToken,
++    completion_continuations: &mut usize,
+ ) -> CodexResult<Option<codex_protocol::protocol::ToolTurnCompletion>> {
+     if !tools.all_succeeded || tools.calls.is_empty() {
+         return Ok(None);
+@@ -2488,6 +2546,7 @@ async fn propose_tool_completion(
+         for contributor in sess.services.extensions.turn_lifecycle_contributors() {
+             let decision = contributor
+                 .propose_tool_completion(codex_extension_api::ToolCompletionInput {
++                    continuation_count: *completion_continuations,
+                     turn_id: &step.turn.sub_id,
+                     model: &step.settings.model_info.slug,
+                     call,
+@@ -2506,6 +2565,10 @@ async fn propose_tool_completion(
+                 None => continue,
+                 Some(codex_extension_api::ToolCompletionDecision::Continue { feedback }) => {
+                     if let Some(feedback) = feedback {
++                        *completion_continuations =
++                            completion_continuations.checked_add(1).ok_or_else(|| {
++                                CodexErr::Fatal("Completion continuation counter exhausted".into())
++                            })?;
+                         let item = build_hook_prompt_message(&[
+                             codex_protocol::items::HookPromptFragment::from_single_hook(
+                                 feedback,
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index 5ed5b9b27ece2f948d2ac126c375bff3f669397e..a5b1268bad2a4d5735b4f47751d989f6c1b6c3e0 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -73,6 +73,7 @@ pub use turn_lifecycle::RecoveredToolCompletionCandidates;
+ pub use turn_lifecycle::ToolCompletionDecision;
+ pub use turn_lifecycle::ToolCompletionInput;
+ pub use turn_lifecycle::TurnAbortInput;
++pub use turn_lifecycle::TurnCompletionInput;
+ pub use turn_lifecycle::TurnErrorInput;
+ pub use turn_lifecycle::TurnStartInput;
+ pub use turn_lifecycle::TurnStartPhase;
+@@ -222,6 +223,13 @@ pub trait ThreadLifecycleContributor<C: Sync>: Send + Sync {
+ /// extension-private turn state. The host exposes stable identifiers and
+ /// extension stores instead of core runtime objects.
+ pub trait TurnLifecycleContributor: Send + Sync {
++    fn before_turn_complete<'a>(
++        &'a self,
++        _input: TurnCompletionInput<'a>,
++    ) -> ExtensionFuture<'a, Result<Option<String>, String>> {
++        Box::pin(std::future::ready(Ok(None)))
++    }
++
+     /// Propose completion from one accepted direct function result. Disabled by
+     /// default. Core invokes this only after every sibling has settled successfully,
+     /// in model call order, and stops at the first eligible result. Errors fail the
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index 7b6d9456f925c08559d870db36b90e663aeca0f7..8b517fb226e9f1798ec1adfefcc8ac3a05605073 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -34,6 +34,18 @@ pub struct TurnStartInput<'a> {
+     pub turn_store: &'a ExtensionData,
+ }
+ 
++/// Application acceptance of a successful natural completion, before turn stop.
++pub struct TurnCompletionInput<'a> {
++    /// Last actually sampled step, including its producing Agent/catalog.
++    pub step_store: Option<&'a ExtensionData>,
++    pub turn_id: &'a str,
++    pub model: &'a str,
++    pub last_assistant_message: Option<&'a str>,
++    pub continuation_count: usize,
++    pub thread_store: &'a ExtensionData,
++    pub turn_store: &'a ExtensionData,
++}
++
+ /// Input supplied when the host completes a turn.
+ pub struct TurnStopInput<'a> {
+     /// Store scoped to the host session runtime.
+@@ -80,6 +92,7 @@ pub struct TurnErrorInput<'a> {
+ /// and application completion policy before accepting it; the host may still discard
+ /// the proposal if steering or cancellation wins the final reservation.
+ pub struct ToolCompletionInput<'a> {
++    pub continuation_count: usize,
+     pub turn_id: &'a str,
+     pub model: &'a str,
+     pub call: &'a codex_protocol::models::ResponseItem,
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index b5026b7b1b9ddc5b8cf49f953d1def8410ed1f67..6e8e595ca85621bf571fadd565451da18089986b 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -104,6 +104,7 @@ pub use contributors::ToolStartInput;
+ pub use contributors::ToolTimingBoundary;
+ pub use contributors::ToolTimingInput;
+ pub use contributors::TurnAbortInput;
++pub use contributors::TurnCompletionInput;
+ pub use contributors::TurnContextContributionInput;
+ pub use contributors::TurnErrorInput;
+ pub use contributors::TurnInputContext;
+@@ -145,6 +146,7 @@ pub use model_request_observation::{
+     ModelResponseLinked,
+ };
+ 
++pub use model_request::ModelContextInput;
+ pub use model_request::ModelHttpStream;
+ pub use model_request::ModelRequestContributor;
+ pub use model_request::ModelRequestInput;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 8ea18755e8aece9c249215f5cb42922d3678df13..f7f62516173901bf4b3daddd8c450ec04507d77d 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -1,5 +1,6 @@
+ //! Request-scoped interception of model response streams.
+ use crate::ExtensionData;
++use crate::ExtensionFuture;
+ pub use codex_api::ApiError as ModelResponseError;
+ pub use codex_api::ResponseEvent;
+ use codex_protocol::models::ResponseItem;
+@@ -42,13 +43,20 @@ impl TurnSamplingStop {
+ 
+     pub fn install_model_deadline(&self, state: Arc<codex_api::ModelInvocationDeadlineState>) {
+         state.bind_stop_flag(self.requested.clone());
+-        *self.model_deadline.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
++        *self
++            .model_deadline
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
+     }
+     pub fn capture_model_deadline(&self) -> Option<Arc<codex_api::ModelInvocationDeadlineState>> {
+-        self.model_deadline.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
++        self.model_deadline
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .clone()
+     }
+     pub fn model_deadline_expired(&self) -> bool {
+-        self.capture_model_deadline().is_some_and(|state| state.expired())
++        self.capture_model_deadline()
++            .is_some_and(|state| state.expired())
+     }
+     /// Capture once for a pending invocation; never hold this gate across an await.
+     pub fn with_model_deadline_admission<T>(&self, enter: impl FnOnce() -> T) -> Option<T> {
+@@ -60,7 +68,9 @@ impl TurnSamplingStop {
+ 
+     pub fn requested(&self) -> bool {
+         self.requested.load(Ordering::Acquire)
+-            || self.capture_model_deadline().is_some_and(|state| state.denies_admission())
++            || self
++                .capture_model_deadline()
++                .is_some_and(|state| state.denies_admission())
+             || self
+                 .graph
+                 .as_ref()
+@@ -91,6 +101,17 @@ pub enum ModelRequestKind {
+ }
+ 
+ /// Request identity and additional metadata supplied before sending to the provider.
++pub struct ModelContextInput<'a> {
++    /// The original sampled step; absent for older/custom request owners.
++    pub step_store: Option<&'a ExtensionData>,
++    pub thread_id: &'a str,
++    pub turn_id: &'a str,
++    pub model: &'a str,
++    pub compaction: bool,
++    pub items: &'a mut Vec<ResponseItem>,
++}
++
++/// Request identity before provider dispatch.
+ pub struct ModelRequestInput<'a> {
+     /// Whether this request generates output or warms up the session.
+     pub kind: ModelRequestKind,
+@@ -132,6 +153,17 @@ pub struct ToolsOnlyCallInput {
+ /// Contributes request-scoped preparation and response interception.
+ /// Return None for requests this host does not manage.
+ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
++    fn transforms_context(&self, _thread_id: &str) -> bool {
++        false
++    }
++
++    fn transform_context<'a>(
++        &'a self,
++        _input: ModelContextInput<'a>,
++    ) -> ExtensionFuture<'a, Result<(), String>> {
++        Box::pin(async { Ok(()) })
++    }
++
+     /// Select solely from the provider endpoint before physical-client creation.
+     /// Declining must not mutate request admission or execute application code.
+     /// The returned dispatcher must revalidate the exact authenticated request.

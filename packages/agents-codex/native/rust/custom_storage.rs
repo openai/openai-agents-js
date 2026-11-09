@@ -42,7 +42,6 @@ struct Writer {
     fence: String,
     snapshot: Snapshot,
     failure: Option<String>,
-    early: HashMap<(String, String), ResponseItem>,
     managed: HashSet<(String, String)>,
 }
 pub struct CustomThreadStore {
@@ -261,7 +260,6 @@ impl CustomThreadStore {
                         fence,
                         snapshot,
                         failure: None,
-                        early: HashMap::new(),
                         managed: HashSet::new(),
                     },
                 );
@@ -289,7 +287,6 @@ impl CustomThreadStore {
                                     mutations: Vec::new(),
                                 },
                                 failure: Some(primary.to_string()),
-                                early: HashMap::new(),
                                 managed: HashSet::new(),
                             },
                         );
@@ -346,29 +343,20 @@ impl CustomThreadStore {
                         && let ResponseItem::FunctionCallOutput {
                             call_id: Some(call),
                             internal_chat_message_metadata_passthrough,
-                            output: actual,
                             ..
                         } = &row.item
-                        && writer.managed.iter().any(|(_, managed)| managed == call)
                     {
                         let owner = internal_chat_message_metadata_passthrough
                             .as_ref()
                             .and_then(|meta| meta.turn_id.clone())
                             .unwrap_or_else(|| turn.clone());
-                        if let Some(ResponseItem::FunctionCallOutput {
-                            output: expected, ..
-                        }) = writer.early.get(&(owner, call.clone()))
-                            && serde_json::to_value(expected).map_err(error)?
-                                != serde_json::to_value(actual).map_err(error)?
-                        {
-                            let failure =
-                                "Core drain changed an acknowledged canonical SDK receipt";
-                            writer.failure = Some(failure.into());
-                            return Err(error(failure));
+                        if writer.managed.contains(&(owner, call.clone())) {
+                            // Core can synthesize cancellation/failure text after its reply
+                            // receiver retires while the admitted SDK writer still settles.
+                            // Only the real-receipt path owns this exact turn/call outcome;
+                            // a Core drain must neither replace it nor poison its writer.
+                            continue;
                         }
-                        // Only the private real-receipt path can settle a managed call.
-                        // Cancellation and foreign drain metadata leave its outcome unknown.
-                        continue;
                     }
                     retained.push(item);
                 }
@@ -495,13 +483,6 @@ impl CustomThreadStore {
             true,
         )
         .await?;
-        self.writers
-            .lock()
-            .await
-            .get_mut(&id)
-            .ok_or_else(|| error("canonical writer closed"))?
-            .early
-            .insert(identity, item);
         self.flush(id).await
     }
     async fn flush(&self, id: ThreadId) -> ThreadStoreResult<()> {

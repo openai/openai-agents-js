@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { Agent, ContinueTurn, OpenAIDecisions } from '@openai/agents';
+import { Agent, OpenAIDecisions } from '@openai/agents';
 
 const request =
   process.argv[2] ?? 'How can I update the payment method on my account?';
@@ -23,7 +23,10 @@ const support = new Agent({
       },
     );
     if (!clear)
-      return new ContinueTurn('Give the customer one concrete next step.');
+      return {
+        action: 'continue',
+        instructions: 'Give the customer one concrete next step.',
+      };
   },
 });
 const result = await support.run(request);

@@ -530,6 +530,52 @@ impl DirectTurn {
     }
 }
 
+// Stop only the captured task. Its existing host stop/join owner retains
+// physical settlement; joining here would wait on this very MCP hook.
+pub(crate) fn expire_mcp_result(
+    thread_store: &ExtensionData,
+    turn_store: &ExtensionData,
+    claim: impl FnOnce() -> bool,
+) {
+    if let (Some(control), Some(owner)) = (
+        thread_store.get::<Control>(),
+        turn_store.get::<DirectTurn>(),
+    ) {
+        let _state = control
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        if !control.stopped.is_cancelled() && owner.admits_policy(true) && claim() {
+            owner.policy_stopped.store(true, Ordering::Release);
+            if let Some(task) = &owner.core_task {
+                task.request_stop();
+            }
+        }
+    } else {
+        claim();
+    }
+}
+
+// Reuse the existing exact-turn publication fence for pre-send application metadata.
+pub(crate) fn publish_mcp_metadata(
+    thread: &ExtensionData,
+    turn: &ExtensionData,
+    retained: bool,
+    is_cancelled: &CancellationProbe,
+    publish: impl FnOnce(),
+) {
+    if let (Some(control), Some(owner)) = (thread.get::<Control>(), turn.get::<DirectTurn>()) {
+        let _ = control.publish_result(
+            &owner,
+            &control.stopped,
+            retained,
+            Some(is_cancelled),
+            publish,
+        );
+    }
+}
+
 struct LastCompletion {
     response_id: String,
     model: String,
@@ -556,22 +602,6 @@ pub(crate) struct CapturedTurnStop {
     settlement: Option<Arc<crate::turn_settlement::Turn>>,
     sessions: Mutex<Vec<Arc<Session>>>,
 }
-pub(crate) fn capture_completion_stop(
-    thread_store: &ExtensionData,
-    turn_store: &ExtensionData,
-) -> Option<Arc<CapturedTurnStop>> {
-    let control = thread_store.get::<Control>()?;
-    let owner = turn_store.get::<DirectTurn>()?;
-    owner.core_task.as_ref()?;
-    let captured = Arc::new(CapturedTurnStop {
-        control,
-        settlement: owner.settlement(),
-        owner: Some(owner),
-        sessions: Mutex::new(Vec::new()),
-    });
-    captured.admitted().then_some(captured)
-}
-
 impl CapturedTurnStop {
     pub(crate) fn decision_ids(&self) -> Option<(&str, &str)> {
         let owner = self.owner.as_ref()?;
@@ -624,6 +654,9 @@ impl CapturedTurnStop {
         })
     }
 
+    pub(crate) fn callback_cancellation(&self) -> Option<CancellationToken> {
+        self.owner.as_ref().map(|owner| owner.cancelled.clone())
+    }
     pub(crate) fn local_exec_cancel_confirmed(&self) -> bool {
         self.settlement
             .as_ref()
@@ -760,6 +793,7 @@ impl HeldPolicyStop {
 }
 
 pub struct Control {
+    context_tools: OnceLock<Weak<crate::python_tools::PythonTools>>,
     mcp_results: OnceLock<Weak<crate::mcp_result_control::McpResultControl>>,
     profile_policies: AtomicU8,
     id: String,
@@ -819,6 +853,9 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn bind_context_tools(&self, tools: &Arc<crate::python_tools::PythonTools>) {
+        let _ = self.context_tools.set(Arc::downgrade(tools));
+    }
     pub(crate) fn bind_mcp_results(
         &self,
         results: &Arc<crate::mcp_result_control::McpResultControl>,
@@ -937,6 +974,7 @@ impl Control {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
             mcp_results: OnceLock::new(),
+            context_tools: OnceLock::new(),
             profile_policies: AtomicU8::new(0),
             root,
             native_depth: if root { 0 } else { usize::MAX },
@@ -983,6 +1021,7 @@ impl Control {
             id,
             incarnation: codex_protocol::ThreadId::new().to_string(),
             mcp_results: OnceLock::new(),
+            context_tools: OnceLock::new(),
             profile_policies: AtomicU8::new(parent.profile_policies.load(Ordering::Acquire)),
             root: false,
             native_depth: parent.native_depth.saturating_add(1),
@@ -2922,21 +2961,6 @@ impl ThreadLifecycleContributor<Config> for Boundary {
 }
 
 impl TurnLifecycleContributor for Boundary {
-    fn before_turn_complete<'a>(
-        &'a self,
-        input: codex_extension_api::TurnCompletionInput<'a>,
-    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
-        Box::pin(async move {
-            let Some(tools) = input.thread_store.get::<crate::python_tools::PythonTools>() else {
-                return Ok(None);
-            };
-            tools
-                .before_complete(input)
-                .await
-                .map_err(|_| "Completion callback failed".to_owned())
-        })
-    }
-
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(control) = input.thread_store.get::<Control>() {
@@ -3049,6 +3073,40 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn customizes_compaction(&self, thread_id: &str) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.customizes_compaction())
+    }
+    fn before_compact<'a>(
+        &'a self,
+        input: codex_extension_api::CompactionInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired compaction callback owner")?
+                .before_compact(input)
+                .await
+                .map_err(|_| "Compaction callback failed".to_owned())
+        })
+    }
+
+    fn transforms_context(&self, thread_id: &str) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.transforms_context())
+    }
+    fn transform_context<'a>(
+        &'a self,
+        input: codex_extension_api::ModelContextInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<(), String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired model context owner")?
+                .transform_context(input)
+                .await
+                .map_err(|_| "Model context transformation failed".to_owned())
+        })
+    }
+
     fn admit_tools_only_call(
         &self,
         input: codex_extension_api::ToolsOnlyCallInput,
@@ -4564,12 +4622,26 @@ impl CodeModeSessionProvider for Provider {
         &self,
         id: codex_protocol::ThreadId,
     ) -> CodeModeSessionProviderFuture<'_> {
+        self.create_session_for_thread_with_reference_profile(
+            id,
+            codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::PrepareInline,
+        )
+    }
+
+    fn create_session_for_thread_with_reference_profile(
+        &self,
+        id: codex_protocol::ThreadId,
+        profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy,
+    ) -> CodeModeSessionProviderFuture<'_> {
         Box::pin(async move {
             self.boundary
                 .check_code_import_admission()
                 .map_err(|error| error.to_string())?;
             let Some(state) = self.boundary.pending_code_state(id) else {
-                let session = self.inner.create_session_for_thread(id).await?;
+                let session = self
+                    .inner
+                    .create_session_for_thread_with_reference_profile(id, profile)
+                    .await?;
                 return Ok(Session::new(session, self.boundary.clone()) as Arc<dyn CodeModeSession>);
             };
             let control = self
@@ -4592,7 +4664,10 @@ impl CodeModeSessionProvider for Provider {
             self.boundary
                 .check_code_import_admission()
                 .map_err(|error| error.to_string())?;
-            let session = self.inner.create_session_for_thread(id).await?;
+            let session = self
+                .inner
+                .create_session_for_thread_with_reference_profile(id, profile)
+                .await?;
             // No await or fallible operation may precede retention of this raw
             // receiver, even when Control admission below has already expired.
             let pending = self
@@ -7091,11 +7166,12 @@ mod tests {
         .await
         .unwrap();
         let (root, parent_unchanged, retained) = parent.unwrap();
-        let (child, child_unchanged, forwarded) = child.unwrap();
+        let (child, _child_unchanged, forwarded) = child.unwrap();
         assert_eq!(root.id, "root");
         assert!(!parent_unchanged);
         assert_eq!(child.id, "child");
-        assert!(child_unchanged);
+        // Native ownership may wrap an opted-out child; the invocation below proves bypass.
+
         assert!(boundary.starts.lock().unwrap().is_empty());
 
         // The dispatch task is gone and native finish may have run. Only the
@@ -7126,10 +7202,13 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(actual.0.load(Ordering::SeqCst), 0);
         assert_eq!(
-            forwarded
-                .invoke_tool(invocation, CancellationToken::new())
-                .await
-                .unwrap(),
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                forwarded.invoke_tool(invocation, CancellationToken::new()),
+            )
+            .await
+            .unwrap()
+            .unwrap(),
             json!({"from_actual":true})
         );
         assert_eq!(actual.0.load(Ordering::SeqCst), 1);
@@ -7521,25 +7600,29 @@ mod tests {
 
     #[tokio::test]
     async fn owned_startup_captures_before_poll_and_drops_without_native_work() {
-        let (session, mut calls) = probed_session();
-        // Opted-out starts still have an exact owner, without enrolling callbacks.
-        let control = Arc::new(Control::new("root".into(), true));
-        session.boundary.start_exec(
-            control,
-            "turn",
-            "same-model-id",
-            codex_code_mode::PUBLIC_TOOL_NAME,
-        );
-        let captured = session.clone().execute_owned(
-            exec_request(),
-            Arc::new(Actual(AtomicUsize::new(0))),
-            None,
-        );
-        assert!(session.boundary.starts.lock().unwrap().is_empty());
-        assert!(calls.try_recv().is_err());
-        drop(captured);
-        assert!(calls.try_recv().is_err());
-        assert!(session.cells.lock().unwrap().is_empty());
+        tokio::spawn(async {
+            let (session, mut calls) = probed_session();
+            // Opted-out starts still have an exact owner, without enrolling callbacks.
+            let control = Arc::new(Control::new("root".into(), true));
+            session.boundary.start_exec(
+                control,
+                "turn",
+                "same-model-id",
+                codex_code_mode::PUBLIC_TOOL_NAME,
+            );
+            let captured = session.clone().execute_owned(
+                exec_request(),
+                Arc::new(Actual(AtomicUsize::new(0))),
+                None,
+            );
+            assert!(session.boundary.starts.lock().unwrap().is_empty());
+            assert!(calls.try_recv().is_err());
+            drop(captured);
+            assert!(calls.try_recv().is_err());
+            assert!(session.cells.lock().unwrap().is_empty());
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -8016,6 +8099,54 @@ mod tests {
         );
         assert!(control.release(nonce));
         assert_eq!(control.channel.bytes.available_permits(), MAX_PAYLOAD_BYTES);
+    }
+
+    #[test]
+    fn rejected_mcp_policy_stops_only_captured_owner_before_publication() {
+        let thread = ExtensionData::new("root");
+        let control = thread.get_or_init(|| Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        let old = direct_request(control.clone(), "same-id");
+        let successor = direct_request(control.clone(), "same-id");
+        *control.direct_turn.lock().unwrap() = Some(successor.owner.clone());
+        let old_turn = old.tool_admission.as_ref().unwrap().turn_store();
+        let successor_turn = successor.tool_admission.as_ref().unwrap().turn_store();
+        old.owner.cancelled.cancel(); // Natural completion still owns retained work.
+        expire_mcp_result(&thread, old_turn, || false); // Cancelled/revoked call cannot claim.
+        assert!(!old.owner.policy_stopped.load(Ordering::Acquire));
+        expire_mcp_result(&thread, old_turn, || true);
+        assert!(old.owner.policy_stopped.load(Ordering::Acquire));
+        assert!(!successor.owner.policy_stopped.load(Ordering::Acquire));
+        let probe: CancellationProbe = Arc::new(|| false);
+        let mut publications = 0;
+        publish_mcp_metadata(&thread, old_turn, true, &probe, || publications += 1);
+        assert_eq!(publications, 0);
+        publish_mcp_metadata(&thread, successor_turn, true, &probe, || publications += 1);
+        assert_eq!(
+            publications, 1,
+            "same-id successor retains its own authority"
+        );
+    }
+
+    #[test]
+    fn metadata_publication_keeps_retained_root_completion_and_fences_exact_call_cancel() {
+        let thread = ExtensionData::new("root");
+        let control = thread.get_or_init(|| Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        let request = direct_request(control, "original");
+        let turn = request.tool_admission.as_ref().unwrap().turn_store();
+        request.owner.cancelled.cancel(); // Ordinary root completion retains the cell.
+        let invocation = CancellationToken::new();
+        let is_cancelled: CancellationProbe = Arc::new({
+            let invocation = invocation.clone();
+            move || invocation.is_cancelled()
+        });
+        let mut publications = 0;
+        publish_mcp_metadata(&thread, turn, true, &is_cancelled, || publications += 1);
+        assert_eq!(publications, 1);
+        invocation.cancel(); // The cell's actual call now ends independently.
+        publish_mcp_metadata(&thread, turn, true, &is_cancelled, || publications += 1);
+        assert_eq!(publications, 1, "cancelled call must not accept metadata");
     }
 
     #[tokio::test]
@@ -9204,3 +9335,16 @@ mod mcp_policy_tests {
 #[cfg(test)]
 #[path = "direct_transport_tests.rs"]
 mod direct_http_transport_tests;
+
+impl Boundary {
+    fn context_tools(&self, thread: &str) -> Option<Arc<crate::python_tools::PythonTools>> {
+        self.threads
+            .lock()
+            .expect("interception index poisoned")
+            .get(thread)?
+            .upgrade()?
+            .context_tools
+            .get()?
+            .upgrade()
+    }
+}

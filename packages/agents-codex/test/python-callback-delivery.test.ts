@@ -36,7 +36,7 @@ async function fixture(
     _enter_python_callback: vi.fn((wire: string) => !cancelled.has(wire)),
     _python_callback_cancelled: vi.fn((wire: string) => cancelled.has(wire)),
     _release_python_callback: vi.fn((_wire: string) => true),
-    _check_python_tool: vi.fn(),
+    _check_python_tool: vi.fn(() => true),
     _reply_prepared_request: vi.fn((_wire: string) => true),
     _reply_step: vi.fn((_wire: string) => true),
     _reply_child_step: vi.fn((_wire: string) => true),
@@ -185,6 +185,35 @@ it('aborts only the exact callback and releases it after its actual finally sett
   } finally {
     release.resolve();
     sibling.resolve();
+    await peer.session.close();
+  }
+});
+
+it('does not enter application validation or execution after native admission is denied', async () => {
+  const validate = vi.fn();
+  const execute = vi.fn(() => 'forbidden');
+  const selected = tool({
+    name: 'denied',
+    parameters: z.object({}).superRefine(validate),
+    execute,
+  });
+  const peer = await fixture([selected]);
+  const call = peer.request(0, 'A', '1');
+  peer.native._check_python_tool.mockReturnValue(false);
+  try {
+    peer.emitBatch([call.event]);
+    await vi.waitFor(() =>
+      expect(peer.native._release_python_callback).toHaveBeenCalledWith(
+        call.wire,
+      ),
+    );
+    expect(peer.native._enter_python_callback).toHaveBeenCalledWith(call.wire);
+    expect(peer.native._check_python_tool).toHaveBeenCalled();
+    expect(validate).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(peer.native._respond_python_tool).not.toHaveBeenCalled();
+    await peer.finish();
+  } finally {
     await peer.session.close();
   }
 });

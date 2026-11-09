@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, Config, Feature, StartThreadOptions, ThreadManager};
@@ -38,15 +38,24 @@ pub(crate) use manual::{Continuation, ManualLedger, ManualSlot};
 #[path = "schema_fidelity.rs"]
 mod schema_fidelity;
 
+#[path = "terminal_completion.rs"]
+mod terminal_completion;
+pub(crate) use terminal_completion::{CompletionReply, TerminalProposal, TerminalSlots};
+
+#[path = "context_callbacks.rs"]
+pub(crate) mod context_callbacks;
+
 #[path = "prepared_requests.rs"]
 pub(crate) mod prepared_requests;
 
+#[derive(Clone)]
 struct Entry {
     name: ToolName,
     spec: ToolSpec,
     exposure: ToolExposure,
 }
 
+#[derive(Clone)]
 pub(crate) struct Generation {
     pub(crate) id: u64,
     manual_slots: Option<HashSet<usize>>,
@@ -54,6 +63,7 @@ pub(crate) struct Generation {
     entries: Vec<Entry>,
     specs: Vec<DynamicToolSpec>,
     defaults: Vec<usize>,
+    terminal_slots: HashSet<usize>,
 }
 
 /// Exact manual classification from the same retained declaration capture.
@@ -125,6 +135,13 @@ pub(crate) struct ManualOwner {
     pub(crate) turn: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct NativeMediaContext {
+    pub(crate) model_info: Arc<codex_protocol::openai_models::ModelInfo>,
+    pub(crate) profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy,
+    pub(crate) inline_data_url_low_detail_supported: bool,
+}
+
 /// Physical callback ownership attached to an existing native pending entry.
 struct CallbackRelease {
     receipt: Value,
@@ -167,6 +184,8 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
 }
 
 struct PendingCall {
+    media: Option<NativeMediaContext>,
+    deadline: Option<Arc<codex_extension_api::ModelInvocationDeadlineState>>,
     invocation: u64,
     retired: bool,
     callback: Option<Arc<CallbackRelease>>,
@@ -176,6 +195,14 @@ struct PendingCall {
 }
 
 pub(crate) struct ChildStepSelection;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ContextCallbacks {
+    pub(crate) before_compact: bool,
+    pub(crate) transform_context: bool,
+    pub(crate) before_complete: bool,
+}
 
 #[derive(Clone)]
 struct InheritedProfileSource {
@@ -202,18 +229,20 @@ pub struct PythonTools {
     instance: Option<String>,
     pub(crate) inherit_children: bool,
     child_before_step: bool,
-    before_complete_enabled: bool,
+    context_callbacks: ContextCallbacks,
+    context_control: OnceLock<Weak<crate::native_interception::Control>>,
     manual: Mutex<ManualLedger>,
     selection: Mutex<Option<ActiveSelection>>,
     step_replies: Mutex<HashMap<u64, PendingStep>>,
-    completion_replies: Mutex<HashMap<u64, PendingCompletion>>,
     prepared: Mutex<Option<Arc<prepared_requests::Owner>>>,
+    completion_replies: Mutex<HashMap<u64, terminal_completion::Pending>>,
 }
 
 // The family inbox transports requests; reply authority stays with each issuer.
 enum FamilyRequest {
     Step(Weak<PythonTools>, u64, Value),
     Completion(Weak<PythonTools>, u64, Value),
+    CompletionFailed(Weak<PythonTools>, Weak<crate::turn_settlement::Turn>, Value),
     Prepared(Weak<prepared_requests::Owner>, u64, Value),
     Call(Weak<PythonTools>, PendingKey, Value),
     Callback(Value),
@@ -387,6 +416,29 @@ pub fn checkpoint_specs(specs: &[DynamicToolSpec]) -> Result<Value> {
     Ok(value)
 }
 
+fn preparation_callback_claim(
+    callback: &Arc<CallbackRelease>,
+    operation: &str,
+    closed: bool,
+    cancelled: bool,
+) -> bool {
+    match operation {
+        "enter" => {
+            !closed
+                && !cancelled
+                && !callback.cancelled.load(Ordering::Acquire)
+                && !callback.released.load(Ordering::Acquire)
+                && callback
+                    .entered
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+        }
+        "cancelled" => cancelled || callback.cancelled.load(Ordering::Acquire),
+        "release" => callback.release(),
+        _ => false,
+    }
+}
+
 impl PythonTools {
     fn preparation_callback_operation(
         self: &Arc<Self>,
@@ -417,7 +469,7 @@ impl PythonTools {
         let mut replies = owner.step_replies.lock().expect("Step replies poisoned");
         let Some(pending) = replies.get_mut(&id) else {
             drop(replies);
-            return owner.completion_callback_operation(id, receipt, operation);
+            return owner.terminal_callback_operation(id, receipt, operation);
         };
         let Some(callback) = pending
             .callback
@@ -426,34 +478,17 @@ impl PythonTools {
         else {
             return false;
         };
-        match operation {
-            "enter" => {
-                if pending.reply.is_closed()
-                    || pending
-                        .source_cancellation
-                        .as_ref()
-                        .is_some_and(|token| token.is_cancelled())
-                    || callback.cancelled.load(Ordering::Acquire)
-                    || callback.released.load(Ordering::Acquire)
-                {
-                    return false;
-                }
-                callback
-                    .entered
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            }
-            "cancelled" => {
-                callback.cancelled.load(Ordering::Acquire)
-                    || pending
-                        .source_cancellation
-                        .as_ref()
-                        .is_some_and(|token| token.is_cancelled())
-            }
-            "release" => callback.release(),
-            _ => false,
-        }
+        preparation_callback_claim(
+            callback,
+            operation,
+            pending.reply.is_closed(),
+            pending
+                .source_cancellation
+                .as_ref()
+                .is_some_and(|token| token.is_cancelled()),
+        )
     }
+
     fn cancel_step_callback(&self, turn: &str, callback: &Arc<CallbackRelease>) {
         if !callback.cancelled.swap(true, Ordering::AcqRel) {
             let mut notice =
@@ -485,7 +520,6 @@ impl PythonTools {
         }
     }
     async fn finish_step_callbacks(&self, turn: Option<&str>, cancel: bool) {
-        self.finish_completion_callbacks(turn, cancel).await;
         let callbacks: Vec<_> = {
             let mut replies = self.step_replies.lock().expect("Step replies poisoned");
             replies
@@ -516,6 +550,7 @@ impl PythonTools {
                 replies.remove(&id);
             }
         }
+        self.finish_terminal_callbacks(turn, cancel).await;
     }
 
     pub(crate) fn callback_operation(
@@ -693,6 +728,7 @@ impl PythonTools {
         &self,
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
+        terminal_slots: &[usize],
         defaults: Option<&[usize]>,
         flags: [bool; 4],
         _reuse_initial: bool,
@@ -707,6 +743,12 @@ impl PythonTools {
             );
         }
         generation.manual_slots = Some(manual);
+        for &slot in terminal_slots {
+            ensure!(
+                slot < generation.entries.len() && generation.terminal_slots.insert(slot),
+                "Invalid or duplicate terminal tool slot"
+            );
+        }
         generation.defaults = defaults
             .map(Vec::from)
             .unwrap_or_else(|| (0..generation.entries.len()).collect());
@@ -745,32 +787,38 @@ impl PythonTools {
         source: &ProfileCatalog,
     ) -> Result<ProfileCatalog> {
         let generation = self.snapshot();
-        let names = source
+        let rebind = |slots: &HashSet<usize>| {
+            let names = slots
+                .iter()
+                .map(|&slot| {
+                    source.generation.entries[slot]
+                        .name
+                        .clone()
+                        .with_default_namespace()
+                })
+                .collect::<HashSet<_>>();
+            generation
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, entry)| {
+                    names
+                        .contains(&entry.name.clone().with_default_namespace())
+                        .then_some(slot)
+                })
+                .collect::<Vec<_>>()
+        };
+        let manual = source
             .generation
             .manual_slots
             .as_ref()
-            .into_iter()
-            .flatten()
-            .map(|&slot| {
-                source.generation.entries[slot]
-                    .name
-                    .clone()
-                    .with_default_namespace()
-            })
-            .collect::<HashSet<_>>();
-        let manual = generation
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, entry)| {
-                names
-                    .contains(&entry.name.clone().with_default_namespace())
-                    .then_some(slot)
-            })
-            .collect::<Vec<_>>();
+            .map(&rebind)
+            .unwrap_or_default();
+        let terminal = rebind(&source.generation.terminal_slots);
         self.profile_catalog(
             generation.specs.clone(),
             &manual,
+            &terminal,
             Some(&generation.defaults),
             flags,
             false,
@@ -1091,6 +1139,7 @@ impl PythonTools {
                 entries: Vec::new(),
                 specs: Vec::new(),
                 defaults: Vec::new(),
+                terminal_slots: HashSet::new(),
             })),
             generation_high_water: AtomicU64::new(0),
             profile_catalogs: RwLock::new(HashMap::new()),
@@ -1109,19 +1158,20 @@ impl PythonTools {
                     .config
                     .features
                     .enabled(Feature::MultiAgentV2DynamicTools),
-            before_complete_enabled: startup
-                .thread_extension_init
-                .get::<CompletionCallback>()
-                .is_some(),
             child_before_step: startup
                 .thread_extension_init
                 .get::<ChildStepSelection>()
                 .is_some(),
+            context_control: OnceLock::new(),
+            context_callbacks: startup
+                .thread_extension_init
+                .get::<ContextCallbacks>()
+                .map_or_else(ContextCallbacks::default, |flags| *flags),
             manual: Mutex::new(ManualLedger::default()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
-            completion_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
+            completion_replies: Mutex::default(),
         };
         let seed = Arc::new(tools.prepare(0, specs)?);
         tools.schema_receipts.register(&seed);
@@ -1199,12 +1249,13 @@ impl PythonTools {
             instance: Some(instance),
             inherit_children: parent.inherit_children,
             child_before_step: parent.child_before_step,
-            before_complete_enabled: parent.before_complete_enabled,
+            context_control: OnceLock::new(),
+            context_callbacks: parent.context_callbacks,
             manual: Mutex::new(parent.child_manual_ledger()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
-            completion_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
+            completion_replies: Mutex::default(),
         };
         // Validate the inherited catalog against this child's current ceiling.
         let parent_generation = spawning_step
@@ -1214,6 +1265,7 @@ impl PythonTools {
         let mut generation =
             child.prepare(parent_generation.id, parent_generation.specs.clone())?;
         generation.defaults = parent_generation.defaults.clone();
+        generation.terminal_slots = parent_generation.terminal_slots.clone();
         generation.manual_slots = parent_generation.manual_slots.clone();
         let generation = Arc::new(generation);
         child.schema_receipts.register(&generation);
@@ -1289,6 +1341,7 @@ impl PythonTools {
             defaults: (0..entries.len()).collect(),
             entries,
             specs,
+            terminal_slots: HashSet::new(),
         })
     }
 
@@ -1323,6 +1376,7 @@ impl PythonTools {
         );
         let mut seed = self.prepare(original.id, current.specs.clone())?;
         seed.defaults = original.defaults.clone();
+        seed.terminal_slots = current.terminal_slots.clone();
         let seed = Arc::new(seed);
         self.schema_receipts.register(&seed);
         *current = seed;
@@ -1354,14 +1408,35 @@ impl PythonTools {
         id: u64,
         specs: Vec<DynamicToolSpec>,
         defaults: Option<Vec<usize>>,
+        terminal: Option<TerminalSlots>,
     ) -> Result<u64> {
-        if let Some(id) =
-            crate::agent_profiles::replace_tools(thread, id, specs.clone(), defaults.clone())
-                .await?
+        let terminal_slots = if let Some(config) = terminal {
+            ensure!(
+                config.generation == id.to_string(),
+                "Expired terminal replacement generation"
+            );
+            config.slots
+        } else {
+            Vec::new()
+        };
+        if let Some(id) = crate::agent_profiles::replace_tools(
+            thread,
+            id,
+            specs.clone(),
+            defaults.clone(),
+            &terminal_slots,
+        )
+        .await?
         {
             return Ok(id);
         }
         let mut candidate = self.prepare(id, specs)?;
+        for slot in terminal_slots {
+            ensure!(
+                slot < candidate.entries.len() && candidate.terminal_slots.insert(slot),
+                "Invalid terminal tool slot"
+            );
+        }
         if let Some(defaults) = defaults {
             validate_selection(&defaults, &(0..candidate.entries.len()).collect::<Vec<_>>())?;
             candidate.defaults = defaults;
@@ -1446,6 +1521,27 @@ impl PythonTools {
         Ok(())
     }
 
+    // Private callback delivery/admission may deny ended work. Strict checkpoint checks above remain unchanged.
+    pub(crate) fn admit_callback(&self, owner: &str, key: &PendingKey) -> Result<bool> {
+        ensure!(
+            key.reply.thread == owner
+                && key.reply.instance == self.instance
+                && self.resolve_generation(key.reply.generation).is_some(),
+            "Expired or invalid managed JavaScript tool request"
+        );
+        let pending = self.pending.lock().expect("JavaScript replies poisoned");
+        let Some(call) = pending.get(key) else {
+            return Ok(false);
+        };
+        if call.retired || call.sender.is_closed() {
+            return Ok(false);
+        }
+        Ok(match &call.deadline {
+            Some(state) => state.admit(|| true).unwrap_or(false),
+            None => true,
+        })
+    }
+
     fn snapshot(&self) -> Arc<Generation> {
         self.current
             .read()
@@ -1464,27 +1560,23 @@ impl PythonTools {
         let mut receiver = self.family.receiver.lock().await;
         loop {
             match receiver.recv().await {
-                Some(FamilyRequest::Callback(request)) => return request,
-                Some(FamilyRequest::Completion(owner, id, request)) => {
-                    if owner.upgrade().is_some_and(|owner| {
-                        if owner.instance.is_some()
-                            && !request["msg"]["thread"].as_str().is_some_and(|thread| {
-                                self.exact_owner("", thread, &owner.instance)
-                                    .is_some_and(|current| Arc::ptr_eq(&current, &owner))
-                            })
-                        {
-                            return false;
-                        }
-                        owner
-                            .completion_replies
-                            .lock()
-                            .expect("Completion replies poisoned")
-                            .get(&id)
-                            .is_some_and(|pending| owner.completion_live(pending))
-                    }) {
+                Some(FamilyRequest::CompletionFailed(owner, turn, request)) => {
+                    if let (Some(owner), Some(turn)) = (owner.upgrade(), turn.upgrade())
+                        && owner.failed_tool_notice_current(&turn, &request)
+                    {
+                        turn.deliver_tool_failure();
                         return request;
                     }
                 }
+                Some(FamilyRequest::Completion(owner, id, request)) => {
+                    if owner
+                        .upgrade()
+                        .is_some_and(|owner| owner.completion_queued(id))
+                    {
+                        return request;
+                    }
+                }
+                Some(FamilyRequest::Callback(request)) => return request,
                 Some(FamilyRequest::Prepared(owner, id, request)) => {
                     if owner.upgrade().is_some_and(|owner| owner.queued(id)) {
                         return request;
@@ -1552,6 +1644,20 @@ impl PythonTools {
         }
     }
 
+    /// Data from the exact native pending receipt, never SDK-observed call metadata.
+    // Match take_reply liveness without consuming the exact sender. Some(None)
+    // is a valid pending text reply; None is a missing or already-taken reply.
+    // Entered effects may still settle after a model deadline, so this is not
+    // the callback admission gate.
+    pub(crate) fn native_media(&self, key: &PendingKey) -> Option<Option<NativeMediaContext>> {
+        self.pending
+            .lock()
+            .expect("managed replies poisoned")
+            .get(key)
+            .filter(|call| call.callback.is_none() || !call.sender.is_closed())
+            .map(|call| call.media.clone())
+    }
+
     // Take the live sender only once. The binding retains it while its writer
     // commits the real result; a failed commit cannot be mistaken for success.
     pub(crate) fn take_reply(
@@ -1583,9 +1689,12 @@ impl PythonTools {
         arguments: Value,
         source: &ToolCallSource,
         model: &str,
+        media: Option<NativeMediaContext>,
+        admission: Option<Arc<crate::turn_settlement::Turn>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
-            thread, generation, slot, turn, call, arguments, source, model, None, None,
+            thread, generation, slot, turn, call, arguments, source, model, media, admission, None,
+            None,
         )
     }
 
@@ -1599,6 +1708,8 @@ impl PythonTools {
         arguments: Value,
         source: &ToolCallSource,
         model: &str,
+        media: Option<NativeMediaContext>,
+        admission: Option<Arc<crate::turn_settlement::Turn>>,
         profile: Option<&codex_extension_api::AgentProfileReceipt>,
         manual: Option<bool>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
@@ -1680,10 +1791,12 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    media,
                     invocation,
                     retired: false,
                     callback,
                     _tracing: tracing,
+                    deadline: admission.and_then(|turn| turn.capture_model_deadline()),
                     sender,
                     manual_request: key.reply.manual_grant.as_ref().map(|_| request.clone()),
                 },
@@ -1733,6 +1846,8 @@ pub struct PythonContributor {
 
 // Presentation follows the current model; it never grants a tool.
 struct ModelPresentation {
+    // Captured from the original turn before model preparation, never resolved by wire ID.
+    admission: Option<Arc<crate::turn_settlement::Turn>>,
     use_deferred_specs: bool,
 }
 
@@ -1787,6 +1902,15 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
                     }
                 }
             }
+            if let (Some(control), Some(tools)) = (
+                input
+                    .thread_store
+                    .get::<crate::native_interception::Control>(),
+                input.thread_store.get::<PythonTools>(),
+            ) {
+                control.bind_context_tools(&tools);
+                let _ = tools.context_control.set(Arc::downgrade(&control));
+            }
         })
     }
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
@@ -1805,6 +1929,7 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
                 tools.finish_callbacks(None, None, true).await;
                 tools.finish_step_callbacks(None, true).await;
                 tools.retire_preparation(None);
+                tools.retire_tool_completion(None);
                 tools.retire_manual_wait();
                 tools
                     .step_replies
@@ -1873,12 +1998,12 @@ struct PendingStep {
     turn: String,
     generation: u64,
     allowed: Vec<ToolName>,
-    reply: oneshot::Sender<Option<Vec<ToolName>>>,
+    reply: context_callbacks::PreparationReply,
 }
-fn closed_step_sender() -> oneshot::Sender<Option<Vec<ToolName>>> {
+fn closed_step_sender() -> context_callbacks::PreparationReply {
     let (sender, receiver) = oneshot::channel();
     drop(receiver);
-    sender
+    context_callbacks::PreparationReply::Selection(sender)
 }
 fn take_pending_step(replies: &mut HashMap<u64, PendingStep>, id: u64) -> Option<PendingStep> {
     let pending = replies.remove(&id)?;
@@ -1910,6 +2035,7 @@ pub(crate) struct StepReply {
     names: Option<Vec<ToolName>>,
 }
 struct StepCatalog {
+    receipts: Arc<Mutex<HashSet<PendingKey>>>,
     generation: Arc<Generation>,
     use_deferred_specs: bool,
     slots: Vec<usize>,
@@ -1986,18 +2112,8 @@ impl Drop for StepWait {
 
 impl PythonTools {
     fn retire_selection(&self, turn: &str) {
-        let ids: Vec<_> = self
-            .completion_replies
-            .lock()
-            .expect("Completion replies poisoned")
-            .iter()
-            .filter(|(_, pending)| pending.turn == turn)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            self.retire_completion(id);
-        }
         self.retire_preparation(Some(turn));
+        self.retire_tool_completion(Some(turn));
         let mut active = self
             .selection
             .lock()
@@ -2078,7 +2194,13 @@ impl PythonTools {
             && self.resolve_generation(pending.generation).is_some()
             && !pending.reply.is_closed()
             && if let Some(cancellation) = &pending.source_cancellation {
-                active.is_none() && !cancellation.is_cancelled()
+                !cancellation.is_cancelled()
+                    && (active.is_none()
+                        || (!pending.reply.is_selection()
+                            && active.is_some_and(|active| {
+                                active.turn == pending.turn
+                                    && active.generation.id == pending.operation_generation
+                            })))
             } else {
                 active.is_some_and(|active| {
                     active.turn == pending.turn
@@ -2118,7 +2240,8 @@ impl PythonTools {
                 .lock()
                 .expect("JavaScript step replies poisoned");
             if !replies.get(&id).is_some_and(|pending| {
-                self.step_matches(owner, &response, active.as_ref(), pending)
+                pending.reply.is_selection()
+                    && self.step_matches(owner, &response, active.as_ref(), pending)
             }) {
                 return Ok(false);
             }
@@ -2162,14 +2285,21 @@ impl PythonTools {
 
     pub(crate) fn reply_step(&self, owner: &str, response: StepReply) -> Result<()> {
         let id = response.request_id.parse::<u64>()?;
-        let pending = take_pending_step(
-            &mut self
+        let pending = {
+            let mut replies = self
                 .step_replies
                 .lock()
-                .expect("JavaScript step replies poisoned"),
-            id,
-        )
-        .ok_or_else(|| anyhow::anyhow!("Expired step selection"))?;
+                .expect("JavaScript step replies poisoned");
+            // A legacy selection reply must never consume another callback kind.
+            ensure!(
+                !replies
+                    .get(&id)
+                    .is_some_and(|pending| !pending.reply.is_selection()),
+                "Invalid selection reply kind"
+            );
+            take_pending_step(&mut replies, id)
+                .ok_or_else(|| anyhow::anyhow!("Expired step selection"))?
+        };
         // Taking the sender consumes this receipt even when validation fails.
         ensure!(
             response.thread == owner
@@ -2218,7 +2348,10 @@ impl PythonTools {
             validate_names(names, &pending.allowed)?;
         }
         let names = names.map(|names| expand_step_helpers(names, &pending.allowed));
-        Ok(pending.reply.send(names).is_ok())
+        let context_callbacks::PreparationReply::Selection(reply) = pending.reply else {
+            anyhow::bail!("Invalid selection reply kind");
+        };
+        Ok(reply.send(names).is_ok())
     }
 }
 
@@ -2239,6 +2372,7 @@ impl PythonContributor {
         generation: Arc<Generation>,
         use_deferred_specs: bool,
         slots: &[usize],
+        receipts: Option<Arc<Mutex<HashSet<PendingKey>>>>,
         profile: Option<codex_extension_api::AgentProfileReceipt>,
         manual: Option<Arc<CapturedManualTools>>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
@@ -2247,12 +2381,16 @@ impl PythonContributor {
             .copied()
             .map(|slot| {
                 Arc::new(PythonExecutor {
+                    admission: thread
+                        .get::<ModelPresentation>()
+                        .and_then(|state| state.admission.clone()),
                     profile: profile.clone(),
                     manual: manual.clone(),
                     thread: thread.level_id().to_string(),
                     tools: tools.clone(),
                     generation: generation.clone(),
                     slot,
+                    receipts: receipts.clone(),
                     use_deferred_specs,
                     code_mode_enabled: self.code_mode_enabled,
                 }) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>
@@ -2563,6 +2701,7 @@ impl ToolContributor for PythonContributor {
             &generation.defaults,
             None,
             None,
+            None,
         )
     }
 
@@ -2627,6 +2766,7 @@ impl ToolContributor for PythonContributor {
                 }
             };
             StepCatalog {
+                receipts: Arc::default(),
                 generation,
                 slots,
                 use_deferred_specs: thread
@@ -2650,6 +2790,7 @@ impl ToolContributor for PythonContributor {
             snapshot.generation.clone(),
             snapshot.use_deferred_specs,
             &snapshot.slots,
+            Some(snapshot.receipts.clone()),
             profile,
             manual,
         )
@@ -2785,7 +2926,7 @@ impl ToolContributor for PythonContributor {
                                 .map_or(generation.id, |active| active.generation.id),
                             generation: generation.id,
                             allowed: allowed.clone(),
-                            reply,
+                            reply: context_callbacks::PreparationReply::Selection(reply),
                         },
                     );
             }
@@ -2902,6 +3043,7 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    admission: Option<Arc<crate::turn_settlement::Turn>>,
     manual: Option<Arc<CapturedManualTools>>,
     profile: Option<codex_extension_api::AgentProfileReceipt>,
     thread: String,
@@ -2910,6 +3052,7 @@ struct PythonExecutor {
     slot: usize,
     use_deferred_specs: bool,
     code_mode_enabled: bool,
+    receipts: Option<Arc<Mutex<HashSet<PendingKey>>>>,
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
@@ -3004,6 +3147,13 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     arguments,
                     &call.source,
                     &call.model,
+                    Some(NativeMediaContext {
+                        model_info: Arc::clone(&call.model_info),
+                        profile: call.provider_reference_profile,
+                        inline_data_url_low_detail_supported: call
+                            .inline_data_url_low_detail_supported,
+                    }),
+                    self.admission.clone(),
                     self.profile.as_ref(),
                     self.manual
                         .as_ref()
@@ -3039,6 +3189,17 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     ));
                 }
             };
+            if response.response.success
+                && call.source == ToolCallSource::Direct
+                && self.tools.admits_generation(&self.generation)
+                && self.tools.current_completion_owner(&self.thread)
+                && let Some(receipts) = &self.receipts
+            {
+                receipts
+                    .lock()
+                    .expect("JavaScript completion receipts poisoned")
+                    .insert(key);
+            }
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),
                 start_response: response.start_response,
@@ -3091,6 +3252,30 @@ impl ToolLifecycleContributor for PythonContributor {
 }
 
 impl TurnLifecycleContributor for PythonContributor {
+    fn before_turn_complete<'a>(
+        &'a self,
+        input: codex_extension_api::TurnCompletionInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+        Box::pin(async move {
+            let Some(tools) = input.thread_store.get::<PythonTools>() else {
+                return Ok(None);
+            };
+            tools
+                .before_complete(input)
+                .await
+                .map_err(|_| "Completion callback failed".to_owned())
+        })
+    }
+
+    fn propose_tool_completion<'a>(
+        &'a self,
+        input: codex_extension_api::ToolCompletionInput<'a>,
+    ) -> ExtensionFuture<
+        'a,
+        std::result::Result<Option<codex_extension_api::ToolCompletionDecision>, String>,
+    > {
+        Box::pin(terminal_completion::propose(input))
+    }
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
@@ -3110,9 +3295,10 @@ impl TurnLifecycleContributor for PythonContributor {
                 } else {
                     false
                 };
-                input
-                    .thread_store
-                    .insert(ModelPresentation { use_deferred_specs });
+                input.thread_store.insert(ModelPresentation {
+                    admission: input.turn_store.get::<crate::turn_settlement::Turn>(),
+                    use_deferred_specs,
+                });
                 let operation = input.turn_store.get::<Option<OperationSelection>>();
                 let selection = tools
                     .turn_selection(input.turn_id, operation.as_deref().and_then(Option::as_ref));
@@ -3144,6 +3330,7 @@ impl TurnLifecycleContributor for PythonContributor {
                     .expect("JavaScript step replies poisoned")
                     .retain(|_, pending| pending.turn != input.turn_store.level_id());
                 tools.retire_preparation(Some(input.turn_store.level_id()));
+                tools.retire_tool_completion(Some(input.turn_store.level_id()));
                 tools.stop_native_manual_turn(input);
             }
         })
@@ -3383,6 +3570,8 @@ mod pending_tests {
                 &ToolCallSource::Direct,
                 "fixture-model",
                 None,
+                None,
+                None,
                 Some(manual.slots.contains(&0)),
             )
             .unwrap();
@@ -3421,6 +3610,7 @@ mod pending_tests {
                 entries: Vec::new(),
                 specs: Vec::new(),
                 defaults: Vec::new(),
+                terminal_slots: HashSet::new(),
             })),
             generation_high_water: AtomicU64::new(0),
             profile_catalogs: RwLock::new(HashMap::new()),
@@ -3433,12 +3623,13 @@ mod pending_tests {
             instance: None,
             inherit_children: true,
             child_before_step: false,
-            before_complete_enabled: false,
+            context_control: OnceLock::new(),
+            context_callbacks: ContextCallbacks::default(),
             manual: Mutex::default(),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
-            completion_replies: Mutex::new(HashMap::new()),
             prepared: Mutex::new(None),
+            completion_replies: Mutex::default(),
         });
         let specs = vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
             name: "decision".into(),
@@ -3449,6 +3640,96 @@ mod pending_tests {
         *tools.current.write().unwrap() = Arc::new(tools.prepare(0, specs).unwrap());
         configure(&tools);
         tools
+    }
+
+    #[tokio::test]
+    async fn native_receipt_metadata_does_not_reopen_a_consumed_sender() {
+        let tools = tools();
+        let model = Arc::new(codex_models_manager::model_info::model_info_from_slug(
+            "gpt-5.5",
+        ));
+        let context = NativeMediaContext {
+            model_info: Arc::clone(&model),
+            profile: codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses,
+            inline_data_url_low_detail_supported: true,
+        };
+        let source = ToolCallSource::CodeMode {
+            cell_id: "1".into(),
+            runtime_tool_call_id: "nested".into(),
+        };
+        let (key, _receive) = tools
+            .enqueue(
+                "root",
+                &tools.snapshot(),
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &source,
+                "gpt-5.5",
+                Some(context),
+                None,
+            )
+            .unwrap();
+        // The existing pending owner retains data without a live root-turn query.
+        let captured = tools.native_media(&key).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&captured.model_info, &model));
+        assert!(captured.inline_data_url_low_detail_supported);
+        let _sender = tools.take_reply("root", &key).unwrap().unwrap();
+        assert!(tools.native_media(&key).is_none());
+        assert!(tools.take_reply("root", &key).unwrap().is_none());
+        // A detached metadata clone still carries no publication capability.
+        assert_eq!(captured.model_info.slug, "gpt-5.5");
+    }
+
+    #[tokio::test]
+    async fn pending_text_media_is_distinct_from_an_expired_media_reply() {
+        let tools = tools();
+        let (key, _receiver) = tools
+            .enqueue(
+                "root",
+                &tools.snapshot(),
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &ToolCallSource::Direct,
+                "gpt-5.5",
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(tools.native_media(&key), Some(None)));
+        let sender = tools.take_reply("root", &key).unwrap().unwrap();
+        assert!(tools.native_media(&key).is_none());
+        assert!(tools.take_reply("root", &key).unwrap().is_none());
+        drop(sender);
+
+        let (cancelled, receiver) = tools
+            .enqueue(
+                "root",
+                &tools.snapshot(),
+                0,
+                "turn",
+                "cancelled",
+                json!({}),
+                &ToolCallSource::Direct,
+                "gpt-5.5",
+                None,
+                None,
+            )
+            .unwrap();
+        tools
+            .pending
+            .lock()
+            .unwrap()
+            .get_mut(&cancelled)
+            .unwrap()
+            .callback = Some(CallbackRelease::new(json!({})));
+        assert!(matches!(tools.native_media(&cancelled), Some(None)));
+        drop(receiver);
+        assert!(tools.native_media(&cancelled).is_none());
+        assert!(tools.take_reply("root", &cancelled).unwrap().is_none());
     }
 
     fn configure(tools: &PythonTools) {
@@ -3482,6 +3763,8 @@ mod pending_tests {
                 json!({}),
                 &ToolCallSource::Direct,
                 "model",
+                None,
+                None,
             )
             .unwrap();
         assert!(
@@ -3495,6 +3778,8 @@ mod pending_tests {
                     json!({}),
                     &ToolCallSource::Direct,
                     "model",
+                    None,
+                    None,
                 )
                 .is_err()
         );
@@ -3556,6 +3841,8 @@ mod pending_tests {
                 json!({}),
                 &ToolCallSource::Direct,
                 "model",
+                None,
+                None,
             )
             .unwrap();
         let first = tools.next_request().await;
@@ -3573,6 +3860,8 @@ mod pending_tests {
                 json!({}),
                 &ToolCallSource::Direct,
                 "model",
+                None,
+                None,
             )
             .unwrap();
         let _ = tools.next_request().await;
@@ -3621,6 +3910,7 @@ mod pending_tests {
                     generation,
                     slots: vec![0],
                     use_deferred_specs: false,
+                    receipts: Default::default(),
                 });
                 let candidates = vec![ToolName::plain("decision")];
                 let contributor = PythonContributor::default();
@@ -3693,6 +3983,8 @@ mod pending_tests {
                 json!({"value":"a"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
+                None,
             )
             .unwrap();
         let (b, _b_receiver) = tools
@@ -3705,6 +3997,8 @@ mod pending_tests {
                 json!({"value":"b"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
+                None,
             )
             .unwrap();
         assert_eq!(a.call, b.call);
@@ -3743,6 +4037,8 @@ mod pending_tests {
                 json!({"value":"original"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
+                None,
             )
             .unwrap();
         let guard = PendingReply {
@@ -3772,6 +4068,8 @@ mod pending_tests {
             json!({"value":"never published"}),
             &ToolCallSource::Direct,
             "fixture-model",
+            None,
+            None,
         );
         assert!(result.is_err());
         assert!(tools.pending.lock().unwrap().is_empty());
@@ -3791,6 +4089,8 @@ mod pending_tests {
                 json!({"value":"old"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
+                None,
             )
             .unwrap();
         let invocation = tools.pending.lock().unwrap().get(&old).unwrap().invocation;
@@ -3819,6 +4119,8 @@ mod pending_tests {
                 json!({"value":"new"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
+                None,
             )
             .unwrap();
         assert!(!tools.manual_tool_current("root", &old));
@@ -3849,6 +4151,8 @@ mod pending_tests {
                 json!({"value":"old"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
+                None,
             )
             .unwrap();
         assert!(root.owner("root", &old_key).is_some());
@@ -3869,6 +4173,8 @@ mod pending_tests {
                 json!({"value":"new"}),
                 &ToolCallSource::Direct,
                 "fixture-model",
+                None,
+                None,
             )
             .unwrap();
         // Keep the old Arc and receiver alive: family selection, not memory
@@ -3916,7 +4222,7 @@ mod pending_tests {
                 turn: "turn".into(),
                 generation: 0,
                 allowed: vec![tools.snapshot().entries[0].name.clone()],
-                reply,
+                reply: context_callbacks::PreparationReply::Selection(reply),
             },
         );
         receive
@@ -4048,7 +4354,7 @@ mod pending_tests {
                 turn: "child-turn".into(),
                 generation: 0,
                 allowed: vec![ToolName::plain("decision")],
-                reply,
+                reply: context_callbacks::PreparationReply::Selection(reply),
             },
         );
         let mut response = StepReply {
@@ -4746,7 +5052,7 @@ mod pending_tests {
                     turn: "next".into(),
                     generation: 0,
                     allowed: vec![tools.snapshot().entries[0].name.clone()],
-                    reply,
+                    reply: context_callbacks::PreparationReply::Selection(reply),
                 },
             );
             (receive, 8)
@@ -4763,6 +5069,113 @@ mod pending_tests {
                 .is_ok()
         );
         assert_eq!(tools.next_request().await, json!({"id":"successor"}));
+    }
+
+    #[test]
+    fn callback_admission_accepts_only_a_live_captured_profile_and_exact_pending_owner() {
+        let tools = tools();
+        let source = tools
+            .profile_catalog(
+                tools.snapshot().specs.clone(),
+                &[],
+                &[],
+                None,
+                [false; 4],
+                false,
+            )
+            .unwrap();
+        assert_ne!(source.generation.id, tools.snapshot().id);
+        let (key, receive) = tools
+            .enqueue(
+                "root",
+                &source.generation,
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &ToolCallSource::Direct,
+                "model",
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(tools.admit_callback("root", &key).unwrap());
+        assert!(tools.admit_callback("another-root", &key).is_err());
+        let mut changed = key.clone();
+        changed.reply.generation = source.generation.id + 1;
+        assert!(tools.admit_callback("root", &changed).is_err());
+        drop(receive);
+        assert!(!tools.admit_callback("root", &key).unwrap());
+        tools.pending.lock().unwrap().remove(&key);
+        assert!(!tools.admit_callback("root", &key).unwrap());
+        drop(source);
+        assert!(tools.admit_callback("root", &key).is_err());
+    }
+
+    #[test]
+    fn captured_profile_terminal_slots_survive_startup_and_idempotent_configuration() {
+        let tools = tools();
+        let source = tools
+            .profile_catalog(
+                tools.snapshot().specs.clone(),
+                &[],
+                &[0],
+                None,
+                [false; 4],
+                false,
+            )
+            .unwrap();
+        let default = tools.snapshot();
+        tools
+            .configure_terminal(TerminalSlots {
+                generation: source.generation.id.to_string(),
+                slots: vec![0],
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&default, &tools.snapshot()));
+        assert!(
+            tools
+                .configure_terminal(TerminalSlots {
+                    generation: source.generation.id.to_string(),
+                    slots: vec![],
+                })
+                .is_err()
+        );
+        assert_eq!(source.generation.terminal_slots, HashSet::from([0]));
+        *tools.current.write().unwrap() = Arc::clone(&source.generation);
+        tools
+            .configure_terminal(TerminalSlots {
+                generation: source.generation.id.to_string(),
+                slots: vec![0],
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&source.generation, &tools.snapshot()));
+        let startup = tools.startup_profile_catalog([false; 4], &source).unwrap();
+        assert_eq!(startup.generation.terminal_slots, HashSet::from([0]));
+        assert!(
+            tools
+                .profile_catalog(
+                    tools.snapshot().specs.clone(),
+                    &[],
+                    &[1],
+                    None,
+                    [false; 4],
+                    false
+                )
+                .is_err()
+        );
+        assert!(
+            tools
+                .profile_catalog(
+                    tools.snapshot().specs.clone(),
+                    &[],
+                    &[0, 0],
+                    None,
+                    [false; 4],
+                    false
+                )
+                .is_err()
+        );
     }
 }
 
@@ -4866,273 +5279,3 @@ mod declaration_validation_tests {
 #[cfg(test)]
 #[path = "web_search_tests.rs"]
 mod web_search_tests;
-
-/// Private startup marker; profile callbacks use their captured catalog instead.
-pub(crate) struct CompletionCallback;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CompletionReply {
-    pub(crate) thread: String,
-    pub(crate) instance: Option<String>,
-    pub(crate) turn_id: String,
-    pub(crate) generation: String,
-    pub(crate) request_id: String,
-    pub(crate) instructions: Option<String>,
-    #[serde(default)]
-    pub(crate) error: bool,
-}
-struct PendingCompletion {
-    thread: String,
-    turn: String,
-    generation: Arc<Generation>,
-    stop: Arc<crate::native_interception::CapturedTurnStop>,
-    callback: Arc<CallbackRelease>,
-    reply: Option<oneshot::Sender<std::result::Result<Option<String>, ()>>>,
-}
-struct CompletionWait {
-    tools: Arc<PythonTools>,
-    id: u64,
-}
-impl Drop for CompletionWait {
-    fn drop(&mut self) {
-        self.tools.retire_completion(self.id);
-    }
-}
-impl PythonTools {
-    fn completion_live(&self, pending: &PendingCompletion) -> bool {
-        pending
-            .reply
-            .as_ref()
-            .is_some_and(|reply| !reply.is_closed())
-            && pending.stop.admitted()
-            && self.admits_generation(&pending.generation)
-    }
-    fn completion_matches(&self, pending: &PendingCompletion, response: &CompletionReply) -> bool {
-        pending.thread == response.thread
-            && self.instance == response.instance
-            && pending.turn == response.turn_id
-            && pending.generation.id.to_string() == response.generation
-            && self.completion_live(pending)
-    }
-    pub(crate) fn check_completion(&self, response: &CompletionReply) -> Result<bool> {
-        let id = response.request_id.parse::<u64>()?;
-        Ok(self
-            .completion_replies
-            .lock()
-            .expect("Completion replies poisoned")
-            .get(&id)
-            .is_some_and(|pending| self.completion_matches(pending, response)))
-    }
-    pub(crate) fn reply_completion(&self, response: CompletionReply) -> Result<()> {
-        let id = response.request_id.parse::<u64>()?;
-        let mut replies = self
-            .completion_replies
-            .lock()
-            .expect("Completion replies poisoned");
-        let pending = replies.get_mut(&id).context("Expired completion owner")?;
-        ensure!(
-            self.completion_matches(pending, &response),
-            "Expired completion owner"
-        );
-        let reply = pending.reply.take().context("Expired completion owner")?;
-        let result = if response.error {
-            Err(())
-        } else {
-            Ok(response.instructions)
-        };
-        reply
-            .send(result)
-            .map_err(|_| anyhow::anyhow!("Completion callback cancelled"))
-    }
-    pub(crate) fn stop_completion(&self, response: &CompletionReply) -> Result<bool> {
-        let id = response.request_id.parse::<u64>()?;
-        let stop = {
-            let mut replies = self
-                .completion_replies
-                .lock()
-                .expect("Completion replies poisoned");
-            let Some(pending) = replies
-                .get_mut(&id)
-                .filter(|pending| self.completion_matches(pending, response))
-            else {
-                return Ok(false);
-            };
-            if let Some(reply) = pending.reply.take() {
-                let _ = reply.send(Err(()));
-            }
-            self.cancel_step_callback(&pending.turn, &pending.callback);
-            pending.stop.clone()
-        };
-        stop.stop();
-        Ok(true)
-    }
-    fn completion_callback_operation(&self, id: u64, receipt: &Value, operation: &str) -> bool {
-        let replies = self
-            .completion_replies
-            .lock()
-            .expect("Completion replies poisoned");
-        let Some(pending) = replies
-            .get(&id)
-            .filter(|pending| pending.callback.receipt == *receipt)
-        else {
-            return false;
-        };
-        let callback = &pending.callback;
-        match operation {
-            "enter" => {
-                self.completion_live(pending)
-                    && !callback.cancelled.load(Ordering::Acquire)
-                    && !callback.released.load(Ordering::Acquire)
-                    && callback
-                        .entered
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-            }
-            "cancelled" => callback.cancelled.load(Ordering::Acquire) || !pending.stop.admitted(),
-            "release" => callback.release(),
-            _ => false,
-        }
-    }
-    fn retire_completion(&self, id: u64) {
-        let mut replies = self
-            .completion_replies
-            .lock()
-            .expect("Completion replies poisoned");
-        if let Some(pending) = replies.get_mut(&id) {
-            pending.reply.take();
-            self.cancel_step_callback(&pending.turn, &pending.callback);
-            if pending.callback.released.load(Ordering::Acquire) {
-                replies.remove(&id);
-            }
-        }
-    }
-    async fn finish_completion_callbacks(&self, turn: Option<&str>, cancel: bool) {
-        let callbacks: Vec<_> = {
-            let mut replies = self
-                .completion_replies
-                .lock()
-                .expect("Completion replies poisoned");
-            replies
-                .iter_mut()
-                .filter(|(_, pending)| turn.is_none_or(|turn| pending.turn == turn))
-                .map(|(id, pending)| {
-                    if cancel {
-                        pending.reply.take();
-                        self.cancel_step_callback(&pending.turn, &pending.callback);
-                    }
-                    if !pending.callback.entered.load(Ordering::Acquire) {
-                        pending.callback.release();
-                    }
-                    (*id, pending.callback.clone())
-                })
-                .collect()
-        };
-        for (id, callback) in callbacks {
-            callback.wait().await;
-            self.completion_replies
-                .lock()
-                .expect("Completion replies poisoned")
-                .remove(&id);
-        }
-    }
-    pub(crate) async fn before_complete(
-        self: &Arc<Self>,
-        input: codex_extension_api::TurnCompletionInput<'_>,
-    ) -> Result<Option<String>> {
-        let catalog = self.source_catalog(Some(input.step_store))?;
-        if !catalog
-            .as_ref()
-            .map_or(self.before_complete_enabled, |catalog| {
-                catalog.before_complete
-            })
-        {
-            return Ok(None);
-        }
-        let generation = self.generation_for_step(Some(input.step_store))?;
-        let profile = self.source_profile(Some(input.step_store))?;
-        let stop = crate::native_interception::capture_completion_stop(
-            input.thread_store,
-            input.turn_store,
-        )
-        .context("Completion owner unavailable")?;
-        let id = self
-            .family
-            .next_step
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
-            .map_err(|_| anyhow::anyhow!("Completion nonce exhausted"))?;
-        let mut receipt = json!({"kind":"preparation","thread":input.thread_store.level_id(),"id":id.to_string()});
-        if let Some(instance) = &self.instance {
-            receipt["instance"] = json!(instance);
-        }
-        let callback = CallbackRelease::new(receipt.clone());
-        let (reply, receive) = oneshot::channel();
-        self.completion_replies
-            .lock()
-            .expect("Completion replies poisoned")
-            .insert(
-                id,
-                PendingCompletion {
-                    thread: input.thread_store.level_id().to_owned(),
-                    turn: input.turn_id.to_owned(),
-                    generation: generation.clone(),
-                    stop: stop.clone(),
-                    callback: callback.clone(),
-                    reply: Some(reply),
-                },
-            );
-        let _wait = CompletionWait {
-            tools: self.clone(),
-            id,
-        };
-        let tracing = if self.instance.is_some() {
-            input
-                .turn_store
-                .get::<codex_otel::sdk_trace::CapturedContext>()
-                .and_then(|captured| captured.context.clone())
-        } else {
-            codex_otel::sdk_trace::ContextLease::capture().map(Arc::new)
-        };
-        let mut request = json!({"id":input.turn_id,"msg":{
-            "type":"_sdk_before_complete","turn_id":input.turn_id,"thread":input.thread_store.level_id(),
-            "instance":self.instance,"request_id":id.to_string(),"step_id":id.to_string(),"generation":generation.id.to_string(),
-            "model":input.model,"text":input.last_assistant_message,"continuation_count":input.continuation_count,"_sdk_callback":receipt,
-        }});
-        if let Some(profile) = profile {
-            request["msg"]["profile_id"] = json!(profile.profile_id);
-            request["msg"]["profile_epoch"] = json!(profile.epoch);
-        }
-        if let Some(context) = &tracing {
-            request["msg"]["tracing_context"] = json!(context.token());
-        }
-        if let Some(instance) = &self.instance {
-            request["subagent_id"] = json!(input.thread_store.level_id());
-            request["subagent_incarnation"] = json!(instance);
-            request["subagent_managed_tools"] = json!(true);
-        }
-        self.family
-            .requests
-            .send(FamilyRequest::Completion(Arc::downgrade(self), id, request))
-            .map_err(|_| anyhow::anyhow!("Completion callback reader closed"))?;
-        let received = receive.await.context("Completion callback cancelled")?;
-        {
-            let replies = self
-                .completion_replies
-                .lock()
-                .expect("Completion replies poisoned");
-            if replies
-                .get(&id)
-                .is_some_and(|pending| pending.reply.is_none())
-                && !callback.entered.load(Ordering::Acquire)
-            {
-                callback.release();
-            }
-        }
-        callback.wait().await;
-        ensure!(
-            stop.admitted() && self.admits_generation(&generation),
-            "Expired completion owner"
-        );
-        received.map_err(|_| anyhow::anyhow!("Completion callback failed"))
-    }
-}

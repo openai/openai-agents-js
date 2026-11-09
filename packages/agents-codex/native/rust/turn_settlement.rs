@@ -52,6 +52,7 @@ pub(crate) struct Turn {
     local_exec_cancel_failed: AtomicBool,
     born_fenced: bool,
     same_id_recovery: bool,
+    pub(crate) tool_proposal: Mutex<Option<crate::python_tools::TerminalProposal>>,
     provider_error: Mutex<
         Option<(
             codex_protocol::protocol::CodexErrorInfo,
@@ -69,6 +70,20 @@ struct Steering {
 }
 
 impl Turn {
+    pub(crate) fn tool_failure_ready(&self) -> bool {
+        *self.admission.borrow() == Admission::Ready
+    }
+    pub(crate) fn deliver_tool_failure(&self) {
+        self.successful.store(false, Ordering::Release);
+        self.rejected.store(true, Ordering::Release);
+        self.terminal.store(true, Ordering::Release);
+        self.delivered.store(true, Ordering::Release);
+        *self
+            .tool_proposal
+            .lock()
+            .expect("terminal proposal poisoned") = None;
+    }
+
     pub(crate) fn permits_integrity_reason(&self) -> bool {
         !self.same_id_recovery
     }
@@ -144,6 +159,11 @@ impl Turn {
     }
     pub(crate) fn stop_sampling(&self) {
         self.sampling_stop.request();
+    }
+    pub(crate) fn capture_model_deadline(
+        &self,
+    ) -> Option<Arc<codex_extension_api::ModelInvocationDeadlineState>> {
+        self.sampling_stop.capture_model_deadline()
     }
     pub(crate) fn sampling_stopped(&self) -> bool {
         self.sampling_stop.requested()
@@ -230,6 +250,10 @@ impl Turn {
     }
 
     pub(crate) fn begin_generation(&self) {
+        *self
+            .tool_proposal
+            .lock()
+            .expect("terminal proposal poisoned") = None;
         if let Some(steering) = &self.steering {
             steering.tail.store(false, Ordering::Release);
         }
@@ -599,6 +623,12 @@ impl ThreadLifecycleContributor<Config> for Contributor {
                     .turn
                 {
                     turn.settle_pending(Admission::Ready);
+                    if matches!(input.cause, ThreadIdleCause::Failed)
+                        && let Some(tools) =
+                            input.thread_store.get::<crate::python_tools::PythonTools>()
+                    {
+                        tools.queue_tool_failure(turn);
+                    }
                 }
                 settlement.changed.send_replace(());
                 if let Some(owner) = input
@@ -691,6 +721,7 @@ impl TurnLifecycleContributor for Contributor {
                 born_fenced,
                 same_id_recovery,
                 provider_error: Mutex::default(),
+                tool_proposal: Mutex::default(),
             });
             let turn = input
                 .turn_store
@@ -722,6 +753,15 @@ impl TurnLifecycleContributor for Contributor {
                 && turn.id == input.turn_id
             {
                 turn.capture_provider_error(input.error, input.original_error);
+                if input
+                    .thread_store
+                    .get::<Settlement>()
+                    .is_some_and(|owner| owner.is_current(&turn))
+                    && let Some(tools) =
+                        input.thread_store.get::<crate::python_tools::PythonTools>()
+                {
+                    tools.mark_tool_failure(&turn);
+                }
             }
         })
     }

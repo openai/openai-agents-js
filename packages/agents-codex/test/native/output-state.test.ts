@@ -1103,7 +1103,7 @@ describe('lossless VM stored JSON', () => {
     }
   });
 
-  it('leaves generic JSON and authority-shaped application envelopes on their existing path', () => {
+  it('preserves generic JSON while keeping authority-shaped application envelopes on the receipt path', () => {
     const values = ownStoredValues();
     for (const application of [
       { root_code_mode: { stored_values: values } },
@@ -1115,8 +1115,30 @@ describe('lossless VM stored JSON', () => {
         },
       },
     ]) {
-      const expected = JSON.parse(encode(application));
-      expect(JSON.parse(encodeReceipt(application))).toEqual(expected);
+      const normalized = {
+        nested: {},
+        array: [{}, null, true, '雪'],
+        constructor: { prototype: { data: true } },
+        application: {
+          next_cell_id: '0003',
+          generation: 7,
+          nonce: '007',
+          root_code_mode: { stored_values: {} },
+        },
+      };
+      const receiptValue =
+        'arguments' in application
+          ? {
+              arguments: {
+                ...application.arguments,
+                root_code_mode: { stored_values: normalized },
+              },
+            }
+          : { root_code_mode: { stored_values: normalized } };
+      const encoded = JSON.parse(encode(application));
+      expect(encoded).toEqual(application);
+      expectOrdinaryPrototypes(encoded);
+      expect(JSON.parse(encodeReceipt(application))).toEqual(receiptValue);
       expect(parseNative(JSON.stringify(application))).toEqual(application);
     }
     const state = fromNativeCheckpoint(readVm(vmNative()), vmPlain.identity);

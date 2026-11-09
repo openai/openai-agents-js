@@ -206,8 +206,8 @@ impl ThreadInstructionsProvider for ThreadInstructions {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ThreadOptions {
-    #[serde(rename = "_before_complete")]
-    before_complete: bool,
+    #[serde(rename = "_context_callbacks")]
+    context_callbacks: crate::python_tools::ContextCallbacks,
     #[serde(rename = "_agent_profiles")]
     pub(crate) agent_profiles: Option<crate::agent_profiles::OpeningProfiles>,
     #[serde(rename = "_sdk_resume_thread_id")]
@@ -235,6 +235,8 @@ pub struct ThreadOptions {
     session_source: Option<SessionSource>,
     thread_source: Option<ThreadSource>,
     dynamic_tools: Vec<DynamicToolSpec>,
+    #[serde(rename = "_buffered_responses", default)]
+    buffered_responses: bool,
     #[serde(rename = "_hosted_tools")]
     hosted_tools: Vec<codex_tools::HostedToolSpec>,
     metrics_service_name: Option<String>,
@@ -274,6 +276,17 @@ struct InstructionText {
 }
 
 impl ThreadOptions {
+    pub(crate) fn validate_initial_messages(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.managed_instructions
+                && self.sdk_resume_thread_id.is_none()
+                && self.initial_history.is_none()
+                && self.reserved_thread_id.is_none(),
+            "initial messages require a managed fresh root without history or reserved identity"
+        );
+        Ok(())
+    }
+
     pub(crate) fn validate_local_authority(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.client_mcp_extensions.is_empty(),
@@ -338,6 +351,12 @@ impl ThreadOptions {
         let source = merged(base_config, self.config)?;
         let configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
         let mut options = StartThreadOptions::new(configuration);
+        options.thread_extension_init.insert(self.context_callbacks);
+        options
+            .thread_extension_init
+            .insert(codex_core::BufferedResponsesPreference(
+                self.buffered_responses,
+            ));
         options
             .thread_extension_init
             .insert(codex_extension_api::HostedModelTools {
@@ -347,11 +366,6 @@ impl ThreadOptions {
             !self.native_agent_before_step || self.native_agent_roles.is_some(),
             "Child step selection requires NativeAgents roles"
         );
-        if self.before_complete {
-            options
-                .thread_extension_init
-                .insert(crate::python_tools::CompletionCallback);
-        }
         if self.native_agent_before_step {
             options
                 .thread_extension_init

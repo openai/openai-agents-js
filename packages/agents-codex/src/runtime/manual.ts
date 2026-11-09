@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { copyJsonValue, decode, jsonValue, type JsonValue } from './binding';
+import {
+  copyJsonValue,
+  decode,
+  jsonValue,
+  losslessJsonValueSchema,
+  type JsonValue,
+} from './binding';
 import type { ThreadOptions } from './options';
 import type { ToolCallInfo } from './call-metadata';
 import { outputOf, type ToolDeclaration, type ToolResponse } from './tools';
@@ -111,7 +117,8 @@ export function manualTool<
       JSON.stringify(z.toJSONSchema(result, { io: 'input' })),
     ),
     parseInput: (args) => parameters.parse(args),
-    parseResult: (value) => outputOf(jsonValue.parse(result.parse(value))),
+    parseResult: (value) =>
+      outputOf(losslessJsonValueSchema.parse(result.parse(value))),
   };
   return assembleManualTool<z.output<P>, z.input<R>>(
     {

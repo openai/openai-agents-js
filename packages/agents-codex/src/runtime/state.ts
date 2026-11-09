@@ -1,3 +1,4 @@
+import { captureFile, captureImage, mediaRecord } from './media';
 import { z } from 'zod';
 import type { OutputIdentity } from './output';
 import {
@@ -19,6 +20,7 @@ import {
   decode,
   encode,
   jsonValue,
+  type JsonValue,
   jsonObject,
   parseNative,
 } from './binding';
@@ -78,7 +80,48 @@ export function readChecklist(source: string): ChecklistState | null {
 }
 
 export const CODEX_REVISION = '7c2ce90716335c889a5076ded9a630459f9c9899';
+const snapshotFileSchema = z.unknown().transform((value, context) => {
+  try {
+    return captureFile(value) as ReturnType<typeof captureFile> &
+      Record<string, JsonValue>;
+  } catch {
+    context.addIssue({
+      code: 'custom',
+      message: 'Invalid saved file reference',
+    });
+    return z.NEVER;
+  }
+});
+const snapshotImageSchema = z.unknown().transform((value, context) => {
+  try {
+    const source = mediaRecord(value);
+    if (Object.hasOwn(source, 'detail'))
+      throw new TypeError('Detail belongs to the snapshot output');
+    return captureImage(source) as ReturnType<typeof captureImage> &
+      Record<string, JsonValue>;
+  } catch {
+    context.addIssue({
+      code: 'custom',
+      message: 'Invalid saved image reference',
+    });
+    return z.NEVER;
+  }
+});
 const cellOutputSchema = z.union([
+  z.object({ File: z.object({ file: snapshotFileSchema }).strict() }).strict(),
+  z
+    .object({
+      RichImage: z
+        .object({
+          image: snapshotImageSchema,
+          detail: z
+            .enum(['Auto', 'Low', 'High', 'Original'])
+            .nullable()
+            .optional(),
+        })
+        .strict(),
+    })
+    .strict(),
   z.object({ Text: z.object({ text: z.string() }).strict() }).strict(),
   z
     .object({
@@ -170,7 +213,7 @@ const childStateSchema = z.discriminatedUnion('status', [
     parent_thread_id: z.string(),
     closed_at: z.null().optional(),
     metadata: jsonObject,
-    history: z.array(jsonObject),
+    history: z.array(losslessJsonObjectSchema),
     memory_mode: z.enum(['enabled', 'disabled']).nullable().optional(),
     checklist: checklistSchema.nullable().optional(),
     goal: goalSnapshotSchema.nullable().optional(),
@@ -182,7 +225,7 @@ const childStateSchema = z.discriminatedUnion('status', [
     parent_thread_id: z.string(),
     closed_at: z.number().nonnegative().nullable().optional(),
     metadata: jsonObject,
-    history: z.array(jsonObject),
+    history: z.array(losslessJsonObjectSchema),
     memory_mode: z.enum(['enabled', 'disabled']).nullable().optional(),
     checklist: checklistSchema.nullable().optional(),
     goal: goalSnapshotSchema.nullable().optional(),
@@ -197,7 +240,7 @@ const rootState = {
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
-  history: z.array(jsonObject),
+  history: z.array(losslessJsonObjectSchema),
   pending_actions: z.array(jsonObject).default([]),
   recovery: z
     .object({

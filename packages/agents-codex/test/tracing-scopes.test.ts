@@ -576,7 +576,7 @@ it.each([
         _configure_manual_tools: () => {},
         _manual_checkpoint_config_supported: async () => false,
         _pending_manual_tools: () => '[]',
-        _check_python_tool: () => {},
+        _check_python_tool: () => true,
         _respond_python_tool: async () => {
           replied.resolve();
           return true;
@@ -1529,7 +1529,7 @@ it.each(['rejected success', 'aborted failure'] as const)(
       {},
       events,
       {
-        _check_python_tool: () => {},
+        _check_python_tool: () => true,
         _respond_python_tool: async () => {
           responding.resolve();
           return accepted.promise;

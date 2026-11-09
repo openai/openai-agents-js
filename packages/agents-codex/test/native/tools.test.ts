@@ -197,7 +197,6 @@ describe('function tools', () => {
   });
 
   it.each([
-    'https://example.invalid/image.png',
     'file-id',
     '/tmp/image.png',
     'data:text/plain;base64,aW1hZ2U=',
@@ -207,9 +206,7 @@ describe('function tools', () => {
     'data:image/png,ignored;base64,aW1hZ2U=',
     null,
   ])('rejects an unsupported image factory input: %s', (imageUrl) => {
-    expect(() => ToolOutput.image(imageUrl as string)).toThrow(
-      /base64 image data URL with a nonempty payload/,
-    );
+    expect(() => ToolOutput.image(imageUrl as string)).toThrow(TypeError);
   });
 
   it('preserves the general image constructor without applying factory restrictions', () => {

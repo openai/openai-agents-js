@@ -16,6 +16,12 @@ Context, environment, opening overrides, and native model requirements still nee
 - A custom endpoint uses HTTP by default.
 - When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
 
+### Capture provider routing and buffered JSON
+
+Provider options accept `headers`, `queryParams`, and `envHeaders` maps, plus `organization` and `project`. `envHeaders` maps header names to environment-variable names. The descriptor copies maps and resolves those environment values at construction; missing or empty values stay omitted. Create a new provider to refresh them. Native authentication, protocol and private-hop headers remain reserved, and configured routing does not follow redirects.
+
+`responseMode: 'buffered'` selects complete Responses JSON over API-key HTTP. Set `supportsWebsockets: false` for this route. The JSON reader enforces a 64 MiB body limit and structural limits through the selected transport. The default `responseMode: 'streaming'` preserves the existing SSE/WebSocket route. Buffered responses still feed the ordinary session, tool and event lifecycle.
+
 ### Provider lifetime
 
 Your application owns the provider, including the default provider created by `new Agent(...)` when you omit `provider`. That default is available as `agent.provider`. Closing a Session or completing `agent.run()` releases that Session's resources. The provider remains available for later Sessions, including its reusable HTTP connections.
@@ -34,10 +40,19 @@ Native `modelSettings` accepts these fields:
 | --- | --- |
 | `reasoningEffort` | A string selecting the model's reasoning effort. |
 | `reasoningSummary` | A string selecting the model's reasoning summary setting. |
-| `serviceTier` | A string selecting a service tier, or `null` to clear an inherited override. |
-| `toolChoice` | `'auto'` (the default), `'none'`, or `'required'`. Controls whether the model calls an offered tool; it does not grant execution authority. |
+| `serviceTier` | Native routing normalizes `fast` to `priority` and may omit a tier under its model/catalog policy; `null` clears an inherited override. |
+| `toolChoice` | `'auto'`, `'none'`, `'required'`, a `toolRef(name, namespace?)`, or `null` to clear a named choice. A named target narrows the already admitted catalog; it does not grant execution authority or widen a selected subset. |
+| `invocationTimeoutMs` | Positive uint32 milliseconds for one model invocation, including preparation waits and retries; `null` clears the override. Accepted terminal responses disarm it before result settlement. Owned cleanup can finish after expiry. |
+| `maxOutputTokens` | Nonnegative safe integer for ordinary generation; `null` clears the override. |
+| `temperature`, `topP` | Provider-supported sampling values; `null` clears an override. |
+| `topLogprobs` | Integer from zero to 255; requests probabilities and alternatives reported as [received response facts](request-metadata.md#received-response-facts). |
+| `parallelToolCalls`, `verbosity` | A boolean for parallel calls; `'low'`, `'medium'`, or `'high'` for verbosity. |
+| `metadata` | A captured string map sent with the request. |
+| `store` | A boolean sent as the provider storage preference; `null` clears the override. |
+| `promptCacheRetention` | `'in_memory'` or `'24h'`; `null` clears the override. |
+| `promptCacheTtl` | `'30m'` or `'12h'`, independently of retention; `null` clears the override. |
 
-Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Native settings do not accept classic fields such as `temperature`, `maxTokens`, or `retry`; port the provider configuration explicitly or retain the [classic runtime](../../../packages/agents/CLASSIC.md) while you migrate.
+Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Use `maxOutputTokens` for the native output limit. Classic `maxTokens` and `retry` settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md).
 
 - An opening provider or model overrides the Agent default.
 - Defined `modelSettings` keys override the matching Agent settings. Omitted or `undefined` keys inherit the defaults. An empty object inherits every default.
@@ -47,7 +62,7 @@ Each Session captures its effective configuration when it opens. The Agent keeps
 
 Portable `state`, including state from `session.fork()`, retains the saved model and accepted settings. Restore through the same Agent even if its default model differs or is absent. Leave `model` and `modelSettings` undefined when restoring. Passing `modelSettings: {}` rejects the restore.
 
-You can supply a provider with current credentials on restore. Afterward, an idle Session can use `session.update(...)` to change supported settings. A `NativeAgents` Session keeps its opening model settings. Checkpoints omit provider credentials and tool grants.
+You can supply a provider with current credentials on restore. Afterward, an idle Session can use `session.update(...)` to change supported settings. A `NativeAgents` Session keeps its opening model settings. Checkpoints omit provider credentials and tool grants. They retain `store`, `promptCacheRetention` and `promptCacheTtl`; verify checkpoint integrity and application-policy approval [before restoring](state.md#restore-instructions-and-tools). A pending manual continuation can sample before an idle update, so a later update cannot serve as its privacy-policy check.
 
 The scripted [session configuration example](../session-configuration.ts) merges settings, clears an inherited tier, and checks the recorded configuration. It uses the current [source build](building.md), with no model credentials. Run it from the repository root:
 

@@ -20,7 +20,7 @@ import {
   type WriteStdinArgs,
   type WorkspaceArchiveData,
   type WorkspaceArchiveOptions,
-  normalizeSandboxClientCreateArgs,
+  normalizeSandboxClientCreateArgs as normalizeCreateArgs,
 } from '@openai/agents-core/sandbox';
 import {
   appendPtyOutput,
@@ -113,13 +113,32 @@ type E2BFilesystemApi = {
     path: string,
     opts?: { format?: 'text' | 'bytes' },
   ): Promise<string | Uint8Array>;
-  read?(
-    path: string,
-    opts: { format: 'stream'; signal?: AbortSignal },
-  ): Promise<ReadableStream<Uint8Array> | ''>;
   remove?(path: string): Promise<unknown>;
   makeDir?(path: string): Promise<unknown>;
 };
+
+type E2BSdkSandboxInstance = Awaited<
+  ReturnType<typeof import('e2b').Sandbox.create>
+>;
+type E2BBoundedReader = (
+  path: string,
+  options: { signal?: AbortSignal },
+) => Promise<ReadableStream<Uint8Array> | ''>;
+const boundedE2BReaders = new WeakMap<E2BSandboxInstance, E2BBoundedReader>();
+
+function captureE2BSandbox(sandbox: E2BSdkSandboxInstance): E2BSandboxInstance {
+  // The real SDK adapter owns this instance and its streaming overload.
+  const instance = sandbox as unknown as E2BSandboxInstance;
+  if (typeof sandbox.files.read === 'function') {
+    const read = sandbox.files.read.bind(sandbox.files);
+    boundedE2BReaders.set(
+      instance,
+      async (path, options) =>
+        await read(path, { format: 'stream', signal: options.signal }),
+    );
+  }
+  return instance;
+}
 
 type E2BCommandResult = {
   stdout?: string;
@@ -656,6 +675,14 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
       throw new UserError('maxBytes must be a non-negative safe integer.');
     }
+    const sandbox = this.sandbox;
+    const read = boundedE2BReaders.get(sandbox);
+    if (!read) {
+      throw new SandboxUnsupportedFeatureError(
+        'Bounded E2B file reads require a session created by E2BSandboxClient.',
+        { provider: 'e2b' },
+      );
+    }
     // E2B always starts commands in a login shell. Bound every command on this
     // path, including validation and missing-file probes, before SDK buffering
     // can grow with startup output. Keep the existing path and user authority.
@@ -663,18 +690,17 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
       manifest: this.state.manifest,
       path: args.path,
       runCommand: async (command) =>
-        await this.runBoundedReadCommand(command, {
+        await this.runBoundedReadCommand(sandbox, command, {
           cwd: this.state.manifest.root,
           envs: {},
         }),
     });
-    if (!args.runAs && this.sandbox.files.read) {
+    if (!args.runAs && sandbox.files.read) {
       // Keep the native daemon's file access permissions for default reads.
       // Newer SDK streams use an idle timeout after the response starts.
       // Preserve the overall request deadline, including its 60-second default.
       const requestTimeoutMs = this.state.requestTimeoutMs ?? 60_000;
-      const stream = await this.sandbox.files.read(absolutePath, {
-        format: 'stream',
+      const stream = await read(absolutePath, {
         signal: requestTimeoutMs
           ? AbortSignal.timeout(requestTimeoutMs)
           : undefined,
@@ -720,6 +746,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
       maxBytes,
       runCommand: async (command, options) =>
         await this.runBoundedReadCommand(
+          sandbox,
           command,
           { cwd: '/', envs: this.state.environment, user: options?.runAs },
           // Account for base64 wrapping and the five-byte read-status trailer.
@@ -730,6 +757,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   }
 
   private async runBoundedReadCommand(
+    sandbox: E2BSandboxInstance,
     command: string,
     options: E2BCommandRunOptions,
     stdoutLimit = 65536,
@@ -743,7 +771,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     );
     let handle: E2BCommandHandle | undefined;
     try {
-      const result = await this.sandbox.commands.run(command, {
+      const result = await sandbox.commands.run(command, {
         ...options,
         background: true,
         onStdout: (chunk) => {
@@ -1043,7 +1071,7 @@ export class E2BSandboxClient implements SandboxClient<
     args?: SandboxClientCreateArgs<E2BSandboxClientOptions> | Manifest,
     manifestOptions?: E2BSandboxClientOptions,
   ): Promise<E2BSandboxSession> {
-    const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
+    const createArgs = normalizeCreateArgs(args, manifestOptions);
     const archiveLimits = resolveCreateArchiveLimits(
       createArgs.archiveLimits,
       createArgs.options?.archiveLimits,
@@ -1376,18 +1404,29 @@ function adaptE2BSandboxClass(
     | typeof import('e2b').Sandbox
     | typeof import('@e2b/code-interpreter').Sandbox,
 ): E2BSandboxClass {
+  type Connect = (
+    sandboxId: string,
+    opts?: Record<string, unknown>,
+  ) => Promise<E2BSdkSandboxInstance>;
   const sdkSandbox = Sandbox as typeof Sandbox & {
-    connect?: E2BSandboxClass['connect'];
-    resume?: E2BSandboxClass['resume'];
+    connect?: Connect;
+    resume?: Connect;
   };
+  const create = Sandbox.create.bind(Sandbox) as (
+    ...args: Parameters<E2BSandboxClass['create']>
+  ) => Promise<E2BSdkSandboxInstance>;
   const adapted: E2BSandboxClass = {
-    create: Sandbox.create.bind(Sandbox) as E2BSandboxClass['create'],
+    create: async (...args) => captureE2BSandbox(await create(...args)),
   };
   if (typeof sdkSandbox.connect === 'function') {
-    adapted.connect = sdkSandbox.connect.bind(Sandbox);
+    const connect = sdkSandbox.connect.bind(Sandbox);
+    adapted.connect = async (...args) =>
+      captureE2BSandbox(await connect(...args));
   }
   if (typeof sdkSandbox.resume === 'function') {
-    adapted.resume = sdkSandbox.resume.bind(Sandbox);
+    const resume = sdkSandbox.resume.bind(Sandbox);
+    adapted.resume = async (...args) =>
+      captureE2BSandbox(await resume(...args));
   }
   return adapted;
 }

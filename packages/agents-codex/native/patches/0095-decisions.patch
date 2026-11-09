@@ -890,20 +890,8 @@ index 0000000000000000000000000000000000000000..c85f9b88f50d2a5a324aeeea1925fb4e
 +        .is_none()
 +    );
 +}
-diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-index 75516746c967325b8d3408b38c5091ef146d247a..7ebd4419278742e5c3f703b20b7089322f6a0a6d 100644
---- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-+++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-@@ -1049,6 +1049,7 @@ mod tests {
-             tx_command,
-             rx_message,
-             pump_task,
-+            upgrade_rate_limits: None,
-         };
-         let (tx_event, mut rx_event) = mpsc::channel(8);
-         let (_tx_interrupt, rx_interrupt) = oneshot::channel();
 diff --git a/codex-rs/codex-api/src/lib.rs b/codex-rs/codex-api/src/lib.rs
-index 7126f39f37a2298b7d2b2ec324a0fe78544e4ed5..20fd438ad3be6cf98ab9f5df86b41b0ef4a5a51f 100644
+index 5188fd100baacaf82d395bec206d581bf3d8333c..087659a5a38b151acb92eb74d71691e3933906a4 100644
 --- a/codex-rs/codex-api/src/lib.rs
 +++ b/codex-rs/codex-api/src/lib.rs
 @@ -2,6 +2,7 @@ pub(crate) mod api_bridge;
@@ -915,10 +903,10 @@ index 7126f39f37a2298b7d2b2ec324a0fe78544e4ed5..20fd438ad3be6cf98ab9f5df86b41b0e
  pub(crate) mod error;
  pub(crate) mod files;
 diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
-index 258e950b7fad3208d47446a5b2a9508ac14506c1..376ce331592fa4f3324ad6e4b6cb88e1899e3b85 100644
+index 87d8f1b39f06547160ff9258ed45a1221df45d1b..2e061540f27bb190606bbbce3c4c01fef7773084 100644
 --- a/codex-rs/codex-api/src/sse/responses.rs
 +++ b/codex-rs/codex-api/src/sse/responses.rs
-@@ -285,6 +285,7 @@ impl ResponsesStreamEvent {
+@@ -324,6 +324,7 @@ impl ResponsesStreamEvent {
                  .and_then(|r| r.get("id"))
                  .and_then(Value::as_str)
                  .map(str::to_owned),
@@ -1023,10 +1011,10 @@ index 0000000000000000000000000000000000000000..579b75b4c1f38a5eff6b8a23fc66aeb8
 +    }
 +}
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index c7a079cc7f3385b43ff3f0075359c2757bd6f14c..3ba2b2771752e869de9027d872b9193f5872ca43 100644
+index efb30bdc9948f1459fc7cc835e8522c00c7db401..7b3b8803f9dfe0465976fe66a9bf44a0f3d7dd56 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
-@@ -336,6 +336,26 @@ impl CodexThread {
+@@ -338,6 +338,26 @@ impl CodexThread {
          &self.session.services.thread_extension_data
      }
  
@@ -1054,7 +1042,7 @@ index c7a079cc7f3385b43ff3f0075359c2757bd6f14c..3ba2b2771752e869de9027d872b9193f
      pub async fn current_turn_extension_data<T>(&self, expected_turn_id: &str) -> Option<Arc<T>>
      where
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 00b6d1f67617c97e3e6620fca36bf66bd17955af..634ae659e738a7f82b69132bfffbe65cf09285e6 100644
+index 72087d77606165c210a0d4719b3f740bb5160edb..546efb27d65701d96b31f63531b07619d6f9ab4f 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -37,6 +37,7 @@ pub use codex_protocol::turn_input::TurnInputSubmission;
@@ -1074,23 +1062,10 @@ index 00b6d1f67617c97e3e6620fca36bf66bd17955af..634ae659e738a7f82b69132bfffbe65c
  pub use codex_network_proxy::NetworkDomainPermission;
  pub use codex_network_proxy::NetworkDomainPermissionEntry;
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 156e0c839f7d1b048319f66d3dddf8fd01d6aaa2..23fd6e1bd0d20fcf9527b7cd5644843ba66ef1ba 100644
+index dced7e5ba2cc1b9ed002d8d8163a11be2155d007..f522c876350de08881e23bbd7839407e33b9c0f9 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -238,11 +238,11 @@ pub(crate) mod context_window;
- mod daemon_recovery;
- mod environment;
- mod extension_interruption;
--pub(crate) mod owned_turn_stop;
- pub(crate) mod extension_metrics;
- mod guardian_checkpoint;
- mod handlers;
- mod inject;
-+pub(crate) mod owned_turn_stop;
- mod reasoning_effort;
- mod submission;
- pub(crate) use reasoning_effort::RequestEffortUsage;
-@@ -5011,6 +5011,70 @@ impl Session {
+@@ -5263,6 +5263,70 @@ impl Session {
              .await;
      }
  
@@ -1162,21 +1137,13 @@ index 156e0c839f7d1b048319f66d3dddf8fd01d6aaa2..23fd6e1bd0d20fcf9527b7cd5644843b
          &self,
          turn_context: &TurnContext,
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index c292a0e8f7e851b7f93e240941ea334c3e24e9d5..baae00b043f31970d9ddf571d44d7cbf5a743360 100644
+index cce8cc0431f17f37798e91a98f5c725c8ffee5aa..e3a0843e662c0d75187fde522345b1452083db2c 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -1,5 +1,5 @@
--use codex_otel::current_span_w3c_trace_context;
- use crate::agent::LocalAgentControl;
-+use codex_otel::current_span_w3c_trace_context;
- #[path = "notification_tests.rs"]
- mod notification_tests;
+@@ -14198,3 +14198,98 @@ async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_he
  
-@@ -14173,3 +14173,99 @@ async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_he
-     .await
-     .expect("cancelled root termination wait test timed out");
- }
-+
+ #[path = "terminal_tool_tests.rs"]
+ mod terminal_tool_tests;
 +#[tokio::test]
 +async fn auxiliary_completion_keeps_captured_turn_and_context_measurement() {
 +    for usage in [
@@ -1272,179 +1239,22 @@ index c292a0e8f7e851b7f93e240941ea334c3e24e9d5..baae00b043f31970d9ddf571d44d7cbf
 +        }
 +    }
 +}
-diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 8a919a4982accb365f04d510fadbb88048ca2af6..71d1b22a879ea37439faa06f464d9217c777d1d5 100644
---- a/codex-rs/core/src/session/turn.rs
-+++ b/codex-rs/core/src/session/turn.rs
-@@ -413,6 +413,7 @@ pub(crate) async fn run_turn(
- 
-     let mut last_agent_message: Option<String> = None;
-     let mut stop_hook_active = false;
-+    let mut completion_continuations = 0;
-     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
-     // many turns, from the perspective of the user, it is a single turn.
-     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
-@@ -589,19 +590,63 @@ pub(crate) async fn run_turn(
-                 can_drain_pending_input = true;
-                 // Process async hooks only after sampling and its tools have finished.
-                 drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ false).await;
--                let (has_pending_input, token_status) = async {
--                    let has_pending_input =
--                        sess.input_queue.has_pending_input(&sess.active_turn).await;
--                    let token_status = super::context_window::context_window_token_status(
--                        sess.as_ref(),
--                        turn_context.as_ref(),
--                    )
--                    .await;
--                    (has_pending_input, token_status)
-+                let has_pending_input = sess.input_queue.has_pending_input(&sess.active_turn).await;
-+                let mut needs_follow_up = model_needs_follow_up || has_pending_input;
-+                if !needs_follow_up {
-+                    for contributor in sess.services.extensions.turn_lifecycle_contributors() {
-+                        let feedback = contributor
-+                            .before_turn_complete(codex_extension_api::TurnCompletionInput {
-+                                turn_id: &turn_context.sub_id,
-+                                model: &step_context.settings.model_info.slug,
-+                                last_assistant_message: sampling_request_last_agent_message
-+                                    .as_deref(),
-+                                continuation_count: completion_continuations,
-+                                step_store: &step_context.extension_data,
-+                                thread_store: &sess.services.thread_extension_data,
-+                                turn_store: turn_context.extension_data.as_ref(),
-+                            })
-+                            .or_cancel(&cancellation_token)
-+                            .await?
-+                            .map_err(CodexErr::InvalidRequest)?;
-+                        if cancellation_token.is_cancelled() {
-+                            return Err(CodexErr::TurnAborted);
-+                        }
-+                        if let Some(feedback) = feedback {
-+                            let item = build_hook_prompt_message(&[
-+                                codex_protocol::items::HookPromptFragment::from_single_hook(
-+                                    feedback,
-+                                    uuid::Uuid::new_v4().to_string(),
-+                                ),
-+                            ])
-+                            .ok_or_else(|| {
-+                                CodexErr::InvalidRequest(
-+                                    "Completion feedback must not be empty".to_owned(),
-+                                )
-+                            })?;
-+                            sess.record_response_item_and_emit_turn_item(
-+                                &turn_context,
-+                                &step_context.settings.model_info,
-+                                item,
-+                            )
-+                            .await;
-+                            sess.input_queue
-+                                .accept_mailbox_delivery_for_current_turn(
-+                                    &sess.active_turn,
-+                                    &turn_context.sub_id,
-+                                )
-+                                .await;
-+                            completion_continuations += 1;
-+                            needs_follow_up = true;
-+                            break;
-+                        }
-+                    }
-                 }
-+                let token_status = super::context_window::context_window_token_status(
-+                    sess.as_ref(),
-+                    turn_context.as_ref(),
-+                )
-                 .instrument(trace_span!("run_turn.collect_post_sampling_state"))
-                 .await;
--                let needs_follow_up = model_needs_follow_up || has_pending_input;
-                 let token_limit_reached = token_status.token_limit_reached;
- 
-                 trace!(
-diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
-index 04a1847dc8b9c206fb3695fad1d661611085d3ef..f999c6456154c3a7e1cf3f9a86d30eface2337d0 100644
---- a/codex-rs/ext/extension-api/src/contributors.rs
-+++ b/codex-rs/ext/extension-api/src/contributors.rs
-@@ -68,6 +68,7 @@ pub use turn_lifecycle::AgentProfileModelSettings;
- pub use turn_lifecycle::AgentProfileReceipt;
- pub use turn_lifecycle::CapturedAgentProfile;
- pub use turn_lifecycle::TurnAbortInput;
-+pub use turn_lifecycle::TurnCompletionInput;
- pub use turn_lifecycle::TurnErrorInput;
- pub use turn_lifecycle::TurnStartInput;
- pub use turn_lifecycle::TurnStartPhase;
-@@ -217,6 +218,15 @@ pub trait ThreadLifecycleContributor<C: Sync>: Send + Sync {
- /// extension-private turn state. The host exposes stable identifiers and
- /// extension stores instead of core runtime objects.
- pub trait TurnLifecycleContributor: Send + Sync {
-+    /// Accept natural completion, or return feedback to continue the same turn.
-+    /// Errors fail the turn; callback results never authorize tools or permissions.
-+    fn before_turn_complete<'a>(
-+        &'a self,
-+        _input: TurnCompletionInput<'a>,
-+    ) -> ExtensionFuture<'a, Result<Option<String>, String>> {
-+        Box::pin(std::future::ready(Ok(None)))
-+    }
-+
-     /// Request an admitted Agent transition before real sampling, never during speculative capture.
-     fn before_step_agent_activation<'a>(
-         &'a self,
-diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-index 549aa77e748f56b103afebbc6fea3035f9329dd5..a95eb1f643f535f45539dcc282b3a4a42fc8944d 100644
---- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-+++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-@@ -34,6 +34,17 @@ pub struct TurnStartInput<'a> {
-     pub turn_store: &'a ExtensionData,
- }
- 
-+/// Application acceptance of a successful natural completion, before turn stop.
-+pub struct TurnCompletionInput<'a> {
-+    pub turn_id: &'a str,
-+    pub model: &'a str,
-+    pub last_assistant_message: Option<&'a str>,
-+    pub continuation_count: usize,
-+    pub step_store: &'a ExtensionData,
-+    pub thread_store: &'a ExtensionData,
-+    pub turn_store: &'a ExtensionData,
-+}
-+
- /// Input supplied when the host completes a turn.
- pub struct TurnStopInput<'a> {
-     /// Store scoped to the host session runtime.
-diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
-index 33b29f4f2c4dc31ebc67c3058b388d27c67d7b76..fa84aef877a26f7b9b21a0ed8b8e20174adaf5d1 100644
---- a/codex-rs/ext/extension-api/src/lib.rs
-+++ b/codex-rs/ext/extension-api/src/lib.rs
-@@ -98,6 +98,7 @@ pub use contributors::ToolStartInput;
- pub use contributors::ToolTimingBoundary;
- pub use contributors::ToolTimingInput;
- pub use contributors::TurnAbortInput;
-+pub use contributors::TurnCompletionInput;
- pub use contributors::TurnContextContributionInput;
- pub use contributors::TurnErrorInput;
- pub use contributors::TurnInputContext;
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index 126936e99680eaaf7f5c79362c543d0695f12e1b..f05e930e590c3f630beaeeb343ac334f906eaa53 100644
+index a11ef22e353355524a90c05a278137e848aa3541..78b189c71eb7056a33bf50e83ed8121f8383a235 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
-@@ -2742,6 +2742,9 @@ pub enum ResponseIncompleteReason {
- #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
- pub struct ResponseObservation {
-     pub response_id: Option<String>,
-+    /// Upstream transport request identity, distinct from a provider body response ID.
-+    #[serde(default, skip_serializing_if = "Option::is_none")]
-+    pub upstream_request_id: Option<String>,
-     pub status: ResponseObservationStatus,
-     pub incomplete_reason: Option<ResponseIncompleteReason>,
-     pub usage: Option<ReceivedResponseUsage>,
-@@ -6986,7 +6989,8 @@ mod response_observation_tests {
+@@ -7025,8 +7025,8 @@ mod response_observation_tests {
              thread_id: ThreadId::new(),
              turn_id: "origin-turn".to_string(),
              observation: ResponseObservation {
+-                upstream_request_id: None,
 -                response_id: None,
 +                response_id: Some("provider-response".to_string()),
 +                upstream_request_id: Some("upstream-request".to_string()),
                  status: ResponseObservationStatus::Incomplete,
                  incomplete_reason: Some(ResponseIncompleteReason::Unknown),
                  usage: Some(ReceivedResponseUsage {
-@@ -6999,6 +7003,21 @@ mod response_observation_tests {
+@@ -7039,6 +7039,21 @@ mod response_observation_tests {
          let value = serde_json::to_value(&record).unwrap();
          assert_eq!(value["id"], "occurrence");
          assert_eq!(value["turn_id"], "origin-turn");

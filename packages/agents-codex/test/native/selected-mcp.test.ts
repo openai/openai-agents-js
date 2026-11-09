@@ -502,3 +502,30 @@ it('keeps overlapping authentication scopes separate when the caller supplies se
     { type: 'inputText', text: 'first' },
   ]);
 });
+
+it('preserves own literal JSON keys through a borrowed MCP argument adapter', async () => {
+  const server = new BorrowedPeer();
+  server.declarations[0].inputSchema = {
+    type: 'object',
+    properties: { value: { type: 'string' } },
+    required: ['value'],
+    additionalProperties: true,
+  };
+  const [selected] = await selectMcpTools(
+    { name: 'crm', server },
+    { context: undefined },
+  );
+  const args = JSON.parse(
+    '{"value":"ok","__proto__":{"borrowedTop":true},"nested":{"__proto__":{"borrowedNested":true}}}',
+  );
+  await invokeFunctionTool(selected, args, invocation, () => {});
+  expect(server.callTool).toHaveBeenCalledOnce();
+  const actual = server.callTool.mock.calls[0][1]!;
+  expect(Object.hasOwn(actual, '__proto__')).toBe(true);
+  expect(Object.hasOwn(actual.nested as object, '__proto__')).toBe(true);
+  expect(actual).toEqual(args);
+  expect(Object.getPrototypeOf(actual)).toBe(Object.prototype);
+  expect(Object.prototype).not.toHaveProperty('borrowedTop');
+  expect(Object.prototype).not.toHaveProperty('borrowedNested');
+  expect(server.close).not.toHaveBeenCalled();
+});

@@ -164,7 +164,7 @@ async fn native_local_json_create_tool_receipt_close_and_reopen() {
         let id = native.id();
         let created = engine.current().unwrap().read_stored_thread(codex_protocol::ThreadId::from_string(&id).unwrap()).await.unwrap().created_at;
         assert!(native.rollout_path().is_some());
-        native._configure_manual_tools("[{\"name\":\"lookup\"}]".into()).unwrap();
+        native._configure_manual_tools("[{\"name\":\"lookup\"}]".into(), None).unwrap();
         submit(&native, "first durable user message").await;
         let request = loop {
             let event: Value = serde_json::from_str(&native.next_session_event().await.unwrap()).unwrap();
@@ -657,6 +657,7 @@ async fn native_local_start_and_mutation_reject_unsupported_authority_before_nat
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -737,7 +738,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
         .unwrap();
     assert_eq!(
         native
-            ._replace_tools("1".into(), specs(), None)
+            ._replace_tools("1".into(), specs(), None, None)
             .await
             .unwrap(),
         "1"
@@ -746,7 +747,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
     renamed[0]["name"] = json!("outside_opening_ceiling");
     assert!(
         native
-            ._replace_tools("2".into(), renamed.to_string(), None)
+            ._replace_tools("2".into(), renamed.to_string(), None, None)
             .await
             .unwrap_err()
             .reason
@@ -754,7 +755,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
     );
     assert_eq!(
         native
-            ._replace_tools("2".into(), specs(), None)
+            ._replace_tools("2".into(), specs(), None, None)
             .await
             .unwrap(),
         "2"
@@ -779,7 +780,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
         .unwrap();
     assert_eq!(
         native
-            ._replace_tools("1".into(), renamed.to_string(), None)
+            ._replace_tools("1".into(), renamed.to_string(), None, None)
             .await
             .unwrap(),
         "1"

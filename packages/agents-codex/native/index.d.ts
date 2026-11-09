@@ -49,6 +49,11 @@ export class Engine {
     options_json: string,
     specs_json: string,
   ): Promise<NativeThread>;
+  _start_seeded_replaceable_thread(
+    options_json: string,
+    specs_json: string,
+    initial_messages_json: string,
+  ): Promise<NativeThread>;
   _start_local_resume(
     options_json: string,
     specs_json: string,
@@ -132,7 +137,7 @@ export class NativeThread {
   _finish_native_interception_reader(): void;
   _enable_native_mcp_results(timeout: number): void;
   _revoke_native_mcp_results(): void;
-  _take_native_mcp_result_failure(turn_id: string): boolean;
+  _take_native_mcp_result_failure(turn_id: string, aborted?: boolean): boolean;
   _next_native_mcp_result(): Promise<string>;
   _check_native_mcp_result(
     nonce: NativeId,
@@ -164,7 +169,7 @@ export class NativeThread {
     closing: boolean,
     probe?: boolean,
   ): Promise<string>;
-  _check_python_tool(request_json: string): void;
+  _check_python_tool(request_json: string): boolean;
   _enter_python_callback(receipt_json: string): boolean;
   _python_callback_cancelled(receipt_json: string): boolean;
   _release_python_callback(receipt_json: string): boolean;
@@ -214,15 +219,16 @@ export class NativeThread {
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _capture_decision(requestJson: string): Promise<_DecisionCall>;
-  _check_completion(responseJson: string): boolean;
-  _reply_completion(responseJson: string): void;
-  _stop_completion(responseJson: string): boolean;
+  _reply_compaction(response_json: string): void;
+  _reply_model_context(response_json: string): void;
+  _reply_natural_completion(response_json: string): void;
   _check_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
   _replace_tools(
     generation: NativeId,
     specs_json: string,
     default_slots_json?: string,
+    terminal_slots_json?: string,
   ): Promise<NativeId>;
   _replace_mcp_servers(
     servers_json: string,
@@ -232,11 +238,17 @@ export class NativeThread {
     specs_json?: string,
     startup_boundary?: string,
     cancel_on_resource_close?: boolean,
+    terminal_slots_json?: string,
     default_slots_json?: string,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(response_json: string): Promise<boolean>;
-  _configure_manual_tools(slots_json: string): void;
+  _configure_manual_tools(
+    slots_json: string,
+    terminal_slots_json?: string,
+  ): void;
+  _check_tool_completion(response_json: string): boolean;
+  _reply_tool_completion(response_json: string): boolean;
   _manual_checkpoint_config_supported(): Promise<boolean>;
   _begin_manual_checkpoint_wait(validated_requests_json: string): string;
   _wait_manual_checkpoint_progress(token: string): Promise<void>;

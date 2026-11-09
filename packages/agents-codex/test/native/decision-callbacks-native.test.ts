@@ -3,7 +3,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
-  ContinueTurn,
   Environment,
   NativeAgents,
   NativeProvider,
@@ -149,7 +148,7 @@ nativeIt(
       beforeComplete: async (context) => {
         expect(context.context).toBe(applicationContext);
         expect(context.model).toBe('gpt-5.5');
-        expect(context.subagentId).toBeNull();
+        expect(context.subagentId).toBeUndefined();
         if (previous)
           await expect(
             previous('Expired?', { input: 'Explicit input.' }),
@@ -165,7 +164,10 @@ nativeIt(
           await context.decide('Approved?', { input: context.text! }),
         ).toBe(true);
         if (context.text!.includes('blocked'))
-          return new ContinueTurn('Produce an accepted report.');
+          return {
+            action: 'continue',
+            instructions: 'Produce an accepted report.',
+          };
       },
     });
     const result = await agent.run('Return a report.', {
@@ -395,7 +397,7 @@ nativeIt.each([
             entered.resolve();
             await release.promise;
           }
-          return new ContinueTurn('Try another report.');
+          return { action: 'continue', instructions: 'Try another report.' };
         }
       },
     }).session();
@@ -432,7 +434,7 @@ nativeIt(
     const native = await binding();
     const prototype = native.NativeThread.prototype;
     const next = prototype._next_session_events;
-    const reply = prototype._reply_completion;
+    const reply = prototype._reply_natural_completion;
     const close = prototype._close_report;
     const correcting = Promise.withResolvers<void>();
     const releaseServer = Promise.withResolvers<void>();
@@ -480,7 +482,7 @@ nativeIt(
             ]);
       });
     const replySpy = vi
-      .spyOn(prototype, '_reply_completion')
+      .spyOn(prototype, '_reply_natural_completion')
       .mockImplementation(function (this: NativeThread, wire) {
         // Keep the original native task alive: its cancellation cannot mask whether
         // the delivery's own signal stops the separate correction task.
@@ -804,7 +806,7 @@ nativeIt(
       beforeComplete: (context) => {
         checked.push(context.text!);
         if (context.text!.includes('blocked'))
-          return new ContinueTurn('Try another report.');
+          return { action: 'continue', instructions: 'Try another report.' };
       },
     });
     await expect(agent.run('Return the report.')).rejects.toThrow(
@@ -921,12 +923,16 @@ nativeIt(
         turns.push(context.turnId);
         retained = context.decide;
         expect(Object.isFrozen(context)).toBe(true);
-        expect(context.subagentId).toBeNull();
+        expect(context.subagentId).toBeUndefined();
         const clear = await context.decide(
           'Does the customer have a clear next step?',
           { input: context.text! },
         );
-        if (!clear) return new ContinueTurn('Give one concrete next step.');
+        if (!clear)
+          return {
+            action: 'continue',
+            instructions: 'Give one concrete next step.',
+          };
       },
     });
     const result = await agent.run('Help with my account.');
@@ -1056,7 +1062,7 @@ nativeIt(
       decisions,
       beforeComplete: async (context) => {
         await context.decide('Ready?', { input: context.text! });
-        return new ContinueTurn('Try again.');
+        return { action: 'continue', instructions: 'Try again.' };
       },
     });
     await expect(
@@ -1224,7 +1230,7 @@ nativeIt(
         },
         decisions: decisionProvider(),
         beforeComplete: async (context) => {
-          if (context.subagentId !== null) {
+          if (context.subagentId !== undefined) {
             try {
               await context.decide('Child ready?', { input: context.text! });
             } finally {
@@ -1463,4 +1469,50 @@ nativeIt(
     server.assertExhausted();
   },
   15000,
+);
+
+nativeIt(
+  'binds terminal completion decisions to the exact proposal and accounts once',
+  async () => {
+    const decisions = decisionProvider();
+    const server = new ModelServer(
+      [[call('finish', {}, { callId: 'terminal-decision' })]],
+      [wireUsage(14)],
+    );
+    await using provider = await providerFor(server);
+    let retained: BoundDecide | undefined;
+    const result = await new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Finish with the report.',
+      decisions,
+      outputType: z.object({ ready: z.boolean() }),
+      tools: [
+        tool({
+          name: 'finish',
+          parameters: z.object({}),
+          finishTurn: true,
+          execute: () => ({ ready: true }),
+        }),
+      ],
+      beforeComplete: async (context) => {
+        expect(context.text).toBeNull();
+        expect(context.toolCall?.callId).toBe('terminal-decision');
+        retained = context.decide;
+        expect(
+          await context.decide('Ready?', {
+            input: JSON.stringify(context.finalOutput),
+          }),
+        ).toBe(true);
+      },
+    }).run('Finish.');
+    expect(result.finalOutput).toEqual({ ready: true });
+    expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(24);
+    expect(decisions.getDecision).toHaveBeenCalledTimes(1);
+    await expect(retained!('Expired?', { input: 'Explicit.' })).rejects.toThrow(
+      /no longer|abort/i,
+    );
+    server.assertExhausted();
+  },
+  30000,
 );

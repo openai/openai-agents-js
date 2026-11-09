@@ -38,3 +38,17 @@ agent.decide('Ready?', {
   choices: [true],
   outputType: z.boolean(),
 });
+
+declare const completion: agents.CompletionContext<{ account: string }>;
+expectTypeOf(
+  completion.decide('Ready?', { input: completion.context.account }),
+).toEqualTypeOf<Promise<boolean>>();
+// @ts-expect-error Completion decisions use the existing action objects.
+void agents.ContinueTurn;
+const continueDecision: agents.CompletionDecision = {
+  action: 'continue',
+  instructions: 'Revise.',
+};
+const stopDecision: agents.CompletionDecision = { action: 'stop' };
+void continueDecision;
+void stopDecision;

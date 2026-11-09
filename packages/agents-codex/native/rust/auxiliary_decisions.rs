@@ -17,7 +17,7 @@ use crate::{RuntimeOwned, engine, input_error, native_error, python_tools};
 enum Callback {
     Tool(python_tools::PendingKey),
     Step(python_tools::StepReply),
-    Completion(python_tools::CompletionReply),
+    ToolCompletion(python_tools::CompletionReply),
     Prepared {
         generation: String,
         request_id: String,
@@ -85,9 +85,14 @@ impl Authority {
                 generation: value["generation"].as_str().ok_or_else(invalid)?.to_owned(),
                 request_id: value["request_id"].as_str().ok_or_else(invalid)?.to_owned(),
             }
-        } else if value["type"] == "_sdk_before_complete" {
-            Callback::Completion(serde_json::from_value(request).map_err(|_| invalid())?)
-        } else if value["type"] == "_sdk_select_step" {
+        } else if value["type"] == "_sdk_tool_completion" {
+            let mut request = request;
+            request["native_step"] = value["native_step"].clone();
+            Callback::ToolCompletion(serde_json::from_value(request).map_err(|_| invalid())?)
+        } else if matches!(
+            value["type"].as_str(),
+            Some("_sdk_before_complete" | "_sdk_select_step")
+        ) {
             Callback::Step(serde_json::from_value(request).map_err(|_| invalid())?)
         } else {
             return Err(invalid());
@@ -121,7 +126,7 @@ impl Authority {
                     .ok_or_else(|| input_error("Expired decision callback authority"))?;
                 let active = match callback {
                     Callback::Step(reply) => owner.check_step(&self.thread, reply),
-                    Callback::Completion(reply) => owner.check_completion(reply),
+                    Callback::ToolCompletion(reply) => owner.check_tool_completion(reply),
                     Callback::Prepared {
                         generation,
                         request_id,

@@ -35,12 +35,7 @@ The built-in provider uses the supported Decisions backend without a model-selec
 The `decisions` setting is separate from the Agent's generative `model` and `provider`. This example checks a proposed answer before accepting it. A failed check requests one continuation of the same turn.
 
 ```ts
-import {
-  Agent,
-  ContinueTurn,
-  NativeProvider,
-  OpenAIDecisions,
-} from '@openai/agents';
+import { Agent, NativeProvider, OpenAIDecisions } from '@openai/agents';
 
 await using provider = new NativeProvider();
 const agent = new Agent({
@@ -56,9 +51,10 @@ const agent = new Agent({
     if (ctx.continuationCount >= 1) {
       throw new Error('The answer did not pass its completion check');
     }
-    return new ContinueTurn(
-      'Explain the cause and give a practical next step.',
-    );
+    return {
+      action: 'continue',
+      instructions: 'Explain the cause and give a practical next step.',
+    };
   },
 });
 
@@ -68,7 +64,7 @@ console.log(result.finalOutput);
 
 Before-step, request-preparation, function-tool, native-agent approval, and completion callback contexts inherit the captured provider through `ctx.decide()`. Await the call in its live callback. Saved contexts cannot use an expired callback's authority. Completed usage contributes to the owning turn; child usage stays with the child. Run budgets check limits before admitting a root model step. An admitted request may finish after reaching a limit. Decision calls do not add root request admissions. Cancellation signals propagate to providers, and the Session joins started work. The helper does not append its question or answer to the conversation.
 
-`beforeComplete` receives proposed text before output validation. Returning `undefined` accepts it. Returning `ContinueTurn` adds feedback to the conversation and continues the same turn. Already streamed text remains visible and recorded. The callback does not run after a provider error or cancellation. Bound continuations with a count check or a run budget.
+`beforeComplete` receives proposed text before output validation. Returning `undefined` accepts it. Returning `{ action: 'continue', instructions }` adds feedback to the conversation and continues the same turn. Returning `{ action: 'stop' }` stops the issuing turn. The hook also receives terminal tool proposals through `finalOutput` and `toolCall`. When prompted output needs repair, the original hook checks each repaired candidate with its original context. Already streamed text remains visible and recorded. The callback does not run after a provider error or cancellation. Bound continuations with a count check or a run budget.
 
 ## Replace the provider
 
