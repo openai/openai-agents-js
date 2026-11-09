@@ -1903,6 +1903,7 @@ export type NativeCodexToolOptions = Pick<
  * Cancellation joins the CLI stream. Persistent calls run sequentially and
  * reuse the most recently completed thread in the same native Session unless
  * threadId selects another. Different native Sessions keep independent state.
+ * Configured turn signals also cancel calls waiting for persistent-session admission.
  */
 export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
   const resolveCodex = createCodexResolver(
@@ -1950,6 +1951,9 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
         .default(null),
     }),
     execute: async ({ prompt, threadId }, context) => {
+      const signal = turnOptions?.signal
+        ? AbortSignal.any([context.signal, turnOptions.signal])
+        : context.signal;
       let state: { persisted?: Thread; pending: Promise<void> } | undefined;
       let previous = Promise.resolve();
       let release: (() => void) | undefined;
@@ -1969,16 +1973,13 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
         state.pending = previous.then(() => slot);
       }
       try {
-        if (state) await waitForNativeCodexSlot(previous, context.signal);
-        context.signal.throwIfAborted();
+        if (state) await waitForNativeCodexSlot(previous, signal);
+        signal.throwIfAborted();
         const codex = await resolveCodex();
         const thread =
           threadId !== null
             ? codex.resumeThread(threadId, threadOptions)
             : (state?.persisted ?? codex.startThread(threadOptions));
-        const signal = turnOptions?.signal
-          ? AbortSignal.any([context.signal, turnOptions.signal])
-          : context.signal;
         const stream = await thread.runStreamed(prompt, {
           ...turnOptions,
           signal,

@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -395,3 +395,84 @@ it.each([
 it('rejects an empty native Codex tool name', () => {
   expect(() => nativeCodexTool({ name: '   ' })).toThrow('non-empty');
 });
+
+it.skipIf(process.platform === 'win32')(
+  'settles configured-signal cancellation while a persistent CLI invocation is queued',
+  async () => {
+    const { cli, calls } = await recordingCli();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const configured = new AbortController();
+    const reason = new Error('configured queued cancellation');
+    let observed = false;
+    let firstSettled = false;
+    const tool = nativeCodexTool({
+      codex: new Codex({ codexPathOverride: cli }),
+      persistSession: true,
+      defaultTurnOptions: { signal: configured.signal },
+      onEvent: async (event) => {
+        if (event.type === 'thread.started' && !observed) {
+          observed = true;
+          entered.resolve();
+          await finish.promise;
+        }
+      },
+    });
+    const owner = {};
+    const context = (callId: string) => {
+      const issued = {
+        context: undefined,
+        submission: { sessionId: 'configured-session' },
+        threadId: 'configured-session',
+        turnId: 'turn',
+        callId,
+        signal: new AbortController().signal,
+      } as ToolCallContext;
+      registerToolSessionOwner(issued, owner);
+      return issued;
+    };
+    const first = invokeFunctionTool(
+      tool,
+      { prompt: 'First', threadId: null },
+      context('first'),
+      () => {},
+    );
+    const firstOutcome = first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+    await entered.promise;
+    const second = invokeFunctionTool(
+      tool,
+      { prompt: 'Queued', threadId: null },
+      context('queued'),
+      () => {},
+    );
+    let secondError: unknown;
+    const secondOutcome = second.catch((error: unknown) => {
+      secondError = error;
+    });
+    configured.abort(reason);
+    try {
+      await vi.waitFor(() => expect(secondError).toBe(reason));
+      expect(firstSettled).toBe(false);
+      expect(await calls()).toHaveLength(1);
+      const third = invokeFunctionTool(
+        tool,
+        { prompt: 'Later', threadId: null },
+        context('later'),
+        () => {},
+      );
+      await expect(third).rejects.toBe(reason);
+      expect(await calls()).toHaveLength(1);
+    } finally {
+      finish.resolve();
+      await Promise.all([firstOutcome, secondOutcome]);
+    }
+    expect(await calls()).toHaveLength(1);
+  },
+);
