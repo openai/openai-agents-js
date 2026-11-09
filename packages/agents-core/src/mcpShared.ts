@@ -225,6 +225,15 @@ export abstract class BaseMCPServerSSE implements MCPServer {
 export const MCPTool = z.object({
   name: z.string(),
   description: z.string().optional(),
+  annotations: z
+    .looseObject({
+      title: z.string().optional(),
+      readOnlyHint: z.boolean().optional(),
+      destructiveHint: z.boolean().optional(),
+      idempotentHint: z.boolean().optional(),
+      openWorldHint: z.boolean().optional(),
+    })
+    .optional(),
   inputSchema: z.object({
     type: z.literal('object'),
     properties: z.record(z.string(), z.any()),
