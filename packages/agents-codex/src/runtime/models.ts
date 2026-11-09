@@ -86,7 +86,12 @@ export class ChatCompletionsModel implements NativeModel {
   ) {}
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const messages: Record<string, unknown>[] = [];
+    const nativeTools = [...((request.body.tools ?? []) as JsonObject[])];
     for (const raw of request.body.input as JsonObject[]) {
+      if (raw.type === 'additional_tools') {
+        nativeTools.push(...(raw.tools as JsonObject[]));
+        continue;
+      }
       if (raw.type === 'message') {
         const content = (raw.content as JsonObject[]).map((part) => {
           if (part.type === 'input_text' || part.type === 'output_text')
@@ -105,6 +110,10 @@ export class ChatCompletionsModel implements NativeModel {
         });
         messages.push({ role: raw.role, content });
       } else if (raw.type === 'function_call') {
+        if (raw.namespace != null && raw.namespace !== 'functions')
+          throw new TypeError(
+            'ChatCompletionsModel supports the default function namespace',
+          );
         messages.push({
           role: 'assistant',
           tool_calls: [
@@ -132,8 +141,16 @@ export class ChatCompletionsModel implements NativeModel {
           'ChatCompletionsModel received an unsupported native input item',
         );
     }
-    const tools = ((request.body.tools ?? []) as JsonObject[]).map(
-      ({ type, ...tool }) => {
+    const tools = nativeTools.flatMap((declaration) => {
+      if (declaration.type === 'namespace' && declaration.name !== 'functions')
+        throw new TypeError(
+          'ChatCompletionsModel supports the default function namespace',
+        );
+      const leaves =
+        declaration.type === 'namespace'
+          ? (declaration.tools as JsonObject[])
+          : [declaration];
+      return leaves.map(({ type, ...tool }) => {
         if (type !== 'function')
           throw new TypeError(
             'ChatCompletionsModel supports native function tools',
@@ -146,8 +163,8 @@ export class ChatCompletionsModel implements NativeModel {
             ),
           ),
         };
-      },
-    );
+      });
+    });
     const options: Record<string, unknown> = Object.fromEntries(
       [
         'temperature',

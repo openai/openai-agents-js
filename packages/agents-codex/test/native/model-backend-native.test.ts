@@ -73,29 +73,32 @@ it('keeps custom model tool calls, results and continuation in native Core', asy
   expect(seen[0].context).toEqual({ tenant: 'synthetic' });
 }, 20_000);
 
-it('uses an injected OpenAI Chat client while Core executes tools and resumes the model', async () => {
-  const seen: any[] = [];
-  const server = createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    const body = JSON.parse(Buffer.concat(chunks).toString());
-    seen.push(body);
-    const message =
-      seen.length === 1
-        ? {
-            content: null,
-            tool_calls: [
-              {
-                type: 'function',
-                id: 'call_echo',
-                function: { name: 'echo', arguments: '{"value":"from-tool"}' },
-              },
-            ],
-          }
-        : { content: 'native chat finished' };
-    response
-      .writeHead(200, { 'content-type': 'application/json' })
-      .end(
+it.each([undefined, 'fixture-chat-standard'])(
+  'uses an injected OpenAI Chat client with native model %s while Core executes tools',
+  async (nativeModel) => {
+    const seen: any[] = [];
+    const server = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      seen.push(body);
+      const message =
+        seen.length === 1
+          ? {
+              content: null,
+              tool_calls: [
+                {
+                  type: 'function',
+                  id: 'call_echo',
+                  function: {
+                    name: 'echo',
+                    arguments: '{"value":"from-tool"}',
+                  },
+                },
+              ],
+            }
+          : { content: 'native chat finished' };
+      response.writeHead(200, { 'content-type': 'application/json' }).end(
         JSON.stringify({
           id: `chat_${seen.length}`,
           object: 'chat.completion',
@@ -111,44 +114,48 @@ it('uses an injected OpenAI Chat client while Core executes tools and resumes th
           usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
         }),
       );
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Expected port');
-  try {
-    const client = new OpenAI({
-      apiKey: 'synthetic-key',
-      baseURL: `http://127.0.0.1:${address.port}/v1`,
     });
-    const echo = tool({
-      name: 'echo',
-      description: 'Echo.',
-      parameters: z.object({ value: z.string() }),
-      execute: ({ value }) => value,
-    });
-    await using provider = new NativeProvider({
-      modelBackend: new ChatCompletionsModel(client, 'chat-model'),
-    });
-    const result = await new Agent({
-      instructions: 'Use echo.',
-      tools: [echo],
-      provider,
-    }).run('Call echo.');
-    expect(result.finalOutput).toBe('native chat finished');
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).toMatchObject({ model: 'chat-model', stream: false });
-    expect(
-      seen[1].messages.some(
-        (item: any) =>
-          item.role === 'tool' && item.content.includes('from-tool'),
-      ),
-    ).toBe(true);
-  } finally {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-}, 20_000);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Expected port');
+    try {
+      const client = new OpenAI({
+        apiKey: 'synthetic-key',
+        baseURL: `http://127.0.0.1:${address.port}/v1`,
+      });
+      const echo = tool({
+        name: 'echo',
+        description: 'Echo.',
+        parameters: z.object({ value: z.string() }),
+        execute: ({ value }) => value,
+      });
+      await using provider = new NativeProvider({
+        modelBackend: new ChatCompletionsModel(client, 'chat-model'),
+      });
+      const result = await new Agent({
+        model: nativeModel,
+        instructions: 'Use echo.',
+        tools: [echo],
+        provider,
+      }).run('Call echo.');
+      expect(result.finalOutput).toBe('native chat finished');
+      expect(seen).toHaveLength(2);
+      expect(seen[0]).toMatchObject({ model: 'chat-model', stream: false });
+      expect(
+        seen[1].messages.some(
+          (item: any) =>
+            item.role === 'tool' && item.content.includes('from-tool'),
+        ),
+      ).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+  20_000,
+);
 
 it('joins admitted asynchronous model work and discards a late tool call on cancellation', async () => {
   let enter!: () => void;
