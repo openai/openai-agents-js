@@ -2322,3 +2322,118 @@ nativeIt(
   },
   30000,
 );
+
+nativeIt.each(['conversation item', 'generic error'] as const)(
+  'rejects dense %s JSON at the native wire allocation boundary',
+  async (kind) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      let failure: unknown;
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch((error: unknown) => {
+        failure = error;
+      });
+      try {
+        const dense = Array.from({ length: 33_000 }, () => ({}));
+        peer.send(
+          kind === 'conversation item'
+            ? {
+                type: 'conversation.item.added',
+                item: {
+                  id: 'dense-item',
+                  type: 'message',
+                  role: 'assistant',
+                  content: [],
+                  metadata: { dense },
+                },
+              }
+            : { type: 'error', error: { dense } },
+        );
+        await vi.waitFor(() => expect(failure).toBeDefined(), {
+          timeout: 2000,
+        });
+        expect(
+          /capacity/.test(String(failure) + String((failure as Error).cause)),
+        ).toBe(true);
+        expect(
+          seen.some(
+            (event) =>
+              event.type === 'conversation_item' &&
+              event.itemId === 'dense-item',
+          ),
+        ).toBe(false);
+      } finally {
+        await voice.close().catch(() => {});
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'preserves small generic conversation items and provider errors',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help the caller.',
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      let failure: unknown;
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch((error: unknown) => {
+        failure = error;
+      });
+      try {
+        peer.send({
+          type: 'conversation.item.added',
+          item: {
+            id: 'small-item',
+            type: 'message',
+            role: 'assistant',
+            content: [],
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item' &&
+                event.itemId === 'small-item',
+            ),
+          ).toBe(true),
+        );
+        peer.send({ type: 'error', error: { code: 'small-provider-error' } });
+        await reading;
+        expect(String((failure as Error).cause)).toContain(
+          'small-provider-error',
+        );
+      } finally {
+        await voice.close().catch(() => {});
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
