@@ -192,6 +192,7 @@ struct PendingCall {
     _tracing: Option<codex_otel::sdk_trace::ContextLease>,
     sender: oneshot::Sender<ToolReply>,
     manual_request: Option<Value>,
+    _approval_receiver: Option<oneshot::Receiver<ToolReply>>,
 }
 
 pub(crate) struct ChildStepSelection;
@@ -595,7 +596,15 @@ impl PythonTools {
                     .is_ok()
             }
             "cancelled" => callback.cancelled.load(Ordering::Acquire),
-            "release" => callback.release(),
+            "release" => {
+                let released = callback.release();
+                // A restored approval owns a synthetic waiter, not a live Core
+                // PendingReply. Retire it after receipt and physical callback release.
+                if call._approval_receiver.is_some() && call.sender.is_closed() {
+                    pending.remove(&key);
+                }
+                released
+            }
             _ => false,
         }
     }
@@ -1799,6 +1808,7 @@ impl PythonTools {
                     deadline: admission.and_then(|turn| turn.capture_model_deadline()),
                     sender,
                     manual_request: key.reply.manual_grant.as_ref().map(|_| request.clone()),
+                    _approval_receiver: None,
                 },
             );
         }

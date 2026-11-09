@@ -3192,13 +3192,23 @@ impl NativeThread {
                 let Some(native_media) = tools.native_media(&request) else {
                     return Ok(false);
                 };
+                let restored = tools.has_restored_manual() && request.reply.manual_grant.is_some();
+                let restored_model = if restored {
+                    Some(
+                        tools
+                            .restored_media_model(&request.reply.thread, &request)
+                            .map_err(native_error)?,
+                    )
+                } else {
+                    None
+                };
                 inner
                     .engine
                     .validate_tool_media(
                         &request.reply.thread,
                         &request.turn,
-                        false,
-                        None,
+                        restored,
+                        restored_model.as_deref(),
                         native_media.as_ref(),
                         &response,
                     )
@@ -3250,6 +3260,54 @@ impl NativeThread {
             }
         })
         .await
+    }
+
+    #[napi(js_name = "_require_tool_approval")]
+    pub fn require_tool_approval(
+        &self,
+        request_json: String,
+        arguments_json: Option<String>,
+    ) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let arguments = arguments_json
+            .map(|text| serde_json::from_str::<Value>(&text))
+            .transpose()
+            .map_err(native_error)?;
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .and_then(|tools| tools.owner(&inner.id.to_string(), &key))
+        else {
+            return Ok(false);
+        };
+        tools
+            .require_approval(&key.reply.thread, &key, arguments)
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_approve_manual_tool")]
+    pub async fn approve_manual_tool(&self, request_json: String) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .and_then(|tools| tools.owner(&inner.id.to_string(), &key))
+        else {
+            return Ok(false);
+        };
+        tools
+            .approve_manual(&key.reply.thread, &key)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "_configure_manual_tools")]

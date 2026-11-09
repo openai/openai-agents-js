@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Agent } from './public-agent';
-import { captureTools, type ToolCatalog } from './tools';
+import { managedApproval, captureTools, type ToolCatalog } from './tools';
 import {
   splitToolDeclarations,
   HttpMCP,
@@ -164,7 +164,10 @@ export function captureProfileRuntimes(
         tool.kind === 'manual' ? [slot] : [],
       ),
       terminal_slots: catalog.tools.flatMap((tool, slot) =>
-        tool.kind !== 'manual' && tool.finishTurn ? [slot] : [],
+        (tool.kind !== 'manual' && tool.finishTurn) ||
+        managedApproval(tool)?.function.finishTurn
+          ? [slot]
+          : [],
       ),
       step_defaults: catalog.tools.map((_, index) => index),
       handoffs: { ...profile.handoffs },

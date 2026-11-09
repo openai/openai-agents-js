@@ -363,3 +363,6 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+
+export { isFunctionApprovalRequest } from './runtime/manual';
+export type { FunctionApprovalRequest } from './runtime/manual';

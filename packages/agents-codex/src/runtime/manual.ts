@@ -39,6 +39,35 @@ export interface ManualToolRequest<Input = unknown, Result = unknown> {
   reply(value: Result): ManualToolReply<Result>;
 }
 
+/** A managed function decision; deliver its reply through Session.respond or onInteraction. */
+export interface FunctionApprovalRequest<
+  Input = unknown,
+> extends ManualToolRequest<Input, never> {
+  readonly approvalRequired: true;
+  /** Detached validated arguments after the pre-approval input policy. */
+  readonly effectiveArguments: Input;
+  approve(options?: { always?: boolean }): ManualToolReply;
+  reject(reason?: string, options?: { always?: boolean }): ManualToolReply;
+}
+
+/** Narrow an SDK-issued managed function approval. */
+export function isFunctionApprovalRequest(
+  value: unknown,
+): value is FunctionApprovalRequest {
+  return (
+    isObject(value) &&
+    requests.has(value) &&
+    'approvalRequired' in value &&
+    value.approvalRequired === true
+  );
+}
+
+export interface ApprovalDecision {
+  approve: boolean;
+  always: boolean;
+  reason: string;
+}
+
 export interface ManualTool<
   Input = unknown,
   Result = unknown,
@@ -55,7 +84,12 @@ interface RequestAuthority {
 const requests = new WeakMap<object, RequestAuthority>();
 const replies = new WeakMap<
   object,
-  { identity: object; value: unknown; consumed?: true }
+  {
+    identity: object;
+    value?: unknown;
+    approval?: ApprovalDecision;
+    consumed?: true;
+  }
 >();
 const preparedResults = new WeakMap<
   object,
@@ -189,6 +223,7 @@ export function createManualRequest<Input, Result>(
   },
   args: JsonValue,
   isCurrent: () => boolean,
+  managedApproval = false,
 ) {
   let active = true;
   const replyIdentity = {};
@@ -209,13 +244,60 @@ export function createManualRequest<Input, Result>(
     throw new TypeError('Manual tool arguments failed validation');
   }
   checkCurrent();
+  let effectiveArguments = parsed;
   let cachedRequest: ManualToolRequest<Input, Result> | undefined;
+  const approvalReply = (
+    approve: boolean,
+    reason: string,
+    always: boolean,
+  ): ManualToolReply => {
+    checkCurrent();
+    if (typeof reason !== 'string' || typeof always !== 'boolean')
+      throw new TypeError(
+        'Approval reason must be a string and always a boolean',
+      );
+    const reply = Object.freeze({}) as ManualToolReply;
+    replies.set(reply, {
+      identity: replyIdentity,
+      approval: { approve, reason, always },
+    });
+    return reply;
+  };
   return {
+    setEffectiveArguments(value: JsonValue): void {
+      checkCurrent();
+      effectiveArguments = copyJsonValue(definition.parseInput(value));
+      checkCurrent();
+    },
+    takeApprovalReply(reply: unknown): ApprovalDecision | undefined {
+      if (!managedApproval || !authority.current() || !isObject(reply))
+        return undefined;
+      const found = replies.get(reply);
+      if (found?.identity !== replyIdentity || !found.approval)
+        return undefined;
+      active = false;
+      return found.approval;
+    },
     request(): ManualToolRequest<Input, Result> | undefined {
       if (!authority.current()) return undefined;
       if (cachedRequest) return cachedRequest;
-      const request: ManualToolRequest<Input, Result> = Object.freeze({
+      const request: ManualToolRequest<Input, Result> = {
         type: 'action_requested',
+        ...(managedApproval
+          ? {
+              approvalRequired: true as const,
+              approve: (options: { always?: boolean } = {}) =>
+                approvalReply(
+                  true,
+                  'Tool execution was rejected',
+                  options.always ?? false,
+                ),
+              reject: (
+                reason = 'Tool execution was rejected',
+                options: { always?: boolean } = {},
+              ) => approvalReply(false, reason, options.always ?? false),
+            }
+          : {}),
         sessionId: identity.sessionId,
         submissionId: identity.submissionId,
         subagentId: identity.subagentId,
@@ -228,11 +310,21 @@ export function createManualRequest<Input, Result>(
           return copyJsonValue(parsed) as Input;
         },
         reply(value: Result): ManualToolReply<Result> {
+          if (managedApproval)
+            throw new TypeError(
+              'Use approve() or reject() for a managed function',
+            );
           const reply = Object.freeze({}) as ManualToolReply<Result>;
           replies.set(reply, { identity: replyIdentity, value });
           return reply;
         },
-      });
+      };
+      if (managedApproval)
+        Object.defineProperty(request, 'effectiveArguments', {
+          enumerable: true,
+          get: () => copyJsonValue(effectiveArguments) as Input,
+        });
+      Object.freeze(request);
       requests.set(request, authority);
       cachedRequest = request;
       return request;

@@ -102,6 +102,40 @@ SDK-issued function, collaboration, and executor callback contexts include froze
 
 `call.callId` is the provider call ID. Generated function/manual calls have no provider or outer ID; their cell and nested runtime IDs remain separate. The existing non-null context or manual request `callId` still identifies its invocation and reply. Metadata never grants permission to execute or answer a call; keep using live manual requests and their `reply()` method. See [the call metadata example](../call-metadata.ts).
 
+### Managed function approvals (preview source)
+
+Use the matching native preview source and artifacts for this API. Set `needsApproval: true` on a bare `tool()` declaration to ask the application before its callback runs. A synchronous or asynchronous predicate can inspect the tool context instead; `false` runs the callback without an interaction.
+
+```ts
+import { Agent, isFunctionApprovalRequest, tool } from '@openai/agents-codex';
+import { z } from 'zod';
+
+const record = tool({
+  name: 'record',
+  parameters: z.object({ value: z.string() }),
+  needsApproval: true,
+  execute: ({ value }) => `Recorded ${value}`,
+});
+const agent = new Agent({ instructions: 'Use record once.', tools: [record] });
+await using session = await agent.session();
+const turn = await session.submit('Record the synthetic value.');
+for await (const request of session.interactions()) {
+  if (!isFunctionApprovalRequest(request)) continue;
+  console.log(request.effectiveArguments);
+  await session.respond(request.approve());
+  break;
+}
+console.log((await turn.wait()).finalOutput);
+```
+
+Configure the provider as usual before running this live example. `request.approve()` creates a single-use decision; `session.respond()` delivers it to the original native call. Approval runs the registered callback. `request.reject(reason)` supplies a failed tool result without calling it. A decision from another Session or an expired request fails.
+
+By default, `before` runs after approval, immediately before execution. With `runBeforeApproval: true`, `before` also checks input before the approval predicate. Its replacement becomes `effectiveArguments`. The input check runs again before execution and can still reject or replace that input. Output checks run after execution. Use `approve({ always: true })` or `reject(reason, { always: true })` to remember a decision for the exact captured declaration and Agent binding in this Session. The cache does not carry into a new Session or replace input checks.
+
+Await `session.suspend()` while approval is pending to capture portable state. Restore it with current trusted tools and provider configuration. A saved required approval remains required even if the current predicate returns false. Core retains accepted sibling results; saved history never grants callback authority. Without `onInteraction`, one-shot `agent.run()` raises `InteractionRequired` with its portable `state` before a required callback runs. Live Realtime function calls share these decisions and guard checks; closing the voice operation expires its request.
+
+This slice excludes managed MCP, nested guarded restore, namespaced or generated-code approvals, Computer approvals, and persistent-store composition. `manualTool()` still supplies an application result rather than approving a registered callback. Cancellation joins callback cleanup and cannot roll back effects. Portable snapshots do not coordinate independent writers or make uncertain effects safe to retry.
+
 ### Manual tool requests
 
 `manualTool()` creates a declaration whose `ActionRequested` events require an application reply. Call `request.reply(value)` and deliver that reply with `session.respond()`. Validation occurs on submission, so an invalid reply does not consume the request. An `onInteraction` handler supplied to `run()` or `session()` can supply replies instead.

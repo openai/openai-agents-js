@@ -1,0 +1,609 @@
+import { afterEach, expect, it } from 'vitest';
+import { z } from 'zod';
+import {
+  Agent,
+  InteractionRequired,
+  NativeProvider,
+  isFunctionApprovalRequest,
+  tool,
+  type FunctionApprovalRequest,
+} from '../../src';
+import { ModelServer, call, message } from './fixtures/model-server';
+
+afterEach(() => ModelServer.closeAll());
+
+async function providerFor(server: ModelServer) {
+  const config = await server.config();
+  return new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-function-approval',
+    supportsWebsockets: false,
+  });
+}
+
+async function nextApproval(session: {
+  interactions(): AsyncIterable<unknown>;
+}): Promise<FunctionApprovalRequest> {
+  for await (const event of session.interactions())
+    if (isFunctionApprovalRequest(event)) return event;
+  throw new Error('The native turn ended before its approval arrived');
+}
+
+it.each([true, false])(
+  'gates callback effects and consumes the exact decision (approve=%s)',
+  async (approve) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: true,
+      execute: ({ value }) => {
+        effects.push(value);
+        return 'accepted-' + value;
+      },
+    });
+    const server = new ModelServer([
+      [call('risky', { value: 'A' }, { callId: 'approval-A' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use the tool.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    });
+    await using session = await agent.session();
+    await using foreign = await agent.session();
+    const turn = await session.submit('begin');
+    const request = await nextApproval(session);
+    expect(request.callId).toBe('approval-A');
+    expect(request.turnId).toBe(turn.turnId);
+    expect(effects).toEqual([]);
+    expect(server.requests).toHaveLength(1);
+    const reply = approve
+      ? request.approve()
+      : request.reject('explicit denial');
+    await expect(foreign.respond(reply)).rejects.toThrow();
+    await session.respond(reply);
+    await expect(session.respond(reply)).rejects.toThrow();
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(effects).toEqual(approve ? ['A'] : []);
+    server.assertExhausted();
+  },
+);
+
+it('runs a false predicate automatically without an interaction handler', async () => {
+  const calls: string[] = [];
+  const safe = tool({
+    name: 'safe',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: async (context) => {
+      calls.push('policy:' + context.effectiveArguments.value);
+      return false;
+    },
+    execute: ({ value }) => {
+      calls.push('body:' + value);
+      return value;
+    },
+  });
+  const server = new ModelServer([
+    [call('safe', { value: 'A' }, { callId: 'safe-A' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  const result = await new Agent({
+    instructions: 'Use the tool.',
+    model: 'gpt-5',
+    provider,
+    tools: [safe],
+  }).run('begin');
+  expect(result.finalOutput).toBe('done');
+  expect(calls).toEqual(['policy:A', 'body:A']);
+  server.assertExhausted();
+});
+
+it('exports a required one-shot approval before callback effects', async () => {
+  const effects: string[] = [];
+  const risky = tool({
+    name: 'risky',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: true,
+    execute: ({ value }) => {
+      effects.push(value);
+      return value;
+    },
+  });
+  const server = new ModelServer([
+    [call('risky', { value: 'A' }, { callId: 'one-shot-approval' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use the tool.',
+    model: 'gpt-5',
+    provider,
+    tools: [risky],
+  });
+  const interrupted = await agent.run('begin').catch((error: unknown) => error);
+  expect(interrupted).toBeInstanceOf(InteractionRequired);
+  if (!(interrupted instanceof InteractionRequired) || !interrupted.state)
+    throw new Error('Required approval did not export its native continuation');
+  expect(effects).toEqual([]);
+  await using restored = await agent.session({ state: interrupted.state });
+  const request = await nextApproval(restored);
+  expect(request.callId).toBe('one-shot-approval');
+  await restored.respond(request.approve());
+  expect((await restored.restoredTurn!.wait()).finalOutput).toBe('done');
+  expect(effects).toEqual(['A']);
+  server.assertExhausted();
+});
+
+it.each([false, true])(
+  'rechecks input policies and exposes effective arguments (before approval=%s)',
+  async (runBeforeApproval) => {
+    const calls: string[] = [];
+    const increment = tool({
+      name: 'increment',
+      parameters: z.object({ value: z.number() }),
+      runBeforeApproval,
+      needsApproval: (context) => {
+        calls.push('policy:' + context.effectiveArguments.value);
+        return true;
+      },
+      before: (context) => {
+        const value = context.effectiveArguments.value as number;
+        calls.push('before:' + value);
+        return { action: 'replaceArguments', arguments: { value: value + 1 } };
+      },
+      execute: ({ value }, context) => {
+        expect(context.originalArguments).toEqual({ value: 1 });
+        calls.push('body:' + value);
+        return String(value);
+      },
+    });
+    const server = new ModelServer([
+      [call('increment', { value: 1 }, { callId: 'increment-A' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use the tool.',
+      model: 'gpt-5',
+      provider,
+      tools: [increment],
+    }).session();
+    const turn = await session.submit('begin');
+    const request = await nextApproval(session);
+    expect(request.arguments).toEqual({ value: 1 });
+    expect(request.effectiveArguments).toEqual({
+      value: runBeforeApproval ? 2 : 1,
+    });
+    (request.effectiveArguments as { value: number }).value = 99;
+    expect(request.effectiveArguments).toEqual({
+      value: runBeforeApproval ? 2 : 1,
+    });
+    expect(calls.some((entry) => entry.startsWith('body:'))).toBe(false);
+    await session.respond(request.approve());
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(calls).toEqual(
+      runBeforeApproval
+        ? ['before:1', 'policy:2', 'before:2', 'body:3']
+        : ['policy:1', 'before:1', 'body:2'],
+    );
+    server.assertExhausted();
+  },
+);
+
+it.each([true, false])(
+  'scopes remembered decisions to one Session and binding (approve=%s)',
+  async (approve) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: true,
+      execute: ({ value }) => {
+        effects.push(value);
+        return value;
+      },
+    });
+    const server = new ModelServer([
+      [call('risky', { value: '0' }, { callId: 'cached-0' })],
+      [message('done')],
+      [call('risky', { value: '1' }, { callId: 'cached-1' })],
+      [message('done')],
+      [call('risky', { value: 'new' }, { callId: 'new-session' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use the tool.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    });
+    {
+      await using session = await agent.session();
+      for (let i = 0; i < 2; i++) {
+        const turn = await session.submit('begin');
+        if (i === 0) {
+          const request = await nextApproval(session);
+          await session.respond(
+            approve
+              ? request.approve({ always: true })
+              : request.reject(undefined, { always: true }),
+          );
+        }
+        expect((await turn.wait()).finalOutput).toBe('done');
+        expect(await session.pendingInteractions()).toEqual([]);
+      }
+    }
+    await using fresh = await agent.session();
+    const turn = await fresh.submit('begin');
+    const request = await nextApproval(fresh);
+    await fresh.respond(request.reject());
+    await turn.wait();
+    expect(effects).toEqual(approve ? ['0', '1'] : []);
+    server.assertExhausted();
+  },
+);
+
+it('denies input before approval without running its predicate, body or output policy', async () => {
+  const calls: string[] = [];
+  const risky = tool({
+    name: 'risky',
+    parameters: z.object({ value: z.string() }),
+    runBeforeApproval: true,
+    needsApproval: () => {
+      calls.push('policy');
+      return true;
+    },
+    before: () => {
+      calls.push('before');
+      return { action: 'deny', reason: 'input denied' };
+    },
+    execute: ({ value }) => {
+      calls.push('body');
+      return value;
+    },
+    after: (output) => {
+      calls.push('after');
+      return output;
+    },
+  });
+  const server = new ModelServer([
+    [call('risky', { value: 'A' }, { callId: 'denied-input' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Use the tool.',
+    model: 'gpt-5',
+    provider,
+    tools: [risky],
+  }).session();
+  expect((await (await session.submit('begin')).wait()).finalOutput).toBe(
+    'done',
+  );
+  expect(calls).toEqual(['before']);
+  server.assertExhausted();
+});
+
+it('joins physical callback cleanup after approving and cancelling a native call', async () => {
+  const entered = Promise.withResolvers<void>();
+  const cleaning = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const hold = tool({
+    name: 'hold',
+    parameters: z.object({}),
+    needsApproval: true,
+    execute: async (_, context) => {
+      entered.resolve();
+      try {
+        await new Promise<void>((_, reject) =>
+          context.signal.addEventListener(
+            'abort',
+            () => reject(context.signal.reason),
+            { once: true },
+          ),
+        );
+      } finally {
+        cleaning.resolve();
+        await release.promise;
+      }
+      return 'unreachable';
+    },
+  });
+  const server = new ModelServer([
+    [call('hold', {}, { callId: 'held-approval' })],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Use the tool.',
+    model: 'gpt-5',
+    provider,
+    tools: [hold],
+  }).session();
+  const turn = await session.submit('begin');
+  const request = await nextApproval(session);
+  await session.respond(request.approve());
+  await entered.promise;
+  let finished = false;
+  const cancellation = turn.cancel().then(() => {
+    finished = true;
+  });
+  try {
+    await cleaning.promise;
+    expect(finished).toBe(false);
+  } finally {
+    release.resolve();
+  }
+  await cancellation;
+  await expect(turn.wait()).rejects.toThrow();
+  expect(() => request.approve()).toThrow();
+});
+
+it.each([
+  { approve: true, guarded: false },
+  { approve: false, guarded: false },
+  { approve: true, guarded: true },
+  { approve: false, guarded: true },
+])(
+  'restores required approval and accepted siblings in a fresh process (approve=$approve, guarded=$guarded)',
+  async ({ approve, guarded }) => {
+    const { mkdtemp, writeFile, readFile, rm } =
+      await import('node:fs/promises');
+    const { appendFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { spawn } = await import('node:child_process');
+    const directory = await mkdtemp(join(tmpdir(), 'native-approval-'));
+    const effectsPath = join(directory, 'effects.txt');
+    await writeFile(effectsPath, '');
+    const risky = tool({
+      name: 'risky',
+      description: 'Synthetic effect',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: true,
+      runBeforeApproval: guarded,
+      before: guarded
+        ? (context) => ({
+            action: 'replaceArguments',
+            arguments: {
+              value: String(context.effectiveArguments.value) + '-pre',
+            },
+          })
+        : undefined,
+      execute: ({ value }) => {
+        appendFileSync(effectsPath, 'risky\n');
+        return 'accepted-' + value;
+      },
+    });
+    const accepted = tool({
+      name: 'accepted',
+      description: 'Accepted sibling',
+      parameters: z.object({ value: z.string() }),
+      execute: ({ value }) => {
+        appendFileSync(effectsPath, 'accepted\n');
+        return 'sibling-' + value;
+      },
+    });
+    const server = new ModelServer([
+      [
+        call('accepted', { value: 'A' }, { callId: 'accepted-sibling' }),
+        call('risky', { value: 'B' }, { callId: 'pending-approval' }),
+      ],
+      [message('resumed')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use both tools.',
+      model: 'gpt-5',
+      provider,
+      tools: [accepted, risky],
+    });
+    try {
+      let turnId: string;
+      {
+        await using source = await agent.session();
+        const turn = await source.submit('begin');
+        turnId = turn.turnId;
+        const old = await nextApproval(source);
+        const saved = await source.suspend();
+        expect(await readFile(effectsPath, 'utf8')).toBe('accepted\n');
+        expect(() => old.approve()).toThrow();
+        await writeFile(join(directory, 'state.json'), JSON.stringify(saved));
+      }
+      const config = await server.config();
+      const baseUrl = (
+        config['model_providers.fixture'] as { base_url: string }
+      ).base_url;
+      const fixture = new URL(
+        './fixtures/managed-approval-restore.ts',
+        import.meta.url,
+      );
+      const child = spawn(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          fixture.pathname,
+          join(directory, 'state.json'),
+          effectsPath,
+          baseUrl,
+          approve ? 'approve' : 'reject',
+          turnId,
+          guarded ? 'guarded' : 'plain',
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let stdout = '',
+        stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (value) => {
+        stdout += value;
+      });
+      child.stderr.on('data', (value) => {
+        stderr += value;
+      });
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.on('error', reject);
+        child.on('exit', resolve);
+      });
+      expect(code, stderr).toBe(0);
+      expect(JSON.parse(stdout).effects).toEqual(
+        approve ? ['accepted', 'risky'] : ['accepted'],
+      );
+      expect(server.requests).toHaveLength(2);
+      const outputs = server.requests[1].input as {
+        type: string;
+        call_id?: string;
+        output?: unknown;
+      }[];
+      expect(
+        JSON.stringify(
+          outputs.find(
+            (item) =>
+              item.type === 'function_call_output' &&
+              item.call_id === 'accepted-sibling',
+          )?.output,
+        ),
+      ).toContain('sibling-A');
+      expect(
+        JSON.stringify(
+          outputs.find(
+            (item) =>
+              item.type === 'function_call_output' &&
+              item.call_id === 'pending-approval',
+          )?.output,
+        ),
+      ).toContain(
+        approve
+          ? guarded
+            ? 'accepted-B-pre-post'
+            : 'accepted-B'
+          : 'restored rejection',
+      );
+      server.assertExhausted();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  40_000,
+);
+
+it('does not apply remembered approval to another admitted Agent callback with the same schema', async () => {
+  const effects: string[] = [];
+  const declaration = (label: string) =>
+    tool({
+      name: 'risky',
+      description: 'Same declaration schema',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: true,
+      execute: ({ value }) => {
+        effects.push(label);
+        return value;
+      },
+    });
+  const first = declaration('old'),
+    second = declaration('new');
+  const server = new ModelServer([
+    [call('risky', { value: 'A' }, { callId: 'old-binding' })],
+    [message('done')],
+    [call('risky', { value: 'B' }, { callId: 'new-binding' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  const options = { instructions: 'Use the tool.', model: 'gpt-5', provider };
+  const other = new Agent({ ...options, name: 'other', tools: [second] });
+  await using session = await new Agent({
+    ...options,
+    tools: [first],
+    handoffs: [other],
+  }).session();
+  const old = await session.submit('first');
+  await session.respond(
+    (await nextApproval(session)).approve({ always: true }),
+  );
+  await old.wait();
+  await session.update({ agent: other });
+  const current = await session.submit('second');
+  const request = await nextApproval(session);
+  expect(effects).toEqual(['old']);
+  await session.respond(request.approve());
+  await current.wait();
+  expect(effects).toEqual(['old', 'new']);
+  server.assertExhausted();
+});
+
+it('preserves a terminal callback without an extra model step', async () => {
+  const finish = tool({
+    name: 'finish',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: true,
+    finishTurn: true,
+    execute: ({ value }) => 'finished-' + value,
+  });
+  const server = new ModelServer([
+    [call('finish', { value: 'A' }, { callId: 'terminal-approval' })],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Use the tool.',
+    model: 'gpt-5',
+    provider,
+    tools: [finish],
+  }).session();
+  const turn = await session.submit('begin');
+  await session.respond((await nextApproval(session)).approve());
+  expect((await turn.wait()).finalOutput).toBe('finished-A');
+  expect(server.requests).toHaveLength(1);
+  server.assertExhausted();
+});
+
+it.each([false, true])(
+  'preserves raw input for schema transforms (replacement=%s)',
+  async (replaceInput) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({
+        value: z.string().transform((value) => value + '!'),
+      }),
+      needsApproval: true,
+      runBeforeApproval: replaceInput,
+      before: replaceInput
+        ? () => ({
+            action: 'replaceArguments',
+            arguments: { value: 'replacement' },
+          })
+        : undefined,
+      execute: ({ value }) => {
+        effects.push(value);
+        return value;
+      },
+    });
+    const server = new ModelServer([
+      [call('risky', { value: 'original' }, { callId: 'transform' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    }).session();
+    const turn = await session.submit('begin');
+    const request = await nextApproval(session);
+    const expected = replaceInput ? 'replacement!' : 'original!';
+    expect(request.effectiveArguments).toEqual({ value: expected });
+    await session.respond(request.approve());
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(effects).toEqual([expected]);
+    server.assertExhausted();
+  },
+);

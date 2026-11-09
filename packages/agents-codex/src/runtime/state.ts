@@ -313,6 +313,8 @@ const manualContinuationSchema = z.object({
         name: z.string().min(1),
         namespace: z.string().optional(),
         arguments: z.string(),
+        approval_required: z.boolean().optional(),
+        effective_arguments: z.string().optional(),
       }),
     )
     .min(1),
