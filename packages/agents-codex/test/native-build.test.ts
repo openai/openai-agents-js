@@ -464,20 +464,42 @@ describe.skipIf(process.platform === 'win32')(
         writeFileSync(
           preload,
           `import { appendFileSync } from 'node:fs';
+const assets = ${JSON.stringify(assets.map((asset, index) => ({ ...asset, id: index + 1, state: 'uploaded' })))};
 const attempts = new Map();
-globalThis.fetch = async (url) => {
-  const name = new URL(url).pathname.split('/').pop();
+globalThis.fetch = async (url, options = {}) => {
+  const parsed = new URL(url);
+  const name = parsed.pathname.split('/').pop();
   const attempt = (attempts.get(name) || 0) + 1;
   attempts.set(name, attempt);
   const mode = process.env.TEST_V8_DOWNLOAD;
-  const firstArchiveRetry = mode === 'retry' && name.startsWith('lib') && attempt === 1;
-  let status = 200;
-  if (mode === 'exhausted' || firstArchiveRetry) status = 504;
-  if (mode === '404') status = 404;
-  appendFileSync(process.env.TEST_FETCH_LOG, JSON.stringify({ name, status }) + '\\n');
-  return new Response(mode === 'digest' ? 'incorrect bytes' : name, { status });
-};
-`,
+  const headers = new Headers(options.headers);
+  let status = 200, body = name, responseHeaders = {};
+  if (parsed.hostname === 'api.github.com') {
+    if (mode === 'exhausted') status = 504;
+    else if (mode === 'api-rate') {
+      status = 403;
+      responseHeaders['x-ratelimit-reset'] = '1700000000';
+    } else if (parsed.pathname.includes('/tags/')) {
+      body = JSON.stringify({ tag_name: 'rusty-v8-v1.2.3', assets: mode === 'api-metadata' ? assets.map(asset => ({ ...asset, digest: 'sha256:incorrect' })) : assets });
+    } else {
+      const asset = assets.find(asset => String(asset.id) === name);
+      if (mode === 'api-body') body = 'incorrect bytes';
+      else if (asset.name.startsWith('lib')) {
+        status = 302;
+        responseHeaders.location = (mode === 'api-insecure' ? 'http:' : 'https:') + '//release-assets.githubusercontent.com/' + asset.name;
+      } else body = asset.name;
+    }
+  } else if (parsed.hostname === 'release-assets.githubusercontent.com') {
+    if (headers.has('authorization')) throw new Error('API credential reached download host');
+  } else {
+    const firstArchiveRetry = mode === 'retry' && name.startsWith('lib') && attempt === 1;
+    if (mode === 'exhausted' || mode.startsWith('api') || firstArchiveRetry) status = 504;
+    if (mode === '404') status = 404;
+    if (mode === 'digest') body = 'incorrect bytes';
+  }
+  appendFileSync(process.env.TEST_FETCH_LOG, JSON.stringify({ name, status, host: parsed.hostname, authorization: headers.get('authorization'), accept: headers.get('accept'), redirect: options.redirect }) + '\\n');
+  return new Response(body, { status, headers: responseHeaders });
+};`,
         );
         const log = join(dir, 'cargo-builds.jsonl');
         writeFileSync(
@@ -494,7 +516,7 @@ const target = args.includes('--target') ? args[args.indexOf('--target') + 1] : 
 const output = path.join(process.env.CARGO_TARGET_DIR, ...(target ? [target] : []), args.includes('--release') ? 'release' : 'debug');
 const windows = process.env.TEST_RUST_HOST.endsWith('-windows-msvc');
 const darwin = process.env.TEST_RUST_HOST.includes('-apple-');
-fs.appendFileSync(process.env.TEST_CARGO_LOG, JSON.stringify({ args, output, jobs: process.env.CARGO_BUILD_JOBS }) + '\\n');
+fs.appendFileSync(process.env.TEST_CARGO_LOG, JSON.stringify({ args, output, jobs: process.env.CARGO_BUILD_JOBS, hasGithubToken: process.env.GITHUB_TOKEN !== undefined }) + '\\n');
 if (args[0] === 'test' && process.env.TEST_FAIL_HYPER_READINESS === '1') process.exit(1);
 fs.mkdirSync(output, { recursive: true });
 if (args.includes('--lib')) fs.writeFileSync(path.join(output, windows ? 'agents_codex.dll' : darwin ? 'libagents_codex.dylib' : 'libagents_codex.so'), 'addon without helper CRT flags');
@@ -520,6 +542,7 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           TEST_CARGO_LOG: log,
           CARGO_TARGET_DIR: join(dir, 'target'),
         };
+        delete env.GITHUB_TOKEN;
         delete env.CARGO_BUILD_TARGET;
         delete env.CARGO_BUILD_JOBS;
         env.OPENAI_AGENTS_NATIVE_TIMINGS = timings ? '1' : '0';
@@ -771,7 +794,68 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
             );
             expect(
               readFileSync(fetchLog, 'utf8').trim().split('\n'),
-            ).toHaveLength(mode === 'exhausted' ? 3 : 1);
+            ).toHaveLength(mode === 'exhausted' ? 4 : 1);
+            expect(readFileSync(log, 'utf8')).toBe(cargoLog);
+            expect(readdirSync(cache)).toEqual([]);
+            for (const name of names) writeFileSync(join(cache, name), name);
+          }
+        }
+        if (downloads) {
+          for (const name of names) rmSync(join(cache, name));
+          rmSync(fetchLog);
+          const recovered = invoke(build, {
+            TEST_V8_DOWNLOAD: 'api',
+            GITHUB_TOKEN: 'fixture-api-token',
+          });
+          expect(recovered.status, recovered.stderr).toBe(0);
+          const requests = readFileSync(fetchLog, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line));
+          expect(requests).toHaveLength(11);
+          expect(
+            requests
+              .filter((row) => row.host === 'github.com')
+              .map((row) => row.status),
+          ).toEqual([504, 504, 504, 504, 504, 504]);
+          for (const request of requests) {
+            expect(request.authorization).toBe(
+              request.host === 'api.github.com'
+                ? 'Bearer fixture-api-token'
+                : null,
+            );
+            if (request.host === 'api.github.com')
+              expect(request.redirect).toBe(
+                request.name.startsWith('rusty-v8-v') ? 'error' : 'manual',
+              );
+          }
+          for (const name of names)
+            expect(readFileSync(join(cache, name), 'utf8')).toBe(name);
+          expect(
+            readFileSync(log, 'utf8')
+              .trim()
+              .split('\n')
+              .map((line) => JSON.parse(line))
+              .every((row) => row.hasGithubToken === false),
+          ).toBe(true);
+          const cargoLog = readFileSync(log, 'utf8');
+          for (const [mode, message, requestCount] of [
+            ['api-rate', 'rate reset 1700000000', 4],
+            ['api-metadata', 'No pinned V8 release asset', 4],
+            ['api-body', 'V8 SHA-256 mismatch', 5],
+            ['api-insecure', 'Invalid V8 release asset redirect', 5],
+          ] as const) {
+            for (const name of names) rmSync(join(cache, name));
+            rmSync(fetchLog);
+            const failed = invoke(build, {
+              TEST_V8_DOWNLOAD: mode,
+              GITHUB_TOKEN: 'fixture-api-token',
+            });
+            expect(failed.status).toBe(1);
+            expect(failed.stderr).toContain(message);
+            expect(
+              readFileSync(fetchLog, 'utf8').trim().split('\n'),
+            ).toHaveLength(requestCount);
             expect(readFileSync(log, 'utf8')).toBe(cargoLog);
             expect(readdirSync(cache)).toEqual([]);
             for (const name of names) writeFileSync(join(cache, name), name);
@@ -825,7 +909,7 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         ).toThrow();
       },
       // This fixture includes real download backoff and subprocess startup.
-      30_000,
+      60_000,
     );
   },
 );
