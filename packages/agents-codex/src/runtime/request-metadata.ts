@@ -58,7 +58,9 @@ export function decodeRequestMetadata(
   if (
     typeof value.model !== 'string' ||
     (value.wire !== 'responses' && value.wire !== 'responses_lite') ||
-    (value.transport !== 'http_sse' && value.transport !== 'websocket')
+    (value.transport !== 'http_sse' &&
+      value.transport !== 'http_json' &&
+      value.transport !== 'websocket')
   )
     return null;
   if (

@@ -43,3 +43,9 @@ Readers share a bounded Session suffix. A `gap` reports lost observations; it ca
 Coverage includes root sampling and supported correction or manual follow-up work. Native children, warmup, compaction, and background or reviewer requests are outside this observation contract. Restoring a manual root emits fresh observations for resumed work; it does not replay previously observed request or link events. These observations are not a durable request ledger.
 
 When writing JSON diagnostics, preserve `bigint` values as decimal strings, as the example does. The metadata itself omits prompts and headers, but application-collected data and identifiers still need an appropriate access and retention policy. For process-wide spans and delivery status, see [native telemetry](telemetry.md).
+
+## Received response facts
+
+The current source build emits `response_fact` events through the existing event reader. `event.record.fact.kind` distinguishes `refusal` text from `text_probabilities`, including token bytes and available alternatives. The record carries native request/response occurrence identity when available. These observations remain separate from model input and persist in portable state.
+
+Marker kinds `capture_truncated` and `malformed_probabilities` report capture limits or unusable probability data. `captureComplete`, when present, describes observation completeness, not a successful model response or turn. A fact can arrive before a later failure. Request `topLogprobs` through [model settings](session-configuration.md#per-session-configuration) when the provider supports it; omission does not invent probabilities.

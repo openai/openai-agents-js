@@ -409,13 +409,6 @@ it('expires an MCP result policy while retaining its callback and withholding it
           { namespace: 'mcp__fixture', callId: 'timed-result' },
         ),
       ],
-      (request) => {
-        expect(JSON.stringify(request.input)).toContain('MCP result withheld');
-        expect(JSON.stringify(request.input)).not.toContain(
-          'PRIVATE_LATE_RECORD',
-        );
-        return [message('handled result timeout')];
-      },
     ]),
     provider = await providerFor(model);
   const session = await new Agent({
@@ -474,6 +467,9 @@ it('expires an MCP result policy while retaining its callback and withholding it
       ),
     ).not.toMatch(/PRIVATE_LATE_RECORD|PRIVATE_LATE_REPLACEMENT/);
   }
-  expect(model.requests).toHaveLength(2);
+  expect(model.requests).toHaveLength(1);
+  expect(JSON.stringify(model.requests)).not.toMatch(
+    /PRIVATE_LATE_RECORD|PRIVATE_LATE_REPLACEMENT/,
+  );
   model.assertExhausted();
 }, 15_000);

@@ -15,7 +15,7 @@ const counts = {
 };
 
 describe('Python data API parity', () => {
-  it('captures ordered user content and rejects remote images before native submission', () => {
+  it('captures ordered media references and rejects unsupported URL schemes before native submission', () => {
     const input: UserInput = {
       role: 'user',
       content: [
@@ -32,15 +32,28 @@ describe('Python data API parity', () => {
     input.content = 'changed by caller';
     expect(captured).toEqual([
       { type: 'text', text: 'before' },
-      { type: 'image', image_url: 'data:image/png;base64,AQ==' },
+      {
+        type: 'image',
+        image_url: 'data:image/png;base64,AQ==',
+        detail: 'auto',
+      },
       { type: 'text', text: 'after' },
+    ]);
+    const remote = {
+      type: 'input_image' as const,
+      image_url: 'https://example.com/image.png',
+    };
+    const capturedRemote = nativeInput({ role: 'user', content: [remote] });
+    remote.image_url = 'https://example.com/changed.png';
+    expect(capturedRemote).toEqual([
+      { type: 'image', image_url: 'https://example.com/image.png' },
     ]);
     expect(() =>
       nativeInput({
         role: 'user',
         content: [
           { type: 'input_text', text: 'must not be partially submitted' },
-          { type: 'input_image', image_url: 'https://example.com/image.png' },
+          { type: 'input_image', image_url: 'file:///tmp/image.png' },
         ],
       }),
     ).toThrow(TypeError);

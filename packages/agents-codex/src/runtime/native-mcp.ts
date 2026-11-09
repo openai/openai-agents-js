@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jsonObject, losslessJsonObjectSchema } from './binding';
+import { losslessJsonObjectSchema } from './binding';
 
 /** Protocol result callback on native MCP calls reaching an admitted root or native child turn. */
 export const nativeMcpResultInfoSchema = z.object({
@@ -12,7 +12,12 @@ export const nativeMcpResultInfoSchema = z.object({
   tool_name: z.string(),
   callable_namespace: z.string(),
   callable_name: z.string(),
-  arguments: jsonObject,
-  result: losslessJsonObjectSchema,
+  arguments: losslessJsonObjectSchema,
+  result: losslessJsonObjectSchema.optional(),
+  phase: z.literal('metadata').optional(),
+  route: z.enum(['direct', 'code']).optional(),
+  model: z.string().optional(),
+  cell_id: z.string().optional(),
+  runtime_tool_call_id: z.string().optional(),
 });
 export type NativeMcpResultInfo = z.infer<typeof nativeMcpResultInfoSchema>;

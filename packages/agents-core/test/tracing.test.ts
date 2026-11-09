@@ -1220,6 +1220,49 @@ describe('withTrace & span helpers (integration)', () => {
     expect(processor.tracesEnded.length).toBe(1);
   });
 
+  it.each([false, true])(
+    'ends withTrace once after an uncaught callback failure (async=%s)',
+    async (asyncFailure) => {
+      const cause = new Error('original cause');
+      const original = new Error('callback failed', { cause });
+      let failedTrace: Trace | undefined;
+      await expect(
+        withTrace('failed workflow', (trace) => {
+          failedTrace = trace;
+          expect(getCurrentTrace()).toBe(trace);
+          if (asyncFailure) return Promise.reject(original);
+          throw original;
+        }),
+      ).rejects.toBe(original);
+      expect(original.cause).toBe(cause);
+      expect(processor.tracesEnded).toEqual([failedTrace]);
+      expect(getCurrentTrace()).toBeNull();
+      expect(getCurrentSpan()).toBeNull();
+      await withTrace('next workflow', async (trace) => {
+        expect(trace).not.toBe(failedTrace);
+        expect(getCurrentTrace()).toBe(trace);
+      });
+      expect(processor.tracesEnded).toHaveLength(2);
+      expect(getCurrentTrace()).toBeNull();
+    },
+  );
+
+  it('preserves the callback error when ending its trace also fails', async () => {
+    const original = new Error('callback failed');
+    const endError = new Error('trace end failed');
+    let endSpy: ReturnType<typeof vi.spyOn> | undefined;
+    await expect(
+      withTrace('failed workflow', async (trace) => {
+        endSpy = vi.spyOn(trace, 'end').mockRejectedValue(endError);
+        throw original;
+      }),
+    ).rejects.toBe(original);
+    expect(endSpy).toHaveBeenCalledTimes(1);
+    expect(getCurrentTrace()).toBeNull();
+    expect(getCurrentSpan()).toBeNull();
+    endSpy?.mockRestore();
+  });
+
   it('uses a supplied tracing context storage implementation', async () => {
     const storage = new StackTracingContextStorage();
     const observed: Array<string | null> = [];

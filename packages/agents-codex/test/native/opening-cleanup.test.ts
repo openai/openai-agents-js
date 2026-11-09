@@ -385,7 +385,7 @@ describe('native opening options without loading native code', () => {
           opened = session;
           return session;
         }),
-      ).rejects.toThrow('Unsupported opening model setting: unknown');
+      ).rejects.toThrow('Unsupported model setting: unknown');
       expect(fixture.preflight).not.toHaveBeenCalled();
       expect(selected._acquire).not.toHaveBeenCalled();
     } finally {

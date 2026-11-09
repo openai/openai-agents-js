@@ -11,12 +11,17 @@ async function peer(toolNames = ['lookup']) {
   const effects: unknown[] = [];
   const server = createServer(async (request, response) => {
     if (request.method !== 'POST') {
-      response.writeHead(405).end();
+      response.writeHead(405, { Allow: 'POST' }).end();
       return;
     }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    const rpc = JSON.parse(Buffer.concat(chunks).toString());
+    const body = Buffer.concat(chunks).toString();
+    if (!body.trim()) {
+      response.writeHead(400).end();
+      return;
+    }
+    const rpc = JSON.parse(body);
     if (rpc.id === undefined) {
       response.writeHead(202).end();
       return;

@@ -115,6 +115,26 @@ function checkpointPayload(value: unknown): unknown {
     ? value.checkpoint
     : value;
 }
+function checkpointHistoryOwners(value: unknown): Record<string, unknown>[] {
+  const checkpoint = checkpointPayload(value);
+  if (
+    typeof checkpoint !== 'object' ||
+    checkpoint === null ||
+    !('codex_revision' in checkpoint) ||
+    !('source_session_id' in checkpoint)
+  )
+    return [];
+  const owners: unknown[] = [checkpoint];
+  if ('descendants' in checkpoint && Array.isArray(checkpoint.descendants))
+    owners.push(...checkpoint.descendants);
+  return owners.filter(
+    (owner): owner is Record<string, unknown> =>
+      typeof owner === 'object' &&
+      owner !== null &&
+      'history' in owner &&
+      Array.isArray(owner.history),
+  );
+}
 function checkpointCodeStates(value: unknown): Record<string, unknown>[] {
   const checkpoint = checkpointPayload(value);
   if (
@@ -149,7 +169,7 @@ export function decode<T>(schema: z.ZodType<T>, source: string): T {
   return schema.parse(JSON.parse(source));
 }
 export function encode(value: unknown): string {
-  return JSON.stringify(jsonValue.parse(value));
+  return JSON.stringify(losslessJsonValueSchema.parse(value));
 }
 
 // Convert only an authority's exact integer token; never return a rounded JS number.
@@ -298,7 +318,13 @@ export function encodeReceipt(value: unknown): string {
       ? losslessJsonObjectSchema.parse(state.stored_values)
       : undefined,
   );
+  const histories = checkpointHistoryOwners(value).map((owner) =>
+    z.array(losslessJsonObjectSchema).parse(owner.history),
+  );
   const validated = jsonObject.parse(value);
+  // Canonical history is JSON data; the surrounding checkpoint keeps its checks.
+  for (const [index, owner] of checkpointHistoryOwners(validated).entries())
+    owner.history = histories[index];
   // Recover only VM JSON from the original input after envelope normalization.
   const states = checkpointCodeStates(validated);
   for (const [index, state] of states.entries()) {

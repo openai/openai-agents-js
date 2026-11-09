@@ -1,5 +1,9 @@
 import { fileURLToPath } from 'node:url';
-import { jsonObject, type JsonObject } from './binding';
+import {
+  jsonObject,
+  losslessJsonObjectSchema,
+  type JsonObject,
+} from './binding';
 import { interceptedCallInfo, type ToolCallInfo } from './call-metadata';
 import {
   invokeWithTimeout,
@@ -180,6 +184,16 @@ export type MCPBeforeDecision =
   | MCPStopDecision
   | Extract<ToolDecision<JsonObject>, { action: 'allow' | 'replaceArguments' }>;
 
+/** Effective arguments after approval, before native file-reference substitution. */
+export interface MCPMetadataContext<Context = unknown> {
+  readonly context: Context;
+  readonly submission: ToolCallContext<Context>['submission'];
+  readonly call: ToolCallInfo;
+  readonly serverName: string;
+  readonly toolName: string;
+  readonly arguments: Readonly<JsonObject>;
+}
+
 export interface MCPResultContext<Context = unknown> {
   readonly context: Context;
   readonly submission: ToolCallContext<Context>['submission'];
@@ -210,6 +224,10 @@ export interface MCPOptions<Context = unknown> {
     result: JsonObject,
   ) => JsonObject | Promise<JsonObject>;
   transformResultTimeout?: number;
+  /** Return detached outbound MCP metadata; native identity and policy keys are reserved. */
+  requestMetadata?: (
+    context: MCPMetadataContext<Context>,
+  ) => JsonObject | null | undefined | Promise<JsonObject | null | undefined>;
 }
 
 abstract class MCP<Context> {
@@ -224,6 +242,7 @@ abstract class MCP<Context> {
   readonly approval?: MCPOptions<Context>['approval'];
   readonly transformResult?: MCPOptions<Context>['transformResult'];
   readonly transformResultTimeout?: number;
+  readonly requestMetadata?: MCPOptions<Context>['requestMetadata'];
 
   constructor(options: MCPOptions<Context>) {
     if (
@@ -269,6 +288,17 @@ abstract class MCP<Context> {
         throw new TypeError(`MCP ${key} must be callable`);
       Object.defineProperty(this, key, { enumerable: false });
     }
+    if (
+      options.requestMetadata !== undefined &&
+      typeof options.requestMetadata !== 'function'
+    )
+      throw new TypeError('MCP requestMetadata must be callable');
+    if (options.requestMetadata && options.name === 'codex_apps')
+      throw new TypeError(
+        'MCP requestMetadata requires an ordinary StdioMCP or HttpMCP declaration',
+      );
+    this.requestMetadata = options.requestMetadata;
+    Object.defineProperty(this, 'requestMetadata', { enumerable: false });
     this.transformResult = options.transformResult;
     Object.defineProperty(this, 'transformResult', { enumerable: false });
     this.transformResultTimeout = options.transformResultTimeout;
@@ -467,7 +497,7 @@ export class HttpMCP<Context = unknown> extends MCP<Context> {
 
 export type HostedVerificationMCPOptions<Context = unknown> = Omit<
   HttpMCPOptions<Context>,
-  'name'
+  'name' | 'requestMetadata'
 >;
 
 /**
@@ -484,7 +514,7 @@ export class HostedVerificationMCP<Context = unknown> extends HttpMCP<Context> {
 
 export type ChatGPTAppsMCPOptions<Context = unknown> = Omit<
   MCPOptions<Context>,
-  'name'
+  'name' | 'requestMetadata'
 >;
 
 /**
@@ -588,6 +618,7 @@ export function selectHttpLeaves(
     before: server.before,
     approval: server.approval,
     transformResult: server.transformResult,
+    requestMetadata: server.requestMetadata,
     transformResultTimeout: server.transformResultTimeout,
   });
 }
@@ -612,6 +643,7 @@ export function resourceMcpBinding(server: McpTool): McpTool {
     before: server.before,
     approval: server.approval,
     transformResult: server.transformResult,
+    requestMetadata: server.requestMetadata,
     transformResultTimeout: server.transformResultTimeout,
   });
 }
@@ -800,6 +832,11 @@ export function mcpPolicies(
         .filter((server) => server.before || server.approval)
         .map((server) => [server.name, [...server.tools]]),
     ),
+    metadata_servers: Object.fromEntries(
+      servers
+        .filter((server) => server.requestMetadata)
+        .map((server) => [server.name, [...server.tools]]),
+    ),
     servers: Object.fromEntries(
       servers
         .filter((server) => server.transformResult)
@@ -913,7 +950,17 @@ export async function transformMcpResult<Context>(
     server_name: string;
     tool_name: string;
     call_id: string;
-    result: JsonObject;
+    result?: JsonObject;
+    arguments?: JsonObject;
+    phase?: 'metadata';
+    route?: 'direct' | 'code';
+    model?: string;
+    cell_id?: string;
+    runtime_tool_call_id?: string;
+    callable_namespace?: string;
+    callable_name?: string;
+    incarnation?: string | null;
+    turn_id?: string;
   },
 ): Promise<JsonObject> {
   if (
@@ -926,6 +973,36 @@ export async function transformMcpResult<Context>(
       server.name === notice.server_name &&
       server.tools.includes(notice.tool_name),
   );
+  if (notice.phase === 'metadata') {
+    if (!server?.requestMetadata || !notice.arguments || !notice.route)
+      throw new Error('Native MCP metadata has no selected resolver');
+    const call = interceptedCallInfo(submission, {
+      tool_name: {
+        name: notice.callable_name!,
+        namespace: notice.callable_namespace!,
+      },
+      turn_id: notice.turn_id!,
+      call_id: notice.route === 'direct' ? notice.call_id : null,
+      incarnation: notice.incarnation ?? null,
+      route: notice.route === 'code' ? 'code_mode' : 'direct',
+      model: notice.model ?? null,
+      cell_id: notice.cell_id ?? null,
+      runtime_tool_call_id: notice.runtime_tool_call_id ?? null,
+    });
+    const value = await server.requestMetadata(
+      Object.freeze({
+        context,
+        submission,
+        call,
+        serverName: server.name,
+        toolName: notice.tool_name,
+        arguments: Object.freeze(
+          losslessJsonObjectSchema.parse(notice.arguments),
+        ),
+      }),
+    );
+    return value == null ? {} : losslessJsonObjectSchema.parse(value);
+  }
   if (!server?.transformResult)
     throw new Error('Native MCP result has no selected transform');
   return server.transformResult(
@@ -936,7 +1013,7 @@ export async function transformMcpResult<Context>(
       serverName: notice.server_name,
       toolName: notice.tool_name,
     },
-    notice.result,
+    losslessJsonObjectSchema.parse(notice.result),
   );
 }
 

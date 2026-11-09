@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { expect, it } from 'vitest';
 import { Agent, captureAgentProfiles } from '../src/runtime/public-agent';
-import { tool, captureTools } from '../src/runtime/tools';
+import { tool, captureTools, toolRef } from '../src/runtime/tools';
 import {
   captureProfileRuntimes,
   allocatedProfileCatalogs,
@@ -171,4 +171,136 @@ it('encodes operation source epochs exactly without changing string catalog IDs 
   expect(
     encodeReceipt({ selection, input: [{ epoch: 'application data' }] }),
   ).toContain('"epoch":"application data"');
+});
+
+it('captures every model control in profiles and normalizes named and cleared choices', () => {
+  const metadata = { owner: 'destination' };
+  const lookup = tool({
+    name: 'lookup',
+    parameters: z.object({}),
+    execute: () => 'found',
+  });
+  const destination = new Agent<unknown>({
+    name: 'destination',
+    instructions: 'Use the destination settings.',
+    model: 'fixture-profile-controls',
+    tools: [lookup],
+    modelSettings: {
+      reasoningEffort: 'low',
+      reasoningSummary: 'auto',
+      serviceTier: 'priority',
+      invocationTimeoutMs: 3210,
+      toolChoice: toolRef('lookup'),
+      maxOutputTokens: 91,
+      temperature: 0.4,
+      topP: 0.7,
+      topLogprobs: 3,
+      parallelToolCalls: false,
+      verbosity: 'high',
+      metadata,
+      store: true,
+      promptCacheRetention: '24h',
+      promptCacheTtl: '12h',
+    },
+  });
+  const cleared = new Agent<unknown>({
+    name: 'cleared',
+    instructions: 'Use cleared settings.',
+    modelSettings: {
+      invocationTimeoutMs: null,
+      maxOutputTokens: null,
+      toolChoice: null,
+    },
+  });
+  const source = new Agent<unknown>({
+    instructions: 'Source.',
+    handoffs: [destination, cleared],
+  });
+  const graph = captureProfileRuntimes(
+    captureAgentProfiles(source),
+    captureTools([]),
+    'Source.',
+  );
+  metadata.owner = 'mutated';
+  expect(graph.roster[1].model).toEqual({
+    model: 'fixture-profile-controls',
+    reasoning_effort: 'low',
+    reasoning_summary: 'auto',
+    service_tier: 'priority',
+    tool_choice: 'required',
+    invocation_timeout_ms: 3210,
+    request_controls: {
+      named_tool_choice: { name: 'lookup', namespace: null },
+      max_output_tokens: 91,
+      temperature: 0.4,
+      top_p: 0.7,
+      top_logprobs: 3,
+      parallel_tool_calls: false,
+      verbosity: 'high',
+      metadata: { owner: 'destination' },
+      store: true,
+      prompt_cache_retention: '24h',
+      prompt_cache_ttl: '12h',
+    },
+    personality: null,
+  });
+  expect(graph.roster[0].model).toMatchObject({
+    tool_choice: null,
+    invocation_timeout_ms: null,
+    request_controls: {},
+  });
+  expect(graph.roster[2].model).toMatchObject({
+    tool_choice: 'auto',
+    invocation_timeout_ms: null,
+    request_controls: { max_output_tokens: null, named_tool_choice: null },
+  });
+});
+
+it('captures terminal slots and metadata selections separately for every profile', async () => {
+  const { StdioMCP } = await import('../src/runtime/mcp');
+  const first = tool({
+    name: 'finish',
+    namespace: 'reports',
+    parameters: z.object({}),
+    finishTurn: false,
+    execute: () => 'A',
+  });
+  const second = tool({
+    name: 'finish',
+    namespace: 'reports',
+    parameters: z.object({}),
+    finishTurn: true,
+    execute: () => 'B',
+  });
+  const mcp = new StdioMCP({
+    name: 'fixture',
+    command: 'unused-pure-capture',
+    tools: ['lookup'],
+    requestMetadata: () => ({ audit: 'B' }),
+  });
+  const target = new Agent({
+    name: 'B',
+    instructions: 'B',
+    tools: [second, mcp],
+  });
+  const root = new Agent({
+    name: 'A',
+    instructions: 'A',
+    tools: [first],
+    handoffs: [target],
+  });
+  const graph = captureProfileRuntimes(
+    captureAgentProfiles(root),
+    captureTools([first]),
+    'A',
+  );
+  expect(graph.roster[0]).toMatchObject({
+    terminal_slots: [],
+    mcp_metadata_tools: {},
+  });
+  expect(graph.roster[1]).toMatchObject({
+    terminal_slots: [0],
+    mcp_metadata_tools: { fixture: ['lookup'] },
+  });
+  expect(JSON.stringify(graph.roster)).not.toContain('"audit"');
 });

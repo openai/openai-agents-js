@@ -65,7 +65,7 @@ async fn terminal(native: &NativeThread, turn_id: &str) {
 
 async fn start_seed(native: &NativeThread) -> String {
     native
-        ._configure_manual_tools("[{\"name\":\"lookup\"}]".into())
+        ._configure_manual_tools("[{\"name\":\"lookup\"}]".into(), None)
         .unwrap();
     let receipt: serde_json::Value = serde_json::from_str(&native._submit(serde_json::json!({"mode":"start_if_idle","input":[{"type":"text","text":"Seed real history"}]}).to_string()).await.unwrap()).unwrap();
     assert_eq!(receipt["status"], "started");
@@ -399,10 +399,13 @@ async fn accepted_compact_reports_a_persistence_failure_after_model_activity() {
         drop(owner);
         release.add_permits(1);
         let diagnostic = persistence_diagnostic(&native, turn_id).await;
-        assert!(
-            diagnostic.contains("injected admitted compact persistence failure"),
+        let event: serde_json::Value = serde_json::from_str(&diagnostic).unwrap();
+        assert_eq!(
+            event["msg"]["message"],
+            "Fatal error: Canonical thread persistence failed; turn completion stopped",
             "{diagnostic}"
         );
+        assert!(!diagnostic.contains("injected admitted compact persistence failure"));
         let error = native._read_goal().await.unwrap_err();
         assert!(
             error
@@ -455,10 +458,13 @@ async fn managed_turn_reports_a_persistence_failure_before_success() {
         drop(owner);
         release.add_permits(1);
         let diagnostic = persistence_diagnostic(&native, &turn_id).await;
-        assert!(
-            diagnostic.contains("injected managed terminal persistence failure"),
+        let event: serde_json::Value = serde_json::from_str(&diagnostic).unwrap();
+        assert_eq!(
+            event["msg"]["message"],
+            "Fatal error: Canonical thread persistence failed; execution stopped pending recovery",
             "{diagnostic}"
         );
+        assert!(!diagnostic.contains("injected managed terminal persistence failure"));
         let error = native._read_goal().await.unwrap_err();
         assert!(
             error

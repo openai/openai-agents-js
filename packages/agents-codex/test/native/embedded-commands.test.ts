@@ -430,7 +430,7 @@ print(json.dumps(dict(locks=locks,holders=holders)))
 `,
           executor.cwd,
         ],
-        { encoding: 'utf8' },
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
       );
       lockSnapshots.push({
         phase,

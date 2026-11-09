@@ -32,7 +32,7 @@ import type {
   Expand,
 } from './types';
 import type { RunResult, StreamedRunResult } from './result';
-import { getHandoff, type Handoff } from './handoff';
+import { getHandoff, Handoff } from './handoff';
 import { StreamRunOptions, RunConfig, Runner } from './run';
 import { RunState } from './runState';
 import { getPublicAgent } from './agentToolConfiguration';
@@ -588,6 +588,7 @@ export class Agent<
       config.modelSettings ??
       getInitialModelSettingsForAgentModel(config.model);
     this.tools = config.tools ?? [];
+    assertClassicAgentGraph(this);
     this._toolsExplicitlyConfigured = config.tools !== undefined;
     this.mcpServers = config.mcpServers ?? [];
     this.mcpConfig = config.mcpConfig ?? {};
@@ -1194,6 +1195,7 @@ export class Agent<
     runContext: RunContext<TContext>,
     tracingParent?: Span<any>,
   ): Promise<Tool<TContext>[]> {
+    assertClassicAgentGraph(this);
     const mcpTools = await this.getMcpTools(runContext, tracingParent);
     const enabledTools: Tool<TContext>[] = [];
 
@@ -1231,6 +1233,7 @@ export class Agent<
   async getEnabledHandoffs(
     runContext: RunContext<TContext>,
   ): Promise<Handoff<any, any>[]> {
+    assertClassicAgentGraph(this);
     const handoffs = this.handoffs?.map((h) => getHandoff(h)) ?? [];
     const enabled: Handoff<any, any>[] = [];
     for (const handoff of handoffs) {
@@ -1296,5 +1299,37 @@ export class Agent<
     return {
       name: this.name,
     };
+  }
+}
+
+/** @internal Reject mixed runtime declarations before callbacks or I/O. */
+export function assertClassicAgentGraph(agent: Agent<any, any>): void {
+  const pending = [agent];
+  const visited = new Set<Agent<any, any>>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (visited.has(current)) continue;
+    if (
+      !(current instanceof Agent) &&
+      (!current ||
+        typeof (current as Agent<any, any>).hasExplicitModelSettings !==
+          'function' ||
+        typeof (current as Agent<any, any>).getAllTools !== 'function')
+    ) {
+      throw new UserError(
+        'Classic agents and handoffs must use Agent from @openai/agents/classic.',
+      );
+    }
+    visited.add(current);
+    for (const candidate of current.tools ?? []) {
+      if (typeof candidate?.type !== 'string') {
+        throw new UserError(
+          'Classic agents require Classic tools. Import tool from @openai/agents/classic.',
+        );
+      }
+    }
+    for (const target of current.handoffs ?? []) {
+      pending.push(target instanceof Handoff ? target.agent : target);
+    }
   }
 }

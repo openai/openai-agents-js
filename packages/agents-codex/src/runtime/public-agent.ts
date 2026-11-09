@@ -1,3 +1,8 @@
+import type {
+  BeforeCompact,
+  BeforeComplete,
+  ContextTransform,
+} from './model-callbacks';
 import {
   captureProfileRuntimes,
   profileRoster,
@@ -44,6 +49,10 @@ import {
   type EnvironmentSource,
 } from './environment-source';
 import type { UserInput } from './input';
+import {
+  captureInitialMessages,
+  type InitialMessage,
+} from './initial-messages';
 import { nativeInput } from './input';
 import type { InteractionHandler } from './native-questions';
 import {
@@ -57,6 +66,7 @@ import {
 } from './mcp';
 import {
   NativeProvider,
+  captureModelSettings,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
@@ -84,6 +94,16 @@ export type AgentOptions<Context = undefined, Output = string> = {
   name?: string;
   model?: string;
   modelSettings?: ModelSettings;
+  /** Await completion policy before accepting a root or native child result.
+   * Feedback continues the same turn. Stop affects only its issuing owner.
+   * Cancellation and close join entered callbacks. Do not mutate this Session.
+   */
+  beforeComplete?: BeforeComplete<Context>;
+  beforeCompact?: BeforeCompact<Context>;
+  /** Replace detached model input for turns, children, compaction and output repair.
+   * Transport retries reuse its result; canonical history and tool authority stay intact.
+   */
+  transformContext?: ContextTransform<Context>;
   provider?: NativeProvider;
   tools?: readonly Tool<Context>[];
   /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
@@ -100,6 +120,14 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /**
+   * Seed settled user messages and assistant text without starting a model turn.
+   * Requires a fresh opening without state or resume, including for []. Core
+   * prepares media using the current route. Publication waits for native flush;
+   * memory storage adds no crash guarantee. Failed startup can leave accepted
+   * persistent history: recover it instead of automatically resubmitting seeds.
+   */
+  initialMessages?: readonly InitialMessage[];
   /**
    * Limit automatic managed functions, including borrowed MCP callbacks, per root
    * or child turn through cleanup and reply settlement. Omission leaves admission
@@ -183,6 +211,10 @@ interface CapturedOpening {
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
   readonly maxFunctionConcurrency?: number;
+  readonly contextTransformPurpose: 'turn' | 'output_repair';
+  readonly beforeComplete?: BeforeComplete<any>;
+  readonly beforeCompact?: BeforeCompact<any>;
+  readonly transformContext?: ContextTransform<any>;
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
@@ -271,6 +303,9 @@ export class Agent<Context = undefined, Output = string> {
   name?: string;
   model?: string;
   modelSettings?: ModelSettings;
+  beforeComplete?: BeforeComplete<Context>;
+  beforeCompact?: BeforeCompact<Context>;
+  transformContext?: ContextTransform<Context>;
   provider: NativeProvider;
   outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
@@ -285,7 +320,20 @@ export class Agent<Context = undefined, Output = string> {
     this.instructions = options.instructions;
     this.name = options.name;
     this.model = options.model;
-    this.modelSettings = options.modelSettings && { ...options.modelSettings };
+    this.modelSettings =
+      options.modelSettings === undefined
+        ? undefined
+        : captureModelSettings(options.modelSettings);
+    for (const name of [
+      'beforeComplete',
+      'beforeCompact',
+      'transformContext',
+    ] as const)
+      if (options[name] !== undefined && typeof options[name] !== 'function')
+        throw new TypeError(`${name} must be callable`);
+    this.beforeComplete = options.beforeComplete;
+    this.beforeCompact = options.beforeCompact;
+    this.transformContext = options.transformContext;
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
       implicitProviders.set(this.provider, new WeakSet([this]));
@@ -373,6 +421,11 @@ export class Agent<Context = undefined, Output = string> {
       ...(args[0] ?? {}),
       parentTrace: captureTraceContext(args[0]?.parentTrace),
     };
+    options.initialMessages = captureInitialMessages(
+      options.initialMessages,
+      options.state,
+      options.resume,
+    );
     options.signal?.throwIfAborted();
     if (
       options.onInteraction !== undefined &&
@@ -449,6 +502,11 @@ export class Agent<Context = undefined, Output = string> {
     ...args: RunArguments<Context>
   ): Promise<Completed<Output>> {
     const options = { ...(args[0] ?? {}) };
+    const initialMessages = captureInitialMessages(
+      options.initialMessages,
+      options.state,
+    );
+
     if ('tools' in options)
       throw new TypeError(
         'Run tool selection is not supported; use Agent.session({ tools })',
@@ -470,6 +528,7 @@ export class Agent<Context = undefined, Output = string> {
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
+      ...(initialMessages === undefined ? {} : { initialMessages }),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
@@ -516,6 +575,25 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const beforeComplete = opening
+      ? opening.beforeComplete
+      : this.beforeComplete;
+    const beforeCompact = opening ? opening.beforeCompact : this.beforeCompact;
+    const transformContext = opening
+      ? opening.transformContext
+      : this.transformContext;
+    const contextTransformPurpose =
+      opening?.contextTransformPurpose ??
+      ((options as OwnedSessionOptions<Context>)[correctionOpening]
+        ? 'output_repair'
+        : 'turn');
+    for (const [name, callback] of [
+      ['beforeComplete', beforeComplete],
+      ['beforeCompact', beforeCompact],
+      ['transformContext', transformContext],
+    ] as const)
+      if (callback !== undefined && typeof callback !== 'function')
+        throw new TypeError(`${name} must be a function`);
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -566,34 +644,12 @@ export class Agent<Context = undefined, Output = string> {
     const model = opening ? opening.model : (openingModel ?? this.model);
     let settings = opening
       ? opening.settings
-      : this.modelSettings && { ...this.modelSettings };
+      : this.modelSettings && captureModelSettings(this.modelSettings);
     if (!opening && openingSettings !== undefined) {
-      if (
-        openingSettings === null ||
-        typeof openingSettings !== 'object' ||
-        Array.isArray(openingSettings)
-      )
-        throw new TypeError('Opening modelSettings must be an object');
-      settings ??= {};
-      for (const key of Object.getOwnPropertyNames(openingSettings)) {
-        if (
-          ![
-            'reasoningEffort',
-            'reasoningSummary',
-            'serviceTier',
-            'toolChoice',
-          ].includes(key)
-        )
-          throw new TypeError(`Unsupported opening model setting: ${key}`);
-        const value = openingSettings[key as keyof ModelSettings];
-        if (value === undefined) continue;
-        if (
-          typeof value !== 'string' &&
-          !(key === 'serviceTier' && value === null)
-        )
-          throw new TypeError(`Invalid opening model setting: ${key}`);
-        Object.assign(settings, { [key]: value });
-      }
+      settings = captureModelSettings({
+        ...settings,
+        ...captureModelSettings(openingSettings),
+      });
     }
     const declarations = opening
       ? {
@@ -673,6 +729,9 @@ export class Agent<Context = undefined, Output = string> {
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
               programmaticToolCalling,
+              beforeComplete,
+              beforeCompact,
+              transformContext,
             } as AgentOptions<Context, Output>),
           )
         : undefined;
@@ -760,6 +819,10 @@ export class Agent<Context = undefined, Output = string> {
         'Persistent storage supports current managed tools without MCP or Code Mode',
       );
     const nativeAgents = declarations.nativeAgents;
+    if (nativeAgents && provider.responseMode === 'buffered')
+      throw new TypeError(
+        'Native child agents are not supported in buffered mode',
+      );
     if (nativeAgents && environment?.readOnly)
       throw new TypeError('Read-only execution does not support NativeAgents');
     if (
@@ -1097,7 +1160,30 @@ export class Agent<Context = undefined, Output = string> {
                 },
               }
             : {}),
+          _context_callbacks: {
+            before_compact:
+              beforeCompact !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.before_compact === true,
+              ) ??
+                false),
+            before_complete:
+              beforeComplete !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.before_complete === true,
+              ) ??
+                false),
+            transform_context:
+              transformContext !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.transform_context === true,
+              ) ??
+                false),
+          },
           _hosted_tools: hostedToolSpecs(declarations.hostedTools),
+          ...(provider.responseMode === 'buffered'
+            ? { _buffered_responses: true }
+            : {}),
           ...(projectGuidance ? { _canonical_rules: true } : {}),
           ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
           ...(resume === undefined ? {} : { _sdk_resume_thread_id: resume }),
@@ -1127,6 +1213,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
@@ -1137,6 +1224,10 @@ export class Agent<Context = undefined, Output = string> {
         context,
         onInteraction: options.onInteraction,
         applicationAgent: this,
+        beforeComplete,
+        beforeCompact,
+        transformContext,
+        contextTransformPurpose,
         agentGraph: completedGraph,
         output,
         restoredOutput: selection?.restoredOutput,
@@ -1155,6 +1246,7 @@ export class Agent<Context = undefined, Output = string> {
           modelSettings,
           retainOpening,
           parentTrace,
+          repairTransformContext,
         ) => {
           // Native fallback may read a later environment key; repair needs this snapshot.
           if (apiKey === undefined)
@@ -1166,6 +1258,14 @@ export class Agent<Context = undefined, Output = string> {
             model,
             modelSettings,
             tools: [],
+            transformContext:
+              repairTransformContext === undefined
+                ? undefined
+                : (request) =>
+                    repairTransformContext({
+                      ...request,
+                      context: context as Context,
+                    }),
           });
           const correctionOptions: OwnedSessionOptions<undefined> = {
             parentTrace,
@@ -1196,6 +1296,10 @@ export class Agent<Context = undefined, Output = string> {
           context,
           onInteraction: options.onInteraction,
           maxFunctionConcurrency,
+          contextTransformPurpose,
+          beforeComplete,
+          beforeCompact,
+          transformContext,
         });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
@@ -1331,6 +1435,9 @@ export function captureAgentProfiles<Context, Output>(
       ),
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
+      beforeComplete: source.beforeComplete,
+      beforeCompact: source.beforeCompact,
+      transformContext: source.transformContext,
     } as AgentOptions<Context, Output>);
     if (wireIdentity(declaration) !== output)
       throw new TypeError(

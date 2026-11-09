@@ -183,6 +183,7 @@ mod tests {
     fn terminal_observation_does_not_grant_supported_output() {
         let mut output = SupportedOutput::default();
         let observation = codex_protocol::protocol::ResponseObservation {
+            upstream_request_id: None,
             response_id: Some("provider-completed".into()),
             status: codex_protocol::protocol::ResponseObservationStatus::Completed,
             incomplete_reason: None,

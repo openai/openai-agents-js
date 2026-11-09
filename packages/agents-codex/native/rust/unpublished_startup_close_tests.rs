@@ -97,12 +97,12 @@ async fn cleanup_created(store: &LocalChecklistStore, id: ThreadId) -> Result<()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_engine_close_refuses_acquired_unpublished_writer_until_cleanup_joins() {
+async fn actual_engine_close_joins_acquired_unpublished_writer_without_releasing_owner_early() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let (provider, profile, _work, engine, id) = setup().await;
         let state = engine.current().unwrap();
         let store = state.local_checklist_store.as_ref().unwrap().clone();
-        let probe = install(&store, Some(id), StartupClosePoint::RegisteredResume);
+        let probe = install(&store, Some(id), StartupClosePoint::PreparedNativeWriter);
         let _release_on_failure = ReleaseOnDrop(probe.clone());
         let mut opening = Box::pin(engine.start_replaceable_thread(options(Some(&id.to_string())), specs()));
         tokio::select! { biased;
@@ -114,30 +114,37 @@ async fn actual_engine_close_refuses_acquired_unpublished_writer_until_cleanup_j
         }
         drop(opening);
         assert!(state.manager.get_thread(id).await.is_err());
-        {
-            let writers = store.writers.lock().await;
-            assert!(!writers.get(&id).unwrap().resume_cleanup_pending);
-        }
+        // prepare_writer holds its writer-map lock at this probe. The entered acquisition
+        // plus independent file-lock rejection below prove ownership without peeking inside.
         let competitor = tests::store(profile.path()).await;
         assert!(competitor.inner.resume_thread(tests::resume(id, profile.path())).await.is_err());
-        // Record the unsafe baseline result before cleanup, but never assert it
-        // until the hold is released and the exact writer has had a joined drain.
-        let first_close = tokio::time::timeout(Duration::from_secs(3), engine.close()).await;
+        // prepare_writer holds the map guard through native acquisition and rollback.
+        // Close must wait for that same owner, not report a completed retirement.
+        // Time out only this borrow so the exact close obligation remains alive.
+        let mut closing = Box::pin(engine.close());
+        let held_close = tokio::time::timeout(Duration::from_secs(3), &mut closing).await;
+        let held_pending = held_close.is_err();
         let owner_retained = engine.inner.lock().unwrap().live.is_some();
         let marked_closed = state.closed.load(Ordering::Acquire);
         probe.release.add_permits(1);
-        let completed = tokio::time::timeout(Duration::from_secs(10), probe.completed.acquire()).await;
-        if let Ok(Ok(permit)) = completed { permit.forget(); }
+        let first_close = if held_pending {
+            tokio::time::timeout(Duration::from_secs(10), &mut closing).await
+        } else {
+            held_close
+        };
+        drop(closing);
+        // Prepared startup owns cleanup; the legacy resume completion counter is not entered.
         let cleanup = writer_removed(&store, id).await;
         let reopen = competitor.inner.resume_thread(tests::resume(id, profile.path())).await;
         let reopen_error = reopen.as_ref().err().map(ToString::to_string);
         if reopen.is_ok() { competitor.inner.shutdown_thread(id).await.unwrap(); }
         let retry = engine.close().await;
         assert_eq!(provider.request_count(), 0);
-        assert!(cleanup.is_ok() && reopen_error.is_none() && retry.is_ok(),
+        assert!(first_close.as_ref().is_ok_and(|result| result.is_ok())
+            && cleanup.is_ok() && reopen_error.is_none() && retry.is_ok(),
             "first close={first_close:?}; Core cleanup={cleanup:?}; reopen={reopen_error:?}; retry={retry:?}");
-        assert!(first_close.as_ref().is_ok_and(|result| result.is_err()) && owner_retained && !marked_closed,
-            "close accepted acquired unpublished writer: result={first_close:?}, owner_retained={owner_retained}, closed={marked_closed}");
+        assert!(held_pending && owner_retained && !marked_closed,
+            "close released acquired unpublished writer before cleanup: held_pending={held_pending}, final={first_close:?}, owner_retained={owner_retained}, closed={marked_closed}");
         assert!(engine.inner.lock().unwrap().live.is_none());
         assert!(state.closed.load(Ordering::Acquire));
     }).await.expect("unpublished writer close probe timed out");

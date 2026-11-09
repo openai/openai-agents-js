@@ -359,7 +359,27 @@
     {
       "path": "0095-bound-hosted-mcp-catalogs.patch",
       "sha256": "2d4bec4d35bc81d8c5e42c5e7e9b1fbd9d8c49e3fd808edae6a1fe7de0bb5833"
+    },
+    {
+      "path": "0090-native-session-media-history.patch",
+      "sha256": "0ae05c239dbf8234678f08e1994f5262bb1d5d25b282825b88f0da0eeb606da0"
+    },
+    {
+      "path": "0095-host-mcp-lazy-launcher.patch",
+      "sha256": "893d2b1f899dc18751f49af585ef50e85fafc04913b70b2731bd3df1d0d4d808"
+    },
+    {
+      "path": "0095-context-completion-callbacks.patch",
+      "sha256": "242c804c44f8a01bbb2ecca4492704fde8d62b84c6a6cb6434a686ac1c03fff0"
+    },
+    {
+      "path": "0096-before-compact-callback.patch",
+      "sha256": "9415cf3a6d2035761d9750addaecc35d3227e4d9f909209bdb710324baa48eff"
+    },
+    {
+      "path": "0097-provider-owned-request-validation.patch",
+      "sha256": "43ee308eaad0e9a518ecb1e8c00b80c7ab8151197e6b3c75635a50d1a9d1d495"
     }
   ],
-  "result_tree": "bc34b1de40de68cb30e7b485f3c12eb727b47f71"
+  "result_tree": "c7782675ee2dd7a63db79dee741e4c677b573c0f"
 }

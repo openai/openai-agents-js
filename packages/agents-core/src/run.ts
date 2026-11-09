@@ -1,5 +1,5 @@
 import { getAgentToolStreamBuffer } from './runner/agentToolStream';
-import { Agent, AgentOutputType } from './agent';
+import { Agent, AgentOutputType, assertClassicAgentGraph } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import {
   AgentsError,
@@ -739,6 +739,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
+    assertClassicAgentGraph(
+      input instanceof RunState ? input._currentAgent : agent,
+    );
     if (
       input instanceof RunState &&
       (input._currentTurn > 0 || input._pendingInput.length > 0) &&

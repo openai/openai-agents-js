@@ -1389,6 +1389,20 @@ impl PythonTools {
         Ok(Value::Array(events))
     }
 
+    /// Model selected by the validated restored native frame, not response JSON.
+    pub(crate) fn restored_media_model(&self, owner: &str, key: &PendingKey) -> Result<String> {
+        self.check_restored_manual(owner, key)?;
+        let manual = self.manual.lock().expect("manual tools poisoned");
+        let (_, keys) = manual
+            .restored
+            .as_ref()
+            .context("manual continuation expired")?;
+        keys.get(key).context("manual continuation expired")?["msg"]["_sdk_model"]
+            .as_str()
+            .map(str::to_owned)
+            .context("restored file reply lacks its admitted original model")
+    }
+
     pub(crate) fn respond_manual(
         &self,
         owner: &str,
@@ -1665,12 +1679,11 @@ mod canonical_result_tests {
             "type":"message", "role":"assistant", "content":[]
         }))
         .unwrap();
-        assert!(
-            serde_json::from_value::<Receipt>(
-                serde_json::to_value(RolloutItem::ResponseItem(item.into())).unwrap()
-            )
-            .is_err()
-        );
+        let wrapped = serde_json::to_value(RolloutItem::ResponseItem(item.into())).unwrap();
+        assert!(serde_json::from_value::<CanonicalResult>(wrapped.clone()).is_err());
+        // Receipt's forward-compatible Native fallback may decode Other, never reply authority.
+        let unsupported: Receipt = serde_json::from_value(wrapped).unwrap();
+        assert!(unsupported.envelope(&call("legacy"), "turn").is_err());
         let bare = json!({"type":"function_call_output", "call_id":"legacy", "output":"ok"});
         let legacy: Receipt = serde_json::from_value(bare).unwrap();
         assert!(legacy.envelope(&call("legacy"), "turn").is_ok());

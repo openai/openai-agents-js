@@ -499,3 +499,91 @@ it('excludes hosted specs and direct-only namespaces from Code Mode collision ch
   expect(effects).toEqual(['function', 'bare']);
   server.assertExhausted();
 }, 30_000);
+
+it('keeps selected defaults and terminal flags through combined function and MCP replacement', async () => {
+  const peer = await mcpPeer();
+  const oldBefore = vi.fn(() => ({ action: 'allow' as const }));
+  const currentBefore = vi.fn(() => ({ action: 'allow' as const }));
+  const oldEffect = vi.fn(() => 'old callback must not run');
+  const excludedEffect = vi.fn(() => 'excluded callback must not run');
+  const finishEffect = vi.fn(() => 'terminal replacement');
+  const original = callback('finish', oldEffect);
+  const excluded = callback('excluded', excludedEffect);
+  const finish = tool({
+    name: 'finish',
+    parameters: z.object({}),
+    finishTurn: true,
+    execute: finishEffect,
+  });
+  const oldMcp = new HttpMCP({
+    name: 'catalog',
+    url: peer.url,
+    tools: ['remote'],
+    approvalMode: 'preapproved',
+    before: oldBefore,
+  });
+  const currentMcp = new HttpMCP({
+    name: 'catalog',
+    url: peer.url,
+    tools: ['remote'],
+    approvalMode: 'preapproved',
+    before: currentBefore,
+    headers: { 'X-Catalog-Tenant': 'combined-current' },
+  });
+  const checkDefaults = (request: { tools?: unknown }) => {
+    const names = (request.tools as { type: string; name: string }[])
+      .filter(
+        (entry) =>
+          entry.type === 'function' &&
+          ['finish', 'excluded'].includes(entry.name),
+      )
+      .map((entry) => entry.name);
+    expect(names).toEqual(['finish']);
+  };
+  const server = new ModelServer([
+    (request) => {
+      checkDefaults(request);
+      return [call('finish', {}, { callId: 'combined-terminal' })];
+    },
+    (request) => {
+      checkDefaults(request);
+      return [
+        call(
+          'remote',
+          {},
+          { namespace: 'mcp__catalog', callId: 'current-mcp' },
+        ),
+      ];
+    },
+    [message('MCP remains current')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Use selected tools.',
+    provider,
+    model: 'gpt-5',
+    tools: [excluded, original, oldMcp],
+  }).session();
+  await session.update({ tools: [finish, currentMcp] });
+  expect(server.requests).toHaveLength(0);
+  const completed = await (await session.submit('Finish immediately.')).wait();
+  expect(completed.finalOutput).toBe('terminal replacement');
+  expect(completed.toolCall).toMatchObject({
+    callId: 'combined-terminal',
+    sessionId: session.id,
+    turnId: completed.turn.turnId,
+    tool: { name: 'finish' },
+  });
+  expect(server.requests).toHaveLength(1);
+  expect(
+    (await (await session.submit('Call the updated MCP tool.')).wait())
+      .finalOutput,
+  ).toBe('MCP remains current');
+  expect(finishEffect).toHaveBeenCalledOnce();
+  expect(oldEffect).not.toHaveBeenCalled();
+  expect(excludedEffect).not.toHaveBeenCalled();
+  expect(oldBefore).not.toHaveBeenCalled();
+  expect(currentBefore).toHaveBeenCalledOnce();
+  expect(peer.calls).toEqual([{ name: 'remote', tenant: 'combined-current' }]);
+  expect(server.requests).toHaveLength(3);
+});

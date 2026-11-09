@@ -72,6 +72,7 @@ export type {
   Tool,
   ToolContext,
   ToolDecision,
+  ToolImageReference,
 } from './runtime/tools';
 export { manualTool } from './runtime/manual';
 export type {
@@ -106,6 +107,7 @@ export type {
 } from './runtime/verification';
 export type {
   MCPCallContext,
+  MCPMetadataContext,
   MCPBeforeDecision,
   MCPStopDecision,
   MCPResultContext,
@@ -146,6 +148,9 @@ export type {
   UserMessage,
   InputText,
   InputImage,
+  InputImageFile,
+  InputFile,
+  ImageDetail,
   FunctionCallOutput,
 } from './runtime/input';
 export type { ChecklistState, SessionState } from './runtime/state';
@@ -284,6 +289,24 @@ export {
 export type { SandboxEnvironmentOptions } from './runtime/sandbox-environment';
 
 export type {
+  InitialMessage,
+  AssistantMessage,
+} from './runtime/initial-messages';
+
+export type {
+  RecordedResponseFact,
+  ResponseFact,
+  ProbabilityToken,
+  ProbabilityAlternative,
+} from './runtime/response-facts';
+export type { ResponseFactReceived } from './runtime/observation';
+
+export type {
+  RecordedResponseFactSummary,
+  ResponseFactSummary,
+} from './runtime/response-facts';
+
+export type {
   NativeRealtimeSession,
   NativeRealtimeOptions,
   NativeRealtimeEvent,
@@ -328,3 +351,13 @@ export {
   isBackgroundResult,
 } from './runtime/background-result';
 export type { BackgroundResult } from './runtime/background-result';
+
+export type {
+  CompletionDecision,
+  CompletionContext,
+  ModelRequestContext,
+  BeforeComplete,
+  BeforeCompact,
+  CompactionContext,
+  ContextTransform,
+} from './runtime/model-callbacks';

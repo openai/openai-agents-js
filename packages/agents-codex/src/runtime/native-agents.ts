@@ -71,6 +71,15 @@ export class NativeRole {
     ])
       if (value !== undefined && !value.trim())
         throw new TypeError('Native role text must not be blank');
+    if (
+      options.modelSettings &&
+      Object.getOwnPropertyNames(options.modelSettings).some(
+        (key) => key !== 'reasoningEffort',
+      )
+    )
+      throw new TypeError(
+        'NativeRole modelSettings supports only reasoningEffort',
+      );
     this.name = options.name;
     this.instructions = options.instructions;
     this.description = options.description;

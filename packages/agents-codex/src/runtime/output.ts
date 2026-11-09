@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { decode, jsonObject, type JsonObject, type JsonValue } from './binding';
+import {
+  decode,
+  losslessJsonValueSchema,
+  jsonObject,
+  type JsonObject,
+  type JsonValue,
+} from './binding';
 
 /** A captured Zod contract using native JSON generation or prompted text. */
 export type OutputSpec<Output> =
@@ -101,6 +107,8 @@ function captureOutputIdentity(
 export interface PreparedOutput<Output = unknown> {
   readonly identity: OutputIdentity;
   readonly schema?: JsonObject;
+  /** Private native non-object response wrapper. */
+  readonly wrapped?: boolean;
   readonly prompt?: string;
   readonly parse?: (text: string) => Output;
   readonly repair?: {
@@ -222,6 +230,7 @@ export function prepareOutput<Output>(
   return {
     identity,
     schema: native,
+    wrapped,
     parse: validate((text) => {
       const value = JSON.parse(text);
       return wrapped
@@ -229,4 +238,35 @@ export function prepareOutput<Output>(
         : schema.parse(value);
     }, wrapped),
   };
+}
+
+/** Convert the final settled body once. This path never invokes output repair. */
+export function parseToolCompletion(
+  output: PreparedOutput,
+  content: unknown,
+): { value: unknown; json: JsonValue } {
+  // Core supplies canonical FunctionCallOutputBody content, never the earlier callback value.
+  const body = z.array(
+    z.object({ type: z.literal('input_text'), text: z.string() }).strict(),
+  );
+  let text = '';
+  try {
+    if (typeof content === 'string') text = content;
+    else {
+      const items = body.parse(content);
+      if (items.length !== 1) throw new Error('Expected one text item');
+      text = items[0].text;
+    }
+    const candidate = output.wrapped
+      ? JSON.stringify(
+          losslessJsonValueSchema.parse({ response: JSON.parse(text) }),
+        )
+      : text;
+    const value = output.parse ? output.parse(candidate) : text;
+    // Validate JSON data without repeating the captured output validator.
+    return { value, json: losslessJsonValueSchema.parse(value) };
+  } catch (error) {
+    if (error instanceof OutputValidationError) throw error;
+    throw new OutputValidationError(text, outputValidationIssues(error));
+  }
 }
