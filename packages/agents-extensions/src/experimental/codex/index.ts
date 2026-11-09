@@ -1,3 +1,4 @@
+import { tool as nativeTool } from '@openai/agents';
 import {
   RunContext,
   Usage,
@@ -1876,4 +1877,118 @@ function isErrorItem(item: ThreadItem): item is ErrorItem {
 
 function isReasoningItem(item: ThreadItem): item is ReasoningItem {
   return item?.type === 'reasoning';
+}
+
+export type NativeCodexToolOptions = Pick<
+  CodexToolOptions,
+  | 'name'
+  | 'description'
+  | 'codex'
+  | 'codexOptions'
+  | 'defaultThreadOptions'
+  | 'defaultTurnOptions'
+  | 'persistSession'
+> & {
+  /** Observes CLI events; usage is returned separately from native model usage. */
+  onEvent?: (event: ThreadEvent) => void | Promise<void>;
+};
+
+/**
+ * Delegate through a native function tool to the external Codex CLI.
+ * The application authorizes executable, credentials and workspace in the
+ * options. Native Environment grants do not constrain this application tool.
+ * Cancellation joins the CLI stream. Persistent calls run sequentially and
+ * reuse the most recently completed thread unless threadId selects another.
+ */
+export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
+  const resolveCodex = createCodexResolver(
+    options.codex,
+    resolveCodexOptions(
+      options.codexOptions ? structuredClone(options.codexOptions) : undefined,
+    ),
+  );
+  const threadOptions = options.defaultThreadOptions
+    ? structuredClone(options.defaultThreadOptions)
+    : undefined;
+  const turnOptions = options.defaultTurnOptions
+    ? {
+        ...options.defaultTurnOptions,
+        ...(options.defaultTurnOptions.outputSchema !== undefined
+          ? {
+              outputSchema: structuredClone(
+                options.defaultTurnOptions.outputSchema,
+              ),
+            }
+          : {}),
+      }
+    : undefined;
+  const persistSession = options.persistSession ?? false;
+  const onEvent = options.onEvent;
+  let persisted: Thread | undefined;
+  let pending = Promise.resolve();
+  return nativeTool({
+    name: options.name ?? 'codex',
+    description:
+      options.description ??
+      'Run an external Codex CLI task in the configured workspace.',
+    parameters: z.object({
+      prompt: z.string().min(1),
+      threadId: z.string().min(1).nullable().default(null),
+    }),
+    execute: async ({ prompt, threadId }, context) => {
+      let release: (() => void) | undefined;
+      if (persistSession) {
+        const previous = pending;
+        pending = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await previous;
+      }
+      try {
+        context.signal.throwIfAborted();
+        const codex = await resolveCodex();
+        const thread =
+          threadId !== null
+            ? codex.resumeThread(threadId, threadOptions)
+            : (persisted ?? codex.startThread(threadOptions));
+        const signal = turnOptions?.signal
+          ? AbortSignal.any([context.signal, turnOptions.signal])
+          : context.signal;
+        const stream = await thread.runStreamed(prompt, {
+          ...turnOptions,
+          signal,
+        });
+        let response = '';
+        let usage: CodexUsage | null = null;
+        for await (const event of stream.events) {
+          context.signal.throwIfAborted();
+          await onEvent?.(event);
+          if (
+            event.type === 'item.completed' &&
+            event.item.type === 'agent_message'
+          )
+            response = event.item.text;
+          else if (event.type === 'turn.completed') usage = event.usage;
+          else if (event.type === 'turn.failed')
+            throw new Error(event.error.message);
+          else if (event.type === 'error') throw new Error(event.message);
+        }
+        if (persistSession) persisted = thread;
+        return { threadId: thread.id, response, usage };
+      } catch (error) {
+        // Node spawn wraps AbortSignal.reason. Preserve the native cancellation
+        // identity so a joined expected abort is not reported as cleanup failure.
+        if (
+          context.signal.aborted &&
+          error instanceof Error &&
+          error.name === 'AbortError' &&
+          error.cause === context.signal.reason
+        )
+          throw context.signal.reason;
+        throw error;
+      } finally {
+        release?.();
+      }
+    },
+  });
 }

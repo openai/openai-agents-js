@@ -1,5 +1,6 @@
 ---
 '@openai/agents-codex': minor
 '@openai/agents-core': patch
+'@openai/agents-extensions': minor
 ---
-feat: support borrowed sandbox sessions, explicitly authorized provider resume, and snapshot and materialization budget options for native environments. Export the shared pure diff helper through the native SDK.
+feat: support native sandbox lifecycle, snapshots and budgets, expose pure diff application, and add external Codex CLI delegation with persistent thread reuse and cancellation.
