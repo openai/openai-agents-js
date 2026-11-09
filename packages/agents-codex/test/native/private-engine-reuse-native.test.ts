@@ -102,7 +102,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       model.assertExhausted();
     }, 30_000);
 
-    it('falls back before registration when current instructions change', async () => {
+    it('applies changed per-root instructions while retaining the Engine', async () => {
       const model = new ModelServer([[message('before')], [message('after')]]);
       await using provider = await providerFor(model);
       const agent = new Agent({
@@ -116,12 +116,16 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect((await agent.run('second')).finalOutput).toBe('after');
       expect(rows.map((row) => [row.kind, row.root === null])).toEqual([
         ['ordinary', false],
-        ['private', true],
-        ['ordinary', false],
+        ['private', false],
       ]);
-      expect(rows[2].engine).not.toBe(rows[0].engine);
+      expect(rows[1].engine).toBe(rows[0].engine);
+      expect(rows[1].root).not.toBe(rows[0].root);
+      expect(rows[1].source).toEqual(rows[0].source);
       expect(JSON.stringify(model.requests[1])).toContain(
         'Changed instruction marker.',
+      );
+      expect(JSON.stringify(model.requests[1])).not.toContain(
+        'Original instruction marker.',
       );
       model.assertExhausted();
     }, 30_000);
@@ -151,7 +155,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         ]);
         expect(rows[1].source).toEqual(rows[0].source);
         expect(rows[1].runtime).toEqual(rows[0].runtime);
+        expect(rows[1].engine).toBe(rows[0].engine);
         expect(rows[2].engine).not.toBe(rows[0].engine);
+        expect(rows[2].root).not.toBe(rows[0].root);
         model.assertExhausted();
       } finally {
         vi.unstubAllEnvs();
