@@ -112,7 +112,7 @@ it('retains dynamic assertion failures locally without sending them to the provi
         });
         expect(response.status).toBe(400);
         expect(await response.text()).not.toContain(failure.message);
-        throw new Error('provider failure caused by HTTP400');
+        // Successful body exit reports the original callback error from exhaustion.
       },
     ),
   ).rejects.toBe(failure);
@@ -145,4 +145,151 @@ it('fences scripted dequeues after a callback failure even for an explicit later
     ),
   ).rejects.toBe(failure);
   expect(following).toBe(0);
+});
+
+it('preserves a primary scripted body exception after a callback failure', async () => {
+  const callback = new Error('synthetic-callback-secondary');
+  const primary = new Error('synthetic-primary-body');
+  await expect(
+    withScriptedResponses(
+      [
+        async () => {
+          throw callback;
+        },
+      ],
+      async (peer) => {
+        const response = await fetch(`${peer.provider.baseUrl}/responses`, {
+          method: 'POST',
+          body: JSON.stringify({ input: [] }),
+        });
+        expect(response.status).toBe(400);
+        await response.text();
+        throw primary;
+      },
+    ),
+  ).rejects.toBe(primary);
+  expect(primary.cause).toBe(callback);
+});
+
+it('serializes callback admission without blocking append or clear', async () => {
+  const callback = new Error('synthetic-concurrent-callback');
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let following = false;
+  let ranBeforeRelease = false;
+  const statuses: number[] = [];
+  await expect(
+    withScriptedResponses(
+      [
+        async () => {
+          entered();
+          await gate;
+          throw callback;
+        },
+        async () => {
+          following = true;
+          return [text('must remain queued')];
+        },
+      ],
+      async (peer) => {
+        const send = () =>
+          fetch(`${peer.provider.baseUrl}/responses`, {
+            method: 'POST',
+            body: JSON.stringify({ input: [] }),
+          });
+        const first = send();
+        await started;
+        const second = send();
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const deadline = Date.now() + 2000;
+            const poll = () => {
+              if (peer.requests.length === 2) return resolve();
+              if (Date.now() > deadline)
+                return reject(new Error('second request did not arrive'));
+              setTimeout(poll, 1);
+            };
+            poll();
+          });
+          ranBeforeRelease = following;
+          peer.clear();
+          peer.append(async () => {
+            following = true;
+            return [text('must stay queued')];
+          });
+        } finally {
+          release();
+        }
+        const responses = await Promise.all([first, second]);
+        for (const response of responses) {
+          statuses.push(response.status);
+          await response.text();
+        }
+      },
+    ),
+  ).rejects.toBe(callback);
+  expect(statuses).toEqual([400, 400]);
+  expect(ranBeforeRelease).toBe(false);
+  expect(following).toBe(false);
+});
+
+it('releases concurrent admission after a successful callback in recorded order', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const called: number[] = [];
+  const respond = async (body: Record<string, any>) => {
+    called.push(body.tag);
+    if (body.tag === 1) {
+      entered();
+      await gate;
+    }
+    return [text(String(body.tag))];
+  };
+  await withScriptedResponses([respond, respond, respond], async (peer) => {
+    const send = (tag: number) =>
+      fetch(`${peer.provider.baseUrl}/responses`, {
+        method: 'POST',
+        body: JSON.stringify({ tag }),
+      });
+    const arrived = (count: number) =>
+      new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + 2000;
+        const poll = () => {
+          if (peer.requests.length === count) return resolve();
+          if (Date.now() > deadline)
+            return reject(new Error('concurrent request did not arrive'));
+          setTimeout(poll, 1);
+        };
+        poll();
+      });
+    const first = send(1);
+    await started;
+    const second = send(2);
+    let third: Promise<Response>;
+    try {
+      await arrived(2);
+      third = send(3);
+      await arrived(3);
+    } finally {
+      release();
+    }
+    const responses = await Promise.all([first, second, third]);
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+  });
+  expect(called).toEqual([1, 2, 3]);
 });

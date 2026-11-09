@@ -207,6 +207,7 @@ class Peer implements ScriptedResponses {
   private unexpected = 0;
   private failures = 0;
   private callbackFailure: { error: unknown } | undefined;
+  private callbackInFlight: Promise<void> | undefined;
   private readonly sockets = new Set<Socket>();
   private readonly reads = new Set<BodyRead>();
   private readonly handlers = new Set<Promise<void>>();
@@ -278,8 +279,23 @@ class Peer implements ScriptedResponses {
     }
     return undefined;
   }
-  primaryError(fallback: unknown): unknown {
-    return this.callbackFailure ? this.callbackFailure.error : fallback;
+  retainCallbackFailure(primary: unknown): void {
+    if (
+      primary instanceof Error &&
+      this.callbackFailure &&
+      primary !== this.callbackFailure.error
+    ) {
+      try {
+        if (primary.cause === undefined)
+          Object.defineProperty(primary, 'cause', {
+            value: this.callbackFailure.error,
+            configurable: true,
+            writable: true,
+          });
+      } catch {
+        // Diagnostic attachment must not replace a frozen or unusual primary error.
+      }
+    }
   }
   assertExhausted(): void {
     if (this.callbackFailure) throw this.callbackFailure.error;
@@ -340,6 +356,7 @@ class Peer implements ScriptedResponses {
         return;
       }
       this.bodies.push(body);
+      while (this.callbackInFlight) await this.callbackInFlight;
       if (this.callbackFailure) {
         this.unexpected++;
         this.reject(response);
@@ -353,6 +370,11 @@ class Peer implements ScriptedResponses {
       }
       this.next++;
       let selected: ScriptedResult;
+      let releaseCallback: (() => void) | undefined;
+      if (typeof script === 'function')
+        this.callbackInFlight = new Promise<void>((resolve) => {
+          releaseCallback = resolve;
+        });
       try {
         selected =
           typeof script === 'function'
@@ -361,6 +383,11 @@ class Peer implements ScriptedResponses {
       } catch (error) {
         this.callbackFailure ??= { error };
         throw error;
+      } finally {
+        if (releaseCallback) {
+          this.callbackInFlight = undefined;
+          releaseCallback();
+        }
       }
       if ('kind' in selected) {
         const error = selected;
@@ -489,7 +516,8 @@ export async function withScriptedResponses<T>(
     await peer.start();
     result = await run(peer);
   } catch (error) {
-    const primary = peer.primaryError(error);
+    const primary = error;
+    peer.retainCallbackFailure(primary);
     try {
       await peer.close();
     } catch (cleanupError) {
