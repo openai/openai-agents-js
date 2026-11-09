@@ -311,6 +311,7 @@ function jsonAllocationBytes(
   value: unknown,
   remaining: number,
   budgetErrorMessage = 'Hosted MCP structured JSON exceeds the event buffer budget',
+  utf8Strings = false,
 ): number {
   let bytes = 0;
   const charge = (amount: number) => {
@@ -318,7 +319,10 @@ function jsonAllocationBytes(
     if (bytes > remaining) throw new RangeError(budgetErrorMessage);
   };
   const string = (value: unknown) => {
-    if (typeof value === 'string') charge(4 * value.length);
+    if (typeof value === 'string')
+      charge(
+        4 * (utf8Strings ? Buffer.byteLength(value, 'utf8') : value.length),
+      );
   };
   const json = (value: unknown, depth: number): void => {
     if (depth > 128)
@@ -1071,6 +1075,7 @@ class NativeRealtimeOwner {
       items,
       INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,
       'Realtime history exceeds the 8 MiB input queue allocation budget',
+      true,
     );
     let snapshot: JsonObject[];
     await this.enqueueInput(

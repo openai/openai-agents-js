@@ -421,29 +421,47 @@ it.each(['inherited', 'explicit'] as const)(
   },
 );
 
-it('rejects oversized provider history before native dispatch', async () => {
-  const f = fixture();
-  await f.session._start();
-  const voice = await f.session.realtime();
-  const calls = f.native.call.mock.calls.length;
-  await expect(
-    voice.updateHistory([
-      {
-        id: 'oversized',
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_audio', audio: 'A'.repeat(3 * 1024 * 1024) }],
-      },
-    ]),
-  ).rejects.toThrow(/history.*input queue.*budget/);
-  expect(f.native.call.mock.calls).toHaveLength(calls);
-  await voice.close();
-  await f.session.close();
-});
+it.each(['ascii', 'cjk-value', 'cjk-key'] as const)(
+  'rejects oversized provider history %s before native dispatch',
+  async (kind) => {
+    const f = fixture();
+    await f.session._start();
+    const voice = await f.session.realtime();
+    const calls = f.native.call.mock.calls.length;
+    const text =
+      kind === 'ascii'
+        ? 'A'.repeat(3 * 1024 * 1024)
+        : kind === 'cjk-value'
+          ? '界'.repeat(800000)
+          : 'small';
+    await expect(
+      voice.updateHistory([
+        {
+          id: 'oversized',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text }],
+          ...(kind === 'cjk-key' ? { ['界'.repeat(800000)]: 'metadata' } : {}),
+        },
+      ]),
+    ).rejects.toThrow(/history.*input queue.*budget/);
+    expect(f.native.call.mock.calls).toHaveLength(calls);
+    await voice.close();
+    await f.session.close();
+  },
+);
 
-it.each([false, true])(
-  'charges queued provider history allocations and releases capacity (failure=%s)',
-  async (failure) => {
+it.each(
+  [
+    { character: 'A', count: (3 * 1024 * 1024) / 4, label: 'ASCII' },
+    { character: '界', count: (3 * 1024 * 1024) / 12, label: 'CJK' },
+    { character: '😀', count: (3 * 1024 * 1024) / 16, label: 'emoji' },
+  ].flatMap((sample) =>
+    [false, true].map((failure) => ({ ...sample, failure })),
+  ),
+)(
+  'charges queued $label history allocations and releases capacity (failure=$failure)',
+  async ({ character, count, failure }) => {
     const f = fixture();
     await f.session._start();
     const voice = await f.session.realtime();
@@ -461,9 +479,7 @@ it.each([false, true])(
         id: 'recording',
         type: 'message',
         role: 'user',
-        content: [
-          { type: 'input_audio', audio: 'A'.repeat((3 * 1024 * 1024) / 4) },
-        ],
+        content: [{ type: 'input_text', text: character.repeat(count) }],
       },
     ];
     const first = voice.updateHistory(items);
