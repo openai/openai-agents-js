@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   mkdtemp,
   mkdir,
@@ -13,10 +13,29 @@ import { join } from 'node:path';
 import {
   Manifest,
   UnixLocalSandboxClient,
+  UnixLocalSandboxSession,
   InMemoryRemoteSnapshotStore,
   NoopSnapshotSpec,
+  SandboxAgent,
+  shell,
 } from '../../src/sandbox/local';
+import { Runner } from '../../src';
+import {
+  ScriptedModel,
+  assistantMessage,
+  functionCall,
+} from '../../src/testing';
 import { markRunStateSessionState } from '../../src/sandbox/internal/sessionStateTrust';
+import {
+  rebindPersistedMountCredentials,
+  rebindPersistedPathGrants,
+} from '../../src/sandbox/sandboxes/shared/manifestPersistence';
+import {
+  captureSandboxStateGeneration,
+  assertSandboxStateGenerationUnchanged,
+  markSandboxSessionStateUnsafe,
+  withExclusiveSandboxManifestMutation,
+} from '../../src/sandbox/mountSecurity';
 
 let base: string;
 beforeEach(async () => {
@@ -24,6 +43,279 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(base, { recursive: true, force: true });
+});
+
+it.each(['created', 'resumed'])(
+  'resumes %s live SDK state through the Runner explicit session-state path',
+  async (kind) => {
+    const grant = join(base, 'grant');
+    await mkdir(grant);
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: base,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const manifest = new Manifest({
+      entries: { 'sentinel.txt': { type: 'file', content: 'live sentinel' } },
+      extraPathGrants: [{ path: grant, readOnly: true }],
+    });
+    const session = await client.create(manifest);
+    const live =
+      kind === 'created'
+        ? session
+        : await client.resume(
+            await client.deserializeSessionState(
+              JSON.parse(
+                JSON.stringify(
+                  await client.serializeSessionState(session.state),
+                ),
+              ),
+            ),
+            {
+              clientOptions: {
+                resumeAuthority: {
+                  workspaceRootPath: session.state.workspaceRootPath,
+                },
+              },
+            },
+          );
+    const model = new ScriptedModel([
+      [
+        functionCall(
+          'exec_command',
+          {
+            cmd: 'cat sentinel.txt',
+            shell: '/bin/sh',
+            login: false,
+            yield_time_ms: 500,
+          },
+          { callId: 'read' },
+        ),
+      ],
+      [assistantMessage('done')],
+    ]);
+    const agent = new SandboxAgent({
+      name: 'LiveResume',
+      model,
+      defaultManifest: manifest,
+      capabilities: [shell()],
+    });
+    try {
+      const result = await new Runner({ tracingDisabled: true }).run(
+        agent,
+        'read the sentinel',
+        { sandbox: { client, sessionState: live.state } },
+      );
+      expect(JSON.stringify(result.history)).toContain('live sentinel');
+      expect(result.finalOutput).toBe('done');
+    } finally {
+      await live.close();
+      await session.close();
+    }
+  },
+);
+
+it.each([false, true])(
+  'does not grant Runner authority to parsed state (tampered: %s)',
+  async (tampered) => {
+    const { client, session, saved, victim } = await fixture();
+    const state = await client.deserializeSessionState(
+      tampered
+        ? {
+            ...saved,
+            workspaceRootPath: victim,
+            workspaceRootOwned: true,
+            snapshot: null,
+          }
+        : saved,
+    );
+    const model = new ScriptedModel([[assistantMessage('must not run')]]);
+    const agent = new SandboxAgent({
+      name: 'ParsedResume',
+      model,
+      defaultManifest: session.state.manifest,
+      capabilities: [shell()],
+    });
+    try {
+      await expect(
+        new Runner({ tracingDisabled: true }).run(agent, 'read', {
+          sandbox: { client, sessionState: state },
+        }),
+      ).rejects.toThrow(/trusted resumeAuthority/);
+      expect(model.calls).toHaveLength(0);
+      expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+        'synthetic host data',
+      );
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+it.each(['root', 'snapshot'])(
+  'retains captured path checks on live SDK copies (%s)',
+  async (field) => {
+    const { client, session, victim } = await fixture();
+    const copied = rebindPersistedPathGrants(
+      rebindPersistedMountCredentials(session.state, session.state.manifest),
+      session.state.manifest,
+    );
+    if (field === 'root') copied.workspaceRootPath = victim;
+    else copied.snapshot = { type: 'local', id: 'forged', path: victim };
+    await expect(client.resume(copied)).rejects.toThrow(
+      /trusted resumeAuthority/,
+    );
+    expect(await readFile(join(victim, 'secret.txt'), 'utf8')).toBe(
+      'synthetic host data',
+    );
+    await session.close();
+  },
+);
+
+it.each(['source', 'copy'])(
+  'rejects %s mutation during asynchronous Runner preparation',
+  async (mutator) => {
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manifest = new Manifest();
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: base,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const source = await client.create(manifest);
+    const copiedState = rebindPersistedPathGrants(
+      rebindPersistedMountCredentials(source.state, manifest),
+      manifest,
+    );
+    const copied = new UnixLocalSandboxSession({ state: copiedState });
+    const model = new ScriptedModel([[assistantMessage('must not run')]]);
+    const agent = new SandboxAgent({
+      name: 'ConcurrentResume',
+      model,
+      defaultManifest: manifest,
+      capabilities: [shell()],
+    });
+    const resume = client.resume.bind(client);
+    vi.spyOn(client, 'resume').mockImplementationOnce(async (...args) => {
+      entered();
+      await released;
+      return resume(...args);
+    });
+    const pending = new Runner({ tracingDisabled: true }).run(agent, 'resume', {
+      sandbox: { client, sessionState: copied.state },
+    });
+    const rejected = expect(pending).rejects.toThrow(/manifest changed/);
+    try {
+      await Promise.race([
+        waiting,
+        pending.then(() => {
+          throw new Error('Runner completed before resume preparation');
+        }),
+      ]);
+      await (mutator === 'source' ? source : copied).materializeEntry({
+        path: 'changed.txt',
+        entry: { type: 'file', content: 'changed' },
+      });
+      release();
+      await rejected;
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      release();
+      await pending.catch(() => {});
+      await copied.close();
+      await source.close();
+    }
+  },
+);
+
+it.each([true, false])(
+  'cleans only fresh workspaces after a resume-generation failure (fresh: %s)',
+  async (fresh) => {
+    const store = new InMemoryRemoteSnapshotStore();
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: base,
+      snapshot: { type: 'remote', store },
+    });
+    const source = await client.create(
+      new Manifest({
+        entries: { 'note.txt': { type: 'file', content: 'saved' } },
+      }),
+    );
+    await client.serializeSessionState(source.state);
+    const originalRoot = source.state.workspaceRootPath;
+    if (fresh) await rm(originalRoot, { recursive: true, force: true });
+    else await writeFile(join(originalRoot, 'note.txt'), 'drift');
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const load = store.load.bind(store);
+    vi.spyOn(store, 'load').mockImplementationOnce(async (...args) => {
+      entered();
+      await released;
+      return load(...args);
+    });
+    const pending = client.resume(source.state);
+    const rejected = expect(pending).rejects.toThrow(/manifest changed/);
+    try {
+      await Promise.race([
+        waiting,
+        pending.then(() => {
+          throw new Error('Resume completed before snapshot load');
+        }),
+      ]);
+      expect(await readdir(base)).toHaveLength(1);
+      await withExclusiveSandboxManifestMutation(source.state, async () => {});
+      release();
+      await rejected;
+      if (fresh) expect(await readdir(base)).toEqual([]);
+      else expect(await stat(originalRoot)).toBeTruthy();
+    } finally {
+      release();
+      await pending.catch(() => {});
+      await source.close();
+    }
+  },
+);
+
+it('shares pending mutation and unsafe-state rejection across live copies', async () => {
+  const { client, session } = await fixture();
+  const copied = rebindPersistedPathGrants(
+    session.state,
+    session.state.manifest,
+  );
+  const generation = captureSandboxStateGeneration(session.state);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const mutation = withExclusiveSandboxManifestMutation(copied, () => blocked);
+  await expect(client.resume(session.state)).rejects.toThrow(
+    /mutation is in progress/,
+  );
+  release();
+  await mutation;
+  expect(() =>
+    assertSandboxStateGenerationUnchanged(session.state, generation),
+  ).toThrow(/manifest changed/);
+  expect(() =>
+    rebindPersistedPathGrants(copied, session.state.manifest),
+  ).toThrow(/manifest changed/);
+  markSandboxSessionStateUnsafe(copied);
+  await expect(session.readFile({ path: 'note.txt' })).rejects.toThrow(
+    /unavailable/,
+  );
+  await expect(client.resume(copied)).rejects.toThrow(/unavailable/);
+  await session.close();
 });
 
 async function fixture() {

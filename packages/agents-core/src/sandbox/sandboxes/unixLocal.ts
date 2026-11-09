@@ -1,4 +1,8 @@
-import { getRunStateSessionTrustedConfig } from '../internal/sessionStateTrust';
+import {
+  getRunStateSessionTrustedConfig,
+  getLocalSandboxStateAuthority,
+  setLocalSandboxStateAuthority,
+} from '../internal/sessionStateTrust';
 import type {
   ApplyPatchOperation,
   ApplyPatchResult,
@@ -163,21 +167,10 @@ export interface UnixLocalSandboxSessionState extends SandboxSessionState {
   configuredExposedPorts?: number[];
 }
 
-type LocalStateAuthority = {
-  workspaceRootPath: string;
-  workspaceRootOwned: boolean;
-  localSnapshotPath?: string;
-  snapshotSpec: LocalSandboxSnapshotSpec | null;
-};
-
-// Only SDK creation and authorized resume/serialization establish provenance.
-// Parsing saved state (including RunState) must never populate this map.
-const localStateAuthorities = new WeakMap<object, LocalStateAuthority>();
-
 function rememberLocalStateAuthority(
   state: UnixLocalSandboxSessionState,
 ): void {
-  localStateAuthorities.set(state, {
+  setLocalSandboxStateAuthority(state, {
     workspaceRootPath: state.workspaceRootPath,
     workspaceRootOwned: state.workspaceRootOwned,
     localSnapshotPath:
@@ -1335,6 +1328,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
     state: UnixLocalSandboxSessionState,
     options: SandboxClientResumeOptions<UnixLocalSandboxClientOptions> = {},
   ): Promise<UnixLocalSandboxSession> {
+    const stateGeneration = captureSandboxStateGeneration(state);
     assertMountCredentialsRebound(state);
     validateMountCredentialBoundaries(state.manifest);
     assertHostPathGrantsRebound(state);
@@ -1355,11 +1349,26 @@ export class UnixLocalSandboxClient implements SandboxClient<
     const files = new UnixLocalFiles(
       currentOptions?.fileIOProtection ?? this.options.fileIOProtection,
     );
+    const previousWorkspaceRootPath = authorizedState.workspaceRootPath;
     const restoredState = await this.restoreIfNeeded(
       authorizedState,
       archiveLimits,
       resolvedOptions.workspaceBaseDir,
     );
+    try {
+      assertSandboxStateGenerationUnchanged(state, stateGeneration);
+    } catch (error) {
+      if (
+        restoredState.workspaceRootOwned &&
+        restoredState.workspaceRootPath !== previousWorkspaceRootPath
+      ) {
+        await rm(restoredState.workspaceRootPath, {
+          recursive: true,
+          force: true,
+        });
+      }
+      throw error;
+    }
     rememberLocalStateAuthority(restoredState);
     return new UnixLocalSandboxSession({
       [preparedFileIO]: files,
@@ -1378,7 +1387,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
     state = this.authorizeState(
       state,
       this.options,
-      localStateAuthorities.get(state)?.snapshotSpec ?? undefined,
+      getLocalSandboxStateAuthority(state)?.snapshotSpec ?? undefined,
     );
     if (!state.workspaceRootPath) {
       throw new UserError(
@@ -1485,7 +1494,10 @@ export class UnixLocalSandboxClient implements SandboxClient<
     options: UnixLocalSandboxClientOptions,
     snapshotSpec?: LocalSandboxSnapshotSpec,
   ): UnixLocalSandboxSessionState {
-    const liveAuthority = localStateAuthorities.get(state);
+    const liveAuthority = getLocalSandboxStateAuthority(state);
+    if (liveAuthority?.generation !== undefined) {
+      assertSandboxStateGenerationUnchanged(state, liveAuthority.generation);
+    }
     const authority = liveAuthority ?? options.resumeAuthority;
     if (
       authority?.workspaceRootPath !== undefined &&
