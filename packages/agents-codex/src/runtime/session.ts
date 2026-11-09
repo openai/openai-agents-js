@@ -24,9 +24,12 @@ import {
 } from './agent-profiles';
 import {
   createNativeRealtimeOwner,
+  realtimePrepareParams,
+  type NativeRealtimeSipConfigOptions,
   type NativeRealtimeSession,
   type NativeRealtimeOptions,
 } from './realtime';
+import { serializeRealtimeSettings } from './realtime-settings';
 import { privateRuntime } from './private-engine-reuse';
 import {
   capturePreparedRequest,
@@ -284,6 +287,7 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
   beforeCompact?: BeforeCompact<any>;
   transformContext?: ContextTransform<any>;
@@ -391,15 +395,26 @@ export interface OperationOptions<Context = unknown> {
   /**
    * Select a subset of the operation ceiling before each model preparation.
    * Returning undefined uses that ceiling. Indices start at zero.
+   * Return { action: 'stop' } to stop this turn before its pending model request.
+   * Earlier tool effects remain; the stop does not accept a final answer.
    * An exhausted step limit or run budget blocks this callback.
    */
   beforeStep?: (
     context: BeforeStepContext<Context>,
-  ) =>
-    | readonly ToolSelector<Context>[]
-    | undefined
-    | Promise<readonly ToolSelector<Context>[] | undefined>;
+  ) => StepDecision<Context> | Promise<StepDecision<Context>>;
 }
+/** Keep the operation tools, select a subset, or stop the exact owning turn. */
+export type StepDecision<Context = unknown> =
+  readonly ToolSelector<Context>[] | { readonly action: 'stop' } | undefined;
+
+function isStepStop<Context>(
+  decision: StepDecision<Context>,
+): decision is { readonly action: 'stop' } {
+  return (
+    decision !== undefined && 'action' in decision && decision.action === 'stop'
+  );
+}
+
 export interface PrepareRequestContext<Context = unknown> extends Omit<
   BeforeStepContext<Context>,
   'stepIndex'
@@ -868,6 +883,7 @@ const submissions = new WeakMap<
     profileSettlement?: Promise<void>;
     callerSignal?: AbortSignal;
     observation: ObservationPhase;
+    observationAfter: number;
     next?: NativeTurn;
     previous?: NativeTurn;
     cancelled?: boolean;
@@ -991,6 +1007,12 @@ type Lifecycle =
   | { kind: 'closed'; completion: Promise<void> };
 type ClosePhase = 'revoke' | 'native' | 'engine' | 'carrier' | 'provider';
 
+/** @internal The optional MCP App helper borrows this Session-owned dispatch closure. */
+export interface MCPAppBinding {
+  readonly view: import('../mcp-apps').MCPAppView;
+  callTool(name: string, arguments_: JsonObject): Promise<JsonObject>;
+}
+
 /** A view of the active model context issued by an idle Session. */
 export interface ModelContextSnapshot {
   /** Detached Responses-shaped JSON items in native context order. */
@@ -1047,6 +1069,81 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private realtimeOwner?: ReturnType<typeof createNativeRealtimeOwner>;
+
+  /**
+   * Build the call-accept request body for an inbound SIP call using the captured
+   * Agent instructions, tools, and handoffs. Send it to the Realtime calls accept
+   * endpoint, then attach with
+   * `realtime({ ...options, transport: { type: 'sip', callId } })` using the same
+   * model, voice, instructions, settings, and tool selection. The builder saves
+   * no configuration for a later attachment.
+   * This prepares Session-owned MCP tools just as connecting does, but does not
+   * connect media or resolve voice credentials.
+   */
+  async buildRealtimeSipConfig(
+    options: NativeRealtimeSipConfigOptions = {},
+  ): Promise<JsonObject> {
+    this.checkCallbackOperation('build Realtime SIP configuration on');
+    if (
+      !this.isOpen ||
+      this.lifecycle.kind === 'mutation' ||
+      this.manualSeal ||
+      this.manualSealed ||
+      this.graphStops.size
+    )
+      throw new NativeError(
+        'Realtime requires an open Session without checkpoint or mutation work',
+      );
+    for (const [name, value] of Object.entries(options)) {
+      if (
+        !['model', 'voice', 'instructions', 'settings', 'tools'].includes(name)
+      )
+        throw new TypeError(
+          `Unsupported Realtime SIP configuration option: ${name}`,
+        );
+      if (
+        ['model', 'voice', 'instructions'].includes(name) &&
+        value !== undefined &&
+        typeof value !== 'string'
+      )
+        throw new TypeError(`Realtime ${name} must be a string`);
+    }
+    if (options.tools !== undefined && !Array.isArray(options.tools))
+      throw new TypeError(
+        'Realtime tools must be an array of captured function declarations',
+      );
+    options = {
+      ...options,
+      tools: options.tools === undefined ? undefined : [...options.tools],
+    };
+    const settings = options.settings
+      ? serializeRealtimeSettings(options.settings)
+      : null;
+    if (options.tools === undefined) await this._prepareRealtimeMcp();
+    const selection =
+      options.tools === undefined
+        ? null
+        : await this._realtimeFunctionTools([...options.tools]);
+    const params = realtimePrepareParams(
+      options,
+      { type: 'websocket' },
+      settings,
+      selection?.tools ?? null,
+      selection?.selectionId ?? null,
+    );
+    delete params.hosted_mcp_auto_response;
+    const result: unknown = JSON.parse(
+      await this.#native.call(
+        'realtime_conversation_config_sdk',
+        encode(params),
+      ),
+    );
+    if (!result || typeof result !== 'object' || Array.isArray(result))
+      throw new NativeError(
+        'Native Realtime SIP configuration is not an object',
+      );
+    return result as JsonObject;
+  }
 
   /** Open native media; closing the returned owner leaves this Session open. */
   async realtime(
@@ -1689,6 +1786,7 @@ export class Session<OutputT = string, Context = unknown> {
   private defaultMcpTools: readonly McpTool[];
   private readonly allowedMcpTools: Set<string>;
   private mcpGeneration = 0n;
+  private mcpAppToolsUpdated = false;
   private mcpReaderStarted = false;
   private readonly publicChildTurns = new Map<
     string,
@@ -1743,7 +1841,9 @@ export class Session<OutputT = string, Context = unknown> {
   };
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
-  private readonly childCallbacks = new ChildCallbacks();
+  private readonly childCallbacks = new ChildCallbacks(
+    () => this.observations.currentSequence,
+  );
   private readonly toolSessionOwner = Object.freeze({});
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
@@ -1834,6 +1934,7 @@ export class Session<OutputT = string, Context = unknown> {
       }),
     );
     this.observations = new ObservationBuffer(native.id, {
+      retention: options.observationRetention,
       validate: () => this.checkCallbackOperation('observe'),
       pendingManual: () =>
         [...this.manualCalls.values()].flatMap((call) => {
@@ -3237,6 +3338,9 @@ export class Session<OutputT = string, Context = unknown> {
 
   private rootObservationScope(root: NativeTurn): TurnObservationScope {
     return {
+      get after() {
+        return submissions.get(root)!.observationAfter;
+      },
       includes: (event) => {
         if (!('submissionId' in event)) return false;
         for (const run of this.rootSteps(root))
@@ -3405,6 +3509,7 @@ export class Session<OutputT = string, Context = unknown> {
     run.selection = selection;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
+    submissions.get(run)!.observationAfter = -1;
     this.pendingRoots.push({ run, parts });
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
@@ -4471,7 +4576,12 @@ export class Session<OutputT = string, Context = unknown> {
     const reference = new WeakRef(run);
     this.runs.add(reference);
     this.runFinalizer.register(run, reference, reference);
-    submissions.set(run, { output, outputOverride, observation: 'open' });
+    submissions.set(run, {
+      output,
+      outputOverride,
+      observation: 'open',
+      observationAfter: this.observations.currentSequence,
+    });
     void run.completion.promise.then(
       () => run.tracing?.finish(),
       (error: unknown) =>
@@ -4534,6 +4644,8 @@ export class Session<OutputT = string, Context = unknown> {
   ): void {
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
+    submissions.get(run)!.observationAfter = this.observations.currentSequence;
+    this.observations.notify();
     // Own synchronous bridge errors through the same admission failure path.
     let submission: Promise<string>;
     try {
@@ -6912,6 +7024,11 @@ export class Session<OutputT = string, Context = unknown> {
             signal,
           });
           assertActive();
+          if (isStepStop(selected)) {
+            if (native._stop_step(nonce)) replied = true;
+            else reply(null);
+            return;
+          }
           const names = this.selectedStepNames(
             event,
             selected,
@@ -7089,6 +7206,11 @@ export class Session<OutputT = string, Context = unknown> {
       } catch (error) {
         this.callbackAuthorityFailed(delivery, error);
       }
+      if (isStepStop(selected)) {
+        if (native._stop_step(encode(receipt))) replied = true;
+        else reply(null);
+        return;
+      }
       reply(this.selectedStepNames(event, selected));
     } catch (error) {
       reply(null);
@@ -7137,9 +7259,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   private selectedStepNames(
     event: NativeEvent,
-    selected: Awaited<
-      ReturnType<NonNullable<OperationOptions<Context>['beforeStep']>>
-    >,
+    selected: readonly ToolSelector<Context>[] | undefined,
     defaults?: readonly ReturnType<typeof toolIdentity>[],
     sourceCatalog?: ToolCatalog,
   ): readonly ReturnType<typeof toolIdentity>[] {
@@ -9097,6 +9217,7 @@ export class Session<OutputT = string, Context = unknown> {
             );
           }
           checkMcpPublication(receipt, active, generation, bindings);
+          this.mcpAppToolsUpdated = true;
           this.acceptCatalog(candidate, replacements.tools, slots);
           this.mcpTools = active;
           this.defaultMcpTools = Object.freeze([...next.mcp]);
@@ -9281,6 +9402,247 @@ export class Session<OutputT = string, Context = unknown> {
       server,
       cursor === undefined ? {} : { cursor },
     ) as Promise<MCPListResourceTemplatesResult>;
+  }
+
+  /** @internal Bind one live canonical call; native MCP ownership stays in this Session. */
+  async _openMcpApp(
+    turn: Turn<any, any>,
+    callId: string,
+  ): Promise<MCPAppBinding> {
+    this.checkCallbackOperation('open MCPApp');
+    if (typeof callId !== 'string' || !callId)
+      throw new TypeError('MCPApp requires a nonempty callId');
+    return this.mutate(async () => {
+      const run = this.lastRun;
+      const native = this.#native;
+      const generation = this.mcpGeneration;
+      const check = () => {
+        if (
+          !this.isOpen ||
+          this.#native !== native ||
+          this.lastRun !== run ||
+          this.mcpGeneration !== generation ||
+          this.mcpAppToolsUpdated ||
+          this.options.nativeAgents !== undefined ||
+          (this.options.agentGraph?.profiles.size ?? 0) > 1 ||
+          !run ||
+          this.#turnFor(run) !== turn ||
+          turn.childId !== null ||
+          run.failure !== undefined
+        )
+          throw new TypeError(
+            'MCPApp requires the latest settled root Turn and fixed opening tools',
+          );
+      };
+      check();
+      await turn.wait();
+      check();
+      const history = projectHistory(await this.#readHistory(), this.id);
+      check();
+      if (
+        !history.turns.some(
+          (entry) => entry.id === turn.turnId && entry.status === 'completed',
+        )
+      )
+        throw new TypeError(
+          'MCPApp requires a successfully completed root Turn',
+        );
+      const calls = history.items.filter(
+        (item) =>
+          item.type === 'mcp_call' &&
+          item.turnId === turn.turnId &&
+          item.callId === callId &&
+          item.threadId === this.id,
+      );
+      if (calls.length !== 1 || calls[0].type !== 'mcp_call')
+        throw new TypeError('MCPApp requires one exact canonical MCP call');
+      const call = calls[0];
+      const result = losslessJsonObjectSchema.parse(call.output);
+      if (
+        call.status !== 'completed' ||
+        call.error != null ||
+        result.isError === true
+      )
+        throw new TypeError('MCPApp requires a successful completed MCP call');
+      const selected = this.openingMcpTools.find(
+        (server) => server.name === call.serverLabel,
+      );
+      if (
+        !selected ||
+        !this.defaultMcpTools.includes(selected) ||
+        !this.mcpTools.includes(selected) ||
+        isHostedRegistration(selected) ||
+        selected.approvalMode !== 'preapproved' ||
+        selected.before ||
+        selected.approval ||
+        selected.transformResult ||
+        (selected as { requestMetadata?: unknown }).requestMetadata ||
+        (selected instanceof StdioMCP &&
+          (selected.lifetime !== 'session' || selected.location !== 'host')) ||
+        (selected instanceof HttpMCP && selected.activation !== 'session') ||
+        !selected.tools.includes(call.name)
+      )
+        throw new TypeError(
+          'MCPApp requires a fixed preapproved local MCP declaration without callbacks',
+        );
+      const mimeType = 'text/html;profile=mcp-app';
+      // Read the current negotiated declaration from this native connection, not result data.
+      const metadata = JSON.parse(
+        await native.call(
+          'mcp_app_tool_metadata',
+          encode({
+            server: selected.name,
+            params: { name: call.name, arguments: {} },
+          }),
+        ),
+      );
+      check();
+      const meta =
+        metadata === null ? {} : losslessJsonObjectSchema.parse(metadata);
+      const ui = meta.ui;
+      if (
+        ui !== undefined &&
+        (ui === null || typeof ui !== 'object' || Array.isArray(ui))
+      )
+        throw new TypeError('MCPApp tool UI metadata must be an object');
+      const declared = ui === undefined ? undefined : ui.resourceUri;
+      const legacy = meta['ui/resourceUri'];
+      const declaredUri = declared ?? legacy;
+      if (
+        (declared !== undefined &&
+          legacy !== undefined &&
+          declared !== legacy) ||
+        (declared !== undefined && typeof declared !== 'string') ||
+        (legacy !== undefined && typeof legacy !== 'string')
+      )
+        throw new TypeError('MCPApp tool resource URI metadata is invalid');
+      if (declaredUri !== undefined) {
+        let valid = false;
+        try {
+          const parsed = new URL(declaredUri as string);
+          valid =
+            parsed.protocol === 'ui:' &&
+            !!parsed.hostname &&
+            !parsed.username &&
+            !parsed.password &&
+            (declaredUri as string).startsWith('ui://');
+        } catch {
+          /* Reject malformed declared authority instead of falling back. */
+        }
+        if (!valid)
+          throw new TypeError(
+            'MCPApp tool resource URI must be a valid ui:// URI',
+          );
+      }
+      const content = Array.isArray(result.content) ? result.content : [];
+      const candidates = content.flatMap((part) => {
+        if (!part || typeof part !== 'object' || Array.isArray(part)) return [];
+        const resource =
+          part.type === 'resource'
+            ? part.resource
+            : part.type === 'resource_link'
+              ? part
+              : undefined;
+        if (
+          !resource ||
+          typeof resource !== 'object' ||
+          Array.isArray(resource) ||
+          resource.mimeType !== mimeType ||
+          typeof resource.uri !== 'string' ||
+          !resource.uri.startsWith('ui://')
+        )
+          return [];
+        return [{ resource, linked: part.type === 'resource_link' }];
+      });
+      if (declaredUri === undefined && candidates.length !== 1)
+        throw new TypeError(
+          'MCPApp requires one embedded or linked MCP App HTML resource',
+        );
+      const candidate =
+        declaredUri === undefined
+          ? candidates[0]
+          : {
+              resource: { uri: declaredUri, mimeType } as JsonObject,
+              linked: true,
+            };
+      let resource = candidate.resource;
+      if (candidate.linked) {
+        const read = losslessJsonObjectSchema.parse(
+          JSON.parse(
+            await native.call(
+              'read_mcp_resource',
+              encode({ server: selected.name, params: { uri: resource.uri } }),
+            ),
+          ),
+        );
+        check();
+        const matches = Array.isArray(read.contents)
+          ? read.contents.filter(
+              (entry) =>
+                entry &&
+                typeof entry === 'object' &&
+                !Array.isArray(entry) &&
+                entry.uri === resource.uri &&
+                entry.mimeType === mimeType,
+            )
+          : [];
+        if (matches.length !== 1)
+          throw new TypeError(
+            'MCPApp resource read did not return the exact HTML resource',
+          );
+        resource = losslessJsonObjectSchema.parse(matches[0]);
+      }
+      if (
+        typeof resource.text !== 'string' ||
+        resource.blob !== undefined ||
+        Buffer.byteLength(resource.text, 'utf8') > 64 * 1024
+      )
+        throw new TypeError(
+          'MCPApp resource must contain at most 64 KiB of HTML text',
+        );
+      const view: import('../mcp-apps').MCPAppView = {
+        callId,
+        toolName: call.name,
+        arguments: structuredClone(call.arguments),
+        result: structuredClone(result),
+        resource: {
+          uri: resource.uri as string,
+          mimeType,
+          text: resource.text,
+          ...(resource._meta === undefined
+            ? {}
+            : { _meta: losslessJsonObjectSchema.parse(resource._meta) }),
+        },
+      };
+      return {
+        view,
+        callTool: (name: string, arguments_: JsonObject) => {
+          const request = JSON.stringify(
+            losslessJsonObjectSchema.parse({
+              server: selected.name,
+              params: { name, arguments: arguments_ },
+            }),
+          );
+          this.checkCallbackOperation('MCPApp tool call');
+          return this.mutate(async () => {
+            check();
+            if (
+              name !== call.name ||
+              !this.defaultMcpTools.includes(selected) ||
+              !this.mcpTools.includes(selected)
+            )
+              throw new TypeError(
+                'MCPApp may call only its originating selected tool',
+              );
+            const output = losslessJsonObjectSchema.parse(
+              JSON.parse(await native.call('call_mcp_app_tool', request)),
+            );
+            check();
+            return output;
+          });
+        },
+      };
+    });
   }
 
   /**
@@ -9555,6 +9917,7 @@ export class Session<OutputT = string, Context = unknown> {
         beforeWait: () => this.checkCallbackOperation('wait on a child of'),
         observations: (options) =>
           this.observations.events(options, {
+            after: owner.observationAfter,
             includes: (event) =>
               'submissionId' in event && event.submissionId === key,
             phase: () => owner.observationPhase,

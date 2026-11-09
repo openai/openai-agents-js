@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { Environment, environmentConfig } from '../src/runtime/environment';
+import { Environment, NetworkPolicy } from '../src/index';
+import { environmentConfig } from '../src/runtime/environment';
 import {
   captureNetworkPolicy,
   networkPolicyDigest,
@@ -23,6 +24,48 @@ const executor = {
 };
 
 describe('managed executor network declaration', () => {
+  it('opts in to the existing wildcard without enabling socket privileges', () => {
+    const environment = Environment.local({
+      cwd: executor.cwd,
+      tools: executor.tools,
+      network: NetworkPolicy.allowAll(),
+    });
+    expect(environmentConfig(environment).network).toEqual({
+      allowed_domains: ['**'],
+      denied_domains: [],
+      allow_all_unix_sockets: false,
+      allow_local_binding: false,
+    });
+  });
+
+  it('keeps the wildcard wire policy and checkpoint identity with explicit options', () => {
+    const options = {
+      deniedDomains: ['BLOCKED.invalid.'],
+      allowAllUnixSockets: true,
+      allowLocalBinding: true,
+    };
+    const wildcard: NetworkPolicy = { ...options, allowedDomains: ['**'] };
+    const legacy = new Environment({ ...executor, network: wildcard });
+    const environment = new Environment({
+      ...executor,
+      network: NetworkPolicy.allowAll(options),
+    });
+    expect(environmentConfig(environment).network).toEqual(
+      environmentConfig(legacy).network,
+    );
+    expect(networkPolicyDigest(environment.network)).toBe(
+      networkPolicyDigest(legacy.network),
+    );
+  });
+
+  it.each([null, { allowedDomains: ['example.invalid'] }])(
+    'refuses invalid allowAll options %j',
+    (options) => {
+      // @ts-expect-error Exercise invalid input from JavaScript.
+      expect(() => NetworkPolicy.allowAll(options)).toThrow();
+    },
+  );
+
   it('distinguishes the default from an explicit empty managed policy', () => {
     const omitted = new Environment(executor);
     const empty = new Environment({ ...executor, network: {} });
