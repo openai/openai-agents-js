@@ -6,6 +6,12 @@ import type { JsonObject } from './binding';
 import type { ToolRef } from './tools';
 import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
+import {
+  disposePrivateKernel,
+  type PrivateKernel,
+  type PrivateRuntimeBorrow,
+} from './private-engine-reuse';
+import { NativeError } from './native-error';
 
 export interface NativeProviderOptions {
   baseUrl?: string;
@@ -21,6 +27,13 @@ export interface NativeProviderOptions {
   project?: string;
   /** Explicit personal Apps credentials; never used for Model requests or refreshed. */
   chatGPT?: ChatGPTAuth;
+}
+
+interface PrivateRuntimeSlot {
+  active?: LeaseToken;
+  entry?: PrivateKernel;
+  idle?: ReturnType<typeof setImmediate>;
+  closing?: Promise<void>;
 }
 
 interface LeaseToken {
@@ -58,6 +71,7 @@ export class NativeProvider {
     query_params?: Readonly<Record<string, string>>;
     http_headers?: Readonly<Record<string, string>>;
   }>;
+  #runtime?: PrivateRuntimeSlot;
 
   constructor(options: NativeProviderOptions = {}) {
     for (const key of ['baseUrl', 'apiKey'] as const) {
@@ -93,6 +107,45 @@ export class NativeProvider {
     });
   }
 
+  #schedulePrivateCleanup(): void {
+    const slot = this.#runtime;
+    if (
+      !slot?.entry ||
+      slot.active ||
+      slot.closing ||
+      slot.idle ||
+      this.#leases.size !== 0 ||
+      this.#closed
+    )
+      return;
+    const entry = slot.entry;
+    slot.idle = setImmediate(() => {
+      slot.idle = undefined;
+      if (
+        this.#runtime !== slot ||
+        slot.entry !== entry ||
+        slot.active ||
+        this.#leases.size !== 0 ||
+        this.#closed
+      )
+        return;
+      // Claim before the first await. New leases take independent fresh owners.
+      const closing = Promise.resolve().then(async () => {
+        const diagnostic = await disposePrivateKernel(entry);
+        if (slot.entry === entry) slot.entry = undefined;
+        if (diagnostic) throw new NativeError(diagnostic);
+      });
+      slot.closing = closing;
+      // Keep a rejected cleanup latched until explicit close consumes it.
+      void closing.then(
+        () => {
+          if (slot.closing === closing) slot.closing = undefined;
+        },
+        () => {},
+      );
+    });
+  }
+
   get baseUrl(): string | undefined {
     return this.#options.baseUrl;
   }
@@ -107,24 +160,131 @@ export class NativeProvider {
   }
 
   /** @internal Reserve synchronously after declaration validation, before opening resources. */
-  _acquire(captured?: { readonly apiKey: string | undefined }): ProviderLease {
+  _acquire(
+    captured?: { readonly apiKey: string | undefined },
+    privateRun = false,
+  ): ProviderLease {
     if (this.#closed) throw new Error('NativeProvider is closed');
     const token: LeaseToken = { failed: false };
     this.#leases.add(token);
+    const pendingIdle = this.#runtime;
+    if (pendingIdle?.idle) {
+      clearImmediate(pendingIdle.idle);
+      pendingIdle.idle = undefined;
+    }
     const options = this.#options;
     const websocketsAllowed =
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ?? options.baseUrl === undefined);
+    const apiKey = captured
+      ? captured.apiKey
+      : (options.apiKey ?? process.env.OPENAI_API_KEY);
+    const eligible =
+      privateRun &&
+      this.constructor === NativeProvider &&
+      !options.chatGPT &&
+      options.apiKey !== undefined &&
+      apiKey === options.apiKey &&
+      options.responseMode !== 'buffered' &&
+      !websocketsAllowed;
+    const slot = eligible ? (this.#runtime ??= {}) : undefined;
+    const reserved =
+      slot !== undefined &&
+      slot.active === undefined &&
+      slot.closing === undefined;
+    if (reserved) slot.active = token;
     let home: string | undefined;
     let released = false;
-    const release = async () => {
+    let privateDone = false;
+    let privateFinishing: Promise<void> | undefined;
+    const openHome = async () => {
+      home = await mkdtemp(join(tmpdir(), 'agents-session-'));
+      const cwd = join(home, 'workspace');
+      await mkdir(cwd);
+      return { codex_home: home, cwd };
+    };
+    const releaseLease = async () => {
       if (released) return;
       if (home) await rm(home, { recursive: true, force: true });
       released = true;
       this.#leases.delete(token);
       token.cleanup = undefined;
+      privateDone = true;
+      if (reserved && slot!.active === token) slot!.active = undefined;
+      this.#schedulePrivateCleanup();
     };
-    token.cleanup = release;
+    const release = () =>
+      reserved && !privateDone && slot!.entry
+        ? Promise.resolve()
+        : releaseLease();
+    const borrow: PrivateRuntimeBorrow | undefined = !reserved
+      ? undefined
+      : {
+          get done() {
+            return privateDone;
+          },
+          peek: () => (privateDone ? undefined : slot!.entry),
+          bind: (engine, carrier, transports) => {
+            if (
+              privateDone ||
+              slot!.active !== token ||
+              !home ||
+              apiKey === undefined
+            )
+              throw new Error('Private runtime reservation is closed');
+            slot!.entry = {
+              engine,
+              carrier,
+              transports,
+              home: { codex_home: home, cwd: join(home, 'workspace') },
+              apiKey,
+              phase: 'engine',
+            };
+          },
+          reset: async () => {
+            if (privateDone || slot!.active !== token)
+              throw new Error('Private runtime reservation is closed');
+            const entry = slot!.entry;
+            if (entry) {
+              const diagnostic = await disposePrivateKernel(entry);
+              slot!.entry = undefined;
+              home = undefined;
+              if (diagnostic) throw new NativeError(diagnostic);
+            }
+            return openHome();
+          },
+          finish: (keep) => {
+            if (privateDone) return Promise.resolve();
+            if (privateFinishing) return privateFinishing;
+            privateFinishing = (async () => {
+              if (slot!.active !== token)
+                throw new Error('Private runtime reservation changed');
+              const entry = slot!.entry;
+              const canKeep =
+                keep &&
+                !token.failed &&
+                !this.#closed &&
+                entry !== undefined &&
+                entry.phase === 'engine' &&
+                entry.engine._private_reuse_ready &&
+                entry.apiKey === apiKey &&
+                entry.transports === this.#httpTransports &&
+                entry.carrier.reuseBinding(entry.engine) !== undefined;
+              let diagnostic: string | null = null;
+              if (entry && !canKeep) {
+                diagnostic = await disposePrivateKernel(entry);
+                slot!.entry = undefined;
+              }
+              if (entry) home = undefined;
+              await releaseLease();
+              if (diagnostic) throw new NativeError(diagnostic);
+            })().finally(() => {
+              privateFinishing = undefined;
+            });
+            return privateFinishing;
+          },
+        };
+    token.cleanup = borrow ? () => borrow.finish(false) : release;
     return {
       get failedOpeningCleanup() {
         return token.failed && token.cleanup
@@ -140,9 +300,8 @@ export class NativeProvider {
         return (this.#httpTransports ??= create(engine));
       },
       chatGPT: options.chatGPT,
-      apiKey: captured
-        ? captured.apiKey
-        : (options.apiKey ?? process.env.OPENAI_API_KEY),
+      apiKey,
+      privateRuntime: borrow,
       config: {
         model_provider: 'native_agent',
         'model_providers.native_agent': {
@@ -155,10 +314,12 @@ export class NativeProvider {
         },
       },
       async open() {
-        home = await mkdtemp(join(tmpdir(), 'agents-session-'));
-        const cwd = join(home, 'workspace');
-        await mkdir(cwd);
-        return { codex_home: home, cwd };
+        if (borrow?.peek()) {
+          const entry = borrow.peek()!;
+          home = entry.home.codex_home;
+          return entry.home;
+        }
+        return openHome();
       },
       release,
       retainOpeningCleanup(cleanup) {
@@ -192,6 +353,20 @@ export class NativeProvider {
     if ([...this.#leases].some((token) => !token.failed))
       throw new Error('NativeProvider has open or opening sessions');
     this.#closed = true;
+    const slot = this.#runtime;
+    if (slot?.idle) {
+      clearImmediate(slot.idle);
+      slot.idle = undefined;
+    }
+    if (slot?.closing) {
+      const closing = slot.closing;
+      try {
+        await closing;
+      } finally {
+        // A failed close preserves entry.phase for a later explicit retry.
+        if (slot.closing === closing) slot.closing = undefined;
+      }
+    }
     const results = await Promise.allSettled(
       [...this.#leases].map(cleanFailedOpening),
     );
@@ -202,6 +377,12 @@ export class NativeProvider {
       throw new AggregateError(failures, 'NativeProvider cleanup failed', {
         cause: failures[0],
       });
+    if (this.#runtime?.entry) {
+      const entry = this.#runtime.entry;
+      const diagnostic = await disposePrivateKernel(entry);
+      this.#runtime.entry = undefined;
+      if (diagnostic) throw new NativeError(diagnostic);
+    }
     this.#httpTransports?.close();
     this.#httpTransports = undefined;
   }
@@ -213,6 +394,7 @@ export class NativeProvider {
 
 /** @internal */
 export interface ProviderLease {
+  readonly privateRuntime?: PrivateRuntimeBorrow;
   readonly chatGPT?: Readonly<ChatGPTAuth>;
   readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
   readonly websocketsAllowed: boolean;

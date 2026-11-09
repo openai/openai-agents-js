@@ -173,6 +173,22 @@ export class NativeProviderRoutes {
     this.providerTransports = transports;
     this.sentinelEngines.set(grant, engine);
   }
+  /** Private owned-run reuse requires the exact quiescent binding. */
+  reuseBinding(engine: Engine): { origin: string; grant: string } | undefined {
+    if (
+      !this.server?.listening ||
+      !this.localOrigin ||
+      this.stopping ||
+      this.tasks.size !== 0 ||
+      this.remoteSockets.size !== 0 ||
+      (this.websocketServer?.clients.size ?? 0) !== 0 ||
+      this.sentinelEngines.size !== 1
+    )
+      return undefined;
+    const binding = this.sentinelEngines.entries().next().value;
+    if (!binding || binding[1] !== engine) return undefined;
+    return { origin: this.localOrigin, grant: binding[0] };
+  }
   /** Release only the retired engine's routing grants; the Session owns the carrier. */
   unbindEngine(engine: Engine): void {
     for (const [grant, owner] of this.sentinelEngines)
