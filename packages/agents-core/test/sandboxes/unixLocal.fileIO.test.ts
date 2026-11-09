@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -157,6 +158,59 @@ describe.skipIf(process.platform === 'win32')(
         Buffer.from(
           await session.readFile({ path: 'new/deep/note.txt' }),
         ).toString(),
+      ).toBe('after\n');
+    });
+
+    it('preserves edited contents and native rename spelling on a case-only move', async () => {
+      const directory = join(session.state.workspaceRootPath, 'nested');
+      const source = join(directory, 'note.txt');
+      const destination = join(directory, 'Note.txt');
+      // Observe this directory's native case-only rename behavior, then restore the fixture.
+      await rename(source, destination);
+      const expectedNames = (await readdir(directory)).sort();
+      await rename(destination, source);
+      await session.createEditor().updateFile({
+        type: 'update_file',
+        path: 'nested/note.txt',
+        moveTo: 'nested/Note.txt',
+        diff: patch,
+      });
+      expect((await readdir(directory)).sort()).toEqual(expectedNames);
+      expect(await readFile(destination, 'utf8')).toBe('after\n');
+    });
+
+    it('removes the source entry when moving onto a distinct hardlink', async () => {
+      const directory = join(session.state.workspaceRootPath, 'nested');
+      const source = join(directory, 'note.txt');
+      await link(source, join(directory, 'destination.txt'));
+      await link(source, join(directory, 'other.txt'));
+      await session.createEditor().updateFile({
+        type: 'update_file',
+        path: 'nested/note.txt',
+        moveTo: 'nested/destination.txt',
+        diff: patch,
+      });
+      await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(join(directory, 'destination.txt'), 'utf8')).toBe(
+        'after\n',
+      );
+      expect(await readFile(join(directory, 'other.txt'), 'utf8')).toBe(
+        'before\n',
+      );
+    });
+
+    it('keeps an explicit same-name move at its original path', async () => {
+      await session.createEditor().updateFile({
+        type: 'update_file',
+        path: 'nested/note.txt',
+        moveTo: 'nested/note.txt',
+        diff: patch,
+      });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'nested/note.txt'),
+          'utf8',
+        ),
       ).toBe('after\n');
     });
 
