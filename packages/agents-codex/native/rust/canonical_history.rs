@@ -58,7 +58,7 @@ pub async fn replace(
             .load(std::sync::atomic::Ordering::Acquire)
             && !state
                 .engine
-                .context_retired
+                .retired
                 .load(std::sync::atomic::Ordering::Acquire),
         "Codex engine is closed"
     );
@@ -117,7 +117,7 @@ pub async fn replace(
             // remains retryable through the existing context retirement mechanism.
             state
                 .engine
-                .context_retired
+                .retired
                 .store(true, std::sync::atomic::Ordering::Release);
             Ok(json!({"outcome": "uncertain"}))
         }
