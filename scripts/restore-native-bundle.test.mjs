@@ -674,3 +674,31 @@ test.each(Object.keys(nativePlatforms))(
     expect(qualify).toContain('steps: *package_steps');
   },
 );
+
+test('Windows filename qualification runs beside native builds on pull requests', () => {
+  const workflow = readFileSync(
+    new URL('../.github/workflows/native-bundle.yml', import.meta.url),
+    'utf8',
+  );
+  const [native, regression] = workflow.split(
+    '\n  windows-filename-regression:\n',
+  );
+  expect(native).toContain(
+    "if: runner.os == 'Windows' && github.event_name != 'pull_request'",
+  );
+  expect(native.indexOf('run: &test_windows_filename')).toBeLessThan(
+    native.indexOf('name: Publish native bundle'),
+  );
+  expect(native).toContain(
+    'cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture',
+  );
+  expect(regression).toContain(
+    "inputs.platform == 'win32-x64' && github.event_name == 'pull_request'",
+  );
+  expect(regression).toContain(
+    'run: node packages/agents-codex/scripts/native.mjs prepare',
+  );
+  expect(regression).toContain('working-directory: *codex_rust_root');
+  expect(regression).toContain('run: *test_windows_filename');
+  expect(regression).not.toContain('needs:');
+});
