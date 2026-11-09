@@ -5,6 +5,7 @@ import {
   PortableVoiceSession,
 } from '@openai/agents/voice/portable';
 import { connectPortableVoiceWorker } from '@openai/agents/voice/workerd';
+import { connectPortableVoiceBrowser } from '@openai/agents/voice/browser';
 
 // These tests execute the real reviewed Rust Wasm artifact, never a JS control double.
 const enabled = process.env.OPENAI_AGENTS_PORTABLE_TESTS === '1';
@@ -67,6 +68,77 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
+  it.each([false, true])(
+    'preserves browser configuration failure across owned media cleanup (cleanup throws=%s)',
+    async (cleanupThrows) => {
+      const cleanup = new Error('injected peer cleanup failure');
+      const stop = vi.fn();
+      const track = Object.assign(new EventTarget(), {
+        readyState: 'live',
+        enabled: true,
+        stop,
+      });
+      const stream = {
+        getAudioTracks: () => [track],
+        getTracks: () => [track],
+      };
+      const channel = {
+        readyState: 'open',
+        close: vi.fn(),
+        onmessage: null as ((event: MessageEvent<string>) => void) | null,
+        send(frame: string) {
+          if (JSON.parse(frame).type === 'session.update') {
+            queueMicrotask(() =>
+              channel.onmessage?.(
+                new MessageEvent('message', {
+                  data: JSON.stringify({
+                    type: 'session.updated',
+                    session: {},
+                  }),
+                }),
+              ),
+            );
+          }
+        },
+      };
+      const close = vi.fn(() => {
+        if (cleanupThrows) throw cleanup;
+      });
+      const peer = {
+        connectionState: 'new',
+        localDescription: null as RTCSessionDescriptionInit | null,
+        createDataChannel: () => channel,
+        addTrack() {},
+        async createOffer() {
+          return { type: 'offer' as const, sdp: 'offer' };
+        },
+        async setLocalDescription(description: RTCSessionDescriptionInit) {
+          peer.localDescription = description;
+        },
+        async setRemoteDescription() {},
+        close,
+      };
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('answer', { status: 200 })),
+      );
+      await expect(
+        connectPortableVoiceBrowser({
+          control: control(),
+          apiKey: 'synthetic',
+          agent: { model: 'test', instructions: 'test' },
+          media: {
+            getUserMedia: async () => stream as unknown as MediaStream,
+            createPeerConnection: async () =>
+              peer as unknown as RTCPeerConnection,
+          },
+        }),
+      ).rejects.toThrow('Provider accepted another tool configuration');
+      expect(close).toHaveBeenCalledOnce();
+      expect(stop).toHaveBeenCalledOnce();
+    },
+  );
+
   it('retires a provider connection that never acknowledges configuration', async () => {
     vi.useFakeTimers();
     const close = vi.fn();

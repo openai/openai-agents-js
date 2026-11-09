@@ -326,7 +326,11 @@ export async function connectPortableVoiceBrowser(options: {
     await session.start();
     return { session, media };
   } catch (error) {
-    await session.close();
+    try {
+      await session.close();
+    } catch {
+      // Preserve the opening error while releasing the acquired media.
+    }
     throw error;
   }
 }
