@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { execFileSync, spawnSync } from 'node:child_process';
+import console from 'node:console';
 import {
   existsSync,
   mkdirSync,
@@ -13,11 +14,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, URL } from 'node:url';
-import { expect, onTestFinished, test } from 'vitest';
+import { expect, onTestFinished, test, vi } from 'vitest';
 import {
   isProducer,
   isNativePublication,
   nativePlatforms,
+  waitForNativeProducer,
 } from './verified-native-bundle.mjs';
 
 const repository = { full_name: 'openai/openai-agents-js' };
@@ -87,6 +89,108 @@ test('only successful direct Alpha producers in approved branches are eligible',
     { head_repository: { full_name: 'fork/openai-agents-js' } },
   ])
     expect(isProducer({ ...producer, ...change }, 1)).toBe(false);
+});
+
+const finishing = { ...producer, status: 'in_progress', conclusion: null };
+const finishingJobs = Object.values(nativePlatforms).map((platform) => ({
+  name: 'Package and test (' + platform + ')',
+  run_id: producer.id,
+  run_attempt: 1,
+  status: 'in_progress',
+  conclusion: null,
+  steps: [{ name: 'Test the extracted bundles', status: 'in_progress' }],
+}));
+
+async function simulateDonorWait(
+  states,
+  {
+    jobs = finishingJobs,
+    platforms = Object.values(nativePlatforms),
+    requestDurations = [],
+  } = {},
+) {
+  let elapsed = 0;
+  let lookups = 0;
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const success = await waitForNativeProducer(
+      [{ run: finishing, platforms: new Set(platforms) }],
+      {
+        request(endpoint, remaining) {
+          expect(remaining).toBeGreaterThan(0);
+          if (endpoint.endsWith('/jobs?per_page=100'))
+            return { total_count: jobs.length, jobs };
+          const state = states[Math.min(lookups, states.length - 1)];
+          elapsed += requestDurations[lookups] ?? 0;
+          lookups++;
+          if (state instanceof Error) throw state;
+          return state;
+        },
+        now: () => elapsed,
+        sleep: async (ms) => {
+          elapsed += ms;
+        },
+      },
+    );
+    return { success, elapsed, lookups };
+  } finally {
+    log.mockRestore();
+  }
+}
+
+test('waits for a late canonical donor, then reports successful completion for re-verification', async () => {
+  const result = await simulateDonorWait([finishing, finishing, producer]);
+  expect(result).toEqual({ success: true, elapsed: 20_000, lookups: 3 });
+});
+
+test('the donor wait caps elapsed time and falls back when a donor stalls', async () => {
+  const result = await simulateDonorWait([finishing]);
+  expect(result).toEqual({ success: false, elapsed: 85_000, lookups: 10 });
+});
+
+test('the final poll catches a donor that finishes after the last regular poll', async () => {
+  const result = await simulateDonorWait([
+    ...Array(9).fill(finishing),
+    producer,
+  ]);
+  expect(result).toEqual({ success: true, elapsed: 85_000, lookups: 10 });
+});
+
+test('a slow status response still leaves room for a final bounded poll', async () => {
+  const result = await simulateDonorWait(
+    [...Array(9).fill(finishing), producer],
+    { requestDurations: [0, ...Array(7).fill(500), 2_500] },
+  );
+  expect(result).toEqual({ success: true, elapsed: 86_000, lookups: 10 });
+});
+
+test('a failed, canceled, stale, retrying, or unobservable donor falls back immediately', async () => {
+  for (const state of [
+    ...['failure', 'cancelled', 'stale'].map((conclusion) => ({
+      ...producer,
+      conclusion,
+    })),
+    { ...finishing, run_attempt: 2 },
+    new Error('GitHub metadata unavailable'),
+  ]) {
+    const result = await simulateDonorWait([finishing, state]);
+    expect(result).toEqual({ success: false, elapsed: 10_000, lookups: 2 });
+  }
+});
+
+test('missing exact artifacts or inconclusive package progress skips the wait', async () => {
+  const incompleteArtifacts = await simulateDonorWait([finishing], {
+    platforms: ['linux-x64', 'win32-x64'],
+  });
+  expect(incompleteArtifacts).toEqual({
+    success: false,
+    elapsed: 0,
+    lookups: 0,
+  });
+  const earlyPackage = await simulateDonorWait([finishing], {
+    jobs: [{ ...finishingJobs[0], steps: [] }, ...finishingJobs.slice(1)],
+  });
+  expect(earlyPackage).toEqual({ success: false, elapsed: 0, lookups: 1 });
 });
 
 test('native publication precedes all SDK execution, including other platforms and prior attempts', () => {
@@ -255,6 +359,7 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
     const fixture = {
       assets: options.assets ?? [],
       run: options.run ?? producer,
+      runLookups: options.runLookups ?? [],
       runs: options.runs ?? {},
       jobs: options.jobs ?? [],
       jobsByRun: options.jobsByRun ?? {},
@@ -269,6 +374,7 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
       import { syncBuiltinESMExports } from 'node:module';
       const fixture = ${JSON.stringify(fixture)};
       const original = cp.execFileSync;
+      let runLookup = 0;
       cp.execFileSync = (command, args, options) => {
         if (command !== 'gh') return original(command, args, options);
         appendFileSync(${JSON.stringify(requests)}, JSON.stringify(args) + '\\n');
@@ -281,7 +387,7 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
           return JSON.stringify({artifacts: fixture.assets.filter(a => a.name === params.get('name')).slice(0, Number(params.get('per_page')))});
         }
         if (endpoint.includes('/jobs?')) return JSON.stringify([{jobs: fixture.jobsByRun[endpoint.split('/').at(-2)] ?? fixture.jobs}]);
-        if (endpoint.includes('/actions/runs/')) return JSON.stringify(fixture.runs[endpoint.split('/').at(-1)] ?? fixture.run);
+        if (endpoint.includes('/actions/runs/')) return JSON.stringify(fixture.runLookups[runLookup++] ?? fixture.runs[endpoint.split('/').at(-1)] ?? fixture.run);
         throw new Error('Unexpected endpoint: ' + endpoint);
       };
       syncBuiltinESMExports();
@@ -307,6 +413,7 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
         env: {
           ...process.env,
           GH_TOKEN: 'fixture',
+          GITHUB_EVENT_NAME: options.event ?? 'push',
           RUNNER_TEMP: temp,
           GITHUB_OUTPUT: output,
           GITHUB_STEP_SUMMARY: summary,
@@ -407,6 +514,32 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
     ).toEqual(archive);
   }
   expect(existsSync(join(native, 'codex.node'))).toBe(false);
+
+  const race = {
+    ...qualified,
+    assets: allAssets,
+    jobs: allJobs,
+    runLookups: allAssets.map(() => ({ ...finishing, head_sha: source })),
+  };
+  const push = run(race);
+  expect(push.status, push.error).toBe(0);
+  expect(push.requests.some(([kind]) => kind === 'download')).toBe(false);
+  const pr = run({ ...race, event: 'pull_request' });
+  expect(pr.status, pr.error).toBe(0);
+  for (const k of Object.keys(nativePlatforms)) {
+    expect(pr.output).toContain(k + '_hit=true');
+  }
+  const unverified = run({ ...race, event: 'pull_request', jobs: [] });
+  expect(unverified.status, unverified.error).toBe(0);
+  expect(unverified.requests.some(([kind]) => kind === 'download')).toBe(false);
+  const unavailable = run({ ...race, event: 'pull_request', status: 403 });
+  expect(unavailable.status, unavailable.error).toBe(0);
+  expect(
+    unavailable.requests.filter(([kind]) => kind === 'download'),
+  ).toHaveLength(allAssets.length);
+  for (const k of Object.keys(nativePlatforms)) {
+    expect(unavailable.output).toContain(k + '_hit=false');
+  }
 
   const pair = {
     'artifact-id': '12',
