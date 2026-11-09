@@ -361,3 +361,19 @@ it('rejects provider fields that replace an admitted hosted identity', () => {
     hostedToolSpecs([imageGeneration({ providerData: { type: 'computer' } })]),
   ).toThrow('cannot replace declared fields');
 });
+
+it('preserves provider fields declared by a different hosted kind', () => {
+  expect(
+    hostedToolSpecs([
+      fileSearch('vs_synthetic', {
+        providerData: { quality: 'future-search-quality' },
+      }),
+    ]),
+  ).toEqual([
+    {
+      type: 'file_search',
+      vector_store_ids: ['vs_synthetic'],
+      quality: 'future-search-quality',
+    },
+  ]);
+});

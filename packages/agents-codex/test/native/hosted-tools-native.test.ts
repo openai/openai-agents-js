@@ -686,7 +686,9 @@ it.each([false, true])(
       model: 'gpt-5.5',
       instructions: 'Use hosted tools.',
       tools: [
-        fileSearch('vs_fixture', { providerData }),
+        fileSearch('vs_fixture', {
+          providerData: { ...providerData, quality: 'future-search-quality' },
+        }),
         codeInterpreter({
           container: 'cntr_fixture',
           includeOutputs,
@@ -708,6 +710,8 @@ it.each([false, true])(
         (tool) => tool.type === type,
       )!;
       expect(wire.future_option).toEqual({ nested: [true, null] });
+      if (type === 'file_search')
+        expect(wire.quality).toBe('future-search-quality');
       expect(wire).not.toHaveProperty('providerData');
       expect(wire).not.toHaveProperty('include_outputs');
     }

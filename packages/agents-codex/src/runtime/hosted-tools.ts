@@ -112,34 +112,39 @@ export function captureHostedTool(tool: HostedTool): HostedTool {
 export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
   return tools.map((tool): JsonObject => {
     const providerData = tool.providerData ?? {};
+    const fieldsByKind = {
+      file_search: [
+        'vector_store_ids',
+        'max_num_results',
+        'include_search_results',
+        'ranking_options',
+        'filters',
+      ],
+      code_interpreter: ['container', 'allowed_callers', 'include_outputs'],
+      image_generation: [
+        'action',
+        'complexity',
+        'frame_count',
+        'frame_duration_ms',
+        'svg',
+        'background',
+        'input_fidelity',
+        'input_image_mask',
+        'model',
+        'moderation',
+        'output_compression',
+        'output_format',
+        'partial_images',
+        'quality',
+        'size',
+      ],
+    };
     const reserved = new Set([
       'type',
       'kind',
       'provider_data',
       'providerData',
-      'vector_store_ids',
-      'max_num_results',
-      'include_search_results',
-      'ranking_options',
-      'filters',
-      'container',
-      'allowed_callers',
-      'include_outputs',
-      'action',
-      'complexity',
-      'frame_count',
-      'frame_duration_ms',
-      'svg',
-      'background',
-      'input_fidelity',
-      'input_image_mask',
-      'model',
-      'moderation',
-      'output_compression',
-      'output_format',
-      'partial_images',
-      'quality',
-      'size',
+      ...fieldsByKind[tool.kind],
     ]);
     if (Object.keys(providerData).some((key) => reserved.has(key))) {
       throw new TypeError(
