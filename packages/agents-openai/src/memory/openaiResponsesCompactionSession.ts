@@ -78,8 +78,9 @@ export type OpenAIResponsesCompactionSessionOptions = {
   /**
    * The OpenAI model to use for `responses.compact`.
    *
-   * Defaults to `DEFAULT_OPENAI_MODEL`. The value must resemble an OpenAI model name (for example
-   * `gpt-*`, `o*`, or a fine-tuned `ft:gpt-*` identifier), otherwise the constructor throws.
+   * Defaults to `DEFAULT_OPENAI_MODEL`. The final slash-delimited component must resemble an
+   * OpenAI model name (for example `gpt-4.1`, `o3`, or a fine-tuned `ft:gpt-*` identifier).
+   * For a namespaced ID such as `openai/gpt-4.1`, the client receives the full ID.
    */
   model?: OpenAI.ResponsesModel;
   /**
@@ -675,16 +676,13 @@ function assertSupportedOpenAIResponsesCompactionModel(model: string): void {
 }
 
 function isOpenAIModelName(model: string): boolean {
-  const trimmed = model.trim();
-  if (!trimmed) {
-    return false;
-  }
+  const modelName = model.slice(model.lastIndexOf('/') + 1);
   // The OpenAI SDK does not ship a runtime allowlist of model names.
   // This check relies on common model naming conventions and intentionally allows unknown `gpt-*` variants.
   // Fine-tuned model IDs typically look like: ft:gpt-4o-mini:org:project:suffix.
-  const withoutFineTunePrefix = trimmed.startsWith('ft:')
-    ? trimmed.slice('ft:'.length)
-    : trimmed;
+  const withoutFineTunePrefix = modelName.startsWith('ft:')
+    ? modelName.slice('ft:'.length)
+    : modelName;
   const root = withoutFineTunePrefix.split(':', 1)[0];
 
   // Allow unknown `gpt-*` variants to avoid needing updates whenever new models ship.
