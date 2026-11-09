@@ -890,6 +890,18 @@ index 0000000000000000000000000000000000000000..c85f9b88f50d2a5a324aeeea1925fb4e
 +        .is_none()
 +    );
 +}
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index 75516746c967325b8d3408b38c5091ef146d247a..7ebd4419278742e5c3f703b20b7089322f6a0a6d 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -1049,6 +1049,7 @@ mod tests {
+             tx_command,
+             rx_message,
+             pump_task,
++            upgrade_rate_limits: None,
+         };
+         let (tx_event, mut rx_event) = mpsc::channel(8);
+         let (_tx_interrupt, rx_interrupt) = oneshot::channel();
 diff --git a/codex-rs/codex-api/src/lib.rs b/codex-rs/codex-api/src/lib.rs
 index 7126f39f37a2298b7d2b2ec324a0fe78544e4ed5..20fd438ad3be6cf98ab9f5df86b41b0ef4a5a51f 100644
 --- a/codex-rs/codex-api/src/lib.rs
