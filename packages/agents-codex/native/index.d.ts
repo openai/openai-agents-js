@@ -53,6 +53,15 @@ export class Engine {
     options_json: string,
     specs_json: string,
   ): Promise<NativeThread | string>;
+  readonly _private_reuse_ready: boolean;
+  _private_start_thread(
+    configJson: string,
+    runtimeJson: string,
+    origin: string,
+    grant: string,
+    optionsJson: string,
+    specsJson: string,
+  ): Promise<NativeThread | null>;
   _close_report(): Promise<string | null>;
   close(): Promise<void>;
 }
@@ -267,6 +276,7 @@ export class NativeThread {
   ): Promise<_NativeChildTurn>;
   _finish_child_event_reader(): void;
   close(): Promise<void>;
+  _close_private_root_report(): Promise<string | null>;
   _close_report(): Promise<string | null>;
   _close_selected_environment(): Promise<string | null>;
   _stop_sampling_for_close(): void;
