@@ -42,6 +42,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Correlate model requests and tool calls | **Run** [request-metadata.ts](request-metadata.ts) with scripted responses. It joins request dispatch identities and tool-call occurrences without changing requests. |
 | Inspect a tool call | **Run** [call-metadata.ts](call-metadata.ts) with access to its selected model. It reads metadata. Decisions and replies require their own grants. |
 | Validate an artifact | **Run** [validated-artifact.ts](validated-artifact.ts). The tool returns validation failures for correction and writes accepted content to an application-selected file. |
+| Use the packaged JSON artifact checker | [Packaged artifact validation](packaged-artifact.md) runs a rejected candidate and a corrected retry through `jsonArtifactTool`. It uses scripted responses and a temporary file. |
 | Choose an output contract | **Import** [`runOutputModes()`](output-modes.ts) for native and prompted output, or [`runOutputOverrides()`](output-overrides.ts) to read a root Turn's selected contract. |
 | Answer an approval or form | **Import** a [native question handler](native-questions.ts) for your own collector, or **run** its terminal consent demo with model credentials, `MCP_URL`, and `MCP_TOOL`. The configured MCP tool must request URL consent. See [URL consent](guides/interactions.md#explicit-url-consent-and-completion). |
 | Aggregate tool results in JavaScript | **Run** [code-mode.ts](code-mode.ts) with access to `gpt-5.5`. The bundled host aggregates synthetic sales. The expected total is 50, and the live answer depends on the model. |
@@ -51,6 +52,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Task | Start here |
 | --- | --- |
 | <a name="persistent-application-facts"></a><a name="scope-facts-to-the-authenticated-user"></a><a name="persistence-and-deletion-limits"></a>Keep one fact across Sessions | [Persistent application facts](persistent-memory.md) runs [persistent-memory.ts](persistent-memory.ts) against SQLite with scripted responses. |
+| Use the packaged application memory store | [Packaged memory](packaged-memory.md) runs `SQLiteMemory` tools across separate Sessions, checks scope isolation, and deletes the saved fact. |
 | <a name="retrieve-and-check-sources"></a><a name="bound-passages-and-validate-citations"></a>Retrieve tenant passages and check citations | [Live and scripted retrieval](input-retrieval-specialist/README.md#retrieve-and-check-sources-with-a-live-model) explains the live [retrieval.ts](retrieval.ts) entry point and its source-membership check. |
 | <a name="selected-documents"></a><a name="select-files-and-connect-tools"></a><a name="continue-reads-and-handle-conflicts"></a><a name="file-and-concurrency-limits"></a><a name="scripted-coverage"></a>Read or revise selected files | [Selected documents](selected-documents.md) runs [selected-documents.ts](selected-documents.ts). **Import** [`SelectedDocuments`](document-workspace.ts) to choose your own trusted root and writable aliases. |
 | Search a collection and stage selected documents | [Selective collection](selective-collection.md) composes metadata search, application-owned acquisition, and bounded reads, with a 10,000-document native fixture and a matched bulk-copy benchmark. |
@@ -89,6 +91,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | <a name="evaluate-two-scripted-cases"></a>Compare model and tool behavior | [Evaluation](evaluation/README.md) covers repeated trials and the [two-case catalog CLI](evaluate-catalog.ts). Select live mode and supply credentials to compare live models. |
 | Start a local MCP peer or aggregate tool data | [Stdio and programmatic tools](stdio-programmatic/README.md) |
 | <a name="project-native-text-into-a-ui-stream"></a>Display native results in a browser | [Native UI streams](native-ui/README.md) projects SSE for Vercel UI and AG-UI clients. The [web starter](web-starter/README.md) runs a browser application. |
+| Render an MCP App and send an action | [MCP App browser](mcp-ui/README.md) consumes the packaged Vercel stream, renders a tool's HTML, and sends a correlated action through its originating Session. |
 | Connect a report worker to a browser | [HTTP report service](http-report-service.md) runs [http-report-service.ts](http-report-service.ts) with model credentials and a local demo token. |
 
 ## Migrate a workflow or use classic

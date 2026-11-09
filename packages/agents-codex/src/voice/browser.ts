@@ -258,13 +258,14 @@ export async function connectPortableVoiceBrowser(options: {
     throw new TypeError(
       'Voice credential must be nonempty text without whitespace or control characters.',
     );
-  if (
-    (!apiKey.startsWith('ek_') || apiKey.length === 3) &&
-    options.useInsecureApiKey !== true
-  )
+  const isClientKey = apiKey.startsWith('ek_') && apiKey.length > 3;
+  if (!isClientKey && options.useInsecureApiKey !== true)
     throw new TypeError(
       'Browser voice requires an ephemeral client key. To explicitly use a regular API key, set useInsecureApiKey: true.',
     );
+  const sessionConfig = isClientKey
+    ? undefined
+    : JSON.stringify({ type: 'realtime', model: options.agent.model });
   const endpoint = new URL(
     options.callUrl ?? 'https://api.openai.com/v1/realtime/calls',
   );
@@ -320,13 +321,19 @@ export async function connectPortableVoiceBrowser(options: {
   try {
     await media.connect({
       exchangeSdp: async (offer, signal) => {
+        let body: string | FormData = offer;
+        if (!isClientKey) {
+          body = new FormData();
+          body.set('sdp', offer);
+          body.set('session', sessionConfig!);
+        }
         const response = await fetch(endpoint, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/sdp',
+            ...(isClientKey ? { 'Content-Type': 'application/sdp' } : {}),
           },
-          body: offer,
+          body,
           signal,
           redirect: 'error',
         });

@@ -203,7 +203,47 @@
         "default": "./dist/voice/portable.js"
       }
     },
-    "./voice/control.wasm": "./native/codex-realtime-control.wasm"
+    "./voice/control.wasm": "./native/codex-realtime-control.wasm",
+    "./memory": {
+      "import": {
+        "types": "./dist/memory/index.d.mts",
+        "default": "./dist/memory/index.mjs"
+      },
+      "require": {
+        "types": "./dist/memory/index.d.ts",
+        "default": "./dist/memory/index.js"
+      }
+    },
+    "./artifacts": {
+      "import": {
+        "types": "./dist/artifacts/index.d.mts",
+        "default": "./dist/artifacts/index.mjs"
+      },
+      "require": {
+        "types": "./dist/artifacts/index.d.ts",
+        "default": "./dist/artifacts/index.js"
+      }
+    },
+    "./ui": {
+      "import": {
+        "types": "./dist/ui/index.d.mts",
+        "default": "./dist/ui/index.mjs"
+      },
+      "require": {
+        "types": "./dist/ui/index.d.ts",
+        "default": "./dist/ui/index.js"
+      }
+    },
+    "./mcp-apps": {
+      "import": {
+        "types": "./dist/mcp-apps/index.d.mts",
+        "default": "./dist/mcp-apps/index.mjs"
+      },
+      "require": {
+        "types": "./dist/mcp-apps/index.d.ts",
+        "default": "./dist/mcp-apps/index.js"
+      }
+    }
   },
   "scripts": {
     "prebuild": "node ../../scripts/embedMeta.mts",
@@ -301,6 +341,18 @@
       ],
       "voice/portable": [
         "dist/voice/portable.d.ts"
+      ],
+      "memory": [
+        "dist/memory/index.d.ts"
+      ],
+      "artifacts": [
+        "dist/artifacts/index.d.ts"
+      ],
+      "ui": [
+        "dist/ui/index.d.ts"
+      ],
+      "mcp-apps": [
+        "dist/mcp-apps/index.d.ts"
       ]
     }
   }

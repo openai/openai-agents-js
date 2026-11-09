@@ -596,7 +596,7 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<NativeThread> {
-        self.start_native_thread(&options_json, &specs_json, None)
+        Box::pin(self.start_native_thread(&options_json, &specs_json, None))
             .await
             .map_err(native_error)
     }
@@ -634,6 +634,32 @@ impl Engine {
                 Err(error) => Err(native_error(error)),
             },
         }
+    }
+
+    #[napi(getter, js_name = "_private_reuse_ready")]
+    pub fn private_reuse_ready(&self) -> napi::Result<bool> {
+        Ok(self.current()?.private_reuse_ready())
+    }
+
+    #[napi(js_name = "_private_start_thread")]
+    pub async fn private_start_thread(
+        &self,
+        config_json: String,
+        runtime_json: String,
+        origin: String,
+        grant: String,
+        options_json: String,
+        specs_json: String,
+    ) -> napi::Result<Option<NativeThread>> {
+        let current = self.current()?;
+        let _operation = current.operation(false).map_err(native_error)?;
+        let options = config::decode(serde_json::from_str(&options_json).map_err(native_error)?)
+            .map_err(native_error)?;
+        let specs = serde_json::from_str(&specs_json).map_err(native_error)?;
+        current
+            .private_start_with_tools(&config_json, &runtime_json, &origin, &grant, options, specs)
+            .await
+            .map_err(native_error)
     }
 
     #[napi(js_name = "close")]
@@ -893,6 +919,14 @@ impl NativeThread {
     }
 
     async fn close_owned(&self, selected_environment: bool) -> napi::Result<Option<String>> {
+        self.close_owned_mode(selected_environment, false).await
+    }
+
+    async fn close_owned_mode(
+        &self,
+        selected_environment: bool,
+        retire_private: bool,
+    ) -> napi::Result<Option<String>> {
         self.inner
             .lock()
             .map_err(native_error)?
@@ -912,6 +946,14 @@ impl NativeThread {
         };
         // A completed diagnostic does not leave a live thread. Shutdown failure
         // returns above, retaining the existing incomplete-close retry path.
+        if retire_private && ack_error.is_none() {
+            inner
+                .engine
+                .retire_private_thread(&inner)
+                .await
+                .map_err(native_error)?;
+            inner.engine.retire_private_registration(&self.inner);
+        }
         self.inner.lock().map_err(native_error)?.release();
         Ok(ack_error)
     }
@@ -2014,7 +2056,9 @@ impl NativeThread {
                 serde_json::to_value(subagents::list(&inner).await.map_err(native_error)?)
                     .map_err(native_error)?
             }
-            "list_mcp_resources"
+            "call_mcp_app_tool"
+            | "mcp_app_tool_metadata"
+            | "list_mcp_resources"
             | "list_mcp_resource_templates"
             | "read_mcp_resource"
             | "list_mcp_prompts"
@@ -2059,6 +2103,72 @@ impl NativeThread {
                     .clone();
                 let request = async {
                     match operation.as_str() {
+                        "call_mcp_app_tool" | "mcp_app_tool_metadata" => {
+                            #[derive(serde::Deserialize)]
+                            #[serde(deny_unknown_fields)]
+                            struct ToolParams {
+                                name: String,
+                                arguments: serde_json::Map<String, Value>,
+                            }
+                            let params: ToolParams =
+                                serde_json::from_value(request.params).map_err(input_error)?;
+                            if !selected.is_local_environment()
+                                || !selected
+                                    .enabled_tools
+                                    .as_ref()
+                                    .is_some_and(|names| names.contains(&params.name))
+                                || selected
+                                    .disabled_tools
+                                    .as_ref()
+                                    .is_some_and(|names| names.contains(&params.name))
+                                || !selected.tools.get(&params.name).is_some_and(|tool| {
+                                    matches!(
+                                        tool.approval_mode,
+                                        Some(codex_config::AppToolApproval::Approve)
+                                    )
+                                })
+                            {
+                                return Err(input_error(
+                                    "MCP App actions require an explicitly selected preapproved ordinary local tool",
+                                ));
+                            }
+                            if operation == "mcp_app_tool_metadata" {
+                                let (_, snapshot) = inner
+                                    .thread
+                                    .mcp_server_status_snapshot(
+                                        &request.server,
+                                        codex_mcp::McpSnapshotDetail::ToolsAndAuthOnly,
+                                    )
+                                    .await
+                                    .map_err(|_| {
+                                        input_error("MCP App tool metadata is unavailable")
+                                    })?;
+                                if snapshot.tools_errors.contains_key(&request.server) {
+                                    return Err(input_error(
+                                        "MCP App tool metadata is unavailable",
+                                    ));
+                                }
+                                let tool = snapshot
+                                    .tools_by_server
+                                    .get(&request.server)
+                                    .and_then(|tools| tools.get(&params.name))
+                                    .ok_or_else(|| {
+                                        input_error("MCP App originating tool is unavailable")
+                                    })?;
+                                return Ok(tool.meta.clone().unwrap_or(Value::Null));
+                            }
+                            let result = inner
+                                .thread
+                                .call_mcp_tool(
+                                    &request.server,
+                                    &params.name,
+                                    Some(Value::Object(params.arguments)),
+                                    None,
+                                )
+                                .await
+                                .map_err(|error| native_error(format!("{error:#}")))?;
+                            serde_json::to_value(result).map_err(native_error)
+                        }
                         "read_mcp_resource" => inner
                             .thread
                             .read_mcp_resource(
@@ -2527,6 +2637,27 @@ impl NativeThread {
         owner
             .check_step(&response.thread, &response)
             .map_err(input_error)
+    }
+
+    #[napi(js_name = "_stop_step")]
+    pub fn _stop_step(&self, response_json: String) -> napi::Result<bool> {
+        let response: python_tools::StepReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Step selection requires a managed Session"))?;
+        let Some(owner) =
+            tools.exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+        else {
+            return Ok(false);
+        };
+        let thread = response.thread.clone();
+        owner.stop_step(&thread, response).map_err(input_error)
     }
 
     #[napi(js_name = "_reply_child_step")]
@@ -3900,6 +4031,11 @@ impl NativeThread {
     #[napi(js_name = "_close_report")]
     pub async fn _close_report(&self) -> napi::Result<Option<String>> {
         self.close_owned(false).await
+    }
+
+    #[napi(js_name = "_close_private_root_report")]
+    pub async fn _close_private_root_report(&self) -> napi::Result<Option<String>> {
+        self.close_owned_mode(false, true).await
     }
 
     #[napi(js_name = "_close_selected_environment")]

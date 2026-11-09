@@ -154,9 +154,17 @@ describe.runIf(enabled)('portable Rust control', () => {
     },
   );
 
-  it.each([false, true])(
-    'preserves browser configuration failure across owned media cleanup (cleanup throws=%s)',
-    async (cleanupThrows) => {
+  it.each([
+    { cleanupThrows: false, apiKey: 'ek_synthetic', useInsecureApiKey: false },
+    { cleanupThrows: true, apiKey: 'ek_synthetic', useInsecureApiKey: false },
+    {
+      cleanupThrows: false,
+      apiKey: 'sk-synthetic-explicit',
+      useInsecureApiKey: true,
+    },
+  ])(
+    'preserves browser configuration failure across owned media cleanup (credential mode and cleanup=%j)',
+    async ({ cleanupThrows, apiKey, useInsecureApiKey }) => {
       const cleanup = new Error('injected peer cleanup failure');
       const stop = vi.fn();
       const track = Object.assign(new EventTarget(), {
@@ -204,11 +212,29 @@ describe.runIf(enabled)('portable Rust control', () => {
         async setRemoteDescription() {},
         close,
       };
-      const fetch = vi.fn(async () => new Response('answer', { status: 200 }));
+      const fetch = vi.fn(async (url: URL, init: RequestInit) => {
+        const request = new Request(url, init);
+        if (apiKey.startsWith('ek_')) {
+          expect(request.headers.get('Content-Type')).toBe('application/sdp');
+          expect(await request.text()).toBe('offer');
+        } else {
+          expect(request.headers.get('Content-Type')).toMatch(
+            /^multipart\/form-data; boundary=/,
+          );
+          const parts = await request.formData();
+          expect(parts.get('sdp')).toBe('offer');
+          expect(JSON.parse(parts.get('session') as string)).toEqual({
+            type: 'realtime',
+            model: 'test',
+          });
+        }
+        return new Response('answer', { status: 200 });
+      });
       vi.stubGlobal('fetch', fetch);
       const options = {
         control: control(),
-        apiKey: 'ek_synthetic',
+        apiKey,
+        useInsecureApiKey,
         agent: { model: 'test', instructions: 'test' },
         media: {
           getUserMedia: async () => {
@@ -227,7 +253,7 @@ describe.runIf(enabled)('portable Rust control', () => {
         expect.any(URL),
         expect.objectContaining({
           headers: expect.objectContaining({
-            Authorization: 'Bearer ek_synthetic',
+            Authorization: `Bearer ${apiKey}`,
           }),
         }),
       );

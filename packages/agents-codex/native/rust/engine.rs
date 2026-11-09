@@ -50,6 +50,7 @@ pub struct EngineState {
     telemetry: Option<crate::telemetry::EmissionSettings>,
     pub(crate) config_json: String,
     pub(crate) runtime_json: String,
+    private_system_origin: Option<std::path::PathBuf>,
     pub(crate) closed: AtomicBool,
     pub(crate) retired: AtomicBool,
     pub(crate) context_gate: Arc<tokio::sync::RwLock<()>>,
@@ -204,6 +205,209 @@ impl EngineState {
         Ok(permit)
     }
 
+    pub(crate) fn private_reuse_ready(&self) -> bool {
+        self.private_system_origin.as_ref().and_then(|path| path.parent())
+            .is_some_and(|parent| matches!(std::fs::symlink_metadata(parent), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
+            && !self.closed.load(Ordering::Acquire)
+            && !self.retired.load(Ordering::Acquire)
+            && self.custom_store.is_none()
+            && self.local_checklist_store.is_none()
+            && self.goals.is_none()
+            && self.application_apps.is_none()
+            && self.telemetry.is_none()
+            && config::environment(&self.runtime_json).is_ok_and(|environment| environment.is_none())
+            && self.service_config.application_network_policy == codex_http_client::NetworkPolicy::unmanaged()
+            && self.service_config.application_auth_route_config.is_none()
+            && self.service_config.config_layer_stack.cloud_config_binding().is_none()
+    }
+
+    pub(crate) async fn private_start_with_tools(
+        self: &Arc<Self>,
+        config_json: &str,
+        runtime_json: &str,
+        origin: &str,
+        grant: &str,
+        options: options::ThreadOptions,
+        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+    ) -> anyhow::Result<Option<NativeThread>> {
+        let _guard = self.lifecycle.lock().await;
+        if !self.private_reuse_ready()
+            || !specs.is_empty()
+            || options.agent_profiles.is_some()
+            || options.sdk_resume_thread_id.is_some()
+            || !options.sdk_reconciled_calls.is_empty()
+            || !self.manager.list_thread_ids().await.is_empty()
+            || !self
+                .native_threads
+                .lock()
+                .expect("native threads poisoned")
+                .is_empty()
+        {
+            return Ok(None);
+        }
+        let binding_matches = self
+            .sentinel
+            .read()
+            .expect("native sentinel poisoned")
+            .as_ref()
+            .is_some_and(|(bound_origin, bound_grant, excluded)| {
+                bound_origin == origin && bound_grant == grant && excluded.is_none()
+            });
+        if !binding_matches || !self.transport_binding_sealed.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let Some(transports) = self.provider_http_transports.get() else {
+            return Ok(None);
+        };
+        transports.check_open()?;
+        let mut requested: serde_json::Value = serde_json::from_str(runtime_json)?;
+        let source: serde_json::Value = serde_json::from_str(config_json)?;
+        if source != serde_json::from_str::<serde_json::Value>(&self.config_json)?
+            || !options.matches_private_inputs(&source, &requested)
+        {
+            return Ok(None);
+        }
+        let retained: serde_json::Value = serde_json::from_str(&self.runtime_json)?;
+        let loader = requested
+            .as_object_mut()
+            .context("runtime must be an object")?
+            .entry("loader")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .context("loader must be an object")?;
+        let mut isolation = Vec::new();
+        for key in [
+            "managed_config_path",
+            "system_config_path",
+            "system_requirements_path",
+        ] {
+            if loader.contains_key(key) {
+                return Ok(None);
+            }
+            let path = retained["loader"][key]
+                .as_str()
+                .context("missing private isolation path")?;
+            isolation.push(path.to_owned());
+            loader.insert(key.to_owned(), serde_json::Value::String(path.to_owned()));
+        }
+        let keyed_runtime = config::prepare_runtime(&requested.to_string())?;
+        if serde_json::from_str::<serde_json::Value>(&keyed_runtime)? != retained {
+            return Ok(None);
+        }
+        // Keep only the SDK-owned, absent System origin stable in the actual load.
+        let mut fresh: serde_json::Value =
+            serde_json::from_str(&config::prepare_runtime(runtime_json)?)?;
+        fresh["loader"]["system_config_path"] = retained["loader"]["system_config_path"].clone();
+        for key in [
+            "managed_config_path",
+            "system_config_path",
+            "system_requirements_path",
+        ] {
+            isolation.push(
+                fresh["loader"][key]
+                    .as_str()
+                    .context("missing fresh isolation path")?
+                    .to_owned(),
+            );
+        }
+        isolation.push(
+            self.private_system_origin
+                .as_ref()
+                .and_then(|path| path.parent())
+                .context("missing private System parent")?
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let absent = || {
+            isolation.iter().all(|path| matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
+        };
+        if !absent() {
+            return Ok(None);
+        }
+        let fresh_runtime = fresh.to_string();
+        self.seal_transport_binding();
+        self.interception.check_code_import_admission()?;
+        // This is the ordinary merge/load pipeline, exactly once for this opening.
+        let (startup, instructions) = options
+            .build(config_json, &fresh_runtime, self.cloud_config.clone())
+            .await?;
+        if !matches!(startup.initial_history, InitialHistory::New)
+            || startup.reserved_thread_id.is_some()
+            || startup.environments.is_some()
+            || config::environment(&fresh_runtime)?.is_some()
+            || startup.config.application_network_policy
+                != codex_http_client::NetworkPolicy::unmanaged()
+            || startup.config.application_auth_route_config.is_some()
+            || startup
+                .config
+                .config_layer_stack
+                .cloud_config_binding()
+                .is_some()
+            || startup.config != self.service_config
+        {
+            return Ok(None);
+        }
+        let validation = crate::environment::for_unattached_threads(&startup.config).await?;
+        drop(validation);
+        if !absent() || !self.private_reuse_ready() {
+            return Ok(None);
+        }
+        let (startup, instructions) = self.finish_startup(startup, instructions).await?;
+        self.start_built_with_tools(startup, instructions, None, Vec::new(), specs, None)
+            .await
+            .map(Some)
+    }
+
+    pub(crate) async fn retire_private_thread(&self, thread: &ThreadState) -> anyhow::Result<()> {
+        ensure!(
+            thread.closed.load(Ordering::Acquire),
+            "private root is not joined"
+        );
+        ensure!(
+            self.custom_store.is_none()
+                && self.local_checklist_store.is_none()
+                && self.goals.is_none(),
+            "private retirement requires memory storage"
+        );
+        ensure!(
+            self.store
+                .as_any()
+                .is::<crate::storage::MemoryThreadStore>(),
+            "private retirement requires the SDK memory store"
+        );
+        ensure!(
+            !self.manager.list_thread_ids().await.contains(&thread.id),
+            "private root is still registered"
+        );
+        self.store
+            .delete_thread(DeleteThreadParams {
+                thread_id: thread.id,
+            })
+            .await?;
+        self.agent_graph.remove_checkpoint_edges(&[thread.id]).await;
+        self.agent_graph
+            .retire_closed_root_subscriptions(thread.id)
+            .await;
+        self.event_owners
+            .lock()
+            .await
+            .retain(|id, owner| *id != thread.id && *owner != thread.id);
+        self.restored_creation_times.lock().await.remove(&thread.id);
+        self.managed_thread_ids.lock().await.remove(&thread.id);
+        Ok(())
+    }
+
+    pub(crate) fn retire_private_registration(
+        &self,
+        owner: &Arc<std::sync::Mutex<crate::NativeThreadOwner>>,
+    ) {
+        let target = Arc::downgrade(owner);
+        self.native_threads
+            .lock()
+            .expect("native threads poisoned")
+            .retain(|registration| !Weak::ptr_eq(&registration.owner, &target));
+    }
+
     pub async fn new(
         config_json: String,
         runtime_json: String,
@@ -285,7 +489,31 @@ impl EngineState {
             "custom canonical storage cannot combine local, checkpoint, or goal stores"
         );
         let telemetry = crate::telemetry::engine_starting().await?;
+        let original: serde_json::Value = serde_json::from_str(&runtime_json)?;
+        let injected = [
+            "managed_config_path",
+            "system_config_path",
+            "system_requirements_path",
+        ]
+        .into_iter()
+        .all(|key| {
+            original
+                .get("loader")
+                .and_then(|loader| loader.get(key))
+                .is_none()
+        });
         let runtime_json = config::prepare_runtime(&runtime_json)?;
+        let prepared: serde_json::Value = serde_json::from_str(&runtime_json)?;
+        let private_system_origin = (injected
+            && prepared["loader"]["ignore_managed_requirements"] == serde_json::Value::Bool(true))
+        .then(|| {
+            prepared["loader"]["system_config_path"]
+                .as_str()
+                .map(std::path::PathBuf::from)
+        })
+        .flatten();
+        drop(original);
+        drop(prepared);
         let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
         ensure!(
             custom_store.is_none() || !config.update_plan_enabled,
@@ -576,6 +804,7 @@ impl EngineState {
             telemetry,
             config_json,
             runtime_json,
+            private_system_origin,
             closed: AtomicBool::new(false),
             retired: AtomicBool::new(false),
             context_gate: Arc::new(tokio::sync::RwLock::new(())),
@@ -642,6 +871,26 @@ impl EngineState {
             self.validate_seed_media(&mut startup, batch.items())
                 .await?;
         }
+        self.start_built_with_tools(
+            startup,
+            instructions,
+            resume,
+            reconciled_calls,
+            specs,
+            initial_messages,
+        )
+        .await
+    }
+
+    async fn start_built_with_tools(
+        self: &Arc<Self>,
+        mut startup: StartThreadOptions,
+        instructions: Arc<options::ThreadInstructions>,
+        resume: Option<ThreadId>,
+        reconciled_calls: Vec<crate::local_reconciliation::Receipt>,
+        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        initial_messages: Option<crate::initial_messages::Batch>,
+    ) -> anyhow::Result<NativeThread> {
         let mut local_resume_admission = None;
         if let Some(id) = resume {
             ensure!(
@@ -1733,13 +1982,21 @@ impl EngineState {
             !self.closed.load(Ordering::Acquire),
             "Codex engine is closed"
         );
-        let (mut startup, instructions) = options
+        let (startup, instructions) = options
             .build(
                 &self.config_json,
                 &self.runtime_json,
                 self.cloud_config.clone(),
             )
             .await?;
+        self.finish_startup(startup, instructions).await
+    }
+
+    async fn finish_startup(
+        &self,
+        mut startup: StartThreadOptions,
+        instructions: Arc<options::ThreadInstructions>,
+    ) -> anyhow::Result<(StartThreadOptions, Arc<options::ThreadInstructions>)> {
         if let Some(settings) = &self.telemetry {
             settings.apply(&mut startup.config);
         }
