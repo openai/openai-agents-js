@@ -20,7 +20,6 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
     "start:script-simple": "node scripts/simple.ts",
     "start:script-ai-sdk": "node scripts/ai-sdk.ts"
   },

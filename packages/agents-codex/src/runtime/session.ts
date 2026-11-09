@@ -27,6 +27,7 @@ import {
   type NativeRealtimeSession,
   type NativeRealtimeOptions,
 } from './realtime';
+import { privateRuntime } from './private-engine-reuse';
 import {
   capturePreparedRequest,
   preparedRequestFromNative,
@@ -345,6 +346,8 @@ export interface ManualCheckpointEntry {
 export type OneShotOptions = {
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
+  /** Private single-use owned-factory grant; never interpreted by truthiness. */
+  privateEngineGrant?: object;
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
@@ -11514,7 +11517,9 @@ export class Session<OutputT = string, Context = unknown> {
       const message = await this.#native._close_selected_environment();
       if (message) return new NativeError(message);
     } else {
-      const message = await this.#native._close_report();
+      const message = privateRuntime(this)
+        ? await this.#native._close_private_root_report()
+        : await this.#native._close_report();
       if (message) return new NativeError(message);
     }
     return undefined;
@@ -11789,8 +11794,10 @@ export class Session<OutputT = string, Context = unknown> {
       await joinGraphStops();
       await Promise.allSettled([...this.childContinuations]);
       if (phase === 'engine') {
-        const message = await this.#engine._close_report();
-        if (message) acknowledgmentFailure ??= new NativeError(message);
+        if (!privateRuntime(this)) {
+          const message = await this.#engine._close_report();
+          if (message) acknowledgmentFailure ??= new NativeError(message);
+        }
         phase = 'carrier';
       }
       // A fulfilled native/engine close proves graph retirement even when its
@@ -11801,7 +11808,7 @@ export class Session<OutputT = string, Context = unknown> {
         void realtimeShutdown?.catch(() => {});
       }
       if (phase === 'carrier') {
-        await this.carrier?.close();
+        if (!privateRuntime(this)) await this.carrier?.close();
         phase = 'provider';
       }
       if (phase === 'provider') {
