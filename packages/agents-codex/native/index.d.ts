@@ -189,6 +189,10 @@ export class NativeThread {
     operation:
       | 'set_instructions'
       | 'realtime_tool_selection_sdk'
+      | 'realtime_conversation_config_sdk'
+      | 'realtime_conversation_update_history_sdk'
+      | 'realtime_conversation_retrieve_item_sdk'
+      | 'realtime_conversation_retrieve_history_sdk'
       | 'realtime_conversation_hosted_mcp_approval_sdk'
       | 'realtime_conversation_prepare_sdk'
       | 'realtime_conversation_activate_sdk'

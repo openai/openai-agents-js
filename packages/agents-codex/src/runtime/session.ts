@@ -24,9 +24,12 @@ import {
 } from './agent-profiles';
 import {
   createNativeRealtimeOwner,
+  realtimePrepareParams,
+  type NativeRealtimeSipConfigOptions,
   type NativeRealtimeSession,
   type NativeRealtimeOptions,
 } from './realtime';
+import { serializeRealtimeSettings } from './realtime-settings';
 import { privateRuntime } from './private-engine-reuse';
 import {
   capturePreparedRequest,
@@ -1063,6 +1066,81 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private realtimeOwner?: ReturnType<typeof createNativeRealtimeOwner>;
+
+  /**
+   * Build the call-accept request body for an inbound SIP call using the captured
+   * Agent instructions, tools, and handoffs. Send it to the Realtime calls accept
+   * endpoint, then attach with
+   * `realtime({ ...options, transport: { type: 'sip', callId } })` using the same
+   * model, voice, instructions, settings, and tool selection. The builder saves
+   * no configuration for a later attachment.
+   * This prepares Session-owned MCP tools just as connecting does, but does not
+   * connect media or resolve voice credentials.
+   */
+  async buildRealtimeSipConfig(
+    options: NativeRealtimeSipConfigOptions = {},
+  ): Promise<JsonObject> {
+    this.checkCallbackOperation('build Realtime SIP configuration on');
+    if (
+      !this.isOpen ||
+      this.lifecycle.kind === 'mutation' ||
+      this.manualSeal ||
+      this.manualSealed ||
+      this.graphStops.size
+    )
+      throw new NativeError(
+        'Realtime requires an open Session without checkpoint or mutation work',
+      );
+    for (const [name, value] of Object.entries(options)) {
+      if (
+        !['model', 'voice', 'instructions', 'settings', 'tools'].includes(name)
+      )
+        throw new TypeError(
+          `Unsupported Realtime SIP configuration option: ${name}`,
+        );
+      if (
+        ['model', 'voice', 'instructions'].includes(name) &&
+        value !== undefined &&
+        typeof value !== 'string'
+      )
+        throw new TypeError(`Realtime ${name} must be a string`);
+    }
+    if (options.tools !== undefined && !Array.isArray(options.tools))
+      throw new TypeError(
+        'Realtime tools must be an array of captured function declarations',
+      );
+    options = {
+      ...options,
+      tools: options.tools === undefined ? undefined : [...options.tools],
+    };
+    const settings = options.settings
+      ? serializeRealtimeSettings(options.settings)
+      : null;
+    if (options.tools === undefined) await this._prepareRealtimeMcp();
+    const selection =
+      options.tools === undefined
+        ? null
+        : await this._realtimeFunctionTools([...options.tools]);
+    const params = realtimePrepareParams(
+      options,
+      { type: 'websocket' },
+      settings,
+      selection?.tools ?? null,
+      selection?.selectionId ?? null,
+    );
+    delete params.hosted_mcp_auto_response;
+    const result: unknown = JSON.parse(
+      await this.#native.call(
+        'realtime_conversation_config_sdk',
+        encode(params),
+      ),
+    );
+    if (!result || typeof result !== 'object' || Array.isArray(result))
+      throw new NativeError(
+        'Native Realtime SIP configuration is not an object',
+      );
+    return result as JsonObject;
+  }
 
   /** Open native media; closing the returned owner leaves this Session open. */
   async realtime(

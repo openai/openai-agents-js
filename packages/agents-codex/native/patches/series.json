@@ -381,6 +381,14 @@
       "sha256": "43ee308eaad0e9a518ecb1e8c00b80c7ab8151197e6b3c75635a50d1a9d1d495"
     },
     {
+      "path": "0096-native-realtime-sip-config.patch",
+      "sha256": "a7efd01ecbf54fa78106dda845ed46f99af70583620437aa02f9c9b501777285"
+    },
+    {
+      "path": "0097-native-realtime-provider-history.patch",
+      "sha256": "8b6badb78293eb00eed5a2147244164a195b4f4dfd9f823689977c7df7af5b9c"
+    },
+    {
       "path": "0150-native-realtime-canonical-startup.patch",
       "sha256": "214aa39eb9e2eed63fee553fff1a425066cbcebc37bd9ac7d3c2bb35c9852ea8"
     },
@@ -389,5 +397,5 @@
       "sha256": "cd078f600aafb1078014ec3005198de0637d2f66c7a45c2a3ca35f1d054dd4af"
     }
   ],
-  "result_tree": "8fa82250cb4b56d46df9645d4d466cecd975d57c"
+  "result_tree": "53f8fecd3cdc4bdebc385baec74679404ee3d7ee"
 }
