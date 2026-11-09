@@ -132,3 +132,138 @@ it('captures the admitted prefix, revision and items before scheduling a history
   }
   server.assertExhausted();
 });
+
+it.each(['function', 'custom', 'search'])(
+  'rejects split or unpaired %s client-tool history before changing state',
+  async (family) => {
+    const server = new ModelServer([[message('pairs preserved')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-history-pairs',
+    });
+    const session = await new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+    }).session();
+    const call: import('../../src/runtime/binding').JsonObject = {
+      id: 'call-item',
+      call_id: 'history-pair',
+      ...(family === 'function'
+        ? { type: 'function_call', name: 'lookup', arguments: '{}' }
+        : family === 'custom'
+          ? { type: 'custom_tool_call', name: 'lookup', input: 'raw input' }
+          : { type: 'tool_search_call', execution: 'client', arguments: {} }),
+    };
+    const output: import('../../src/runtime/binding').JsonObject = {
+      id: 'result-item',
+      call_id: 'history-pair',
+      ...(family === 'function'
+        ? { type: 'function_call_output', output: 'retained result' }
+        : family === 'custom'
+          ? { type: 'custom_tool_call_output', output: 'retained result' }
+          : {
+              type: 'tool_search_output',
+              execution: 'client',
+              status: 'completed',
+              tools: [],
+            }),
+    };
+    try {
+      const initial = await session.historySnapshot();
+      await session.transactHistory({
+        expectedRevision: initial.revision,
+        keep: 0,
+        items: [call, output],
+      });
+      const retained = await session.historySnapshot();
+      for (const change of [
+        { keep: 1, items: [] },
+        { keep: 1, items: [output] },
+        { keep: 0, items: [call] },
+        { keep: 0, items: [output] },
+        { keep: 0, items: [output, call] },
+      ]) {
+        await expect(
+          session.transactHistory({
+            expectedRevision: retained.revision,
+            ...change,
+          }),
+        ).rejects.toThrow('complete tool call/result pairs');
+        expect(await session.historySnapshot()).toEqual(retained);
+        expect(server.requests).toEqual([]);
+      }
+      expect(
+        (await (await session.submit('continue')).wait()).finalOutput,
+      ).toBe('pairs preserved');
+    } finally {
+      await session.close();
+    }
+    const wire = server.requests[0]!.input as Array<{ call_id?: string }>;
+    expect(wire.filter((item) => item.call_id === 'history-pair')).toHaveLength(
+      2,
+    );
+    server.assertExhausted();
+  },
+);
+
+it('preserves self-contained provider-hosted history and unpaired server search output', async () => {
+  const server = new ModelServer([[message('hosted preserved')]]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-hosted-history',
+  });
+  const session = await new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  }).session();
+  try {
+    const before = await session.historySnapshot();
+    await session.transactHistory({
+      expectedRevision: before.revision,
+      keep: 0,
+      items: [
+        {
+          type: 'web_search_call',
+          id: 'hosted-search',
+          status: 'completed',
+          action: { type: 'search', query: 'synthetic query' },
+        },
+        {
+          type: 'tool_search_output',
+          id: 'server-search-output',
+          call_id: null,
+          execution: 'server',
+          status: 'completed',
+          tools: [],
+        },
+      ],
+    });
+    const retained = await session.historySnapshot();
+    expect(
+      retained.items.map((item) => (item as { type: string }).type),
+    ).toEqual(['web_search_call', 'tool_search_output']);
+    expect((await (await session.submit('continue')).wait()).finalOutput).toBe(
+      'hosted preserved',
+    );
+  } finally {
+    await session.close();
+  }
+  const wire = server.requests[0]!.input as Array<{
+    type: string;
+    execution?: string;
+  }>;
+  expect(wire.some((item) => item.type === 'web_search_call')).toBe(true);
+  expect(
+    wire.some(
+      (item) =>
+        item.type === 'tool_search_output' && item.execution === 'server',
+    ),
+  ).toBe(true);
+  server.assertExhausted();
+});

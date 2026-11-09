@@ -804,7 +804,8 @@ export class Agent<Context = undefined, Output = string> {
         declarations.nativeAgents ||
         declarations.nativeGoals ||
         declarations.checklist ||
-        (declarations.webSearch && declarations.webSearch.route !== 'hosted') ||
+        declarations.webSearch ||
+        declarations.hostedTools.length > 0 ||
         declarations.tools.some((tool) => tool.deferLoading) ||
         declarations.mcp.some(
           (tool) => tool.deferLoading || isHostedRegistration(tool),
