@@ -27,6 +27,10 @@ export interface NativeProviderOptions {
   project?: string;
   /** Explicit personal Apps credentials; never used for Model requests or refreshed. */
   chatGPT?: ChatGPTAuth;
+  /** Failed HTTP request retries. Native default: 4; native cap: 100; zero disables. */
+  requestMaxRetries?: number;
+  /** Dropped response stream reconnections. Native default: 5; native cap: 100; zero disables. */
+  streamMaxRetries?: number;
 }
 
 interface PrivateRuntimeSlot {
@@ -98,6 +102,11 @@ export class NativeProvider {
       throw new TypeError(
         'buffered Responses requires HTTP without WebSockets',
       );
+    for (const key of ['requestMaxRetries', 'streamMaxRetries'] as const) {
+      const value = options[key];
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+        throw new TypeError(`${key} must be a non-negative safe integer`);
+    }
     const routing = captureProviderRouting(options);
     this.#routing = routing.config;
     const captured = { ...options, ...routing.options };
@@ -312,6 +321,12 @@ export class NativeProvider {
           requires_openai_auth: true,
           supports_websockets: websocketsAllowed,
           ...this.#routing,
+          ...(options.requestMaxRetries === undefined
+            ? {}
+            : { request_max_retries: options.requestMaxRetries }),
+          ...(options.streamMaxRetries === undefined
+            ? {}
+            : { stream_max_retries: options.streamMaxRetries }),
         },
       },
       async open() {
