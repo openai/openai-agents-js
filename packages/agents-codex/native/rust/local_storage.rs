@@ -911,7 +911,8 @@ impl LocalChecklistStore {
                 "SDK receipt does not belong to the active local writer",
             ));
         }
-        if !matches!(&item, ResponseItem::FunctionCallOutput { call_id: Some(call), internal_chat_message_metadata_passthrough: Some(meta), .. } if *call == key.call && meta.turn_id.as_deref() == Some(key.turn.as_str()))
+        if crate::local_reconciliation::output_identity(&item)
+            != Some((key.call.as_str(), Some(key.turn.as_str())))
         {
             return Err(checklist_error("SDK receipt identity mismatch"));
         }
@@ -1344,43 +1345,25 @@ impl ThreadStore for LocalChecklistStore {
                     });
                 }
                 if let RolloutItem::ResponseItem(envelope) = &row
-                    && let ResponseItem::FunctionCallOutput {
-                        call_id: Some(call),
-                        internal_chat_message_metadata_passthrough,
-                        ..
-                    } = &envelope.item
+                    && let Some((call, owner)) =
+                        crate::local_reconciliation::output_identity(&envelope.item)
                 {
                     let owned = writer.managed.iter().any(|(_, id)| id == call);
                     if owned {
-                        let identity = internal_chat_message_metadata_passthrough
-                            .as_ref()
-                            .and_then(|meta| meta.turn_id.as_ref())
-                            .map(|turn| (turn.clone(), call.clone()));
+                        let identity = owner.map(|turn| (turn.to_owned(), call.to_owned()));
                         if let Some(identity) = identity
                             && let Some(expected) = writer.early.remove(&identity)
                         {
-                            let matches = match (&expected, &envelope.item) {
-                                (
-                                    ResponseItem::FunctionCallOutput {
-                                        output: expected, ..
-                                    },
-                                    ResponseItem::FunctionCallOutput { output: actual, .. },
-                                ) => {
-                                    serde_json::to_value(expected).map_err(checklist_error)?
-                                        == serde_json::to_value(actual).map_err(checklist_error)?
-                                }
-                                _ => false,
-                            };
-                            // Core adds an output ID and creation timestamp at
-                            // drain. The actual result body must stay unchanged.
-                            if !matches {
+                            if !crate::local_reconciliation::same_output_payload(
+                                &expected,
+                                &envelope.item,
+                            ) {
                                 writer.failure =
                                     Some("Core drain changed an acknowledged SDK receipt".into());
                                 return writer.check();
                             }
                         }
-                        // Missing/foreign metadata cannot turn a cancellation
-                        // into an SDK receipt. Keep the original call unknown.
+                        // Unbound/synthesized drain output never settles an external effect.
                         continue;
                     }
                 }

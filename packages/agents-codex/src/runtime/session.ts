@@ -1,3 +1,4 @@
+import { closeComputerResources } from './computer';
 import {
   captureCompletionDecision,
   type BeforeComplete,
@@ -250,6 +251,7 @@ import {
   toolDeclarationIdentity,
   type ToolSelector,
   invokeFunctionTool,
+  registerToolSessionOwner,
   outputOf,
   type ToolResponse,
   type SessionTool,
@@ -1740,6 +1742,7 @@ export class Session<OutputT = string, Context = unknown> {
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
   private readonly childCallbacks = new ChildCallbacks();
+  private readonly toolSessionOwner = Object.freeze({});
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -8213,6 +8216,7 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
+      registerToolSessionOwner(context, this.toolSessionOwner);
       const identity: ToolIdentity = {
         callId: context.callId,
         toolName: tool.name,
@@ -11826,6 +11830,18 @@ export class Session<OutputT = string, Context = unknown> {
             } finally {
               this.environmentDisposalFinished = true;
             }
+          }
+          const computerScope = {
+            session: this,
+            active: true,
+            parent: toolInvocation.getStore(),
+          };
+          try {
+            await toolInvocation.run(computerScope, () =>
+              closeComputerResources(this.toolSessionOwner),
+            );
+          } finally {
+            computerScope.active = false;
           }
           await this.options.onClose?.();
         } finally {

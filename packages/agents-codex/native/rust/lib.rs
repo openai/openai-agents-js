@@ -3071,6 +3071,19 @@ impl NativeThread {
                 // Rejected media must leave the exact live sender parked until the
                 // owning host failure requests stop. Taking it before validation
                 // could wake Core before that fatal failure is recorded.
+                let receipt = if inner.engine.local_checklist_store.is_some()
+                    || inner.engine.custom_store.is_some()
+                {
+                    let Some(receipt) = tools
+                        .response_receipt(&request, response.clone())
+                        .map_err(native_error)?
+                    else {
+                        return Ok(false);
+                    };
+                    Some(receipt)
+                } else {
+                    None
+                };
                 let Some(sender) = tools
                     .take_reply(&request.reply.thread, &request)
                     .map_err(native_error)?
@@ -3085,7 +3098,7 @@ impl NativeThread {
                         .commit_sdk_receipt(
                             receipt_thread,
                             &request,
-                            python_tools::PythonOutput(response.clone()).receipt(&request),
+                            receipt.clone().expect("selected durable callback receipt"),
                         )
                         .await
                         .map_err(native_error)?;
@@ -3094,10 +3107,7 @@ impl NativeThread {
                     let id = codex_protocol::ThreadId::from_string(&request.reply.thread)
                         .map_err(native_error)?;
                     store
-                        .receipt(
-                            id,
-                            python_tools::PythonOutput(response.clone()).receipt(&request),
-                        )
+                        .receipt(id, receipt.expect("selected durable callback receipt"))
                         .await
                         .map_err(native_error)?;
                 }

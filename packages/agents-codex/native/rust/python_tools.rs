@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
@@ -184,6 +185,8 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
 }
 
 struct PendingCall {
+    // Captured by native enqueue, never reconstructed from a host reply.
+    computer_arguments: Option<String>,
     media: Option<NativeMediaContext>,
     deadline: Option<Arc<codex_extension_api::ModelInvocationDeadlineState>>,
     invocation: u64,
@@ -296,14 +299,20 @@ impl From<DynamicToolResponse> for ToolReply {
 
 fn functions(
     specs: &[DynamicToolSpec],
-) -> Vec<(Option<&DynamicToolNamespaceSpec>, &DynamicToolFunctionSpec)> {
+) -> Vec<(
+    Option<&DynamicToolNamespaceSpec>,
+    Cow<'_, DynamicToolFunctionSpec>,
+)> {
     let mut functions = Vec::new();
     for spec in specs {
         match spec {
-            DynamicToolSpec::Function(tool) => functions.push((None, tool)),
+            DynamicToolSpec::Function(tool) => functions.push((None, Cow::Borrowed(tool))),
+            DynamicToolSpec::Computer(tool) => {
+                functions.push((None, Cow::Owned(tool.callback_spec())))
+            }
             DynamicToolSpec::Namespace(namespace) => {
                 for DynamicToolNamespaceTool::Function(tool) in &namespace.tools {
-                    functions.push((Some(namespace), tool));
+                    functions.push((Some(namespace), Cow::Borrowed(tool)));
                 }
             }
         }
@@ -314,7 +323,7 @@ fn functions(
 fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
     ensure!(
         specs.iter().all(|spec| match spec {
-            DynamicToolSpec::Function(_) => true,
+            DynamicToolSpec::Function(_) | DynamicToolSpec::Computer(_) => true,
             DynamicToolSpec::Namespace(ns) => ns.tools.len() == 1,
         }),
         "invalid JavaScript tool slot projection"
@@ -325,6 +334,11 @@ fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
 /// Validate declarations without acquiring runtime resources or consulting live policy.
 pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
     validate_slots(specs)?;
+    for declaration in specs {
+        if let DynamicToolSpec::Computer(computer) = declaration {
+            codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?;
+        }
+    }
     let mut seen = HashSet::new();
     for (namespace, tool) in functions(specs) {
         let key = ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone())
@@ -349,7 +363,7 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
                 ),
             "JavaScript tool uses a reserved name: {key}"
         );
-        dynamic_tool_to_responses_api_tool(tool)?;
+        dynamic_tool_to_responses_api_tool(&tool)?;
     }
     Ok(())
 }
@@ -406,7 +420,7 @@ pub fn checkpoint_specs(specs: &[DynamicToolSpec]) -> Result<Value> {
                     .entry("deferLoading")
                     .or_insert(Value::Bool(false));
             }
-        } else {
+        } else if spec.get("type").and_then(Value::as_str) == Some("function") {
             spec.as_object_mut()
                 .expect("serialized tool")
                 .entry("deferLoading")
@@ -1288,13 +1302,48 @@ impl PythonTools {
         Ok(child)
     }
 
+    pub(crate) fn response_receipt(
+        &self,
+        key: &PendingKey,
+        response: DynamicToolResponse,
+    ) -> Result<Option<ResponseItem>> {
+        let arguments = {
+            let pending = self.pending.lock().expect("tool replies poisoned");
+            let Some(call) = pending.get(key) else {
+                return Ok(None);
+            };
+            call.computer_arguments.clone()
+        };
+        let Some(arguments) = arguments else {
+            return Ok(Some(PythonOutput(response).receipt(key)));
+        };
+        let output = codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
+            .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?;
+        let mut item: ResponseItem = output
+            .to_response_item(&key.call, &ToolPayload::Computer { arguments })
+            .into();
+        if let ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &mut item
+        {
+            *internal_chat_message_metadata_passthrough = Some(
+                codex_protocol::models::InternalChatMessageMetadataPassthrough {
+                    turn_id: Some(key.turn.clone()),
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(Some(item))
+    }
+
     fn prepare(&self, id: u64, specs: Vec<DynamicToolSpec>) -> Result<Generation> {
         let mut entries = Vec::new();
         let schema_token = self
             .preserve_schemas
             .then(|| codex_protocol::ThreadId::new().to_string());
         validate_declarations(&specs)?;
-        for (namespace, tool) in functions(&specs) {
+        for (declaration, (namespace, tool)) in specs.iter().zip(functions(&specs)) {
             let name = ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone());
             let key = name.clone().with_default_namespace();
             ensure!(
@@ -1305,29 +1354,35 @@ impl PythonTools {
                 self.policy.allows(&key),
                 "JavaScript tool is excluded by ToolPolicy: {key}"
             );
-            let mut function = dynamic_tool_to_responses_api_tool(tool)?;
+            let mut function = dynamic_tool_to_responses_api_tool(&tool)?;
             function.defer_loading = None;
             function.strict = false;
             if let Some(token) = &schema_token {
                 function.description =
                     schema_fidelity::Receipts::description(&tool.description, token, entries.len());
             }
-            let spec = match namespace.filter(|_| !key.is_default_namespace()) {
-                None => ToolSpec::Function(function),
-                Some(ns) => ToolSpec::Namespace(ResponsesApiNamespace {
-                    name: ns.name.clone(),
-                    description: if ns.description.trim().is_empty() {
-                        default_namespace_description(&ns.name)
-                    } else {
-                        ns.description.clone()
-                    },
-                    tools: vec![ResponsesApiNamespaceTool::Function(function)],
-                }),
+            let spec = if let DynamicToolSpec::Computer(computer) = declaration {
+                codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?
+            } else {
+                match namespace.filter(|_| !key.is_default_namespace()) {
+                    None => ToolSpec::Function(function),
+                    Some(ns) => ToolSpec::Namespace(ResponsesApiNamespace {
+                        name: ns.name.clone(),
+                        description: if ns.description.trim().is_empty() {
+                            default_namespace_description(&ns.name)
+                        } else {
+                            ns.description.clone()
+                        },
+                        tools: vec![ResponsesApiNamespaceTool::Function(function)],
+                    }),
+                }
             };
             entries.push(Entry {
                 name,
                 spec,
-                exposure: if tool.defer_loading {
+                exposure: if matches!(declaration, DynamicToolSpec::Computer(_)) {
+                    ToolExposure::DirectModelOnly
+                } else if tool.defer_loading {
                     ToolExposure::Deferred
                 } else {
                     ToolExposure::Direct
@@ -1791,6 +1846,11 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    computer_arguments: matches!(
+                        entry.spec,
+                        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. }
+                    )
+                    .then(|| request["msg"]["arguments"].to_string()),
                     media,
                     invocation,
                     retired: false,
@@ -3177,6 +3237,11 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     reply_guard.completed = true;
                     response
                 }
+                Err(_) if matches!(call.payload, ToolPayload::Computer { .. }) => {
+                    return Err(FunctionCallError::Fatal(
+                        "Computer call cancelled before reply".into(),
+                    ));
+                }
                 Err(_) if self.tools.local_store.is_some() || self.tools.custom_store.is_some() => {
                     // No real receipt can certify the external effect. Keep
                     // this call unresolved until Core cancels its owned future;
@@ -3199,6 +3264,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .lock()
                     .expect("JavaScript completion receipts poisoned")
                     .insert(key);
+            }
+            if let ToolPayload::Computer { arguments } = &call.payload {
+                return Ok(
+                    Box::new(codex_tools::ComputerToolOutput::from_dynamic_response(
+                        arguments,
+                        response.response,
+                    )?) as Box<dyn ToolOutput>,
+                );
             }
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),

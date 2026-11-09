@@ -361,3 +361,13 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+
+export { computerTool, ComputerSafetyError } from './runtime/computer';
+export type {
+  Computer,
+  ComputerProvider,
+  ComputerAction,
+  ComputerButton,
+  ComputerEnvironment,
+  ComputerToolOptions,
+} from './runtime/computer';
