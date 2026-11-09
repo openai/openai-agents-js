@@ -153,7 +153,73 @@ describe('offline Agent declaration validation', () => {
     await expect(agent.session()).rejects.toThrow('NativeProvider is closed');
   });
 
+  it('allows distinct function and MCP identities in the same projected namespace', async () => {
+    const provider = new NativeProvider();
+    await provider.close();
+    const agent = new Agent({
+      instructions: 'Validate distinct tools offline.',
+      provider,
+      tools: [
+        { ...lookup(), namespace: 'mcp__records', name: 'other' },
+        new HttpMCP({
+          name: 'records',
+          tools: ['lookup'],
+          url: 'http://127.0.0.1:1/mcp',
+        }),
+      ],
+    });
+    await expect(agent.validate()).resolves.toBeUndefined();
+    await expect(agent.session()).rejects.toThrow('NativeProvider is closed');
+  });
+
+  it('validates each handoff profile without merging its identities with other profiles', async () => {
+    const target = new Agent({
+      name: 'Target',
+      instructions: 'Read a record.',
+      tools: [
+        new HttpMCP({
+          name: 'records',
+          tools: ['lookup'],
+          url: 'http://127.0.0.1:1/mcp',
+        }),
+      ],
+    });
+    const agent = new Agent({
+      instructions: 'Delegate when needed.',
+      tools: [{ ...lookup(), namespace: 'mcp__records' }],
+      handoffs: [target],
+    });
+    await expect(agent.validate()).resolves.toBeUndefined();
+    await agent.provider.close();
+    await expect(agent.session()).rejects.toThrow('NativeProvider is closed');
+    target.tools = [
+      ...target.tools,
+      { ...lookup(), namespace: 'mcp__records' },
+    ];
+    await expect(agent.validate()).rejects.toThrow(
+      'Duplicate selected tool mcp__records.lookup',
+    );
+    await expect(agent.session()).rejects.toThrow(
+      'Duplicate selected tool mcp__records.lookup',
+    );
+    await agent.provider.close();
+    await target.provider.close();
+  });
+
   const invalidDefaults = [
+    {
+      name: 'function and projected MCP identity collision',
+      make: () => ({
+        tools: [
+          { ...lookup(), namespace: 'mcp__records' },
+          new HttpMCP({
+            name: 'records',
+            tools: ['lookup'],
+            url: 'http://127.0.0.1:1/mcp',
+          }),
+        ],
+      }),
+    },
     {
       name: 'NativeGoals and application create_goal collision',
       make: () => ({
