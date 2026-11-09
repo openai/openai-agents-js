@@ -487,19 +487,42 @@ describe('OpenAIHostedMultiAgentModel', () => {
   it.each([false, true])(
     'applies the client timeout while waiting for hosted WebSocket events (stream: %s)',
     async (stream) => {
-      const fakeWebSocket = new FakeResponsesWebSocket([
-        STALLED_WEBSOCKET_EVENT,
-      ]);
-      const model = new TestHostedMultiAgentModel(
-        fakeWebSocket,
-        undefined,
-        new OpenAI({ apiKey: 'test-key', timeout: 25 }),
-      );
+      vi.useFakeTimers();
+      try {
+        const fakeWebSocket = new FakeResponsesWebSocket([
+          STALLED_WEBSOCKET_EVENT,
+        ]);
+        let markFrameReadStarted!: () => void;
+        const frameReadStarted = new Promise<void>((resolve) => {
+          markFrameReadStarted = resolve;
+        });
+        const iterator = fakeWebSocket[Symbol.asyncIterator]();
+        vi.spyOn(fakeWebSocket, Symbol.asyncIterator).mockReturnValue({
+          next: () => {
+            markFrameReadStarted();
+            return iterator.next();
+          },
+        });
+        const model = new TestHostedMultiAgentModel(
+          fakeWebSocket,
+          undefined,
+          new OpenAI({ apiKey: 'test-key', timeout: 25 }),
+        );
+        const response = getTestResponse(model, request(), stream);
+        const timeoutAssertion = expect(response).rejects.toThrow(
+          'Hosted Multi-agent WebSocket frame read timed out after 25ms.',
+        );
+        // Keep an early setup failure handled until the assertion is awaited.
+        void timeoutAssertion.catch(() => {});
 
-      await expect(getTestResponse(model, request(), stream)).rejects.toThrow(
-        'Hosted Multi-agent WebSocket frame read timed out after 25ms.',
-      );
-      expect(fakeWebSocket.close).toHaveBeenCalledOnce();
+        // Auth shares the deadline; advance time only after frame reading starts.
+        await Promise.race([frameReadStarted, response]);
+        await vi.advanceTimersByTimeAsync(25);
+        await timeoutAssertion;
+        expect(fakeWebSocket.close).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
     },
   );
 
