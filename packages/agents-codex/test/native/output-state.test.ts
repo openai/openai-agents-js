@@ -1103,7 +1103,7 @@ describe('lossless VM stored JSON', () => {
     }
   });
 
-  it('preserves generic JSON while keeping authority-shaped application envelopes on the receipt path', () => {
+  it('preserves own JSON keys and authority-shaped application data on the receipt path', () => {
     const values = ownStoredValues();
     for (const application of [
       { root_code_mode: { stored_values: values } },
@@ -1115,30 +1115,22 @@ describe('lossless VM stored JSON', () => {
         },
       },
     ]) {
-      const normalized = {
-        nested: {},
-        array: [{}, null, true, '雪'],
-        constructor: { prototype: { data: true } },
-        application: {
-          next_cell_id: '0003',
-          generation: 7,
-          nonce: '007',
-          root_code_mode: { stored_values: {} },
-        },
-      };
-      const receiptValue =
-        'arguments' in application
-          ? {
-              arguments: {
-                ...application.arguments,
-                root_code_mode: { stored_values: normalized },
-              },
-            }
-          : { root_code_mode: { stored_values: normalized } };
       const encoded = JSON.parse(encode(application));
       expect(encoded).toEqual(application);
       expectOrdinaryPrototypes(encoded);
-      expect(JSON.parse(encodeReceipt(application))).toEqual(receiptValue);
+      const receipt = JSON.parse(encodeReceipt(application));
+      expect(receipt).toEqual(application);
+      expectOrdinaryPrototypes(receipt);
+      const stored =
+        'arguments' in receipt
+          ? receipt.arguments.root_code_mode.stored_values
+          : receipt.root_code_mode.stored_values;
+      expect(Object.hasOwn(stored, '__proto__')).toBe(true);
+      expect(stored.application).toMatchObject({
+        next_cell_id: '0003',
+        generation: 7,
+        nonce: '007',
+      });
       expect(parseNative(JSON.stringify(application))).toEqual(application);
     }
     const state = fromNativeCheckpoint(readVm(vmNative()), vmPlain.identity);

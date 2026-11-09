@@ -34,11 +34,10 @@ export type VoiceTextSplitter = (
   segments: readonly string[];
   remainder: string;
 };
-export interface VoicePipelineOptions<D extends VoiceOutputDtype = 'int16'> {
+export type VoicePipelineOptions<D extends VoiceOutputDtype = 'int16'> = {
   workflow: VoiceWorkflow;
   provider: SpeechProvider;
   textSplitter?: VoiceTextSplitter;
-  outputDtype?: D;
   /** Runs synchronously after dtype conversion, before buffering. */
   outputTransform?: (
     frame: AudioFrame<OutputSamples<D>>,
@@ -46,7 +45,7 @@ export interface VoicePipelineOptions<D extends VoiceOutputDtype = 'int16'> {
   /** Omitted emits immediately; a positive count flushes its tail at each synthesis boundary. */
   bufferSamples?: number;
   tracing?: VoiceTracingOptions;
-}
+} & ('int16' extends D ? { outputDtype?: D } : { outputDtype: D });
 
 const splitSentences: VoiceTextSplitter = (text, final) => {
   if (final) return { segments: text ? [text] : [], remainder: '' };

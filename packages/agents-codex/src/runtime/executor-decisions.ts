@@ -1,4 +1,7 @@
-import { jsonValue, type JsonValue } from './binding';
+import {
+  losslessJsonValueSchema as jsonValue,
+  type JsonValue,
+} from './binding';
 
 declare const executorPolicyDecision: unique symbol;
 interface Decision<Kind extends 'allow' | 'replace' | 'stop'> {

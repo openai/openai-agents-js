@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: preserve queued and continued turn results, prepare handoff requests, and validate selected MCP identities
+fix(codex): preserve handoff tool ownership, JSON data and saved state, and align history, request preparation and voice output types
