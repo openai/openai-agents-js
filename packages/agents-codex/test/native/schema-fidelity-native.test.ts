@@ -9,14 +9,15 @@ import {
   NativeProvider,
   tool,
   manualTool,
+  selectMcpTools,
   type Session,
 } from '../../src';
 import {
-  decode,
-  jsonObject,
+  losslessJsonObjectSchema as jsonObject,
   type JsonObject,
   type JsonValue,
 } from '../../src/runtime/binding';
+import { BorrowedPeer } from './fixtures/borrowed-mcp';
 
 // These fixtures observe actual native HTTP or Model-boundary requests, where
 // Core's typed schema could have discarded the accepted Zod constraints.
@@ -127,7 +128,7 @@ async function fixture(
     }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    received.push(decode(jsonObject, Buffer.concat(chunks).toString()));
+    received.push(JSON.parse(Buffer.concat(chunks).toString()));
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     for (const event of reply(received.at(-1)!))
       response.write('data: ' + JSON.stringify(event) + '\n\n');
@@ -139,7 +140,7 @@ async function fixture(
     sockets.push(ws);
     ws.on('connection', (socket) =>
       socket.on('message', (bytes) => {
-        const frame = decode(jsonObject, bytes.toString());
+        const frame: JsonObject = JSON.parse(bytes.toString());
         frames.push(frame);
         if (disconnectAfterRequest && frame.generate !== false) {
           socket.terminate();
@@ -220,6 +221,61 @@ describe('native function schema fidelity', () => {
     },
   );
 });
+
+it.each([false, true])(
+  'preserves borrowed MCP own-key schemas on both turns (WebSocket: %s)',
+  async (websocket) => {
+    // Own __proto__ must be data in both the source and the raw wire capture.
+    const schema = JSON.parse(
+      '{"type":"object","properties":{"__proto__":{"type":"string"},"constructor":{"type":"string"},"prototype":{"type":"string"},"ordinary":{"type":"string"}},"required":["__proto__","constructor","prototype","ordinary"],"additionalProperties":false}',
+    );
+    const borrowed = new BorrowedPeer();
+    borrowed.declarations[0].inputSchema = schema;
+    const selected = await selectMcpTools(
+      { name: 'crm', server: borrowed },
+      { context: undefined },
+    );
+    const peer = await fixture(websocket);
+    const session = await new Agent({
+      instructions: 'Answer briefly.',
+      model: 'gpt-5.5',
+      provider: peer.provider,
+      programmaticToolCalling: false,
+      tools: selected,
+    }).session();
+    sessions.push(session);
+    await answer(session, 'Remember the record.');
+    await answer(session, 'Remember another record.');
+    const requests = (websocket ? peer.frames : peer.received).filter(
+      (request) => request.generate !== false,
+    );
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      const published = declarations(request);
+      expect(published).toHaveLength(1);
+      const parameters = published[0].parameters as JsonObject;
+      expect(parameters).toEqual(schema);
+      const properties = parameters.properties as JsonObject;
+      for (const name of [
+        '__proto__',
+        'constructor',
+        'prototype',
+        'ordinary',
+      ]) {
+        expect(Object.hasOwn(properties, name)).toBe(true);
+        expect(properties[name]).toEqual({ type: 'string' });
+        expect(parameters.required).toContain(name);
+      }
+      expect(Object.getPrototypeOf(properties)).toBe(Object.prototype);
+      expect(parameters.additionalProperties).toBe(false);
+    }
+    if (websocket) {
+      expect(peer.received).toHaveLength(0);
+      // A generated-response continuation requires the prior completion receipt.
+      expect(requests[1].previous_response_id).toMatch(/^resp_schema_/);
+    }
+  },
+);
 
 it.each(['Agent.run', 'Session.suspend'])(
   'restores a manual action after %s over WebSocket without replaying it',

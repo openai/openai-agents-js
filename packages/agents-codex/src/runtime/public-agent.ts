@@ -807,8 +807,9 @@ export class Agent<Context = undefined, Output = string> {
           'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
         );
       if (
+        provider.responseMode !== 'buffered' &&
         (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
-        false
+          false
       )
         throw new TypeError(
           'prepareRequest requires NativeProvider({ supportsWebsockets: false })',

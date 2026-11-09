@@ -1191,6 +1191,117 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       30000,
     );
 
+    it.each(['none', 'shared', 'same-name'] as const)(
+      'resolves a handed-off manual request with %s opening declarations',
+      async (opening) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        await withScriptedResponses(
+          [
+            [toolCall('transfer_to_b', {}, { callId: 'transfer' })],
+            [toolCall('decision', {}, { callId: 'decision' })],
+            [text('accepted')],
+          ],
+          async (model) => {
+            const decision = manualTool({
+              name: 'decision',
+              description: 'Choose.',
+              parameters: z.strictObject({}),
+              result: z.string(),
+            });
+            const sourceTools =
+              opening === 'none'
+                ? []
+                : [
+                    opening === 'shared'
+                      ? decision
+                      : manualTool({
+                          name: 'decision',
+                          description: 'Choose.',
+                          parameters: z.strictObject({}),
+                          result: z.boolean(),
+                        }),
+                  ];
+            const target = new Agent({
+              name: 'B',
+              instructions: 'Ask for a decision.',
+              tools: [decision],
+            });
+            const agent = new Agent({
+              name: 'A',
+              instructions: 'Handoff to B.',
+              model: 'gpt-5.5',
+              provider: model.provider,
+              tools: sourceTools,
+              handoffs: [target],
+            });
+            const opened: unknown[] = [];
+            const closed = new Set<unknown>();
+            const open = agent.session.bind(agent);
+            vi.spyOn(agent, 'session').mockImplementation(async (options) => {
+              const session = await open(options);
+              opened.push(session);
+              const close = session.close.bind(session);
+              vi.spyOn(session, 'close').mockImplementation(async () => {
+                await close();
+                closed.add(session);
+              });
+              return session;
+            });
+            const store = new FileA2AStore();
+            const remote = await host(
+              store,
+              new NativeA2AExecutor({
+                store,
+                agentFactory: async () => ({ agent, context: undefined }),
+              }),
+            );
+            try {
+              const created = await remote.client.sendMessage(
+                input([Part.fromJSON({ text: 'begin' })]),
+              );
+              if (!('id' in created)) throw new Error('Expected task');
+              const waiting = await settled(remote.client, created);
+              expect(waiting.status?.state).toBe(
+                TaskState.TASK_STATE_INPUT_REQUIRED,
+              );
+              const proposal = inputProposal(waiting)!;
+              const before = store.record(waiting.id, context)!;
+              const answer = (result: unknown) =>
+                remote.client.sendMessage(
+                  input(
+                    [
+                      Part.fromJSON({
+                        data: {
+                          challenge: proposal.challenge,
+                          generation: proposal.generation,
+                          result,
+                        },
+                      }),
+                    ],
+                    waiting.id,
+                    waiting.contextId,
+                  ),
+                );
+              await expect(answer(false)).rejects.toThrow();
+              expect(store.record(waiting.id, context)).toEqual(before);
+              expect(model.requests).toHaveLength(2);
+              expect(opened).toHaveLength(2);
+              expect([...closed]).toEqual(opened);
+              const updated = await answer('approved');
+              if (!('id' in updated)) throw new Error('Expected task');
+              const done = await settled(remote.client, updated);
+              expect(done.status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+              expect(model.toolOutput('decision')).toContain('approved');
+              expect(model.requests).toHaveLength(3);
+            } finally {
+              await remote.close();
+            }
+          },
+        );
+      },
+      30000,
+    );
+
     it('converts a resumed manual answer once and preserves invalid-answer retry', async () => {
       vi.spyOn(console, 'error').mockImplementation(() => {});
       await withScriptedResponses(
