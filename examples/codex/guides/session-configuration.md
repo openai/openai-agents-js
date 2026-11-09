@@ -48,6 +48,7 @@ Native `modelSettings` accepts these fields:
 | `topLogprobs` | Integer from zero to 20; requests probabilities and alternatives reported as [received response facts](request-metadata.md#received-response-facts). |
 | `parallelToolCalls`, `verbosity` | A boolean for parallel calls; `'low'`, `'medium'`, or `'high'` for verbosity. |
 | `metadata` | A captured string map sent with the request. |
+| `store` | A boolean sent as the provider storage preference; `null` clears the override. |
 | `promptCacheRetention` | `'in_memory'` or `'24h'`; `null` clears the override. |
 | `promptCacheTtl` | `'30m'` or `'12h'`, independently of retention; `null` clears the override. |
 
@@ -61,7 +62,7 @@ Each Session captures its effective configuration when it opens. The Agent keeps
 
 Portable `state`, including state from `session.fork()`, retains the saved model and accepted settings. Restore through the same Agent even if its default model differs or is absent. Leave `model` and `modelSettings` undefined when restoring. Passing `modelSettings: {}` rejects the restore.
 
-You can supply a provider with current credentials on restore. Afterward, an idle Session can use `session.update(...)` to change supported settings. A `NativeAgents` Session keeps its opening model settings. Checkpoints omit provider credentials and tool grants.
+You can supply a provider with current credentials on restore. Afterward, an idle Session can use `session.update(...)` to change supported settings. A `NativeAgents` Session keeps its opening model settings. Checkpoints omit provider credentials and tool grants. They retain `store`, `promptCacheRetention` and `promptCacheTtl`; verify checkpoint integrity and application-policy approval [before restoring](state.md#restore-instructions-and-tools). A pending manual continuation can sample before an idle update, so a later update cannot serve as its privacy-policy check.
 
 The scripted [session configuration example](../session-configuration.ts) merges settings, clears an inherited tier, and checks the recorded configuration. It uses the current [source build](building.md), with no model credentials. Run it from the repository root:
 

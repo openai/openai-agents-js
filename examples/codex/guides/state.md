@@ -74,7 +74,9 @@ Opening a checkpoint with a local executor or strict WSS Environment requires th
 
 ### Restore instructions and tools
 
-Validate the envelope with `parseSessionState(json)`. If you trust the storage, read and reuse the last accepted instructions with `await readSessionInstructions(state)`. Older v2 and manual v3 checkpoints can lack that record. The reader then throws, and you can restore with current trusted instructions.
+Before opening a checkpoint, verify its integrity and confirm that your application policy approves its saved settings. Keep the checkpoint opaque. Use a trusted record of its source, saved settings and approved policy, protected together with the checkpoint. If either check fails, reject the checkpoint or start a fresh Session with current settings.
+
+`parseSessionState(json)` validates the envelope structure. It does not authenticate the checkpoint or approve its saved privacy settings. After the integrity and policy checks, read and reuse the last accepted instructions with `await readSessionInstructions(state)`. Older v2 and manual v3 checkpoints can lack that record. The reader then throws, and you can restore with current trusted instructions.
 
 Idle restore requires matching managed declarations, including materialized borrowed MCP tools. The SDK compares names, descriptions, parameter schemas, namespaces, and catalog order. Current callback implementations can differ. Selected checkpoints retain the full admitted catalog, including hidden tools, separately from narrowed defaults.
 
@@ -82,9 +84,9 @@ The destination selects native `HttpMCP` and `StdioMCP` declarations. Restore ma
 
 ### Model settings on restore
 
-Portable restore uses the checkpoint's latest accepted model settings. Those settings include the model, reasoning effort, reasoning summary and service tier.
+Portable restore uses the checkpoint's latest accepted model settings. Those settings include the model, reasoning effort, reasoning summary, service tier and model request controls, including `store`, `promptCacheRetention` and `promptCacheTtl`. Accepting the checkpoint authorizes those saved controls for later provider requests.
 
-Fork retains those accepted settings too. A different model or setting on the destination Agent does not replace the saved settings. Current provider credentials, callbacks, context and Environment still come from the application. To change accepted settings on an ordinary Session, restore first and call `session.update({ model, modelSettings })` while idle. Finish a pending manual turn before updating. Sessions opened with `NativeAgents` keep their model settings fixed.
+Fork retains those accepted settings too. A different model or setting on the destination Agent does not replace the saved settings. Current provider credentials, callbacks, context and Environment still come from the application. To change accepted settings on an ordinary Session, restore first and call `session.update({ model, modelSettings })` while idle. A pending manual continuation can sample before an idle update becomes available. Sessions opened with `NativeAgents` keep their model settings fixed. These restores must therefore satisfy the application policy before opening; do not rely on a later settings update to enforce it.
 
 ### Output and checkpoint versions
 
