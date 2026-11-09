@@ -41,7 +41,6 @@ import {
 import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
-import { isOfficialOpenAIEndpoint } from './utils/openaiEndpoint';
 import type { OpenAIClient } from './openaiClient';
 import {
   CONTENT_FILTER_REFUSAL_MESSAGE,
