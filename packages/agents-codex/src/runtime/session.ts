@@ -300,6 +300,7 @@ export interface SessionOptions {
       readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
     }) => void,
     parentTrace?: TraceContext,
+    transformContext?: ContextTransform<any>,
   ) => Promise<Session<string>>;
   applicationAgent?: import('./public-agent').Agent<any, any>;
   /** @internal Sealed live declarations; excluded from persisted options. */
@@ -4621,6 +4622,19 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TurnAborted('Output repair stopped');
     };
     check(true);
+    // Output overrides do not identify the producing Agent. Capture Core's
+    // committed profile before opening any correction Session.
+    const source = this.options.agentGraph
+      ? checkProfileReceipt(
+          parseProfileReceipt(await this.#native._active_agent_profile()),
+          this.options.agentGraph,
+        )
+      : undefined;
+    check(true);
+    const transformContext = source
+      ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+          .transformContext
+      : this.options.transformContext;
     const history = await this.#readHistory();
     check(true);
     const settingsEvent = history
@@ -4666,6 +4680,7 @@ export class Session<OutputT = string, Context = unknown> {
           repair.opening = owner;
         },
         run.parentTrace,
+        transformContext,
       );
       repair.opening = undefined;
       const correction = repair.session;

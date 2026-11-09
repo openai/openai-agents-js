@@ -858,3 +858,53 @@ nativeIt(
     );
   },
 );
+
+nativeIt.each([false, true])(
+  'uses the captured producing profile transform for handoff output repair (opening hook=%s)',
+  async (openingHook) => {
+    const model = new ModelServer([
+      [call('transfer_to_b', {}, { callId: 'handoff-repair' })],
+      [message('invalid')],
+      [message('{"value":9}')],
+    ]);
+    const app = { key: 'handoff-repair-context' };
+    const opening = vi.fn();
+    const late = vi.fn();
+    const requests: ModelRequestContext<typeof app>[] = [];
+    const outputType = {
+      mode: 'prompted' as const,
+      schema: z.object({ value: z.number() }),
+      maxRetries: 1,
+    };
+    await using provider = await providerFor(model);
+    const destination = new Agent<typeof app, { value: number }>({
+      name: 'B',
+      instructions: 'B base',
+      provider,
+      outputType,
+      transformContext: (request) => {
+        requests.push(request);
+      },
+    });
+    await using session = await new Agent<typeof app, { value: number }>({
+      name: 'A',
+      instructions: 'A base',
+      provider,
+      handoffs: [destination],
+      outputType,
+      transformContext: openingHook ? opening : undefined,
+    }).session({ context: app });
+    destination.transformContext = late;
+    expect((await (await session.submit('one')).wait()).finalOutput).toEqual({
+      value: 9,
+    });
+    expect(requests.map((request) => request.purpose)).toEqual([
+      'turn',
+      'output_repair',
+    ]);
+    expect(requests.every((request) => request.context === app)).toBe(true);
+    expect(opening).toHaveBeenCalledTimes(openingHook ? 1 : 0);
+    expect(late).not.toHaveBeenCalled();
+    expect(model.requests).toHaveLength(3);
+  },
+);

@@ -1254,6 +1254,7 @@ export class Agent<Context = undefined, Output = string> {
           modelSettings,
           retainOpening,
           parentTrace,
+          repairTransformContext,
         ) => {
           // Native fallback may read a later environment key; repair needs this snapshot.
           if (apiKey === undefined)
@@ -1266,10 +1267,10 @@ export class Agent<Context = undefined, Output = string> {
             modelSettings,
             tools: [],
             transformContext:
-              transformContext === undefined
+              repairTransformContext === undefined
                 ? undefined
                 : (request) =>
-                    transformContext({
+                    repairTransformContext({
                       ...request,
                       context: context as Context,
                     }),
