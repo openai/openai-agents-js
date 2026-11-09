@@ -180,22 +180,7 @@ export function computerTool<Context = unknown>(
         : call.action
           ? [call.action]
           : [];
-      if (approve) {
-        const allowed = await approve(context, structuredClone(actions));
-        admit();
-        if (allowed !== true)
-          throw new ComputerSafetyError('Computer call was not approved');
-      }
       const pending = structuredClone(call.pending_safety_checks);
-      if (pending.length) {
-        if (!onSafetyCheck) throw new ComputerSafetyError();
-        const acknowledged = await onSafetyCheck(
-          context,
-          structuredClone(pending),
-        );
-        admit();
-        if (acknowledged !== true) throw new ComputerSafetyError();
-      }
       let leases = resources.get(owner);
       if (!leases) resources.set(owner, (leases = new Map()));
       let lease = leases.get(identity);
@@ -206,6 +191,21 @@ export function computerTool<Context = unknown>(
       const release = await lease.gate.acquire(context.signal);
       try {
         admit();
+        if (approve) {
+          const allowed = await approve(context, structuredClone(actions));
+          admit();
+          if (allowed !== true)
+            throw new ComputerSafetyError('Computer call was not approved');
+        }
+        if (pending.length) {
+          if (!onSafetyCheck) throw new ComputerSafetyError();
+          const acknowledged = await onSafetyCheck(
+            context,
+            structuredClone(pending),
+          );
+          admit();
+          if (acknowledged !== true) throw new ComputerSafetyError();
+        }
         if (!lease.driver) {
           // Retain ownership before checking cancellation after acquisition.
           lease.driver = provider ? await provider.create(context) : borrowed;

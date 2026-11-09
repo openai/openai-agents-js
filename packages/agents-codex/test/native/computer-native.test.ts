@@ -288,19 +288,19 @@ it('records a driver failure before a queued native sibling can enter the device
       tools: [
         computerTool({
           computer: { create: () => computer, dispose },
-          async approve(_context, actions) {
-            if (actions[0]?.type === 'type') {
-              await entered.promise;
-              queued.resolve();
-            }
-            return true;
-          },
         }),
       ],
     });
   const session = await agent.session();
   try {
     const turn = await session.submit('wait and type');
+    const observations = (async () => {
+      for await (const event of turn.events()) {
+        if (event.type === 'tool_started' && event.callId === 'queued-type')
+          queued.resolve();
+      }
+    })();
+    void observations.catch(() => {});
     await Promise.all([entered.promise, queued.promise]);
     fail.resolve();
     await expect(turn.wait()).rejects.toThrow('device failed');
@@ -350,3 +350,82 @@ it('rejects model-forged computer receipts before device acquisition', async () 
     await selected.close();
   }
 });
+
+it.each(['approve', 'onSafetyCheck'] as const)(
+  'serializes queued native %s with preceding screen effects',
+  async (policyKind) => {
+    const entered = Promise.withResolvers<void>();
+    const queued = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const observations: number[] = [],
+      effects: number[] = [];
+    let screen = 0;
+    const computer = device([]),
+      dispose = vi.fn();
+    computer.wait = async () => {
+      entered.resolve();
+      await release.promise;
+      effects.push(screen++);
+    };
+    const checks = [{ id: 'check', code: 'screen', message: 'Confirm screen' }];
+    const server = new ModelServer([
+      [
+        computerCall({
+          action: { type: 'wait' },
+          pending_safety_checks: policyKind === 'onSafetyCheck' ? checks : [],
+        }),
+        computerCall({
+          id: 'cu_queued',
+          call_id: 'queued-computer',
+          action: { type: 'wait' },
+          pending_safety_checks: policyKind === 'onSafetyCheck' ? checks : [],
+        }),
+      ],
+      [message('done')],
+    ]);
+    const selected = await provider(server);
+    const policy = async () => {
+      observations.push(screen);
+      return screen === 0;
+    };
+    const agent = new Agent({
+      instructions: 'Use computer.',
+      provider: selected,
+      model: 'gpt-5',
+      tools: [
+        computerTool({
+          computer: { create: () => computer, dispose },
+          [policyKind]: policy,
+        }),
+      ],
+    });
+    const session = await agent.session();
+    try {
+      const turn = await session.submit('Use the device twice');
+      const events = (async () => {
+        for await (const event of turn.events()) {
+          if (
+            event.type === 'tool_started' &&
+            event.callId === 'queued-computer'
+          )
+            queued.resolve();
+        }
+      })();
+      void events.catch(() => {});
+      await Promise.all([entered.promise, queued.promise]);
+      release.resolve();
+      await expect(turn.wait()).rejects.toThrow(
+        /not approved|require acknowledgment/,
+      );
+    } finally {
+      release.resolve();
+      await session.close();
+      await selected.close();
+    }
+    expect(observations).toEqual([0, 1]);
+    expect(effects).toEqual([0]);
+    expect(dispose).toHaveBeenCalledExactlyOnceWith(computer);
+    expect(server.requests).toHaveLength(1);
+  },
+  30_000,
+);
