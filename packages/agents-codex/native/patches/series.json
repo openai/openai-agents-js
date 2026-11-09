@@ -387,7 +387,11 @@
     {
       "path": "0101-native-request-extensions.patch",
       "sha256": "fc28e524a2b71b3501d232cad8a2a3e420f8463f719c2415b89ab853b9beaa68"
+    },
+    {
+      "path": "0103-empty-extra-body-lite.patch",
+      "sha256": "8b13438eea150779e0adcb4d2b533e4192cb5e5c4539f054a8402aaaef29cf77"
     }
   ],
-  "result_tree": "e331be29f9327ccc6a2d21c8ff93d0726fdfa62a"
+  "result_tree": "15b535317c4663dcbf28b1d7dc122e216734806d"
 }
