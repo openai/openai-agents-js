@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use codex_client::{HttpTransport as _, TransportError};
 use codex_core::{ModelClient, ResponseEvent, sdk_plain_run};
 use codex_core_api::Feature;
@@ -162,14 +162,19 @@ async fn model_info(
 ) -> codex_protocol::openai_models::ModelInfo {
     let config = &engine.service_config;
     let models = engine.manager.get_models_manager();
-    let model = models
-        .get_default_model(
-            &model.or_else(|| config.model.clone()),
-            false,
-            codex_models_manager::manager::RefreshStrategy::Offline,
-            config.http_client_factory(),
-        )
-        .await;
+    let model = match model.or_else(|| config.model.clone()) {
+        Some(model) => model,
+        None => {
+            models
+                .get_default_model(
+                    &None,
+                    false,
+                    codex_models_manager::manager::RefreshStrategy::Offline,
+                    config.http_client_factory(),
+                )
+                .await
+        }
+    };
     models
         .get_model_info(&model, &config.to_models_manager_config())
         .await

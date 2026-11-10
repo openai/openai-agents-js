@@ -30,7 +30,7 @@ import {
   type TurnCompletion,
 } from './session';
 
-/** One prepared owner; dispatch happens only after the opening handoff. */
+/** @internal One prepared owner; dispatch happens only after the opening handoff. */
 export interface PreparedPlainRun {
   run(): Promise<Completed<string>>;
 }
@@ -206,7 +206,7 @@ async function completedPlainRun(
   return publicResult;
 }
 
-/** Consume one canonical prepared opening; undefined leaves ordinary opening valid. */
+/** @internal Consume one canonical prepared opening; undefined leaves ordinary opening valid. */
 export async function tryOpenPlainRun(
   setup: SessionSetup,
   options: SessionOptions,
