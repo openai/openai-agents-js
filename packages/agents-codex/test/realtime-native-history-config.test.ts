@@ -57,6 +57,8 @@ class HistoryPeer {
   readonly frames: Frame[] = [];
   readonly models: (string | null)[] = [];
   readonly retrievals = new Map<string, JsonObject>();
+  autoAckUpdates = true;
+  readonly pendingUpdates: Frame[] = [];
   private socket?: WebSocket;
   private readonly server = new WebSocketServer({ noServer: true });
   constructor(model: ModelServer) {
@@ -84,10 +86,12 @@ class HistoryPeer {
           });
         if (frame.type === 'session.update') {
           mergeSession(session, frame.session);
-          this.send({
+          const acknowledgement = {
             type: 'session.updated',
-            session: { ...session, id: 'history-fixture' },
-          });
+            session: { ...structuredClone(session), id: 'history-fixture' },
+          };
+          if (this.autoAckUpdates) this.send(acknowledgement);
+          else this.pendingUpdates.push(acknowledgement);
         }
       });
     });
@@ -166,6 +170,229 @@ const defaultResponseCreate = {
   event_id: expect.any(String),
 };
 const generatedResponseMetadata = { codex_response_id: expect.any(String) };
+
+nativeIt.each([
+  { raw: false, prompt: null },
+  { raw: false, prompt: { id: 'runtime-prompt' } },
+  { raw: true, prompt: null },
+  { raw: true, prompt: { id: 'runtime-prompt' } },
+])(
+  'retains acknowledged runtime instructions and prompt across agent changes (raw=$raw, prompt=$prompt)',
+  async ({ raw, prompt }) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      const first = new Agent({ provider, instructions: 'Opening backend' });
+      const second = new Agent({
+        provider,
+        instructions: 'New backend',
+        realtime: {
+          instructions: 'New voice default',
+          prompt: { id: 'agent-prompt' },
+        },
+      });
+      const instructions = vi.fn(async () => 'Opening connection instructions');
+      await using session = await first.session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        instructions,
+        settings: { prompt: { id: 'opening-prompt' } },
+      });
+      peer.autoAckUpdates = false;
+      const after = peer.frames.length;
+      let accepted = false;
+      const updating = (
+        raw
+          ? voice.sendEvent({
+              type: 'session.update',
+              session: {
+                instructions: 'Accepted runtime instructions',
+                prompt,
+              },
+            })
+          : voice.update({
+              instructions: 'Accepted runtime instructions',
+              prompt,
+            })
+      ).then(() => {
+        accepted = true;
+      });
+      await peer.frame('session.update', after);
+      expect(accepted).toBe(false);
+      const followingInput = raw
+        ? voice.sendEvent({ type: 'input_audio_buffer.append', audio: 'AAA=' })
+        : undefined;
+      expect(
+        peer.frames
+          .slice(after)
+          .some((frame) => frame.type === 'input_audio_buffer.append'),
+      ).toBe(false);
+      const switching = voice.updateAgent(second);
+      expect(instructions).toHaveBeenCalledOnce();
+      peer.autoAckUpdates = true;
+      const acknowledgement = peer.pendingUpdates.shift();
+      expect(acknowledgement).toBeDefined();
+      peer.send(acknowledgement!);
+      await updating;
+      await followingInput;
+      await switching;
+      if (raw) await peer.frame('input_audio_buffer.append', after);
+      const updates = peer.frames
+        .slice(after)
+        .filter((frame) => frame.type === 'session.update');
+      expect(updates).toHaveLength(2);
+      expect(updates[1].session).toMatchObject({
+        instructions: 'Accepted runtime instructions',
+        prompt,
+      });
+      expect(instructions).toHaveBeenCalledOnce();
+      await expect(session.getActiveAgent()).resolves.toBe(first);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'keeps the accepted prompt after a rejected raw update and subsequent agent refresh',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Opening',
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: { prompt: { id: 'accepted-prompt' } },
+      });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      peer.autoAckUpdates = false;
+      const after = peer.frames.length;
+      const updating = voice.sendEvent({
+        type: 'session.update',
+        session: { prompt: { id: 'rejected-prompt' } },
+      });
+      const rejected = expect(updating).rejects.toThrow();
+      const frame = await peer.frame('session.update', after);
+      const switching = voice.updateAgent(
+        new Agent({ provider, instructions: 'New agent' }),
+      );
+      void switching.catch(() => {});
+      peer.autoAckUpdates = true;
+      peer.send({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          code: 'fixture_prompt_rejected',
+          event_id: frame.event_id,
+        },
+      });
+      await rejected;
+      await switching;
+      const updates = peer.frames
+        .slice(after)
+        .filter((entry) => entry.type === 'session.update');
+      expect(updates).toHaveLength(2);
+      expect(updates[1].session.prompt).toEqual({ id: 'accepted-prompt' });
+      await voice.requestResponse();
+      const created = await peer.frame('response.create', after);
+      const response = {
+        id: 'after-prompt-rejection',
+        metadata: created.response?.metadata,
+        status: 'completed',
+        output: [],
+      };
+      peer.send({ type: 'response.created', response });
+      peer.send({ type: 'response.done', response });
+      await vi.waitFor(() => {
+        expect(seen).toContainEqual({
+          type: 'provider_request_error',
+          code: 'fixture_prompt_rejected',
+          eventId: frame.event_id,
+        });
+        expect(seen).toContainEqual(
+          expect.objectContaining({
+            type: 'response',
+            status: 'done',
+            responseId: response.id,
+          }),
+        );
+      });
+      expect(peer.models).toEqual(['fixture-realtime']);
+      await voice.close();
+      await reading;
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([false, true])(
+  'accepts a runtime update reentered from a profile instructions callback (raw=%s)',
+  async (raw) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      const first = new Agent({ provider, instructions: 'Opening' });
+      const second = new Agent({
+        provider,
+        instructions: 'New backend',
+        realtime: { instructions: 'Agent default' },
+      });
+      await using session = await first.session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        instructions: async ({ agent }) => {
+          if (agent === second) {
+            await publish();
+          }
+          return 'Callback instructions';
+        },
+      });
+      const publish = () =>
+        raw
+          ? voice.sendEvent({
+              type: 'session.update',
+              session: {
+                instructions: 'Reentered runtime instructions',
+                prompt: null,
+              },
+            })
+          : voice.update({
+              instructions: 'Reentered runtime instructions',
+              prompt: null,
+            });
+      const after = peer.frames.length;
+      await voice.updateAgent(second);
+      const updates = peer.frames
+        .slice(after)
+        .filter((frame) => frame.type === 'session.update');
+      expect(updates).toHaveLength(2);
+      expect(updates[1].session).toMatchObject({
+        instructions: 'Reentered runtime instructions',
+        prompt: null,
+      });
+      await expect(voice.getActiveAgent()).resolves.toBe(second);
+      await expect(session.getActiveAgent()).resolves.toBe(first);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
 
 nativeIt(
   'binds connection policies to an updated voice agent without widening its tools or changing the Session',

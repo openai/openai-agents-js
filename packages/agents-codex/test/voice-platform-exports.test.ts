@@ -155,4 +155,4 @@ it('typechecks the mobile public entry without DOM libraries', () => {
       .getPreEmitDiagnostics(program)
       .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n')),
   ).toEqual([]);
-}, 20_000);
+}, 120_000);

@@ -576,6 +576,7 @@ class NativeRealtimeOwner {
   private profileSource?: JsonObject | null;
   private voiceGraphAdmitted = false;
   private retargetTail: Promise<void> = Promise.resolve();
+  private settingsTail: Promise<void> = Promise.resolve();
   private readonly profileGuardrails = new Map<
     string,
     readonly NativeRealtimeOutputGuardrail[]
@@ -617,6 +618,7 @@ class NativeRealtimeOwner {
     return this.admittedAnswerSdp;
   }
   private readonly initialSettings: JsonObject | null;
+  private readonly profileOverrides: JsonObject = {};
   private closeNative = () => this.call('close');
 
   /** @internal Session installs the route before starting admission. */
@@ -1085,9 +1087,28 @@ class NativeRealtimeOwner {
       this,
       'update its own Realtime session',
     );
-    await this.call('update', {
-      update: serializeRealtimeSessionUpdate(update),
+    const snapshot = serializeRealtimeSessionUpdate(update);
+    await this.publishSettings(async () => {
+      this.checkLive();
+      await this.call('update', { update: snapshot });
+      this.retainProfileOverrides(snapshot);
     });
+  }
+
+  private retainProfileOverrides(update: JsonObject): void {
+    if (typeof update.instructions === 'string')
+      this.profileOverrides.instructions = update.instructions;
+    if (Object.hasOwn(update, 'prompt'))
+      this.profileOverrides.prompt = copyJsonValue(update.prompt);
+  }
+
+  private publishSettings<T>(publish: () => Promise<T>): Promise<T> {
+    const task = this.settingsTail.then(publish);
+    this.settingsTail = task.then(
+      () => {},
+      () => {},
+    );
+    return task;
   }
 
   /** Switch the voice agent on this connection after the provider accepts its configuration. */
@@ -1149,6 +1170,8 @@ class NativeRealtimeOwner {
       | { delegationId: string; responseId?: never; target?: never },
     resetPrompt = false,
   ): Promise<void> {
+    await this.settingsTail;
+    this.checkLive();
     const source =
       snapshot || this.session._hasRealtimeAgentConfiguration(target)
         ? this.session._realtimeConfigurationSource(target)
@@ -1167,8 +1190,9 @@ class NativeRealtimeOwner {
             allowMissing: true,
             snapshot: raw,
           });
-    const settings: JsonObject =
-      this.initialSettings?.prompt === undefined
+    const settings: JsonObject = Object.hasOwn(this.profileOverrides, 'prompt')
+      ? { prompt: this.profileOverrides.prompt }
+      : this.initialSettings?.prompt === undefined
         ? {}
         : { prompt: this.initialSettings.prompt };
     const policy = await this.#context(() =>
@@ -1176,9 +1200,11 @@ class NativeRealtimeOwner {
         this.session,
         {
           instructions:
-            typeof this.options.instructions === 'function'
-              ? this.options.instructions
-              : undefined,
+            typeof this.profileOverrides.instructions === 'string'
+              ? this.profileOverrides.instructions
+              : typeof this.options.instructions === 'function'
+                ? this.options.instructions
+                : undefined,
           isToolEnabled: this.options.isToolEnabled,
         },
         this.startupAbort.signal,
@@ -1216,33 +1242,42 @@ class NativeRealtimeOwner {
     const instructions = config ? config.instructions : policy.instructions;
     if (instructions !== undefined) update.instructions = instructions;
     if (resetPrompt && update.prompt === undefined) update.prompt = null;
-    if (config) this.setProfileGuardrails(target, config.guardrails);
-    const receipt = await this.call('update', {
-      update,
-      profile: {
-        response_id: bound?.responseId ?? null,
-        ...(bound?.delegationId === undefined
-          ? {}
-          : { delegation_id: bound.delegationId }),
-        target,
-        function_tools: config?.tools ?? selection?.tools ?? null,
-        expected_selection_id:
-          config?.selectionId ??
-          policy.selectionId ??
-          selection?.selectionId ??
-          null,
-        disabled_tool_names: policy.disabledToolNames ?? null,
-      },
+    await this.publishSettings(async () => {
+      this.checkLive();
+      if (
+        bound?.responseId !== undefined &&
+        this.retiredResponses.has(bound.responseId)
+      )
+        return;
+      Object.assign(update, this.profileOverrides);
+      if (config) this.setProfileGuardrails(target, config.guardrails);
+      const receipt = await this.call('update', {
+        update,
+        profile: {
+          response_id: bound?.responseId ?? null,
+          ...(bound?.delegationId === undefined
+            ? {}
+            : { delegation_id: bound.delegationId }),
+          target,
+          function_tools: config?.tools ?? selection?.tools ?? null,
+          expected_selection_id:
+            config?.selectionId ??
+            policy.selectionId ??
+            selection?.selectionId ??
+            null,
+          disabled_tool_names: policy.disabledToolNames ?? null,
+        },
+      });
+      if (
+        bound?.responseId !== undefined &&
+        receipt &&
+        typeof receipt === 'object' &&
+        'applied' in receipt &&
+        receipt.applied === false
+      )
+        return;
+      this.profileSource = target;
     });
-    if (
-      bound?.responseId !== undefined &&
-      receipt &&
-      typeof receipt === 'object' &&
-      'applied' in receipt &&
-      receipt.applied === false
-    )
-      return;
-    this.profileSource = target;
   }
   /**
    * Decide only an original issued request; clones, cross-owner objects and replay fail.
@@ -1600,7 +1635,22 @@ class NativeRealtimeOwner {
             void completion.catch(() => {});
             return { completion };
           }
-          const raw = await this.call('send_event', { event: snapshot });
+          const send = () => this.call('send_event', { event: snapshot });
+          const raw =
+            snapshot.type === 'session.update'
+              ? await this.publishSettings(async () => {
+                  this.checkLive();
+                  const accepted = await send();
+                  const update = snapshot.session;
+                  if (
+                    update &&
+                    typeof update === 'object' &&
+                    !Array.isArray(update)
+                  )
+                    this.retainProfileOverrides(update);
+                  return accepted;
+                })
+              : await send();
           const value: unknown =
             typeof raw === 'string' ? JSON.parse(raw) : raw;
           if (
@@ -3016,6 +3066,7 @@ class NativeRealtimeOwner {
       const results = await joining;
       const tasks = await Promise.allSettled([
         this.retargetTail,
+        this.settingsTail,
         ...this.profileUpdates,
         ...owned.flatMap((item) => (item.task ? [item.task] : [])),
         ...batches.flatMap((batch) => (batch.task ? [batch.task] : [])),
