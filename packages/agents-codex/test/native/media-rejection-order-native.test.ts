@@ -21,9 +21,22 @@ afterEach(async () => {
   await ModelServer.closeAll();
 });
 
-it.each([false, true])(
-  'keeps rejected media parked before host failure (child=%s)',
-  async (child) => {
+it.each([
+  [
+    'keeps rejected media parked before host failure (child=false)',
+    false,
+    false,
+  ],
+  ['keeps rejected media parked before host failure (child=true)', true, false],
+  [
+    'preserves accepted steering after child media validation fails',
+    true,
+    true,
+  ],
+] as const)(
+  '%s',
+  async (_name, child, queuedSteering) => {
+    const queuedInput = 'Continue with the accepted steering.';
     let validationError: unknown;
     const release = Promise.withResolvers<void>();
     const addon = await binding();
@@ -46,6 +59,7 @@ it.each([false, true])(
       rootRequests = 0,
       childRequests = 0;
     let rootId: string | undefined;
+    let acceptSteering: (() => Promise<void>) | undefined;
     try {
       if (child) executor = await startPublicExecutor();
       const responses = child
@@ -70,7 +84,13 @@ it.each([false, true])(
             childRequests += 1;
             return childRequests === 1
               ? [call('reference', {}, { callId: 'child-low' })]
-              : [message('must not continue')];
+              : [
+                  message(
+                    queuedSteering
+                      ? 'processed queued input'
+                      : 'must not continue',
+                  ),
+                ];
           })
         : [
             [call('reference', {}, { callId: 'root-low' })],
@@ -118,7 +138,14 @@ it.each([false, true])(
           const values = await Array.fromAsync(session!.subagents());
           return values[0]?.turn ? values : false;
         });
-        result = children[0].turn!.wait().catch((error) => error);
+        const childHandle = children[0];
+        const turn = childHandle.turn!;
+        if (queuedSteering) {
+          acceptSteering = async () => {
+            expect(await childHandle.submit(queuedInput)).toBe(turn);
+          };
+        }
+        result = turn.wait().catch((error) => error);
       } else result = root.wait().catch((error) => error);
       await vi.waitFor(() => expect(validationError).toBeInstanceOf(Error), {
         timeout: 10000,
@@ -139,14 +166,19 @@ it.each([false, true])(
         expect(rootRequests).toBe(2);
         expect(childRequests).toBe(1);
       }
+      if (acceptSteering) await acceptSteering();
       release.resolve();
       expect(await result).toMatchObject({
         message: expect.stringMatching(/detail 'low' is not supported/),
       });
-      expect(model.requests).toHaveLength(child ? 3 : 1);
+      if (queuedSteering) {
+        expect(model.requests).toHaveLength(4);
+        expect(childRequests).toBe(2);
+        expect(JSON.stringify(model.requests[3].input)).toContain(queuedInput);
+      } else {
+        expect(model.requests).toHaveLength(child ? 3 : 1);
+      }
       expect(effects).toBe(1);
-      // The extra fixture answer is a forbidden-continuation control.
-      // Exact request counts above prove it remains unused.
     } finally {
       release.resolve();
       try {
