@@ -1310,7 +1310,7 @@ it('rejects computer history substituted for a managed function approval', async
     );
   expect(outcome).toBeInstanceOf(Error);
   expect(String(outcome)).toMatch(
-    /Recovered tool outcomes lack a retained completed response/,
+    /manual checkpoint contains a non-function tool or unsupported item/,
   );
   expect(effects).toEqual([]);
   expect(server.requests).toHaveLength(1);

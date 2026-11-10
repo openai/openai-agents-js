@@ -610,7 +610,7 @@ impl Engine {
         specs_json: String,
         initial_messages_json: String,
     ) -> napi::Result<NativeThread> {
-        self.start_native_thread(&options_json, &specs_json, Some(&initial_messages_json))
+        Box::pin(self.start_native_thread(&options_json, &specs_json, Some(&initial_messages_json)))
             .await
             .map_err(native_error)
     }
@@ -621,10 +621,7 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<Either<NativeThread, String>> {
-        match self
-            .start_native_thread(&options_json, &specs_json, None)
-            .await
-        {
+        match Box::pin(self.start_native_thread(&options_json, &specs_json, None)).await {
             Ok(thread) => Ok(Either::A(thread)),
             Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
                 Ok(hold) => {
@@ -657,10 +654,16 @@ impl Engine {
         let options = config::decode(serde_json::from_str(&options_json).map_err(native_error)?)
             .map_err(native_error)?;
         let specs = serde_json::from_str(&specs_json).map_err(native_error)?;
-        current
-            .private_start_with_tools(&config_json, &runtime_json, &origin, &grant, options, specs)
-            .await
-            .map_err(native_error)
+        Box::pin(current.private_start_with_tools(
+            &config_json,
+            &runtime_json,
+            &origin,
+            &grant,
+            options,
+            specs,
+        ))
+        .await
+        .map_err(native_error)
     }
 
     #[napi(js_name = "close")]
