@@ -1,11 +1,11 @@
-name: Strict macOS read-only roots with the release native bundle
+name: Compare stock macOS PEM verification through one CONNECT listener
 
 on:
   push:
     branches: [mark/nov9-js-macos-read-roots-receipt]
     paths:
       - '.github/workflows/macos-read-roots-receipt.yml'
-      - '.github/diagnostics/macos-read-roots-scratch.test.ts'
+      - '.github/diagnostics/macos-stock-pem-connect.test.ts'
 
 permissions:
   contents: read
@@ -20,10 +20,10 @@ jobs:
       run:
         shell: bash
     env:
-      SDK_COMMIT: c6fb57c2705534f93334af01226bd6265a406d69
-      SDK_TREE: 1537a33554793bb820bb9c0ca588a14a5fc1d833
-      NATIVE_INPUTS: f21c2533bbfd3a0a68d0e2628b0ea508505557b53af2dc4bf666b4340bd573a7
-      STRICT_CASE: applies a per-turn write policy with macOS read-only roots and restores a named linked skill
+      SDK_COMMIT: 3a04fcda5e74b11bc5668bd07d0715fb38bc3f8e
+      SDK_TREE: 2a023a8af4539af69cadb89213834d0e2fb11dd3
+      NATIVE_INPUTS: 0e8037e90a550263d510f2ef54da1642b5234ef9168c087810638c04ff2857a9
+      PEM_CASE: compares stock Darwin PEM verification through the same CONNECT listener
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -52,13 +52,12 @@ jobs:
           assert.ok(process.getuid() > 0);
           console.log('Verified checkout, tree and native inputs', SDK_COMMIT, SDK_TREE, NATIVE_INPUTS);
           JS
-      - name: Restore the pinned transfer from Alpha run 42882200360
+      - name: Restore the pinned transfer from Alpha run 42890383494
         env:
           GH_TOKEN: ${{ github.token }}
-          NATIVE_ARTIFACT: '{"artifact-id":"13795224134","artifact-digest":"e7a4f4ca11b421791e5910f6f4078fbc0297e9f95e718f9a9aeaf821abb11260"}'
+          NATIVE_ARTIFACT: '{"artifact-id":"13799113376","artifact-digest":"f8d683937ec01c14ab03d0b4504f9c598baf644dea526dbd27d9a7d1e882bc5e"}'
         run: node scripts/restore-native-bundle.mjs
       - name: Verify the release receipt and build the exact JavaScript SDK
-        id: sdk-build
         run: |
           pnpm install --frozen-lockfile
           node --input-type=module <<'JS'
@@ -66,78 +65,48 @@ jobs:
           await verifyNativeReceipt(process.cwd(), 'darwin-arm64');
           console.log('Release receipt inputs and products match.');
           JS
-          test -x packages/agents-codex/native/test-bin/exec-server-fixture
           node scripts/build-packages.mjs
-      - name: Run the workspace read-only roots case under strict Seatbelt
-        env:
-          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: |
-          result="$RUNNER_TEMP/strict-read-only-roots.json"
-          env -u OPENAI_API_KEY -u CODEX_API_KEY pnpm test:native \
-            packages/agents-codex/test/native/local-executor-policy-native.test.ts \
-            -t "$STRICT_CASE$" --maxWorkers=1 --reporter=verbose --reporter=json \
-            --outputFile.json="$result"
-          node --input-type=module - "$result" <<'JS'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-
-          const result = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-          const tests = result.testResults.flatMap((file) => file.assertionResults);
-          const selected = tests.filter((test) => test.title === process.env.STRICT_CASE);
-          assert.equal(selected.length, 1, 'Expected exactly one named read-root case');
-          assert.equal(selected[0].status, 'passed', 'Strict read-root case must run and pass');
-          assert.equal(result.numPassedTests, 1);
-          assert.equal(result.numFailedTests, 0);
-          console.log('Strict read-root case passed with zero selected skips.');
-          JS
-      - name: Check out the scratch fixture from the diagnostic commit
-        if: ${{ !cancelled() && steps.sdk-build.outcome == 'success' }}
+      - name: Check out the focused fixture from the diagnostic commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           path: .macos-receipt
-          sparse-checkout: .github/diagnostics/macos-read-roots-scratch.test.ts
+          sparse-checkout: .github/diagnostics/macos-stock-pem-connect.test.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - name: Verify environment, scratch and stock TLS under strict Seatbelt
-        if: ${{ !cancelled() && steps.sdk-build.outcome == 'success' }}
+      - name: Compare stock PEM in host and strict Session
         env:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: |
-          probe=packages/agents-codex/test/native/macos-read-roots-scratch.test.ts
-          result="$RUNNER_TEMP/strict-darwin-scratch.json"
-          export SDK_DARWIN_TLS_RECEIPT="$RUNNER_TEMP/strict-darwin-tls-receipt.json"
+          probe=packages/agents-codex/test/native/macos-stock-pem-connect.test.ts
+          result="$RUNNER_TEMP/strict-darwin-pem-test.json"
+          export SDK_DARWIN_PEM_RECEIPT="$RUNNER_TEMP/strict-darwin-pem-receipt.json"
           test ! -e "$probe"
-          test ! -e "$SDK_DARWIN_TLS_RECEIPT"
-          cp ".macos-receipt/.github/diagnostics/macos-read-roots-scratch.test.ts" "$probe"
+          test ! -e "$SDK_DARWIN_PEM_RECEIPT"
+          cp ".macos-receipt/.github/diagnostics/macos-stock-pem-connect.test.ts" "$probe"
           trap 'rm -f "$probe"' EXIT
           status=0
           env -u OPENAI_API_KEY -u CODEX_API_KEY pnpm test:native "$probe" \
-            --maxWorkers=1 --reporter=verbose --reporter=json --outputFile.json="$result" || status=$?
-          if test -s "$SDK_DARWIN_TLS_RECEIPT"; then
+            -t "$PEM_CASE$" --maxWorkers=1 --reporter=verbose --reporter=json \
+            --outputFile.json="$result" || status=$?
+          if test -s "$SDK_DARWIN_PEM_RECEIPT"; then
             node --input-type=module <<'JS'
           import { readFileSync } from 'node:fs';
-
-          const receipts = JSON.parse(readFileSync(process.env.SDK_DARWIN_TLS_RECEIPT, 'utf8'));
-          console.log('Stock Darwin TLS receipts', JSON.stringify(receipts));
+          const receipt = JSON.parse(readFileSync(process.env.SDK_DARWIN_PEM_RECEIPT, 'utf8'));
+          console.log('Stock Darwin PEM CONNECT comparison', JSON.stringify(receipt));
           JS
           fi
           test "$status" -eq 0
-          test -s "$SDK_DARWIN_TLS_RECEIPT"
+          test -s "$SDK_DARWIN_PEM_RECEIPT"
           node --input-type=module - "$result" <<'JS'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
-
           const result = JSON.parse(readFileSync(process.argv[2], 'utf8'));
           const tests = result.testResults.flatMap((file) => file.assertionResults);
-          const expected = [
-            'honors explicit Darwin environment and writable scratch under strict Seatbelt',
-            'verifies stock Darwin native TLS trust under strict Seatbelt',
-          ];
-          assert.deepEqual(tests.map(({ title }) => title).sort(), expected.sort());
-          assert.ok(tests.every(({ status }) => status === 'passed'));
-          assert.equal(result.numPassedTests, 2);
+          assert.equal(tests.length, 1);
+          assert.equal(tests[0].title, process.env.PEM_CASE);
+          assert.equal(tests[0].status, 'passed');
+          assert.equal(result.numPassedTests, 1);
           assert.equal(result.numFailedTests, 0);
-          console.log('Both scratch diagnostic cases passed with zero skips.');
+          console.log('Both peer comparisons completed through CONNECT, with zero selected skips.');
           JS
