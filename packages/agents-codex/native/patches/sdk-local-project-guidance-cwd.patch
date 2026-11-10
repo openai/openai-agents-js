@@ -1,0 +1,143 @@
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index 72087d77606165c210a0d4719b3f740bb5160edb..dcf240a59eda613abc43b57f280d63ab88c26cc7 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -123,6 +123,8 @@ mod mcp_tool_exposure;
+ mod network_policy_decision;
+ pub use mcp::McpManager;
+ mod original_image_detail;
++#[doc(hidden)]
++pub mod project_read_path;
+ pub use codex_mcp::CodexAppsToolsCache;
+ pub use codex_mcp::SandboxState;
+ mod mcp_openai_file;
+diff --git a/codex-rs/core/src/project_read_path.rs b/codex-rs/core/src/project_read_path.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ebfbce4d306668d222256b4a3ed910cd2c00206
+--- /dev/null
++++ b/codex-rs/core/src/project_read_path.rs
+@@ -0,0 +1,54 @@
++use codex_utils_path_uri::PathUri;
++use codex_utils_path_uri::PathUriParseError;
++
++/// Thread-local mapping from a declared cwd to its admitted filesystem path.
++pub struct ProjectReadPathMapping {
++    environment_id: String,
++    declared_cwd: PathUri,
++    canonical_cwd: PathUri,
++}
++
++impl ProjectReadPathMapping {
++    pub fn new(environment_id: String, declared_cwd: PathUri, canonical_cwd: PathUri) -> Self {
++        Self {
++            environment_id,
++            declared_cwd,
++            canonical_cwd,
++        }
++    }
++
++    pub fn resolve(
++        mapping: Option<&Self>,
++        environment_id: &str,
++        cwd: &PathUri,
++        path: &str,
++    ) -> Result<ProjectReadPath, PathUriParseError> {
++        let logical = cwd.join(path)?;
++        let rebased = if let Some(mapping) = mapping
++            && mapping.environment_id == environment_id
++            && &mapping.declared_cwd == cwd
++            && let Some(relative) = logical.relative_path_from(&mapping.declared_cwd)
++        {
++            Some(mapping.canonical_cwd.join(&relative)?)
++        } else {
++            None
++        };
++        Ok(ProjectReadPath { logical, rebased })
++    }
++}
++
++pub struct ProjectReadPath {
++    // The tool reports the declared spelling even when its sandbox reads the pinned path.
++    pub(crate) logical: PathUri,
++    rebased: Option<PathUri>,
++}
++
++impl ProjectReadPath {
++    pub(crate) fn read_path(&self) -> &PathUri {
++        self.rebased.as_ref().unwrap_or(&self.logical)
++    }
++
++    pub fn into_read_path(self) -> PathUri {
++        self.rebased.unwrap_or(self.logical)
++    }
++}
+diff --git a/codex-rs/core/src/tools/handlers/view_image.rs b/codex-rs/core/src/tools/handlers/view_image.rs
+index 25468f3749a974a2237721a45418d5c257aed4ed..12e0a27ea862154a1aa53d2410d739c19c72b69a 100644
+--- a/codex-rs/core/src/tools/handlers/view_image.rs
++++ b/codex-rs/core/src/tools/handlers/view_image.rs
+@@ -15,6 +15,7 @@ use serde::Deserialize;
+ 
+ use crate::function_tool::FunctionCallError;
+ use crate::original_image_detail::can_request_original_image_detail;
++use crate::project_read_path::ProjectReadPathMapping;
+ use crate::tools::context::ToolInvocation;
+ use crate::tools::context::ToolOutput;
+ use crate::tools::context::ToolPayload;
+@@ -147,18 +148,32 @@ impl ViewImageHandler {
+             environment_id.as_deref(),
+             "view_image is unavailable in this session",
+         )?;
+-        let path_uri = turn_environment.cwd().join(&path).map_err(|err| {
++        let mapping = session
++            .services
++            .thread_extension_data
++            .get::<ProjectReadPathMapping>();
++        let resolved = ProjectReadPathMapping::resolve(
++            mapping.as_deref(),
++            &turn_environment.selection.environment_id,
++            turn_environment.cwd(),
++            &path,
++        )
++        .map_err(|err| {
+             FunctionCallError::RespondToModel(format!(
+                 "unable to resolve image path `{path}` against environment cwd `{}`: {err}",
+                 turn_environment.cwd(),
+             ))
+         })?;
+-        let model_visible_path = path_uri.inferred_native_path_string();
++        let model_visible_path = resolved.logical.inferred_native_path_string();
+         let sandbox = turn_environment.sandbox_context(/*additional_permissions*/ None);
+         let fs = turn_environment.environment.get_filesystem();
+ 
+         let metadata = fs
+-            .get_metadata(&path_uri, GetMetadataOptions::default(), Some(&sandbox))
++            .get_metadata(
++                resolved.read_path(),
++                GetMetadataOptions::default(),
++                Some(&sandbox),
++            )
+             .await
+             .map_err(|error| {
+                 FunctionCallError::RespondToModel(format!(
+@@ -172,7 +187,11 @@ impl ViewImageHandler {
+             )));
+         }
+         let file_bytes = fs
+-            .read_file(&path_uri, ReadFileOptions::default(), Some(&sandbox))
++            .read_file(
++                resolved.read_path(),
++                ReadFileOptions::default(),
++                Some(&sandbox),
++            )
+             .await
+             .map_err(|error| {
+                 FunctionCallError::RespondToModel(format!(
+@@ -200,7 +219,7 @@ impl ViewImageHandler {
+ 
+         let item = TurnItem::ImageView(ImageViewItem {
+             id: call_id,
+-            path: path_uri,
++            path: resolved.logical,
+         });
+         session.emit_turn_item_started(turn.as_ref(), &item).await;
+         session.emit_turn_item_completed(turn.as_ref(), item).await;

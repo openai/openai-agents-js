@@ -9,7 +9,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use codex_config::{NetworkConstraints, NetworkDomainPermissionToml, NetworkDomainPermissionsToml};
 use codex_core::{
-    config::validate_environment_network_policy, windows_sandbox::WindowsSandboxLevelExt,
+    config::validate_environment_network_policy, project_read_path::ProjectReadPathMapping,
+    windows_sandbox::WindowsSandboxLevelExt,
 };
 use codex_core_api::{
     Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
@@ -344,6 +345,19 @@ impl EnvironmentOptions {
 
     pub fn trusted_root(&self) -> &PathUri {
         &self.cwd
+    }
+
+    pub(crate) fn project_read_path_mapping(
+        &self,
+        strict: &StrictExecutorWrites,
+    ) -> Option<ProjectReadPathMapping> {
+        (self.local && self.cwd != strict.canonical_cwd).then(|| {
+            ProjectReadPathMapping::new(
+                self.id().to_owned(),
+                self.cwd.clone(),
+                strict.canonical_cwd.clone(),
+            )
+        })
     }
 
     pub fn capability_roots(&self) -> Option<Vec<SelectedCapabilityRoot>> {
