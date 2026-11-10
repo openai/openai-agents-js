@@ -4,6 +4,10 @@ import {
   Manifest,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  type SandboxSessionLike,
+  type SandboxSessionResumeValidationInput,
+  type SandboxClientResumeOptions,
+  normalizeExposedPort,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
@@ -1065,6 +1069,46 @@ export class E2BSandboxClient implements SandboxClient<
 
   constructor(options: E2BSandboxClientOptions = {}) {
     this.options = options;
+  }
+
+  assertBorrowedSessionManifestAuthority(
+    session: SandboxSessionLike<E2BSandboxSessionState>,
+    _manifest: Manifest,
+    options?: E2BSandboxClientOptions,
+  ): void {
+    this.validateSessionStateForResume(
+      { source: 'explicit', state: session.state },
+      { clientOptions: options },
+    );
+  }
+
+  validateSessionStateForResume(
+    input: SandboxSessionResumeValidationInput<E2BSandboxSessionState>,
+    options: SandboxClientResumeOptions<E2BSandboxClientOptions> = {},
+  ): void {
+    const current = { ...this.options, ...options.clientOptions };
+    const recordedPorts = new Set(
+      (readOptionalNumberArray(input.state.configuredExposedPorts) ?? []).map(
+        normalizeExposedPort,
+      ),
+    );
+    const requestedPorts =
+      current.exposedPorts === undefined
+        ? undefined
+        : new Set(current.exposedPorts.map(normalizeExposedPort));
+    const portMismatch =
+      requestedPorts !== undefined &&
+      (requestedPorts.size !== recordedPorts.size ||
+        [...requestedPorts].some((port) => !recordedPorts.has(port)));
+    if (
+      (current.allowInternetAccess === false &&
+        readOptionalBoolean(input.state, 'allowInternetAccess') !== false) ||
+      portMismatch
+    ) {
+      throw new UserError(
+        'Current E2B networking options require a fresh sandbox session',
+      );
+    }
   }
 
   resolveTrustedEnvironment(
