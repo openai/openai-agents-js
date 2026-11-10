@@ -269,3 +269,19 @@ for (const large of [false, true]) {
     );
   }, 45000);
 }
+
+it('forwards immutable retained descriptors through single-event processors', async () => {
+  const result = await execute(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      join(fixtures, 'tracing-retained-eviction-child.ts'),
+      '--single',
+    ],
+    { timeout: 40000, maxBuffer: 2097152 },
+  );
+  expect(result.stdout).toContain(
+    'PASS retained native context after descriptor eviction',
+  );
+}, 45000);
