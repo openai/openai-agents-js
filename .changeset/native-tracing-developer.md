@@ -3,4 +3,4 @@
 '@openai/agents': patch
 ---
 
-feat: add native OpenAI traces-ingest and console processors, reversible capture controls, and dynamic scripted Responses fixtures with queue mutation, queued-response counts, acknowledged function-output observations, and explicit event identifiers.
+feat: Native Session events have been supporting committed agent-profile changes and acknowledged function outputs, alongside realtime tool policies, trace processors, and scripted-response fixtures.

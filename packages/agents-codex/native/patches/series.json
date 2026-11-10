@@ -1,4 +1,5 @@
 {
+  "result_tree": "675c0e1114332d196133cbd43ed2c68485e28929",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -501,6 +502,14 @@
       "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
     },
     {
+      "path": "sdk-linux-protected-metadata-mount-race.patch",
+      "sha256": "22137e6318edf060270e1fd558005d6fadb4c04297bdad1ba46dad141ddc2b7b"
+    },
+    {
+      "path": "sdk-linux-protected-metadata-bootstrap.patch",
+      "sha256": "76ced00372b6b83f300b3ddc798517b632c92eee5d4e78445d76bb7206bf1130"
+    },
+    {
       "path": "0171-original-history-catalog.patch",
       "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
     },
@@ -533,9 +542,24 @@
       "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
     },
     {
+      "path": "sdk-realtime-voice-policies.patch",
+      "sha256": "2097a7e96d764c7e49335b35ee3b8bfe7d39924eba52fb346914888b0f583e2e"
+    },
+    {
+      "path": "sdk-agent-profile-observations.patch",
+      "sha256": "6e7ccb5f3b38d26fa69dbfc33338d829011692ab29a544baa074fb71bbcea607"
+    },
+    {
+      "path": "sdk-realtime-retrieved-caller-profile.patch",
+      "sha256": "f164f6e1362464563628f47f88ef425c12716e6177cf72f4ee4703cf3a4b8368"
+    },
+    {
+      "path": "sdk-realtime-filter-forwarded-batches.patch",
+      "sha256": "3ad6dcf410800d6314a9930ffac558a57eba21c8cfbb6ea6294706df4196c5db"
+    },
+    {
       "path": "sdk-local-project-guidance-cwd.patch",
       "sha256": "5ba8abea56c5abcd70d371bd4fb8d7c1f626dc890ce73451850a8cf3dc82f2e6"
     }
-  ],
-  "result_tree": "bef39c3bb919c3d10b047989c6e59d1ed6db601c"
+  ]
 }

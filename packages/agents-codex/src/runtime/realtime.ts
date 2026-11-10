@@ -1,4 +1,10 @@
 import {
+  resolveRealtimePolicy,
+  type NativeRealtimePolicyContext,
+  type NativeRealtimeTool,
+  type NativeRealtimeToolErrorContext,
+} from './realtime-policy';
+import {
   addRealtimeUsage,
   reportedRealtimeUsage,
   type NativeRealtimeUsage,
@@ -72,7 +78,18 @@ type RealtimeProviderObject = JsonObject | { readonly type: string };
 export interface NativeRealtimeOptions {
   model?: string;
   voice?: string;
-  instructions?: string;
+  instructions?:
+    | string
+    | ((context: NativeRealtimePolicyContext) => string | Promise<string>);
+  /** Narrow captured function and handoff availability before advertisement and dispatch. */
+  isToolEnabled?: (
+    context: NativeRealtimePolicyContext,
+    tool: NativeRealtimeTool,
+  ) => boolean | Promise<boolean>;
+  /** Format only an implicit approval rejection; explicit per-call reasons win. */
+  toolErrorFormatter?: (
+    input: NativeRealtimeToolErrorContext,
+  ) => string | null | undefined | Promise<string | null | undefined>;
   /** Initial provider output modality; defaults to audio. */
   outputModality?: 'audio' | 'text';
   /** Resolve once per connection without changing the Session provider's auth. */
@@ -94,7 +111,13 @@ export interface NativeRealtimeOptions {
 /** Session configuration for accepting an inbound SIP call before attaching sideband media. */
 export type NativeRealtimeSipConfigOptions = Pick<
   NativeRealtimeOptions,
-  'model' | 'voice' | 'instructions' | 'outputModality' | 'settings' | 'tools'
+  | 'model'
+  | 'voice'
+  | 'instructions'
+  | 'isToolEnabled'
+  | 'outputModality'
+  | 'settings'
+  | 'tools'
 >;
 
 /** Overrides for one response; the accepted Session configuration remains unchanged. */
@@ -106,7 +129,9 @@ export type NativeRealtimeResponseOptions = {
 
 /** @internal Both connection admission and SIP acceptance use Core's config builder. */
 export function realtimePrepareParams(
-  options: NativeRealtimeOptions,
+  options: Omit<NativeRealtimeOptions, 'instructions'> & {
+    instructions?: string;
+  },
   transport: JsonObject,
   settings: JsonObject | null,
   functionTools: JsonObject[] | null,
@@ -265,6 +290,7 @@ export type NativeRealtimeEvent =
       callId: string;
       name: string;
       status: 'started' | 'completed' | 'failed';
+      error?: Error;
     }
   | {
       type: 'tool_batch_error';
@@ -481,6 +507,8 @@ class NativeRealtimeOwner {
     string,
     {
       name: string;
+      sourceProfile?: unknown;
+      error?: Error;
       responseId?: string;
       batch?: NativeRealtimeToolBatch;
       retired: boolean;
@@ -548,6 +576,7 @@ class NativeRealtimeOwner {
     private readonly closeAfterGraph: (generation: string) => Promise<void>,
     private readonly adapterBridge?: NativeRealtimeAdapterBridge,
   ) {
+    this.options = { ...options };
     this.credentialSource = options.apiKey;
     this.adapterSource = options.adapter;
     if (options.adapter !== undefined) {
@@ -641,6 +670,88 @@ class NativeRealtimeOwner {
     this.ready.promise.catch(() => {});
     this.terminal.promise.catch(() => {});
   }
+  /** @internal The existing response callback owner supplies its source and signal. */
+  /** @internal Attach a diagnostic to the already-owned call record. */
+  _markToolUnavailable(callId: string): void {
+    const call = this.functions.get(callId);
+    if (call) call.error = new Error(`Tool ${call.name} not found`);
+  }
+
+  async _toolEnabled(
+    agent: import('./public-agent').Agent<any, any> | undefined,
+    context: unknown,
+    name: string,
+    signal: AbortSignal,
+    type: 'function' | 'handoff' = 'function',
+  ): Promise<boolean> {
+    const predicate = this.options.isToolEnabled;
+    if (predicate === undefined) return true;
+    if (!agent) throw new Error('Realtime tool policy has no captured Agent');
+    signal.throwIfAborted();
+    this.checkLive();
+    const result = await this.#context(() =>
+      this.session._runVoiceCallback(() =>
+        predicate(
+          Object.freeze({ agent, context, realtimeUsage: this.usage, signal }),
+          Object.freeze({ type, name }),
+        ),
+      ),
+    );
+    signal.throwIfAborted();
+    this.checkLive();
+    if (typeof result !== 'boolean')
+      throw new TypeError('Realtime tool predicate must return a boolean');
+    return result;
+  }
+
+  /** @internal Formatting cannot grant an approval or replace the native writer. */
+  async _formatApprovalRejection(
+    agent: import('./public-agent').Agent<any, any> | undefined,
+    context: unknown,
+    toolName: string,
+    callId: string,
+    defaultMessage: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const formatter = this.options.toolErrorFormatter;
+    if (formatter === undefined) return defaultMessage;
+    if (!agent)
+      throw new Error('Realtime approval formatter has no captured Agent');
+    signal.throwIfAborted();
+    this.checkLive();
+    let result: unknown;
+    try {
+      result = await this.#context(() =>
+        this.session._runVoiceCallback(() =>
+          formatter(
+            Object.freeze({
+              kind: 'approval_rejected' as const,
+              toolType: 'function' as const,
+              toolName,
+              callId,
+              defaultMessage,
+              runContext: Object.freeze({
+                agent,
+                context,
+                realtimeUsage: this.usage,
+                signal,
+              }),
+            }),
+          ),
+        ),
+      );
+    } catch {
+      // Application formatter errors retain the default rejection. Admission stays outside this catch.
+    }
+    signal.throwIfAborted();
+    this.checkLive();
+    if (result != null && typeof result !== 'string')
+      throw new TypeError(
+        'Realtime tool error formatter must return a string, null or undefined',
+      );
+    return result == null ? defaultMessage : result;
+  }
+
   /** @internal Allow a later public opening to retry failed startup cleanup. */
   get _startupFailed(): boolean {
     return this.startupFailed;
@@ -682,13 +793,26 @@ class NativeRealtimeOwner {
         expectedSelectionId: string | null = null,
       ) => {
         this.checkLive();
-        const prepareParams = realtimePrepareParams(
+        const policyPreparation = resolveRealtimePolicy(
+          this.session,
           this.options,
+          this.startupAbort.signal,
+          () => this.checkLive(),
+          this.usage,
+        );
+        this.preparation = policyPreparation;
+        const policy = await policyPreparation;
+        this.checkLive();
+        const prepareParams = realtimePrepareParams(
+          { ...this.options, instructions: policy.instructions },
           this.transport,
           this.initialSettings,
           functionTools,
-          expectedSelectionId,
+          policy.selectionId ?? expectedSelectionId,
         );
+        if (policy.disabledToolNames !== undefined)
+          prepareParams.disabled_tool_names = policy.disabledToolNames;
+        let nativePreparation: Promise<unknown>;
         if (this.adapterSource) {
           if (!this.adapterBridge)
             throw new Error('Native adapter binding is unavailable');
@@ -701,12 +825,13 @@ class NativeRealtimeOwner {
                 this.session._runVoiceCallback(callback, this),
               ),
           );
-          this.preparation = this.adapterBridge.prepare(
+          nativePreparation = this.adapterBridge.prepare(
             { generation: this.#generation, ...prepareParams },
             handle,
           );
-        } else this.preparation = this.call('prepare', prepareParams);
-        const prepared = await this.preparation;
+        } else nativePreparation = this.call('prepare', prepareParams);
+        this.preparation = nativePreparation;
+        const prepared = await nativePreparation;
         const receipt =
           typeof prepared === 'string' ? JSON.parse(prepared) : prepared;
         if (
@@ -888,9 +1013,32 @@ class NativeRealtimeOwner {
           : await this.session._realtimeFunctionTools(this.selectedTools, {
               allowMissing: true,
             });
+      const policy = await resolveRealtimePolicy(
+        this.session,
+        {
+          instructions:
+            typeof this.options.instructions === 'function'
+              ? this.options.instructions
+              : undefined,
+          isToolEnabled: this.options.isToolEnabled,
+        },
+        this.startupAbort.signal,
+        () => this.checkLive(),
+        this.usage,
+      );
       this.checkLive();
+      if (
+        bound &&
+        'responseId' in bound &&
+        bound.responseId !== undefined &&
+        this.retiredResponses.has(bound.responseId)
+      )
+        return;
       await this.call('update', {
-        update: {},
+        update:
+          policy.instructions === undefined
+            ? {}
+            : { instructions: policy.instructions },
         profile: {
           response_id: bound?.responseId ?? null,
           ...(bound?.delegationId === undefined
@@ -898,7 +1046,9 @@ class NativeRealtimeOwner {
             : { delegation_id: bound.delegationId }),
           target,
           function_tools: selection?.tools ?? null,
-          expected_selection_id: selection?.selectionId ?? null,
+          expected_selection_id:
+            policy.selectionId ?? selection?.selectionId ?? null,
+          disabled_tool_names: policy.disabledToolNames ?? null,
         },
       });
     } catch (error) {
@@ -1758,11 +1908,22 @@ class NativeRealtimeOwner {
       this.functionBytes += bytes;
       this.functions.set(id, {
         name: value.name,
+        sourceProfile: value.source_profile,
         retired:
           typeof value.response_id === 'string' &&
           this.retiredResponses.has(value.response_id),
         responseId:
           typeof value.response_id === 'string' ? value.response_id : undefined,
+      });
+    } else if (name === 'FunctionCallRejected') {
+      if (typeof value.call_id !== 'string' || typeof value.name !== 'string')
+        throw new TypeError('Native unavailable function lacks identity');
+      this.emit({
+        type: 'function_call',
+        callId: value.call_id,
+        name: value.name,
+        status: 'failed',
+        error: new Error(`Tool ${value.name} not found`),
       });
     } else if (name === 'FunctionCallFinished') {
       const record = this.functions.get(value.call_id);
@@ -1775,6 +1936,7 @@ class NativeRealtimeOwner {
         callId: value.call_id,
         name: record.name,
         status: value.succeeded ? 'completed' : 'failed',
+        ...(record.error ? { error: record.error } : {}),
       });
       this.functionBytes -=
         Buffer.byteLength(value.call_id) + Buffer.byteLength(record.name);
@@ -2035,6 +2197,34 @@ class NativeRealtimeOwner {
           responseId,
           ids,
           signal,
+          async () => {
+            if (this.options.isToolEnabled === undefined) return [];
+            const disabled: string[] = [];
+            for (const id of ids) {
+              signal.throwIfAborted();
+              const call = this.functions.get(id);
+              if (!call || call.retired)
+                throw new Error('Realtime call retired before dispatch');
+              const source = this.session._realtimeHandoffSource(
+                call.sourceProfile,
+                call.name,
+              );
+              if (
+                source &&
+                !(await this._toolEnabled(
+                  source.agent,
+                  source.context,
+                  call.name,
+                  signal,
+                  'handoff',
+                ))
+              ) {
+                disabled.push(id);
+                this._markToolUnavailable(id);
+              }
+            }
+            return disabled;
+          },
         );
         batch.root = root;
         this.observeToolsRoot(root, batch);
