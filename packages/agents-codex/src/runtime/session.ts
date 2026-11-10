@@ -4495,6 +4495,7 @@ export class Session<OutputT = string, Context = unknown> {
       ? this.catalog
       : undefined,
     sourceMcp: readonly McpTool[] = this.openingMcpTools,
+    mcpIndex = this.mcpNameIndex(sourceMcp),
   ): readonly ReturnType<typeof toolIdentity>[] {
     // A graph operation captures object authority, not a historical name alias.
     // Keep ordinary mono Session selector compatibility unchanged.
@@ -4503,6 +4504,12 @@ export class Session<OutputT = string, Context = unknown> {
     const opening =
       policy && typeof policy === 'object' && !Array.isArray(policy)
         ? policy.allowed_tools
+        : undefined;
+    const currentMcp =
+      this.hasOperationMcp && sourceMcp === this.openingMcpTools
+        ? sourceMcp === this.mcpBindings
+          ? mcpIndex
+          : this.mcpNameIndex(this.mcpBindings)
         : undefined;
     return Object.freeze(
       selectors.map((selector) => {
@@ -4516,18 +4523,12 @@ export class Session<OutputT = string, Context = unknown> {
         const rawIdentity =
           selector.kind === 'tool_ref' ? mcpRefIdentity(selector) : undefined;
         if (rawIdentity) {
-          const server = sourceMcp.find(
-            (server) =>
-              server.name === rawIdentity[0] &&
-              server.tools.includes(rawIdentity[1]),
-          );
-          if (!server)
+          const declared = mcpIndex.byRaw.get(JSON.stringify(rawIdentity));
+          if (!declared)
             throw new TypeError(
               'MCP identity was not admitted by this Session',
             );
-          identity = mcpToolNames([server])[
-            server.tools.indexOf(rawIdentity[1])
-          ]!;
+          identity = declared;
         }
         const key = JSON.stringify([identity.namespace, identity.name]);
         // Preserve immediate rejection outside the captured opening authority.
@@ -4536,24 +4537,14 @@ export class Session<OutputT = string, Context = unknown> {
         if (selector.kind === 'tool_ref')
           assertAdmittedToolReference(identity, opening);
         if (
-          this.hasOperationMcp &&
-          sourceMcp === this.openingMcpTools &&
-          selector.kind === 'tool_ref'
-        ) {
-          const matches = (server: McpTool) =>
-            mcpToolNames([server]).some(
-              (name) =>
-                name.namespace === identity.namespace &&
-                name.name === identity.name,
-            );
-          if (
-            this.openingMcpTools.some(matches) &&
-            !this.mcpBindings.some(matches)
-          )
-            throw new TypeError(
-              'MCP selector requires a current captured raw binding',
-            );
-        }
+          currentMcp &&
+          selector.kind === 'tool_ref' &&
+          mcpIndex.byProjected.has(key) &&
+          !currentMcp.byProjected.has(key)
+        )
+          throw new TypeError(
+            'MCP selector requires a current captured raw binding',
+          );
         if (
           selector.kind !== 'tool_ref' &&
           !(sourceCatalog
@@ -8777,6 +8768,24 @@ export class Session<OutputT = string, Context = unknown> {
       .parse(event.msg.mcp_names ?? []);
   }
 
+  private mcpNameIndex(servers: readonly McpTool[]) {
+    const byRaw = new Map<string, ReturnType<typeof toolIdentity>>();
+    const byProjected = new Map<string, readonly [string, string]>();
+    for (const server of servers) {
+      const names = mcpToolNames([server]);
+      for (let index = 0; index < names.length; index++) {
+        const name = names[index]!;
+        const raw = [server.name, server.tools[index]!] as const;
+        const rawKey = JSON.stringify(raw);
+        const projectedKey = JSON.stringify([name.namespace, name.name]);
+        // Preserve the first captured declaration when identities overlap.
+        if (!byRaw.has(rawKey)) byRaw.set(rawKey, name);
+        if (!byProjected.has(projectedKey)) byProjected.set(projectedKey, raw);
+      }
+    }
+    return { byRaw, byProjected };
+  }
+
   private selectedStepNames(
     event: NativeEvent,
     selected: readonly ToolSelector<Context>[] | undefined,
@@ -8805,6 +8814,12 @@ export class Session<OutputT = string, Context = unknown> {
           this.profileKey(source.profile_id, sourceCatalog!.generation),
         ) ?? [])
       : this.mcpTools;
+    const declared = this.mcpNameIndex(servers);
+    const nativeByRaw = new Map<string, (typeof projection)[number]>();
+    for (const item of projection) {
+      const key = JSON.stringify([item.server, item.tool]);
+      if (!nativeByRaw.has(key)) nativeByRaw.set(key, item);
+    }
     const resolve = (
       name: ReturnType<typeof toolIdentity>,
       selector?: ToolSelector<Context>,
@@ -8813,38 +8828,29 @@ export class Session<OutputT = string, Context = unknown> {
         selector?.kind === 'tool_ref' ? mcpRefIdentity(selector) : undefined;
       const match =
         raw ??
-        servers
-          .flatMap((server) =>
-            mcpToolNames([server]).map((declared, index) =>
-              declared.name === name.name &&
-              declared.namespace === name.namespace
-                ? ([server.name, server.tools[index]!] as const)
-                : undefined,
-            ),
-          )
-          .find((identity) => identity !== undefined);
+        declared.byProjected.get(JSON.stringify([name.namespace, name.name]));
       if (!match) return name;
-      const actual = projection.find(
-        (item) => item.server === match[0] && item.tool === match[1],
-      );
+      const actual = nativeByRaw.get(JSON.stringify(match));
       if (!actual)
         throw new TypeError('MCP selector is outside the captured native step');
       return { name: actual.name, namespace: actual.namespace };
     };
+    const resolvedDefaults = defaults?.map((name) => resolve(name));
     const names =
       selected === undefined
-        ? defaults
-          ? defaults.map((name) => resolve(name))
-          : (nativeDefaults ?? candidates)
-        : this.selectionNames([...selected], sourceCatalog, servers).map(
-            (name, index) => resolve(name, selected[index]),
-          );
+        ? (resolvedDefaults ?? nativeDefaults ?? candidates)
+        : this.selectionNames(
+            [...selected],
+            sourceCatalog,
+            servers,
+            declared,
+          ).map((name, index) => resolve(name, selected[index]));
     const ceiling =
-      defaults && this.options.agentGraph
+      resolvedDefaults && this.options.agentGraph
         ? new Set(
-            defaults
-              .map((name) => resolve(name))
-              .map((tool) => JSON.stringify([tool.namespace, tool.name])),
+            resolvedDefaults.map((tool) =>
+              JSON.stringify([tool.namespace, tool.name]),
+            ),
           )
         : undefined;
     const allowed = new Set(

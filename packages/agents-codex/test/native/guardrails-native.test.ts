@@ -501,6 +501,7 @@ it.each([false, true])(
     let rootId: string | undefined;
     let rootCalls = 0;
     let blockedId: string | undefined;
+    const blocked = Promise.withResolvers<void>();
     const server = new ModelServer(
       Array.from({ length: 4 }, () => (request: any) => {
         const id = JSON.parse(
@@ -557,8 +558,10 @@ it.each([false, true])(
                 expect(context.finalOutput).toBe(
                   `child-output:${context.subagentId}`,
                 );
-              if (rejectOne && context.toolCall)
+              if (rejectOne && context.toolCall) {
                 blockedId ??= context.subagentId;
+                blocked.resolve();
+              }
               return {
                 tripwireTriggered:
                   rejectOne &&
@@ -583,6 +586,7 @@ it.each([false, true])(
       expect((await root.wait()).finalOutput).toBe('root complete');
       const children = await Array.fromAsync(session.subagents());
       expect(children).toHaveLength(2);
+      if (rejectOne) await blocked.promise;
       for (const child of children) {
         if (child.id === blockedId)
           await expect(child.turn!.wait()).rejects.toBeInstanceOf(
