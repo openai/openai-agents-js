@@ -8,6 +8,9 @@ import {
   NativeProvider,
   isFunctionApprovalRequest,
   parseSessionState,
+  manualTool,
+  type Session,
+  ToolOutput,
   tool,
   type FunctionApprovalRequest,
 } from '../../src';
@@ -1073,3 +1076,118 @@ it('rejects a foreign response observation before restoring approval effects', a
   expect(effects).toEqual([]);
   expect(server.requests).toHaveLength(1);
 });
+
+it.each([false, true])(
+  'settles a pending manual sibling before approved terminal completion (restored=%s)',
+  async (restored) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: true,
+      finishTurn: true,
+      execute: () => {
+        effects.push('effect');
+        return 'terminal result';
+      },
+    });
+    const review = manualTool({
+      name: 'review',
+      description: 'Review.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    async function nextManual(session: Session) {
+      for await (const event of session.interactions()) {
+        const request = review.match(event);
+        if (request) return request;
+      }
+      throw new Error('Missing pending manual sibling');
+    }
+    const server = new ModelServer([
+      [
+        call('risky', {}, { callId: 'approved-terminal' }),
+        call('review', {}, { callId: 'manual-sibling' }),
+      ],
+      [message('unexpected model continuation')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use both.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky, review],
+    });
+    let state;
+    if (restored) {
+      await using source = await agent.session();
+      await source.submit('begin');
+      await nextApproval(source);
+      await nextManual(source);
+      state = await source.suspend();
+    }
+    await using session = await agent.session({ state });
+    const turn = restored
+      ? session.restoredTurn!
+      : await session.submit('begin');
+    const approval = await nextApproval(session);
+    const manual = await nextManual(session);
+    let settled = false;
+    const completion = turn.wait().finally(() => {
+      settled = true;
+    });
+    await session.respond(approval.approve());
+    expect(settled).toBe(false);
+    await session.respond(manual.reply('accepted manual sibling'));
+    const result = await completion;
+    expect(result.finalOutput).toBe('terminal result');
+    expect(result.toolCall?.callId).toBe('approved-terminal');
+    expect(effects).toEqual(['effect']);
+    expect(server.requests).toHaveLength(1);
+  },
+);
+
+it.each([
+  { automatic: false, rich: false },
+  { automatic: true, rich: false },
+  { automatic: false, rich: true },
+  { automatic: true, rich: true },
+])(
+  'preserves non-JSON callback result validators (automatic=$automatic, rich=$rich)',
+  async ({ automatic, rich }) => {
+    const returned = rich
+      ? new ToolOutput([{ type: 'inputText', text: 'validated result' }], true)
+      : 'validated result';
+    const validated: unknown[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: automatic ? () => false : true,
+      result: z
+        .union([z.string(), z.instanceof(ToolOutput)])
+        .refine((value) => {
+          validated.push(value);
+          return true;
+        }),
+      execute: () => returned,
+    });
+    const server = new ModelServer([
+      [call('risky', {}, { callId: 'rich-result' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    }).session();
+    const turn = await session.submit('begin');
+    if (!automatic)
+      await session.respond((await nextApproval(session)).approve());
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(validated).toHaveLength(1);
+    expect(validated[0]).toBe(returned);
+    expect(JSON.stringify(server.requests[1])).toContain('validated result');
+  },
+);

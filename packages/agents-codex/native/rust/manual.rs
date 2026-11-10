@@ -1637,6 +1637,7 @@ impl PythonTools {
         response: DynamicToolResponse,
     ) -> Result<()> {
         self.check_restored_manual(owner, &key)?;
+        let success = response.success;
         let receipt = Receipt::Native(PythonOutput(response).receipt(&key));
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         let (frame, keys) = manual
@@ -1649,9 +1650,15 @@ impl PythonTools {
         );
         frame.pending_manual.retain(|call| call.call_id != key.call);
         ensure!(
-            frame.accepted_replies.insert(key.call, receipt).is_none(),
+            frame
+                .accepted_replies
+                .insert(key.call.clone(), receipt)
+                .is_none(),
             "manual result already present"
         );
+        if let Some(outcomes) = &mut frame.tool_outcomes {
+            outcomes.record(&key.call, success);
+        }
         Ok(())
     }
 
