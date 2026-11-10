@@ -1783,7 +1783,17 @@ impl PythonTools {
             if history.outputs.contains_key(&call.call_id) {
                 continue;
             }
-            let slot = self.slot_for_catalog(&manual, call, generation)?;
+            ensure!(
+                !call.custom,
+                "native custom calls cannot acquire manual grants"
+            );
+            let name =
+                ToolName::new(call.namespace.clone(), call.name.clone()).with_default_namespace();
+            let slot = generation
+                .entries
+                .iter()
+                .position(|entry| entry.name.clone().with_default_namespace() == name)
+                .context("manual tool absent from captured source catalog")?;
             if generation.terminal_slots.contains(&slot)
                 && frame.accepted_replies.contains_key(&call.call_id)
             {
@@ -1795,6 +1805,8 @@ impl PythonTools {
                     "Held terminal reply has no current response facts"
                 );
                 held_ids.insert(call.call_id.clone());
+            } else {
+                self.slot_for_catalog(&manual, call, generation)?;
             }
         }
         ensure!(

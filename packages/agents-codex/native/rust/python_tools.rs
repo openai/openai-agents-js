@@ -2993,11 +2993,16 @@ impl ToolContributor for PythonContributor {
                 .expect("JavaScript selection poisoned")
                 .clone();
             let cancellation = step.get::<codex_extension_api::ToolsOnlyWorkCancellation>();
+            let resolves_mcp_names = tools
+                .policy
+                .allowed_mcp_tools
+                .as_ref()
+                .is_some_and(|tools| !tools.is_empty());
             let source_owned = active.is_none()
                 && cancellation.is_some()
                 && step
                     .get::<ProfileCatalog>()
-                    .is_some_and(|catalog| catalog.selecting_steps);
+                    .is_some_and(|catalog| catalog.selecting_steps || resolves_mcp_names);
             if let Some(active) = &active {
                 if active.turn != turn.level_id() || !tools.admits_generation(&active.generation) {
                     return Err("Expired step selection owner or generation".into());
@@ -3046,11 +3051,7 @@ impl ToolContributor for PythonContributor {
             });
             if !source_owned
                 && !active.as_ref().is_some_and(|active| active.before_step)
-                && tools
-                    .policy
-                    .allowed_mcp_tools
-                    .as_ref()
-                    .is_none_or(|tools| tools.is_empty())
+                && !resolves_mcp_names
             {
                 return Ok(Some(defaults.unwrap_or(allowed)));
             }

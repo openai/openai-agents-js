@@ -4587,6 +4587,8 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (
       !this.options.agentGraph &&
+      !this.options.inputGuardrails?.length &&
+      !this.options.agentInputGuardrails?.length &&
       options?.tools === undefined &&
       options?.beforeStep === undefined &&
       options?.maxModelSteps === undefined &&
