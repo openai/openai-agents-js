@@ -27,6 +27,7 @@ export class PortableVoiceHistory {
     private readonly snapshot: () => readonly VoiceHistoryItem[],
     private readonly send: (command: unknown) => void,
     private readonly fail: (error: Error) => void,
+    private readonly rejected?: (error: Error) => void,
   ) {}
 
   update(update: PortableHistoryUpdate): Promise<void> {
@@ -39,14 +40,7 @@ export class PortableVoiceHistory {
     } catch (error) {
       return Promise.reject(error);
     }
-    if (this.queued >= 16 || this.queuedBytes + captured.bytes > CAPACITY)
-      return Promise.reject(
-        new Error('Portable history queue exceeds capacity.'),
-      );
-    this.queued++;
-    this.queuedBytes += captured.bytes;
-    const operation = this.tail.then(async () => {
-      if (this.closed) throw this.closed;
+    return this.enqueue(captured.bytes, async () => {
       const edits = plan(this.snapshot(), captured.items);
       if (!edits.length) return;
       // Pure native preflight: every edit must be valid before the first write.
@@ -64,11 +58,45 @@ export class PortableVoiceHistory {
         await this.apply(edit);
       }
     });
-    this.tail = operation.catch(() => {});
-    return operation.finally(() => {
-      this.queued--;
-      this.queuedBytes -= captured.bytes;
+  }
+
+  delete(itemId: string): Promise<void> {
+    return this.enqueue(itemId.length * 2, () =>
+      this.apply({ type: 'delete', item_id: itemId }),
+    );
+  }
+
+  private enqueue(bytes: number, work: () => Promise<void>): Promise<void> {
+    if (this.closed) return Promise.reject(this.closed);
+    if (this.queued >= 16 || this.queuedBytes + bytes > CAPACITY) {
+      const error = new Error('Portable history queue exceeds capacity.');
+      this.rejected?.(error);
+      return Promise.reject(error);
+    }
+    this.queued++;
+    this.queuedBytes += bytes;
+    const operation = this.tail.then(async () => {
+      if (this.closed) throw this.closed;
+      await work();
     });
+    this.tail = operation.catch(() => {});
+    return operation
+      .catch((error: Error) => {
+        this.rejected?.(error);
+        throw error;
+      })
+      .finally(() => {
+        this.queued--;
+        this.queuedBytes -= bytes;
+      });
+  }
+
+  rejectDeletion(itemId: string, error: Error): boolean {
+    const pending = this.pending;
+    if (pending?.edit.type !== 'delete' || pending.edit.item_id !== itemId)
+      return false;
+    pending.reject(error);
+    return true;
   }
 
   observe(event: Record<string, any>): void {

@@ -1796,7 +1796,9 @@ export class Session<OutputT = string, Context = unknown> {
       retained && generation
         ? await this.#native._realtime_agent_source(
             generation,
-            JSON.stringify(target),
+            encodeProfileReceipt(
+              checkProfileReceipt(target, this.callbackProfileGraph(target)!),
+            ),
           )
         : await this.#native.call('realtime_tool_selection_sdk', '{}'),
     );
@@ -1836,7 +1838,14 @@ export class Session<OutputT = string, Context = unknown> {
         generation,
         JSON.stringify(profileRoster(graph, this.options.environment)),
         graph.rootId,
-        JSON.stringify(expected),
+        expected === null
+          ? 'null'
+          : encodeProfileReceipt(
+              checkProfileReceipt(
+                expected,
+                this.callbackProfileGraph(expected)!,
+              ),
+            ),
       ),
     );
     const allocated = allocatedProfileCatalogs(
@@ -1868,7 +1877,7 @@ export class Session<OutputT = string, Context = unknown> {
     const target = checkProfileReceipt(receipt, graph);
     await this.#native._discard_realtime_agent_graph(
       generation,
-      JSON.stringify(target),
+      encodeProfileReceipt(target),
     );
     for (const [id, profile] of graph.profiles) {
       this.voiceProfileGraphs.delete(id);

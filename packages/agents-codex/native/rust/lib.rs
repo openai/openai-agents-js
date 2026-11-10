@@ -2590,11 +2590,8 @@ impl NativeThread {
         root_id: String,
         expected_json: String,
     ) -> napi::Result<String> {
-        let expected: Value = serde_json::from_str(&expected_json).map_err(input_error)?;
-        let expected = (!expected.is_null())
-            .then(|| agent_profiles::profile_receipt(&expected))
-            .transpose()
-            .map_err(input_error)?;
+        let expected: Option<codex_extension_api::AgentProfileReceipt> =
+            serde_json::from_str(&expected_json).map_err(input_error)?;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let _mutation = inner.mutations.lock().await;
@@ -2617,8 +2614,8 @@ impl NativeThread {
         generation: String,
         receipt_json: String,
     ) -> napi::Result<()> {
-        let receipt: Value = serde_json::from_str(&receipt_json).map_err(input_error)?;
-        let receipt = agent_profiles::profile_receipt(&receipt).map_err(input_error)?;
+        let receipt: codex_extension_api::AgentProfileReceipt =
+            serde_json::from_str(&receipt_json).map_err(input_error)?;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let _mutation = inner.mutations.lock().await;
@@ -2632,8 +2629,8 @@ impl NativeThread {
         generation: String,
         target_json: String,
     ) -> napi::Result<String> {
-        let target: Value = serde_json::from_str(&target_json).map_err(input_error)?;
-        let target = agent_profiles::profile_receipt(&target).map_err(input_error)?;
+        let target: codex_extension_api::AgentProfileReceipt =
+            serde_json::from_str(&target_json).map_err(input_error)?;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let result = agent_profiles::realtime_source(&inner.thread, &generation, target)

@@ -182,6 +182,45 @@ it('fails uncertain timed-out edits without replay and rejects queued edits on c
   await closed;
 });
 
+it('rejects only a matching trusted deletion failure promptly and keeps later edits usable', async () => {
+  const f = fixture([message('a')], false);
+  const editing = f.editor.update([]);
+  const rejected = expect(editing).rejects.toThrow('still active');
+  await vi.waitFor(() => expect(f.commands).toHaveLength(2));
+  expect(f.editor.rejectDeletion('foreign', new Error('unrelated'))).toBe(
+    false,
+  );
+  f.ack({ type: 'history_rejected', item_id: 'a', message: 'wire spoof' });
+  expect(f.editor.rejectDeletion('a', new Error('still active'))).toBe(true);
+  await rejected;
+  expect(f.failure).not.toHaveBeenCalled();
+  const next = f.editor.update([]);
+  await vi.waitFor(() => expect(f.commands).toHaveLength(4));
+  f.ack({ type: 'conversation.item.deleted', item_id: 'a' });
+  await next;
+});
+
+it('bounds direct deletions with the existing serialized edit queue and timeout', async () => {
+  vi.useFakeTimers();
+  const f = fixture([], false);
+  const first = f.editor.delete('external');
+  const outcome = expect(first).rejects.toThrow('timed out');
+  const queued = Array.from({ length: 15 }, (_, index) =>
+    f.editor.delete(`queued-${index}`).catch((error) => error),
+  );
+  await expect(f.editor.delete('overflow')).rejects.toThrow('queue');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.commands).toEqual([{ type: 'delete', item_id: 'external' }]);
+  await vi.advanceTimersByTimeAsync(10_001);
+  await outcome;
+  expect(f.failure).toHaveBeenCalledOnce();
+  expect(
+    (await Promise.all(queued)).every((error) =>
+      error.message.includes('timed out'),
+    ),
+  ).toBe(true);
+});
+
 it('rejects incorrect same-item placement instead of continuing after an uncertain create', async () => {
   const f = fixture([], false);
   const editing = f.editor.update([message('a'), message('b')]);
@@ -220,7 +259,13 @@ it('bounds desired structure and queued work before edits', async () => {
   ).toBe(true);
 });
 
-async function nativeFixture(options: Partial<PortableVoiceOptions> = {}) {
+async function nativeFixture(
+  options: Partial<PortableVoiceOptions> = {},
+  provider: {
+    lookupItem?: Record<string, unknown>;
+    rejectDelete?: boolean;
+  } = {},
+) {
   const control = new NativeVoiceControl(
     new WebAssembly.Module(
       Uint8Array.from(
@@ -241,11 +286,30 @@ async function nativeFixture(options: Partial<PortableVoiceOptions> = {}) {
               type: 'session.updated',
               session: event.session,
             });
-          if (event.type === 'conversation.item.delete')
+          if (
+            event.type === 'conversation.item.retrieve' &&
+            provider.lookupItem
+          )
             session.receive({
-              type: 'conversation.item.deleted',
-              item_id: event.item_id,
+              type: 'conversation.item.retrieved',
+              item: provider.lookupItem,
             });
+          if (event.type === 'conversation.item.delete') {
+            if (provider.rejectDelete)
+              session.receive({
+                type: 'error',
+                error: {
+                  type: 'invalid_request_error',
+                  message: 'private provider rejection',
+                  event_id: event.event_id,
+                },
+              });
+            else
+              session.receive({
+                type: 'conversation.item.deleted',
+                item_id: event.item_id,
+              });
+          }
           if (event.type === 'conversation.item.create')
             session.receive({
               type: 'conversation.item.created',
@@ -266,6 +330,102 @@ async function nativeFixture(options: Partial<PortableVoiceOptions> = {}) {
 }
 
 const native = process.env.OPENAI_AGENTS_PORTABLE_TESTS === '1';
+it.runIf(native)(
+  'expires an unanswered direct lookup through the shared edit timeout and reports once',
+  async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const onError = vi.fn();
+    const { session, frames } = await nativeFixture({ onError });
+    session.deleteItem('unanswered');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      frames.some((frame) => frame.type === 'conversation.item.retrieve'),
+    ).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(onError).toHaveBeenCalledOnce();
+    expect(() => session.sendMessage(message('closed'))).toThrow('closed');
+    await session.close();
+  },
+);
+
+it.runIf(native)(
+  'rejects a pre-attachment active tool lookup without deleting or closing the session',
+  async () => {
+    const onError = vi.fn();
+    const { session, frames } = await nativeFixture(
+      { onError },
+      {
+        lookupItem: {
+          id: 'external',
+          type: 'function_call',
+          status: 'in_progress',
+        },
+      },
+    );
+    session.deleteItem('external');
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(
+      frames.some((frame) => frame.type === 'conversation.item.retrieve'),
+    ).toBe(true);
+    expect(
+      frames.some((frame) => frame.type === 'conversation.item.delete'),
+    ).toBe(false);
+    session.sendMessage(message('continuing'));
+    await vi.waitFor(() =>
+      expect(frames.some((frame) => frame.item?.id === 'continuing')).toBe(
+        true,
+      ),
+    );
+    await session.close();
+  },
+);
+
+it.runIf(native)(
+  'retrieves and deletes a valid external status-less MCP result',
+  async () => {
+    const onError = vi.fn();
+    const { session, frames } = await nativeFixture(
+      { onError },
+      { lookupItem: { id: 'external', type: 'mcp_call', output: 'done' } },
+    );
+    session.deleteItem('external');
+    await vi.waitFor(() =>
+      expect(
+        frames.some((frame) => frame.type === 'conversation.item.delete'),
+      ).toBe(true),
+    );
+    expect(
+      frames
+        .filter((frame) => frame.type.startsWith('conversation.item.'))
+        .map((frame) => frame.type),
+    ).toEqual(['conversation.item.retrieve', 'conversation.item.delete']);
+    expect(onError).not.toHaveBeenCalled();
+    await session.close();
+  },
+);
+
+it.runIf(native)(
+  'rejects an exact managed deletion error promptly and permits a later acknowledged edit',
+  async () => {
+    const onError = vi.fn();
+    const provider = { rejectDelete: true };
+    const { session } = await nativeFixture({ onError }, provider);
+    session.receive({
+      type: 'conversation.item.created',
+      item: message('a'),
+      previous_item_id: null,
+    });
+    await expect(session.updateHistory([])).rejects.toThrow(
+      'settled provider item',
+    );
+    expect(onError).toHaveBeenCalledOnce();
+    provider.rejectDelete = false;
+    await session.updateHistory([]);
+    expect(session.history).toEqual([]);
+    await session.close();
+  },
+);
+
 it.runIf(native)(
   'runs ordered inert edits through Rust and retains detached history/audio after close',
   async () => {

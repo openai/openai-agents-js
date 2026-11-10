@@ -145,6 +145,7 @@ export type PortableVoiceEffect =
       out_of_band: boolean;
       history?: readonly Readonly<Record<string, unknown>>[];
     }
+  | { type: 'history_rejected'; item_id: string; message: string }
   | { type: 'event'; event: unknown }
   | { type: 'abort'; call_id: string }
   | { type: 'ready' | 'configured' | 'closed' };
@@ -233,6 +234,9 @@ export class PortableVoiceSession {
           ? this.#apply(command)
           : this.#dispatch(command),
       (error) => this.fail(error),
+      (error) => {
+        if (!this.#closed) this.#notify(this.options.onError, error);
+      },
     );
     this.#profile = this.#makeProfile(options);
     this.options = this.#profile.options;
@@ -436,7 +440,7 @@ export class PortableVoiceSession {
     this.#dispatch({ type: 'input', item });
   }
   deleteItem(itemId: string): void {
-    this.#dispatch({ type: 'delete', item_id: itemId });
+    void this.#historyUpdates.delete(itemId).catch(() => {});
   }
   truncateItem(itemId: string, contentIndex: number, audioEndMs: number): void {
     this.#dispatch({
@@ -907,6 +911,12 @@ export class PortableVoiceSession {
         }
         case 'abort':
           break;
+        case 'history_rejected': {
+          const error = new Error(effect.message);
+          if (!this.#historyUpdates.rejectDeletion(effect.item_id, error))
+            this.#notify(this.options.onError, error);
+          break;
+        }
         case 'event':
           this.#observe(effect.event);
           this.#capture(effect.event, true);

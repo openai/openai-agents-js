@@ -244,6 +244,10 @@ nativeIt(
           expect(footprint()).toEqual(retained);
         }
         await expect(voice.getActiveAgent()).resolves.toBe(accepted);
+        expect(
+          peer.frames.filter((frame) => frame.type === 'session.update'),
+        ).toHaveLength(2);
+        const toolAfter = peer.frames.length;
         const item = {
           type: 'function_call',
           id: 'accepted-call-item',
@@ -269,7 +273,7 @@ nativeIt(
         await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce(), {
           timeout: 10000,
         });
-        await peer.frame('conversation.item.create', after);
+        await peer.frame('response.create', toolAfter);
         const valid = new Agent({
           provider,
           name: 'Valid',
@@ -279,8 +283,9 @@ nativeIt(
         await expect(voice.getActiveAgent()).resolves.toBe(valid);
         await expect(session.getActiveAgent()).resolves.toBe(opening);
         expect(
-          peer.frames.filter((frame) => frame.type === 'session.update'),
-        ).toHaveLength(3);
+          peer.frames.filter((frame) => frame.type === 'session.update').at(-1)
+            ?.session.instructions,
+        ).toBe('Still updatable');
       } finally {
         await voice.close();
         await reading;
