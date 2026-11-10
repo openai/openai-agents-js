@@ -313,6 +313,8 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   modelBackend?: NativeModel | ModelProvider;
+  /** @internal Captured provider credential, independent of text producer admission. */
+  realtimeApiKey?: string;
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
@@ -1251,6 +1253,18 @@ export class Session<OutputT = string, Context = unknown> {
         typeof value !== 'string'
       )
         throw new TypeError(`Realtime ${name} must be a string`);
+    }
+    if (
+      this.options.modelBackend !== undefined &&
+      options.adapter === undefined &&
+      options.apiKey === undefined
+    ) {
+      const apiKey = this.options.realtimeApiKey;
+      if (!apiKey?.trim())
+        throw new TypeError(
+          'Built-in Realtime requires a provider or voice API key',
+        );
+      options = { ...options, apiKey };
     }
     const native = this.#native;
     const mediaCleanup = native._realtime_cleanup();

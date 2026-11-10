@@ -1338,6 +1338,7 @@ export class Agent<Context = undefined, Output = string> {
       };
       const session: CoreSessionOptions = {
         modelBackend: provider.modelBackend,
+        realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
