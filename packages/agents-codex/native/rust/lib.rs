@@ -3185,17 +3185,20 @@ impl NativeThread {
         {
             return Ok(false);
         }
-        // The callback has ended even when queued input prevents an interrupt.
-        // Retire only its own sender so the native executor can finish, without
-        // cancelling work Core already accepted for this child or another turn.
-        drop(
-            owner
-                .take_reply(&key.reply.thread, &key)
-                .map_err(native_error)?,
-        );
-        ops::interrupt_if_no_pending_input(&thread, key.turn.clone())
+        // Releasing the reply before the decision can send a tool failure to the model.
+        let reply = owner
+            .take_reply(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        let interrupted = thread
+            .interrupt_if_no_pending_input(&key.turn)
             .await
-            .map_err(native_error)
+            .map_err(native_error)?;
+        // Core acknowledges the decision before cancelling the task. Keep the sender
+        // until cancellation closes the receiver. On refusal, release it for queued input.
+        if interrupted && let Some(mut sender) = reply {
+            sender.closed().await;
+        }
+        Ok(interrupted)
     }
 
     #[napi(js_name = "_respond_python_tool")]
