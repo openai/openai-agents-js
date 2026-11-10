@@ -39,6 +39,25 @@ it('preserves original object records and their admission across a portable rest
     },
     { application: { text: 'audit-only missing type marker' } },
     { type: 17, application: { text: 'audit-only nonstring type marker' } },
+    JSON.parse(
+      '{"$serde_json::private::Number":"123456789012345678901234567890"}',
+    ) as Record<string, unknown>,
+    {
+      '$serde_json::private::RawValue': JSON.stringify({
+        type: 'message',
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'audit-only raw marker promotion' },
+        ],
+      }),
+    },
+    JSON.parse(
+      '{"__proto__":{"polluted":"audit-only prototype marker"},"constructor":{"prototype":{"kept":true}}}',
+    ) as Record<string, unknown>,
+    {
+      type: { '$serde_json::private::RawValue': '"message"' },
+      application: { text: 'audit-only nested nonstring tag' },
+    },
   ];
   const session = await agent.session();
   let state;
@@ -70,6 +89,7 @@ it('preserves original object records and their admission across a portable rest
       originals,
     );
     expect(Object.hasOwn(retained.items[0]!, 'id')).toBe(false);
+    expect(Object.hasOwn(retained.items.at(-2)!, '__proto__')).toBe(true);
     state = await session.saveState();
     expect(server.requests).toEqual([]);
   } finally {

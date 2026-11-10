@@ -99,7 +99,7 @@ pub struct EnvironmentOptions {
     cwd: PathUri,
     #[serde(default)]
     headers: HashMap<String, String>,
-    #[serde(default, deserialize_with = "deserialize_env")]
+    #[serde(default, rename = "env_json", deserialize_with = "deserialize_env")]
     env: HashMap<String, String>,
     connect_timeout: Option<f64>,
     capability_directories: Option<Vec<PathUri>>,
@@ -129,7 +129,9 @@ fn mount_read_only() -> bool {
 fn deserialize_env<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<HashMap<String, String>, D::Error> {
-    let values = HashMap::<String, String>::deserialize(deserializer)
+    let encoded = String::deserialize(deserializer)
+        .map_err(|_| serde::de::Error::custom("invalid environment variables"))?;
+    let values: HashMap<String, String> = serde_json::from_str(&encoded)
         .map_err(|_| serde::de::Error::custom("invalid environment variables"))?;
     if values.iter().any(|(name, value)| {
         name.is_empty()
@@ -2101,11 +2103,27 @@ mod tests {
     fn explicit_environment_values_validate_before_native_selection() {
         let valid: super::EnvironmentOptions = serde_json::from_value(json!({
             "cwd": "file:///workspace",
-            "env": {"VALUE": "private-environment-value", "EMPTY": "", "__proto__": "literal"}
+            "env_json": r#"{"VALUE":"private-environment-value","EMPTY":"","__proto__":"literal"}"#
         }))
         .unwrap();
         assert_eq!(valid.env["EMPTY"], "");
         assert_eq!(valid.env["__proto__"], "literal");
+        for (name, value) in [
+            ("$serde_json::private::Number", "7301592846"),
+            (
+                "$serde_json::private::RawValue",
+                r#"{"APP_MODE":"injected-env-marker"}"#,
+            ),
+        ] {
+            let values = std::collections::HashMap::from([(name, value)]);
+            let options: super::EnvironmentOptions = serde_json::from_value(json!({
+                "cwd": "file:///workspace",
+                "env_json": serde_json::to_string(&values).unwrap()
+            }))
+            .unwrap();
+            assert_eq!(options.env.len(), 1);
+            assert_eq!(options.env[name], value);
+        }
         for values in [
             json!({"": "private-environment-value"}),
             json!({"BAD=NAME": "private-environment-value"}),
@@ -2117,7 +2135,7 @@ mod tests {
             json!(["private-environment-value"]),
         ] {
             let result = serde_json::from_value::<super::EnvironmentOptions>(json!({
-                "cwd": "file:///workspace", "env": values
+                "cwd": "file:///workspace", "env_json": values.to_string()
             }));
             let error = match result {
                 Ok(_) => panic!("invalid environment values were accepted"),

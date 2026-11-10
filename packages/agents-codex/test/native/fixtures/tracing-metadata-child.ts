@@ -7,6 +7,11 @@ async function main() {
   await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
   try {
     const metadata = {
+      number: { '$serde_json::private::Number': '7' },
+      raw: { '$serde_json::private::RawValue': '{"a":1}' },
+      numberLiteral: { '$serde_json::private::Number': 'ordinary text' },
+      rawLiteral: { '$serde_json::private::RawValue': 'ordinary text' },
+      escapedString: { text: 'é'.repeat(1000) },
       flag: false,
       text: 'false',
       object: {},
@@ -133,6 +138,20 @@ async function main() {
         assert.deepEqual(callbackMetadata, { owner: 'restored' });
       },
     );
+    for (const [key, value] of Object.entries({
+      '$serde_json::private::Number': '7',
+      '$serde_json::private::RawValue': '{"a":1}',
+    })) {
+      const magic = { [key]: value };
+      const magicRoot = await telemetry.withTrace(
+        { name: 'metadata.magic-root', metadata: magic },
+        async (root) => {
+          assert.deepEqual(root.traceMetadata, magic);
+          return root;
+        },
+      );
+      assert.deepEqual(magicRoot.traceMetadata, magic);
+    }
     assert.equal((await telemetry.forceFlush()).status, 'success');
   } finally {
     await telemetry.shutdown({ timeoutMs: 1000 });

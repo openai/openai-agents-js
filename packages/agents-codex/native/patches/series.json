@@ -482,12 +482,16 @@
     },
     {
       "path": "sdk-root-metadata-readback.patch",
-      "sha256": "2208c2c4eda68a1f4e4de000bb3796ac38b883aa54413f05b96e9175f49aa155"
+      "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
     },
     {
       "path": "0171-original-history-catalog.patch",
-      "sha256": "c90c5f0c2608888dc472cfd07a786cb656bc503303cb9f1fe941bbbd52bf8cd8"
+      "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
+    },
+    {
+      "path": "sdk-rpc-json-fidelity.patch",
+      "sha256": "627e429ded864fb3388b6562c22460e604ca9ba6ad25ec72e38480c1ba61e6ed"
     }
   ],
-  "result_tree": "a271b5a3a6ba907d53bc847a2fe6b8ff064ec0d2"
+  "result_tree": "c07d4555e3968ab1d1fa3b3e70e9ff72f69fe77d"
 }

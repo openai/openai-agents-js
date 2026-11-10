@@ -77,6 +77,8 @@ Historical messages may mention old skills, but they do not authorize fresh read
 
 Source builds: explicit command variables through `Environment.env`, for both local and remote execution.
 
+Async values: application-defined resolution inside an [`EnvironmentSource`](#lease-an-executor) before creating the new `Environment.lease(...)`. For restore: a fresh source with current values.
+
 ```typescript
 import { Environment } from '@openai/agents';
 

@@ -10710,9 +10710,16 @@ export class Session<OutputT = string, Context = unknown> {
       (!Number.isSafeInteger(limit) || limit < 0 || limit > 0xffffffff)
     )
       throw new RangeError('limit must be a nonnegative 32-bit integer');
-    return this.mutate(async () =>
-      JSON.parse(await this.#native._canonical_history(limit ?? null)),
-    );
+    return this.mutate(async () => {
+      const snapshot: { revision: string; total: number; items: string[] } =
+        JSON.parse(await this.#native._canonical_history(limit ?? null));
+      return {
+        ...snapshot,
+        items: snapshot.items.map(
+          (item) => JSON.parse(item) as Record<string, unknown>,
+        ),
+      };
+    });
   }
 
   /** Core has been atomically replacing a suffix of original JSON object records.
@@ -10736,7 +10743,10 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('expectedRevision must be nonempty text');
     if (!Number.isSafeInteger(keep) || keep < 0 || keep > 0xffffffff)
       throw new RangeError('keep must be a nonnegative 32-bit integer');
-    const captured = JSON.stringify(options.items ?? []);
+    // Original JSON has been crossing generic native Value conversions only as strings.
+    const captured = JSON.stringify(
+      (options.items ?? []).map((item) => JSON.stringify(item)),
+    );
     return this.mutate(async () => {
       const value = JSON.parse(
         await this.#native._transact_history(expectedRevision, keep, captured),

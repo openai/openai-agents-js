@@ -107,12 +107,13 @@ export class TraceSpan {
   > | null {
     const { root_metadata: metadata } = JSON.parse(
       this.native.trace_span_context(this.#contextToken),
-    ) as {
-      root_metadata?: Record<string, import('./binding').JsonValue> | null;
-    };
+    ) as { root_metadata?: string | null };
     if (metadata === undefined)
       throw new Error('Native trace metadata unavailable');
-    return metadata;
+    if (metadata === null) return null;
+    if (typeof metadata !== 'string')
+      throw new Error('Invalid native trace metadata');
+    return JSON.parse(metadata);
   }
   /** @internal Release only a caller-owned lease, not this object's alias. */
   releaseContext(token: string): void {

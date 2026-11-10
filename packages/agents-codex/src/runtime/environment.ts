@@ -168,7 +168,7 @@ const remoteEnvironmentSchema = z
     writable_roots: z.array(capabilityDirectory).optional(),
     read_only: z.boolean().optional(),
     headers: z.record(z.string(), z.string()).optional(),
-    env: environmentValues.optional(),
+    env_json: z.string().optional(),
     connect_timeout: z.number().nonnegative().finite().nullable().optional(),
     network: networkPolicyWireSchema.optional(),
   })
@@ -503,7 +503,9 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
       ? { local: true }
       : { url: environment.url, headers: environment.headers }),
     cwd: environment.cwd,
-    ...(environment.env === undefined ? {} : { env: environment.env }),
+    ...(environment.env === undefined
+      ? {}
+      : { env_json: JSON.stringify(environment.env) }),
     ...(environment.readOnly ? { read_only: true } : {}),
     ...(environment.mounts === undefined
       ? {}

@@ -43,7 +43,7 @@ pub async fn replace(
     state: &ThreadState,
     expected: String,
     keep: usize,
-    items: Vec<Value>,
+    items: Vec<String>,
 ) -> anyhow::Result<Value> {
     let _operation = state
         .engine
