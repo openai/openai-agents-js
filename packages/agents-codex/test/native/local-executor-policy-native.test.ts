@@ -15,8 +15,8 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
-import { basename, delimiter, join } from 'node:path';
+import { tmpdir, userInfo } from 'node:os';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -55,9 +55,306 @@ async function providerFor(server: ModelServer) {
 const supported = process.platform === 'linux' || process.platform === 'darwin';
 const packageRoot = join(import.meta.dirname, '..', '..');
 
+const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
+
 it.skipIf(!supported)(
-  'records the selected local proxy in child and grandchild receipts',
+  'scopes trusted local workspace writes, private authentication and command temp',
   async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-local-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'extra');
+      const replacement = join(base, 'replacement');
+      const sibling = join(base, 'sibling');
+      const homes = join(base, 'runtime-homes');
+      const login = join(base, 'codex-home');
+      const tools = join(base, 'toolchain');
+      await Promise.all(
+        [cwd, extra, replacement, sibling, homes, login, tools].map((p) =>
+          mkdir(p),
+        ),
+      );
+      const outside = join(base, 'outside');
+      const readAlias = join(cwd, 'host-capability');
+      const auth = join(base, 'private-login-target');
+      const authAlias = join(cwd, 'private-alias');
+      const oauth = join(login, '.credentials.json');
+      const fakeHelper = join(base, 'fake-bwrap-ran');
+      await Promise.all([
+        writeFile(outside, 'outside'),
+        writeFile(auth, 'synthetic-login'),
+        writeFile(oauth, 'synthetic-oauth'),
+        symlink(outside, readAlias),
+        symlink(auth, authAlias),
+        symlink(auth, join(login, 'auth.json')),
+        writeFile(
+          join(tools, 'sdk-fixture-tool'),
+          '#!/bin/sh\nprintf inherited',
+          { mode: 0o755 },
+        ),
+        writeFile(
+          join(tools, 'bwrap'),
+          `#!/bin/sh\nprintf unsafe > ${shellQuote(fakeHelper)}\nexit 71\n`,
+          {
+            mode: 0o755,
+          },
+        ),
+      ]);
+      vi.stubEnv('CODEX_HOME', login);
+      vi.stubEnv('TMPDIR', homes);
+      vi.stubEnv('PATH', [tools, process.env.PATH].join(delimiter));
+      vi.stubEnv('OPENAI_API_KEY', 'synthetic-ambient-key');
+      vi.stubEnv('BASH_ENV', join(tools, 'bwrap'));
+      vi.stubEnv('HTTP_PROXY', 'http://ambient-proxy.invalid:9');
+      vi.stubEnv('NO_PROXY', '127.0.0.1');
+      const command = [
+        'set -eu',
+        'test "$(sdk-fixture-tool)" = inherited',
+        'test -z "${OPENAI_API_KEY+x}${BASH_ENV+x}${CODEX_HOME+x}${OPENAI_AGENTS_SDK_COMMAND_PATH+x}"',
+        'test -n "${HTTP_PROXY:-${http_proxy:-}}"',
+        'test "${HTTP_PROXY:-${http_proxy:-}}" != http://ambient-proxy.invalid:9',
+        `test "$(cat ${shellQuote(readAlias)})" = outside`,
+        ...[authAlias, auth, join(login, 'auth.json'), oauth].map(
+          (file) =>
+            `if ( : < ${shellQuote(file)} ) 2>/dev/null; then exit 12; fi`,
+        ),
+        `for home in ${shellQuote(homes)}/agents-session-*; do if ( : < "$home/auth.json" ) 2>/dev/null; then exit 16; fi; done`,
+        `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 13; fi`,
+        `if (printf denied > ${shellQuote(join(homes, 'ambient-write'))}) 2>/dev/null; then exit 14; fi`,
+        'printf scoped > "$TMPDIR/fixture"',
+        'printf "%s" "$TMPDIR" > command-temp',
+        `printf granted > ${shellQuote(join(extra, 'marker'))}`,
+      ].join('; ');
+      const server = new ModelServer([
+        [call('exec_command', { cmd: command }, { callId: 'trusted-scope' })],
+        [message('trusted')],
+        [
+          call(
+            'exec_command',
+            {
+              cmd: [
+                'set -eu',
+                `other="$(cat ${shellQuote(join(cwd, 'command-temp'))})"`,
+                'test "$other" != "$TMPDIR"',
+                'if (printf denied > "$other/fixture") 2>/dev/null; then exit 15; fi',
+                `if (printf denied > ${shellQuote(join(extra, 'marker'))}) 2>/dev/null; then exit 16; fi`,
+                'printf sibling > "$TMPDIR/fixture"',
+                'printf "%s" "$TMPDIR" > command-temp',
+              ].join('; '),
+            },
+            { callId: 'trusted-sibling' },
+          ),
+        ],
+        [message('sibling')],
+        [
+          call(
+            'exec_command',
+            {
+              cmd: [
+                'set -eu',
+                `if (printf denied > ${shellQuote(join(extra, 'marker'))}) 2>/dev/null; then exit 17; fi`,
+                `printf replaced > ${shellQuote(join(replacement, 'marker'))}`,
+                'printf compacted > "$TMPDIR/fixture"',
+                'printf "%s" "$TMPDIR" > command-temp',
+              ].join('; '),
+            },
+            { callId: 'trusted-compacted' },
+          ),
+        ],
+        [message('Continue')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      const environment = (cwd: string, writableRoots: string[] = []) =>
+        Environment.local({
+          cwd,
+          writableRoots,
+          writePolicy: 'trusted_workspace_write',
+          tools: ['exec_command'],
+          network: {
+            allowedDomains: ['sdk-fixture.invalid'],
+            deniedDomains: ['denied.invalid'],
+            allowAllUnixSockets: process.platform === 'linux',
+          },
+        });
+      const opened = await agent
+        .session({ environment: environment(cwd, [extra]) })
+        .catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            /could not establish the platform sandbox/.test(error.message) &&
+            process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+          ) {
+            expect(server.requests).toHaveLength(0);
+            context.skip('This host cannot launch a nested platform sandbox');
+          }
+          throw error;
+        });
+      await using session = opened;
+      const [runtimeHome] = (await readdir(homes)).filter((name) =>
+        name.startsWith('agents-session-'),
+      );
+      expect(runtimeHome).toBeDefined();
+      await writeFile(
+        join(homes, runtimeHome!, 'auth.json'),
+        'synthetic-native-auth',
+      );
+      await using other = await agent.session({
+        environment: environment(sibling),
+      });
+      const run = async (
+        session: Session,
+        stage: string,
+        callId: string,
+        writableRoots?: string[],
+      ) => {
+        const turn = await session.submit(stage, { writableRoots });
+        expect((await turn.wait()).finalOutput).toBe(stage);
+        expect(await Array.fromAsync(session.items())).toContainEqual(
+          expect.objectContaining({
+            type: 'command_execution',
+            callId,
+            exitCode: 0,
+            status: 'completed',
+          }),
+        );
+      };
+      await run(session, 'trusted', 'trusted-scope');
+      await run(other, 'sibling', 'trusted-sibling');
+      const temp = await readFile(join(cwd, 'command-temp'), 'utf8');
+      const otherTemp = await readFile(join(sibling, 'command-temp'), 'utf8');
+      expect(temp).not.toBe(otherTemp);
+      expect(await readFile(join(temp, 'fixture'), 'utf8')).toBe('scoped');
+      expect(await readFile(join(otherTemp, 'fixture'), 'utf8')).toBe(
+        'sibling',
+      );
+      expect(await readFile(outside, 'utf8')).toBe('outside');
+      expect(await readFile(auth, 'utf8')).toBe('synthetic-login');
+      expect(await readFile(join(extra, 'marker'), 'utf8')).toBe('granted');
+      expect(existsSync(fakeHelper)).toBe(false);
+      expect(existsSync(join(homes, 'ambient-write'))).toBe(false);
+      const receipt = (await Array.fromAsync(session.turns())).at(-1)?.receipt
+        ?.executors?.[0];
+      expect(receipt?.networkPolicy?.domains).toEqual({
+        'sdk-fixture.invalid': 'allow',
+        'denied.invalid': 'deny',
+      });
+      await session.compact({ summary: 'Supplied summary.' });
+      expect(existsSync(temp)).toBe(false);
+      await run(session, 'Continue', 'trusted-compacted', [replacement]);
+      const compactedTemp = await readFile(join(cwd, 'command-temp'), 'utf8');
+      expect(compactedTemp).not.toBe(temp);
+      expect(compactedTemp).not.toBe(otherTemp);
+      expect(await readFile(join(compactedTemp, 'fixture'), 'utf8')).toBe(
+        'compacted',
+      );
+      expect(await readFile(join(extra, 'marker'), 'utf8')).toBe('granted');
+      expect(await readFile(join(replacement, 'marker'), 'utf8')).toBe(
+        'replaced',
+      );
+      await session.close();
+      expect(existsSync(compactedTemp)).toBe(false);
+      expect(await readFile(join(otherTemp, 'fixture'), 'utf8')).toBe(
+        'sibling',
+      );
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  45_000,
+);
+
+it.skipIf(process.platform !== 'darwin')(
+  'allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants',
+  async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-darwin-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'granted');
+      const outside = join(base, 'outside');
+      await Promise.all([
+        mkdir(cwd),
+        mkdir(extra),
+        writeFile(outside, 'outside'),
+      ]);
+      vi.stubEnv(
+        'PATH',
+        [dirname(process.execPath), process.env.PATH].join(delimiter),
+      );
+      const host = userInfo();
+      const command = [
+        'set -eu',
+        `test "$(/usr/bin/id -u)" = ${host.uid} || exit 11`,
+        `test "$(/usr/bin/id -un)" = ${shellQuote(host.username)} || exit 12`,
+        '/usr/bin/ssh -G -F /dev/null sdk-fixture.invalid > "$TMPDIR/ssh-config"',
+        '/usr/bin/grep -qx "hostname sdk-fixture.invalid" "$TMPDIR/ssh-config"',
+        `test "$(node --version)" = ${shellQuote(process.version)} || exit 13`,
+        'verify=$(/usr/bin/curl --disable --fail --silent --show-error --max-time 20 --proto "=https" --write-out "%{ssl_verify_result}" https://github.com/robots.txt -o "$TMPDIR/robots.txt")',
+        'test "$verify" = 0 || exit 14',
+        'test -s "$TMPDIR/robots.txt"',
+        `test "$(cat ${shellQuote(outside)})" = outside`,
+        `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 15; fi`,
+        'printf workspace > result',
+        `printf grant > ${shellQuote(join(extra, 'result'))}`,
+      ].join('; ');
+      const server = new ModelServer([
+        [
+          call(
+            'exec_command',
+            { cmd: command, yield_time_ms: 25_000 },
+            { callId: 'trusted-macos' },
+          ),
+        ],
+        [message('done')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      await using session = await agent.session({
+        environment: Environment.local({
+          cwd,
+          writableRoots: [extra],
+          writePolicy: 'trusted_workspace_write',
+          tools: ['exec_command'],
+          network: { allowedDomains: ['github.com'] },
+        }),
+      });
+      expect(
+        (await (await session.submit('Run the fixture.')).wait()).finalOutput,
+      ).toBe('done');
+      expect(await Array.fromAsync(session.items())).toContainEqual(
+        expect.objectContaining({
+          type: 'command_execution',
+          callId: 'trusted-macos',
+          exitCode: 0,
+          status: 'completed',
+        }),
+      );
+      expect(await readFile(join(cwd, 'result'), 'utf8')).toBe('workspace');
+      expect(await readFile(join(extra, 'result'), 'utf8')).toBe('grant');
+      expect(await readFile(outside, 'utf8')).toBe('outside');
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  45_000,
+);
+
+it.skipIf(!supported).for(['strict', 'trusted_workspace_write'] as const)(
+  'records the selected local proxy in child and grandchild receipts with %s',
+  { timeout: 75_000 },
+  async (writePolicy, context) => {
     const temporary = await mkdtemp(
       join(tmpdir(), 'agents-child-local-policy-'),
     );
@@ -67,6 +364,12 @@ it.skipIf(!supported)(
       const extra = join(directory, 'extra');
       const storage = join(directory, 'storage');
       await Promise.all([mkdir(cwd), mkdir(extra)]);
+      const capability = join(directory, 'host-capability');
+      await writeFile(capability, 'delegated-read');
+      const read =
+        writePolicy === 'trusted_workspace_write'
+          ? `test "$(cat ${shellQuote(capability)})" = delegated-read`
+          : `! cat ${shellQuote(capability)} >/dev/null 2>&1`;
       const identities = new Map<string, string>();
       const respond = (request: JsonObject) => {
         const metadata = request.client_metadata as Record<string, string>;
@@ -90,7 +393,9 @@ it.skipIf(!supported)(
           return [
             call(
               'exec_command',
-              { cmd: 'test -n "$HTTP_PROXY" && printf "proxy active"' },
+              {
+                cmd: `test -n "$HTTP_PROXY" && ${read} && printf "proxy active"`,
+              },
               { callId: 'probe-proxy' },
             ),
           ];
@@ -125,6 +430,7 @@ it.skipIf(!supported)(
             environment: Environment.local({
               cwd,
               writableRoots: [extra],
+              writePolicy,
               tools: ['exec_command', 'write_stdin', 'apply_patch'],
               network: {
                 allowedDomains: ['allowed.example.invalid'],
@@ -161,6 +467,7 @@ it.skipIf(!supported)(
         expect(new Set(identities.keys())).toEqual(
           new Set(['/root', '/root/alpha', '/root/alpha/grandchild']),
         );
+        let expectedRoots: Set<string> | undefined;
         for (const id of identities.values()) {
           const [recorded] = await Array.fromAsync(
             session.turns(id === session.id ? {} : { subagentId: id }),
@@ -176,9 +483,12 @@ it.skipIf(!supported)(
               },
             },
           });
-          expect(new Set(executor?.writableRoots)).toEqual(
-            new Set([pathToFileURL(cwd).href, pathToFileURL(extra).href]),
-          );
+          const roots = new Set(executor?.writableRoots);
+          expect(roots.size).toBe(writePolicy === 'strict' ? 2 : 3);
+          expect(roots.has(pathToFileURL(cwd).href)).toBe(true);
+          expect(roots.has(pathToFileURL(extra).href)).toBe(true);
+          expectedRoots ??= roots;
+          expect(roots).toEqual(expectedRoots);
         }
       }
       const sessions = join(storage, 'sessions');
@@ -204,7 +514,6 @@ it.skipIf(!supported)(
       await rm(temporary, { recursive: true, force: true });
     }
   },
-  75_000,
 );
 
 it.skipIf(!supported).for(['default', 'explicit'] as const)(
@@ -1756,7 +2065,7 @@ it.skipIf(!supported)(
   30_000,
 );
 
-it.skipIf(!supported).for(['portable', 'local'] as const)(
+it.skipIf(!supported).for(['portable', 'local', 'trusted portable'] as const)(
   'applies a per-turn write policy and requires the current policy on %s restore',
   { timeout: 45_000 },
   async (kind, context) => {
@@ -1774,6 +2083,8 @@ it.skipIf(!supported).for(['portable', 'local'] as const)(
       const previousFile = join(previous, 'marker');
       const nextFile = join(next, 'marker');
       await writeFile(previousFile, 'previous');
+      const writePolicy =
+        kind === 'trusted portable' ? 'trusted_workspace_write' : 'strict';
       const command =
         `if (printf denied > "${previousFile}") 2>/dev/null; then exit 11; fi; ` +
         `printf expanded > "${nextFile}"`;
@@ -1806,11 +2117,13 @@ it.skipIf(!supported).for(['portable', 'local'] as const)(
         cwd,
         tools: ['exec_command'],
         writableRoots: [previous],
+        writePolicy,
       });
       const current = Environment.local({
         cwd,
         tools: ['exec_command'],
         writableRoots: [next],
+        writePolicy,
       });
       const storage =
         kind === 'local' ? localStorage(join(workspace, 'storage')) : undefined;
@@ -1900,6 +2213,20 @@ it.skipIf(!supported).for(['portable', 'local'] as const)(
       ).rejects.toThrow(
         /recorded executor write and network policy|applied executor policy/,
       );
+      if (writePolicy === 'trusted_workspace_write') {
+        await expect(
+          agent.session({
+            ...restore,
+            environment: Environment.local({
+              cwd,
+              tools: ['exec_command'],
+              writableRoots: [next],
+            }),
+          }),
+        ).rejects.toThrow(
+          /recorded executor write and network policy|applied executor policy/,
+        );
+      }
       expect(server.requests).toHaveLength(3);
       {
         await using resumed = await agent.session({
@@ -2374,7 +2701,7 @@ it
         process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
   )
-  .for(['portable', 'local'] as const)(
+  .for(['portable', 'local', 'trusted local'] as const)(
   'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
   { timeout: 120_000 },
   async (route) => {
@@ -2522,11 +2849,14 @@ it
         instructions: 'Work.',
       });
       const storage =
-        route === 'local' ? localStorage(join(base, 'storage')) : undefined;
+        route === 'portable' ? undefined : localStorage(join(base, 'storage'));
+      const writePolicy =
+        route === 'trusted local' ? 'trusted_workspace_write' : 'strict';
       const environment = (roots: string[]) =>
         Environment.local({
           cwd: linked,
           writableRoots: roots,
+          writePolicy,
           tools: ['exec_command'],
           network,
         });
@@ -2596,6 +2926,7 @@ it
           environment: Environment.local({
             cwd: linked,
             writableRoots: expanded,
+            writePolicy,
             tools: ['exec_command'],
             network: { ...network, allowedDomains: ['different.invalid'] },
           }),
@@ -2609,13 +2940,37 @@ it
         environment: environment(expanded),
       });
       const reopened = await run(resumed, 'resumed');
-      expect(new Set(initial?.writableRoots)).toEqual(
-        new Set([linked, ...first].map((path) => pathToFileURL(path).href)),
-      );
-      expect(new Set(updated?.writableRoots)).toEqual(
-        new Set([linked, ...expanded].map((path) => pathToFileURL(path).href)),
-      );
-      expect(reopened).toEqual(updated);
+      const checkRoots = (
+        actual: readonly string[] | undefined,
+        paths: string[],
+      ) => {
+        const granted = new Set(paths.map((path) => pathToFileURL(path).href));
+        const temp = actual?.filter((path) => !granted.has(path)) ?? [];
+        expect(new Set(actual?.filter((path) => !temp.includes(path)))).toEqual(
+          granted,
+        );
+        expect(temp).toHaveLength(writePolicy === 'strict' ? 0 : 1);
+        return temp[0];
+      };
+      const initialTemp = checkRoots(initial?.writableRoots, [
+        linked,
+        ...first,
+      ]);
+      const updatedTemp = checkRoots(updated?.writableRoots, [
+        linked,
+        ...expanded,
+      ]);
+      const reopenedTemp = checkRoots(reopened?.writableRoots, [
+        linked,
+        ...expanded,
+      ]);
+      expect(updatedTemp).toBe(initialTemp);
+      if (writePolicy === 'trusted_workspace_write') {
+        expect(reopenedTemp).not.toBe(updatedTemp);
+        expect(reopened?.networkPolicy).toEqual(updated?.networkPolicy);
+      } else {
+        expect(reopened).toEqual(updated);
+      }
       expect(hits).toEqual(['/initial', '/expanded', '/resumed']);
       expect(git(linked, 'rev-parse', 'HEAD')).not.toBe(linkedHead);
       expect(git(sibling, 'rev-parse', 'HEAD')).not.toBe(siblingHead);

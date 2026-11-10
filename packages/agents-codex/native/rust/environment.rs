@@ -25,7 +25,9 @@ use codex_protocol::capabilities::{CapabilityRootLocation, SelectedCapabilityRoo
 use codex_protocol::config_types::{
     ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit, WindowsSandboxLevel,
 };
-use codex_protocol::models::{PermissionProfile, PermissionProfileSnapshot, ResponseItem};
+use codex_protocol::models::{
+    ManagedFileSystemPermissions, PermissionProfile, PermissionProfileSnapshot, ResponseItem,
+};
 use codex_protocol::permissions::{
     FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSpecialPath,
     NetworkSandboxPolicy,
@@ -45,6 +47,9 @@ use tokio_tungstenite::tungstenite::{Error as WebSocketError, error::TlsError};
 #[cfg(target_os = "linux")]
 #[path = "linux_apparmor_probe.rs"]
 mod linux_apparmor_probe;
+#[path = "local_command_path.rs"]
+mod local_command_path;
+use local_command_path::LOCAL_HELPER_PATH;
 
 pub async fn for_unattached_threads(config: &Config) -> Result<EnvironmentManager> {
     local_environment_manager(config, /*restricted*/ false).await
@@ -67,7 +72,7 @@ async fn local_environment_manager(
     )?;
     let paths = if restricted {
         let paths = paths
-            .with_file_system_helper_env(local_command_env())
+            .with_file_system_helper_env(local_helper_env())
             .with_join_unreturned_local_exec_on_interrupt();
         #[cfg(target_os = "macos")]
         let paths = paths.with_restricted_macos_process_sandbox();
@@ -83,11 +88,45 @@ async fn local_environment_manager(
     )?)
 }
 
-const LOCAL_COMMAND_PATH: &str = "/usr/bin:/bin";
-
-fn local_command_env() -> HashMap<String, String> {
+fn local_helper_env() -> HashMap<String, String> {
     // The Linux sandbox helper resolves bubblewrap from PATH before isolation.
-    HashMap::from([("PATH".to_owned(), LOCAL_COMMAND_PATH.to_owned())])
+    HashMap::from([("PATH".to_owned(), LOCAL_HELPER_PATH.to_owned())])
+}
+
+fn trusted_command_env(temp: &Path) -> Result<HashMap<String, String>> {
+    let mut env = local_helper_env();
+    for key in [
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "TERM",
+    ] {
+        if let Ok(value) = std::env::var(key) {
+            env.insert(key.to_owned(), value);
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        #[cfg(target_os = "linux")]
+        let path_key = local_command_path::COMMAND_PATH_ENV;
+        #[cfg(not(target_os = "linux"))]
+        let path_key = "PATH";
+        env.insert(path_key.to_owned(), path);
+    }
+    let temp = temp
+        .to_str()
+        .context("Trusted local command temp requires a UTF-8 path")?;
+    env.insert("TMPDIR".to_owned(), temp.to_owned());
+    Ok(env)
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalWritePolicy {
+    TrustedWorkspaceWrite,
 }
 
 #[derive(Clone, Deserialize)]
@@ -102,6 +141,7 @@ pub struct EnvironmentOptions {
     connect_timeout: Option<f64>,
     capability_directories: Option<Vec<PathUri>>,
     writable_roots: Option<Vec<PathUri>>,
+    write_policy: Option<LocalWritePolicy>,
     #[serde(default)]
     read_only: bool,
     #[serde(default, deserialize_with = "deserialize_mounts")]
@@ -181,6 +221,7 @@ pub(crate) struct StrictExecutorWrites {
     root_pins: HashMap<Vec<u8>, PathUri>,
     has_storage_mounts: bool,
     read_only: bool,
+    trusted_workspace_write: bool,
 }
 
 impl StrictExecutorWrites {
@@ -276,6 +317,21 @@ impl EnvironmentOptions {
         self.local || self.writable_roots.is_some()
     }
 
+    pub(crate) fn trusted_command_temp(&self) -> Result<Option<tempfile::TempDir>> {
+        if self.write_policy.is_none() {
+            return Ok(None);
+        }
+        let parent = std::env::temp_dir()
+            .canonicalize()
+            .context("Could not resolve the trusted local command temp directory")?;
+        Ok(Some(
+            tempfile::Builder::new()
+                .prefix("agents-command-")
+                .tempdir_in(parent)
+                .context("Could not create a scoped trusted local command temp directory")?,
+        ))
+    }
+
     pub fn trusted_root(&self) -> &PathUri {
         &self.cwd
     }
@@ -346,6 +402,20 @@ impl EnvironmentOptions {
     }
 
     pub(crate) fn check_config(&self, config: &Config) -> Result<()> {
+        if self.write_policy.is_some() {
+            ensure!(
+                self.local,
+                "Trusted workspace writes require a local Environment"
+            );
+            ensure!(
+                !self.read_only,
+                "Read-only execution requires strict write policy"
+            );
+            ensure!(
+                cfg!(any(target_os = "linux", target_os = "macos")),
+                "Trusted workspace writes require Linux or macOS"
+            );
+        }
         if self.read_only {
             ensure!(
                 self.strict_writes(),
@@ -539,6 +609,7 @@ impl EnvironmentOptions {
         &self,
         config: &Config,
         manager: &EnvironmentManager,
+        trusted_temp: Option<&Path>,
     ) -> Result<()> {
         let environment = manager
             .get_environment(self.id())
@@ -552,7 +623,9 @@ impl EnvironmentOptions {
         })?;
         if self.strict_writes() || self.network.is_some() {
             let info = executor_info(&environment).await?;
-            let (_, profile) = self.profile(config, &environment, &info, None).await?;
+            let (_, profile) = self
+                .profile(config, &environment, &info, None, trusted_temp)
+                .await?;
             self.check_network_target(&info, &profile)?;
             if self.local {
                 probe_local_sandbox(&environment, &self.cwd, profile).await?;
@@ -597,7 +670,12 @@ impl EnvironmentOptions {
         environment: &Environment,
         info: &EnvironmentInfo,
         local_storage: Option<&Path>,
+        trusted_temp: Option<&Path>,
     ) -> Result<(Option<StrictExecutorWrites>, PermissionProfile)> {
+        ensure!(
+            self.write_policy.is_some() == trusted_temp.is_some(),
+            "Trusted workspace writes require a scoped command temp directory"
+        );
         if self.strict_writes() {
             let mounts = self.validate_storage_mounts(config, local_storage)?;
             let (strict, profile) = strict_write_profile(
@@ -609,6 +687,7 @@ impl EnvironmentOptions {
                 &mounts,
                 local_storage,
                 self.read_only,
+                trusted_temp,
             )
             .await?;
             Ok((Some(strict), profile))
@@ -622,6 +701,7 @@ impl EnvironmentOptions {
         config: &Config,
         manager: &EnvironmentManager,
         local_storage: Option<&Path>,
+        trusted_temp: Option<&Path>,
     ) -> Result<(TurnEnvironmentSelection, Option<StrictExecutorWrites>)> {
         self.check_config(config)?;
         let environment = manager
@@ -633,7 +713,7 @@ impl EnvironmentOptions {
         let (strict, profile, windows_executor) = if needs_info {
             let info = executor_info(&environment).await?;
             let (strict, profile) = self
-                .profile(config, &environment, &info, local_storage)
+                .profile(config, &environment, &info, local_storage, trusted_temp)
                 .await?;
             self.check_network_target(&info, &profile)?;
             (
@@ -666,7 +746,11 @@ impl EnvironmentOptions {
         let shell_environment_policy = if self.local {
             ShellEnvironmentPolicy {
                 inherit: ShellEnvironmentPolicyInherit::None,
-                r#set: local_command_env(),
+                r#set: if let Some(temp) = trusted_temp {
+                    trusted_command_env(temp)?
+                } else {
+                    local_helper_env()
+                },
                 ..Default::default()
             }
         } else {
@@ -850,6 +934,7 @@ async fn strict_write_profile(
     mounts: &[PathUri],
     local_storage: Option<&Path>,
     read_only: bool,
+    trusted_temp: Option<&Path>,
 ) -> Result<(StrictExecutorWrites, PermissionProfile)> {
     ensure!(
         matches!(
@@ -911,18 +996,50 @@ async fn strict_write_profile(
             LocalWriteRoots::new(&local_roots).context("could not verify local write roots")?;
         check_local_helper_write_roots(config, &local_roots)?;
         check_local_session_write_roots(config, &local_roots, local_storage)?;
-        for entry in &mut filesystem_policy.entries {
-            if entry.access == FileSystemAccessMode::Read
-                && matches!(
-                    entry.path,
-                    FileSystemPath::Special {
-                        value: FileSystemSpecialPath::Root
-                    }
-                )
-            {
-                entry.path = FileSystemPath::Special {
+        if let Some(temp) = trusted_temp {
+            let error = "Could not verify the scoped trusted local command temp directory";
+            let resolved = resolve_local_path(temp, false, error, |_| Ok(()))?;
+            ensure!(resolved == temp && temp.is_dir(), "{error}");
+            ensure!(
+                !local_roots.contains_entry(temp)? && !local_roots.has_root_at_or_below(temp)?,
+                "Keep the scoped command temp directory separate from the executor write roots"
+            );
+            let path = PathUri::from_host_native_path(temp).context(error)?;
+            // Mark the Session-owned grant so durable comparisons can omit it.
+            filesystem_policy
+                .entries
+                .push(FileSystemSandboxEntry::skip_missing_path(
+                    FileSystemPath::Path { path },
+                    FileSystemAccessMode::Write,
+                ));
+            // Retain the platform defaults, including Seatbelt account lookup
+            // rules, when private exclusions make Root a restricted read grant.
+            filesystem_policy.entries.push(FileSystemSandboxEntry::new(
+                FileSystemPath::Special {
                     value: FileSystemSpecialPath::Minimal,
-                };
+                },
+                FileSystemAccessMode::Read,
+            ));
+            for path in trusted_auth_denials(config, &local_roots)? {
+                filesystem_policy.entries.push(FileSystemSandboxEntry::new(
+                    FileSystemPath::Path { path },
+                    FileSystemAccessMode::Deny,
+                ));
+            }
+        } else {
+            for entry in &mut filesystem_policy.entries {
+                if entry.access == FileSystemAccessMode::Read
+                    && matches!(
+                        entry.path,
+                        FileSystemPath::Special {
+                            value: FileSystemSpecialPath::Root
+                        }
+                    )
+                {
+                    entry.path = FileSystemPath::Special {
+                        value: FileSystemSpecialPath::Minimal,
+                    };
+                }
             }
         }
     }
@@ -958,9 +1075,63 @@ async fn strict_write_profile(
             root_pins,
             has_storage_mounts: !mounts.is_empty(),
             read_only,
+            trusted_workspace_write: trusted_temp.is_some(),
         },
         profile,
     ))
+}
+
+fn trusted_auth_denials(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<Vec<PathUri>> {
+    const RESOLVE_ERROR: &str =
+        "Could not protect the trusted local executor's private authentication files";
+    const OVERLAP_ERROR: &str =
+        "Keep private authentication files outside the executor write roots";
+    let runtime_home = config.codex_home.as_path();
+    let runtime_home = resolve_local_path(runtime_home, false, RESOLVE_ERROR, |_| Ok(()))?;
+    ensure!(runtime_home.is_dir(), "{RESOLVE_ERROR}");
+    let resolved_codex_home =
+        codex_core::config::find_codex_home().map_err(|_| anyhow::anyhow!(RESOLVE_ERROR))?;
+    // Preserve the override's lexical path so the overlap check sees each
+    // symlink before Core's canonicalization.
+    let codex_home = match std::env::var("CODEX_HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+    {
+        Some(home) => std::path::absolute(home).context(RESOLVE_ERROR)?,
+        None => resolved_codex_home.to_path_buf(),
+    };
+    let default_home = std::env::home_dir().context(RESOLVE_ERROR)?.join(".codex");
+    let mut denied = vec![runtime_home.clone()];
+    // The embedded runtime keeps its private home separate. Core can also
+    // find the Codex login and MCP OAuth fallback files in the user's home.
+    for home in [
+        runtime_home.as_path(),
+        codex_home.as_path(),
+        default_home.as_path(),
+    ] {
+        for name in ["auth.json", ".credentials.json"] {
+            let path = resolve_local_protected_path(
+                roots,
+                &home.join(name),
+                RESOLVE_ERROR,
+                OVERLAP_ERROR,
+            )?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            ensure!(
+                linked_local_regular_file(path.clone())
+                    .map_err(|_| anyhow::anyhow!(RESOLVE_ERROR))?
+                    .is_none(),
+                "{RESOLVE_ERROR}: a credential file has multiple hard links"
+            );
+            if !path.starts_with(&runtime_home) && !denied.contains(&path) {
+                denied.push(path);
+            }
+        }
+    }
+    denied
+        .iter()
+        .map(|path| PathUri::from_host_native_path(path).context(RESOLVE_ERROR))
+        .collect()
 }
 
 fn check_local_helper_write_roots(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<()> {
@@ -975,7 +1146,7 @@ fn check_local_helper_write_roots(config: &Config, roots: &LocalWriteRoots<'_>) 
         config.main_execve_wrapper_exe.as_deref(),
         code_mode.as_deref(),
     ];
-    let system_search = LOCAL_COMMAND_PATH
+    let system_search = LOCAL_HELPER_PATH
         .split(':')
         .filter(|_| cfg!(target_os = "linux"))
         .map(Path::new);
@@ -1395,6 +1566,24 @@ pub(crate) async fn replace_writable_roots(
     let EnvironmentConfigState::Ready(settings) = &mut selection.config else {
         anyhow::bail!("writable_roots requires a ready Session Environment")
     };
+    let trusted_temp = if previous.trusted_workspace_write {
+        ensure!(
+            local,
+            "Trusted workspace writes require a local Environment"
+        );
+        // Strict Sessions reject raw selection overrides. The SDK sets TMPDIR
+        // in the ready selection from the current engine's command temp.
+        Some(
+            settings
+                .shell_environment_policy
+                .r#set
+                .get("TMPDIR")
+                .map(Path::new)
+                .context("Trusted workspace writes require a scoped command temp directory")?,
+        )
+    } else {
+        None
+    };
     let environment = manager
         .get_environment(&selection.environment_id)
         .context("selected executor was not registered")?;
@@ -1409,6 +1598,7 @@ pub(crate) async fn replace_writable_roots(
         &[],
         local_storage,
         previous.read_only,
+        trusted_temp,
     )
     .await?;
     strict.check_pins(previous)?;
@@ -1468,21 +1658,72 @@ fn digest(policy: &[serde_json::Value]) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(policy)?)))
 }
 
+// Core receipts retain the effective sandbox. Restore compares caller authority
+// and reconstructs the private denials and temp grant from the current runtime.
+fn declared_trusted_policy(mut receipt: Value) -> Option<Value> {
+    if receipt["transport"] != "local" {
+        return None;
+    }
+    let mut profile: PermissionProfile =
+        serde_json::from_value(receipt.get("permission_profile")?.clone()).ok()?;
+    let PermissionProfile::Managed {
+        file_system: ManagedFileSystemPermissions::Restricted { entries, .. },
+        ..
+    } = &mut profile
+    else {
+        return None;
+    };
+    let mut temp = entries.iter().filter_map(|entry| match &entry.path {
+        FileSystemPath::Path { path }
+            if entry.access == FileSystemAccessMode::Write && entry.skips_missing_path() =>
+        {
+            Some(path.to_string())
+        }
+        _ => None,
+    });
+    let temp_root = temp.next()?;
+    if temp.next().is_some() {
+        return None;
+    }
+    let roots = receipt.get_mut("writable_roots")?.as_array_mut()?;
+    let before = roots.len();
+    roots.retain(|root| root.as_str() != Some(&temp_root));
+    if roots.len() + 1 != before {
+        return None;
+    }
+    entries.retain(|entry| {
+        entry.access != FileSystemAccessMode::Deny
+            && !(entry.access == FileSystemAccessMode::Write && entry.skips_missing_path())
+    });
+    receipt["permission_profile"] = serde_json::to_value(profile).ok()?;
+    Some(receipt)
+}
+
+fn declared_executor_policies(values: Vec<Value>, trusted: bool) -> Result<Vec<Value>> {
+    if trusted {
+        values
+            .into_iter()
+            .map(|value| {
+                declared_trusted_policy(value).context("Invalid trusted local executor policy")
+            })
+            .collect()
+    } else {
+        Ok(values)
+    }
+}
+
 pub(crate) async fn checkpoint_policy(
     thread: &codex_core_api::CodexThread,
 ) -> Result<Option<String>> {
-    if thread
-        .thread_extension_data()
-        .get::<StrictExecutorWrites>()
-        .is_none()
-    {
+    let Some(strict) = thread.thread_extension_data().get::<StrictExecutorWrites>() else {
         return Ok(None);
-    }
+    };
     let selections = thread.environment_selections().await;
     let config = thread.config().await;
-    Ok(Some(digest(&executor_policy_values(
-        &selections,
-        &config,
+    let values = executor_policy_values(&selections, &config)?;
+    Ok(Some(digest(&declared_executor_policies(
+        values,
+        strict.trusted_workspace_write,
     )?)?))
 }
 
@@ -1491,16 +1732,20 @@ pub(crate) fn check_checkpoint_policy(
     startup: &codex_core_api::StartThreadOptions,
 ) -> Result<()> {
     if let Some(expected) = recorded {
+        let strict = startup
+            .thread_extension_init
+            .get::<StrictExecutorWrites>()
+            .context("Restore requires the recorded executor write and network policy")?;
+        let values = executor_policy_values(
+            startup.environments.as_deref().unwrap_or_default(),
+            &startup.config,
+        )?;
         ensure!(
-            startup
-                .thread_extension_init
-                .get::<StrictExecutorWrites>()
-                .is_some()
-                && expected
-                    == digest(&executor_policy_values(
-                        startup.environments.as_deref().unwrap_or_default(),
-                        &startup.config,
-                    )?)?,
+            expected
+                == digest(&declared_executor_policies(
+                    values,
+                    strict.trusted_workspace_write
+                )?)?,
             "Restore requires the recorded executor write and network policy"
         );
     }
@@ -1601,19 +1846,25 @@ fn is_legacy_executor_profile(profile: &PermissionProfile) -> bool {
 pub(crate) struct LocalResumeExecutorPolicy {
     values: Vec<serde_json::Value>,
     strict: bool,
+    trusted: bool,
 }
 
 impl LocalResumeExecutorPolicy {
     pub(crate) fn from_startup(startup: &codex_core_api::StartThreadOptions) -> Result<Self> {
+        let strict = startup.thread_extension_init.get::<StrictExecutorWrites>();
+        let trusted = strict
+            .as_ref()
+            .is_some_and(|strict| strict.trusted_workspace_write);
         Ok(Self {
-            values: executor_policy_values(
-                startup.environments.as_deref().unwrap_or_default(),
-                &startup.config,
+            values: declared_executor_policies(
+                executor_policy_values(
+                    startup.environments.as_deref().unwrap_or_default(),
+                    &startup.config,
+                )?,
+                trusted,
             )?,
-            strict: startup
-                .thread_extension_init
-                .get::<StrictExecutorWrites>()
-                .is_some(),
+            strict: strict.is_some(),
+            trusted,
         })
     }
 
@@ -1666,7 +1917,12 @@ impl LocalResumeExecutorPolicy {
             } else if strict || self.strict {
                 // A strict reopen requires durable evidence of the recorded strict mode.
                 strict_flag.and_then(Value::as_bool) == Some(self.strict)
-                    && *previous == self.values
+                    && if self.trusted {
+                        declared_executor_policies(previous.clone(), true)
+                            .is_ok_and(|previous| previous == self.values)
+                    } else {
+                        *previous == self.values
+                    }
             } else if self.values.is_empty() {
                 // A durable session without an Environment has no executor.
                 previous.iter().all(is_implicit_remote_policy)
@@ -1772,13 +2028,9 @@ pub(crate) async fn context_candidate_runtime(
     thread: &codex_core_api::CodexThread,
     runtime: &str,
 ) -> Result<String> {
-    if thread
-        .thread_extension_data()
-        .get::<StrictExecutorWrites>()
-        .is_none()
-    {
+    let Some(strict) = thread.thread_extension_data().get::<StrictExecutorWrites>() else {
         return Ok(runtime.to_owned());
-    }
+    };
     let selections = thread.environment_selections().await;
     let [selection] = selections.as_slice() else {
         anyhow::bail!("strict executor context change requires one selected Environment");
@@ -1791,6 +2043,11 @@ pub(crate) async fn context_candidate_runtime(
         local_network.as_ref(),
     )
     .context("Selected executor policy is unavailable")?;
+    let receipt = if strict.trusted_workspace_write {
+        declared_trusted_policy(receipt).context("Invalid trusted local executor policy")?
+    } else {
+        receipt
+    };
     let mut runtime: serde_json::Value = serde_json::from_str(runtime)?;
     let environment = runtime
         .get_mut("environment")
@@ -1840,16 +2097,42 @@ async fn probe_local_sandbox(
             .await
             .context("local executor could not establish managed macOS command cleanup")?;
     }
-    // The direct local backend has no transport handshake. A fixed command
-    // verifies that this process can launch the requested sandbox.
+    // The direct local backend has no handshake. Verify sandbox startup and,
+    // for trusted profiles, that the backend actually applies private read masks.
+    let mut private_paths = Vec::new();
+    for entry in profile.file_system_sandbox_policy().entries {
+        if entry.access == FileSystemAccessMode::Deny
+            && let FileSystemPath::Path { path } = entry.path
+        {
+            let path = path.to_abs_path().context(
+                "Could not protect the trusted local executor's private authentication files",
+            )?;
+            private_paths.push(
+                path.to_str()
+                    .context("Trusted local executor authentication paths must be UTF-8")?
+                    .to_owned(),
+            );
+        }
+    }
+    let checks_private_auth = !private_paths.is_empty();
+    let mut argv = vec!["/bin/sh".to_owned(), "-c".to_owned()];
+    if checks_private_auth {
+        argv.extend([
+            format!(r#"for path; do if ( : < "$path" ) 2>/dev/null; then exit {PRIVATE_AUTH_READABLE}; fi; done"#),
+            "sdk-local-sandbox-readiness".to_owned(),
+        ]);
+        argv.extend(private_paths);
+    } else {
+        argv.push("exit 0".to_owned());
+    }
     let params = ExecParams {
         process_id: ProcessId::new("sdk-local-sandbox-readiness"),
         metadata: None,
-        argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), "exit 0".to_owned()],
+        argv,
         cwd: cwd.clone(),
         env_policy: None,
         shell_snapshot: None,
-        env: local_command_env(),
+        env: local_helper_env(),
         tty: false,
         pipe_stdin: false,
         arg0: None,
@@ -1880,6 +2163,17 @@ async fn probe_local_sandbox(
         let mut readiness =
             LocalSandboxReadiness::new(cfg!(target_os = "linux") && sandbox_matches);
         while let Ok(event) = events.recv().await {
+            if checks_private_auth
+                && matches!(
+                    event,
+                    ExecProcessEvent::Exited {
+                        exit_code: PRIVATE_AUTH_READABLE,
+                        ..
+                    }
+                )
+            {
+                return LocalSandboxOutcome::PrivateAuthReadable;
+            }
             if let Some(outcome) = readiness.observe(event) {
                 return outcome;
             }
@@ -1891,6 +2185,11 @@ async fn probe_local_sandbox(
         return Ok(());
     }
     let _ = process.process.terminate().await;
+    if matches!(outcome, Ok(LocalSandboxOutcome::PrivateAuthReadable)) {
+        anyhow::bail!(
+            "The installed local executor sandbox cannot protect private authentication files"
+        );
+    }
     #[cfg(target_os = "linux")]
     if matches!(outcome, Ok(LocalSandboxOutcome::PossibleAppArmorDenial))
         && confirm_linux_apparmor_denial(environment, deadline).await
@@ -1911,8 +2210,11 @@ async fn probe_local_sandbox(
 enum LocalSandboxOutcome {
     Ready,
     Failed,
+    PrivateAuthReadable,
     PossibleAppArmorDenial,
 }
+
+const PRIVATE_AUTH_READABLE: i32 = 42;
 
 const BWRAP_APPARMOR_STDERR: &[u8] =
     b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n";
@@ -2407,6 +2709,7 @@ mod tests {
             root_pins: HashMap::from([(write_root_key(&cwd), cwd)]),
             has_storage_mounts: false,
             read_only: false,
+            trusted_workspace_write: false,
         };
         let recorded = store.join("rollout.jsonl");
         let compressed = recorded.with_extension("jsonl.zst");
@@ -2464,6 +2767,7 @@ mod tests {
         let policy = LocalResumeExecutorPolicy {
             values,
             strict: true,
+            trusted: false,
         };
         let legacy = context(json!({ "thread_id": id }));
         assert!(policy.validate(&[older.clone(), legacy], id).is_ok());

@@ -154,6 +154,7 @@ const localEnvironmentSchema = remoteEnvironmentSchema
   .omit({ url: true, headers: true, connect_timeout: true })
   .extend({
     local: z.literal(true),
+    write_policy: z.literal('trusted_workspace_write').optional(),
     mounts: z.array(storageMountWireSchema).optional(),
   });
 const environmentSchema = z.union([
@@ -234,8 +235,8 @@ export type LocalEnvironmentOptions<Context = unknown> = Omit<
   EnvironmentOptions<Context>,
   'url' | 'headers' | 'connectTimeout' | 'mounts' | 'writePolicy'
 > & {
-  /** Local environments only support strict writes. */
-  writePolicy?: 'strict';
+  /** Trusted mode permits host reads and toolchain discovery with scoped writes. */
+  writePolicy?: 'strict' | 'trusted_workspace_write';
   /** Linux only: canonical same-path read-only local_bind mounts. */
   mounts?: readonly LocalStorageMount[];
 };
@@ -243,8 +244,9 @@ export type LocalEnvironmentOptions<Context = unknown> = Omit<
 export class Environment<Context = any> {
   /**
    * Execute in the local Linux or macOS sandbox using packaged helpers.
-   * Commands can read the workspace, declared writable roots, and platform
-   * runtime files. They start with a system PATH and no inherited host variables.
+   * With strict writes, commands can read the workspace, declared writable
+   * roots, and platform runtime files. They start with a system PATH and no
+   * inherited host variables.
    * Install the SDK helpers outside every writable root, including the workspace.
    */
   static local<Context>(
@@ -268,7 +270,7 @@ export class Environment<Context = any> {
 
   #remoteUrl?: string;
   readonly kind: 'local' | 'remote';
-  readonly writePolicy: 'strict' | 'legacy';
+  readonly writePolicy: 'strict' | 'legacy' | 'trusted_workspace_write';
   readonly readOnly: boolean;
   /** WSS transport URL. A local Environment has no transport URL. */
   get url(): string {
@@ -308,8 +310,20 @@ export class Environment<Context = any> {
       !['linux', 'darwin'].includes(process.platform)
     )
       throw new TypeError('Read-only local execution requires Linux or macOS');
-    if (this.writePolicy !== 'strict' && this.writePolicy !== 'legacy')
-      throw new TypeError('writePolicy must be strict or legacy');
+    if (this.writePolicy === 'trusted_workspace_write') {
+      if (this.kind !== 'local')
+        throw new TypeError(
+          'Trusted workspace writes require Environment.local',
+        );
+      if (!['linux', 'darwin'].includes(process.platform))
+        throw new TypeError('Trusted workspace writes require Linux or macOS');
+    } else if (this.writePolicy !== 'strict' && this.writePolicy !== 'legacy') {
+      throw new TypeError(
+        this.kind === 'local'
+          ? 'Local writePolicy must be strict or trusted_workspace_write'
+          : 'writePolicy must be strict or legacy',
+      );
+    }
     if (this.writePolicy === 'legacy') {
       if (this.kind === 'local')
         throw new TypeError(
@@ -472,6 +486,9 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
       ? { local: true }
       : { url: environment.url, headers: environment.headers }),
     cwd: environment.cwd,
+    ...(environment.writePolicy === 'trusted_workspace_write'
+      ? { write_policy: environment.writePolicy }
+      : {}),
     ...(environment.readOnly ? { read_only: true } : {}),
     ...(environment.mounts === undefined
       ? {}

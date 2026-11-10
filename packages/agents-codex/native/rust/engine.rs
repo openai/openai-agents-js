@@ -50,6 +50,7 @@ pub struct EngineState {
     telemetry: Option<crate::telemetry::EmissionSettings>,
     pub(crate) config_json: String,
     pub(crate) runtime_json: String,
+    trusted_command_temp: std::sync::Mutex<Option<tempfile::TempDir>>,
     private_system_origin: Option<std::path::PathBuf>,
     pub(crate) closed: AtomicBool,
     pub(crate) retired: AtomicBool,
@@ -756,9 +757,20 @@ impl EngineState {
                 .map_err(|_| anyhow::anyhow!("candidate environment owner poisoned"))? =
                 Some(crate::RuntimeOwned::new(environment.clone()));
         }
-        if let Some(options) = &environment_options {
-            options.check_ready(&config, &environment).await?;
-        }
+        let trusted_command_temp = match &environment_options {
+            Some(options) => {
+                let temp = options.trusted_command_temp()?;
+                options
+                    .check_ready(
+                        &config,
+                        &environment,
+                        temp.as_ref().map(tempfile::TempDir::path),
+                    )
+                    .await?;
+                temp
+            }
+            None => None,
+        };
         let project_search = config::project_search(&runtime_json)?;
         let manager = Arc::new_cyclic(|weak| {
             let extensions = extensions::build(
@@ -812,6 +824,7 @@ impl EngineState {
             telemetry,
             config_json,
             runtime_json,
+            trusted_command_temp: std::sync::Mutex::new(trusted_command_temp),
             private_system_origin,
             closed: AtomicBool::new(false),
             retired: AtomicBool::new(false),
@@ -1635,6 +1648,9 @@ impl EngineState {
                 }
             };
             diagnostics.extend(canonical);
+            if diagnostics.is_empty() {
+                self.release_trusted_command_temp();
+            }
             return Ok((!diagnostics.is_empty()).then(|| diagnostics.join("; ")));
         }
         // Fork cleanup and manager shutdown remove completed threads. Preserve
@@ -1738,8 +1754,18 @@ impl EngineState {
         if let Some(diagnostic) = diagnostic {
             fork_diagnostics.push(diagnostic);
         }
+        if fork_diagnostics.is_empty() {
+            self.release_trusted_command_temp();
+        }
         self.closed.store(true, Ordering::Release);
         Ok((!fork_diagnostics.is_empty()).then(|| fork_diagnostics.join("; ")))
+    }
+
+    fn release_trusted_command_temp(&self) {
+        self.trusted_command_temp
+            .lock()
+            .expect("trusted command temp poisoned")
+            .take();
     }
 
     pub(crate) fn register_native_thread(
@@ -2034,11 +2060,18 @@ impl EngineState {
             environment.restrict_network_approval(&mut startup.config)?;
             environment.check_config(&startup.config)?;
             if startup.environments.is_none() {
+                let trusted_temp = self
+                    .trusted_command_temp
+                    .lock()
+                    .expect("trusted command temp poisoned")
+                    .as_ref()
+                    .map(|temp| temp.path().to_owned());
                 let (selection, strict) = environment
                     .selection(
                         &startup.config,
                         &self.manager.environment_manager(),
                         self.local_storage_home(),
+                        trusted_temp.as_deref(),
                     )
                     .await?;
                 environment.configure_local_proxy(&mut startup.config, &selection)?;
