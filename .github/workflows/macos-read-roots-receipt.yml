@@ -1,4 +1,4 @@
-name: Diagnose stock macOS Go system trust in one strict SDK Session
+name: Compare stock macOS Go system trust in strict and trusted SDK Sessions
 
 on:
   push:
@@ -21,9 +21,12 @@ jobs:
       run:
         shell: bash
     env:
-      SDK_COMMIT: 3a04fcda5e74b11bc5668bd07d0715fb38bc3f8e
-      SDK_TREE: 2a023a8af4539af69cadb89213834d0e2fb11dd3
-      NATIVE_INPUTS: 0e8037e90a550263d510f2ef54da1642b5234ef9168c087810638c04ff2857a9
+      # Exact merge preview for draft #2352.
+      SDK_COMMIT: 11edcbb2be4eb2e43179aac133cbe04d8234212a
+      SDK_BASE: fae5fe6bf594e5f3234da4c5039bfb00f9b82a50
+      SDK_HEAD: 63f03f79c6ecfcfddda97c67510baaf5b5a7d662
+      SDK_TREE: 159057f420c7581f35c9c87030cec7a08eafff9f
+      NATIVE_INPUTS: 95ea144d6d19acb8fdf60e1a8e5599d08831e400453be7f07e498d6035e19b0e
       ALPHA_VERSION: 0.22.0-alpha.2
       GO_VERSION: '1.26.10'
       GO_SOURCE_SHA256: ab88e2580dd1d489ade900ce6a4310c2bd3d4c73aba5939e3f8bd66fb3fdfc99
@@ -31,6 +34,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.SDK_COMMIT }}
+          fetch-depth: 2
           persist-credentials: false
       - name: Check out the diagnostics from the triggering commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -66,10 +70,11 @@ jobs:
           import { execFileSync } from 'node:child_process';
           import { nativeInputs } from './scripts/native-bundle-inputs.mjs';
 
-          const { SDK_COMMIT, SDK_TREE, NATIVE_INPUTS } = process.env;
+          const { SDK_COMMIT, SDK_BASE, SDK_HEAD, SDK_TREE, NATIVE_INPUTS } = process.env;
           const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
           assert.equal(git('rev-parse', 'HEAD'), SDK_COMMIT);
           assert.equal(git('rev-parse', 'HEAD^{tree}'), SDK_TREE);
+          assert.equal(git('show', '-s', '--format=%P', 'HEAD'), `${SDK_BASE} ${SDK_HEAD}`);
           assert.equal(nativeInputs(), NATIVE_INPUTS);
           assert.equal(`${process.platform}-${process.arch}`, 'darwin-arm64');
           assert(process.getuid() > 0);
@@ -97,10 +102,10 @@ jobs:
           binary_digest=$(/usr/bin/shasum -a 256 < "$scratch/github-trust")
           printf '%s\n' "${binary_digest%% *}" > "$scratch/github-trust.sha256"
           printf '%s; probe SHA-256 %s\n' "$go_version" "${binary_digest%% *}"
-      - name: Restore the pinned transfer from Alpha run 42890383494
+      - name: Restore the pinned transfer from Alpha run 42903346108
         env:
           GH_TOKEN: ${{ github.token }}
-          NATIVE_ARTIFACT: '{"artifact-id":"13799113376","artifact-digest":"f8d683937ec01c14ab03d0b4504f9c598baf644dea526dbd27d9a7d1e882bc5e"}'
+          NATIVE_ARTIFACT: '{"artifact-id":"13805987392","artifact-digest":"b1cb7a2602afcb52fc635d76f29a8d6b3dce5dc252ecbbbee1f547912957dac3"}'
         run: node scripts/restore-native-bundle.mjs
       - name: Verify native products and assemble the local diagnostic starter
         run: |
@@ -140,7 +145,7 @@ jobs:
           npm_cli="$(dirname "$node_bin")/../lib/node_modules/npm/bin/npm-cli.js"
           cd "$scratch/agents-starter"
           PATH='' "$node_bin" "$npm_cli" ci --ignore-scripts --no-audit --no-fund
-      - name: Run one strict Go system probe and summarize the host unified log
+      - name: Compare one Go system probe per SDK policy with its live-listener host control
         run: |
           scratch="$RUNNER_TEMP/agents-go-trust"
           node_bin=$(command -v node)

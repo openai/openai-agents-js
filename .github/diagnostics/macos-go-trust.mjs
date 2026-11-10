@@ -20,7 +20,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 
 const execute = promisify(execFile);
 const json = async (file) => JSON.parse(await readFile(file, 'utf8'));
@@ -71,9 +71,17 @@ async function verifyInstalled(starter) {
     (await readFile(join(codex, 'native/CODEX_REVISION'), 'utf8')).trim(),
     build.codexRevision,
   );
+  const helpers = [
+    'bin/codex-code-mode-host',
+    'bin/codex-execve-wrapper',
+    'bin/codex-sdk-runtime',
+  ];
+  assert.deepEqual(Object.keys(native.products).sort(), [...helpers, 'native/codex.node']);
   for (const [relative, expected] of Object.entries(native.products)) {
     const file = join(codex, relative);
-    assert((await lstat(file)).isFile());
+    const stat = await lstat(file);
+    assert(stat.isFile() && stat.size > 0);
+    if (helpers.includes(relative)) assert(stat.mode & 0o111);
     assert.equal(await realpath(file), file);
     const hash = createHash('sha256');
     for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -139,12 +147,12 @@ async function withModel(responses, run) {
 async function readPrivate(cwd, name) {
   const file = join(cwd, name);
   const stat = await lstat(file);
-  assert(stat.isFile() && (stat.mode & 0o077) === 0);
+  assert(stat.isFile() && (stat.mode & 0o077) === 0 && stat.size <= 64 * 1024);
   return readFile(file, 'utf8');
 }
 
 function observation(data) {
-  const { go, mode, connect, http, outcome, osStatus } = JSON.parse(data);
+  const { go, mode, connect, http, outcome, osStatus, peerSha256 } = JSON.parse(data);
   assert.equal(go, goVersion);
   assert.equal(mode, 'system');
   for (const status of [connect, http]) {
@@ -155,36 +163,88 @@ function observation(data) {
   }
   assert(outcomes.includes(outcome));
 
-  const result = { connect, http, outcome };
-  if (osStatus !== undefined) {
-    assert.match(osStatus, /^-?[0-9]{1,10}$/);
-    result.osStatus = Number(osStatus);
+  const verified = outcome === 'verified';
+  const metadata = { connect, http, verified };
+  if (verified) assert(connect === 200 && http > 0 && peerSha256);
+  if (peerSha256 !== undefined) {
+    assert(Array.isArray(peerSha256) && peerSha256.length > 0);
+    for (const digest of peerSha256) assert.match(digest, sha256);
   }
-  const reproduced =
-    connect === 200 && http === 0 &&
-    outcome === 'certificate-verification-failed' && result.osStatus === -26276;
-  return { ...result, result: reproduced ? 'reproduced' : 'different-tls-observation' };
+  if (osStatus !== undefined) {
+    assert.equal(outcome, 'certificate-verification-failed');
+    assert.match(osStatus, /^-?[0-9]{1,10}$/);
+    const code = Number(osStatus);
+    assert(code >= -(2 ** 31) && code < 2 ** 31);
+    metadata.osStatus = code;
+  }
+  return { metadata, peerSha256 };
+}
+
+function compare(writePolicy, child, host) {
+  const bothPresented = child?.peerSha256 !== undefined && host?.peerSha256 !== undefined;
+  const samePresentedChain = bothPresented && isDeepStrictEqual(child.peerSha256, host.peerSha256);
+  let result;
+  if (!host?.metadata.verified || (bothPresented && !samePresentedChain)) {
+    result = 'control-drift';
+  } else if (child?.metadata.verified) {
+    result = 'verified-tls';
+  } else if (writePolicy === 'trusted_workspace_write') {
+    result = 'trusted-tls-failure';
+  } else if (samePresentedChain && child.metadata.connect === 200 &&
+      child.metadata.http === 0 && child.metadata.osStatus === -26276) {
+    result = 'strict-baseline-reproduced';
+  } else {
+    result = 'strict-tls-failure';
+  }
+  return { result, samePresentedChain, child: child?.metadata, host: host?.metadata };
+}
+
+async function optionalReceipt(read) {
+  try {
+    return await read();
+  } catch {
+    return undefined;
+  }
+}
+
+async function readListener(cwd) {
+  const proxy = await readPrivate(cwd, '.sdk-loopback-proxy');
+  const match = /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})\/?\n$/.exec(proxy);
+  assert(match && match[0] === proxy && Number(match[1]) <= 65535);
+  return proxy.slice(0, -1);
 }
 
 const sandboxEmitters = ['/kernel', '/System/Library/Kernels/kernel', '/usr/libexec/sandboxd'];
 const trustEmitters = ['/usr/libexec/trustd', '/usr/libexec/trustd.agent'];
 const sandboxOperation = /^(mach-lookup|mach-register|file-read-(?:data|metadata|xattr)|file-write-(?:data|create|unlink)|sysctl-read|network-outbound)(?=$|\s)\s*/;
-const publicServices = new Set([
-  'com.apple.trustd',
-  'com.apple.trustd.agent',
-  'com.apple.TrustEvaluationAgent',
-  'com.apple.securityd.xpc',
-  'com.apple.securityd.systemkeychain',
-  'com.apple.ocspd',
-  'com.apple.trustdFileHelper',
+const pathClasses = new Map([
+  ['/System/Library/Keychains/SystemRootCertificates.keychain', 'system-keychain'],
+  ['/System/Library/Keychains/SystemCACertificates.keychain', 'system-keychain'],
+  ['/Library/Keychains/System.keychain', 'system-keychain'],
+  ['/Library/Security/Trust Settings/Admin.plist', 'admin-trust-settings'],
+  ['/var/protected/trustd/private/Admin.plist', 'admin-trust-settings'],
+  ['/private/var/protected/trustd/private/Admin.plist', 'admin-trust-settings'],
+  ['/etc/ssl/cert.pem', 'stock-pem'],
+  ['/private/etc/ssl/cert.pem', 'stock-pem'],
 ]);
-const publicPaths = new Set([
-  '/System/Library/Keychains/SystemRootCertificates.keychain',
-  '/Library/Keychains/System.keychain',
-  '/Library/Security/Trust Settings/Admin.plist',
-  '/etc/ssl/cert.pem',
-  '/private/etc/ssl/cert.pem',
-]);
+const userTrustSettings = /^\/(?:Library\/Security\/Trust Settings|(?:private\/)?var\/protected\/trustd\/private)\/[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}\/TrustSettings\.plist$/;
+
+function classifyPath(target, runnerHome) {
+  if (/[\r\n]/.test(target)) return 'unclassified-target';
+  if (pathClasses.has(target)) return pathClasses.get(target);
+  if (userTrustSettings.test(target)) return 'user-trust-settings';
+  if (runnerHome) {
+    const prefix = join(runnerHome, 'Library/Keychains') + sep;
+    if (target.startsWith(prefix)) {
+      const relative = target.slice(prefix.length);
+      if (/^.+\.(?:keychain(?:-db)?|db)$/.test(relative) &&
+          relative.split('/').every((part) => part && part !== '.' && part !== '..')) {
+        return 'user-keychain';
+      }
+    }
+  }
+  return 'unclassified-target';
+}
 const trustOperation = /^(?:sec_)?(trust_evaluate|trust_store_contains|trust_store_copy_all|trust_store_copy_usage_constraints)(?=$|[ \t,:;])[ \t,:;]*/;
 const statusText = String.raw`(?:Error Domain=NSOSStatusErrorDomain Code=|OSStatus(?:[ \t]*[=:][ \t]*|[ \t]+))(-?[0-9]{1,10})`;
 const trustStatus = new RegExp('^' + statusText + '$');
@@ -211,7 +271,7 @@ function correlation(pid) {
   ];
 }
 
-export function summarizeLog(stdout, pid, start, end) {
+export function summarizeLog(stdout, pid, start, end, runnerHome) {
   const [sandbox, trust] = correlation(pid);
   const sandboxPrefix = new RegExp('^' + sandbox.prefix);
   const trustPrefix = new RegExp('^' + trust.prefix + '(?=' + trustMetadata + '$)');
@@ -219,7 +279,10 @@ export function summarizeLog(stdout, pid, start, end) {
   const trailer = JSON.parse(lines.pop());
   assert(trailer?.finished === 1 || trailer?.finished === true);
   let correlated = false;
-  const evidence = [];
+  const operationCounts = {};
+  const pathClassCounts = {};
+  const daemonStatusCounts = {};
+  const increment = (counts, key) => { counts[key] = (counts[key] ?? 0) + 1; };
   for (const line of lines) {
     if (!line.trim() || logNotice.test(line)) continue;
     const { processImagePath, eventMessage, timestamp } = JSON.parse(line);
@@ -234,16 +297,10 @@ export function summarizeLog(stdout, pid, start, end) {
       const op = sandboxOperation.exec(eventMessage.slice(prefix[0].length));
       if (!op) continue;
       const operation = op[1];
-      const target = eventMessage.slice(prefix[0].length + op[0].length);
-      if (operation.startsWith('mach-')) {
-        const service = target.replace(/ \((?:global-name|local-name|per-pid)\)$/, '');
-        evidence.push(publicServices.has(service) ? { operation, service } : { operation });
-      } else if (operation.startsWith('file-') && target) {
-        evidence.push(publicPaths.has(target)
-          ? { operation, path: target }
-          : { operation, pathKind: 'file-path-omitted' });
-      } else {
-        evidence.push({ operation });
+      increment(operationCounts, operation);
+      if (operation.startsWith('file-')) {
+        const target = eventMessage.slice(prefix[0].length + op[0].length);
+        increment(pathClassCounts, classifyPath(target, runnerHome));
       }
     } else if (trust.emitters.includes(processImagePath)) {
       const prefix = trustPrefix.exec(eventMessage);
@@ -254,19 +311,17 @@ export function summarizeLog(stdout, pid, start, end) {
       const status = trustStatus.exec(detail.slice(op?.[0].length ?? 0));
       const daemonStatus = Number(status?.[1]);
       const hasStatus = daemonStatus >= -(2 ** 31) && daemonStatus < 2 ** 31;
-      if (op || hasStatus) evidence.push({
-        ...(op && { operation: op[1] }),
-        ...(hasStatus && { daemonStatus }),
-      });
+      if (op) increment(operationCounts, op[1]);
+      if (hasStatus) increment(daemonStatusCounts, daemonStatus);
     }
   }
-  const logResult = evidence.length > 0
+  const logResult = Object.keys(operationCounts).length || Object.keys(daemonStatusCounts).length
     ? 'attributed-operation-or-status'
     : correlated ? 'correlated-without-operation-or-status' : 'completed-zero-correlated';
-  return { logResult, evidence };
+  return { logResult, operationCounts, pathClassCounts, daemonStatusCounts };
 }
 
-async function queryLog(pid, start, end) {
+async function queryLog(pid, start, end, runnerHome) {
   const predicate = correlation(pid).map(({ emitters, prefix }, i) => (
     '(processImagePath IN {' + emitters.map((path) => JSON.stringify(path)).join(', ') +
     '} AND eventMessage MATCHES ' +
@@ -289,7 +344,7 @@ async function queryLog(pid, start, end) {
       return unavailable('unexpected-diagnostic');
     }
     try {
-      return summarizeLog(stdout, pid, start, end);
+      return summarizeLog(stdout, pid, start, end, runnerHome);
     } catch {
       return unavailable('incomplete-or-invalid-ndjson');
     }
@@ -311,15 +366,15 @@ async function readUtcStamp(cwd, name) {
   return time;
 }
 
-export async function collectDiagnostic(cwd, commandStartedAt, exitCode) {
+export async function collectDiagnostic(cwd, commandStartedAt, runnerHome) {
   const assertions = {};
-  const check = async (name, validate, optional = false) => {
+  const check = async (name, validate) => {
     try {
       const value = await validate();
       assertions[name] = 'pass';
       return value;
-    } catch (error) {
-      assertions[name] = optional && error.code === 'ENOENT' ? 'skipped' : 'fail';
+    } catch {
+      assertions[name] = 'fail';
     }
   };
 
@@ -349,7 +404,7 @@ export async function collectDiagnostic(cwd, commandStartedAt, exitCode) {
 
   let log;
   if (pid !== undefined && end !== undefined) {
-    log = await queryLog(pid, start, end);
+    log = await queryLog(pid, start, end, runnerHome);
   } else {
     log = {
       logResult: 'skipped',
@@ -359,17 +414,26 @@ export async function collectDiagnostic(cwd, commandStartedAt, exitCode) {
     };
   }
 
-  await check('loopbackProxyReceipt', async () => {
-    const proxy = await readPrivate(cwd, '.sdk-loopback-proxy');
-    const match = /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})\/?\n$/.exec(proxy);
-    assert(match && match[0] === proxy && Number(match[1]) <= 65535);
-  }, true);
-  const tls = await check('tlsJsonReceipt', async () =>
-    observation(await readPrivate(cwd, 'system.json')),
-  );
-
-  return { assertions, canaryDenied: 1, exitCode, ...(tls && { tls }), ...log };
+  return { assertions, ...log };
 }
+
+const command = [
+  'set -eu',
+  'umask 077',
+  'if (printf changed > ../sandbox-canary) 2>/dev/null; then exit 27; fi',
+  'printf "%s\\n" workspace > .workspace-canary',
+  'test "$(/bin/cat .workspace-canary)" = workspace',
+  'test -n "${HTTPS_PROXY:-}"',
+  '(printf "%s\\n" "$HTTPS_PROXY" > .sdk-loopback-proxy) 2>/dev/null || :',
+  'status=0',
+  "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-start",
+  '/usr/bin/env -i HTTPS_PROXY="$HTTPS_PROXY" ./github-trust system > system.json 2>/dev/null &',
+  'pid=$!',
+  'wait "$pid" || status=$?',
+  "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-end",
+  'printf "%s\\n" "$pid" > .probe-pid',
+  'exit "$status"',
+].join('\n');
 
 async function main() {
   assert.equal(`${process.platform}-${process.arch}`, 'darwin-arm64');
@@ -382,104 +446,113 @@ async function main() {
   phase = 'probe workspace setup';
   const [sourceBinary, binarySha256] = process.argv.slice(2);
   assert.match(binarySha256, sha256);
-  const temporary = await mkdtemp(join(homedir(), '.agents-go-trust-'));
+  const runnerHome = await realpath(homedir());
+  const temporary = await mkdtemp(join(runnerHome, '.agents-go-trust-'));
   try {
-    const root = await realpath(temporary);
-    const cwd = join(root, 'workspace');
-    const canary = join(root, 'sandbox-canary');
-    await mkdir(cwd);
-    await writeFile(canary, 'protected');
-    const binary = join(cwd, 'github-trust');
-    await copyFile(sourceBinary, binary);
-    await chmod(binary, 0o700);
-    const copiedSha256 = createHash('sha256')
-      .update(await readFile(binary))
-      .digest('hex');
-    assert.equal(copiedSha256, binarySha256);
-    const command = [
-      'set -eu',
-      'umask 077',
-      'if (printf changed > ../sandbox-canary) 2>/dev/null; then exit 27; fi',
-      'test -n "${HTTPS_PROXY:-}"',
-      'status=0',
-      "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-start",
-      '/usr/bin/env -i HTTPS_PROXY="$HTTPS_PROXY" ./github-trust system > system.json 2>/dev/null &',
-      'pid=$!',
-      'wait "$pid" || status=$?',
-      "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-end",
-      'printf "%s\\n" "$pid" > .probe-pid',
-      '(printf "%s\\n" "$HTTPS_PROXY" > .sdk-loopback-proxy) 2>/dev/null || :',
-      'exit "$status"',
-    ].join('\n');
+    // Both Sessions use the stock native sandbox. Only their workspace and write policy differ.
+    for (const writePolicy of ['strict', 'trusted_workspace_write']) {
+      phase = `${writePolicy} workspace setup`;
+      const root = join(temporary, writePolicy);
+      const cwd = join(root, 'workspace');
+      const canary = join(root, 'sandbox-canary');
+      await mkdir(cwd, { recursive: true });
+      await writeFile(canary, 'protected');
+      const binary = join(cwd, 'github-trust');
+      await copyFile(sourceBinary, binary);
+      await chmod(binary, 0o700);
+      const copiedSha256 = createHash('sha256').update(await readFile(binary)).digest('hex');
+      assert.equal(copiedSha256, binarySha256);
 
-    phase = 'strict native command';
-    const commandStartedAt = Date.now();
-    const exitCode = await withModel(
-      [
+      phase = `${writePolicy} Session and host control`;
+      let commandStartedAt;
+      const run = await optionalReceipt(() => withModel(
         [
-          {
+          [{
             type: 'function_call',
             call_id: callId,
             name: 'exec_command',
             arguments: JSON.stringify({ cmd: command, yield_time_ms: 20_000 }),
-          },
+          }],
+          [message(done)],
         ],
-        [message(done)],
-      ],
-      async (baseUrl) => {
-        const provider = new NativeProvider({
-          baseUrl,
-          apiKey: 'synthetic-alpha-key',
-          supportsWebsockets: false,
-          requestMaxRetries: 0,
-          streamMaxRetries: 0,
-        });
-        try {
-          const agent = new Agent({
-            instructions: 'Run the requested command.',
-            model: 'gpt-5.5',
-            provider,
-          });
-          const session = await agent.session({
-            environment: Environment.local({
-              cwd,
-              writePolicy: 'strict',
-              tools: ['exec_command'],
-              network: { allowedDomains: ['api.github.com'] },
-            }),
+        async (baseUrl) => {
+          const provider = new NativeProvider({
+            baseUrl,
+            apiKey: 'synthetic-alpha-key',
+            supportsWebsockets: false,
+            requestMaxRetries: 0,
+            streamMaxRetries: 0,
           });
           try {
-            const turn = await session.submit('Run the probe.');
-            assert.equal((await turn.wait()).finalOutput, done);
-            const commands = (await Array.fromAsync(session.items())).filter(
-              (item) => item.type === 'command_execution',
-            );
-            assert.equal(commands.length, 1);
-            const [execution] = commands;
-            assert.equal(execution.callId, callId);
-            assert.equal(execution.status, 'completed');
-            assert.equal(execution.exitCode, 0);
-            assert.equal(await readFile(canary, 'utf8'), 'protected');
+            const agent = new Agent({
+              instructions: 'Run the requested command.',
+              model: 'gpt-5.5',
+              provider,
+            });
+            const session = await agent.session({
+              environment: Environment.local({
+                cwd,
+                writePolicy,
+                tools: ['exec_command'],
+                network: { allowedDomains: ['api.github.com'] },
+              }),
+            });
+            try {
+              commandStartedAt = Date.now();
+              const turn = await session.submit('Run the probe.');
+              assert.equal((await turn.wait()).finalOutput, done);
+              const commands = (await Array.fromAsync(session.items())).filter(
+                (item) => item.type === 'command_execution',
+              );
+              assert.equal(commands.length, 1);
+              const [execution] = commands;
+              assert.equal(execution.callId, callId);
 
-            phase = 'Session cleanup and synthetic model verification';
-            return execution.exitCode;
+              const child = await optionalReceipt(async () =>
+                observation(await readPrivate(cwd, 'system.json')),
+              );
+              const proxy = await optionalReceipt(() => readListener(cwd));
+              const host = proxy && await optionalReceipt(async () => {
+                const { stdout } = await execute(binary, ['system'], {
+                  cwd,
+                  env: { HTTPS_PROXY: proxy },
+                  timeout: 12_000,
+                  killSignal: 'SIGKILL',
+                  maxBuffer: 64 * 1024,
+                });
+                return observation(stdout);
+              });
+              return { execution, child, host, sameManagedListener: proxy !== undefined };
+            } finally {
+              await session.close();
+            }
           } finally {
-            await session.close();
+            await provider.close();
           }
-        } finally {
-          await provider.close();
-        }
-      },
-    );
+        },
+      ));
 
-    phase = 'diagnostic receipt collection';
-    const receipt = await collectDiagnostic(cwd, commandStartedAt, exitCode);
-    console.log(JSON.stringify(receipt));
-    if (
-      receipt.assertions.tlsJsonReceipt === 'fail' ||
-      receipt.logResult === 'skipped' ||
-      receipt.logResult === 'access-or-query-failure'
-    ) process.exitCode = 1;
+      phase = `${writePolicy} diagnostic receipt collection`;
+      const { execution, child, host, sameManagedListener = false } = run ?? {};
+      const exitCode = execution?.exitCode;
+      const workspaceWriteRead = exitCode === 0 &&
+        await optionalReceipt(() => readPrivate(cwd, '.workspace-canary')) === 'workspace\n';
+      const outsideWriteDenied = (workspaceWriteRead || child !== undefined) &&
+        await readFile(canary, 'utf8') === 'protected';
+      const commandPassed = execution?.status === 'completed' && workspaceWriteRead && outsideWriteDenied;
+      const comparison = compare(writePolicy, child, host);
+      const result = commandPassed ? comparison.result : 'probe-failure';
+      const diagnostic = writePolicy === 'trusted_workspace_write' && !child?.metadata.verified
+        ? commandStartedAt === undefined
+          ? { logResult: 'skipped', logSkipReason: 'command-not-started' }
+          : await collectDiagnostic(cwd, commandStartedAt, runnerHome)
+        : undefined;
+      console.log(JSON.stringify({
+        writePolicy, exitCode, outsideWriteDenied, workspaceWriteRead,
+        ...comparison, result, sameManagedListener, ...diagnostic,
+      }));
+      if (result !== 'verified-tls' && result !== 'strict-baseline-reproduced') process.exitCode = 1;
+    }
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
