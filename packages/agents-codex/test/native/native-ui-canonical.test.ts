@@ -56,29 +56,41 @@ function complete(
 describe('native UI canonical display identity', () => {
   it('uses the later nonblank unphased message over an earlier final_answer', async () => {
     const items = [
-      message('final', 'same', { phase: 'final_answer' }),
-      message('later', 'same'),
+      message('final', 'first', { phase: 'final_answer' }),
+      message('later', 'last'),
     ];
-    expect(await complete(items, [['final', 'same']], 'same')).toBe(false);
-    expect(await complete(items, [['later', 'same']], 'same')).toBe(true);
+    const shown = [
+      ['final', 'first'],
+      ['later', 'last'],
+    ] as const;
+    expect(await complete(items, shown, 'first')).toBe(false);
+    expect(await complete(items, shown, 'last')).toBe(true);
   });
 
   it('uses a later final_answer over an earlier nonblank unphased message', async () => {
     const items = [
-      message('unphased', 'same'),
-      message('final', 'same', { phase: 'final_answer' }),
+      message('unphased', 'earlier'),
+      message('final', 'answer', { phase: 'final_answer' }),
     ];
-    expect(await complete(items, [['unphased', 'same']], 'same')).toBe(false);
-    expect(await complete(items, [['final', 'same']], 'same')).toBe(true);
+    const shown = [
+      ['unphased', 'earlier'],
+      ['final', 'answer'],
+    ] as const;
+    expect(await complete(items, shown, 'earlier')).toBe(false);
+    expect(await complete(items, shown, 'answer')).toBe(true);
   });
 
   it('uses the last of repeated final_answer candidates', async () => {
     const items = [
-      message('first', 'same', { phase: 'final_answer' }),
-      message('second', 'same', { phase: 'final_answer' }),
+      message('first', 'first', { phase: 'final_answer' }),
+      message('second', 'second', { phase: 'final_answer' }),
     ];
-    expect(await complete(items, [['first', 'same']], 'same')).toBe(false);
-    expect(await complete(items, [['second', 'same']], 'same')).toBe(true);
+    const shown = [
+      ['first', 'first'],
+      ['second', 'second'],
+    ] as const;
+    expect(await complete(items, shown, 'first')).toBe(false);
+    expect(await complete(items, shown, 'second')).toBe(true);
   });
 
   it('does not let a later blank unphased message displace a nonblank candidate', async () => {
@@ -86,7 +98,16 @@ describe('native UI canonical display identity', () => {
       message('final', 'answer', { phase: 'final_answer' }),
       message('blank', '\u0085'),
     ];
-    expect(await complete(items, [['final', 'answer']], 'answer')).toBe(true);
+    expect(
+      await complete(
+        items,
+        [
+          ['final', 'answer'],
+          ['blank', '\u0085'],
+        ],
+        'answer',
+      ),
+    ).toBe(true);
   });
 
   it('does not accept equal commentary as observation of the final ID', async () => {
@@ -97,7 +118,16 @@ describe('native UI canonical display identity', () => {
     expect(await complete(items, [['commentary', 'answer']], 'answer')).toBe(
       false,
     );
-    expect(await complete(items, [['final', 'answer']], 'answer')).toBe(true);
+    expect(
+      await complete(
+        items,
+        [
+          ['commentary', 'answer'],
+          ['final', 'answer'],
+        ],
+        'answer',
+      ),
+    ).toBe(true);
   });
 
   it('does not promote commentary when it is the only recorded message', async () => {
@@ -172,11 +202,15 @@ describe('native UI canonical display identity', () => {
 
   it('selects the final candidate only from the last submitted turn', async () => {
     const items = [
-      message('final', 'same'),
-      message('old', 'same', { turnId: 'earlier', phase: 'final_answer' }),
+      message('final', 'current'),
+      message('old', 'earlier', { turnId: 'earlier', phase: 'final_answer' }),
     ];
-    expect(await complete(items, [['old', 'same']], 'same')).toBe(false);
-    expect(await complete(items, [['final', 'same']], 'same')).toBe(true);
+    const shown = [
+      ['old', 'earlier'],
+      ['final', 'current'],
+    ] as const;
+    expect(await complete(items, shown, 'earlier')).toBe(false);
+    expect(await complete(items, shown, 'current')).toBe(true);
   });
 
   it.each<Message['status']>(['in_progress', 'failed', 'incomplete'])(
@@ -223,10 +257,20 @@ describe('native UI blank output', () => {
     expect(await complete([], [], '')).toBe(true);
   });
 
-  it('requires the last blank fallback ID when blank messages were shown', async () => {
+  it('requires every nonempty blank message before accepting empty output', async () => {
     const items = [message('first', '\u0085'), message('last', '\u0085')];
     expect(await complete(items, [['first', '\u0085']], '')).toBe(false);
-    expect(await complete(items, [['last', '\u0085']], '')).toBe(true);
+    expect(await complete(items, [['last', '\u0085']], '')).toBe(false);
+    expect(
+      await complete(
+        items,
+        [
+          ['first', '\u0085'],
+          ['last', '\u0085'],
+        ],
+        '',
+      ),
+    ).toBe(true);
   });
 
   it.each(['\ufeff', '\u001c'])(
@@ -273,5 +317,65 @@ describe('native UI selected typed output declaration (plain=false)', () => {
     expect(await complete(items, [['missing', 'working']], output, false)).toBe(
       false,
     );
+  });
+});
+
+describe('native UI complete canonical view', () => {
+  it.each(['answer', ''])(
+    'rejects unshown commentary even with final output %j',
+    async (output) => {
+      const items = [
+        message('commentary', 'working', { phase: 'commentary' }),
+        message('final', output, { phase: 'final_answer' }),
+      ];
+      const shown: [string, string][] = output ? [['final', output]] : [];
+      expect(await complete(items, shown, output)).toBe(false);
+      expect(
+        await complete(
+          items,
+          [
+            ['commentary', 'working'],
+            ['final', output],
+          ],
+          output,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it('requires commentary while allowing an unrendered typed final item', async () => {
+    const items = [
+      message('commentary', 'working', { phase: 'commentary' }),
+      message('final', '{"answer":42}', { phase: 'final_answer' }),
+    ];
+    expect(await complete(items, [], { answer: 42 }, false)).toBe(false);
+    expect(
+      await complete(items, [['commentary', 'working']], { answer: 42 }, false),
+    ).toBe(true);
+    expect(
+      await complete(items, [['final', 'incorrect']], { answer: 42 }, false),
+    ).toBe(false);
+  });
+
+  it('does not accept empty output when canonical history is unavailable', async () => {
+    const unavailable: ViewSession = {
+      id: 'session',
+      async *items() {
+        yield* [];
+        throw new Error('Unavailable history');
+      },
+    };
+    expect(
+      await completeDisplay(
+        unavailable,
+        null,
+        new Set(['last']),
+        'last',
+        new Map(),
+        true,
+        '',
+        new AbortController().signal,
+      ),
+    ).toBe(false);
   });
 });

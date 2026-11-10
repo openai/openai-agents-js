@@ -416,3 +416,54 @@ describe('native UI adapters with real Sessions', () => {
     }
   }, 30_000);
 });
+
+it.each(['vercel', 'ag-ui'] as const)(
+  '%s rejects unobserved canonical commentary through the real native owner',
+  async (protocol) => {
+    const peer = new ModelServer([
+      [
+        { ...message('Retained commentary'), phase: 'commentary' },
+        { ...message(''), phase: 'final_answer' },
+      ],
+    ]);
+    await using provider = await providerFor(peer);
+    await using session = await new Agent({
+      instructions: 'Reply.',
+      provider,
+    }).session();
+    const turn = await session.submit('Reply.');
+    const wire = await (
+      protocol === 'vercel'
+        ? vercelResponse(turn, session)
+        : agUiResponse(turn, session, undefined)
+    ).text();
+    expect(wire).toContain('resync_required');
+    expect(wire).not.toContain('"type":"finish"');
+    expect(wire).not.toContain('RUN_FINISHED');
+    expect((await turn.wait()).finalOutput).toBe('');
+    expect(peer.requests).toHaveLength(1);
+  },
+  30_000,
+);
+
+it('typed AG-UI still requires canonical commentary through the real native owner', async () => {
+  const peer = new ModelServer([
+    [
+      { ...message('Retained commentary'), phase: 'commentary' },
+      { ...message('{"answer":"typed"}'), phase: 'final_answer' },
+    ],
+  ]);
+  await using provider = await providerFor(peer);
+  const outputType = z.object({ answer: z.string() });
+  await using session = await new Agent({
+    instructions: 'Reply.',
+    provider,
+    outputType,
+  }).session();
+  const turn = await session.submit('Reply.');
+  const wire = await agUiResponse(turn, session, outputType).text();
+  expect(wire).toContain('resync_required');
+  expect(wire).not.toContain('RUN_FINISHED');
+  expect((await turn.wait()).finalOutput).toEqual({ answer: 'typed' });
+  expect(peer.requests).toHaveLength(1);
+}, 30_000);

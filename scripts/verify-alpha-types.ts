@@ -1,4 +1,16 @@
-import { Agent, NativeProvider, tool } from '@openai/agents';
+import {
+  Agent,
+  Environment,
+  NativeProvider,
+  tool,
+  type NativeRealtimeUsage,
+  type NativeRealtimeUsageCounters,
+} from '@openai/agents';
+import {
+  Manifest,
+  sandboxEnvironment,
+  type SandboxClient,
+} from '@openai/agents/sandbox';
 import * as classic from '@openai/agents/classic';
 import * as runtime from '@openai/agents-codex';
 import * as facadeTesting from '@openai/agents/testing';
@@ -87,9 +99,38 @@ async function checkNativeResult() {
   return { count, wrong };
 }
 
+async function checkSandboxEnvironment(client: SandboxClient) {
+  const environment = sandboxEnvironment({
+    client,
+    manifest: new Manifest({}),
+    connect: async () =>
+      Environment.lease(
+        Environment.local({ cwd: '/workspace', tools: [] }),
+        () => {},
+      ),
+  });
+  return agent.session({ environment });
+}
+
+function checkNativeRealtimeUsage(usage: NativeRealtimeUsage) {
+  const input: NativeRealtimeUsageCounters | undefined =
+    usage.input_token_details;
+  const audio: number | undefined = input?.audio_tokens;
+  const cachedAudio: number | undefined =
+    input?.cached_tokens_details?.audio_tokens;
+  if (input) {
+    // @ts-expect-error A reported usage detail can omit an individual counter.
+    const requiredAudio: number = input.audio_tokens;
+    void requiredAudio;
+  }
+  return { audio, cachedAudio };
+}
+
 const model = new ScriptedModel([modelResponse([assistantMessage('hello')])]);
 const classicAgent = new classic.Agent({ name: 'Classic', model });
 const runner = new classic.Runner({ tracingDisabled: true });
 const session = new classic.MemorySession({ sessionId: 'types' });
 void checkNativeResult;
+void checkSandboxEnvironment;
+void checkNativeRealtimeUsage;
 void runner.run(classicAgent, 'Hello', { session });
