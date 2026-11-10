@@ -14,9 +14,65 @@ Context, environment, opening overrides, and native model requirements still nee
 
 The default `NativeProvider` transport has been sending model requests through Codex's built-in Responses client. Custom endpoints on this transport have been requiring the Responses protocol. The provider options have been controlling its endpoint, API key, and WebSocket policy.
 
-- `baseUrl` defaults to `https://api.openai.com/v1`. To use `OPENAI_BASE_URL`, pass `baseUrl: process.env.OPENAI_BASE_URL`.
+- For API-key authentication, `baseUrl` defaults to `https://api.openai.com/v1`. To use `OPENAI_BASE_URL`, pass `baseUrl: process.env.OPENAI_BASE_URL`.
 - A custom endpoint uses HTTP by default.
 - When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
+
+### Use Sign in with ChatGPT
+
+With the current source build, a registered application can use a user's ChatGPT plan for native text Sessions. Supply a `SignInWithChatGPT` credential source to `NativeProvider`. Each Session opening, including resume, calls `getCredential()` once and uses that access token for the Session's lifetime.
+
+```ts
+import { Agent, NativeProvider, type SignInWithChatGPT } from '@openai/agents';
+
+export async function runOnChatGPTPlan(
+  getCredential: SignInWithChatGPT['getCredential'],
+) {
+  await using provider = new NativeProvider({
+    signInWithChatGPT: { getCredential },
+  });
+  const agent = new Agent({ instructions: 'Answer briefly.', provider });
+  return (await agent.run('What is a prime number?')).finalOutput;
+}
+```
+
+At sign-in, your application verifies the ID token's signature using OpenAI's published JWKS and checks its issuer, audience, expiration, and nonce. Use `https://auth.openai.com` as the issuer and the issued OAuth client ID as the expected audience. Store the verified issuer and subject with that client ID and the access token from the same code exchange. [Sign-in validation](https://developers.openai.com/siwc/token-sharing-open-source/sign-in#4-validate-the-id-token-and-chatgpt-plan-permission)
+
+Implement `getCredential()` to return `{ accessToken, issuer, clientId, subject }` from one protected record for the selected account. On refresh, keep the verified identity paired with the renewed access token. When refresh returns a replacement ID token, verify it and confirm it belongs to the same profile before updating the record. For a self-hosted VM, import the protected record using the VM's stable host identity and a protected transfer, or read it from an application-controlled credential broker. Keep the refresh token with the application that handles renewal. [Self-hosted VM guide](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)
+
+The SDK checks decoded access-token claims for route eligibility, including the resource audience, matching client ID, validity window, and `resource.invoke` and `chatgpt.tokens.use.direct` scopes. OpenAI verifies the access token signature and plan entitlement on model requests. [Token reference](https://developers.openai.com/siwc/token-sharing-open-source/token-reference#access-token-claims)
+
+The provider uses streaming Responses Lite over HTTP. Use a Lite model with one Agent and direct local function tools. Use a separate provider for API keys, ChatGPT Apps, Realtime, custom endpoints, or model backends. If a token expires, obtain a renewed token through your application and open a new Session. The SDK sends each model request once.
+
+Save a settled Session as portable state or open it with `localStorage(path)` or a `SessionStore`. To resume, supply the state, or the original store and Session ID, with the current credential record for the same registration and verified OIDC subject. The SDK saves only a digest of the issued client ID and verified ID-token subject as the plan identity. If a tool result needs application-store reconciliation, pass `{ signInWithChatGPT }` as the third argument to `reconcileSessionStore`.
+
+### Use a saved Codex login on a headless host
+
+With the current [source build](building.md), a Node application can use a file-backed ChatGPT login saved by the Codex CLI. For a workspace login, ask your admin to turn on **Enable device code authentication for Codex CLI**. For a personal account, enable device code authentication in ChatGPT security settings. Set `cli_auth_credentials_store = "file"` in the CLI's `config.toml`, run `codex login --device-auth`, and follow the browser sign-in instructions on another device. [Codex authentication guide](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)
+
+For a browser sign-in on a trusted machine, set the same file storage option there before signing in. Then securely copy that machine's `auth.json` to a private, writable directory on the headless host. Treat this file like a password. Use the destination file for the SDK and keep a single active copy of the login for refresh. [Codex credential storage](https://learn.chatgpt.com/docs/auth#credential-storage)
+
+Pass the destination directory as `codexHome`. To use the default CLI directory from `CODEX_HOME` or `~/.codex`, pass `codexLogin: {}`. Set `accountId` if the application requires a specific ChatGPT account or workspace.
+
+```ts
+import { Agent, NativeProvider } from '@openai/agents-codex';
+
+await using provider = new NativeProvider({
+  codexLogin: { codexHome: '/private/codex-login' },
+});
+const agent = new Agent({ provider, instructions: 'Answer briefly.' });
+await using session = await agent.session();
+const turn = await session.submit('Summarize the deployment checklist.');
+console.log((await turn.wait()).finalOutput);
+```
+
+Saved login uses the default ChatGPT Responses route over streaming HTTP. You can attach an `Environment` to the Session and enable `programmaticToolCalling` on the Agent where the selected model, tools, and storage support Code Mode. For local execution, keep `auth.json` in a private user directory outside the platform runtime paths available to sandboxed commands. Keep the file and its aliases outside the workspace, additional writable roots, and read-only storage mounts. The SDK rejects overlapping configured grants before model requests. [Local execution](local-execution.md) · [Programmatic tool calling](tools.md#programmatic-tool-calling)
+
+Realtime uses an explicit API key with a saved-login Session. Sessions in one process coordinate refresh for the same saved user and workspace. A later process can open the updated cache after the first process exits.
+
+For structured output with saved login, use native output or prompted output with `maxRetries: 0`.
+
+For web search with saved login, use `webSearch({ route: 'hosted' })` with a model that supports hosted web search.
 
 ### Capture provider routing and buffered JSON
 

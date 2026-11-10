@@ -210,12 +210,14 @@ pub fn build(
             }
         }
     }
-    codex_git_attribution::install(
-        &mut builder,
-        auth.clone(),
-        config.chatgpt_base_url.clone(),
-        config.http_client_factory(),
-    );
+    if !auth.is_saved_chatgpt() {
+        codex_git_attribution::install(
+            &mut builder,
+            auth.clone(),
+            config.chatgpt_base_url.clone(),
+            config.http_client_factory(),
+        );
+    }
     codex_guardian_v2::install(&mut builder, auth.clone(), manager);
     codex_mcp_extension::install(&mut builder);
     codex_mcp_extension::install_plugins(&mut builder, environment.clone());
@@ -223,7 +225,6 @@ pub fn build(
     builder.mcp_server_contributor(Arc::new(crate::verification::Contributor));
     let media_project = entered_media_projection(config.clone(), auth.clone(), sentinel.clone());
     builder.thread_lifecycle_contributor(Arc::new(RealtimeProjection(media_project.clone())));
-    let mut media_registry = ExtensionRegistryBuilder::with_event_sink(builder.event_sink());
     {
         let project = media_project.clone();
         let auth = auth.clone();
@@ -251,45 +252,48 @@ pub fn build(
             Some((native, url::Url::parse(&provider.base_url).ok()?))
         }));
     }
-    codex_web_search_extension::install(&mut media_registry, auth.clone());
-    let media_registry = media_registry.build();
-    // The pinned web installer registers exactly one thread, config and
-    // tool contributor, sharing its auth manager and thread store. Retain
-    // that tool Arc and the normal interception; only adapt its inputs.
-    let web = Arc::new(EnteredMedia {
-        thread: media_registry.thread_lifecycle_contributors()[0].clone(),
-        config: media_registry.config_contributors()[0].clone(),
-        project: media_project.clone(),
-    });
-    builder.thread_lifecycle_contributor(web.clone());
-    builder.config_contributor(web);
-    for contributor in media_registry.tool_contributors() {
-        builder.tool_contributor(Arc::new(crate::native_interception::DirectContributor(
-            Arc::new(crate::canonical_rules::AccessContributor(
-                contributor.clone(),
-            )),
-            crate::native_interception::DirectOutput::ResponseBody,
-        )));
-    }
-    // Image generation owns both real filesystem access and a typed result body.
-    let mut image_registry = ExtensionRegistryBuilder::with_event_sink(builder.event_sink());
-    codex_image_generation_extension::install(&mut image_registry, auth, |_: &Config| None);
-    let image_registry = image_registry.build();
-    // The pinned image installer also shares exactly one thread/config/tool Arc.
-    let image = Arc::new(EnteredMedia {
-        thread: image_registry.thread_lifecycle_contributors()[0].clone(),
-        config: image_registry.config_contributors()[0].clone(),
-        project: media_project,
-    });
-    builder.thread_lifecycle_contributor(image.clone());
-    builder.config_contributor(image);
-    for contributor in image_registry.tool_contributors() {
-        builder.tool_contributor(Arc::new(crate::native_interception::DirectContributor(
-            Arc::new(crate::canonical_rules::AccessContributor(
-                contributor.clone(),
-            )),
-            crate::native_interception::DirectOutput::ResponseBody,
-        )));
+    if !auth.is_saved_chatgpt() {
+        let mut media_registry = ExtensionRegistryBuilder::with_event_sink(builder.event_sink());
+        codex_web_search_extension::install(&mut media_registry, auth.clone());
+        let media_registry = media_registry.build();
+        // The pinned web installer registers exactly one thread, config and
+        // tool contributor, sharing its auth manager and thread store. Retain
+        // that tool Arc and the normal interception; only adapt its inputs.
+        let web = Arc::new(EnteredMedia {
+            thread: media_registry.thread_lifecycle_contributors()[0].clone(),
+            config: media_registry.config_contributors()[0].clone(),
+            project: media_project.clone(),
+        });
+        builder.thread_lifecycle_contributor(web.clone());
+        builder.config_contributor(web);
+        for contributor in media_registry.tool_contributors() {
+            builder.tool_contributor(Arc::new(crate::native_interception::DirectContributor(
+                Arc::new(crate::canonical_rules::AccessContributor(
+                    contributor.clone(),
+                )),
+                crate::native_interception::DirectOutput::ResponseBody,
+            )));
+        }
+        // Image generation owns both real filesystem access and a typed result body.
+        let mut image_registry = ExtensionRegistryBuilder::with_event_sink(builder.event_sink());
+        codex_image_generation_extension::install(&mut image_registry, auth, |_: &Config| None);
+        let image_registry = image_registry.build();
+        // The pinned image installer also shares exactly one thread/config/tool Arc.
+        let image = Arc::new(EnteredMedia {
+            thread: image_registry.thread_lifecycle_contributors()[0].clone(),
+            config: image_registry.config_contributors()[0].clone(),
+            project: media_project,
+        });
+        builder.thread_lifecycle_contributor(image.clone());
+        builder.config_contributor(image);
+        for contributor in image_registry.tool_contributors() {
+            builder.tool_contributor(Arc::new(crate::native_interception::DirectContributor(
+                Arc::new(crate::canonical_rules::AccessContributor(
+                    contributor.clone(),
+                )),
+                crate::native_interception::DirectOutput::ResponseBody,
+            )));
+        }
     }
     let skills = codex_skills_extension::SkillProviders::new().with_executor_provider(Arc::new(
         codex_skills_extension::ExecutorSkillProvider::new_with_restriction_product(

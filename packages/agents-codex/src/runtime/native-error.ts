@@ -51,6 +51,7 @@ function responseIntegrityReason(
 export interface NativeErrorOptions extends ErrorOptions {
   statusCode?: number | null;
   code?: string | null;
+  param?: string | null;
   requestId?: string | null;
   category?: string | null;
   retryable?: boolean | null;
@@ -62,6 +63,7 @@ type Metadata = {
   readonly responseIntegrityReason: ResponseIntegrityReason | null;
   readonly statusCode: number | null;
   readonly code: string | null;
+  readonly param: string | null;
   readonly requestId: string | null;
   readonly category: string | null;
   readonly retryable: boolean | null;
@@ -82,6 +84,7 @@ export class NativeError extends Error {
       responseIntegrityReason: null,
       statusCode: options?.statusCode ?? null,
       code: options?.code ?? null,
+      param: options?.param ?? null,
       requestId: options?.requestId ?? null,
       category: options?.category ?? null,
       retryable: options?.retryable ?? null,
@@ -104,6 +107,10 @@ export class NativeError extends Error {
   }
   get code(): string | null {
     return metadata.get(this)!.code;
+  }
+  /** The provider's bounded request parameter, when the error identifies one. */
+  get param(): string | null {
+    return metadata.get(this)!.param;
   }
   get requestId(): string | null {
     return metadata.get(this)!.requestId;
@@ -220,13 +227,28 @@ function category(value: unknown): string | null {
 export function enrichNativeError(error: NativeError, value: unknown): void {
   const provider = object(object(value)?._sdk_provider_error);
   const status = provider?.status_code;
+  let failureCategory = category(value);
   const localDeadline =
-    category(value) === 'model_invocation_deadline_exceeded';
+    failureCategory === 'model_invocation_deadline_exceeded';
   const code = localDeadline
     ? 'model_invocation_deadline_exceeded'
     : provider?.code;
+  const param = localDeadline ? undefined : provider?.param;
   const requestId = provider?.request_id;
-  const retryable = localDeadline ? false : provider?.retryable;
+  let retryable = localDeadline ? false : provider?.retryable;
+  switch (code) {
+    case 'subscription_sharing_usage_limit_exceeded':
+      failureCategory = 'usage_limit_exceeded';
+      retryable = false;
+      break;
+    case 'subscription_sharing_usage_unavailable':
+      failureCategory = 'server_overloaded';
+      retryable = true;
+      break;
+    case 'subscription_sharing_unsupported_capability':
+      retryable = false;
+      break;
+  }
   const retryAfterMs = localDeadline ? undefined : provider?.retry_after_ms;
   metadata.set(error, {
     effects: metadata.get(error)!.effects,
@@ -242,11 +264,15 @@ export function enrichNativeError(error: NativeError, value: unknown): void {
       typeof code === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(code)
         ? code
         : null,
+    param:
+      typeof param === 'string' && /^[A-Za-z0-9_.[\]-]{1,128}$/.test(param)
+        ? param
+        : null,
     requestId:
       typeof requestId === 'string' && /^[\x21-\x7e]{1,256}$/.test(requestId)
         ? requestId
         : null,
-    category: category(value),
+    category: failureCategory,
     retryable: typeof retryable === 'boolean' ? retryable : null,
     retryAfterMs:
       typeof retryAfterMs === 'number' &&

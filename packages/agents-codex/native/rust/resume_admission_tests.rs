@@ -90,6 +90,53 @@ async fn complete(owner: &LocalChecklistStore, id: ThreadId) -> Vec<RolloutItem>
         .items
 }
 
+#[tokio::test]
+async fn local_writer_rechecks_plan_binding_after_preflight() {
+    let home = tempfile::tempdir().unwrap();
+    let store = tests::store(home.path()).await;
+    let id = ThreadId::new();
+    let binding = format!("{CHATGPT_PLAN_PROVIDER_PREFIX}{}", "a".repeat(64));
+    let changed_binding = format!("{CHATGPT_PLAN_PROVIDER_PREFIX}{}", "b".repeat(64));
+    let mut create = tests::create_params(id, home.path());
+    create.metadata.model_provider.clone_from(&binding);
+    store.create_thread(create).await.unwrap();
+    store
+        .persist_thread(id, PersistContext::Standard)
+        .await
+        .unwrap();
+    store.flush_thread(id).await.unwrap();
+    store.shutdown_thread(id).await.unwrap();
+
+    let saved = store
+        .read_thread(ReadThreadParams {
+            thread_id: id,
+            include_archived: true,
+            include_history: false,
+        })
+        .await
+        .unwrap();
+    store
+        .validate_resume_binding(&saved, &binding)
+        .await
+        .unwrap();
+    let (_, mut resume) = replay(&store, id, home.path()).await;
+    let path = saved.rollout_path.unwrap();
+    resume.rollout_path = Some(path.clone());
+    resume.metadata.model_provider = binding.clone();
+
+    let original = std::fs::read_to_string(&path).unwrap();
+    let changed = original.replacen(&binding, &changed_binding, 1);
+    assert_ne!(changed, original);
+    std::fs::write(&path, &changed).unwrap();
+    let error = store.inner.resume_thread(resume.clone()).await.unwrap_err();
+    assert!(error.to_string().contains("matching Sign in with ChatGPT"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+
+    std::fs::write(&path, original).unwrap();
+    store.inner.resume_thread(resume).await.unwrap();
+    store.inner.shutdown_thread(id).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn constructor_model_expectation_survives_drop_and_acquisition_failure() {
     let home = tempfile::tempdir().unwrap();

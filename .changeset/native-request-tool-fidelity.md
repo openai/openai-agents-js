@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-feat: add native model backends, request and retry controls, and hosted-tool options.
+Native model backends, Responses and AI SDK adapters with caller cache keys, request and retry controls, and hosted tools.
