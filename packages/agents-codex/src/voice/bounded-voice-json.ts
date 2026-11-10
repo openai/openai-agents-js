@@ -15,17 +15,19 @@ export function boundedVoiceJSON(
     if (chars > maxChars || bytes > MAX_COMMAND_BYTES)
       throw new RangeError('Portable voice input exceeds capacity.');
   };
-  const string = (text: string) => {
+  const string = (text: string, encoded = false) => {
+    const quotes = encoded ? 0 : 2;
     if (
-      text.length > maxChars - chars - 2 ||
-      text.length > MAX_COMMAND_BYTES - bytes - 2
+      text.length > maxChars - chars - quotes ||
+      text.length > MAX_COMMAND_BYTES - bytes - quotes
     )
       throw new RangeError('Portable voice input exceeds capacity.');
-    add(2);
+    add(quotes);
     for (let index = 0; index < text.length; index++) {
       const code = text.charCodeAt(index);
-      if (code === 34 || code === 92) add(2);
-      else if (code < 32) add([8, 9, 10, 12, 13].includes(code) ? 2 : 6);
+      if (!encoded && (code === 34 || code === 92)) add(2);
+      else if (!encoded && code < 32)
+        add([8, 9, 10, 12, 13].includes(code) ? 2 : 6);
       else if (code >= 0xd800 && code <= 0xdbff) {
         const low = text.charCodeAt(++index);
         if (!(low >= 0xdc00 && low <= 0xdfff))
@@ -93,8 +95,13 @@ export function boundedVoiceJSON(
       else if (typeof item === 'bigint')
         throw new TypeError('Portable voice input must be JSON.');
       else if (typeof item === 'object') {
-        add(2);
-        counts.set(item, 0);
+        if (typeof JSON.isRawJSON === 'function' && JSON.isRawJSON(item)) {
+          // Raw JSON is emitted literally without another replacer traversal.
+          string(item.rawJSON, true);
+        } else {
+          add(2);
+          counts.set(item, 0);
+        }
       }
       return item;
     },

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { boundedVoiceJSON } from '../src/voice/bounded-voice-json';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   NativeVoiceControl,
@@ -513,4 +514,86 @@ describe.runIf(enabled)('actual native portable egress admission', () => {
       expect(f.closed()).toBe(0);
     },
   );
+});
+
+describe.skipIf(!enabled)('raw JSON voice admission', () => {
+  it.each(['message', 'response'] as const)(
+    'bounds raw JSON in %s before later getters and preserves the session',
+    async (kind) => {
+      const f = await fixture();
+      let laterReads = 0;
+      const raw = JSON.rawJSON('"' + 'x'.repeat(8 * 1024 * 1024) + '"');
+      const fields = {
+        raw,
+        get later() {
+          laterReads++;
+          return 'later';
+        },
+      };
+      const before = f.frames.length;
+      expect(() => {
+        if (kind === 'message')
+          f.session.sendMessage({
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'oversized metadata' }],
+            metadata: fields,
+          });
+        else f.session.createResponse({ metadata: fields });
+      }).toThrow(RangeError);
+      expect(laterReads).toBe(0);
+      expect(f.frames).toHaveLength(before);
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+      f.session.sendMessage({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: JSON.rawJSON('"retry"') }],
+      });
+      await vi.waitFor(() =>
+        expect(f.observed.some((event) => event.type === 'response.done')).toBe(
+          true,
+        ),
+      );
+      expect(
+        f.frames.find((event) => event.type === 'conversation.item.create').item
+          .content[0].text,
+      ).toBe('retry');
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+    },
+  );
+
+  it('counts literal raw JSON without quoting it again', () => {
+    for (const literal of [
+      '12345678901234567890',
+      '"é😀"',
+      '"escaped\\ntext"',
+      'null',
+      'false',
+    ]) {
+      const value = {
+        values: [JSON.rawJSON(literal)],
+        viaToJSON: { toJSON: () => JSON.rawJSON(literal) },
+      };
+      const expected = JSON.stringify(value);
+      expect(boundedVoiceJSON(value, expected.length)).toBe(expected);
+      expect(() => boundedVoiceJSON(value, expected.length - 1)).toThrow(
+        RangeError,
+      );
+    }
+  });
+
+  it('counts raw UTF-8 bytes before reading later values', () => {
+    let laterReads = 0;
+    const value = {
+      raw: JSON.rawJSON('"' + '€'.repeat(3 * 1024 * 1024) + '"'),
+      get later() {
+        laterReads++;
+        return true;
+      },
+    };
+    expect(() => boundedVoiceJSON(value)).toThrow(RangeError);
+    expect(laterReads).toBe(0);
+  });
 });
