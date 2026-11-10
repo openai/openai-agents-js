@@ -618,3 +618,131 @@ it.each([false, true])(
     }
   },
 );
+
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])(
+  'checks held manual restoration before ordinary admission (reject=%s erase=%s)',
+  async (reject, erase) => {
+    const { manualTool, InteractionRequired } = await import('../../src');
+    const effects: string[] = [];
+    const checked: string[] = [];
+    const { provider, server } = await fixture([
+      [call('prior', {}, { callId: 'prior-call' })],
+      [
+        call('done', {}, { callId: 'held-call' }),
+        call('lookup', {}, { callId: 'manual-call' }),
+      ],
+      ...(reject ? [] : [[message('ordinary after restore')]]),
+    ]);
+    await using _provider = provider;
+    const options = {
+      instructions: 'Use the tools.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        tool({
+          name: 'prior',
+          parameters: z.object({}),
+          execute: () => 'accepted-prior-sibling',
+        }),
+        tool({
+          name: 'done',
+          parameters: z.object({}),
+          finishTurn: true,
+          execute() {
+            effects.push('once');
+            return 'held-terminal-sentinel';
+          },
+        }),
+        manualTool({
+          name: 'lookup',
+          description: 'Ask.',
+          parameters: z.object({}),
+          result: z.string(),
+        }),
+      ],
+    };
+    await using original = await new Agent(options).session();
+    const first = await original.submit('begin');
+    const interrupted = first.wait().catch((error: unknown) => error);
+    for await (const event of original.events())
+      if (event.type === 'action_requested') break;
+    const state = await original.suspend();
+    expect(await interrupted).toBeInstanceOf(InteractionRequired);
+    expect(effects).toEqual(['once']);
+    expect(JSON.stringify(state.history)).not.toContain(
+      'held-terminal-sentinel',
+    );
+    expect(
+      JSON.stringify(
+        await Array.fromAsync(first.events({ includeExecutionDetails: true })),
+      ),
+    ).not.toContain('held-terminal-sentinel');
+    await original.close();
+    const raw = JSON.parse(JSON.stringify(state));
+    expect(raw.manual_continuation.tool_outcomes.held_call_ids).toEqual([
+      'held-call',
+    ]);
+    if (erase) delete raw.manual_continuation.tool_outcomes.held_call_ids;
+    await using restored = await new Agent({
+      ...options,
+      outputGuardrails: [
+        {
+          name: 'restore',
+          callback(context) {
+            if (context.toolCall) {
+              checked.push(context.toolCall.callId!);
+              expect(context.finalOutput).toBe('held-terminal-sentinel');
+              return { tripwireTriggered: reject };
+            }
+            return { tripwireTriggered: false };
+          },
+        },
+      ],
+    }).session({ state: raw });
+    expect(
+      JSON.stringify(await Array.fromAsync(restored.items())),
+    ).not.toContain('held-terminal-sentinel');
+    for await (const event of restored.events()) {
+      if (event.type !== 'action_requested') continue;
+      await restored.respond(event.reply('accepted'));
+      break;
+    }
+    if (reject)
+      await expect(restored.restoredTurn!.wait()).rejects.toBeInstanceOf(
+        GuardrailTripwire,
+      );
+    else {
+      const result = await restored.restoredTurn!.wait();
+      expect(result.finalOutput).toBe('ordinary after restore');
+      expect(result.toolCall).toBeUndefined();
+    }
+    const items = await Array.fromAsync(restored.items());
+    const encoded = JSON.stringify(items);
+    expect(encoded).toContain('accepted-prior-sibling');
+    if (reject) expect(encoded).not.toContain('held-terminal-sentinel');
+    else expect(encoded).toContain('held-terminal-sentinel');
+    const held = items.filter(
+      (item) =>
+        item.type === 'function_call_output' && item.callId === 'held-call',
+    );
+    expect(held).toHaveLength(1);
+    if (reject) {
+      expect(JSON.stringify(held)).toContain('withheld');
+      expect(
+        JSON.stringify(
+          await Array.fromAsync(
+            restored.restoredTurn!.events({ includeExecutionDetails: true }),
+          ),
+        ),
+      ).not.toContain('held-terminal-sentinel');
+    }
+    expect(checked).toEqual(['held-call']);
+    expect(effects).toEqual(['once']);
+    expect(server.requests).toHaveLength(reject ? 2 : 3);
+  },
+);
