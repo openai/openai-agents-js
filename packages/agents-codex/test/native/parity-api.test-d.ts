@@ -46,3 +46,19 @@ const update: SessionUpdate<unknown> = { instructions: 'Continue carefully.' };
 const interrupt: SessionInterruptOptions = { scope: 'all', mode: 'graceful' };
 session.update(update);
 session.interrupt(interrupt);
+
+// Reusable Computer callbacks use the same exported context at both public roots.
+const screenshot: import('@openai/agents').Computer['screenshot'] = (
+  context: import('@openai/agents-codex').ToolCallContext,
+): string => {
+  void context.signal;
+  return 'png';
+};
+const publicContext: (
+  context: import('@openai/agents').ToolCallContext,
+) => string = screenshot;
+void publicContext;
+// @ts-expect-error Session owner lookup is internal to sibling packages.
+void import('@openai/agents').then((sdk) => sdk._nativeToolSessionOwner);
+// @ts-expect-error Session owner lookup is internal to sibling packages.
+void import('@openai/agents-codex').then((sdk) => sdk._nativeToolSessionOwner);
