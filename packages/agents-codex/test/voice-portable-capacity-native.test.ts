@@ -130,6 +130,61 @@ function fill(
 }
 describe.runIf(enabled)('actual native portable egress admission', () => {
   it.each(
+    [false, true].flatMap((named) =>
+      [false, true].map((detached) => ({ named, detached })),
+    ),
+  )(
+    'fences a queued terminal default response with named=$named and detached sibling=$detached',
+    async ({ named, detached }) => {
+      const f = await fixture();
+      if (detached)
+        f.session.receive({
+          type: 'response.created',
+          response: { id: 'detached-D', conversation_id: null },
+        });
+      f.session.sendAudio('AAAA');
+      f.session.receive({
+        type: 'response.created',
+        response: { id: 'completed-B' },
+      });
+      f.session.receive({
+        type: 'response.done',
+        response: { id: 'completed-B', status: 'completed', output: [] },
+      });
+      expect(() =>
+        f.session.cancel(named ? 'completed-B' : undefined),
+      ).not.toThrow();
+      expect(
+        f.frames.filter((event) => event.type === 'response.cancel'),
+      ).toEqual([]);
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+      f.release();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      f.session.createResponse();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter((event) => event.type === 'response.create'),
+        ).toHaveLength(1),
+      );
+      if (detached) {
+        f.session.cancel('detached-D');
+        await vi.waitFor(() =>
+          expect(
+            f.frames.filter((event) => event.type === 'response.cancel'),
+          ).toHaveLength(1),
+        );
+        expect(
+          f.frames.find((event) => event.type === 'response.cancel')
+            .response_id,
+        ).toBe('detached-D');
+      }
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+    },
+  );
+
+  it.each(
     (['deleteItem', 'truncateItem'] as const).flatMap((method) =>
       (['count', 'bytes'] as const).map((boundary) => ({ method, boundary })),
     ),

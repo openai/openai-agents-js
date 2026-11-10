@@ -610,7 +610,7 @@
     },
     {
       "path": "portable-realtime-session-parity.patch",
-      "sha256": "f0b2a4ac68af3a29733f6c7a596b7643fe93b805fb5b5bfedf4887eb60523740"
+      "sha256": "1be1deb3a070c604b4beae48c58124edc7c9ca86c487c5d15e3decf99c537662"
     },
     {
       "path": "sdk-bounded-original-history-reads.patch",
@@ -622,8 +622,8 @@
     },
     {
       "path": "sdk-terminal-candidate-admission.patch",
-      "sha256": "79cd4458385ebefac423d02bccaa124b845d092582cfa679aa764d1a06648b12"
+      "sha256": "daf499723d9331eb1c9cf93a78084eea6a4c0f5217b9b4d38f34836b9654edfe"
     }
   ],
-  "result_tree": "522513fd2a3af151bdb661177b1347d04c896c18"
+  "result_tree": "067152f85557b75b83e1686a421ce2f784ffbfb1"
 }
