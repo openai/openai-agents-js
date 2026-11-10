@@ -577,6 +577,10 @@
       "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
     },
     {
+      "path": "sdk-local-project-guidance-cwd.patch",
+      "sha256": "5ba8abea56c5abcd70d371bd4fb8d7c1f626dc890ce73451850a8cf3dc82f2e6"
+    },
+    {
       "path": "sdk-realtime-unpublished-agent-source.patch",
       "sha256": "e0311387868c576d81dce16ee47a1ce4d345c35c182b799eade073475efc044c"
     },
@@ -597,5 +601,5 @@
       "sha256": "31486f942f4e9138d6f7b012cd3c330566fa3dff0061357165551cd03a404c2c"
     }
   ],
-  "result_tree": "c620e262b34654330a072d91976282691ad3bd03"
+  "result_tree": "001d06caa44fa574cdb6c321db9b14173a4d7e35"
 }
