@@ -283,6 +283,7 @@ import {
   storedTurnPage,
   storedItemPage,
   storedMatchPage,
+  type StoredForkOptions,
   type StoredTurnPage,
   type StoredItemPage,
   type StoredMatchPage,
@@ -12101,6 +12102,61 @@ export class Session<OutputT = string, Context = unknown> {
       encode({ input: parts }, audioInputByteLimit(parts)),
     );
     return this.publicChildTurn(native, producer);
+  }
+
+  /** Native stored history branch, with the source Session remaining usable.
+   * Idle LocalStorage root; fresh immutable ID at latest/before/through-turn.
+   * History only: no descendant or native VM cloning. Subsequent opening with
+   * the same LocalStorage and current Agent; no portable checkpoint conversion. */
+  async forkStored(options: StoredForkOptions = {}): Promise<string> {
+    this.checkCallbackOperation('fork stored history');
+    if (!options || typeof options !== 'object' || Array.isArray(options))
+      throw new TypeError('Stored fork options must be an object');
+    if (!this.options.localStorage)
+      throw new TypeError('Stored forks require native LocalStorage');
+    if (this.realtimeOwner)
+      throw new NativeError('Close native Realtime before a stored fork');
+    this.requireCompleteRepairReceipts();
+    if (this.graphStops.size || this.childContinuations.size)
+      throw new NativeError('Stored fork requires a settled Session');
+    const request: Record<string, string> = {};
+    for (const [name, value] of [
+      ['before_turn_id', options.beforeTurnId],
+      ['through_turn_id', options.throughTurnId],
+    ] as const) {
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || !value)
+        throw new TypeError('Stored fork turn IDs must be nonempty strings');
+      request[name] = value;
+    }
+    if (Object.keys(request).length > 1)
+      throw new TypeError('Choose either beforeTurnId or throughTurnId');
+    return this.mutate(async () => {
+      await this.discardForkCopy();
+      try {
+        const copy = await this.#native._fork_stored(encode(request));
+        this.forkCopy = copy;
+        const id = await copy._publish_stored_fork();
+        this.forkCopy = undefined;
+        return id;
+      } catch (error) {
+        try {
+          await this.discardForkCopy();
+          // Creation can succeed even when its wrapper never reaches JS.
+          const diagnostic = await this.#native._discard_stored_fork();
+          if (diagnostic) throw new NativeError(diagnostic);
+        } catch (cleanup) {
+          throw new AggregateError(
+            [error, cleanup],
+            'Stored fork and cleanup failed',
+            {
+              cause: error,
+            },
+          );
+        }
+        throw error;
+      }
+    });
   }
 
   /** Core has been closing this Session before reverting its stored conversation.

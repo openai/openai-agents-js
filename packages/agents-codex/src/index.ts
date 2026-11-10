@@ -195,6 +195,7 @@ export type {
 } from './runtime/api-rate-limits';
 export type { CodexPlanLimit, CodexPlanUsage } from './runtime/plan-usage';
 export type {
+  StoredForkOptions,
   StoredItem,
   StoredTurn,
   StoredTurnPage,

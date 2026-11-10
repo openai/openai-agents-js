@@ -1,3 +1,9 @@
+/** One native turn boundary; omitted fields select the latest committed prefix. */
+export interface StoredForkOptions {
+  readonly beforeTurnId?: string;
+  readonly throughTurnId?: string;
+}
+
 /** Core's indexed item projection, distinct from an original JSON record. */
 export interface StoredItem {
   readonly id: string;

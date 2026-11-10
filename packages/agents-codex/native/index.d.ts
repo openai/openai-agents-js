@@ -213,6 +213,9 @@ export class NativeThread {
     token_budget?: string | null,
   ): Promise<string>;
   _fork_settled(): Promise<NativeThread>;
+  _fork_stored(requestJson: string): Promise<NativeThread>;
+  _discard_stored_fork(): Promise<string | null>;
+  _publish_stored_fork(): Promise<string>;
   _discard_fork(): Promise<string | null>;
   _export_checkpoint(
     request_json: string | null,

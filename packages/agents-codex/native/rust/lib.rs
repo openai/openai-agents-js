@@ -1453,6 +1453,51 @@ impl NativeThread {
         .await
     }
 
+    #[napi(js_name = "_fork_stored")]
+    pub async fn _fork_stored(&self, request_json: String) -> napi::Result<NativeThread> {
+        let source = self.current()?;
+        let boundary = stored_history::fork_boundary(&request_json).map_err(native_error)?;
+        retain_writer_operation(async move {
+            source
+                .engine
+                .fork_stored(&source, boundary)
+                .await
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi(js_name = "_discard_stored_fork")]
+    pub async fn _discard_stored_fork(&self) -> napi::Result<Option<String>> {
+        let source = self.current()?;
+        retain_writer_operation(async move {
+            source
+                .engine
+                .discard_stored_fork(&source)
+                .await
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi(js_name = "_publish_stored_fork")]
+    pub async fn _publish_stored_fork(&self) -> napi::Result<String> {
+        let source = self
+            .fork_source
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| native_error("This thread is not an unpublished stored fork"))?;
+        let id = codex_protocol::ThreadId::from_string(&self.id).map_err(native_error)?;
+        retain_writer_operation(async move {
+            source
+                .engine
+                .publish_stored_fork(&source, id)
+                .await
+                .map_err(native_error)
+        })
+        .await
+    }
+
     #[napi(js_name = "_discard_fork")]
     pub async fn _discard_fork(&self) -> napi::Result<Option<String>> {
         let source = self
