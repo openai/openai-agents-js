@@ -47,6 +47,9 @@ export interface SelectMcpToolsOptions<Context = unknown> {
 }
 
 const invalidProviderNameCharacter = /[^A-Za-z0-9_-]/;
+const maxDiscoveredTools = 16_384;
+const maxDiscoveredNameBytes = 4_096;
+const maxDiscoveredNameBudget = 1_048_576;
 
 function freezeJson<T extends JsonValue>(value: T): T {
   if (value !== null && typeof value === 'object') {
@@ -151,6 +154,8 @@ function outputOfMcp(
  * dispatch. Namespace characters: ASCII letters, digits, underscores, and
  * hyphens; namespace `tool_search` reserved.
  * Call again for refresh; existing snapshots and Sessions remain unchanged.
+ * Discovery limits before filtering: 16,384 tools, 4,096 UTF-8 bytes per tool
+ * name, and 1 MiB of tool-name bytes in total.
  * The caller owns connect/close and must serialize unsafe reauthentication of
  * a shared mutable client, or use separate clients for different auth scopes.
  * Cancellation joins entered discovery; it never closes the borrowed server.
@@ -241,10 +246,13 @@ export async function selectMcpTools<Context = unknown>(
   check();
   await invalidate();
   check();
-  const discovered = structuredClone(await list());
+  const listed = await list();
   check();
+  if (listed.length > maxDiscoveredTools)
+    throw new TypeError('MCP discovery exceeds the 16384-tool limit');
   const names = new Set<string>();
-  for (const declaration of discovered) {
+  let nameBudget = 0;
+  for (const declaration of listed) {
     if (
       typeof declaration.name !== 'string' ||
       !declaration.name ||
@@ -253,8 +261,17 @@ export async function selectMcpTools<Context = unknown>(
       throw new TypeError(
         'MCP discovery must contain unique nonempty tool names',
       );
+    const nameBytes = Buffer.byteLength(declaration.name, 'utf8');
+    if (nameBytes > maxDiscoveredNameBytes)
+      throw new TypeError(
+        'MCP discovery exceeds the 4096-byte tool name limit',
+      );
+    nameBudget += nameBytes;
+    if (nameBudget > maxDiscoveredNameBudget)
+      throw new TypeError('MCP discovery exceeds the 1048576-byte name budget');
     names.add(declaration.name);
   }
+  const discovered = structuredClone(listed);
   const projected = projectMcpToolNames([{ name, tools: [...names] }], false);
   const selectedRawNames = new Set<string>();
   const tools: FunctionTool<Context>[] = [];
