@@ -448,3 +448,73 @@ it('does not attach audio after pending custom playback outlives close', async (
   expect(audio.srcObject).toBeNull();
   expect(audio.play).not.toHaveBeenCalled();
 });
+
+it('keeps the latest remote stream when playback callbacks finish out of order', async () => {
+  const mic = microphone();
+  const peer = new Peer();
+  const firstStream = microphone().stream;
+  const secondStream = microphone().stream;
+  const first = deferred<void>();
+  const second = deferred<void>();
+  const audio = {
+    srcObject: null as MediaStream | null,
+    play: vi.fn(async () => {}),
+  };
+  const media = new NativeVoiceWebRTC({
+    mediaStream: mic.stream,
+    createPeerConnection: () => peer as unknown as RTCPeerConnection,
+    onRemoteStream: (stream) =>
+      stream === firstStream ? first.promise : second.promise,
+    audioElement: audio,
+  });
+  await media.connect({ exchangeSdp: async () => 'answer' });
+  try {
+    peer.ontrack!({ streams: [firstStream] });
+    peer.ontrack!({ streams: [secondStream] });
+    second.resolve();
+    await second.promise;
+    expect(audio.srcObject).toBe(secondStream);
+    first.resolve();
+    await first.promise;
+    expect(audio.srcObject).toBe(secondStream);
+    expect(audio.play).toHaveBeenCalledOnce();
+  } finally {
+    media.close();
+  }
+  expect(audio.srcObject).toBeNull();
+});
+
+it.each([false, true])(
+  'cleans attached audio while replacement playback is pending (caller replacement=%s)',
+  async (callerReplacement) => {
+    const mic = microphone();
+    const peer = new Peer();
+    const firstStream = microphone().stream;
+    const secondStream = microphone().stream;
+    const callerStream = microphone().stream;
+    const pending = deferred<void>();
+    const audio = {
+      srcObject: null as MediaStream | null,
+      play: vi.fn(async () => {}),
+    };
+    const media = new NativeVoiceWebRTC({
+      mediaStream: mic.stream,
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: (stream) =>
+        stream === secondStream ? pending.promise : undefined,
+      audioElement: audio,
+    });
+    await media.connect({ exchangeSdp: async () => 'answer' });
+    peer.ontrack!({ streams: [firstStream] });
+    await Promise.resolve();
+    expect(audio.srcObject).toBe(firstStream);
+    peer.ontrack!({ streams: [secondStream] });
+    if (callerReplacement) audio.srcObject = callerStream;
+    media.close();
+    expect(audio.srcObject).toBe(callerReplacement ? callerStream : null);
+    pending.resolve();
+    await pending.promise;
+    expect(audio.srcObject).toBe(callerReplacement ? callerStream : null);
+    expect(audio.play).toHaveBeenCalledOnce();
+  },
+);

@@ -50,6 +50,7 @@ export class PortableVoiceHistory {
         captured = capture(
           typeof update === 'function' ? update(this.snapshot()) : update,
         );
+        if (this.closed) throw this.closed;
         if (this.queuedBytes + captured.bytes > CAPACITY)
           throw new Error('Portable history queue exceeds capacity.');
         retainedBytes = captured.bytes;

@@ -145,6 +145,18 @@ it('evaluates queued history updaters after preceding edits have been acknowledg
   expect(f.commands.filter((command) => command.type === 'delete')).toEqual([]);
 });
 
+it('rejects an updater that closes history before editing', async () => {
+  const f = fixture([message('a')]);
+  const reason = new Error('Closed by updater.');
+  await expect(
+    f.editor.update((history) => {
+      f.editor.close(reason);
+      return history;
+    }),
+  ).rejects.toBe(reason);
+  expect(f.commands).toEqual([]);
+});
+
 it('charges deferred updater results against queued arrays before editing', async () => {
   const f = fixture();
   const text = 'x'.repeat(1_100_000);
