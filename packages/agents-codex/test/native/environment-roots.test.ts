@@ -17,10 +17,11 @@ it('keeps the omitted local write policy identical to explicit strict', () => {
   expect(environmentConfig(strict)).not.toHaveProperty('write_policy');
 });
 
-it('accepts an immutable trusted workspace write policy only on supported local platforms', () => {
+it('accepts an immutable trusted workspace write policy only on local Linux', () => {
   const options = {
     cwd: process.cwd(),
     writePolicy: 'trusted_workspace_write' as const,
+    env: { SDK_TEST_VALUE: 'captured' },
     writableRoots: [process.cwd()],
   };
   expect(
@@ -30,8 +31,8 @@ it('accepts an immutable trusted workspace write policy only on supported local 
         writePolicy: options.writePolicy as never,
       }),
   ).toThrow('Trusted workspace writes require Environment.local');
-  if (process.platform !== 'linux' && process.platform !== 'darwin') {
-    expect(() => Environment.local(options)).toThrow(/Linux or macOS/);
+  if (process.platform !== 'linux') {
+    expect(() => Environment.local(options)).toThrow(/require Linux/);
     return;
   }
   expect(() => Environment.local({ ...options, readOnly: true })).toThrow(
@@ -39,10 +40,12 @@ it('accepts an immutable trusted workspace write policy only on supported local 
   );
   const environment = Environment.local(options);
   options.writableRoots.pop();
+  options.env.SDK_TEST_VALUE = 'changed';
   expect(Object.isFrozen(environment)).toBe(true);
   expect(environment.writePolicy).toBe(options.writePolicy);
   expect(environmentConfig(environment)).toMatchObject({
     write_policy: 'trusted_workspace_write',
+    env_json: JSON.stringify({ SDK_TEST_VALUE: 'captured' }),
     writable_roots: [expect.any(String)],
   });
 });

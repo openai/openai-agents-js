@@ -9,10 +9,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use codex_config::{NetworkConstraints, NetworkDomainPermissionToml, NetworkDomainPermissionsToml};
 use codex_core::{
-    config::validate_environment_network_policy, windows_sandbox::WindowsSandboxLevelExt,
+    config::validate_environment_network_policy, project_read_path::ProjectReadPathMapping,
+    windows_sandbox::WindowsSandboxLevelExt,
 };
 use codex_core_api::{
-    Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
+    AbsolutePathBuf, Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
     NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec, SqliteConfig,
 };
 use codex_exec_server::{
@@ -47,9 +48,6 @@ use tokio_tungstenite::tungstenite::{Error as WebSocketError, error::TlsError};
 #[cfg(target_os = "linux")]
 #[path = "linux_apparmor_probe.rs"]
 mod linux_apparmor_probe;
-#[path = "local_command_path.rs"]
-mod local_command_path;
-use local_command_path::LOCAL_HELPER_PATH;
 
 pub async fn for_unattached_threads(config: &Config) -> Result<EnvironmentManager> {
     local_environment_manager(config, /*restricted*/ false).await
@@ -72,7 +70,7 @@ async fn local_environment_manager(
     )?;
     let paths = if restricted {
         let paths = paths
-            .with_file_system_helper_env(local_helper_env())
+            .with_file_system_helper_env(local_command_env())
             .with_join_unreturned_local_exec_on_interrupt();
         #[cfg(target_os = "macos")]
         let paths = paths.with_restricted_macos_process_sandbox();
@@ -88,16 +86,18 @@ async fn local_environment_manager(
     )?)
 }
 
-fn local_helper_env() -> HashMap<String, String> {
-    // The Linux sandbox helper resolves bubblewrap from PATH before isolation.
-    HashMap::from([("PATH".to_owned(), LOCAL_HELPER_PATH.to_owned())])
+const LOCAL_COMMAND_PATH: &str = "/usr/bin:/bin";
+
+fn local_command_env() -> HashMap<String, String> {
+    // Provide a predictable default for commands without importing host values.
+    HashMap::from([("PATH".to_owned(), LOCAL_COMMAND_PATH.to_owned())])
 }
 
 fn trusted_command_env(
     temp: &Path,
     allow_all_unix_sockets: bool,
 ) -> Result<HashMap<String, String>> {
-    let mut env = local_helper_env();
+    let mut env = local_command_env();
     for key in [
         "HOME",
         "GIT_CONFIG_GLOBAL",
@@ -108,6 +108,7 @@ fn trusted_command_env(
         "LC_CTYPE",
         "LC_MESSAGES",
         "TERM",
+        "PATH",
     ] {
         if let Ok(value) = std::env::var(key) {
             env.insert(key.to_owned(), value);
@@ -115,13 +116,6 @@ fn trusted_command_env(
     }
     if allow_all_unix_sockets && let Ok(socket) = std::env::var("SSH_AUTH_SOCK") {
         env.insert("SSH_AUTH_SOCK".to_owned(), socket);
-    }
-    if let Ok(path) = std::env::var("PATH") {
-        #[cfg(target_os = "linux")]
-        let path_key = local_command_path::COMMAND_PATH_ENV;
-        #[cfg(not(target_os = "linux"))]
-        let path_key = "PATH";
-        env.insert(path_key.to_owned(), path);
     }
     let temp = temp
         .to_str()
@@ -145,10 +139,14 @@ pub struct EnvironmentOptions {
     cwd: PathUri,
     #[serde(default)]
     headers: HashMap<String, String>,
+    #[serde(default, rename = "env_json", deserialize_with = "deserialize_env")]
+    env: HashMap<String, String>,
     connect_timeout: Option<f64>,
     capability_directories: Option<Vec<PathUri>>,
     writable_roots: Option<Vec<PathUri>>,
     write_policy: Option<LocalWritePolicy>,
+    #[serde(default)]
+    read_only_roots: Vec<PathUri>,
     #[serde(default)]
     read_only: bool,
     #[serde(default, deserialize_with = "deserialize_mounts")]
@@ -169,6 +167,81 @@ struct LocalStorageMount {
 
 fn mount_read_only() -> bool {
     true
+}
+
+fn deserialize_env<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HashMap<String, String>, D::Error> {
+    let encoded = String::deserialize(deserializer)
+        .map_err(|_| serde::de::Error::custom("invalid environment variables"))?;
+    let values: HashMap<String, String> = serde_json::from_str(&encoded)
+        .map_err(|_| serde::de::Error::custom("invalid environment variables"))?;
+    if values.iter().any(|(name, value)| {
+        name.is_empty()
+            || codex_protocol::shell_environment::is_non_inheritable_env_var(name)
+            || [
+                "CODEX_SDK_BWRAP_SEARCH_PATH",
+                "CARGO_BIN_EXE_bwrap",
+                "CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE",
+                "CODEX_SANDBOX_COMMAND_ENV_JSON",
+                "CODEX_THREAD_ID",
+                "CODEX_SESSION_ID",
+                "CODEX_VERSION",
+                "CODEX_PERMISSION_PROFILE",
+                "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
+                "CODEX_PLUGIN_METRICS_OUTPUT",
+            ]
+            .iter()
+            .any(|reserved| name.eq_ignore_ascii_case(reserved))
+            || name
+                .get(.."CODEX_SANDBOX_COMMAND_ENV_JSON_".len())
+                .is_some_and(|prefix| {
+                    prefix.eq_ignore_ascii_case("CODEX_SANDBOX_COMMAND_ENV_JSON_")
+                })
+            || name.contains(['\0', '='])
+            || value.contains('\0')
+    }) {
+        return Err(serde::de::Error::custom("invalid environment variables"));
+    }
+    Ok(values)
+}
+
+fn environment_target_name_validation_required(
+    platform: Option<&str>,
+    supported: bool,
+) -> Result<bool> {
+    ensure!(
+        platform.is_some(),
+        "explicit environment variables require the executor platform"
+    );
+    if platform == Some("windows") {
+        ensure!(
+            supported,
+            "explicit environment variables require native name validation on this Windows executor"
+        );
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+async fn validate_environment_target_names(
+    environment: &Environment,
+    values: &HashMap<String, String>,
+    info: &EnvironmentInfo,
+) -> Result<()> {
+    if values.is_empty()
+        || !environment_target_name_validation_required(
+            info.platform_os.as_deref(),
+            info.capabilities.environment_variable_name_validation,
+        )?
+    {
+        return Ok(());
+    }
+    environment
+        .validate_environment_variable_names(values.keys().cloned().collect())
+        .await
+        .map_err(|_| anyhow::anyhow!("invalid explicit environment names for this executor"))
 }
 
 fn deserialize_mounts<'de, D: Deserializer<'de>>(
@@ -226,6 +299,7 @@ fn deserialize_network<'de, D: Deserializer<'de>>(
 pub(crate) struct StrictExecutorWrites {
     canonical_cwd: PathUri,
     root_pins: HashMap<Vec<u8>, PathUri>,
+    read_only_roots: Vec<PathUri>,
     has_storage_mounts: bool,
     read_only: bool,
     trusted_workspace_write: bool,
@@ -234,7 +308,7 @@ pub(crate) struct StrictExecutorWrites {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LocalPrivatePaths<'a> {
     pub(crate) storage: Option<&'a Path>,
-    pub(crate) saved_login_file: Option<&'a Path>,
+    pub(crate) saved_login_file: Option<&'a crate::auth::SavedLoginFile>,
 }
 
 impl StrictExecutorWrites {
@@ -258,6 +332,7 @@ impl StrictExecutorWrites {
         let roots = self
             .root_pins
             .values()
+            .chain(&self.read_only_roots)
             .map(PathUri::to_abs_path)
             .collect::<Result<Vec<_>, _>>()?;
         let roots = LocalWriteRoots::new(&roots).context("could not verify local write roots")?;
@@ -332,6 +407,19 @@ impl EnvironmentOptions {
         &self.cwd
     }
 
+    pub(crate) fn project_read_path_mapping(
+        &self,
+        strict: &StrictExecutorWrites,
+    ) -> Option<ProjectReadPathMapping> {
+        (self.local && self.cwd != strict.canonical_cwd).then(|| {
+            ProjectReadPathMapping::new(
+                self.id().to_owned(),
+                self.cwd.clone(),
+                strict.canonical_cwd.clone(),
+            )
+        })
+    }
+
     pub fn capability_roots(&self) -> Option<Vec<SelectedCapabilityRoot>> {
         let environment_id = self.id();
         self.capability_directories.as_ref().map(|directories| {
@@ -397,7 +485,7 @@ impl EnvironmentOptions {
             .context("executor policy conflicts with required approvals")
     }
 
-    pub(crate) fn check_config(&self, config: &Config) -> Result<()> {
+    pub(crate) fn check_trusted_write_policy(&self) -> Result<()> {
         if self.write_policy.is_some() {
             ensure!(
                 self.local,
@@ -408,10 +496,19 @@ impl EnvironmentOptions {
                 "Read-only execution requires strict write policy"
             );
             ensure!(
-                cfg!(any(target_os = "linux", target_os = "macos")),
-                "Trusted workspace writes require Linux or macOS"
+                cfg!(target_os = "linux"),
+                "Trusted workspace writes require Linux"
             );
         }
+        Ok(())
+    }
+
+    pub(crate) fn check_config(&self, config: &Config) -> Result<()> {
+        ensure!(
+            self.read_only_roots.is_empty() || (self.local && cfg!(target_os = "macos")),
+            "read_only_roots requires a local macOS Environment"
+        );
+        self.check_trusted_write_policy()?;
         if self.read_only {
             ensure!(
                 self.strict_writes(),
@@ -535,7 +632,7 @@ impl EnvironmentOptions {
             linked_mount_files.extend(linked_local_protected_files(
                 &canonical,
                 false,
-                /*storage_mount*/ true,
+                Some(STORAGE_MOUNT_ENTRY_ERROR),
                 "Could not inspect storage mount files for hard links",
             )?);
             mounts.push(path);
@@ -571,6 +668,7 @@ impl EnvironmentOptions {
                     .context("could not resolve an executor write root")
             })
             .collect::<Result<Vec<_>>>()?;
+        validate_local_read_only_roots(config, &self.read_only_roots, &roots, private_paths)?;
         let roots = LocalWriteRoots::new(&roots).context("could not verify local write roots")?;
         check_local_session_write_roots(config, &roots, private_paths, self.write_policy.is_some())
             .map(drop)
@@ -694,6 +792,7 @@ impl EnvironmentOptions {
                 &self.cwd,
                 self.writable_roots.as_deref().unwrap_or_default(),
                 &mounts,
+                &self.read_only_roots,
                 private_paths,
                 self.read_only,
                 trusted_temp,
@@ -721,11 +820,13 @@ impl EnvironmentOptions {
         let environment = manager
             .get_environment(self.id())
             .context("selected executor was not registered")?;
-        let needs_info = self.strict_writes()
+        let needs_info = !self.env.is_empty()
+            || self.strict_writes()
             || self.network.is_some()
             || self.cwd.infer_path_convention() == Some(PathConvention::Windows);
         let (strict, profile, windows_executor) = if needs_info {
             let info = executor_info(&environment).await?;
+            validate_environment_target_names(&environment, &self.env, &info).await?;
             let (strict, profile) = self
                 .profile(config, &environment, &info, private_paths, trusted_temp)
                 .await?;
@@ -759,7 +860,7 @@ impl EnvironmentOptions {
         };
         let selected_capability_roots = self.capability_roots().unwrap_or_default();
         let workspace_roots = vec![self.cwd.clone()];
-        let shell_environment_policy = if self.local {
+        let mut shell_environment_policy = if self.local {
             ShellEnvironmentPolicy {
                 inherit: ShellEnvironmentPolicyInherit::None,
                 r#set: if let Some(temp) = trusted_temp {
@@ -769,13 +870,14 @@ impl EnvironmentOptions {
                         .is_some_and(|network| network.dangerously_allow_all_unix_sockets);
                     trusted_command_env(temp, allow_all_unix_sockets)?
                 } else {
-                    local_helper_env()
+                    local_command_env()
                 },
                 ..Default::default()
             }
         } else {
             permissions.shell_environment_policy.clone()
         };
+        shell_environment_policy.set_sdk_environment_overrides(self.env.clone());
         let selection = TurnEnvironmentSelection {
             environment_id: self.id().to_owned(),
             workspace_roots: workspace_roots.clone(),
@@ -952,16 +1054,20 @@ async fn strict_write_profile(
     cwd: &PathUri,
     additional: &[PathUri],
     mounts: &[PathUri],
+    read_only_roots: &[PathUri],
     private_paths: LocalPrivatePaths<'_>,
     read_only: bool,
     trusted_temp: Option<&Path>,
 ) -> Result<(StrictExecutorWrites, PermissionProfileSnapshot)> {
+    let platform = Platform::from_platform_os(info.platform_os.as_deref());
     ensure!(
-        matches!(
-            Platform::from_platform_os(info.platform_os.as_deref()),
-            Platform::Linux | Platform::Macos
-        ) && info.capabilities.sandboxed_file_streaming,
+        matches!(platform, Platform::Linux | Platform::Macos)
+            && info.capabilities.sandboxed_file_streaming,
         "strict executor write policy requires a Linux or macOS executor with sandboxed file access"
+    );
+    ensure!(
+        read_only_roots.is_empty() || (!environment.is_remote() && platform == Platform::Macos),
+        "read_only_roots requires a local macOS Environment"
     );
     // Resolve on the executor, so controller path aliases cannot change the grant.
     let filesystem = environment.get_filesystem();
@@ -1007,12 +1113,15 @@ async fn strict_write_profile(
     // The cwd remains first; equivalent declarations keep the same digest.
     roots[1..].sort_by_key(ToString::to_string);
     let mut filesystem_policy = workspace_profile(&roots).file_system_sandbox_policy();
-    let mut saved_login_deny = None;
+    let mut private_denials = Vec::new();
+    let mut read_grants = Vec::new();
     if !environment.is_remote() {
         let local_roots = roots
             .iter()
             .map(PathUri::to_abs_path)
             .collect::<Result<Vec<_>, _>>()?;
+        read_grants =
+            validate_local_read_only_roots(config, read_only_roots, &local_roots, private_paths)?;
         let local_roots =
             LocalWriteRoots::new(&local_roots).context("could not verify local write roots")?;
         check_local_helper_write_roots(config, &local_roots)?;
@@ -1023,7 +1132,7 @@ async fn strict_write_profile(
             trusted_temp.is_some(),
         )? {
             // The platform defaults can also grant reads under system paths.
-            saved_login_deny = Some(
+            private_denials.push(
                 PathUri::from_host_native_path(&file)
                     .context("could not protect the saved Codex login file")?,
             );
@@ -1044,18 +1153,19 @@ async fn strict_write_profile(
                     FileSystemPath::Path { path },
                     FileSystemAccessMode::Write,
                 ));
-            // Retain the platform defaults, including Seatbelt account lookup
-            // rules, when private exclusions make Root a restricted read grant.
+            // Retain platform defaults when private exclusions restrict host reads.
             filesystem_policy.entries.push(FileSystemSandboxEntry::new(
                 FileSystemPath::Special {
                     value: FileSystemSpecialPath::Minimal,
                 },
                 FileSystemAccessMode::Read,
             ));
-            for path in trusted_auth_denials(config, &local_roots)? {
-                // The snapshot owns the selected login's exact deny and omits it
-                // from model context and portable policy.
-                if saved_login_deny.as_ref() == Some(&path) {
+            let (denials, selected_denials) =
+                trusted_auth_denials(config, &local_roots, private_paths.saved_login_file)?;
+            private_denials.extend(selected_denials);
+            for path in denials {
+                // Selected credentials are excluded from model context and portable policy.
+                if private_denials.contains(&path) {
                     continue;
                 }
                 filesystem_policy.entries.push(FileSystemSandboxEntry::new(
@@ -1089,11 +1199,16 @@ async fn strict_write_profile(
     });
     filesystem_policy
         .entries
-        .extend(mounts.iter().map(|path| FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path: path.clone() },
-            access: FileSystemAccessMode::Read,
-            missing_path_behavior: None,
-        }));
+        .extend(
+            mounts
+                .iter()
+                .chain(&read_grants)
+                .map(|path| FileSystemSandboxEntry {
+                    path: FileSystemPath::Path { path: path.clone() },
+                    access: FileSystemAccessMode::Read,
+                    missing_path_behavior: None,
+                }),
+        );
     // Intersect after the strict roots and Minimal have been applied.
     let profile = PermissionProfile::from_runtime_permissions(
         &filesystem_policy,
@@ -1107,11 +1222,12 @@ async fn strict_write_profile(
         profile
     };
     let profile =
-        PermissionProfileSnapshot::legacy_with_sdk_private_deny(profile, saved_login_deny);
+        PermissionProfileSnapshot::legacy_with_sdk_private_denies(profile, private_denials);
     Ok((
         StrictExecutorWrites {
             canonical_cwd: roots[0].clone(),
             root_pins,
+            read_only_roots: read_grants,
             has_storage_mounts: !mounts.is_empty(),
             read_only,
             trusted_workspace_write: trusted_temp.is_some(),
@@ -1120,7 +1236,72 @@ async fn strict_write_profile(
     ))
 }
 
-fn trusted_auth_denials(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<Vec<PathUri>> {
+fn validate_local_read_only_roots(
+    config: &Config,
+    declarations: &[PathUri],
+    write_paths: &[AbsolutePathBuf],
+    private_paths: LocalPrivatePaths<'_>,
+) -> Result<Vec<PathUri>> {
+    let invalid = "read_only_roots requires disjoint canonical existing directories below the filesystem root";
+    let mut roots = Vec::with_capacity(declarations.len());
+    for declaration in declarations {
+        let path = declaration.to_abs_path().context(invalid)?;
+        let canonical = path.canonicalize().context(invalid)?;
+        ensure!(
+            canonical.as_os_str() == path.as_os_str()
+                && canonical.parent().is_some()
+                && canonical.is_dir(),
+            "{invalid}"
+        );
+        let root = LocalWriteRoots::new(std::slice::from_ref(&canonical)).context(invalid)?;
+        for other in write_paths.iter().chain(&roots) {
+            ensure!(
+                !root.contains_entry(other.as_path()).context(invalid)?
+                    && !root
+                        .has_root_at_or_below(other.as_path())
+                        .context(invalid)?,
+                "{invalid}"
+            );
+        }
+        let private = "read_only_roots must not expose private SDK state";
+        check_local_session_write_roots(config, &root, private_paths, false).context(private)?;
+        if let Some(login) = private_paths.saved_login_file {
+            resolve_local_protected_path(&root, &login.declared, private, private)?;
+            if let Some(parent) = login.canonical.parent() {
+                // Saved login refresh stages a replacement alongside the current file.
+                resolve_local_protected_path(&root, parent, private, private)?;
+            }
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let linked = linked_local_protected_files(
+                canonical.as_path(),
+                false,
+                Some(
+                    "read_only_roots supports only regular files, directories, and symlink entries",
+                ),
+                "could not inspect a read_only_roots directory",
+            )?;
+            ensure!(
+                linked.is_empty(),
+                "read_only_roots must not contain hard-linked files"
+            );
+        }
+        roots.push(canonical);
+    }
+    let mut grants = roots
+        .iter()
+        .map(|root| PathUri::from_host_native_path(root.as_path()).context(invalid))
+        .collect::<Result<Vec<_>>>()?;
+    grants.sort_by_key(ToString::to_string);
+    Ok(grants)
+}
+
+fn trusted_auth_denials(
+    config: &Config,
+    roots: &LocalWriteRoots<'_>,
+    selected_login: Option<&crate::auth::SavedLoginFile>,
+) -> Result<(Vec<PathUri>, Vec<PathUri>)> {
     const RESOLVE_ERROR: &str =
         "Could not protect the trusted local executor's private authentication files";
     const OVERLAP_ERROR: &str =
@@ -1140,6 +1321,17 @@ fn trusted_auth_denials(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<
         None => resolved_codex_home.to_path_buf(),
     };
     let default_home = std::env::home_dir().context(RESOLVE_ERROR)?.join(".codex");
+    let resolve_credential = |path: &Path| -> Result<PathBuf> {
+        let path = resolve_local_protected_path(roots, path, RESOLVE_ERROR, OVERLAP_ERROR)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        ensure!(
+            linked_local_regular_file(path.clone())
+                .map_err(|_| anyhow::anyhow!(RESOLVE_ERROR))?
+                .is_none(),
+            "{RESOLVE_ERROR}: a credential file has multiple hard links"
+        );
+        Ok(path)
+    };
     let mut denied = vec![runtime_home.clone()];
     // The embedded runtime keeps its private home separate. Core can also
     // find the Codex login and MCP OAuth fallback files in the user's home.
@@ -1149,28 +1341,29 @@ fn trusted_auth_denials(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<
         default_home.as_path(),
     ] {
         for name in ["auth.json", ".credentials.json"] {
-            let path = resolve_local_protected_path(
-                roots,
-                &home.join(name),
-                RESOLVE_ERROR,
-                OVERLAP_ERROR,
-            )?;
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            ensure!(
-                linked_local_regular_file(path.clone())
-                    .map_err(|_| anyhow::anyhow!(RESOLVE_ERROR))?
-                    .is_none(),
-                "{RESOLVE_ERROR}: a credential file has multiple hard links"
-            );
+            let path = resolve_credential(&home.join(name))?;
             if !path.starts_with(&runtime_home) && !denied.contains(&path) {
                 denied.push(path);
             }
         }
     }
-    denied
-        .iter()
-        .map(|path| PathUri::from_host_native_path(path).context(RESOLVE_ERROR))
-        .collect()
+    let mut selected_denied = Vec::new();
+    if let Some(login) = selected_login {
+        // Validate the declared symlink hops and the originally selected home.
+        for auth in [&login.declared, &login.canonical] {
+            let path = resolve_credential(&auth.with_file_name(".credentials.json"))?;
+            if !path.starts_with(&runtime_home) && !selected_denied.contains(&path) {
+                selected_denied.push(path);
+            }
+        }
+    }
+    let to_uris = |paths: Vec<PathBuf>| -> Result<Vec<PathUri>> {
+        paths
+            .iter()
+            .map(|path| PathUri::from_host_native_path(path).context(RESOLVE_ERROR))
+            .collect()
+    };
+    Ok((to_uris(denied)?, to_uris(selected_denied)?))
 }
 
 fn check_local_helper_write_roots(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<()> {
@@ -1185,7 +1378,7 @@ fn check_local_helper_write_roots(config: &Config, roots: &LocalWriteRoots<'_>) 
         config.main_execve_wrapper_exe.as_deref(),
         code_mode.as_deref(),
     ];
-    let system_search = LOCAL_HELPER_PATH
+    let system_search = LOCAL_COMMAND_PATH
         .split(':')
         .filter(|_| cfg!(target_os = "linux"))
         .map(Path::new);
@@ -1267,7 +1460,8 @@ fn check_local_session_write_roots(
     };
     let resolve_error = "could not inspect the saved Codex login file";
     let overlap_error = "Keep the saved Codex login outside local executor grants";
-    let resolved = resolve_local_protected_path(roots, file, resolve_error, overlap_error)?;
+    let resolved =
+        resolve_local_protected_path(roots, &file.canonical, resolve_error, overlap_error)?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(linked) = linked_local_regular_file(resolved.clone()).context(resolve_error)? {
         // Trusted commands can read hard-link aliases outside their write roots.
@@ -1297,7 +1491,7 @@ fn check_local_protected_path(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let mut linked_files =
-            linked_local_protected_files(&resolved, private_runtime_home, false, resolve_error)?;
+            linked_local_protected_files(&resolved, private_runtime_home, None, resolve_error)?;
         if path == sqlite.home() {
             linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
             linked_files.extend(linked_relocated_rollout_files(roots, &resolved)?);
@@ -1317,6 +1511,10 @@ fn check_local_protected_path(
 
 const LOCAL_STORAGE_OVERLAP: &str =
     "Keep local session storage outside the executor cwd and writable roots";
+
+#[cfg(target_os = "linux")]
+const STORAGE_MOUNT_ENTRY_ERROR: &str =
+    "Storage mounts support only regular files, directories, and symlink entries";
 
 fn resolve_local_rollout_path(roots: &LocalWriteRoots<'_>, path: &Path) -> Result<PathBuf> {
     resolve_local_protected_path(
@@ -1494,7 +1692,7 @@ fn linked_relocated_sqlite_files(
 fn linked_local_protected_files(
     root: &Path,
     private_runtime_home: bool,
-    storage_mount: bool,
+    strict_tree_error: Option<&'static str>,
     resolve_error: &'static str,
 ) -> Result<Vec<PathBuf>> {
     use std::fs;
@@ -1505,17 +1703,23 @@ fn linked_local_protected_files(
     while let Some(directory) = directories.pop() {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
-            Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
+            Err(error) if strict_tree_error.is_none() && error.kind() == ErrorKind::NotFound => {
+                continue;
+            }
             Err(error) => return Err(error).context(resolve_error),
         };
         for entry in entries {
             let entry = entry.context(resolve_error)?;
             // DirEntry::metadata does not follow symlinks. Native state can
-            // also disappear during a normal rename or cleanup; mounted sources
-            // must remain enumerable, so their scans cannot ignore missing entries.
+            // also disappear during a normal rename or cleanup. Caller-selected
+            // directories must remain enumerable, so their scans reject missing entries.
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
-                Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
+                Err(error)
+                    if strict_tree_error.is_none() && error.kind() == ErrorKind::NotFound =>
+                {
+                    continue;
+                }
                 Err(error) => return Err(error).context(resolve_error),
             };
             // The SDK creates and owns this temporary directory. Public
@@ -1524,13 +1728,12 @@ fn linked_local_protected_files(
                 !private_runtime_home || !metadata.file_type().is_symlink(),
                 "symbolic links inside the private native runtime home are unsupported"
             );
-            ensure!(
-                !storage_mount
-                    || metadata.is_dir()
-                    || metadata.is_file()
-                    || metadata.file_type().is_symlink(),
-                "Storage mounts support only regular files, directories, and symlink entries"
-            );
+            if let Some(error) = strict_tree_error {
+                ensure!(
+                    metadata.is_dir() || metadata.is_file() || metadata.file_type().is_symlink(),
+                    "{error}"
+                );
+            }
             if metadata.is_dir() {
                 directories.push(entry.path());
             } else if metadata.is_file() && metadata.nlink() > 1 {
@@ -1661,6 +1864,7 @@ pub(crate) async fn replace_writable_roots(
         &selection.cwd,
         &writable_roots,
         &[],
+        &previous.read_only_roots,
         private_paths,
         previous.read_only,
         trusted_temp,
@@ -1795,6 +1999,7 @@ pub(crate) fn check_checkpoint_policy(
     recorded: Option<&str>,
     startup: &codex_core_api::StartThreadOptions,
 ) -> Result<()> {
+    let strict = startup.thread_extension_init.get::<StrictExecutorWrites>();
     if let Some(expected) = recorded {
         let strict = startup
             .thread_extension_init
@@ -1811,6 +2016,11 @@ pub(crate) fn check_checkpoint_policy(
                     strict.trusted_workspace_write
                 )?)?,
             "Restore requires the recorded executor write and network policy"
+        );
+    } else {
+        ensure!(
+            strict.is_none_or(|policy| policy.read_only_roots.is_empty()),
+            "Restore requires the recorded executor policy for read-only roots"
         );
     }
     Ok(())
@@ -2207,7 +2417,7 @@ async fn probe_local_sandbox(
         cwd: cwd.clone(),
         env_policy: None,
         shell_snapshot: None,
-        env: local_helper_env(),
+        env: local_command_env(),
         tty: false,
         pipe_stdin: false,
         arg0: None,
@@ -2454,6 +2664,99 @@ mod tests {
     use codex_exec_server::{ByteChunk, ProcessOutputChunk};
     use serde_json::json;
 
+    #[test]
+    fn explicit_environment_names_match_receiver_restrictions() {
+        for name in codex_protocol::shell_environment::NON_INHERITABLE_ENV_VARS
+            .iter()
+            .copied()
+            .chain([
+                "CODEX_SDK_BWRAP_SEARCH_PATH",
+                "CARGO_BIN_EXE_bwrap",
+                "CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE",
+                "CODEX_SANDBOX_COMMAND_ENV_JSON",
+                "CODEX_THREAD_ID",
+                "CODEX_SESSION_ID",
+                "CODEX_VERSION",
+                "CODEX_PERMISSION_PROFILE",
+                "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
+                "CODEX_PLUGIN_METRICS_OUTPUT",
+                "CODEX_SANDBOX_COMMAND_ENV_JSON_0",
+                "CODEX_SANDBOX_COMMAND_ENV_JSON_é",
+            ])
+        {
+            for variant in [name.to_owned(), name.to_ascii_lowercase()] {
+                let values =
+                    std::collections::HashMap::from([(variant, "private-environment-value")]);
+                let result = serde_json::from_value::<super::EnvironmentOptions>(json!({
+                    "cwd": "file:///workspace", "env_json": serde_json::to_string(&values).unwrap()
+                }));
+                let error = result
+                    .err()
+                    .expect("receiver-reserved environment name")
+                    .to_string();
+                assert!(!error.contains("private-environment-value"));
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_environment_name_identity_is_owned_by_the_receiver() {
+        assert!(super::environment_target_name_validation_required(Some("windows"), true).unwrap());
+        assert!(
+            super::environment_target_name_validation_required(Some("windows"), false).is_err()
+        );
+        assert!(!super::environment_target_name_validation_required(Some("linux"), false).unwrap());
+        assert!(!super::environment_target_name_validation_required(Some("macos"), false).unwrap());
+        assert!(super::environment_target_name_validation_required(None, false).is_err());
+    }
+
+    #[test]
+    fn explicit_environment_values_validate_before_native_selection() {
+        let valid: super::EnvironmentOptions = serde_json::from_value(json!({
+            "cwd": "file:///workspace",
+            "env_json": r#"{"VALUE":"private-environment-value","EMPTY":"","__proto__":"literal"}"#
+        }))
+        .unwrap();
+        assert_eq!(valid.env["EMPTY"], "");
+        assert_eq!(valid.env["__proto__"], "literal");
+        for (name, value) in [
+            ("$serde_json::private::Number", "7301592846"),
+            (
+                "$serde_json::private::RawValue",
+                r#"{"APP_MODE":"injected-env-marker"}"#,
+            ),
+        ] {
+            let values = std::collections::HashMap::from([(name, value)]);
+            let options: super::EnvironmentOptions = serde_json::from_value(json!({
+                "cwd": "file:///workspace",
+                "env_json": serde_json::to_string(&values).unwrap()
+            }))
+            .unwrap();
+            assert_eq!(options.env.len(), 1);
+            assert_eq!(options.env[name], value);
+        }
+        for values in [
+            json!({"": "private-environment-value"}),
+            json!({"BAD=NAME": "private-environment-value"}),
+            json!({"BAD\0NAME": "private-environment-value"}),
+            json!({"CODEX_SDK_BWRAP_SEARCH_PATH": "private-environment-value"}),
+            json!({"CARGO_BIN_EXE_bwrap": "private-environment-value"}),
+            json!({"NAME": "private-environment-value\0"}),
+            json!({"NAME": 3}),
+            json!(["private-environment-value"]),
+        ] {
+            let result = serde_json::from_value::<super::EnvironmentOptions>(json!({
+                "cwd": "file:///workspace", "env_json": values.to_string()
+            }));
+            let error = match result {
+                Ok(_) => panic!("invalid environment values were accepted"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("environment"));
+            assert!(!error.contains("private-environment-value"));
+        }
+    }
+
     fn readiness_output(seq: u64, stream: ExecOutputStream, bytes: &[u8]) -> ExecProcessEvent {
         ExecProcessEvent::Output(ProcessOutputChunk {
             seq,
@@ -2529,6 +2832,126 @@ mod tests {
             },
         ];
         assert_eq!(readiness_outcome(events), LocalSandboxOutcome::Ready);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn read_only_roots_admit_stable_directories_and_protect_private_paths() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::os::unix::net::UnixListener;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let base = temporary.path().canonicalize().unwrap();
+        let cwd = base.join("work");
+        let source = base.join("skills");
+        let child = source.join("child");
+        let second = base.join("resources");
+        let home = base.join("home");
+        let login_home = base.join("login");
+        for path in [&cwd, &source, &child, &second, &home, &login_home] {
+            fs::create_dir(path).unwrap();
+        }
+        let (config, _) = crate::config::load(
+            "{}",
+            &json!({
+                "codex_home": home, "cwd": cwd,
+                "loader":{"ignore_user_config":true,"ignore_project_config":true}
+            })
+            .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+        let uri = |path: &Path| PathUri::from_host_native_path(path).unwrap();
+        let write = [uri(&cwd).to_abs_path().unwrap()];
+        let validate = |paths: &[&Path], private| {
+            let declarations: Vec<_> = paths.iter().map(|path| uri(path)).collect();
+            validate_local_read_only_roots(&config, &declarations, &write, private)
+        };
+        let private = LocalPrivatePaths::default();
+        assert_eq!(
+            validate(&[&source, &second], private).unwrap(),
+            vec![uri(&second), uri(&source)]
+        );
+        let alias = base.join("alias");
+        symlink(&source, &alias).unwrap();
+        let regular = source.join("marker");
+        fs::write(&regular, b"fixture").unwrap();
+        let work_child = cwd.join("child");
+        fs::create_dir(&work_child).unwrap();
+        for path in [
+            &base,
+            &cwd,
+            &work_child,
+            &alias,
+            &regular,
+            &base.join("missing"),
+        ] {
+            assert!(validate(&[path], private).is_err(), "{path:?}");
+        }
+        for paths in [[source.as_path(), child.as_path()], [&child, &source]] {
+            assert!(validate(&paths, private).is_err());
+        }
+        assert!(validate(&[&home], private).is_err());
+
+        let hard_link = source.join("linked");
+        fs::hard_link(&regular, &hard_link).unwrap();
+        assert!(
+            validate(&[&source], private)
+                .unwrap_err()
+                .to_string()
+                .contains("hard-linked")
+        );
+        fs::remove_file(hard_link).unwrap();
+        let _socket = UnixListener::bind(source.join("socket")).unwrap();
+        assert!(
+            validate(&[&source], private)
+                .unwrap_err()
+                .to_string()
+                .contains("only regular files")
+        );
+
+        // The durable profile alias resolves into the proposed read grant.
+        let storage = base.join("profile");
+        symlink(&second, &storage).unwrap();
+        assert!(
+            validate(
+                &[&second],
+                LocalPrivatePaths {
+                    storage: Some(&storage),
+                    ..private
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("private SDK state")
+        );
+
+        // The declared alias and the actual atomic refresh directory are
+        // separate filesystem entries. Neither belongs to a read grant.
+        let login_alias = second.join("login");
+        symlink(&login_home, &login_alias).unwrap();
+        let auth = login_home.join("auth.json");
+        fs::write(&auth, b"synthetic").unwrap();
+        let login = crate::auth::SavedLoginFile {
+            declared: login_alias.join("auth.json"),
+            canonical: auth,
+        };
+        let private = LocalPrivatePaths {
+            saved_login_file: Some(&login),
+            ..private
+        };
+        let refresh_directory_child = login_home.join("resources");
+        fs::create_dir(&refresh_directory_child).unwrap();
+        for path in [&second, &refresh_directory_child] {
+            assert!(
+                validate(&[path], private)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("private SDK state")
+            );
+        }
     }
 
     #[test]
@@ -2710,21 +3133,22 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let missing = temporary.path().join("disappeared-directory");
         let error = "Could not inspect storage mount files for hard links";
+        let mount_tree = Some(STORAGE_MOUNT_ENTRY_ERROR);
         assert_eq!(
-            linked_local_protected_files(&missing, false, true, error)
+            linked_local_protected_files(&missing, false, mount_tree, error)
                 .unwrap_err()
                 .to_string(),
             error
         );
         // Private SDK state retains its existing allowance for absent files.
         assert!(
-            linked_local_protected_files(&missing, false, false, error)
+            linked_local_protected_files(&missing, false, None, error)
                 .unwrap()
                 .is_empty()
         );
         let file = temporary.path().join("not-a-directory");
         std::fs::write(&file, "caller-owned").unwrap();
-        assert!(linked_local_protected_files(&file, false, true, error).is_err());
+        assert!(linked_local_protected_files(&file, false, mount_tree, error).is_err());
         assert_eq!(std::fs::read_to_string(file).unwrap(), "caller-owned");
     }
 
@@ -2746,16 +3170,17 @@ mod tests {
         let _outside_listener = UnixListener::bind(&outside).unwrap();
         symlink(&outside, nested.join("unfollowed-socket-link")).unwrap();
         let error = "Could not inspect storage mount files";
+        let mount_tree = Some(STORAGE_MOUNT_ENTRY_ERROR);
         // The symlink entry is allowed; its special-file target is not inspected.
         assert!(
-            linked_local_protected_files(&source, false, true, error)
+            linked_local_protected_files(&source, false, mount_tree, error)
                 .unwrap()
                 .is_empty()
         );
         let endpoint = source.join("socket");
         let _listener = UnixListener::bind(&endpoint).unwrap();
         let original = fs::symlink_metadata(&endpoint).unwrap();
-        let rejected = linked_local_protected_files(&source, false, true, error).unwrap_err();
+        let rejected = linked_local_protected_files(&source, false, mount_tree, error).unwrap_err();
         assert!(
             rejected
                 .to_string()
@@ -2764,7 +3189,7 @@ mod tests {
         // The shared collector must not add a special-file restriction to
         // private-state scans, which use their existing symlink rules.
         assert!(
-            linked_local_protected_files(&source, false, false, error)
+            linked_local_protected_files(&source, false, None, error)
                 .unwrap()
                 .is_empty()
         );
@@ -2804,6 +3229,7 @@ mod tests {
         let strict = StrictExecutorWrites {
             canonical_cwd: cwd.clone(),
             root_pins: HashMap::from([(write_root_key(&cwd), cwd)]),
+            read_only_roots: Vec::new(),
             has_storage_mounts: false,
             read_only: false,
             trusted_workspace_write: false,

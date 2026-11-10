@@ -138,6 +138,52 @@ function captureStorageMounts(
   }
 }
 
+// Core's private credentials, runtime-owned values, and SDK bootstrap controls.
+const reservedEnvironmentNames = new Set([
+  'CODEX_SDK_BWRAP_SEARCH_PATH',
+  'CARGO_BIN_EXE_BWRAP',
+  'CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE',
+  'CODEX_SANDBOX_COMMAND_ENV_JSON',
+  'CODEX_THREAD_ID',
+  'CODEX_SESSION_ID',
+  'CODEX_VERSION',
+  'CODEX_PERMISSION_PROFILE',
+  'CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS',
+  'CODEX_PLUGIN_METRICS_OUTPUT',
+  'CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN',
+  'NODE_REPL_AUTH_TOKEN',
+  'CODEX_GUARDIAN_DECISIONS_API_KEY',
+  'OPENAI_FEDERATION_RULE_ID',
+  'OPENAI_IDENTITY_TOKEN_FILE',
+  'OPENAI_WORKLOAD_IDENTITY_CONTEXT',
+]);
+
+const environmentValues = z
+  .custom<Record<string, string>>(
+    (value) =>
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.entries(value).every(([name, entry]) => {
+        const normalizedName = name.replace(/[a-z]/g, (letter) =>
+          letter.toUpperCase(),
+        );
+        return (
+          name.length > 0 &&
+          !reservedEnvironmentNames.has(normalizedName) &&
+          !normalizedName.startsWith('CODEX_SANDBOX_COMMAND_ENV_JSON_') &&
+          !name.includes('\0') &&
+          !name.includes('=') &&
+          typeof entry === 'string' &&
+          !entry.includes('\0') &&
+          Buffer.from(name, 'utf8').toString('utf8') === name &&
+          Buffer.from(entry, 'utf8').toString('utf8') === entry
+        );
+      }),
+    'Invalid executor environment variables',
+  )
+  .transform((value) => Object.fromEntries(Object.entries(value)));
+
 const remoteEnvironmentSchema = z
   .object({
     url: z.string().url(),
@@ -146,6 +192,7 @@ const remoteEnvironmentSchema = z
     writable_roots: z.array(capabilityDirectory).optional(),
     read_only: z.boolean().optional(),
     headers: z.record(z.string(), z.string()).optional(),
+    env_json: z.string().optional(),
     connect_timeout: z.number().nonnegative().finite().nullable().optional(),
     network: networkPolicyWireSchema.optional(),
   })
@@ -156,6 +203,7 @@ const localEnvironmentSchema = remoteEnvironmentSchema
     local: z.literal(true),
     write_policy: z.literal('trusted_workspace_write').optional(),
     mounts: z.array(storageMountWireSchema).optional(),
+    read_only_roots: z.array(capabilityDirectory).optional(),
   });
 const environmentSchema = z.union([
   remoteEnvironmentSchema,
@@ -193,6 +241,7 @@ export interface ExecutorContext<Context = unknown> {
 export interface EnvironmentOptions<Context = unknown> {
   /** Storage mounts are available only through Environment.local. */
   mounts?: never;
+  readOnlyRoots?: never;
   url: string;
   cwd: string;
   capabilityDirectories?: readonly string[];
@@ -205,6 +254,8 @@ export interface EnvironmentOptions<Context = unknown> {
   /** Explicit managed proxy policy. Requires exec_command and a supported executor. */
   network?: NetworkPolicy;
   headers?: Readonly<Record<string, string>>;
+  /** Captured command-variable overrides; current declarations only, excluded from saved state. */
+  env?: Readonly<Record<string, string>>;
   connectTimeout?: number;
   approval?: (
     context: ExecutorContext<Context>,
@@ -233,19 +284,32 @@ export interface EnvironmentOptions<Context = unknown> {
 
 export type LocalEnvironmentOptions<Context = unknown> = Omit<
   EnvironmentOptions<Context>,
-  'url' | 'headers' | 'connectTimeout' | 'mounts' | 'writePolicy'
+  | 'url'
+  | 'headers'
+  | 'connectTimeout'
+  | 'mounts'
+  | 'readOnlyRoots'
+  | 'writePolicy'
 > & {
-  /** Trusted mode permits host reads and toolchain discovery with scoped writes. */
+  /** Linux only. Trusted mode permits host reads and toolchain discovery with scoped writes. */
   writePolicy?: 'strict' | 'trusted_workspace_write';
   /** Linux only: canonical same-path read-only local_bind mounts. */
   mounts?: readonly LocalStorageMount[];
+  /**
+   * macOS only. Existing canonical application-owned directories to read at
+   * their original paths. Keep them outside the workspace, writable roots,
+   * and SDK private state. For a symlinked skill, grant its canonical target
+   * directory. Keep the trees stable during use and repeat the same grants
+   * when restoring the Session.
+   */
+  readOnlyRoots?: readonly string[];
 };
 
 export class Environment<Context = any> {
   /**
    * Execute in the local Linux or macOS sandbox using packaged helpers.
-   * With strict writes, commands can read the workspace, declared writable
-   * roots, and platform runtime files. They start with a system PATH and no
+   * With strict writes, commands can read the workspace, declared roots,
+   * and platform runtime files. They start with a system PATH and no
    * inherited host variables.
    * Install the SDK helpers outside every writable root, including the workspace.
    */
@@ -282,9 +346,11 @@ export class Environment<Context = any> {
   readonly capabilityDirectories?: readonly string[];
   readonly writableRoots?: readonly string[];
   readonly mounts?: readonly LocalStorageMount[];
+  readonly readOnlyRoots?: readonly string[];
   readonly tools: readonly ExecutorToolName[];
   readonly network?: CapturedNetworkPolicy;
   readonly headers: Readonly<Record<string, string>>;
+  readonly env?: Readonly<Record<string, string>>;
   readonly connectTimeout?: number;
   readonly approval?: EnvironmentOptions<Context>['approval'];
   readonly transformArguments?: EnvironmentOptions<Context>['transformArguments'];
@@ -315,8 +381,8 @@ export class Environment<Context = any> {
         throw new TypeError(
           'Trusted workspace writes require Environment.local',
         );
-      if (!['linux', 'darwin'].includes(process.platform))
-        throw new TypeError('Trusted workspace writes require Linux or macOS');
+      if (process.platform !== 'linux')
+        throw new TypeError('Trusted workspace writes require Linux');
     } else if (this.writePolicy !== 'strict' && this.writePolicy !== 'legacy') {
       throw new TypeError(
         this.kind === 'local'
@@ -457,12 +523,32 @@ export class Environment<Context = any> {
         this.cwd,
         this.writableRoots ?? [],
       );
+    if (options.readOnlyRoots !== undefined) {
+      const roots = z
+        .array(capabilityDirectory)
+        .safeParse(options.readOnlyRoots);
+      if (!roots.success)
+        throw new TypeError(
+          'readOnlyRoots must contain absolute paths or file URIs',
+        );
+      if (roots.data.length) {
+        if (this.kind !== 'local' || process.platform !== 'darwin')
+          throw new TypeError(
+            'readOnlyRoots requires Environment.local on macOS',
+          );
+        this.readOnlyRoots = Object.freeze(roots.data);
+      }
+    }
     this.tools = Object.freeze(tools);
     this.network =
       options.network === undefined
         ? undefined
         : captureNetworkPolicy(options.network);
     this.headers = Object.freeze(headers);
+    this.env =
+      options.env === undefined
+        ? undefined
+        : Object.freeze(environmentValues.parse(options.env));
     this.connectTimeout = transport?.connectTimeout;
     this.approval = options.approval;
     this.transformArguments = options.transformArguments;
@@ -470,6 +556,7 @@ export class Environment<Context = any> {
     environmentConfig(this);
     for (const name of [
       'headers',
+      'env',
       'approval',
       'transformArguments',
       'transformResult',
@@ -489,6 +576,9 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
     ...(environment.writePolicy === 'trusted_workspace_write'
       ? { write_policy: environment.writePolicy }
       : {}),
+    ...(environment.env === undefined
+      ? {}
+      : { env_json: JSON.stringify(environment.env) }),
     ...(environment.readOnly ? { read_only: true } : {}),
     ...(environment.mounts === undefined
       ? {}
@@ -500,6 +590,9 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
             read_only: true as const,
           })),
         }),
+    ...(environment.readOnlyRoots === undefined
+      ? {}
+      : { read_only_roots: environment.readOnlyRoots }),
     ...(environment.capabilityDirectories === undefined
       ? {}
       : { capability_directories: environment.capabilityDirectories }),

@@ -16,8 +16,8 @@ import {
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createUnixServer } from 'node:net';
-import { tmpdir, userInfo } from 'node:os';
-import { basename, delimiter, dirname, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { basename, delimiter, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -34,6 +34,7 @@ import {
   type Session,
   type SessionState,
 } from '@openai/agents';
+import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { nativeDescendantModel } from './fixtures/native-descendant-model';
@@ -54,12 +55,13 @@ async function providerFor(server: ModelServer) {
   });
 }
 
-const supported = process.platform === 'linux' || process.platform === 'darwin';
+const trustedSupported = process.platform === 'linux';
+const supported = trustedSupported || process.platform === 'darwin';
 const packageRoot = join(import.meta.dirname, '..', '..');
 
 const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
-it.skipIf(!supported)(
+it.skipIf(!trustedSupported)(
   'scopes trusted local workspace writes, private authentication and command temp',
   async (context) => {
     const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-local-'));
@@ -181,7 +183,7 @@ it.skipIf(!supported)(
           network: {
             allowedDomains: ['sdk-fixture.invalid'],
             deniedDomains: ['denied.invalid'],
-            allowAllUnixSockets: process.platform === 'linux',
+            allowAllUnixSockets: true,
           },
         });
       const opened = await agent
@@ -272,7 +274,7 @@ it.skipIf(!supported)(
   45_000,
 );
 
-it.skipIf(!supported)(
+it.skipIf(!trustedSupported)(
   'scopes Git and SSH settings for local commands',
   async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'sdk-git-'));
@@ -388,19 +390,17 @@ it.skipIf(!supported)(
         model: 'gpt-5',
         instructions: 'Work.',
       });
-      if (process.platform === 'linux') {
-        await expect(
-          agent.session({
-            environment: Environment.local({
-              cwd,
-              writePolicy: 'trusted_workspace_write',
-              tools: ['exec_command'],
-              network: { allowedDomains: ['sdk-fixture.invalid'] },
-            }),
+      await expect(
+        agent.session({
+          environment: Environment.local({
+            cwd,
+            writePolicy: 'trusted_workspace_write',
+            tools: ['exec_command'],
+            network: { allowedDomains: ['sdk-fixture.invalid'] },
           }),
-        ).rejects.toThrow('Linux requires explicit access to all Unix sockets');
-        expect(server.requests).toHaveLength(0);
-      }
+        }),
+      ).rejects.toThrow('Linux requires explicit access to all Unix sockets');
+      expect(server.requests).toHaveLength(0);
       for (const { name, trusted, allowSockets } of modes) {
         await using session = await agent.session({
           environment: Environment.local({
@@ -442,87 +442,48 @@ it.skipIf(!supported)(
 );
 
 it.skipIf(process.platform !== 'darwin')(
-  'allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants',
-  async () => {
-    const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-darwin-'));
-    try {
-      const base = await realpath(temporary);
-      const cwd = join(base, 'workspace');
-      const extra = join(base, 'granted');
-      const outside = join(base, 'outside');
-      await Promise.all([
-        mkdir(cwd),
-        mkdir(extra),
-        writeFile(outside, 'outside'),
-      ]);
-      vi.stubEnv(
-        'PATH',
-        [dirname(process.execPath), process.env.PATH].join(delimiter),
+  'rejects trusted workspace writes on macOS',
+  () => {
+    expect(() =>
+      Environment.local({
+        cwd: process.cwd(),
+        writePolicy: 'trusted_workspace_write',
+      }),
+    ).toThrow('Trusted workspace writes require Linux');
+
+    const env = { ...process.env };
+    delete env.CODEX_HOME;
+    delete env.OPENAI_API_KEY;
+    delete env.NODE_PATH;
+    const fixture = join(
+      import.meta.dirname,
+      'fixtures',
+      'darwin-telemetry.mjs',
+    );
+    for (const mode of ['clean', 'unsupported', 'late']) {
+      const stdout = execFileSync(
+        process.execPath,
+        [fixture, packageRoot, mode],
+        {
+          encoding: 'utf8',
+          env,
+          timeout: 45_000,
+          maxBuffer: 1024 * 1024,
+        },
       );
-      const host = userInfo();
-      const command = [
-        'set -eu',
-        `test "$(/usr/bin/id -u)" = ${host.uid} || exit 11`,
-        `test "$(/usr/bin/id -un)" = ${shellQuote(host.username)} || exit 12`,
-        '/usr/bin/ssh -G -F /dev/null sdk-fixture.invalid > "$TMPDIR/ssh-config"',
-        '/usr/bin/grep -qx "hostname sdk-fixture.invalid" "$TMPDIR/ssh-config"',
-        `test "$(node --version)" = ${shellQuote(process.version)} || exit 13`,
-        'verify=$(/usr/bin/curl --disable --fail --silent --show-error --max-time 20 --proto "=https" --write-out "%{ssl_verify_result}" https://github.com/robots.txt -o "$TMPDIR/robots.txt")',
-        'test "$verify" = 0 || exit 14',
-        'test -s "$TMPDIR/robots.txt"',
-        `test "$(cat ${shellQuote(outside)})" = outside`,
-        `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 15; fi`,
-        'printf workspace > result',
-        `printf grant > ${shellQuote(join(extra, 'result'))}`,
-      ].join('; ');
-      const server = new ModelServer([
-        [
-          call(
-            'exec_command',
-            { cmd: command, yield_time_ms: 25_000 },
-            { callId: 'trusted-macos' },
-          ),
-        ],
-        [message('done')],
-      ]);
-      await using provider = await providerFor(server);
-      const agent = new Agent({
-        provider,
-        model: 'gpt-5',
-        instructions: 'Work.',
-      });
-      await using session = await agent.session({
-        environment: Environment.local({
-          cwd,
-          writableRoots: [extra],
-          writePolicy: 'trusted_workspace_write',
-          tools: ['exec_command'],
-          network: { allowedDomains: ['github.com'] },
-        }),
-      });
-      expect(
-        (await (await session.submit('Run the fixture.')).wait()).finalOutput,
-      ).toBe('done');
-      expect(await Array.fromAsync(session.items())).toContainEqual(
-        expect.objectContaining({
-          type: 'command_execution',
-          callId: 'trusted-macos',
-          exitCode: 0,
-          status: 'completed',
-        }),
-      );
-      expect(await readFile(join(cwd, 'result'), 'utf8')).toBe('workspace');
-      expect(await readFile(join(extra, 'result'), 'utf8')).toBe('grant');
-      expect(await readFile(outside, 'utf8')).toBe('outside');
-      server.assertExhausted();
-    } finally {
-      await rm(temporary, { recursive: true, force: true });
+      expect(stdout.trim()).toBe(`PASS ${mode}`);
     }
   },
-  45_000,
+  150_000,
 );
 
-it.skipIf(!supported).for(['strict', 'trusted_workspace_write'] as const)(
+it
+  .skipIf(!supported)
+  .for(
+    trustedSupported
+      ? (['strict', 'trusted_workspace_write'] as const)
+      : (['strict'] as const),
+  )(
   'records the selected local proxy in child and grandchild receipts with %s',
   { timeout: 75_000 },
   async (writePolicy, context) => {
@@ -2236,7 +2197,13 @@ it.skipIf(!supported)(
   30_000,
 );
 
-it.skipIf(!supported).for(['portable', 'local', 'trusted portable'] as const)(
+it
+  .skipIf(!supported)
+  .for(
+    trustedSupported
+      ? (['portable', 'local', 'trusted portable'] as const)
+      : (['portable', 'local'] as const),
+  )(
   'applies a per-turn write policy and requires the current policy on %s restore',
   { timeout: 45_000 },
   async (kind, context) => {
@@ -2872,7 +2839,11 @@ it
         process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
   )
-  .for(['portable', 'local', 'trusted local'] as const)(
+  .for(
+    trustedSupported
+      ? (['portable', 'local', 'trusted local'] as const)
+      : (['portable', 'local'] as const),
+  )(
   'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
   { timeout: 120_000 },
   async (route) => {
@@ -3165,4 +3136,223 @@ it
       await rm(base, { recursive: true, force: true });
     }
   },
+);
+
+it.skipIf(process.platform !== 'darwin')(
+  'applies a per-turn write policy with macOS read-only roots and restores a named linked skill',
+  async () => {
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    // Seatbelt already grants access to the system scratch directories.
+    const temporary = await mkdtemp(
+      join(homedir(), '.agents-macos-read-roots-'),
+    );
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const granted = join(base, 'granted');
+      const harmless = join(base, 'harmless');
+      const other = join(base, 'other');
+      const homes = join(base, 'runtime-homes');
+      const skill = join(cwd, '.agents', 'skills', 'nov9_read_only_probe');
+      await Promise.all([
+        mkdir(join(cwd, '.agents', 'skills'), { recursive: true }),
+        mkdir(join(cwd, '.git'), { recursive: true }),
+        mkdir(granted),
+        mkdir(harmless),
+        mkdir(other),
+        mkdir(homes),
+      ]);
+      const skillBody =
+        '---\nname: nov9_read_only_probe\ndescription: NAMED_SKILL_CATALOG\n---\nRead marker.txt when this skill is requested.\n';
+      const marker = join(granted, 'marker.txt');
+      const outside = join(other, 'ungranted.txt');
+      const metadata = '[core]\n\trepositoryformatversion = 0\n';
+      await Promise.all([
+        writeFile(join(granted, 'SKILL.md'), skillBody),
+        writeFile(marker, 'GRANTED_SKILL_MARKER\n'),
+        writeFile(outside, 'UNGRANTED_PRIVATE_SENTINEL\n'),
+        writeFile(join(cwd, '.git', 'config'), metadata),
+        symlink(granted, skill),
+        symlink(outside, join(cwd, 'ungranted-link')),
+        symlink(outside, join(granted, 'ungranted-link')),
+      ]);
+      vi.stubEnv('TMPDIR', homes);
+      let privateMarker = '';
+      const denyRead = (path: string) =>
+        `if cat ${quote(path)} >/dev/null 2>&1; then exit 11; fi`;
+      const denyWrite = (path: string) =>
+        `if (printf changed >> ${quote(path)}) 2>/dev/null; then exit 12; fi`;
+      const probe = (name: string, allowed: boolean) =>
+        [
+          'set -eu',
+          ...(allowed
+            ? [
+                `cat ${quote(join(skill, 'SKILL.md'))}`,
+                `cat ${quote(join(skill, 'marker.txt'))}`,
+                `cat ${quote(marker)}`,
+              ]
+            : [denyRead(marker), denyRead(join(skill, 'marker.txt'))]),
+          denyRead(outside),
+          denyRead(join(cwd, 'ungranted-link')),
+          denyRead(join(granted, 'ungranted-link')),
+          denyRead(privateMarker),
+          denyWrite(marker),
+          denyWrite(join(skill, 'marker.txt')),
+          denyWrite(join(granted, 'new.txt')),
+          denyWrite(join(cwd, '.git', 'config')),
+          `printf workspace-ok > ${quote(join(cwd, name))}`,
+          'printf POLICY_OK',
+        ].join('; ');
+      const command = (name: string, allowed: boolean) => ({
+        items: [
+          toolCall(
+            'exec_command',
+            { cmd: probe(name, allowed) },
+            { callId: name },
+          ),
+        ],
+      });
+      const answer = () => ({ items: [text('done')] });
+      const readOnlyRoots: readonly string[] = [granted, harmless];
+      const options = { cwd, tools: ['exec_command'] as const };
+      await withScriptedResponses(
+        [
+          () => command('strict-default', false),
+          answer(),
+          () => command('initial', true),
+          answer(),
+          () => command('restored', true),
+          answer(),
+        ],
+        async (peer) => {
+          const agent = new Agent({
+            provider: peer.provider,
+            model: 'gpt-5.5',
+            instructions: 'Use the named skill and run the selected command.',
+          });
+          const setPrivateMarker = async (previous: string[]) => {
+            const created = (await readdir(homes)).filter(
+              (name) =>
+                name.startsWith('agents-session-') && !previous.includes(name),
+            );
+            expect(created).toHaveLength(1);
+            privateMarker = join(homes, created[0], 'private-sentinel');
+            await writeFile(privateMarker, 'NATIVE_PRIVATE_SENTINEL\n');
+          };
+          {
+            const environment = Environment.local(options);
+            expect(environment.writePolicy).toBe('strict');
+            const previous = await readdir(homes);
+            await using session = await agent.session({ environment });
+            await setPrivateMarker(previous);
+            expect(
+              (await (await session.submit('Check the default policy.')).wait())
+                .finalOutput,
+            ).toBe('done');
+          }
+          const sharedMarker = join(harmless, 'shared-marker');
+          await link(outside, sharedMarker);
+          await expect(
+            agent.session({
+              environment: Environment.local({ ...options, readOnlyRoots }),
+            }),
+          ).rejects.toThrow(/hard.link/i);
+          await rm(sharedMarker);
+          expect(peer.requests).toHaveLength(2);
+          let state: SessionState;
+          {
+            const environment = Environment.local({
+              ...options,
+              capabilityDirectories: [join(cwd, '.agents')],
+              readOnlyRoots,
+            });
+            expect(environment.writePolicy).toBe('strict');
+            const previous = await readdir(homes);
+            await using session = await agent.session({ environment });
+            await setPrivateMarker(previous);
+            await expect(
+              session.submit('Do not make the linked skill writable.', {
+                writableRoots: [skill],
+              }),
+            ).rejects.toThrow(/read.only|overlap|writ/i);
+            expect(peer.requests).toHaveLength(2);
+            expect(
+              (
+                await (
+                  await session.submit(
+                    'Use $nov9_read_only_probe and read its marker.txt.',
+                    { writableRoots: [] },
+                  )
+                ).wait()
+              ).finalOutput,
+            ).toBe('done');
+            state = parseSessionState(
+              JSON.stringify(await session.saveState()),
+            );
+          }
+          for (const roots of [undefined, [other]] as const) {
+            await expect(
+              agent.session({
+                state,
+                environment: Environment.local({
+                  ...options,
+                  readOnlyRoots: roots,
+                }),
+              }),
+            ).rejects.toThrow(
+              /recorded executor write and network policy|read.only roots/i,
+            );
+          }
+          expect(peer.requests).toHaveLength(4);
+          {
+            const previous = await readdir(homes);
+            await using session = await agent.session({
+              state,
+              environment: Environment.local({
+                ...options,
+                capabilityDirectories: [join(cwd, '.agents')],
+                readOnlyRoots: [harmless, granted],
+              }),
+            });
+            await setPrivateMarker(previous);
+            expect(
+              (
+                await (
+                  await session.submit('Use $nov9_read_only_probe again.')
+                ).wait()
+              ).finalOutput,
+            ).toBe('done');
+          }
+          expect(JSON.stringify(peer.requests[2])).toContain(
+            'NAMED_SKILL_CATALOG',
+          );
+          expect(peer.requests).toHaveLength(6);
+          peer.assertExhausted();
+          for (const phase of ['strict-default', 'initial', 'restored']) {
+            const output = peer.toolOutput(phase);
+            expect(output).toContain('POLICY_OK');
+            expect(output).not.toContain('UNGRANTED_PRIVATE_SENTINEL');
+            expect(output).not.toContain('NATIVE_PRIVATE_SENTINEL');
+            if (phase !== 'strict-default')
+              expect(output).toContain('GRANTED_SKILL_MARKER');
+          }
+        },
+      );
+      for (const name of ['strict-default', 'initial', 'restored'])
+        expect(await readFile(join(cwd, name), 'utf8')).toBe('workspace-ok');
+      expect(await readFile(marker, 'utf8')).toBe('GRANTED_SKILL_MARKER\n');
+      expect(await readFile(join(granted, 'SKILL.md'), 'utf8')).toBe(skillBody);
+      expect(await readFile(outside, 'utf8')).toBe(
+        'UNGRANTED_PRIVATE_SENTINEL\n',
+      );
+      expect(await readFile(join(cwd, '.git', 'config'), 'utf8')).toBe(
+        metadata,
+      );
+      expect(existsSync(join(granted, 'new.txt'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  60_000,
 );
