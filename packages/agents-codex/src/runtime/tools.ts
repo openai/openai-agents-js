@@ -472,10 +472,9 @@ export function tool<
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed = parameters.parse(
-        effectiveArgs === undefined ? args : effectiveArgs,
-      );
-      if (approved) parsed = approved.value as typeof parsed;
+      let parsed = approved
+        ? (approved.value as z.output<T>)
+        : parameters.parse(effectiveArgs === undefined ? args : effectiveArgs);
       let callContext: ToolContext<Context> = {
         ...context,
         decide:
