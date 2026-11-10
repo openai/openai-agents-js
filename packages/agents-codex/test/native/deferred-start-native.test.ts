@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { WebSocketServer } from 'ws';
 import {
   Agent,
   InteractionRequired,
@@ -74,6 +75,7 @@ async function fixture(
     promptedOverride?: boolean;
     laterPlain?: boolean;
     envKey?: boolean;
+    modelBackend?: boolean;
     hostedSearch?: boolean;
     openingOverride?: boolean;
     perOpening?: 'overrides' | 'undefined';
@@ -157,7 +159,22 @@ async function fixture(
       : [],
   );
   const config = await model.config();
+  let modelCalls = 0;
   const provider = new NativeProvider({
+    ...(options.modelBackend
+      ? {
+          modelBackend: {
+            complete: async () => {
+              const response = responses[modelCalls++];
+              const output =
+                typeof response === 'function' ? await response() : response;
+              if (!Array.isArray(output))
+                throw new Error('Expected complete fixture response');
+              return { output };
+            },
+          },
+        }
+      : {}),
     baseUrl: (config['model_providers.fixture'] as { base_url: string })
       .base_url,
     supportsWebsockets: false,
@@ -453,6 +470,101 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       await expect(borrowed!.pendingInteractions()).rejects.toThrow('closed');
       expect(f.backend.start).toHaveBeenCalledTimes(1);
     }, 20_000);
+
+    it('keeps keyless custom backend output repair available after deferred reopening', async () => {
+      vi.stubEnv('OPENAI_API_KEY', undefined);
+      await using f = await fixture({
+        modelBackend: true,
+        envKey: true,
+        promptedOverride: true,
+        repair: true,
+      });
+      vi.stubEnv('OPENAI_API_KEY', 'later-ambient-key');
+      await f.jobs.start(f.session, f.request, {}, async ({ outcome }) => {
+        if (outcome.status !== 'continued')
+          throw new Error('Expected continuation');
+        const result = await outcome.turn.wait();
+        expect(result.finalOutput).toEqual({ answer: 'done' });
+        expect(result.repairAttempts).toHaveLength(1);
+      });
+      expect(f.model.requests).toHaveLength(0);
+    });
+
+    it.each(['provider', 'environment', 'missing'] as const)(
+      'preserves %s Realtime credentials when reopening a custom model backend for deferred use',
+      async (credential) => {
+        vi.stubEnv(
+          'OPENAI_API_KEY',
+          credential === 'environment' ? 'captured-environment-key' : undefined,
+        );
+        await using f = await fixture({
+          modelBackend: true,
+          envKey: credential !== 'provider',
+        });
+        const authorization: (string | undefined)[] = [];
+        const realtime = new WebSocketServer({ noServer: true });
+        f.model.onUpgrade((request, transport, head) => {
+          authorization.push(request.headers.authorization);
+          realtime.handleUpgrade(request, transport, head, (socket) => {
+            socket.on('message', (raw) => {
+              const frame = JSON.parse(raw.toString());
+              if (frame.type === 'session.update')
+                socket.send(
+                  JSON.stringify({
+                    type: 'session.updated',
+                    session: {
+                      model: new URL(
+                        request.url ?? '/',
+                        'http://fixture',
+                      ).searchParams.get('model'),
+                      ...frame.session,
+                      id: 'deferred-voice',
+                    },
+                  }),
+                );
+            });
+          });
+        });
+        vi.stubEnv('OPENAI_API_KEY', 'later-ambient-key');
+        try {
+          await f.jobs.start(
+            f.session,
+            f.request,
+            {},
+            async ({ session, outcome }) => {
+              if (outcome.status !== 'continued')
+                throw new Error('Expected continuation');
+              expect((await outcome.turn.wait()).finalOutput).toBe('done');
+              if (credential === 'missing') {
+                await expect(
+                  session
+                    .realtime({ model: 'fixture-realtime' })
+                    .then((voice) => voice.close()),
+                ).rejects.toThrow('requires a provider or voice API key');
+                expect(authorization).toEqual([]);
+              } else {
+                const voice = await session.realtime({
+                  model: 'fixture-realtime',
+                });
+                await voice.close();
+                expect(authorization).toEqual([
+                  `Bearer ${credential === 'provider' ? 'synthetic-deferred-start' : 'captured-environment-key'}`,
+                ]);
+              }
+            },
+          );
+          expect(f.agent.factoryCalls).toBe(2);
+          expect(f.backend.start).toHaveBeenCalledOnce();
+          expect(f.model.requests).toHaveLength(0);
+        } finally {
+          for (const client of realtime.clients) client.terminate();
+          await new Promise<void>((resolve, reject) =>
+            realtime.close((error) => (error ? reject(error) : resolve())),
+          );
+        }
+      },
+      30_000,
+    );
 
     it('uses the captured factory, original receiver, provider and effective key despite later Agent and environment changes', async () => {
       vi.stubEnv('OPENAI_API_KEY', 'captured-opening-key');

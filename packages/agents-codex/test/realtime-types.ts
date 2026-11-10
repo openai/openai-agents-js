@@ -1,3 +1,8 @@
+import type {
+  ResponseCreateEvent,
+  ResponseCancelEvent,
+  ConversationItem,
+} from 'openai/resources/realtime/realtime';
 import type { Session, NativeRealtimeSession } from '../src';
 
 async function publicRealtimeTypes(session: Session) {
@@ -14,6 +19,26 @@ async function publicRealtimeTypes(session: Session) {
     model: 'gpt-realtime',
     instructions: 'Delegate work.',
   });
+  const create: ResponseCreateEvent = { type: 'response.create' };
+  const cancel: ResponseCancelEvent = { type: 'response.cancel' };
+  const item: ConversationItem = {
+    type: 'message',
+    role: 'user',
+    id: 'typed-item',
+    content: [{ type: 'input_text', text: 'hello' }],
+  };
+  // @ts-expect-error A provider event requires a type or generic JSON fields.
+  await voice.sendEvent(new Date());
+  // @ts-expect-error A provider item requires a type or generic JSON fields.
+  await voice.updateHistory([new Date()]);
+  await voice.sendEvent(create);
+  await voice.sendEvent(cancel);
+  await voice.updateHistory([item]);
+  await voice.updateHistory((history) => [...history, item]);
+  // @ts-expect-error Provider events must be objects.
+  await voice.sendEvent('response.create');
+  // @ts-expect-error Provider history items must be objects.
+  await voice.updateHistory(['typed-item']);
   await voice.updateHistory([]);
   await voice.retrieveConversationItem('provider-item');
   await voice.retrieveConversationHistory();

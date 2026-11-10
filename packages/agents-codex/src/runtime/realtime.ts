@@ -66,6 +66,9 @@ import {
   voiceWorkflowGraphClosed,
 } from '../voice/workflow';
 
+/** Provider declarations can omit a string index signature; runtime validates JSON. */
+type RealtimeProviderObject = JsonObject | { readonly type: string };
+
 export interface NativeRealtimeOptions {
   model?: string;
   voice?: string;
@@ -1110,7 +1113,7 @@ class NativeRealtimeOwner {
    * Cancellation allows later input after dispatch and resolves after retirement.
    * Tool and approval authority remains with the native Session.
    */
-  async sendEvent(event: JsonObject): Promise<JsonObject | null> {
+  async sendEvent(event: RealtimeProviderObject): Promise<JsonObject | null> {
     this.checkLive();
     this.session._checkVoiceAdapterOperation(
       this,
@@ -1179,8 +1182,8 @@ class NativeRealtimeOwner {
    */
   async updateHistory(
     items:
-      | readonly JsonObject[]
-      | ((history: JsonObject[]) => readonly JsonObject[]),
+      | readonly RealtimeProviderObject[]
+      | ((history: JsonObject[]) => readonly RealtimeProviderObject[]),
   ): Promise<void> {
     this.checkLive();
     this.session._checkVoiceAdapterOperation(
@@ -1203,7 +1206,7 @@ class NativeRealtimeOwner {
       try {
         await this.enqueueInput(async () => {
           let retainedBytes = 0;
-          const charge = (value: readonly JsonObject[]): void => {
+          const charge = (value: readonly object[]): void => {
             const bytes = jsonAllocationBytes(
               value,
               INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,

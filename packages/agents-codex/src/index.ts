@@ -85,6 +85,7 @@ export type {
   ToolTimeoutErrorFunction,
   Tool,
   ToolContext,
+  ToolCallContext,
   ToolDecision,
   ToolImageReference,
 } from './runtime/tools';
@@ -225,6 +226,7 @@ export type {
   SpanContext,
   TraceEvent,
   TraceProcessor,
+  TraceProcessorRegistration,
   FlushResult,
 } from './runtime/telemetry';
 
@@ -397,8 +399,6 @@ export type {
   ComputerEnvironment,
   ComputerToolOptions,
 } from './runtime/computer';
-// Private extension hook for Session-scoped state, not execution authority.
-export { _nativeToolSessionOwner } from './runtime/tools';
 export { isFunctionApprovalRequest } from './runtime/manual';
 export type { FunctionApprovalRequest } from './runtime/manual';
 export type {

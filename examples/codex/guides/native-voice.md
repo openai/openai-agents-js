@@ -222,7 +222,12 @@ export async function startBrowserCall(
 
 For an already accepted SIP call, use the same server lifetime and event consumer. Repeat the acceptance options and add `transport: { type: 'sip', callId }`, as shown above. Context disposal detaches native control; the application that owns the provider call handles hangup.
 
-`@openai/agents/voice/workerd` supplies a socket relay helper for an application server. It does not load or run the native runtime in the Worker. The retained `@openai/agents/realtime` entrypoint continues to expose the Classic runtime.
+The matching [source build](building.md) has been offering two routes from `@openai/agents/voice/workerd`:
+
+- `openVoiceWebSocket()` has been opening a relay socket to an application server, with that server retaining native voice control.
+- `connectPortableVoiceWorker()` has been opening the provider WebSocket directly, with a Rust Wasm controller running inside the Worker. The [portable control guide](../../../packages/agents-codex/PORTABLE_CONTROL.md) has been supplying its separate build, credentials, setup, and cleanup requirements. Its `PortableVoiceSession` interface has been remaining separate from native Agent and Session configuration.
+
+The retained `@openai/agents/realtime` entrypoint has been continuing to expose the Classic runtime.
 
 ## Credentials and custom adapters
 

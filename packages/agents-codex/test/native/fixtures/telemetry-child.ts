@@ -149,6 +149,67 @@ async function main() {
         );
       assert(!JSON.stringify(usageSpans).includes('PRIVATE_DECISION_'));
     }
+  } else if (mode === 'processor-handlers') {
+    await assert.rejects(
+      telemetry.configure({
+        traceProcessors: [{} as telemetry.TraceProcessorRegistration],
+      }),
+      /traceProcessors/,
+    );
+    const configured: telemetry.TraceEvent[] = [];
+    await telemetry.configure({
+      traceProcessors: [
+        {
+          onEvents(events) {
+            configured.push(...events);
+          },
+        },
+      ],
+    });
+    class PerEventProcessor implements telemetry.TraceProcessor {
+      events: telemetry.TraceEvent[] = [];
+      onEvent(event: telemetry.TraceEvent) {
+        this.events.push(event);
+      }
+    }
+    const perEvent = new PerEventProcessor();
+    await telemetry.addTraceProcessor(perEvent);
+    const added: telemetry.TraceEvent[] = [];
+    await telemetry.addTraceProcessor({
+      onEvents(events) {
+        added.push(...events);
+      },
+    });
+    await assert.rejects(
+      telemetry.addTraceProcessor({} as telemetry.TraceProcessorRegistration),
+      /traceProcessors/,
+    );
+    await assert.rejects(
+      telemetry.setTraceProcessors([
+        {} as telemetry.TraceProcessorRegistration,
+      ]),
+      /traceProcessors/,
+    );
+    await telemetry.withTrace({ name: 'before-replacement' }, async () => {});
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    for (const events of [configured, perEvent.events, added]) {
+      assert(events.some((event) => event.name === 'before-replacement'));
+    }
+    const replaced: telemetry.TraceEvent[] = [];
+    await telemetry.setTraceProcessors([
+      {
+        onEvents(events) {
+          replaced.push(...events);
+        },
+      },
+    ]);
+    await telemetry.withTrace({ name: 'after-replacement' }, async () => {});
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    assert(replaced.some((event) => event.name === 'after-replacement'));
+    for (const events of [configured, perEvent.events, added]) {
+      assert(!events.some((event) => event.name === 'after-replacement'));
+    }
+    await telemetry.shutdown();
   } else if (mode === 'lifecycle') {
     await assert.rejects(
       telemetry.shutdown(),

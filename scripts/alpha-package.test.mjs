@@ -49,6 +49,10 @@ test('stages a matched alpha dependency graph without changing source manifests'
   assert.deepEqual(result.cpu, ['x64']);
   assert.deepEqual(result.libc, ['glibc']);
   assert.equal(result.engines.node, '>=24');
+  assert.deepEqual(alphaManifest(source, version, 'linux-arm64'), {
+    ...result,
+    cpu: ['arm64'],
+  });
   assert.throws(() => alphaManifest(source, '0.22.0', 'linux-x64'));
   assert.throws(
     () =>
@@ -155,6 +159,18 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
       (await verifyNativeReceipt(root, 'linux-x64')).revision,
       revision,
     );
+    await assert.rejects(
+      verifyNativeReceipt(root, 'linux-arm64'),
+      /aarch64-unknown-linux-gnu/,
+    );
+    await writeFile(
+      receiptPath,
+      JSON.stringify({ ...receipt, host: 'aarch64-unknown-linux-gnu' }),
+    );
+    assert.deepEqual(await verifyNativeReceipt(root, 'linux-arm64'), {
+      revision,
+      helpers: Object.keys(files).filter((name) => name.startsWith('bin/')),
+    });
     await writeFile(
       receiptPath,
       JSON.stringify({ ...receipt, release: false }),

@@ -112,7 +112,7 @@ Stable v0 already provides an agent loop, tools, sessions, and tracing. The arch
 | Execution loop | TypeScript `Runner` coordinates model calls and tools. | Embedded Codex coordinates native execution and history. |
 | Starting work | `Runner.run(agent, input)` | `agent.run(input)` or an explicit Session and Turn |
 | Session | A conversation-history store used by Runner | A live conversation with owned resources; storage is separate |
-| Model integration | TypeScript `Model` and `ModelProvider` | `NativeProvider` and the Responses protocol |
+| Model integration | TypeScript `Model` and `ModelProvider` | `NativeProvider` has been using Responses for its built-in HTTP route; the matching source build has been accepting [application-supplied models](session-configuration.md#supply-an-application-model). |
 | Saved work | Session history and `RunState` | Native checkpoints or configured storage, with their own restore contracts |
 
 For a new application, start with the [native quickstart](../../../packages/agents-codex/README.md#run-an-agent). For an existing v0 workflow, prefer a direct [migration to native v1](migration.md). Port Agent declarations, tools, providers, execution, and state ownership together, then validate the application's behavior.

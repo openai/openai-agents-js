@@ -54,6 +54,10 @@ export const networkPolicyWireSchema = z
   .strict();
 
 function canonicalDomain(value: string): string {
+  if (value === '*')
+    throw new TypeError(
+      'Network rules reject a lone "*". Use NetworkPolicy.allowAll() or "**" to allow public hosts, and exact hosts or scoped host patterns to deny them.',
+    );
   // A rule cannot imply a narrower port or URL grant than the proxy enforces.
   if (/[^\x21-\x7e]|[/@#\\]/.test(value))
     throw new TypeError('Network rules require an ASCII host or host pattern');

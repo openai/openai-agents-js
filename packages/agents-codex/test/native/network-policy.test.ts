@@ -4,7 +4,7 @@ import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Agent as HttpAgent, createServer, get, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Agent, Environment, NativeProvider } from '../../src';
+import { Agent, Environment, NativeProvider, NetworkPolicy } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 import type { Session } from '../../src';
@@ -37,27 +37,31 @@ async function refusesOpening(opening: Promise<Session>, message: string) {
   }
 }
 
-// Same controlled probe as Python9d84: the command must use the native proxy,
-// and a direct connection must remain denied even to the allowed destination.
+// Use the native proxy explicitly. The allowlist case also checks that direct
+// connections fail when local binding is disabled.
 const probe = `import errno, os, socket, sys
 from contextlib import closing
 from http.client import HTTPConnection
 from urllib.parse import urlsplit
-allowed, overlap, unlisted = sys.argv[1:]
+mode, allowed, overlap, unlisted = sys.argv[1:]
+allow_all = mode == "allow-all"
 proxy = urlsplit(os.environ["HTTP_PROXY"])
-for url, expected in [(allowed, 200), (overlap, 403), (unlisted, 403)]:
+for url, expected in [(allowed, 200), (overlap, 403), (unlisted, 200 if allow_all else 403)]:
     with closing(HTTPConnection(proxy.hostname, proxy.port, timeout=3)) as connection:
         connection.request("GET", url)
         response = connection.getresponse()
         assert response.status == expected, (url, response.status)
         if expected == 200:
-            assert response.read() == b"127.0.0.1"
-target = urlsplit(allowed)
-try:
-    with socket.create_connection((target.hostname, target.port), timeout=3):
-        raise AssertionError("Direct connection to allowed destination succeeded")
-except OSError as error:
-    assert error.errno in (errno.EPERM, errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH), error
+            assert response.read() == urlsplit(url).hostname.encode("ascii")
+        if url == overlap:
+            assert response.getheader("x-proxy-error") == "blocked-by-denylist", response.getheaders()
+if not allow_all:
+    target = urlsplit(allowed)
+    try:
+        with socket.create_connection((target.hostname, target.port), timeout=3):
+            raise AssertionError("Direct connection to allowed destination succeeded")
+    except OSError as error:
+        assert error.errno in (errno.EPERM, errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH), error
 print("managed-network-probe-passed")
 `;
 
@@ -334,15 +338,26 @@ it.skipIf(
   30_000,
 );
 
-it.skipIf(
-  process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
-    process.platform !== 'linux' ||
-    (process.env.GITHUB_ACTIONS !== 'true' &&
-      process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
-      process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
-)(
-  'enforces allowed, overlapping-denied and unlisted proxy requests without direct bypass',
-  async () => {
+it
+  .skipIf(
+    process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
+      process.platform !== 'linux' ||
+      (process.env.GITHUB_ACTIONS !== 'true' &&
+        process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+        process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
+  )
+  .each([
+    [
+      'enforces allowed, overlapping-denied and unlisted proxy requests without direct bypass',
+      false,
+    ],
+    [
+      'allows unlisted proxy requests and enforces explicit denials with allowAll',
+      true,
+    ],
+  ] as const)(
+  '%s',
+  async (_name, allowAll) => {
     const received: string[] = [];
     const listeners: Server[] = [];
     const localAgent = new HttpAgent({ keepAlive: false });
@@ -374,7 +389,14 @@ it.skipIf(
         urls.push(url);
       }
       received.length = 0;
-      const cmd = ['python3', '-I', '-c', probe, ...urls]
+      const cmd = [
+        'python3',
+        '-I',
+        '-c',
+        probe,
+        allowAll ? 'allow-all' : 'allowlist',
+        ...urls,
+      ]
         .map(shellQuote)
         .join(' ');
       const server = new ModelServer([
@@ -393,21 +415,30 @@ it.skipIf(
           instructions: 'Run the network probe.',
           provider,
         });
+        const options = {
+          deniedDomains: ['127.0.0.2', 'private-denial-marker.invalid'],
+          allowAllUnixSockets: true,
+        };
         const session = await agent.session({
           environment: new Environment({
             url: executor.url,
             cwd: executor.cwd,
             headers: executor.headers,
             tools: ['exec_command'],
-            network: {
-              allowedDomains: [
-                '127.0.0.1',
-                '127.0.0.2',
-                'private-policy-marker.invalid',
-              ],
-              deniedDomains: ['127.0.0.2', 'private-denial-marker.invalid'],
-              allowAllUnixSockets: true,
-            },
+            network: allowAll
+              ? NetworkPolicy.allowAll({
+                  ...options,
+                  // The wildcard requires this opt-in for loopback origins.
+                  allowLocalBinding: true,
+                })
+              : {
+                  ...options,
+                  allowedDomains: [
+                    '127.0.0.1',
+                    '127.0.0.2',
+                    'private-policy-marker.invalid',
+                  ],
+                },
           }),
         });
         try {
@@ -429,9 +460,12 @@ it.skipIf(
           expect(String(output?.output)).toContain(
             'managed-network-probe-passed',
           );
-          expect(received).toEqual(['127.0.0.1']);
+          expect(received).toEqual(
+            allowAll ? ['127.0.0.1', '127.0.0.3'] : ['127.0.0.1'],
+          );
           const saved = JSON.stringify(await session.saveState());
-          expect(saved).not.toContain('private-policy-marker.invalid');
+          if (!allowAll)
+            expect(saved).not.toContain('private-policy-marker.invalid');
           expect(saved).not.toContain('private-denial-marker.invalid');
           server.assertExhausted();
         } finally {

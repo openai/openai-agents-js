@@ -4,6 +4,7 @@ import type { EnvironmentConfig } from './environment';
 /** SDK-owned configuration sent to the native runtime. */
 export type RuntimeOptions = JsonObject & {
   environment?: EnvironmentConfig | null;
+  _sdk_discover_agents_md?: boolean;
   _sdk_project_search?: {
     root: string;
     tools: ('project_glob' | 'project_grep')[];

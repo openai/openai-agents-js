@@ -174,6 +174,17 @@ export interface SessionBaseOptions<Context = undefined> {
    * Use files and parent directories that untrusted actors cannot modify.
    */
   instructionFiles?: readonly string[];
+  /**
+   * Use Codex AGENTS.md instructions as model context. Discovery reads the
+   * host Codex home (`CODEX_HOME` or `~/.codex`) and the readable project
+   * hierarchy of a selected Environment, using that executor's filesystem.
+   * Codex prefers `AGENTS.override.md` at each location and applies user
+   * guidance followed by project guidance from the root to the working
+   * directory. Explicit `instructionFiles` provide developer instructions.
+   * Enable only for trusted executors, directories, grants, and symlink
+   * targets. Defaults to false on each public opening, including restore.
+   */
+  discoverAgentsMd?: boolean;
   /** Cancel opening and join cleanup. Agent.run retains this signal until completion. */
   signal?: AbortSignal;
   /**
@@ -218,6 +229,7 @@ interface CapturedOpening {
   readonly factory: Agent<any, any>['session'];
   readonly instructions: string;
   readonly instructionFiles: readonly InstructionFileReceipt[];
+  readonly discoverAgentsMd?: boolean;
   readonly name?: string;
   readonly model?: string;
   readonly settings?: ModelSettings;
@@ -640,6 +652,7 @@ export class Agent<Context = undefined, Output = string> {
       state: options.state,
       environment: options.environment,
       instructionFiles: options.instructionFiles,
+      discoverAgentsMd: options.discoverAgentsMd,
       projectGuidance: options.projectGuidance,
       signal: options.signal,
       provider: options.provider,
@@ -710,6 +723,10 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const discoverAgentsMd =
+      opening?.discoverAgentsMd ?? options.discoverAgentsMd;
+    if (discoverAgentsMd !== undefined && typeof discoverAgentsMd !== 'boolean')
+      throw new TypeError('discoverAgentsMd must be a boolean');
     const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
@@ -1217,6 +1234,7 @@ export class Agent<Context = undefined, Output = string> {
       state == null &&
       !environment &&
       !projectGuidance &&
+      !discoverAgentsMd &&
       files.length === 0 &&
       !programmaticToolCalling &&
       selected.length === 0 &&
@@ -1292,6 +1310,7 @@ export class Agent<Context = undefined, Output = string> {
         },
         runtime: {
           ...home,
+          ...(discoverAgentsMd ? { _sdk_discover_agents_md: true } : {}),
           ...(!persistent
             ? {}
             : {
@@ -1385,6 +1404,7 @@ export class Agent<Context = undefined, Output = string> {
       };
       const session: CoreSessionOptions = {
         modelBackend: provider.modelBackend,
+        realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
@@ -1443,7 +1463,10 @@ export class Agent<Context = undefined, Output = string> {
           });
           const correctionOptions: OwnedSessionOptions<undefined> = {
             parentTrace,
-            [correctionOpening]: { apiKey, retainOpening },
+            [correctionOpening]: {
+              apiKey: lease.realtimeApiKey,
+              retainOpening,
+            },
           };
           return (await correction.session(
             correctionOptions,
@@ -1460,6 +1483,7 @@ export class Agent<Context = undefined, Output = string> {
             factory,
             instructions,
             instructionFiles: files,
+            discoverAgentsMd,
             name,
             model,
             settings,
@@ -1468,7 +1492,7 @@ export class Agent<Context = undefined, Output = string> {
             output,
             outputType,
             provider,
-            apiKey: lease.apiKey,
+            apiKey: lease.realtimeApiKey,
             context,
             onInteraction: options.onInteraction,
             maxFunctionConcurrency,
@@ -1477,8 +1501,8 @@ export class Agent<Context = undefined, Output = string> {
             beforeCompact,
             transformContext,
           });
-      // Without a captured key, native reopening would reread ambient auth.
-      if (captured.apiKey !== undefined) {
+      // HTTP reopening needs captured auth; custom producers use text admission.
+      if (lease.apiKey !== undefined) {
         session.deferredReopen = async (
           state,
           active,

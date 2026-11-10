@@ -6,8 +6,8 @@ import {
   NativeAgents,
   NativeProvider,
   tool,
-  _nativeToolSessionOwner,
 } from '../../src';
+import { _nativeToolSessionOwner } from '../../src/internal';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
