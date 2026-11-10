@@ -4,10 +4,12 @@ import { z } from 'zod';
 import {
   Agent,
   Environment,
+  LocalRecoveryRequired,
   NativeAgents,
   NativeProvider,
   localStorage,
   tool,
+  type ReconciledCall,
   type ToolContext,
 } from '../../../src/index';
 import { nativeDescendantModel } from './native-descendant-model';
@@ -20,6 +22,8 @@ const config = JSON.parse(process.argv[2]) as {
   depth: number;
   mode: 'settled' | 'unknown' | 'active' | 'destination';
   resume?: string;
+  reconciledCalls?: ReconciledCall[];
+  inspectOnly?: boolean;
   noChildren?: boolean;
   writePolicy?: 'legacy';
 };
@@ -59,9 +63,17 @@ const agent = new Agent<string>({
 
 async function main() {
   try {
+    const storage = localStorage(config.profile);
+    const persistence =
+      config.resume === undefined
+        ? { storage }
+        : {
+            storage,
+            resume: config.resume,
+            reconciledCalls: config.reconciledCalls,
+          };
     const session = await agent.session({
-      storage: localStorage(config.profile),
-      resume: config.resume,
+      ...persistence,
       context: destination ? 'destination' : 'source',
       ...(config.noChildren
         ? {}
@@ -74,10 +86,12 @@ async function main() {
           }),
     });
     process.send?.({ type: 'opened', id: session.id, pid: process.pid });
-    const result = await (
-      await session.submit('Run the requested operation.')
-    ).wait();
-    process.send?.({ type: 'root-result', output: result.finalOutput });
+    if (!config.inspectOnly) {
+      const result = await (
+        await session.submit('Run the requested operation.')
+      ).wait();
+      process.send?.({ type: 'root-result', output: result.finalOutput });
+    }
     if (!destination) {
       // Wait via real public child handles. The source model creates one chain,
       // so newly discovered descendants can be joined without polling a runtime.
@@ -122,7 +136,15 @@ async function main() {
               item.status === 'completed',
           ),
         );
-        children.push({ id: child.id, turns, completedText });
+        children.push({
+          id: child.id,
+          turns,
+          completedText,
+          reconciled: items.filter(
+            (item) =>
+              item.type === 'function_call_output' && item.reconciliation,
+          ),
+        });
       }
       process.send?.({ type: 'history', children });
     }
@@ -134,6 +156,16 @@ async function main() {
       type: 'failure',
       message: error instanceof Error ? error.message : String(error),
       details: inspect(error, { depth: null }),
+      ...(error instanceof LocalRecoveryRequired
+        ? {
+            calls: error.calls,
+            turns: error.turns.map(({ id, status, subagentId }) => ({
+              id,
+              status,
+              subagentId,
+            })),
+          }
+        : {}),
     });
     try {
       await provider.close();

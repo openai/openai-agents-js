@@ -320,23 +320,6 @@ impl StrictExecutorWrites {
     }
 }
 
-pub(crate) async fn check_local_resume_rollout_path(
-    startup: &codex_core_api::StartThreadOptions,
-    path: &Path,
-) -> Result<()> {
-    if startup
-        .environments
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .any(|selection| selection.environment_id == LOCAL_ENVIRONMENT_ID)
-        && let Some(strict) = startup.thread_extension_init.get::<StrictExecutorWrites>()
-    {
-        strict.check_local_rollout_path(path).await?;
-    }
-    Ok(())
-}
-
 fn write_root_key(path: &PathUri) -> Vec<u8> {
     // POSIX treats repeated and trailing separators as the same directory.
     path.decoded_path_bytes()
@@ -1727,20 +1710,29 @@ fn is_legacy_executor_profile(profile: &PermissionProfile) -> bool {
 pub(crate) struct LocalResumeExecutorPolicy {
     values: Vec<serde_json::Value>,
     strict: bool,
+    local_writes: Option<Arc<StrictExecutorWrites>>,
 }
 
 impl LocalResumeExecutorPolicy {
     pub(crate) fn from_startup(startup: &codex_core_api::StartThreadOptions) -> Result<Self> {
+        let selections = startup.environments.as_deref().unwrap_or_default();
+        let strict_writes = startup.thread_extension_init.get::<StrictExecutorWrites>();
         Ok(Self {
-            values: executor_policy_values(
-                startup.environments.as_deref().unwrap_or_default(),
-                &startup.config,
-            )?,
-            strict: startup
-                .thread_extension_init
-                .get::<StrictExecutorWrites>()
-                .is_some(),
+            values: executor_policy_values(selections, &startup.config)?,
+            strict: strict_writes.is_some(),
+            local_writes: strict_writes.filter(|_| {
+                selections
+                    .iter()
+                    .any(|selection| selection.environment_id == LOCAL_ENVIRONMENT_ID)
+            }),
         })
+    }
+
+    pub(crate) async fn check_rollout_path(&self, path: &Path) -> Result<()> {
+        if let Some(strict) = &self.local_writes {
+            strict.check_local_rollout_path(path).await?;
+        }
+        Ok(())
     }
 
     pub(crate) fn validate(
@@ -2705,6 +2697,7 @@ mod tests {
         let policy = LocalResumeExecutorPolicy {
             values,
             strict: true,
+            ..Default::default()
         };
         let legacy = context(json!({ "thread_id": id }));
         assert!(policy.validate(&[older.clone(), legacy], id).is_ok());

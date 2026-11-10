@@ -178,7 +178,7 @@ After confirming the effect:
 2. Let the SDK validate the receipt under the native local writer, save the result, and confirm it can be read before admitting the Session.
 3. Retain the same receipt for later reopening. An identical receipt can be reused; different values for an already saved result fail.
 
-The SDK fences replay of the reconciled call IDs. Use an application operation key to prevent duplicate effects across new call IDs. The example handles root calls. An unfinished descendant still blocks cold recovery.
+The SDK guards against replay of reconciled calls in their original thread. Use an application operation key to prevent duplicate effects across new call IDs. This example declares root tools. If your application uses native children, reopen with the root Session ID and copy the reported child or grandchild IDs into each descendant receipt.
 
 ## Set deadlines
 

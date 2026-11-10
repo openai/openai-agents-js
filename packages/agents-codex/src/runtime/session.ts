@@ -2158,7 +2158,10 @@ export class Session<OutputT = string, Context = unknown> {
             id === this.id ? undefined : id,
           );
           recorded.set(id, projected);
+          // Native LocalStorage has already checked the original owners.
+          // A Legacy descendant's audit can still contain a copied call.
           if (
+            this.options.customStore &&
             projected.items.some(
               (item) =>
                 item.type === 'function_call' &&

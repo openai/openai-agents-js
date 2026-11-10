@@ -631,7 +631,18 @@ impl Engine {
             Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
                 Ok(hold) => {
                     let history = usage::history_to_wire(&hold.history).map_err(native_error)?;
-                    let snapshot = serde_json::json!({ "calls": hold.calls, "history": history });
+                    let descendants = hold
+                        .descendants
+                        .iter()
+                        .map(|(id, items)| {
+                            let history = usage::history_to_wire(items)?;
+                            Ok(serde_json::json!({ "threadId": id, "history": history }))
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()
+                        .map_err(native_error)?;
+                    let snapshot = serde_json::json!({
+                        "calls": hold.calls, "history": history, "descendants": descendants
+                    });
                     Ok(Either::B(snapshot.to_string()))
                 }
                 Err(error) => Err(native_error(error)),
