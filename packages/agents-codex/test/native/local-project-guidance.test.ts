@@ -23,7 +23,8 @@ import {
 
 afterEach(() => ModelServer.closeAll());
 
-const supported = process.platform === 'linux' || process.platform === 'darwin';
+const darwin = process.platform === 'darwin';
+const supported = process.platform === 'linux' || darwin;
 const marker = 'DIRECT_JADE';
 const outsideText = 'SYNTHETIC_OUTSIDE_WORKSPACE';
 
@@ -117,7 +118,8 @@ it.skipIf(!supported).for([
       await symlink(root, alias, 'dir');
 
       const outsideSymlink = pathKind === 'outside symlink';
-      const denied = outsideSymlink || pathKind === 'alias absolute';
+      const denied =
+        outsideSymlink || (!darwin && pathKind === 'alias absolute');
       if (outsideSymlink) {
         const outside = join(
           scratch,
@@ -175,11 +177,14 @@ it.skipIf(!supported).for([
 
       const output = functionOutput(after!, callId);
       if (denied) {
+        const imageDenial = darwin
+          ? /^unable to read image at `.+`: Operation not permitted \(os error 1\)$/
+          : /^unable to locate image at .*\b(?:not permitted|Permission denied|No such file or directory)\b/i;
         expect(output).toMatchObject({
           call_id: callId,
           output: expect.stringMatching(
             operation === 'view_image'
-              ? /^unable to locate image at .*\b(?:not permitted|Permission denied|No such file or directory)\b/i
+              ? imageDenial
               : /^read_text_file: .*\b(?:not permitted|Permission denied|No such file or directory)\b/i,
           ),
         });

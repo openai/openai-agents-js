@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -31,11 +31,12 @@ jobs:
           package-manager-cache: false
       - name: Verify branch scope and runner
         run: |
-          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-parse HEAD^)" = 58a1e77f6c1558a378ba84ed146f84580cc06d19
+          test "$(git rev-parse HEAD~2)" = "$BASE"
           test "$(git rev-parse "$BASE^{tree}")" = 44a4b68e1a53a3efe8181eb877c0422364e2e6a2
           diff -u <(printf '%s\n' .github/workflows/project-guidance-macos-png.yml "$FIXTURE") \
             <(git diff --name-only "$BASE" HEAD)
-          printf '%s  %s\n' 8f86828e07bdbc098621be183d4168802a3c3905cbfe665db141793b8acd0d91 "$FIXTURE" | shasum -a 256 -c -
+          printf '%s  %s\n' 69270159a008d9f1be93b9a211d0af43e21decf2dd3acd18d8fc01d1fec580f4 "$FIXTURE" | shasum -a 256 -c -
           test "$(id -u)" -ne 0
           test -x /usr/bin/sandbox-exec
           sw_vers
