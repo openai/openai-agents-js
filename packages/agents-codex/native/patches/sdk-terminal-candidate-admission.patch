@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 4259fdc5..49bc648c 100644
+index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c77943719f0a1781 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -54,6 +54,7 @@ use crate::stream_events_utils::record_completed_response_item_with_finalized_fa
@@ -10,7 +10,7 @@ index 4259fdc5..49bc648c 100644
  use crate::tools::parallel::ToolCallRuntime;
  use crate::tools::registry::ToolArgumentDiffConsumer;
  use crate::tools::router::ToolSuggestCandidates;
-@@ -177,6 +178,7 @@ pub(crate) async fn run_turn(
+@@ -172,6 +173,7 @@ pub(crate) async fn run_turn(
      cancellation_token: CancellationToken,
  ) -> CodexResult<Option<String>> {
      sess.check_agent_profile_admission()?;
@@ -18,7 +18,7 @@ index 4259fdc5..49bc648c 100644
      if crate::guardian::is_basic_session_source(&turn_context.session_source) {
          crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
      }
-@@ -450,6 +452,14 @@ pub(crate) async fn run_turn(
+@@ -426,6 +428,14 @@ pub(crate) async fn run_turn(
              &turn_context.sub_id,
              &history.items,
          )?;
@@ -33,7 +33,7 @@ index 4259fdc5..49bc648c 100644
          if try_complete_tool_turn(
              &sess,
              &first_step_context,
-@@ -2477,6 +2487,24 @@ fn recovered_tools_from_history(
+@@ -2439,6 +2449,24 @@ fn recovered_tools_from_history(
              }
          }
      }
@@ -58,10 +58,10 @@ index 4259fdc5..49bc648c 100644
      let mut ordered_outputs = Vec::with_capacity(calls.len());
      let mut all_succeeded = true;
      for (call, id) in calls.iter().zip(&ids) {
-@@ -2515,6 +2543,60 @@ fn recovered_tools_from_history(
+@@ -2477,6 +2505,60 @@ fn recovered_tools_from_history(
      })
  }
- 
+
 +async fn release_held_tool_results(sess: &Session, step: &StepContext, withheld: bool) {
 +    let Some(held) = step
 +        .turn
@@ -119,28 +119,35 @@ index 4259fdc5..49bc648c 100644
  async fn try_complete_tool_turn(
      sess: &Arc<Session>,
      step_context: &Arc<StepContext>,
-@@ -2522,9 +2604,9 @@ async fn try_complete_tool_turn(
-     cancellation_token: &CancellationToken,
+@@ -2485,15 +2567,16 @@ async fn try_complete_tool_turn(
      stop_hook_active: &mut bool,
+     completion_continuations: &mut usize,
  ) -> CodexResult<bool> {
--    if let Some(completion) =
--        propose_tool_completion(sess, step_context, tools, cancellation_token).await?
+-    if let Some(completion) = propose_tool_completion(
++    let proposal = propose_tool_completion(
+         sess,
+         step_context,
+         tools,
+         cancellation_token,
+         completion_continuations,
+     )
+-    .await?
 -    {
-+    let proposal = propose_tool_completion(sess, step_context, tools, cancellation_token).await;
++    .await;
 +    release_held_tool_results(sess, step_context, proposal.is_err()).await;
 +    if let Some(completion) = proposal? {
          let stop = run_turn_stop_hooks(sess, step_context, *stop_hook_active, None).await;
          if stop.should_stop {
              return Err(CodexErr::TurnAborted);
-@@ -2610,6 +2692,7 @@ async fn propose_tool_completion(
+@@ -2581,6 +2664,7 @@ async fn propose_tool_completion(
              match decision {
                  None => continue,
                  Some(codex_extension_api::ToolCompletionDecision::Continue { feedback }) => {
 +                    release_held_tool_results(sess, step, false).await;
                      if let Some(feedback) = feedback {
-                         let item = build_hook_prompt_message(&[
-                             codex_protocol::items::HookPromptFragment::from_single_hook(
-@@ -3246,8 +3329,47 @@ async fn drain_in_flight(
+                         *completion_continuations =
+                             completion_continuations.checked_add(1).ok_or_else(|| {
+@@ -3221,8 +3305,47 @@ async fn drain_in_flight(
                      &result.envelope.item,
                  )
                  .await;
@@ -189,7 +196,7 @@ index 4259fdc5..49bc648c 100644
              }
              Err(err) => return Err(err),
          }
-@@ -4101,7 +4223,7 @@ async fn try_run_sampling_request(
+@@ -4074,7 +4197,7 @@ async fn try_run_sampling_request(
      if timeout_ms.is_some() {
          deadline_cleanup_errors.extend(deadline.retire_tasks().await);
      }
@@ -198,10 +205,10 @@ index 4259fdc5..49bc648c 100644
          let _tool_blocking_timing_guard = turn_context.turn_timing_state.begin_tool_blocking();
          let _tool_blocking_span = trace_span!(
              "codex.tool_blocking",
-@@ -4120,23 +4242,29 @@ async fn try_run_sampling_request(
+@@ -4093,23 +4216,29 @@ async fn try_run_sampling_request(
          Ok(())
      };
- 
+
 +    // Suspension must retain every admitted sibling, including results buffered
 +    // after a cancelled manual waiter in FuturesOrdered.
 +    while !in_flight.is_empty() {
@@ -241,7 +248,7 @@ index 4259fdc5..49bc648c 100644
          let durable = sess.ensure_rollout_durable().await;
          if durable.is_ok() && should_emit_token_count {
              sess.send_token_count_event(&turn_context).await;
-@@ -4163,9 +4291,13 @@ async fn try_run_sampling_request(
+@@ -4136,9 +4265,13 @@ async fn try_run_sampling_request(
          // Preserve an earlier provider/tool failure. A successful response must
          // not publish success when its owned request retirement failed.
          if outcome.is_ok() && tool_cleanup.is_ok() {
@@ -253,10 +260,10 @@ index 4259fdc5..49bc648c 100644
 +        release_failed_tool_candidates(&sess, &step_context).await;
 +    }
      tool_cleanup?;
- 
+
      // Tool effects have completed. Save their results before any dependent work.
 diff --git a/codex-rs/core/src/session/turn_suspension.rs b/codex-rs/core/src/session/turn_suspension.rs
-index 64e40d64..e38ae908 100644
+index 64e40d64803f43ac262cd1a6375e912266b25282..e38ae9086247cbdbb1a13f992f75f501509dd23d 100644
 --- a/codex-rs/core/src/session/turn_suspension.rs
 +++ b/codex-rs/core/src/session/turn_suspension.rs
 @@ -69,6 +69,11 @@ pub(super) async fn suspend_turn_and_shutdown(
@@ -272,7 +279,7 @@ index 64e40d64..e38ae908 100644
      task.turn_context
          .turn_metadata_state
 diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
-index 99a5f411..55430b52 100644
+index 99a5f411e4a177e778eb8695e7c0b07074f21e7d..55430b52a68085649639083b7ab4f4b1cf6d809a 100644
 --- a/codex-rs/core/src/session/turn_tests.rs
 +++ b/codex-rs/core/src/session/turn_tests.rs
 @@ -328,6 +328,7 @@ fn recovered_batch_fixture() -> (
@@ -284,7 +291,7 @@ index 99a5f411..55430b52 100644
          response_observation_id: "batch".into(),
          call_ids: ["prefix", "fresh", "suffix"]
 diff --git a/codex-rs/core/src/tasks/regular.rs b/codex-rs/core/src/tasks/regular.rs
-index 32ae3148..8c35e139 100644
+index 68eebb777c25b1ce10de5a7b7000a0103d657535..8e4e512bcd6ac6c0f084cf7d32d638d0ce454cd2 100644
 --- a/codex-rs/core/src/tasks/regular.rs
 +++ b/codex-rs/core/src/tasks/regular.rs
 @@ -45,6 +45,36 @@ impl SessionTask for RegularTask {
@@ -310,7 +317,7 @@ index 32ae3148..8c35e139 100644
 +                .map(serde_json::to_value)
 +                .collect::<Result<Vec<_>, _>>()
 +                .map_err(|error| {
-+                    crate::error::CodexErr::Fatal(format!(
++                    codex_protocol::error::CodexErr::Fatal(format!(
 +                        "Could not capture initial input: {error}"
 +                    ))
 +                })?;
@@ -321,11 +328,11 @@ index 32ae3148..8c35e139 100644
 +                );
 +            }
 +        }
-         let mut initial_step = match ctx
-             .extension_data
-             .get::<Arc<crate::InitialTurnInitialization>>()
+         // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
+         // not wait on startup prewarm resolution.
+         let prewarmed_client_session = async {
 diff --git a/codex-rs/core/tests/tool_terminal_recovery.rs b/codex-rs/core/tests/tool_terminal_recovery.rs
-index 556d7d4b..7c661a2e 100644
+index 556d7d4b714efa466181da3e85be1742147d8c89..7c661a2e1761aa19a2b1ccf96480ea5e61e8ce56 100644
 --- a/codex-rs/core/tests/tool_terminal_recovery.rs
 +++ b/codex-rs/core/tests/tool_terminal_recovery.rs
 @@ -72,6 +72,7 @@ impl TurnLifecycleContributor for RecoveryPolicy {
@@ -337,7 +344,7 @@ index 556d7d4b..7c661a2e 100644
                  response_observation_id: "retained-batch".into(),
                  call_ids: if matches!(self.case, RecoveryCase::SingleFresh) {
 diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
-index cf9368d8..4485973a 100644
+index 89d28021f491b482bcdecf854a0d846df94b4c8b..6dc6725521c8ab379ea8c5c6f613fe6f914351a2 100644
 --- a/codex-rs/ext/extension-api/src/contributors.rs
 +++ b/codex-rs/ext/extension-api/src/contributors.rs
 @@ -59,6 +59,7 @@ pub use tool_lifecycle::ToolStartInput;
@@ -348,18 +355,18 @@ index cf9368d8..4485973a 100644
  pub use turn_input::TurnInputContext;
  pub use turn_input::TurnInputEnvironment;
  pub use turn_lifecycle::AgentProfile;
-@@ -69,6 +70,7 @@ pub use turn_lifecycle::AgentProfileInstructions;
- pub use turn_lifecycle::AgentProfileModelSettings;
+@@ -70,6 +71,7 @@ pub use turn_lifecycle::AgentProfileModelSettings;
  pub use turn_lifecycle::AgentProfileReceipt;
  pub use turn_lifecycle::CapturedAgentProfile;
+ pub use turn_lifecycle::RealtimeVoiceProfileScope;
 +pub use turn_lifecycle::HeldToolCompletionResults;
  pub use turn_lifecycle::RecoveredToolCompletionCandidates;
  pub use turn_lifecycle::ToolCompletionDecision;
  pub use turn_lifecycle::ToolCompletionInput;
-@@ -223,6 +225,12 @@ pub trait ThreadLifecycleContributor<C: Sync>: Send + Sync {
- /// extension-private turn state. The host exposes stable identifiers and
- /// extension stores instead of core runtime objects.
- pub trait TurnLifecycleContributor: Send + Sync {
+@@ -231,6 +233,12 @@ pub trait TurnLifecycleContributor: Send + Sync {
+         Box::pin(std::future::ready(Ok(None)))
+     }
+
 +    /// Hold an actual terminal candidate before its first durable/public record.
 +    /// This predicate has no application side effects and grants no completion authority.
 +    fn hold_tool_completion(&self, _input: ToolCompletionInput<'_>) -> bool {
@@ -370,7 +377,7 @@ index cf9368d8..4485973a 100644
      /// default. Core invokes this only after every sibling has settled successfully,
      /// in model call order, and stops at the first eligible result. Errors fail the
 diff --git a/codex-rs/ext/extension-api/src/contributors/turn_input.rs b/codex-rs/ext/extension-api/src/contributors/turn_input.rs
-index 6375242a..d91d6396 100644
+index 6375242ac925108906b90ebd1372901e8a1eda50..d91d6396475146da13d1e20a4c80a6f086a1b748 100644
 --- a/codex-rs/ext/extension-api/src/contributors/turn_input.rs
 +++ b/codex-rs/ext/extension-api/src/contributors/turn_input.rs
 @@ -46,3 +46,8 @@ impl fmt::Debug for TurnInputContext<'_> {
@@ -383,10 +390,10 @@ index 6375242a..d91d6396 100644
 +#[derive(Default)]
 +pub struct InitialTurnInput(pub Option<Vec<serde_json::Value>>);
 diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-index f2c2e259..8eed17ed 100644
+index b6f4ce79842b57b0c1c8c2ebbfc99ed39999f2c5..418c6e672c194a94393afe63ef58b37e1ef7eee9 100644
 --- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
 +++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-@@ -113,6 +113,8 @@ pub enum ToolCompletionDecision {
+@@ -118,6 +118,8 @@ pub enum ToolCompletionDecision {
  /// consulting policy. This type deliberately has no serialization support.
  #[derive(Debug)]
  pub struct RecoveredToolCompletionCandidates {
@@ -395,10 +402,10 @@ index f2c2e259..8eed17ed 100644
      pub turn_id: String,
      pub response_observation_id: String,
      /// Every direct call in original model order, including settled siblings.
-@@ -122,6 +124,14 @@ pub struct RecoveredToolCompletionCandidates {
+@@ -127,6 +129,14 @@ pub struct RecoveredToolCompletionCandidates {
      pub outcomes: Vec<(String, bool)>,
  }
- 
+
 +/// Private candidate bodies shared with the exact turn's checkpoint owner.
 +/// Neither these rows nor a checkpoint can authorize terminal completion.
 +#[derive(Default)]
@@ -408,10 +415,10 @@ index f2c2e259..8eed17ed 100644
 +}
 +
  pub use codex_protocol::agent_profile::AgentProfileReceipt;
- 
- /// Exact admitted handoff declarations in this profile's native catalog.
+
+ /// Identifies an Agent profile captured for one live Realtime connection.
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
-index f952c8a7..efcd7411 100644
+index b52f6d89728bcc292dc0e49a94a93624ea88f220..3b5eac01523203d0cf5de64222f15e91d03dd321 100644
 --- a/codex-rs/ext/extension-api/src/lib.rs
 +++ b/codex-rs/ext/extension-api/src/lib.rs
 @@ -64,6 +64,8 @@ pub use contributors::ConfigContributor;

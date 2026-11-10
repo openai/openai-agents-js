@@ -618,12 +618,12 @@
     },
     {
       "path": "0212-native-mcp-routing.patch",
-      "sha256": "659493afa37831cd18d5ef88e826a81e434c7cd6a4132f08c615884bbde7fe0e"
+      "sha256": "06d7103aeab8b4bd9765c01ecb2888babc2996d72da76b6e3f9acf1e11674ac7"
     },
     {
       "path": "sdk-terminal-candidate-admission.patch",
-      "sha256": "daf499723d9331eb1c9cf93a78084eea6a4c0f5217b9b4d38f34836b9654edfe"
+      "sha256": "723293b78941e97dcd4c4032d708ca9e73f2b9d85ae567a59006398e0f78d0df"
     }
   ],
-  "result_tree": "067152f85557b75b83e1686a421ce2f784ffbfb1"
+  "result_tree": "eccba1768f581fb6ee6989791d5fc85be6d723b6"
 }
