@@ -2269,6 +2269,7 @@ export class Session<OutputT = string, Context = unknown> {
       active: boolean;
     }
   >();
+  private readonly nativeFormRetirementReplies = new Set<Promise<void>>();
   private readonly nativeQuestionKeys = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     Set<string>
@@ -3056,6 +3057,14 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
+  private trackNativeFormRetirement(reply: Promise<void>): void {
+    this.nativeFormRetirementReplies.add(reply);
+    void reply.then(
+      () => this.nativeFormRetirementReplies.delete(reply),
+      () => this.nativeFormRetirementReplies.delete(reply),
+    );
+  }
+
   private retireNativeQuestions(
     run: NativeTurn | ChildCallbackOwner,
     formsOnly = false,
@@ -3071,6 +3080,7 @@ export class Session<OutputT = string, Context = unknown> {
         preparation.decline,
         preparation.questionId,
       );
+      this.trackNativeFormRetirement(reply);
       replies.push(reply);
       void reply.catch(() => {});
     }
@@ -3088,6 +3098,7 @@ export class Session<OutputT = string, Context = unknown> {
           record.decline,
           record.questionId,
         );
+        if (record.form) this.trackNativeFormRetirement(reply);
         replies.push(reply);
         void reply.catch(() => {});
       }
@@ -13163,6 +13174,9 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private async closeNative(): Promise<NativeError | undefined> {
+    // Join exact form replies, including retirements started by earlier stops.
+    // Native shutdown must still precede held schema compilation cleanup.
+    await Promise.allSettled([...this.nativeFormRetirementReplies]);
     if (
       this.environment instanceof Environment &&
       !this.selectedEnvironmentRetirementAttempted
