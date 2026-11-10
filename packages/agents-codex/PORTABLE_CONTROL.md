@@ -32,6 +32,7 @@ export async function connectVoice(module: WebAssembly.Module, apiKey: string) {
     agent: {
       model: 'gpt-realtime-1.5',
       instructions: 'Answer briefly.',
+      sessionSettings: { output_modalities: ['text'] },
       tools: [
         {
           name: 'current_label',
@@ -51,9 +52,41 @@ export async function connectVoice(module: WebAssembly.Module, apiKey: string) {
 
 For browser WebRTC, use `connectPortableVoiceBrowser()` from `@openai/agents/voice/browser`. Supply a short-lived client credential, a `NativeVoiceControl`, and media options. Keep standard API keys on your server. `createPeerConnection`, `getUserMedia`, and `onRemoteStream` let the application supply media objects without global browser shims.
 
+## Input, interruption, and usage
+
+`sessionSettings` has been forwarding provider-format session fields through the configuration acceptance check. The named `model`, `instructions`, and `tools` options have been controlling their corresponding fields.
+
+The following helper has been submitting an image/text message and an audio segment before requesting a response:
+
+```ts
+import type { PortableVoiceSession } from '@openai/agents/voice/portable';
+
+export function submitInputs(
+  session: PortableVoiceSession,
+  imageDataUrl: string,
+  audio: ArrayBuffer,
+): void {
+  session.sendMessage(
+    [
+      { type: 'input_text', text: 'Describe this image and audio.' },
+      { type: 'input_image', image_url: imageDataUrl },
+    ],
+    { triggerResponse: false },
+  );
+  session.sendAudio(audio, { commit: true });
+  session.requestResponse();
+}
+```
+
+Audio input has been following the format in the accepted provider configuration. `commitAudio()` and `clearAudio()` have been controlling buffered input independently; committing audio has not been starting a response automatically.
+
+`interrupt()` has been cancelling the active provider response while keeping the session available for more input. Previously admitted tool callbacks from completed responses have been retaining their authority to finish. Local audio playback and playback-position truncation have been remaining application responsibilities.
+
+The `usage` getter has been accumulating reported counters from terminal provider responses, including cancelled responses, and retaining them after close. Missing counters have been remaining unknown. Vendor-specific fields have been remaining available in the original `onEvent` payload. Each getter call has been returning a separate snapshot.
+
 ## Current limits
 
-The prototype supports function tools and text input. It does not yet implement native Agent projection, full schema validation, guardrails, handoffs, profile changes, history replacement, settings updates, interruption, or deletion. It stops accepting calls after 256 retained function IDs. Provider cancellation, an incomplete response, or speech during active work retires the prototype generation. Create a new generation after close or a protocol failure.
+Pending capabilities: native Agent projection, full schema validation, guardrails, handoffs, profile changes, history replacement, settings updates, and deletion. The prototype has been retaining at most 256 function IDs. Valid cancelled, failed, and incomplete response receipts have been keeping the session available. Protocol failures have been closing the generation.
 
 Closing aborts callbacks and waits for their promises to settle. Callbacks must observe cancellation. A callback must not await closing its own session.
 

@@ -483,7 +483,11 @@
     {
       "path": "sdk-saved-codex-login.patch",
       "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
+    },
+    {
+      "path": "portable-realtime-session-parity.patch",
+      "sha256": "d215c4963b66c5607cece0f825314e29c2c118ef0a27056ed35cf302cb1ebde0"
     }
   ],
-  "result_tree": "f8054cc146010a945274e19f86df9183cbbb269f"
+  "result_tree": "00b35d8b8a9560d757fe27c9449f7012762ef162"
 }

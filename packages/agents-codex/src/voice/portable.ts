@@ -1,8 +1,20 @@
+import {
+  addRealtimeUsage,
+  reportedRealtimeUsage,
+  type NativeRealtimeUsage,
+} from '../runtime/realtime-usage';
+export type { NativeRealtimeUsage } from '../runtime/realtime-usage';
+
 /** Host effects for the target-neutral Rust Realtime control crate. */
 export interface PortableVoiceTransport {
   send(frame: string): void | Promise<void>;
   close(): void | Promise<void>;
 }
+
+/** Provider-format text and image parts in a user message. */
+export type PortableVoiceMessageContent =
+  | { type: 'input_text'; text: string }
+  | { type: 'input_image'; image_url: string; [key: string]: unknown };
 
 export interface PortableVoiceTool {
   name: string;
@@ -19,6 +31,8 @@ export interface PortableVoiceOptions {
   model: string;
   instructions: string;
   tools?: PortableVoiceTool[];
+  /** Provider-format session settings; model, instructions and tools belong to the named options. */
+  sessionSettings?: Readonly<Record<string, unknown>>;
   onApproval?: (
     request: {
       callId: string;
@@ -110,6 +124,7 @@ export class PortableVoiceSession {
   #closing: Promise<void> | undefined;
   #readyResolve!: () => void;
   #readyReject!: (error: unknown) => void;
+  #usageTotals?: ReturnType<typeof reportedRealtimeUsage>;
   readonly #ready = new Promise<void>((resolve, reject) => {
     this.#readyResolve = resolve;
     this.#readyReject = reject;
@@ -127,6 +142,13 @@ export class PortableVoiceSession {
     }
     // A transport can fail before start returns its readiness promise.
     void this.#ready.catch(() => {});
+  }
+
+  /** Observed speech-model usage; omitted counters remain unknown. */
+  get usage(): NativeRealtimeUsage | undefined {
+    return this.#usageTotals === undefined
+      ? undefined
+      : (structuredClone(this.#usageTotals) as NativeRealtimeUsage);
   }
 
   async start(): Promise<void> {
@@ -147,6 +169,7 @@ export class PortableVoiceSession {
         config: {
           model: this.options.model,
           instructions: this.options.instructions,
+          session_settings: this.options.sessionSettings ?? {},
           tools: [...this.#tools.values()].map((tool) => ({
             name: tool.name,
             description: tool.description,
@@ -171,8 +194,56 @@ export class PortableVoiceSession {
   }
 
   sendText(text: string): void {
+    this.#sendInput({ type: 'text', text });
+  }
+
+  sendMessage(
+    content: readonly PortableVoiceMessageContent[],
+    { triggerResponse = true }: { triggerResponse?: boolean } = {},
+  ): void {
+    this.#sendInput({
+      type: 'message',
+      content,
+      trigger_response: triggerResponse,
+    });
+  }
+
+  /** Append bytes in the format selected by the accepted session configuration. */
+  sendAudio(
+    audio: ArrayBuffer,
+    { commit = false }: { commit?: boolean } = {},
+  ): void {
+    if (!(audio instanceof ArrayBuffer))
+      throw new TypeError('Portable voice audio must be an ArrayBuffer.');
+    const bytes = new Uint8Array(audio);
+    const chunks: string[] = [];
+    for (let offset = 0; offset < bytes.length; offset += 8192)
+      chunks.push(
+        String.fromCharCode(...bytes.subarray(offset, offset + 8192)),
+      );
+    this.#sendInput({ type: 'audio', audio: btoa(chunks.join('')), commit });
+  }
+
+  commitAudio(): void {
+    this.#sendInput({ type: 'commit_audio' });
+  }
+
+  clearAudio(): void {
+    this.#sendInput({ type: 'clear_audio' });
+  }
+
+  requestResponse(): void {
+    this.#sendInput({ type: 'respond' });
+  }
+
+  /** Stop the current response. Previously admitted tool work may still finish. */
+  interrupt(): void {
+    this.#sendInput({ type: 'interrupt' });
+  }
+
+  #sendInput(command: unknown): void {
     try {
-      this.#dispatch({ type: 'text', text });
+      this.#dispatch(command);
     } catch (error) {
       this.fail(error);
       throw error;
@@ -224,9 +295,19 @@ export class PortableVoiceSession {
           this.#readyTimer = undefined;
           this.#readyResolve();
           break;
-        case 'event':
+        case 'event': {
+          const event = effect.event as {
+            type?: string;
+            response?: { usage?: unknown };
+          };
+          if (event.type === 'response.done' && event.response?.usage != null)
+            this.#usageTotals = addRealtimeUsage(
+              this.#usageTotals ?? {},
+              reportedRealtimeUsage(event.response.usage),
+            );
           this.options.onEvent?.(effect.event);
           break;
+        }
         case 'send': {
           const frame = JSON.stringify(effect.event);
           const bytes = frame.length * 2;

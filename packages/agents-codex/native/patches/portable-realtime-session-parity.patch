@@ -1,0 +1,589 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+index f8690a24..78f9cdc0 100644
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -226,16 +226,64 @@ pub struct Config {
+     pub instructions: String,
+     #[serde(default)]
+     pub tools: Vec<Tool>,
++    #[serde(default)]
++    pub session_settings: serde_json::Map<String, Value>,
++}
++
++#[derive(Deserialize, Serialize)]
++#[serde(tag = "type", rename_all = "snake_case")]
++pub enum UserContent {
++    InputText {
++        text: String,
++    },
++    InputImage {
++        image_url: String,
++        #[serde(flatten)]
++        properties: serde_json::Map<String, Value>,
++    },
+ }
++
++fn default_trigger_response() -> bool {
++    true
++}
++
+ #[derive(Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+ pub enum Command {
+-    Start { config: Config },
+-    Provider { event: Value },
+-    Approve { call_id: String, approved: bool },
+-    ToolResult { call_id: String, output: String },
+-    Sent { id: u64 },
+-    Text { text: String },
++    Start {
++        config: Config,
++    },
++    Provider {
++        event: Value,
++    },
++    Approve {
++        call_id: String,
++        approved: bool,
++    },
++    ToolResult {
++        call_id: String,
++        output: String,
++    },
++    Sent {
++        id: u64,
++    },
++    Text {
++        text: String,
++    },
++    Message {
++        content: Vec<UserContent>,
++        #[serde(default = "default_trigger_response")]
++        trigger_response: bool,
++    },
++    Audio {
++        audio: String,
++        #[serde(default)]
++        commit: bool,
++    },
++    CommitAudio,
++    ClearAudio,
++    Respond,
++    Interrupt,
+     Close,
+ }
+ #[derive(Debug, Serialize, PartialEq)]
+@@ -302,6 +350,8 @@ pub struct Control {
+     startup_send: Option<u64>,
+     startup_sent: bool,
+     startup_accepted: bool,
++    cancel_on_created: Option<bool>,
++    automatic_interruption: bool,
+ }
+ impl Default for Control {
+     fn default() -> Self {
+@@ -319,6 +369,8 @@ impl Default for Control {
+             startup_send: None,
+             startup_sent: false,
+             startup_accepted: false,
++            cancel_on_created: None,
++            automatic_interruption: false,
+         }
+     }
+ }
+@@ -349,6 +401,7 @@ impl Control {
+         self.incoming.clear();
+         self.incoming_bytes = 0;
+         self.responses = ResponseCreateState::default();
++        self.cancel_on_created = None;
+     }
+     fn transition(&mut self, command: Command) -> Result<Vec<Effect>, String> {
+         if self.phase == Phase::Closed {
+@@ -367,6 +420,11 @@ impl Control {
+                 if config.model.is_empty() || config.tools.len() > MAX_CALLS {
+                     return Err("Invalid Realtime configuration".into());
+                 }
++                if config.session_settings.keys().any(|name| {
++                    matches!(name.as_str(), "type" | "model" | "instructions" | "tools")
++                }) {
++                    return Err("Session settings cannot replace the owned configuration".into());
++                }
+                 let mut tools = BTreeMap::new();
+                 let mut wire_tools = vec![];
+                 for tool in config.tools {
+@@ -381,7 +439,15 @@ impl Control {
+                 }
+                 self.tools = tools;
+                 self.phase = Phase::Configuring;
+-                let session = json!({"type":"realtime","model":config.model,"instructions":config.instructions,"tools":wire_tools,"tool_choice":"auto"});
++                let mut session = config.session_settings;
++                session.insert("type".into(), json!("realtime"));
++                session.insert("model".into(), json!(config.model));
++                session.insert("instructions".into(), json!(config.instructions));
++                session.insert("tools".into(), Value::Array(wire_tools));
++                session
++                    .entry("tool_choice")
++                    .or_insert_with(|| json!("auto"));
++                let session = Value::Object(session);
+                 self.expected_session = session.clone();
+                 self.startup_send = Some(self.send(
+                     json!({"type":"session.update","session":session}),
+@@ -458,6 +524,46 @@ impl Control {
+                 self.send(json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}), &mut effects);
+                 self.request_response(&mut effects);
+             }
++            Command::Message {
++                content,
++                trigger_response,
++            } => {
++                self.require_ready()?;
++                if content.is_empty() {
++                    return Err("A Realtime message needs content".into());
++                }
++                self.send(json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":content}}), &mut effects);
++                if trigger_response {
++                    self.request_response(&mut effects);
++                }
++            }
++            Command::Audio { audio, commit } => {
++                self.require_ready()?;
++                self.send(
++                    json!({"type":"input_audio_buffer.append","audio":audio}),
++                    &mut effects,
++                );
++                if commit {
++                    self.send(json!({"type":"input_audio_buffer.commit"}), &mut effects);
++                }
++            }
++            Command::CommitAudio | Command::ClearAudio => {
++                self.require_ready()?;
++                let kind = if matches!(command, Command::CommitAudio) {
++                    "input_audio_buffer.commit"
++                } else {
++                    "input_audio_buffer.clear"
++                };
++                self.send(json!({"type":kind}), &mut effects);
++            }
++            Command::Respond => {
++                self.require_ready()?;
++                self.request_response(&mut effects);
++            }
++            Command::Interrupt => {
++                self.require_ready()?;
++                self.interrupt_response(true, &mut effects);
++            }
+             Command::Close => {
+                 self.retire();
+                 effects.push(Effect::Closed);
+@@ -498,20 +604,21 @@ impl Control {
+             }
+             "response.cancelled" => return Err("Portable voice generation was cancelled".into()),
+             "response.done" if event["response"]["status"].as_str() != Some("completed") => {
+-                return Err("Incomplete Realtime response cannot admit functions".into());
+-            }
+-            "input_audio_buffer.speech_started" => {
+-                if self.responses.active_default_response
+-                    || self
+-                        .calls
+-                        .values()
+-                        .any(|call| call.phase != CallPhase::Published)
+-                    || self
+-                        .incoming
+-                        .iter()
+-                        .any(|(event, _)| event["type"] == "response.created")
++                let id = event["response"]["id"].as_str();
++                let known = id.is_some_and(|id| {
++                    self.responses.sdk_response_id.as_deref() == Some(id)
++                        || self.incoming.iter().any(|(event, _)| {
++                            event["type"] == "response.created"
++                                && event["response"]["id"].as_str() == Some(id)
++                        })
++                });
++                if !known
++                    || !matches!(
++                        event["response"]["status"].as_str(),
++                        Some("cancelled" | "failed" | "incomplete")
++                    )
+                 {
+-                    return Err("Portable voice interruption requires a new generation".into());
++                    return Err("Incomplete Realtime response cannot admit functions".into());
+                 }
+             }
+             "error" => return Err("Realtime provider rejected the operation".into()),
+@@ -527,6 +634,18 @@ impl Control {
+             self.send(json!({"type":"response.create"}), effects);
+         }
+     }
++    fn interrupt_response(&mut self, emit_cancel: bool, effects: &mut Vec<Effect>) {
++        if let Some(id) = self.responses.sdk_response_id.clone() {
++            if self.responses.sdk_cancelled_response.as_ref() != Some(&id) {
++                self.responses.sdk_cancelled_response = Some(id.clone());
++                if emit_cancel {
++                    self.send(json!({"type":"response.cancel","response_id":id}), effects);
++                }
++            }
++        } else if self.responses.active_default_response {
++            self.cancel_on_created = Some(self.cancel_on_created.unwrap_or(false) || emit_cancel);
++        }
++    }
+     fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
+         let kind = event
+             .get("type")
+@@ -536,6 +655,15 @@ impl Control {
+             "session.updated" => {
+                 if self.phase == Phase::Configuring || self.phase == Phase::Ready {
+                     self.startup_accepted = true;
++                    self.automatic_interruption =
++                        event["session"]["audio"]["input"]["turn_detection"]["interrupt_response"]
++                            .as_bool()
++                            .unwrap_or(false);
++                }
++            }
++            "input_audio_buffer.speech_started" => {
++                if self.phase == Phase::Ready {
++                    self.interrupt_response(!self.automatic_interruption, effects);
+                 }
+             }
+             "response.created" => {
+@@ -551,6 +679,9 @@ impl Control {
+                 }
+                 self.responses.sdk_response_id = Some(id);
+                 self.responses.mark_started();
++                if let Some(emit_cancel) = self.cancel_on_created.take() {
++                    self.interrupt_response(emit_cancel, effects);
++                }
+             }
+             "response.output_item.done" => {
+                 self.require_ready()?;
+@@ -576,6 +707,23 @@ impl Control {
+                 if self.responses.sdk_response_id.as_ref() != Some(&id) {
+                     return Err("Completed response does not own the active response".into());
+                 }
++                if response["status"] != "completed"
++                    || self.responses.sdk_cancelled_response.as_ref() == Some(&id)
++                {
++                    // Calls from an unfinished response have not been admitted.
++                    // Previously completed response callbacks keep their authority.
++                    self.calls.retain(|_, call| {
++                        call.request.response_id.as_ref() != Some(&id)
++                            || call.phase != CallPhase::Discovered
++                    });
++                    self.responses.sdk_response_id = None;
++                    self.responses.sdk_cancelled_response = None;
++                    if self.responses.mark_finished().is_some() {
++                        self.request_response(effects);
++                    }
++                    effects.push(Effect::Event { event });
++                    return Ok(());
++                }
+                 let output = response
+                     .get("output")
+                     .and_then(Value::as_array)
+@@ -808,6 +956,72 @@ mod tests {
+             json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
+         )
+     }
++    #[test]
++    fn ordered_message_content_can_wait_for_an_explicit_response() {
++        let mut control = ready();
++        let content = json!([
++            {"type":"input_text","text":"Describe this image."},
++            {"type":"input_image","image_url":"https://example.test/image.png","detail":"low"}
++        ]);
++        let result = command(
++            &mut control,
++            json!({"type":"message","content":content,"trigger_response":false}),
++        );
++        assert_eq!(result["effects"].as_array().unwrap().len(), 1);
++        assert_eq!(result["effects"][0]["event"]["item"]["content"], content);
++        assert!(!control.responses.active_default_response);
++        let response = command(&mut control, json!({"type":"respond"}));
++        assert_eq!(response["effects"][0]["event"]["type"], "response.create");
++        assert!(
++            command(&mut control, json!({"type":"respond"}))["effects"]
++                .as_array()
++                .unwrap()
++                .is_empty()
++        );
++        assert!(control.responses.pending_create);
++    }
++
++    #[test]
++    fn audio_append_commit_and_clear_do_not_implicitly_start_a_response() {
++        let mut control = ready();
++        let result = command(
++            &mut control,
++            json!({"type":"audio","audio":"AAH+/w==","commit":true}),
++        );
++        assert_eq!(result["effects"].as_array().unwrap().len(), 2);
++        assert_eq!(
++            result["effects"][0]["event"],
++            json!({"type":"input_audio_buffer.append","audio":"AAH+/w=="})
++        );
++        assert_eq!(
++            result["effects"][1]["event"]["type"],
++            "input_audio_buffer.commit"
++        );
++        for (kind, expected) in [
++            ("clear_audio", "input_audio_buffer.clear"),
++            ("commit_audio", "input_audio_buffer.commit"),
++        ] {
++            let result = command(&mut control, json!({"type":kind}));
++            assert_eq!(result["effects"].as_array().unwrap().len(), 1);
++            assert_eq!(result["effects"][0]["event"]["type"], expected);
++        }
++        assert!(!control.responses.active_default_response);
++    }
++
++    #[test]
++    fn user_messages_cannot_admit_tool_calls_or_malformed_images() {
++        for content in [
++            json!([]),
++            json!([item()]),
++            json!([{"type":"input_image","image_url":7}]),
++        ] {
++            let mut control = ready();
++            let result = command(&mut control, json!({"type":"message","content":content}));
++            assert!(result.get("error").is_some());
++            assert!(control.calls.is_empty());
++        }
++    }
++
+     #[test]
+     fn queued_text_waits_for_batch_approval_and_physical_output() {
+         for before_completion in [true, false] {
+@@ -866,7 +1080,6 @@ mod tests {
+             json!({"type":"response.done","response":{"id":"response-1","status":"cancelled","output":[]}}),
+             json!({"type":"response.done","response":{"id":"response-1","status":"failed","output":[]}}),
+             json!({"type":"response.done","response":{"id":"response-1","status":"incomplete","output":[]}}),
+-            json!({"type":"input_audio_buffer.speech_started"}),
+             json!({"type":"error"}),
+             json!({"type":"session.updated","session":{}}),
+         ] {
+@@ -1076,14 +1289,31 @@ mod tests {
+         );
+     }
+     #[test]
+-    fn non_completed_responses_never_admit_functions_and_retire_the_owner() {
+-        for status in [
+-            json!("cancelled"),
+-            json!("failed"),
+-            json!("incomplete"),
+-            json!("in_progress"),
+-            Value::Null,
+-        ] {
++    fn terminal_responses_discard_unadmitted_functions_and_keep_the_session() {
++        for status in ["cancelled", "failed", "incomplete"] {
++            let mut control = ready();
++            request(&mut control);
++            let response = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":status,"output":[item()]}}}),
++            );
++            assert!(response.get("error").is_none());
++            assert!(control.calls.is_empty());
++            assert!(
++                response["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .all(|effect| effect["type"] == "event")
++            );
++            let next = command(&mut control, json!({"type":"text","text":"Continue."}));
++            assert_eq!(next["effects"][1]["event"]["type"], "response.create");
++        }
++    }
++
++    #[test]
++    fn invalid_terminal_statuses_retire_the_owner() {
++        for status in [json!("in_progress"), Value::Null] {
+             let mut control = ready();
+             request(&mut control);
+             let response = command(
+@@ -1142,7 +1372,7 @@ mod tests {
+         }
+     }
+     #[test]
+-    fn first_user_speech_is_allowed_but_live_response_or_function_work_retires() {
++    fn speech_cancels_active_output_but_preserves_completed_response_work() {
+         let speech = json!({"type":"provider","event":{"type":"input_audio_buffer.speech_started","item_id":"input-1"}});
+         let mut idle = ready();
+         assert!(command(&mut idle, speech.clone()).get("error").is_none());
+@@ -1158,13 +1388,78 @@ mod tests {
+                     json!({"type":"approve","call_id":"call-1","approved":true}),
+                 );
+             }
++            let received = command(&mut control, speech.clone());
++            assert!(received.get("error").is_none());
++            assert!(control.phase == Phase::Ready);
++            assert!(!control.calls.is_empty());
++            if stage == 0 {
++                assert_eq!(received["effects"][0]["event"]["type"], "response.cancel");
++            } else {
++                assert_eq!(received["effects"].as_array().unwrap().len(), 1);
++                assert_eq!(received["effects"][0]["type"], "event");
++            }
++        }
++    }
++
++    #[test]
++    fn repeated_interruptions_wait_for_terminal_receipts_and_keep_one_session() {
++        let mut control = ready();
++        for index in 0..3 {
++            let create = command(&mut control, json!({"type":"respond"}));
++            command(
++                &mut control,
++                json!({"type":"sent","id":create["effects"][0]["id"]}),
++            );
++            let id = format!("response-{index}");
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.created","response":{"id":id}}}),
++            );
++            let stopped = command(&mut control, json!({"type":"interrupt"}));
+             assert_eq!(
+-                command(&mut control, speech.clone())["error"],
+-                "Portable voice interruption requires a new generation"
++                stopped["effects"][0]["event"],
++                json!({"type":"response.cancel","response_id":id})
+             );
+-            assert!(control.calls.is_empty());
++            assert!(
++                command(&mut control, json!({"type":"interrupt"}))["effects"]
++                    .as_array()
++                    .unwrap()
++                    .is_empty()
++            );
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.done","response":{"id":id,"status":"cancelled","output":[]}}}),
++            );
++            assert!(control.responses.active_default_response);
++            command(
++                &mut control,
++                json!({"type":"sent","id":stopped["effects"][0]["id"]}),
++            );
++            assert!(!control.responses.active_default_response);
++            assert!(control.phase == Phase::Ready);
+         }
+     }
++
++    #[test]
++    fn interrupted_response_cannot_admit_tools_even_if_completion_wins_the_wire_race() {
++        let mut control = ready();
++        request(&mut control);
++        let stopped = command(&mut control, json!({"type":"interrupt"}));
++        batch(&mut control);
++        let received = command(
++            &mut control,
++            json!({"type":"sent","id":stopped["effects"][0]["id"]}),
++        );
++        assert!(
++            received["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .all(|effect| effect["type"] == "event")
++        );
++        assert!(control.calls.is_empty());
++        assert!(control.phase == Phase::Ready);
++    }
+     #[test]
+     fn duplicate_accepted_names_cannot_replace_a_declared_tool() {
+         let mut control = Control::default();
+@@ -1188,6 +1483,95 @@ mod tests {
+         );
+     }
+     #[test]
++    fn session_settings_survive_acceptance_and_wait_for_physical_send() {
++        let mut control = Control::default();
++        let settings = json!({
++            "audio": {
++                "input": {"transcription":{"model":"transcribe"},"turn_detection":null},
++                "output": {"voice":"verse","speed":1.1}
++            },
++            "max_output_tokens":128,
++            "tracing":"auto",
++            "tool_choice":"required",
++            "parallel_tool_calls":false
++        });
++        let started = command(
++            &mut control,
++            json!({"type":"start","config":{
++                "model":"test-realtime","instructions":"Help.","tools":[tool()],
++                "session_settings":settings
++            }}),
++        );
++        let session = &started["effects"][0]["event"]["session"];
++        for (key, value) in settings.as_object().unwrap() {
++            assert_eq!(&session[key], value);
++        }
++        let accepted = command(
++            &mut control,
++            json!({"type":"provider","event":{
++                "type":"session.updated","session":session
++            }}),
++        );
++        assert_eq!(accepted["effects"], json!([]));
++        let sent = command(
++            &mut control,
++            json!({"type":"sent","id":started["effects"][0]["id"]}),
++        );
++        assert_eq!(
++            sent["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .filter(|effect| effect["type"] == "ready")
++                .count(),
++            1
++        );
++    }
++    #[test]
++    fn session_settings_reject_changed_nested_acceptance() {
++        let mut control = Control::default();
++        let started = command(
++            &mut control,
++            json!({"type":"start","config":{
++                "model":"test-realtime","instructions":"Help.",
++                "session_settings":{"audio":{"output":{"voice":"verse"}}}
++            }}),
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":started["effects"][0]["id"]}),
++        );
++        let mut session = started["effects"][0]["event"]["session"].clone();
++        session["audio"]["output"]["voice"] = json!("another-voice");
++        let rejected = command(
++            &mut control,
++            json!({"type":"provider","event":{
++                "type":"session.updated","session":session
++            }}),
++        );
++        assert_eq!(
++            rejected["error"],
++            "Provider accepted another tool configuration"
++        );
++    }
++    #[test]
++    fn session_settings_cannot_replace_named_configuration() {
++        for key in ["type", "model", "instructions", "tools"] {
++            let mut control = Control::default();
++            let rejected = command(
++                &mut control,
++                json!({"type":"start","config":{
++                    "model":"test-realtime","instructions":"Help.",
++                    "session_settings":{key:null}
++                }}),
++            );
++            assert_eq!(
++                rejected["error"],
++                "Session settings cannot replace the owned configuration"
++            );
++        }
++    }
++    #[test]
+     fn configuration_acceptance_preserves_all_requested_values() {
+         let mut control = Control::default();
+         startup(&mut control);

@@ -68,6 +68,465 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
+  it('aggregates reported usage without inventing missing counts or exposing mutable totals', async () => {
+    const frames: { type: string }[] = [];
+    const events: { type: string; response?: { usage?: unknown } }[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      {
+        model: 'test-realtime',
+        instructions: 'Help.',
+        onEvent(event) {
+          events.push(event as (typeof events)[number]);
+        },
+      },
+    );
+    const first = {
+      input_tokens: 10,
+      output_tokens: 4,
+      total_tokens: 14,
+      input_token_details: {
+        text_tokens: 3,
+        audio_tokens: 7,
+        cached_tokens: 2,
+        cached_tokens_details: { text_tokens: 1, audio_tokens: 1 },
+      },
+      output_token_details: { audio_tokens: 4 },
+      vendor_meter: 9,
+    };
+    try {
+      await session.start();
+      expect(session.usage).toBeUndefined();
+      const reports = [
+        first,
+        {
+          input_tokens: 2,
+          total_tokens: 2,
+          input_token_details: { text_tokens: 2 },
+        },
+        undefined,
+      ];
+      for (let index = 0; index < reports.length; index++) {
+        session.requestResponse();
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((event) => event.type === 'response.create'),
+          ).toHaveLength(index + 1),
+        );
+        const id = `usage-${index}`;
+        session.receive({ type: 'response.created', response: { id } });
+        session.receive({
+          type: 'response.done',
+          response: {
+            id,
+            status: index === 1 ? 'cancelled' : 'completed',
+            output: [],
+            usage: reports[index],
+          },
+        });
+        await vi.waitFor(() =>
+          expect(
+            events.filter((event) => event.type === 'response.done'),
+          ).toHaveLength(index + 1),
+        );
+      }
+      const expected = {
+        input_tokens: 12,
+        output_tokens: 4,
+        total_tokens: 16,
+        input_token_details: {
+          text_tokens: 5,
+          audio_tokens: 7,
+          cached_tokens: 2,
+          cached_tokens_details: { text_tokens: 1, audio_tokens: 1 },
+        },
+        output_token_details: { audio_tokens: 4 },
+      };
+      expect(session.usage).toEqual(expected);
+      const copy = session.usage as {
+        input_tokens: number;
+        input_token_details: { text_tokens: number };
+      };
+      copy.input_tokens = 999;
+      copy.input_token_details.text_tokens = 999;
+      expect(session.usage).toEqual(expected);
+      expect(
+        events.find((event) => event.type === 'response.done')?.response?.usage,
+      ).toEqual(first);
+    } finally {
+      await session.close();
+    }
+    expect(session.usage?.input_tokens).toBe(12);
+  });
+
+  it('closes on invalid reported usage without publishing corrupt totals', async () => {
+    const frames: { type: string }[] = [];
+    const onError = vi.fn();
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      { model: 'test-realtime', instructions: 'Help.', onError },
+    );
+    try {
+      await session.start();
+      session.requestResponse();
+      await vi.waitFor(() =>
+        expect(frames.some((event) => event.type === 'response.create')).toBe(
+          true,
+        ),
+      );
+      session.receive({
+        type: 'response.created',
+        response: { id: 'invalid-usage' },
+      });
+      session.receive({
+        type: 'response.done',
+        response: {
+          id: 'invalid-usage',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: -1 },
+        },
+      });
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+      expect(session.usage).toBeUndefined();
+      expect(() => session.sendText('After invalid usage.')).toThrow('closed');
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each([true, false])(
+    'keeps the session after speech with automatic interruption %s',
+    async (automatic) => {
+      const frames: { type: string; response_id?: string }[] = [];
+      const onError = vi.fn();
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+          },
+          close() {},
+        },
+        {
+          model: 'test-realtime',
+          instructions: 'Help.',
+          sessionSettings: {
+            audio: {
+              input: {
+                turn_detection: {
+                  type: 'server_vad',
+                  interrupt_response: automatic,
+                },
+              },
+            },
+          },
+          onError,
+        },
+      );
+      try {
+        await session.start();
+        session.requestResponse();
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((event) => event.type === 'response.create'),
+          ).toHaveLength(1),
+        );
+        session.receive({
+          type: 'response.created',
+          response: { id: 'first' },
+        });
+        session.receive({ type: 'input_audio_buffer.speech_started' });
+        session.receive({
+          type: 'response.done',
+          response: { id: 'first', status: 'cancelled', output: [] },
+        });
+        session.sendText('Continue.');
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((event) => event.type === 'response.create'),
+          ).toHaveLength(2),
+        );
+        expect(
+          frames.filter((event) => event.type === 'response.cancel'),
+        ).toHaveLength(automatic ? 0 : 1);
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it('waits for the response identity when interrupting a pending creation', async () => {
+    const frames: { type: string; response_id?: string }[] = [];
+    const onError = vi.fn();
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      { model: 'test-realtime', instructions: 'Help.', onError },
+    );
+    try {
+      await session.start();
+      session.requestResponse();
+      session.interrupt();
+      await vi.waitFor(() =>
+        expect(
+          frames.filter((event) => event.type === 'response.create'),
+        ).toHaveLength(1),
+      );
+      expect(frames.some((event) => event.type === 'response.cancel')).toBe(
+        false,
+      );
+      session.receive({
+        type: 'response.created',
+        response: { id: 'pending' },
+      });
+      await vi.waitFor(() =>
+        expect(frames).toContainEqual({
+          type: 'response.cancel',
+          response_id: 'pending',
+        }),
+      );
+      session.receive({
+        type: 'response.done',
+        response: { id: 'pending', status: 'cancelled', output: [] },
+      });
+      session.requestResponse();
+      await vi.waitFor(() =>
+        expect(
+          frames.filter((event) => event.type === 'response.create'),
+        ).toHaveLength(2),
+      );
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('interrupts three responses and continues through the same native owner', async () => {
+    const frames: Record<string, unknown>[] = [];
+    const close = vi.fn();
+    const onError = vi.fn();
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close,
+      },
+      { model: 'test-realtime', instructions: 'Help.', onError },
+    );
+    try {
+      await session.start();
+      for (let index = 0; index < 3; index++) {
+        session.requestResponse();
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((event) => event.type === 'response.create'),
+          ).toHaveLength(index + 1),
+        );
+        const id = `response-${index}`;
+        session.receive({ type: 'response.created', response: { id } });
+        session.interrupt();
+        session.interrupt();
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((event) => event.type === 'response.cancel'),
+          ).toHaveLength(index + 1),
+        );
+        session.receive({
+          type: 'response.done',
+          response: { id, status: 'cancelled', output: [] },
+        });
+      }
+      session.sendText('Continue.');
+      await vi.waitFor(() =>
+        expect(
+          frames.filter((event) => event.type === 'response.create'),
+        ).toHaveLength(4),
+      );
+      expect(close).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('keeps already admitted tool work when interrupting response generation', async () => {
+    const definition = agent();
+    const result = Promise.withResolvers<string>();
+    let signal: AbortSignal | undefined;
+    const execute = vi.fn((_args: unknown, callbackSignal: AbortSignal) => {
+      signal = callbackSignal;
+      return result.promise;
+    });
+    const frames: { type: string; item?: { type: string } }[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              fixtureEvents(event.session).forEach((incoming) =>
+                session.receive(incoming),
+              ),
+            );
+        },
+        close() {},
+      },
+      {
+        ...definition.options,
+        tools: [{ ...definition.options.tools[0], execute }],
+      },
+    );
+    try {
+      await session.start();
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      session.interrupt();
+      expect(signal?.aborted).toBe(false);
+      result.resolve('Kept the authorized result.');
+      await vi.waitFor(() =>
+        expect(
+          frames.some((event) => event.item?.type === 'function_call_output'),
+        ).toBe(true),
+      );
+      expect(execute).toHaveBeenCalledOnce();
+    } finally {
+      result.resolve('Cleanup.');
+      await session.close();
+    }
+  });
+
+  it('captures ordered image/text input and audio bytes through native send receipts', async () => {
+    const frames: Record<string, unknown>[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      { model: 'test-realtime', instructions: 'Help.' },
+    );
+    try {
+      await session.start();
+      const textPart = {
+        type: 'input_text' as const,
+        text: 'Describe this image.',
+      };
+      const imagePart = {
+        type: 'input_image' as const,
+        image_url: 'https://example.test/image.png',
+        detail: 'low',
+      };
+      const content = [textPart, imagePart];
+      const captured = structuredClone(content);
+      session.sendMessage(content, { triggerResponse: false });
+      textPart.text = 'changed after submission';
+      imagePart.image_url = 'https://example.test/other.png';
+      const bytes = Uint8Array.from(
+        { length: 32768 },
+        (_, index) => index % 256,
+      );
+      const expectedBytes = Buffer.from(bytes);
+      session.sendAudio(bytes.buffer, { commit: true });
+      bytes.fill(0);
+      session.clearAudio();
+      session.commitAudio();
+      session.requestResponse();
+      await vi.waitFor(() => expect(frames).toHaveLength(7));
+      expect(frames.map((frame) => frame.type)).toEqual([
+        'session.update',
+        'conversation.item.create',
+        'input_audio_buffer.append',
+        'input_audio_buffer.commit',
+        'input_audio_buffer.clear',
+        'input_audio_buffer.commit',
+        'response.create',
+      ]);
+      expect(frames[1].item).toEqual({
+        type: 'message',
+        role: 'user',
+        content: captured,
+      });
+      expect(Buffer.from(String(frames[2].audio), 'base64')).toEqual(
+        expectedBytes,
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
   it('rejects startup after close without leaving a readiness timer', async () => {
     vi.useFakeTimers();
     const owner = control();
@@ -283,6 +742,77 @@ describe.runIf(enabled)('portable Rust control', () => {
     },
   );
 
+  it('preserves session settings through real Rust acceptance', async () => {
+    const settings = {
+      audio: {
+        input: { transcription: { model: 'transcribe' }, turn_detection: null },
+        output: { voice: 'verse', speed: 1.1 },
+      },
+      tracing: 'auto',
+      tool_choice: 'required',
+      max_output_tokens: 128,
+    };
+    const requested = structuredClone(settings);
+    const frames: { type: string; session: Record<string, unknown> }[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          queueMicrotask(() =>
+            session.receive({
+              type: 'session.updated',
+              session: event.session,
+            }),
+          );
+        },
+        close() {},
+      },
+      { ...agent().options, sessionSettings: settings },
+    );
+    const ready = session.start();
+    settings.audio.output.voice = 'later-caller-mutation';
+    await ready;
+    expect(frames).toHaveLength(1);
+    expect(frames[0].session).toMatchObject(requested);
+    expect(frames[0].session).toMatchObject({
+      model: 'test-realtime',
+      instructions: 'Help.',
+      tools: [{ type: 'function', name: 'lookup' }],
+    });
+    await session.close();
+  });
+
+  it('rejects provider acceptance that changes a requested voice', async () => {
+    const close = vi.fn();
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          event.session.audio.output.voice = 'another-voice';
+          queueMicrotask(() =>
+            session.receive({
+              type: 'session.updated',
+              session: event.session,
+            }),
+          );
+        },
+        close,
+      },
+      {
+        ...agent().options,
+        sessionSettings: { audio: { output: { voice: 'verse' } } },
+      },
+    );
+    await expect(session.start()).rejects.toThrow(
+      'Provider accepted another tool configuration',
+    );
+    await session.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('retires a provider connection that never acknowledges configuration', async () => {
     vi.useFakeTimers();
     const close = vi.fn();
@@ -387,16 +917,18 @@ describe.runIf(enabled)('portable Rust control', () => {
   });
 
   it.each(['cancelled', 'failed', 'incomplete'])(
-    'never invokes a callback from a %s provider response',
+    'keeps the session after a %s response without admitting its callbacks',
     async (status) => {
       const definition = agent();
       const close = vi.fn();
       const onError = vi.fn();
+      const frames: { type: string }[] = [];
       const session: PortableVoiceSession = new PortableVoiceSession(
         control(),
         {
           send(frame) {
             const event = JSON.parse(frame);
+            frames.push(event);
             if (event.type === 'session.update')
               queueMicrotask(() => {
                 for (const incoming of fixtureEvents(event.session).slice(0, 3))
@@ -411,23 +943,24 @@ describe.runIf(enabled)('portable Rust control', () => {
         },
         { ...definition.options, onError },
       );
-      await expect(session.start()).rejects.toThrow(
-        'Incomplete Realtime response cannot admit functions',
-      );
+      await session.start();
+      session.sendText('Continue after the terminal response.');
+      await vi.waitFor(() => expect(frames).toHaveLength(3));
+      expect(frames.map((frame) => frame.type)).toEqual([
+        'session.update',
+        'conversation.item.create',
+        'response.create',
+      ]);
       await session.close();
       expect(close).toHaveBeenCalledOnce();
-      expect(onError).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: 'Incomplete Realtime response cannot admit functions',
-        }),
-      );
+      expect(onError).not.toHaveBeenCalled();
       expect(definition.onApproval).not.toHaveBeenCalled();
       expect(definition.execute).not.toHaveBeenCalled();
     },
   );
 
   it.each(['response.cancelled', 'input_audio_buffer.speech_started'])(
-    'aborts and joins callback work after %s without publishing its late result',
+    'close aborts and joins callback work after %s without publishing its late result',
     async (type) => {
       const definition = agent();
       const result = Promise.withResolvers<string>();
@@ -658,7 +1191,6 @@ describe.runIf(enabled)('portable Rust control', () => {
         response: { id: 'response-1', status, output: [] },
       },
     })),
-    { label: 'speech', event: { type: 'input_audio_buffer.speech_started' } },
     { label: 'provider error', event: { type: 'error' } },
     {
       label: 'changed configuration',
