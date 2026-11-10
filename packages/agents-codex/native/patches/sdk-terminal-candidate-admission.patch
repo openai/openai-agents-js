@@ -344,7 +344,7 @@ index 556d7d4b714efa466181da3e85be1742147d8c89..7c661a2e1761aa19a2b1ccf96480ea5e
                  response_observation_id: "retained-batch".into(),
                  call_ids: if matches!(self.case, RecoveryCase::SingleFresh) {
 diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
-index 89d28021f491b482bcdecf854a0d846df94b4c8b..6dc6725521c8ab379ea8c5c6f613fe6f914351a2 100644
+index 89d28021f491b482bcdecf854a0d846df94b4c8b..3ee5b1ef0872a802d09d6d23e22e5a5625bff78c 100644
 --- a/codex-rs/ext/extension-api/src/contributors.rs
 +++ b/codex-rs/ext/extension-api/src/contributors.rs
 @@ -59,6 +59,7 @@ pub use tool_lifecycle::ToolStartInput;
@@ -355,14 +355,14 @@ index 89d28021f491b482bcdecf854a0d846df94b4c8b..6dc6725521c8ab379ea8c5c6f613fe6f
  pub use turn_input::TurnInputContext;
  pub use turn_input::TurnInputEnvironment;
  pub use turn_lifecycle::AgentProfile;
-@@ -70,6 +71,7 @@ pub use turn_lifecycle::AgentProfileModelSettings;
+@@ -69,6 +70,7 @@ pub use turn_lifecycle::AgentProfileInstructions;
+ pub use turn_lifecycle::AgentProfileModelSettings;
  pub use turn_lifecycle::AgentProfileReceipt;
  pub use turn_lifecycle::CapturedAgentProfile;
- pub use turn_lifecycle::RealtimeVoiceProfileScope;
 +pub use turn_lifecycle::HeldToolCompletionResults;
+ pub use turn_lifecycle::RealtimeVoiceProfileScope;
  pub use turn_lifecycle::RecoveredToolCompletionCandidates;
  pub use turn_lifecycle::ToolCompletionDecision;
- pub use turn_lifecycle::ToolCompletionInput;
 @@ -231,6 +233,12 @@ pub trait TurnLifecycleContributor: Send + Sync {
          Box::pin(std::future::ready(Ok(None)))
      }

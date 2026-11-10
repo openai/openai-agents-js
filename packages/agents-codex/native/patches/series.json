@@ -622,8 +622,8 @@
     },
     {
       "path": "sdk-terminal-candidate-admission.patch",
-      "sha256": "723293b78941e97dcd4c4032d708ca9e73f2b9d85ae567a59006398e0f78d0df"
+      "sha256": "e5001bb57a41842cfa157d2cf369b027690f2ecab0660bfafe7dc6f0da302ac3"
     }
   ],
-  "result_tree": "eccba1768f581fb6ee6989791d5fc85be6d723b6"
+  "result_tree": "710235a0d7d2a385fec5a01ef474ec353d1bfb5f"
 }
