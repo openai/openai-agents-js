@@ -4,4 +4,4 @@
 '@openai/agents-extensions': patch
 ---
 
-feat: support native sandbox lifecycle, snapshots and budgets, pure diff application, and Session-scoped external Codex CLI delegation with cancellation; validate borrowed provider defaults, original resume identity, Docker bind/no-network authority, and E2B/Vercel network and port policy before effects.
+feat: support native sandbox lifecycle, snapshots, budgets, pure diff application and cancellable Session-scoped Codex CLI delegation; validate borrowed-provider defaults, original resume identity and UnixLocal runtime authority, Docker bind/no-network policy, and E2B/Vercel/Daytona/Modal network/port exposure before effects.

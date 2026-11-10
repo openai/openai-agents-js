@@ -9,6 +9,7 @@ import {
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   normalizeSandboxClientCreateArgs,
+  normalizeExposedPort,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
@@ -22,6 +23,8 @@ import {
   type Mount,
   type ReadFileArgs,
   type SandboxSession,
+  type SandboxSessionLike,
+  type SandboxSessionResumeValidationInput,
   type SandboxSessionState,
   type TypedMount,
   type ViewImageArgs,
@@ -1546,6 +1549,39 @@ export class DaytonaSandboxClient implements SandboxClient<
 
   resolveTrustedManifestForResume(manifest: Manifest): Manifest {
     return resolveManifestRoot(manifest);
+  }
+
+  assertBorrowedSessionManifestAuthority(
+    session: SandboxSessionLike<DaytonaSandboxSessionState>,
+    _manifest: Manifest,
+    options?: DaytonaSandboxClientOptions,
+  ): void {
+    this.validateSessionStateForResume(
+      { source: 'explicit', state: session.state },
+      { clientOptions: options },
+    );
+  }
+
+  validateSessionStateForResume(
+    input: SandboxSessionResumeValidationInput<DaytonaSandboxSessionState>,
+    options: SandboxClientResumeOptions<DaytonaSandboxClientOptions> = {},
+  ): void {
+    const current = { ...this.options, ...options.clientOptions };
+    if (current.exposedPorts === undefined) return;
+    const recorded = new Set(
+      (readOptionalNumberArray(input.state.configuredExposedPorts) ?? []).map(
+        normalizeExposedPort,
+      ),
+    );
+    const requested = new Set(current.exposedPorts.map(normalizeExposedPort));
+    if (
+      requested.size !== recorded.size ||
+      [...requested].some((port) => !recorded.has(port))
+    ) {
+      throw new UserError(
+        'Current Daytona networking options require a fresh sandbox session',
+      );
+    }
   }
 
   resolveTrustedEnvironment(

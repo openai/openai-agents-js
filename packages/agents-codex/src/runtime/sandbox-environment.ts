@@ -9,6 +9,7 @@ import type {
 } from '@openai/agents-core/sandbox';
 import {
   cloneManifest,
+  copySandboxStateRuntimeAuthority,
   Manifest,
   cleanupSandboxSession,
   rebindPersistedMountCredentials,
@@ -130,7 +131,7 @@ export function sandboxEnvironment<
   const resumeState = resume
     ? rebindPersistedPathGrants(
         rebindPersistedMountCredentials(
-          captureOptions(originalResumeState!),
+          captureResumeState(originalResumeState!),
           manifest,
         ),
         manifest,
@@ -227,7 +228,7 @@ export function sandboxEnvironment<
             ? undefined
             : captureOptions(providerOptions);
         if (resumeState) {
-          const state = captureOptions(resumeState);
+          const state = captureResumeState(resumeState);
           const resumeOptions = {
             clientOptions: currentOptions,
             trustedManifest: cloneManifest(manifest),
@@ -360,4 +361,13 @@ function captureOptions<T>(value: T, seen = new WeakMap<object, object>()): T {
     });
   }
   return captured as T;
+}
+
+// Preserve only authority registered by the SDK; public state fields grant none.
+function captureResumeState<State extends SandboxSessionState>(
+  state: State,
+): State {
+  const captured = captureOptions(state);
+  copySandboxStateRuntimeAuthority(state, captured);
+  return captured;
 }

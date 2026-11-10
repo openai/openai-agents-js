@@ -5350,10 +5350,19 @@ export class Session<OutputT = string, Context = unknown> {
             .decisions
         : undefined) ?? this.options.decisions;
     let active = true;
+    const controller = new AbortController();
+    const pending = new Set<Promise<unknown>>();
     const make = (effectiveSignal: AbortSignal): BoundDecide =>
       bindDecide({
         provider,
-        signal: effectiveSignal,
+        signal: AbortSignal.any([effectiveSignal, controller.signal]),
+        track(work) {
+          pending.add(work);
+          void work.then(
+            () => pending.delete(work),
+            () => pending.delete(work),
+          );
+        },
         assertActive() {
           if (!active)
             throw new NativeError('Decision callback is no longer active');
@@ -5362,8 +5371,12 @@ export class Session<OutputT = string, Context = unknown> {
     return {
       decide: make(signal),
       [decisionBinding]: make,
-      close() {
+      async close() {
         active = false;
+        controller.abort(
+          new NativeError('Decision callback is no longer active'),
+        );
+        await Promise.allSettled([...pending]);
       },
     };
   }
@@ -6784,7 +6797,7 @@ export class Session<OutputT = string, Context = unknown> {
                 return;
               }
             } finally {
-              scope.close();
+              await scope.close();
             }
           }
           check();
@@ -6999,7 +7012,7 @@ export class Session<OutputT = string, Context = unknown> {
                   check();
                   return decision;
                 } finally {
-                  scope.close();
+                  await scope.close();
                 }
               };
               if (!child) this.decodedOutputs.delete(owner);
@@ -7142,7 +7155,7 @@ export class Session<OutputT = string, Context = unknown> {
                 ? undefined
                 : capturePreparedRequest(replacement);
           } finally {
-            scope.close();
+            await scope.close();
           }
           signal.throwIfAborted();
           if (
@@ -7276,7 +7289,7 @@ export class Session<OutputT = string, Context = unknown> {
                 sourceCatalog,
               );
           } finally {
-            scope.close();
+            await scope.close();
           }
           assertActive();
           if (stopped) {
@@ -7464,7 +7477,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (isStepStop(selected)) stopped = true;
         else names = this.selectedStepNames(event, selected);
       } finally {
-        scope.close();
+        await scope.close();
       }
       signal.throwIfAborted();
       if (
@@ -7965,7 +7978,7 @@ export class Session<OutputT = string, Context = unknown> {
                 : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
             );
           } finally {
-            scope.close();
+            await scope.close();
           }
           check();
           if (
@@ -8956,7 +8969,7 @@ export class Session<OutputT = string, Context = unknown> {
         }
         throw error;
       } finally {
-        scope.close();
+        await scope.close();
         const finalStatus = signal.aborted ? 'cancelled' : status;
         if (finalStatus !== undefined)
           getCurrentSpan()?.end({
@@ -12378,7 +12391,7 @@ export class Session<OutputT = string, Context = unknown> {
                             scope.decide,
                           );
                         } finally {
-                          scope.close();
+                          await scope.close();
                         }
                       })()
                     : this.environment instanceof Environment &&

@@ -235,6 +235,8 @@ export interface FlushResult {
 }
 export interface TraceEvent {
   readonly sequence: number;
+  /** Native sequence cutoff for known record loss; preserved by forwarding snapshots. */
+  readonly recovery_sequence?: number;
   readonly processor_ids: readonly string[];
   readonly lifecycle: 'start' | 'end';
   readonly trace_id: string;
@@ -386,11 +388,13 @@ async function route(
             for (const event of group) {
               const descriptor =
                 batch.root_descriptors?.[String(event.sequence)];
-              const snapshot = freezeSnapshot(
-                descriptor === undefined
-                  ? event
-                  : { ...event, root_descriptor: descriptor },
-              );
+              const snapshot = freezeSnapshot({
+                ...event,
+                recovery_sequence: recoveryEpoch,
+                ...(descriptor === undefined
+                  ? {}
+                  : { root_descriptor: descriptor }),
+              });
               snapshots.push(snapshot);
               for (const id of event.processor_ids) {
                 const events = routes.get(id) ?? [];

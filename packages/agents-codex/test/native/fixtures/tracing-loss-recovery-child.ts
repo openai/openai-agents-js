@@ -2,13 +2,17 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { binding } from '../../../src/runtime/binding';
-import type { TraceEvent } from '../../../src/runtime/telemetry';
+import type { TraceEvent, TraceSpan } from '../../../src/runtime/telemetry';
 
 async function main() {
   const telemetry = process.env.N06_LOSS_BASELINE_MODULE
     ? await import(process.env.N06_LOSS_BASELINE_MODULE)
     : await import('../../../src/runtime/telemetry');
   const longNames = process.argv.includes('--bytes');
+  const forwarded = process.argv.includes('--forward');
+  const retainedAfterRecovery = process.argv.includes(
+    '--retained-after-recovery',
+  );
   const records: Record<string, any>[] = [];
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -40,7 +44,9 @@ async function main() {
     });
     await telemetry.configure({
       traceProcessors: [
-        exporter,
+        forwarded
+          ? { onEvent: (event: TraceEvent) => exporter.onEvent(event) }
+          : exporter,
         {
           onEvent() {},
           async onEvents(events: readonly TraceEvent[]) {
@@ -115,6 +121,80 @@ async function main() {
     );
     assert.equal(fresh.length, 1);
     assert.ok(records.some((row) => row.trace_id === fresh[0].id));
+    if (forwarded) {
+      const recoveredRoots = Array.from({ length: 1024 }, (_, i) =>
+        start(`recovered-active-${i}`),
+      );
+      const active = await telemetry.forceFlush({ timeoutMs: 15000 });
+      assert.equal(
+        active.failedDeliveries,
+        result.failedDeliveries,
+        'forwarding kept lost roots pinned',
+      );
+      recoveredRoots.forEach(end);
+      const completed = await telemetry.forceFlush({ timeoutMs: 15000 });
+      assert.equal(completed.failedDeliveries, result.failedDeliveries);
+      assert.equal(completed.droppedRecords, result.droppedRecords);
+    }
+    if (retainedAfterRecovery) {
+      const failures = result.failedDeliveries;
+      let parent!: TraceSpan;
+      await telemetry.withTrace(
+        {
+          name: 'post-recovery-retained',
+          detached: true,
+          groupId: 'recovered-group',
+          metadata: { tenant: 'recovered-tenant' },
+        },
+        (root: TraceSpan) => {
+          parent = root;
+        },
+      );
+      await telemetry.forceFlush({ timeoutMs: 15000 });
+      for (let i = 0; i < 1024; i++) {
+        await telemetry.withTrace(
+          { name: `recovered-churn-${i}`, detached: true },
+          () => {},
+        );
+        if (i % 32 === 31) await telemetry.forceFlush({ timeoutMs: 15000 });
+      }
+      await telemetry.withSpan(
+        { name: 'post-recovery-late-child', parent },
+        (child: TraceSpan) => {
+          child.end({
+            status: 'ok',
+            data: { private: 'recovered-private-sentinel' },
+          });
+        },
+      );
+      const lateResult = await telemetry.forceFlush({ timeoutMs: 15000 });
+      assert.equal(
+        lateResult.failedDeliveries,
+        failures,
+        'post-recovery retained child was rejected after eviction',
+      );
+      const descriptors = records.filter(
+        (row) =>
+          row.object === 'trace' &&
+          row.id === `trace_${parent.context.traceId}`,
+      );
+      assert.equal(descriptors.length, 2);
+      assert.equal(descriptors[1].workflow_name, 'post-recovery-retained');
+      assert.equal(descriptors[1].group_id, 'recovered-group');
+      assert.equal(descriptors[1].metadata.tenant, 'recovered-tenant');
+      const late = records.filter(
+        (row) => row.span_data?.name === 'post-recovery-late-child',
+      );
+      assert.equal(late.length, 1);
+      assert.equal(
+        late[0].parent_id,
+        `span_${parent.context.spanId.padStart(24, '0')}`,
+      );
+      assert.equal(
+        JSON.stringify(records).includes('recovered-private-sentinel'),
+        false,
+      );
+    }
     const oldSequences = observed
       .filter((event) => event.name.startsWith('burst-'))
       .map((event) => event.sequence);
