@@ -10,6 +10,7 @@ import {
   tool,
 } from '../src';
 import { ModelServer, message } from './native/fixtures/model-server';
+import type { Session as NativeSession } from '../src/runtime/session';
 
 type Frame = Record<string, any>;
 
@@ -858,8 +859,12 @@ nativeIt(
       });
       const captured = Promise.withResolvers<void>();
       const resume = Promise.withResolvers<void>();
-      const select = session._realtimeFunctionTools.bind(session);
-      const selection = vi.spyOn(session, '_realtimeFunctionTools');
+      const nativeSession = session as unknown as NativeSession<
+        string,
+        unknown
+      >;
+      const select = nativeSession._realtimeFunctionTools.bind(nativeSession);
+      const selection = vi.spyOn(nativeSession, '_realtimeFunctionTools');
       selection.mockImplementationOnce(async (...args) => {
         const first = await select(...args);
         captured.resolve();
@@ -903,7 +908,7 @@ nativeIt(
         await voice.close();
       }
     } finally {
-      await model.close();
+      await ModelServer.closeAll();
     }
   },
 );
