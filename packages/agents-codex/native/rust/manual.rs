@@ -1,3 +1,4 @@
+use super::recovered_completion::{FreshTerminalReceipts, ToolOutcomes};
 use super::*;
 use anyhow::Context;
 use codex_history::{ResponseItemEnvelope, RolloutItem};
@@ -26,6 +27,10 @@ struct ManualCall {
     // native apply_patch call can use this internal history marker.
     #[serde(default, skip_serializing_if = "is_false")]
     custom: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    approval_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effective_arguments: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -34,12 +39,14 @@ fn is_false(value: &bool) -> bool {
 
 fn manual_request(key: &PendingKey, call: &ManualCall, model: Option<&str>) -> Result<Value> {
     let arguments: Value = serde_json::from_str(&call.arguments)?;
-    Ok(
-        json!({"id":call.call_id,"msg":{"type":"dynamic_tool_call_request",
+    let mut request = json!({"id":call.call_id,"msg":{"type":"dynamic_tool_call_request",
         "turnId":key.turn,"callId":call.call_id,"namespace":call.namespace,
         "tool":call.name,"arguments":arguments,"_sdk_python_tool":key.reply,
-        "_sdk_code_origin":null,"_sdk_model":model}}),
-    )
+        "_sdk_code_origin":null,"_sdk_model":model, "_sdk_restored_approval":true, "_sdk_approval_required":call.approval_required}});
+    if let Some(arguments) = &call.effective_arguments {
+        request["msg"]["_sdk_effective_arguments"] = serde_json::from_str(arguments)?;
+    }
+    Ok(request)
 }
 
 /// Canonical results retain their metadata through suspension and reinjection.
@@ -205,6 +212,23 @@ pub(crate) struct Continuation {
     pending_manual: Vec<ManualCall>,
     #[serde(skip)]
     generation: Option<Arc<Generation>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_outcomes: Option<ToolOutcomes>,
+    #[serde(skip)]
+    fresh: Option<FreshTerminalReceipts>,
+}
+
+impl Continuation {
+    pub(crate) fn terminal_seed(&mut self) -> Option<RecoveredToolCompletionSeed> {
+        match (self.tool_outcomes.take(), self.fresh.take()) {
+            (Some(outcomes), Some(fresh)) => Some(RecoveredToolCompletionSeed::new(
+                self.turn_id.clone(),
+                outcomes,
+                fresh,
+            )),
+            _ => None,
+        }
+    }
 }
 
 struct ManualNativeTurn {
@@ -461,6 +485,8 @@ fn history(value: &Value) -> Result<History> {
                         arguments,
                         call_id,
                         custom: false,
+                        approval_required: false,
+                        effective_arguments: None,
                     });
                 }
                 ResponseItem::CustomToolCall {
@@ -487,6 +513,8 @@ fn history(value: &Value) -> Result<History> {
                         arguments: input,
                         call_id,
                         custom: true,
+                        approval_required: false,
+                        effective_arguments: None,
                     });
                 }
                 item @ (ResponseItem::FunctionCallOutput { .. }
@@ -914,6 +942,24 @@ impl PythonTools {
 
     pub(crate) fn record_manual_receipt(&self, key: &PendingKey, response: DynamicToolResponse) {
         let mut manual = self.manual.lock().expect("manual tools poisoned");
+        if let Some((frame, keys)) = manual.restored.as_mut() {
+            if keys.remove(key).is_some() {
+                frame.pending_manual.retain(|call| call.call_id != key.call);
+                if let Some(outcomes) = &mut frame.tool_outcomes {
+                    outcomes.record(&key.call, response.success);
+                }
+                if response.success {
+                    if let Some(generation) = self.resolve_generation(key.reply.generation) {
+                        FreshTerminalReceipts::record(&mut frame.fresh, generation, key);
+                    }
+                }
+                frame.accepted_replies.insert(
+                    key.call.clone(),
+                    Receipt::Native(PythonOutput(response).receipt(key)),
+                );
+                return;
+            }
+        }
         if manual.slots.is_empty()
             && !self
                 .resolve_generation(key.reply.generation)
@@ -956,7 +1002,15 @@ impl PythonTools {
         if let Some((_, keys)) = &manual.restored {
             return keys
                 .iter()
-                .filter(|(key, _)| current(key))
+                .filter(|(key, _)| {
+                    current(key)
+                        && !self
+                            .pending
+                            .lock()
+                            .expect("approval pending poisoned")
+                            .get(*key)
+                            .is_some_and(|call| call.callback.is_some())
+                })
                 .map(|(_, request)| request.clone())
                 .collect();
         }
@@ -978,13 +1032,147 @@ impl PythonTools {
         }
         let manual = self.manual.lock().expect("manual tools poisoned");
         if let Some((_, keys)) = &manual.restored {
-            return keys.contains_key(key);
+            return keys.contains_key(key)
+                && !self
+                    .pending
+                    .lock()
+                    .expect("approval pending poisoned")
+                    .get(key)
+                    .is_some_and(|call| call.callback.is_some());
         }
         self.pending
             .lock()
             .expect("JavaScript replies poisoned")
             .get(key)
             .is_some_and(|call| call.manual_request.is_some() && !call.sender.is_closed())
+    }
+
+    pub(crate) fn require_approval(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+        arguments: Option<Value>,
+    ) -> Result<bool> {
+        if !self.manual_tool_current(owner, key) {
+            return Ok(false);
+        }
+        let mut manual = self.manual.lock().expect("manual tools poisoned");
+        if let Some((frame, keys)) = manual.restored.as_mut() {
+            let Some(request) = keys.get_mut(key) else {
+                return Ok(false);
+            };
+            ensure!(
+                request["msg"]["_sdk_approval_required"] == true,
+                "Saved manual call has no captured approval requirement"
+            );
+            if let Some(arguments) = arguments {
+                request["msg"]["_sdk_effective_arguments"] = arguments.clone();
+                if let Some(call) = frame
+                    .pending_manual
+                    .iter_mut()
+                    .find(|call| call.call_id == key.call)
+                {
+                    call.effective_arguments = Some(serde_json::to_string(&arguments)?);
+                }
+            }
+            return Ok(true);
+        }
+        let mut pending = self.pending.lock().expect("JavaScript replies poisoned");
+        let Some(request) = pending
+            .get_mut(key)
+            .and_then(|call| call.manual_request.as_mut())
+        else {
+            return Ok(false);
+        };
+        request["msg"]["_sdk_approval_required"] = Value::Bool(true);
+        if let Some(arguments) = arguments {
+            request["msg"]["_sdk_effective_arguments"] = arguments;
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn approve_manual(self: &Arc<Self>, owner: &str, key: &PendingKey) -> Result<bool> {
+        if !self.manual_tool_current(owner, key) {
+            return Ok(false);
+        }
+        let manual = self.manual.lock().expect("manual tools poisoned");
+        let restored = manual
+            .restored
+            .as_ref()
+            .and_then(|(_, keys)| keys.get(key))
+            .cloned();
+        let mut pending = self.pending.lock().expect("JavaScript replies poisoned");
+        let mut request = match &restored {
+            Some(request) => request.clone(),
+            None => pending
+                .get(key)
+                .and_then(|call| call.manual_request.clone())
+                .context("Approval invocation expired")?,
+        };
+        ensure!(
+            request["msg"]["_sdk_approval_required"] == true,
+            "Tool has no captured approval requirement"
+        );
+        ensure!(
+            request["msg"]["_sdk_code_origin"].is_null(),
+            "Managed approvals require direct function calls"
+        );
+        let invocation = if let Some(call) = pending.get(key) {
+            if call
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| !deadline.admit(|| true).unwrap_or(false))
+            {
+                return Ok(false);
+            }
+            call.invocation
+        } else {
+            self.family
+                .next_step
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                    value.checked_add(1)
+                })
+                .map_err(|_| anyhow::anyhow!("Callback nonce exhausted"))?
+        };
+        let callback = CallbackRelease::new(
+            json!({"kind":"tool","request":key,"invocation":invocation.to_string()}),
+        );
+        request["msg"]["_sdk_callback"] = callback.receipt.clone();
+        request["msg"]["_sdk_managed_approved"] = Value::Bool(true);
+        if restored.is_some() {
+            let (sender, receiver) = oneshot::channel();
+            pending.insert(
+                key.clone(),
+                PendingCall {
+                    media: None,
+                    deadline: None,
+                    invocation,
+                    retired: false,
+                    callback: Some(callback),
+                    _tracing: None,
+                    sender,
+                    manual_request: None,
+                    _approval_receiver: Some(receiver),
+                },
+            );
+        } else {
+            let call = pending
+                .get_mut(key)
+                .context("Approval invocation expired")?;
+            call.manual_request = None;
+            call.callback = Some(callback);
+        }
+        drop(pending);
+        drop(manual);
+        self.family
+            .requests
+            .send(FamilyRequest::Call(
+                Arc::downgrade(self),
+                key.clone(),
+                request,
+            ))
+            .map_err(|_| anyhow::anyhow!("Approval owner closed"))?;
+        Ok(true)
     }
 
     pub(crate) fn check_restored_manual(&self, owner: &str, key: &PendingKey) -> Result<()> {
@@ -1101,6 +1289,12 @@ impl PythonTools {
             accepted_replies: history.outputs.clone(),
             pending_manual: Vec::new(),
             generation: Some(generation.clone()),
+            tool_outcomes: ToolOutcomes::capture(
+                &serde_json::from_value::<Vec<RolloutItem>>(raw.clone())?,
+                &validated[0].reply.thread,
+                &history.turn,
+            )?,
+            fresh: None,
         };
         let mut waiting = unique.len() != current.len();
         for call in &history.calls {
@@ -1109,7 +1303,18 @@ impl PythonTools {
                     key.reply.slot == self.slot_for_catalog(&manual, call, &generation)?,
                     "manual request slot mismatch"
                 );
-                frame.pending_manual.push(call.clone());
+                let mut captured = call.clone();
+                if let Some(request) = pending
+                    .get(key)
+                    .and_then(|call| call.manual_request.as_ref())
+                {
+                    captured.approval_required = request["msg"]["_sdk_approval_required"] == true;
+                    captured.effective_arguments = request["msg"]
+                        .get("_sdk_effective_arguments")
+                        .map(serde_json::to_string)
+                        .transpose()?;
+                }
+                frame.pending_manual.push(captured);
             } else if !history.outputs.contains_key(&call.call_id) {
                 let reply = manual
                     .receipts
@@ -1136,6 +1341,25 @@ impl PythonTools {
                     frame
                         .accepted_replies
                         .insert(call.call_id.clone(), reply.clone());
+                }
+            }
+        }
+        if let Some(outcomes) = &mut frame.tool_outcomes {
+            for (key, receipt) in &manual.receipts {
+                if key.turn != history.turn || key.reply.thread != validated[0].reply.thread {
+                    continue;
+                }
+                let output = match receipt {
+                    Receipt::Native(ResponseItem::FunctionCallOutput { output, .. })
+                    | Receipt::Provisional(ResponseItem::FunctionCallOutput { output, .. })
+                    | Receipt::Native(ResponseItem::CustomToolCallOutput { output, .. })
+                    | Receipt::Provisional(ResponseItem::CustomToolCallOutput { output, .. }) => {
+                        Some(output)
+                    }
+                    _ => None,
+                };
+                if let Some(success) = output.and_then(|output| output.success) {
+                    outcomes.record(&key.call, success);
                 }
             }
         }
@@ -1289,6 +1513,13 @@ impl PythonTools {
         raw: &Value,
     ) -> Result<Value> {
         let history = history(raw)?;
+        if let Some(outcomes) = &frame.tool_outcomes {
+            outcomes.validate(
+                &serde_json::from_value::<Vec<RolloutItem>>(raw.clone())?,
+                &state.id.to_string(),
+                &frame.turn_id,
+            )?;
+        }
         let owner = state.id.to_string();
         let opening = state
             .thread
@@ -1448,6 +1679,9 @@ impl PythonTools {
                         .collect::<Vec<_>>(),
             "manual continuation is not complete"
         );
+        if let Some(fresh) = &frame.fresh {
+            fresh.check(self)?;
+        }
         let mut items = Vec::new();
         for (id, call) in frame.reply_order.iter().zip(&history.calls) {
             let receipt = frame
@@ -1637,6 +1871,8 @@ mod canonical_result_tests {
             namespace: None,
             arguments: "{}".into(),
             custom: false,
+            approval_required: false,
+            effective_arguments: None,
         }
     }
 

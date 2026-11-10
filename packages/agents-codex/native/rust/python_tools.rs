@@ -39,8 +39,11 @@ pub(crate) use manual::{Continuation, ManualLedger, ManualSlot};
 #[path = "schema_fidelity.rs"]
 mod schema_fidelity;
 
+#[path = "recovered_completion.rs"]
+mod recovered_completion;
 #[path = "terminal_completion.rs"]
 mod terminal_completion;
+pub(crate) use recovered_completion::RecoveredToolCompletionSeed;
 pub(crate) use terminal_completion::{CompletionReply, TerminalProposal, TerminalSlots};
 
 #[path = "context_callbacks.rs"]
@@ -195,6 +198,7 @@ struct PendingCall {
     _tracing: Option<codex_otel::sdk_trace::ContextLease>,
     sender: oneshot::Sender<ToolReply>,
     manual_request: Option<Value>,
+    _approval_receiver: Option<oneshot::Receiver<ToolReply>>,
 }
 
 pub(crate) struct ChildStepSelection;
@@ -610,7 +614,15 @@ impl PythonTools {
                     .is_ok()
             }
             "cancelled" => callback.cancelled.load(Ordering::Acquire),
-            "release" => callback.release(),
+            "release" => {
+                let released = callback.release();
+                // A restored approval owns a synthetic waiter, not a live Core
+                // PendingReply. Retire it after receipt and physical callback release.
+                if call._approval_receiver.is_some() && call.sender.is_closed() {
+                    pending.remove(&key);
+                }
+                released
+            }
             _ => false,
         }
     }
@@ -1860,6 +1872,7 @@ impl PythonTools {
                     deadline: admission.and_then(|turn| turn.capture_model_deadline()),
                     sender,
                     manual_request: key.reply.manual_grant.as_ref().map(|_| request.clone()),
+                    _approval_receiver: None,
                 },
             );
         }
@@ -3388,6 +3401,10 @@ impl TurnLifecycleContributor for PythonContributor {
     }
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if let Some(seed) = input.turn_store.get::<RecoveredToolCompletionSeed>() {
+                seed.consume(&input);
+            }
+
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
                 let deferred = tools
                     .snapshot()

@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
 import type { IncomingHttpHeaders } from 'node:http';
-import { Agent, NativeProvider, tool } from '../src';
+import { Agent, NativeProvider, isFunctionApprovalRequest, tool } from '../src';
 import { ModelServer, call, message } from './native/fixtures/model-server';
 
 // The independent provider speaks actual Realtime and Responses protocols;
@@ -98,10 +98,36 @@ function peer(model: ModelServer) {
     if (!socket) throw new Error('provider not connected');
     socket.send(JSON.stringify(frame));
   }
+  function sendFunctionCall(
+    name: string,
+    args: Record<string, unknown>,
+    id: string,
+  ) {
+    const responseId = `frontend-${id}`;
+    const item = {
+      id: `item-${id}`,
+      type: 'function_call',
+      name,
+      call_id: id,
+      arguments: JSON.stringify(args),
+    };
+    send({ type: 'response.created', response: { id: responseId } });
+    send({
+      type: 'response.output_item.done',
+      response_id: responseId,
+      output_index: 0,
+      item,
+    });
+    send({
+      type: 'response.done',
+      response: { id: responseId, output: [item] },
+    });
+  }
   return {
     frames,
     upgrades,
     send,
+    function: sendFunctionCall,
     async connected() {
       await vi.waitFor(
         () =>
@@ -112,25 +138,7 @@ function peer(model: ModelServer) {
       );
     },
     handoff(text: string, id = 'handoff-1') {
-      const responseId = `frontend-${id}`;
-      const item = {
-        id: `item-${id}`,
-        type: 'function_call',
-        name: 'background_agent',
-        call_id: id,
-        arguments: JSON.stringify({ input_transcript: text }),
-      };
-      send({ type: 'response.created', response: { id: responseId } });
-      send({
-        type: 'response.output_item.done',
-        response_id: responseId,
-        output_index: 0,
-        item,
-      });
-      send({
-        type: 'response.done',
-        response: { id: responseId, output: [item] },
-      });
+      sendFunctionCall('background_agent', { input_transcript: text }, id);
     },
     async output(id = 'handoff-1') {
       let output: any;
@@ -340,4 +348,168 @@ nativeIt(
     }
   },
   30000,
+);
+
+nativeIt.each([true, false])(
+  'uses native managed Realtime approvals, guards and remembered decisions (approve=%s)',
+  async (approve) => {
+    const effects: string[] = [],
+      guards: string[] = [],
+      predicates: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ key: z.string() }),
+      runBeforeApproval: true,
+      before: (context) => {
+        guards.push(String(context.effectiveArguments.key));
+        return { action: 'allow' };
+      },
+      needsApproval: (context) => {
+        predicates.push(String(context.effectiveArguments.key));
+        return true;
+      },
+      execute: ({ key }) => {
+        effects.push(key);
+        return 'accepted-' + key;
+      },
+    });
+    const model = new ModelServer([[message('after voice')]]);
+    const realtime = peer(model);
+    try {
+      const config = await model.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-voice-approval',
+        supportsWebsockets: false,
+      });
+      await using session = await new Agent({
+        instructions: 'Use risky.',
+        model: 'gpt-5',
+        provider,
+        tools: [risky],
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [risky],
+      });
+      try {
+        await realtime.connected();
+        realtime.function('risky', { key: 'first' }, 'voice-first');
+        const reader = session.interactions()[Symbol.asyncIterator]();
+        const { value: request } = await reader.next();
+        if (!isFunctionApprovalRequest(request))
+          throw new Error('Native approval missing');
+        expect(effects).toEqual([]);
+        expect(guards).toEqual(['first']);
+        await session.respond(
+          approve
+            ? request.approve({ always: true })
+            : request.reject('explicit denial', { always: true }),
+        );
+        await reader.return?.();
+        expect(await realtime.output('voice-first')).toBe(
+          approve ? 'accepted-first' : 'explicit denial',
+        );
+        realtime.function('risky', { key: 'second' }, 'voice-second');
+        expect(await realtime.output('voice-second')).toBe(
+          approve ? 'accepted-second' : 'explicit denial',
+        );
+        expect(effects).toEqual(approve ? ['first', 'second'] : []);
+        expect(predicates).toEqual(['first']);
+        expect(guards).toEqual(
+          approve
+            ? ['first', 'first', 'second', 'second']
+            : ['first', 'second'],
+        );
+        expect(await session.pendingInteractions()).toEqual([]);
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+      }
+      expect(
+        (await (await session.submit('Continue.')).wait()).finalOutput,
+      ).toBe('after voice');
+      const history = model.requests[0].input as any[];
+      const calls = history.filter(
+        (item) => item.type === 'function_call' && item.name === 'risky',
+      );
+      expect(calls).toHaveLength(2);
+      for (const call of calls)
+        expect(
+          history.some(
+            (item) =>
+              item.type === 'function_call_output' &&
+              item.call_id === call.call_id,
+          ),
+        ).toBe(true);
+      model.assertExhausted();
+    } finally {
+      await realtime.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30_000,
+);
+
+nativeIt(
+  'expires a managed Realtime approval on close while preserving its caller Session',
+  async () => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ key: z.string() }),
+      needsApproval: true,
+      execute: ({ key }) => {
+        effects.push(key);
+        return key;
+      },
+    });
+    const model = new ModelServer([[message('root remains usable')]]);
+    const realtime = peer(model);
+    try {
+      const config = await model.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-voice-close',
+        supportsWebsockets: false,
+      });
+      await using session = await new Agent({
+        instructions: 'Use risky.',
+        model: 'gpt-5',
+        provider,
+        tools: [risky],
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [risky],
+      });
+      await realtime.connected();
+      realtime.function('risky', { key: 'blocked' }, 'voice-blocked');
+      const reader = session.interactions()[Symbol.asyncIterator]();
+      const { value: request } = await reader.next();
+      if (!isFunctionApprovalRequest(request))
+        throw new Error('Native approval missing');
+      const reply = request.approve();
+      await reader.return?.();
+      await voice.close();
+      await expect(session.respond(reply)).rejects.toThrow();
+      expect(effects).toEqual([]);
+      expect(model.requests).toHaveLength(0);
+      expect(
+        realtime.frames.some(
+          (frame) => frame.item?.call_id === 'voice-blocked',
+        ),
+      ).toBe(false);
+      expect(
+        (await (await session.submit('Continue.')).wait()).finalOutput,
+      ).toBe('root remains usable');
+      model.assertExhausted();
+    } finally {
+      await realtime.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30_000,
 );

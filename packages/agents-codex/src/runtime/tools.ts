@@ -9,6 +9,7 @@ import {
 import {
   decode,
   encode,
+  jsonValue,
   losslessJsonObjectSchema,
   losslessJsonValueSchema,
   type JsonValue,
@@ -19,7 +20,7 @@ import type { WebSearch } from './web-search';
 import type { HostedTool } from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
 import type { HttpMCP, StdioMCP } from './mcp';
-import type { ManualTool } from './manual';
+import { assembleManualTool, type ManualTool } from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
 
@@ -173,6 +174,7 @@ type Invocation<Context> = (
   context: ToolCallContext<Context>,
   onTimeout: (error: Error) => void,
   admit: () => void,
+  effectiveArgs?: JsonValue,
 ) => Promise<ToolResponse>;
 
 /** A tool-local decision made before its execution callback runs. */
@@ -180,6 +182,28 @@ export type ToolDecision<Arguments = unknown> =
   | { readonly action: 'allow' }
   | { readonly action: 'deny'; readonly reason: string }
   | { readonly action: 'replaceArguments'; readonly arguments: Arguments };
+
+const approvalDefinition = Symbol('managed function approval');
+interface ManagedApproval<Context = unknown> {
+  readonly function: FunctionTool<Context>;
+  readonly resultSchema: JsonValue;
+  parseInput(args: JsonValue): unknown;
+  prepare(
+    args: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+    skipPredicate?: boolean,
+    effectiveArgs?: JsonValue,
+  ): Promise<{ required: boolean; effective?: JsonValue; denial?: string }>;
+}
+/** @internal Captured declarations share the existing manual owner before callback admission. */
+export function managedApproval(
+  tool: SessionTool,
+): ManagedApproval | undefined {
+  return (tool as SessionTool & { [approvalDefinition]?: ManagedApproval })[
+    approvalDefinition
+  ];
+}
 
 export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   /** Complete the turn from an accepted direct result; captured outside the schema. */
@@ -319,6 +343,10 @@ export function tool<
   timeoutBehavior?: FunctionToolTimeoutBehavior;
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  needsApproval?:
+    boolean | ((context: ToolContext<Context>) => boolean | Promise<boolean>);
+  /** Run the input policy before approval and again before callback execution. */
+  runBeforeApproval?: boolean;
   name: string;
   /** Publish this function under a captured native namespace. */
   namespace?: string;
@@ -372,6 +400,21 @@ export function tool<
     options.namespace === undefined
   )
     throw new TypeError('namespaceDescription requires namespace');
+  if (
+    options.needsApproval !== undefined &&
+    typeof options.needsApproval !== 'boolean' &&
+    typeof options.needsApproval !== 'function'
+  )
+    throw new TypeError('needsApproval must be a boolean or function');
+  if (
+    options.runBeforeApproval !== undefined &&
+    typeof options.runBeforeApproval !== 'boolean'
+  )
+    throw new TypeError('runBeforeApproval must be a boolean');
+  if (options.needsApproval && options.namespace !== undefined)
+    throw new TypeError('Managed approvals require an unnamespaced function');
+  if (options.runBeforeApproval && !options.needsApproval)
+    throw new TypeError('runBeforeApproval requires needsApproval');
   const {
     name,
     parameters,
@@ -383,7 +426,9 @@ export function tool<
     timeoutBehavior = 'raise_exception',
     timeoutErrorFunction,
   } = options;
-  return Object.freeze({
+  const needsApproval = options.needsApproval;
+  const runBeforeApproval = options.runBeforeApproval ?? false;
+  const declaration: FunctionTool<Context> = Object.freeze({
     finishTurn: options.finishTurn ?? false,
     name: options.name,
     namespace: options.namespace,
@@ -402,12 +447,15 @@ export function tool<
       context: ToolCallContext<Context>,
       onTimeout: (error: Error) => void,
       admit: () => void,
+      effectiveArgs?: JsonValue,
     ) {
       admit();
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed = parameters.parse(args);
+      let parsed = parameters.parse(
+        effectiveArgs === undefined ? args : effectiveArgs,
+      );
       let callContext: ToolContext<Context> = {
         ...context,
         originalArguments,
@@ -517,6 +565,68 @@ export function tool<
       return background ? markBackgroundToolResponse(response) : response;
     },
   });
+  if (!needsApproval) return declaration;
+  const approval: ManagedApproval<Context> = {
+    function: declaration,
+    resultSchema: result
+      ? decode(
+          jsonValue,
+          JSON.stringify(z.toJSONSchema(result, { io: 'input' })),
+        )
+      : {},
+    parseInput: (args) => parameters.parse(structuredClone(args)),
+    async prepare(args, context, admit, skipPredicate = false, effectiveArgs) {
+      admit();
+      let parsed = parameters.parse(
+        structuredClone(effectiveArgs === undefined ? args : effectiveArgs),
+      );
+      let effective = effectiveArgs;
+      let callContext: ToolContext<Context> = {
+        ...context,
+        originalArguments: Object.freeze(structuredClone(args) as JsonObject),
+        effectiveArguments: Object.freeze({
+          ...(parsed as Record<string, unknown>),
+        }),
+      };
+      admit();
+      if (
+        runBeforeApproval &&
+        before &&
+        !(skipPredicate && effectiveArgs !== undefined)
+      ) {
+        const decision = await before(callContext);
+        admit();
+        if (decision.action === 'deny') {
+          if (typeof decision.reason !== 'string')
+            throw new TypeError('Tool denial requires a reason');
+          return { required: false, denial: decision.reason };
+        }
+        if (decision.action === 'replaceArguments') {
+          effective = losslessJsonValueSchema.parse(decision.arguments);
+          parsed = parameters.parse(structuredClone(effective));
+          callContext = {
+            ...callContext,
+            effectiveArguments: Object.freeze({
+              ...(parsed as Record<string, unknown>),
+            }),
+          };
+        } else if (decision.action !== 'allow')
+          throw new TypeError(
+            'Tool before must allow, deny, or replace arguments',
+          );
+      }
+      const required = skipPredicate
+        ? true
+        : typeof needsApproval === 'function'
+          ? await needsApproval(callContext)
+          : needsApproval;
+      admit();
+      if (typeof required !== 'boolean')
+        throw new TypeError('needsApproval must return a boolean');
+      return { required, effective };
+    },
+  };
+  return Object.freeze({ ...declaration, [approvalDefinition]: approval });
 }
 
 export function outputOf(value: unknown): ToolResponse {
@@ -567,8 +677,21 @@ export function captureTools(
       typeof tool.finishTurn !== 'boolean'
     )
       throw new TypeError('finishTurn must be a boolean');
+    const approval = managedApproval(tool);
+    const source = approval
+      ? Object.freeze({
+          ...assembleManualTool(tool, {
+            resultSchema: approval.resultSchema,
+            parseInput: approval.parseInput,
+            parseResult: () => {
+              throw new TypeError('Use an approval decision');
+            },
+          }),
+          [approvalDefinition]: approval,
+        })
+      : tool;
     const binding = Object.freeze({
-      ...tool,
+      ...source,
       ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
@@ -629,12 +752,19 @@ export async function invokeFunctionTool(
   context: ToolCallContext<any>,
   onTimeout: (error: Error) => void,
   checkAdmission?: () => void,
+  effectiveArgs?: JsonValue,
 ): Promise<ToolResponse> {
   const admit = () => {
     context.signal.throwIfAborted();
     checkAdmission?.();
   };
-  return tool[prepareInvocation](args, context, onTimeout, admit);
+  return tool[prepareInvocation](
+    args,
+    context,
+    onTimeout,
+    admit,
+    effectiveArgs,
+  );
 }
 
 /** @internal A callback deadline revokes publication; the caller still joins physical work. */

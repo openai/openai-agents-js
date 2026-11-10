@@ -183,6 +183,8 @@ import {
 } from './mcp';
 import {
   createManualRequest,
+  isFunctionApprovalRequest,
+  type ApprovalDecision,
   isManualReply,
   manualResultSchema,
   supportsManualCheckpoint,
@@ -254,6 +256,7 @@ import {
   projectSearchRuntime,
 } from './environment';
 import {
+  managedApproval,
   captureTools,
   toolIdentity,
   toolNamespace,
@@ -1318,7 +1321,10 @@ export class Session<OutputT = string, Context = unknown> {
         this.catalog,
         declarationCatalog,
       );
-      if (!captured || captured.kind === 'manual')
+      if (
+        !captured ||
+        (captured.kind === 'manual' && !managedApproval(captured))
+      )
         throw new TypeError(
           'Voice tool was not admitted in the current Agent catalog',
         );
@@ -1389,7 +1395,10 @@ export class Session<OutputT = string, Context = unknown> {
         catalog,
         declarationCatalog,
       );
-      if (!captured || captured.kind === 'manual') {
+      if (
+        !captured ||
+        (captured.kind === 'manual' && managedApproval(captured) === undefined)
+      ) {
         if (allowMissing) continue;
         throw new TypeError(
           'Realtime tool was not admitted in the current Agent catalog',
@@ -1830,6 +1839,10 @@ export class Session<OutputT = string, Context = unknown> {
     }
   >();
   private readonly manualAdmissions = new Map<string, Promise<void>>();
+  private readonly approvalDecisions = new WeakMap<
+    object,
+    Map<string, ApprovalDecision>
+  >();
   private nativeManualCheckpoint = false;
   private manualSealing = false;
   private manualSeal?: Promise<SessionState>;
@@ -6571,7 +6584,9 @@ export class Session<OutputT = string, Context = unknown> {
           );
           check();
           const slot = z.number().int().nonnegative().safe().parse(msg.slot);
-          const declaration = capturedCatalog.tools[slot];
+          const captured = capturedCatalog.tools[slot];
+          const declaration =
+            captured && (managedApproval(captured)?.function ?? captured);
           const identity = z
             .object({ name: z.string(), namespace: z.string().nullable() })
             .parse(msg.tool);
@@ -7409,6 +7424,10 @@ export class Session<OutputT = string, Context = unknown> {
           onComplete?.();
           this.notifyManualProgress();
           this.maybeSealManual(run);
+          if (this.manualRestoring)
+            void this.resumeManualIfReady(run).catch((error) =>
+              this.readerFailed(error),
+            );
         },
         async (error) => {
           if (this.current(run)) run.failure = error;
@@ -7549,10 +7568,18 @@ export class Session<OutputT = string, Context = unknown> {
     this.manualWake?.();
   }
 
-  private manualCallKey(event: NativeEvent): string | undefined {
+  private manualCallKey(
+    event: NativeEvent,
+    includeApproved = false,
+  ): string | undefined {
     const msg = event.msg;
     const marker = msg._sdk_python_tool;
-    if (msg.type !== 'dynamic_tool_call_request' || !marker) return;
+    if (
+      msg.type !== 'dynamic_tool_call_request' ||
+      !marker ||
+      (msg._sdk_managed_approved === true && !includeApproved)
+    )
+      return;
     const catalog = this.sourceCatalog(msg, marker.generation);
     if (catalog.tools[marker.slot]?.kind !== 'manual') return;
     // Only admission's native check grants authority. This key keeps distinct
@@ -7617,6 +7644,15 @@ export class Session<OutputT = string, Context = unknown> {
         msg.namespace != null
       )
         throw new NativeError('Invalid managed tool identity');
+      const approval = managedApproval(tool);
+      if (
+        msg._sdk_restored_approval === true &&
+        msg._sdk_approval_required === true &&
+        !approval
+      )
+        throw new NativeError(
+          'Saved managed approval requires an approval-enabled callback',
+        );
       const identity = {
         callId,
         toolName: tool.name,
@@ -7624,8 +7660,27 @@ export class Session<OutputT = string, Context = unknown> {
         family: 'function' as const,
       };
       this.observeToolStart(run, identity);
+      let release: (() => void) | undefined;
+      let admission: FunctionAdmission | undefined;
       try {
-        if (!this.current(run) || !this.manualCurrent(event)) return;
+        if (approval) {
+          admission = this.functionAdmissions.get(run);
+          if (!admission && this.options.maxFunctionConcurrency !== undefined) {
+            admission = new FunctionAdmission(
+              this.options.maxFunctionConcurrency,
+            );
+            this.functionAdmissions.set(run, admission);
+          }
+          release = admission
+            ? await admission.acquire(run.controller.signal)
+            : undefined;
+        }
+        if (
+          !this.current(run) ||
+          run.failure !== undefined ||
+          !this.manualCurrent(event)
+        )
+          return;
         const args =
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
@@ -7660,6 +7715,7 @@ export class Session<OutputT = string, Context = unknown> {
               return false;
             }
           },
+          managedApproval(tool) !== undefined,
         );
         this.manualCalls.set(key, {
           run,
@@ -7671,6 +7727,94 @@ export class Session<OutputT = string, Context = unknown> {
           ready: false,
         });
         calls.add(key);
+        if (approval) {
+          if (
+            msg._sdk_restored_approval === true &&
+            msg._sdk_approval_required !== true
+          )
+            throw new NativeError(
+              'Saved manual call cannot acquire managed callback authority',
+            );
+          if (!this.#native._require_tool_approval(encodeReceipt(msg))) return;
+          const submission = root
+            ? this.#turnFor(run)
+            : await this.childSubmission(run);
+          if (!submission) return;
+          const source = JSON.stringify([
+            msg.profile_id ?? null,
+            msg.profile_epoch ?? null,
+            String(marker.generation),
+          ]);
+          const cached = this.approvalDecisions
+            .get(toolDeclarationIdentity(tool))
+            ?.get(source);
+          const context = {
+            context: this.options.context,
+            submission,
+            call: managedCallInfo(
+              {
+                sessionId: this.id,
+                childId: root ? null : run.childId,
+                childIncarnation: root ? null : run.incarnation,
+              },
+              msg,
+            ),
+            threadId: root ? this.id : run.childId,
+            turnId,
+            callId,
+            signal: run.controller.signal,
+          };
+          const check = () => {
+            context.signal.throwIfAborted();
+            admission?.check();
+            if (!this.current(run) || !this.manualCurrent(event))
+              throw new NativeError(
+                'Managed approval expired during policy evaluation',
+              );
+          };
+          const decision = await approval.prepare(
+            args,
+            context,
+            check,
+            msg._sdk_restored_approval === true || cached !== undefined,
+            msg._sdk_effective_arguments === undefined
+              ? undefined
+              : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
+          );
+          check();
+          if (
+            !this.#native._require_tool_approval(
+              encodeReceipt(msg),
+              encodeReceipt(
+                decision.effective === undefined ? args : decision.effective,
+              ),
+            )
+          )
+            return;
+          if (decision.effective !== undefined)
+            grant.setEffectiveArguments(decision.effective);
+          const action = grant.request();
+          if (!isFunctionApprovalRequest(action))
+            throw new NativeError('Managed approval capability was not issued');
+          if (
+            decision.denial !== undefined ||
+            (msg._sdk_restored_approval !== true && cached)
+          ) {
+            const remembered = cached ?? {
+              approve: false,
+              always: false,
+              reason: decision.denial!,
+            };
+            await this.submitManualResult(
+              remembered.approve && decision.denial === undefined
+                ? action.approve()
+                : action.reject(decision.denial ?? remembered.reason),
+              key,
+            );
+          } else if (!decision.required) {
+            await this.submitManualResult(action.approve(), key);
+          }
+        }
       } catch (error) {
         if (!this.current(run) || !this.manualCurrent(event)) {
           this.observeToolEnd(run, identity, 'cancelled');
@@ -7678,7 +7822,10 @@ export class Session<OutputT = string, Context = unknown> {
         }
         this.observeToolEnd(run, identity, 'failed');
         run.failure ??= error;
+        admission?.seal(error);
         throw error;
+      } finally {
+        release?.();
       }
     };
     const invoke = async () => {
@@ -7804,6 +7951,68 @@ export class Session<OutputT = string, Context = unknown> {
     return this.submitManualResult(reply);
   }
 
+  private async decideManagedApproval(
+    key: string,
+    call: {
+      run: NativeTurn | ChildCallbackOwner;
+      event: NativeEvent;
+      tool: ManualTool;
+      identity: ToolIdentity;
+    },
+    decision: ApprovalDecision,
+  ): Promise<boolean> {
+    const run = call.run;
+    const operation = (async () => {
+      let accepted: boolean;
+      if (decision.approve)
+        accepted = await this.#native._approve_manual_tool(
+          encodeReceipt(call.event.msg),
+        );
+      else {
+        const response: ToolResponse = {
+          success: false,
+          contentItems: [{ type: 'inputText', text: decision.reason }],
+        };
+        if (this.manualRestoring) {
+          await this.#native._respond_manual_continuation(
+            encodeReceipt({ request: call.event.msg, response }),
+          );
+          accepted = true;
+        } else
+          accepted = await this.#native._respond_python_tool(
+            encodeReceipt({ request: call.event.msg, response }),
+          );
+      }
+      if (!accepted)
+        throw new TypeError('Managed approval is expired or already decided');
+      // Approval enqueues a callback; its native result still owns this call.
+      // Keep the consumed grant until that callback commits its real receipt.
+      if (!decision.approve) this.manualCalls.delete(key);
+      if (decision.always) {
+        const declaration = toolDeclarationIdentity(call.tool);
+        let policy = this.approvalDecisions.get(declaration);
+        if (!policy)
+          this.approvalDecisions.set(declaration, (policy = new Map()));
+        policy.set(
+          JSON.stringify([
+            call.event.msg.profile_id ?? null,
+            call.event.msg.profile_epoch ?? null,
+            String(call.event.msg._sdk_python_tool!.generation),
+          ]),
+          decision,
+        );
+      }
+      this.notifyManualProgress();
+      this.observations.notify();
+      if (!decision.approve) this.observeToolEnd(run, call.identity, 'failed');
+      return true;
+    })();
+    const settled = operation.then(() => {});
+    if (run instanceof NativeTurn) this.track(run, settled, run.manualReplies);
+    else this.trackOwnedCallback(run, () => settled);
+    return operation;
+  }
+
   private async submitManualResult(
     reply: unknown,
     expectedKey?: string,
@@ -7812,6 +8021,8 @@ export class Session<OutputT = string, Context = unknown> {
     for (const [key, call] of this.manualCalls) {
       if (expectedKey !== undefined && key !== expectedKey) continue;
       if (!call.grant.matchesReply(reply)) continue;
+      const decision = call.grant.takeApprovalReply(reply);
+      if (decision) return this.decideManagedApproval(key, call, decision);
       const validate = () => call.grant.takeReply(reply, beforeConsume);
       const output = call.tracing
         ? call.tracing.validate(validate)
@@ -7852,75 +8063,84 @@ export class Session<OutputT = string, Context = unknown> {
       else this.trackOwnedCallback(run, () => settled);
       const accepted = await operation;
       await settled;
-      if (
-        this.manualRestoring &&
-        run instanceof NativeTurn &&
-        !this.manualCalls.size &&
-        !run.manualReplies.size &&
-        this.current(run) &&
-        run.failure === undefined
-      ) {
-        // Claim recovery before awaiting native so concurrent accepted replies
-        // cannot start the original turn twice. Every end hook has joined.
-        this.manualRestoring = false;
-        try {
-          const schema = submissions.get(run)!.output.schema;
-          const tracingContext = run.tracing
-            ? await run.tracing.context()
-            : undefined;
-          if (
-            tracingContext &&
-            (!this.current(run) || run.controller.signal.aborted)
-          )
-            throw new TurnAborted(
-              'Manual continuation stopped before native admission',
-            );
-          const wire = await this.#native._complete_manual_continuation(
-            schema == null ? undefined : encodeReceipt(schema),
-            run.selection
-              ? encodeOperationSelection({
-                  generation: this.catalog.generation.toString(),
-                  ...(run.selection.operationDeclarationSource
-                    ? {
-                        operation_declaration_source:
-                          run.selection.operationDeclarationSource,
-                      }
-                    : {}),
-                  names: run.selection.names ?? null,
-                  before_step:
-                    run.selection.maxModelSteps !== undefined ||
-                    this.options.agentGraph !== undefined,
-                })
-              : undefined,
-            this.options.parentTrace
-              ? encode(this.options.parentTrace.toHeaders())
-              : undefined,
-            tracingContext,
-            this.submissionIds.get(run)!,
-          );
-          const submission = decode(submissionSchema, wire);
-          if (submission.status !== 'started' || submission.turn_id !== run.id)
-            throw new NativeError(
-              'Manual continuation changed the original turn',
-            );
-        } catch (error) {
-          if (
-            [...this.graphStops].some(
-              (stop) => stop.run === run && stop.options.mode === 'force',
-            )
-          ) {
-            this.finish(run, new TurnAborted('Manual continuation stopped'));
-            return false;
-          }
-          this.retire(error);
-          // An owned handler must leave before Agent.run can join and close it.
-          if (expectedKey === undefined) await this.close();
-          throw error;
-        }
-      }
+      if (run instanceof NativeTurn)
+        await this.resumeManualIfReady(run, expectedKey === undefined);
       return accepted;
     }
     return false;
+  }
+
+  private async resumeManualIfReady(
+    run: NativeTurn,
+    closeOnError = false,
+  ): Promise<void> {
+    if (
+      this.manualRestoring &&
+      !this.manualCalls.size &&
+      !run.manualReplies.size &&
+      !run.toolInvocations.size &&
+      !run.callbacks.size &&
+      this.current(run) &&
+      run.failure === undefined
+    ) {
+      // Claim recovery before awaiting native so concurrent accepted replies
+      // cannot start the original turn twice. Every end hook has joined.
+      this.manualRestoring = false;
+      try {
+        const schema = submissions.get(run)!.output.schema;
+        const tracingContext = run.tracing
+          ? await run.tracing.context()
+          : undefined;
+        if (
+          tracingContext &&
+          (!this.current(run) || run.controller.signal.aborted)
+        )
+          throw new TurnAborted(
+            'Manual continuation stopped before native admission',
+          );
+        const wire = await this.#native._complete_manual_continuation(
+          schema == null ? undefined : encodeReceipt(schema),
+          run.selection
+            ? encodeOperationSelection({
+                generation: this.catalog.generation.toString(),
+                ...(run.selection.operationDeclarationSource
+                  ? {
+                      operation_declaration_source:
+                        run.selection.operationDeclarationSource,
+                    }
+                  : {}),
+                names: run.selection.names ?? null,
+                before_step:
+                  run.selection.maxModelSteps !== undefined ||
+                  this.options.agentGraph !== undefined,
+              })
+            : undefined,
+          this.options.parentTrace
+            ? encode(this.options.parentTrace.toHeaders())
+            : undefined,
+          tracingContext,
+          this.submissionIds.get(run)!,
+        );
+        const submission = decode(submissionSchema, wire);
+        if (submission.status !== 'started' || submission.turn_id !== run.id)
+          throw new NativeError(
+            'Manual continuation changed the original turn',
+          );
+      } catch (error) {
+        if (
+          [...this.graphStops].some(
+            (stop) => stop.run === run && stop.options.mode === 'force',
+          )
+        ) {
+          this.finish(run, new TurnAborted('Manual continuation stopped'));
+          return;
+        }
+        this.retire(error);
+        // An owned handler must leave before Agent.run can join and close it.
+        if (closeOnError) await this.close();
+        throw error;
+      }
+    }
   }
 
   private maybeSealManual(run: NativeTurn): void {
@@ -7939,7 +8159,11 @@ export class Session<OutputT = string, Context = unknown> {
       run.manualReplies.size
     )
       return;
-    const action = this.manualCalls.values().next().value?.grant.request();
+    const action = [...this.manualCalls.values()]
+      .filter((call) => call.run === run)
+      .map((call) => call.grant.request())
+      .find((request) => request !== undefined);
+    if (!action) return;
     void this.sealManualTurn(run)
       .catch(async (error) => {
         if (!this.current(run)) return;
@@ -8390,7 +8614,8 @@ export class Session<OutputT = string, Context = unknown> {
       BigInt(marker.generation) !== catalog.generation
     )
       throw new NativeError('Expired managed tool generation');
-    const tool = catalog.tools[marker.slot];
+    const captured = catalog.tools[marker.slot];
+    const tool = captured && (managedApproval(captured)?.function ?? captured);
     if (
       !tool ||
       msg.tool !== tool.name ||
@@ -8455,7 +8680,9 @@ export class Session<OutputT = string, Context = unknown> {
         namespace: toolNamespace(tool),
         family: 'function',
       };
-      this.observeToolStart(owner, identity);
+      // Native manual admission already records the start before its decision.
+      if (msg._sdk_managed_approved !== true)
+        this.observeToolStart(owner, identity);
       let status: ToolStatus | undefined;
       try {
         const args =
@@ -8487,6 +8714,9 @@ export class Session<OutputT = string, Context = unknown> {
               throw new NativeError('Tool invocation is no longer active');
             if (!check()) throw admissionEnded;
           },
+          msg._sdk_effective_arguments === undefined
+            ? undefined
+            : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
         );
         if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';
@@ -8507,6 +8737,10 @@ export class Session<OutputT = string, Context = unknown> {
                 : {}),
             }),
           );
+          if (accepted && msg._sdk_managed_approved === true) {
+            const key = this.manualCallKey(event, true);
+            if (key !== undefined) this.manualCalls.delete(key);
+          }
         } catch (error) {
           this.callbackAuthorityFailed(delivery, error);
         }
@@ -9440,7 +9674,10 @@ export class Session<OutputT = string, Context = unknown> {
     return encode({
       generation: catalog.generation.toString(),
       slots: catalog.tools.flatMap((tool, slot) =>
-        tool.kind !== 'manual' && tool.finishTurn ? [slot] : [],
+        (tool.kind !== 'manual' && tool.finishTurn) ||
+        managedApproval(tool)?.function.finishTurn
+          ? [slot]
+          : [],
       ),
     });
   }
