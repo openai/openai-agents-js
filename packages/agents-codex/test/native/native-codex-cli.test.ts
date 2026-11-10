@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Agent, NativeProvider } from '@openai/agents';
+import { Agent, NativeProvider, tool } from '@openai/agents';
+import { z } from 'zod';
 import {
   invokeFunctionTool,
   registerToolSessionOwner,
@@ -27,7 +28,18 @@ it.skipIf(process.platform === 'win32')(
     roots.push(root);
     const cli = join(root, 'codex');
     const record = join(root, 'record.json');
-    const image = join(root, 'diagram.png');
+    const image = '  authorized diagram.png  ';
+    await writeFile(join(root, image), 'synthetic image');
+    const resolveImage = vi.fn(async (_reference: string) => image);
+    const options = {
+      codexOptions: { codexPathOverride: cli },
+      defaultThreadOptions: { workingDirectory: root },
+      resolveImage,
+    };
+    const declaration = nativeCodexTool(options);
+    options.resolveImage = async () => {
+      throw new Error('Mutated resolver');
+    };
     await writeFile(
       cli,
       `#!${process.execPath}\nlet input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { require('node:fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify({args:process.argv, input})); for (const event of [{type:'thread.started',thread_id:'structured-cli'},{type:'item.completed',item:{id:'item',type:'agent_message',text:'CLI completed'}},{type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}]) console.log(JSON.stringify(event)); });\n`,
@@ -39,9 +51,9 @@ it.skipIf(process.platform === 'win32')(
           'codex',
           {
             prompt: [
-              { type: 'text', text: 'First' },
-              { type: 'local_image', path: image },
-              { type: 'text', text: 'Second' },
+              { type: 'text', text: '  First\n' },
+              { type: 'local_image', path: ' asset:diagram ' },
+              { type: 'text', text: '\nSecond  ' },
             ],
             threadId: null,
           },
@@ -61,14 +73,180 @@ it.skipIf(process.platform === 'win32')(
       model: 'gpt-5',
       instructions: 'Use codex.',
       provider,
-      tools: [nativeCodexTool({ codexOptions: { codexPathOverride: cli } })],
+      tools: [declaration],
     }).session();
     expect(
       (await (await session.submit('Inspect the diagram')).wait()).finalOutput,
     ).toBe('done');
     const captured = JSON.parse(await readFile(record, 'utf8'));
     expect(captured.args[captured.args.indexOf('--image') + 1]).toBe(image);
-    expect(captured.input).toBe('First\n\nSecond');
+    expect(resolveImage).toHaveBeenCalledExactlyOnceWith(' asset:diagram ');
+    expect(captured.input).toBe('  First\n\n\n\nSecond  ');
+  },
+);
+
+it.skipIf(process.platform === 'win32').each([
+  { denied: false, resume: false },
+  { denied: true, resume: false },
+  { denied: false, resume: true },
+  { denied: true, resume: true },
+])(
+  'rejects unauthorized native CLI images before starting or resuming: %j',
+  async ({ denied, resume }) => {
+    const { cli, calls } = await recordingCli();
+    const client = new Codex({ codexPathOverride: cli });
+    const start = vi.spyOn(client, 'startThread');
+    const resumeThread = vi.spyOn(client, 'resumeThread');
+    const declaration = nativeCodexTool({
+      codex: client,
+      ...(resume ? { threadId: 'trusted-existing' } : {}),
+      ...(denied ? { resolveImage: async () => null } : {}),
+    });
+    const server = new ModelServer([
+      [
+        call(
+          'codex',
+          {
+            prompt: [{ type: 'local_image', path: '/private/ungranted.png' }],
+            threadId: null,
+          },
+          { callId: 'ungranted' },
+        ),
+      ],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      model: 'gpt-5',
+      instructions: 'Use codex.',
+      provider,
+      tools: [declaration],
+    }).session();
+    await expect(
+      (await session.submit('Inspect image')).wait(),
+    ).rejects.toThrow(/resolveImage|not authorized/);
+    expect(start).not.toHaveBeenCalled();
+    expect(resumeThread).not.toHaveBeenCalled();
+    await expect(calls()).rejects.toMatchObject({ code: 'ENOENT' });
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'rechecks cancellation after awaited native image resolution',
+  async () => {
+    const { cli, calls } = await recordingCli();
+    const controller = new AbortController();
+    const reason = new Error('image resolution cancelled');
+    const client = new Codex({ codexPathOverride: cli });
+    const start = vi.spyOn(client, 'startThread');
+    const declaration = nativeCodexTool({
+      codex: client,
+      resolveImage: async () => {
+        controller.abort(reason);
+        await Promise.resolve();
+        return '/authorized/asset.png';
+      },
+    });
+    const context = {
+      context: undefined,
+      submission: { sessionId: 'image-owner' },
+      threadId: 'image-owner',
+      turnId: 'turn',
+      callId: 'image',
+      signal: controller.signal,
+    } as ToolCallContext;
+    registerToolSessionOwner(context, {});
+    await expect(
+      invokeFunctionTool(
+        declaration,
+        { prompt: [{ type: 'local_image', path: 'asset' }], threadId: null },
+        context,
+        () => {},
+      ),
+    ).rejects.toBe(reason);
+    expect(start).not.toHaveBeenCalled();
+    await expect(calls()).rejects.toMatchObject({ code: 'ENOENT' });
+  },
+);
+
+it.skipIf(process.platform === 'win32').each([false, true])(
+  'fences a late image resolver after an actual native callback timeout (persistSession=%s)',
+  async (persistSession) => {
+    const { cli, calls } = await recordingCli();
+    const client = new Codex({ codexPathOverride: cli });
+    const start = vi.spyOn(client, 'startThread');
+    const resumed = vi.spyOn(client, 'resumeThread');
+    const release = Promise.withResolvers<void>();
+    let nativeSignal: AbortSignal | undefined;
+    let resolved = false;
+    const delegation = nativeCodexTool({
+      codex: client,
+      persistSession,
+      resolveImage: async () => {
+        await release.promise;
+        expect(nativeSignal?.aborted).toBe(true);
+        resolved = true;
+        return '/authorized/staged.png';
+      },
+    });
+    const server = new ModelServer([
+      [call('delegate_image', {}, { callId: 'late-image' })],
+      [message('timed out')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      model: 'gpt-5',
+      instructions: 'Delegate the image.',
+      provider,
+      tools: [
+        tool({
+          name: 'delegate_image',
+          parameters: z.object({}),
+          callbackTimeout: 0.02,
+          timeoutBehavior: 'error_as_result',
+          execute: async (_, context) => {
+            nativeSignal = context.signal;
+            return invokeFunctionTool(
+              delegation,
+              {
+                prompt: [{ type: 'local_image', path: 'asset' }],
+                threadId: null,
+              },
+              context,
+              () => {},
+            );
+          },
+        }),
+      ],
+    });
+    const running = agent.run('Inspect image');
+    const outcome = running.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(nativeSignal?.aborted).toBe(true), {
+        timeout: 2000,
+      });
+      release.resolve();
+      expect((await running).finalOutput).toBe('timed out');
+    } finally {
+      release.resolve();
+      await outcome;
+    }
+    expect(resolved).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+    expect(resumed).not.toHaveBeenCalled();
+    await expect(calls()).rejects.toMatchObject({ code: 'ENOENT' });
+    server.assertExhausted();
   },
 );
 
