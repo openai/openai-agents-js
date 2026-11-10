@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { APIUserAbortError } from 'openai';
+import { captureImage } from './media';
 import { copyJsonValue, type JsonObject } from './binding';
 
 /** Detached native provider input; Core retains canonical history and tool execution. */
@@ -538,7 +539,15 @@ export class AiSdkModel implements NativeModel {
           if (part.type === 'input_text' || part.type === 'output_text')
             return { type: 'text', text: part.text };
           if (part.type === 'input_image' && part.image_url) {
-            const image = new URL(part.image_url as string);
+            const imageSource = part.image_url as string;
+            captureImage({ image_url: imageSource });
+            const comma = imageSource.startsWith('data:')
+              ? imageSource.indexOf(',')
+              : -1;
+            const image =
+              comma < 0 ? new URL(imageSource) : imageSource.slice(comma + 1);
+            const mediaType =
+              comma < 0 ? 'image/*' : imageSource.slice(5, comma).split(';')[0];
             const openai = this.model.provider.startsWith('openai.');
             if (part.detail != null && part.detail !== 'auto' && !openai)
               throw new TypeError(
@@ -550,10 +559,12 @@ export class AiSdkModel implements NativeModel {
                 : {};
             return {
               type: 'file',
-              mediaType: 'image/*',
+              mediaType,
               data:
                 this.model.specificationVersion === 'v4'
-                  ? { type: 'url', url: image }
+                  ? typeof image === 'string'
+                    ? { type: 'data', data: image }
+                    : { type: 'url', url: image }
                   : image,
               ...imageOptions,
             };

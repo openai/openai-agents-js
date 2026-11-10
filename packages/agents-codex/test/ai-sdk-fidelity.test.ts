@@ -2,10 +2,16 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { nativeInput } from '../src/runtime/input';
 import { expect, it } from 'vitest';
 import { AiSdkModel, type ModelRequest } from '../src/runtime/models';
 
-function request(detail?: string, strict?: boolean): ModelRequest {
+function request(
+  detail?: string,
+  strict?: boolean,
+  imageUrl = 'https://example.test/image.png',
+): ModelRequest {
   return {
     body: {
       model: 'gpt-4.1',
@@ -16,7 +22,7 @@ function request(detail?: string, strict?: boolean): ModelRequest {
           content: [
             {
               type: 'input_image',
-              image_url: 'https://example.test/image.png',
+              image_url: imageUrl,
               ...(detail === undefined ? {} : { detail }),
             },
           ],
@@ -166,9 +172,46 @@ it.each(['high', 'low'])(
   },
 );
 
-it.each(['v2', 'v3'] as const)(
-  'projects native images into the %s file protocol',
-  async (specificationVersion) => {
+const imageCases = [
+  {
+    label: 'http',
+    imageUrl: 'http://example.test/image.png',
+    mediaType: 'image/*',
+    data: undefined,
+  },
+  {
+    label: 'https',
+    imageUrl: 'https://example.test/image.png',
+    mediaType: 'image/*',
+    data: undefined,
+  },
+  {
+    label: 'png-inline',
+    imageUrl: 'data:image/png;base64,AAEC',
+    mediaType: 'image/png',
+    data: 'AAEC',
+  },
+  {
+    label: 'jpeg-inline-parameters',
+    imageUrl: 'data:image/jpeg;charset=utf-8;base64,AQID',
+    mediaType: 'image/jpeg',
+    data: 'AQID',
+  },
+  {
+    label: 'png-inline-unpadded',
+    imageUrl: 'data:image/png;base64,AQI',
+    mediaType: 'image/png',
+    data: 'AQI',
+  },
+];
+it.each(
+  (['v2', 'v3', 'v4'] as const).flatMap((specificationVersion) =>
+    imageCases.map((image) => ({ specificationVersion, ...image })),
+  ),
+)(
+  'projects $label into the $specificationVersion image protocol',
+  async ({ specificationVersion, imageUrl, mediaType, data }) => {
+    const value = data ?? new URL(imageUrl);
     const model = new AiSdkModel({
       specificationVersion,
       provider: 'other.messages',
@@ -176,8 +219,13 @@ it.each(['v2', 'v3'] as const)(
       doGenerate(options) {
         expect(options.prompt[0].content[0]).toEqual({
           type: 'file',
-          mediaType: 'image/*',
-          data: new URL('https://example.test/image.png'),
+          mediaType,
+          data:
+            specificationVersion === 'v4'
+              ? typeof value === 'string'
+                ? { type: 'data', data: value }
+                : { type: 'url', url: value }
+              : value,
         });
         return {
           content: [{ type: 'text', text: 'ok' }],
@@ -185,48 +233,97 @@ it.each(['v2', 'v3'] as const)(
         };
       },
     });
-    await model.complete(request());
+    await model.complete(request(undefined, undefined, imageUrl));
   },
 );
-
-it('preserves native image URLs through the actual Anthropic v3 provider', async () => {
-  const seen: any[] = [];
-  const server = createServer(async (incoming, outgoing) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
-    seen.push(JSON.parse(Buffer.concat(chunks).toString()));
-    outgoing.writeHead(200, { 'content-type': 'application/json' });
-    outgoing.end(
-      JSON.stringify({
-        id: 'msg_image',
-        type: 'message',
-        role: 'assistant',
-        model: 'claude-sonnet-4-5',
-        content: [{ type: 'text', text: 'ok' }],
-        stop_reason: 'end_turn',
-        stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      }),
-    );
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  try {
-    const address = server.address() as { port: number };
-    const provider = createAnthropic({
-      apiKey: 'fixture',
-      baseURL: `http://127.0.0.1:${address.port}/v1`,
+it.each(
+  imageCases
+    .map((image) => ({ endpoint: 'anthropic-v3', ...image }))
+    .concat(
+      imageCases
+        .filter((image) => image.data !== undefined)
+        .map((image) => ({ endpoint: 'google-v4', ...image })),
+    ),
+)(
+  'preserves $label through actual $endpoint image wire conversion',
+  async ({ endpoint, imageUrl, mediaType, data }) => {
+    const seen: any[] = [];
+    const server = createServer(async (incoming, outgoing) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+      seen.push(JSON.parse(Buffer.concat(chunks).toString()));
+      outgoing.writeHead(200, { 'content-type': 'application/json' });
+      outgoing.end(
+        JSON.stringify(
+          endpoint === 'anthropic-v3'
+            ? {
+                id: 'msg_image',
+                type: 'message',
+                role: 'assistant',
+                model: 'claude-sonnet-4-5',
+                content: [{ type: 'text', text: 'ok' }],
+                stop_reason: 'end_turn',
+                stop_sequence: null,
+                usage: { input_tokens: 1, output_tokens: 1 },
+              }
+            : {
+                candidates: [
+                  {
+                    content: { role: 'model', parts: [{ text: 'ok' }] },
+                    finishReason: 'STOP',
+                  },
+                ],
+                usageMetadata: {
+                  promptTokenCount: 1,
+                  candidatesTokenCount: 1,
+                  totalTokenCount: 2,
+                },
+              },
+        ),
+      );
     });
-    const real = provider('claude-sonnet-4-5');
-    expect(real.specificationVersion).toBe('v3');
-    await new AiSdkModel(real).complete(request());
-    expect(seen).toHaveLength(1);
-    expect(seen[0].messages[0].content[0]).toEqual({
-      type: 'image',
-      source: { type: 'url', url: 'https://example.test/image.png' },
-    });
-  } finally {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-});
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      const address = server.address() as { port: number };
+      const options = {
+        apiKey: 'fixture',
+        baseURL: `http://127.0.0.1:${address.port}/v1`,
+      };
+      const real =
+        endpoint === 'anthropic-v3'
+          ? createAnthropic(options)('claude-sonnet-4-5')
+          : createGoogleGenerativeAI(options)('gemini-2.5-flash');
+      await new AiSdkModel(real).complete(
+        request(undefined, undefined, imageUrl),
+      );
+      expect(seen).toHaveLength(1);
+      if (endpoint === 'anthropic-v3')
+        expect(seen[0].messages[0].content[0]).toEqual({
+          type: 'image',
+          source:
+            data === undefined
+              ? { type: 'url', url: imageUrl }
+              : { type: 'base64', media_type: mediaType, data },
+        });
+      else
+        expect(seen[0].contents[0].parts[0]).toEqual({
+          inlineData: { mimeType: mediaType, data },
+        });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+it.each(['AAEC', [0, 1, 2], new Uint8Array([0, 1, 2]), 'data:image/png,AAEC'])(
+  'keeps unadmitted raw/byte/malformed image forms outside native input',
+  (image_url) => {
+    expect(() =>
+      nativeInput({
+        role: 'user',
+        content: [{ type: 'input_image', image_url }],
+      } as any),
+    ).toThrow();
+  },
+);
