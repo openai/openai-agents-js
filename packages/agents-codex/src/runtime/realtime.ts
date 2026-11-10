@@ -270,6 +270,7 @@ type Command =
   | 'audio_commit'
   | 'input'
   | 'response'
+  | 'send_event'
   | 'delete_item'
   | 'update_history'
   | 'retrieve_item'
@@ -1094,12 +1095,65 @@ class NativeRealtimeOwner {
     }, bytes);
   }
   /**
+   * Send a supported provider event through native validation and response ordering.
+   * Returns the provider item for conversation.item.retrieve, otherwise null.
+   * Supports response controls, message creation/retrieval/deletion, sparse session
+   * settings, input audio buffers, known audio truncation and provider playback clear.
+   * Tool and approval authority remains with the native Session.
+   */
+  async sendEvent(event: JsonObject): Promise<JsonObject | null> {
+    this.checkLive();
+    this.session._checkVoiceAdapterOperation(
+      this,
+      'send its own provider event',
+    );
+    if (!event || typeof event !== 'object' || Array.isArray(event))
+      throw new TypeError('Realtime event must be a JSON object');
+    const bytes = jsonAllocationBytes(
+      event,
+      INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,
+      'Realtime event exceeds the 8 MiB input queue allocation budget',
+      true,
+    );
+    let snapshot: JsonObject;
+    let result: JsonObject | null = null;
+    await this.enqueueInput(
+      async () => {
+        if (snapshot.type === 'response.cancel') {
+          await this.interruptOwned(
+            typeof snapshot.response_id === 'string'
+              ? snapshot.response_id
+              : undefined,
+            {},
+            undefined,
+            () => this.call('send_event', { event: snapshot }),
+          );
+          return;
+        }
+        const raw = await this.call('send_event', { event: snapshot });
+        const value: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (
+          value !== null &&
+          (!value || typeof value !== 'object' || Array.isArray(value))
+        )
+          throw new Error('Native Realtime event returned an invalid result');
+        result = value as JsonObject | null;
+      },
+      bytes,
+      () => {
+        snapshot = copyJsonValue(event) as JsonObject;
+      },
+    );
+    return result;
+  }
+  /**
    * Reconcile provider items observed during this connection with the supplied items.
    * Unobserved items, including SIP items from before attachment, remain outside
    * this replacement. Core validates the replacement before sending changes and
    * waits for provider acknowledgements. Only system/user/assistant messages are
-   * editable. Tool, MCP, and approval rows retain exact content and order;
-   * messages cannot move across these rows. A provider failure after some
+   * editable. Surviving tool, MCP, and approval rows retain exact content and
+   * relative order; settled rows can be removed. Supported messages can move
+   * across surviving rows. A provider failure after some
    * acknowledgements can leave partial edits; retrieve observed history before
    * retrying. Canonical audit history, background work, and retained context for
    * subsequent Session turns remain intact.
@@ -2041,6 +2095,7 @@ class NativeRealtimeOwner {
       feedback?: string;
     } = {},
     excludeWorker?: NativeRealtimeGuardrailWork,
+    nativeInterrupt?: () => Promise<unknown>,
   ): Promise<void> {
     this.session._checkVoiceOperation('interrupt Realtime in');
     this.checkLive();
@@ -2064,15 +2119,23 @@ class NativeRealtimeOwner {
       options.playback.responseId !== responseId
     )
       throw new TypeError('Playback must match the explicit responseId');
+    // Raw events must pass native schema validation before local retirement.
+    const dispatched = nativeInterrupt
+      ? { receipt: await nativeInterrupt() }
+      : undefined;
     const playback = options.playback
       ? this.playback.report(options.playback)
       : undefined;
-    if (responseId !== undefined) this.retireResponse(responseId);
+    // Typed interruption fences current work before dispatch. A raw event has
+    // already dispatched, so only its receipt may identify retired work.
+    const matchesInitial = (id: string | undefined) =>
+      !dispatched && (responseId === undefined || id === responseId);
+    if (!dispatched && responseId !== undefined)
+      this.retireResponse(responseId);
     for (const record of this.functions.values())
-      if (responseId === undefined || record.responseId === responseId)
-        record.retired = true;
-    const owned = [...this.delegations.values()].filter(
-      (item) => responseId === undefined || item.responseId === responseId,
+      if (matchesInitial(record.responseId)) record.retired = true;
+    const owned = [...this.delegations.values()].filter((item) =>
+      matchesInitial(item.responseId),
     );
     owned.forEach((item) => {
       item.retired = true;
@@ -2080,18 +2143,21 @@ class NativeRealtimeOwner {
     for (let i = this.queue.length - 1; i >= 0; i--)
       if (
         this.queue[i].type === 'audio' &&
-        (responseId === undefined ||
-          (this.queue[i] as { responseId?: string }).responseId === responseId)
+        matchesInitial((this.queue[i] as { responseId?: string }).responseId)
       ) {
         this.queuedBytes -= this.eventBytes(this.queue[i]);
         this.queue.splice(i, 1);
       }
-    const batches = [...this.toolBatches].filter(
-      (batch) => responseId === undefined || batch.responseId === responseId,
+    const batches = [...this.toolBatches].filter((batch) =>
+      matchesInitial(batch.responseId),
     );
     // Retire admission immediately. Core owns response-scoped native cancellation.
     const guardWork = this.guardrails.retire(
-      responseId === undefined ? undefined : new Set([responseId]),
+      dispatched
+        ? new Set<string>()
+        : responseId === undefined
+          ? undefined
+          : new Set([responseId]),
     );
     const joining = Promise.allSettled([
       this.guardrails.join(guardWork, excludeWorker),
@@ -2102,11 +2168,13 @@ class NativeRealtimeOwner {
     let joinedRoots = new Set<string>();
     let retired = new Set<string>();
     try {
-      const raw = await this.call('interrupt', {
-        response_id: responseId ?? null,
-        playback: playbackPayload(playback),
-        feedback: options.feedback ?? null,
-      });
+      const raw = dispatched
+        ? dispatched.receipt
+        : await this.call('interrupt', {
+            response_id: responseId ?? null,
+            playback: playbackPayload(playback),
+            feedback: options.feedback ?? null,
+          });
       const receipt = typeof raw === 'string' ? JSON.parse(raw) : raw;
       if (
         !receipt ||
@@ -2311,6 +2379,7 @@ export type NativeRealtimeSession = Pick<
   | 'sendMessage'
   | 'addImage'
   | 'requestResponse'
+  | 'sendEvent'
   | 'deleteConversationItem'
   | 'updateHistory'
   | 'retrieveConversationItem'

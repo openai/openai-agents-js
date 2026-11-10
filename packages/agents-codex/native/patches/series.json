@@ -407,7 +407,11 @@
     {
       "path": "0152-native-realtime-response-options.patch",
       "sha256": "fa77798ebf5d7146262143836f490bf11d24eecaeb8991e47baa08be044e0935"
+    },
+    {
+      "path": "sdk-realtime-raw-events-and-history.patch",
+      "sha256": "8c4a9c24c29845c54937f779202a08bb6d5a12e44fa4253694ba4d5e6d44f450"
     }
   ],
-  "result_tree": "77b16447aae00891d0283bff79a86e0032731bc3"
+  "result_tree": "cf570cd9486f1c8015c70092d47932e442da52d5"
 }
