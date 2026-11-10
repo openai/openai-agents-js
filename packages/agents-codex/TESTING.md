@@ -150,6 +150,7 @@ const answer = await adapter.runScenario({
   },
 });
 assert.equal(answer, 'Synthetic answer.');
+adapter.assertComplete();
 adapter.assertClosed();
 ```
 

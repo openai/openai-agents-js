@@ -160,9 +160,22 @@ it.each([
       provider,
       tools: [action],
     });
-    const pending = agent.run('go', { budget: { maxTokens: 1, missingUsage } });
-    if (blocked) await expect(pending).rejects.toMatchObject(missing);
-    else
+    await using session = await agent.session();
+    const turn = await session.submit('go', {
+      budget: { maxTokens: 1, missingUsage },
+    });
+    const pending = turn.wait();
+    if (blocked) {
+      await expect(pending).rejects.toMatchObject(missing);
+      const attention = await turn.waitForAttention();
+      expect(attention).toMatchObject({
+        type: 'needs_attention',
+        reason: 'budget_exceeded',
+        error: missing,
+      });
+      if (!('type' in attention)) throw new Error('Expected the budget stop');
+      await expect(turn.wait()).rejects.toBe(attention.error);
+    } else
       await expect(pending).resolves.toMatchObject({ finalOutput: 'finished' });
     expect(server.requests).toHaveLength(blocked ? 1 : 2);
   },

@@ -287,6 +287,21 @@ describe('function tools', () => {
     expect(() => captureTools([definedTool, definedTool])).toThrow(TypeError);
   });
 
+  it('explains a foreign SDK declaration without admitting its callback', async () => {
+    vi.resetModules();
+    const other = await import('../../src/runtime/tools');
+    const execute = vi.fn(() => 'must not run');
+    const declaration = other.tool({
+      name: 'foreign',
+      parameters: z.object({}),
+      execute,
+    });
+    expect(() => captureTools([declaration])).toThrow(
+      'same loaded SDK instance as the Session',
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('distinguishes explicit native content from ordinary JSON results', () => {
     const contentItems: ToolOutput['contentItems'] = [
       {

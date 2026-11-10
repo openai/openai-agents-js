@@ -509,8 +509,7 @@ it('Retry-After backoff uses the same allowance and never retries local expiry',
   expect(server.requests).toHaveLength(1);
 });
 
-it('a separate prompted repair does not inherit the main invocation clock', async () => {
-  // EXCLUDED: public repair owner gets no implicit main invocation allowance.
+it('applies the accepted invocation deadline to a separate prompted repair', async () => {
   const held = gate();
   const server = new ModelServer(
     [[message('not-json')], [message('{"value":7}')]],
@@ -523,7 +522,49 @@ it('a separate prompted repair does not inherit the main invocation clock', asyn
     },
   );
   await using provider = await providerFor(server);
-  await using session = await new Agent({
+  const agent = new Agent({
+    instructions: 'Return a report.',
+    provider,
+    outputType: {
+      mode: 'prompted',
+      schema: z.object({ value: z.number() }),
+      maxRetries: 1,
+    },
+    modelSettings: { invocationTimeoutMs: 60_000 },
+  });
+  await using source = await agent.session();
+  await source.update({ modelSettings: { invocationTimeoutMs: MODEL_MS } });
+  const saved = await source.saveState();
+  await source.close();
+  await using session = await agent.session({ state: saved });
+  const result = track(
+    (await session.submit('one', { budget: { maxRequests: 2 } })).wait(),
+  );
+  const releaseHeld = setTimeout(() => held.release.resolve(), MODEL_MS * 2);
+  try {
+    await held.entered.promise;
+    await expectDeadline(result);
+  } finally {
+    clearTimeout(releaseHeld);
+    held.release.resolve();
+  }
+  expect(server.requests).toHaveLength(2);
+  expect(server.requests[1]?.tools ?? []).toEqual([]);
+});
+
+it('starts a fresh invocation clock for each prompted correction', async () => {
+  const server = new ModelServer([
+    async () => {
+      await delay(MODEL_MS * 0.6);
+      return [message('not-json')];
+    },
+    async () => {
+      await delay(MODEL_MS * 0.6);
+      return [message('{"value":7}')];
+    },
+  ]);
+  await using provider = await providerFor(server);
+  const result = await new Agent({
     instructions: 'Return a report.',
     provider,
     outputType: {
@@ -532,19 +573,55 @@ it('a separate prompted repair does not inherit the main invocation clock', asyn
       maxRetries: 1,
     },
     modelSettings: { invocationTimeoutMs: MODEL_MS },
-  }).session();
-  const result = track((await session.submit('one')).wait());
-  try {
-    await held.entered.promise;
-    await delay(MODEL_MS * 2);
-    expect(result.done()).toBe(false);
-  } finally {
-    held.release.resolve();
-  }
-  expect((await result.outcome).value?.finalOutput).toEqual({ value: 7 });
+  }).run('one', { budget: { maxRequests: 2 } });
+  expect(result.finalOutput).toEqual({ value: 7 });
   expect(server.requests).toHaveLength(2);
-  expect(server.requests[1]?.tools ?? []).toEqual([]);
+  server.assertExhausted();
 });
+
+it.each([null, MODEL_MS])(
+  'preserves the accepted fork deadline %s through portable reopen',
+  async (timeout) => {
+    const held = gate();
+    const server = new ModelServer([
+      async () => {
+        held.entered.resolve();
+        await held.release.promise;
+        return [message('fork finished')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider,
+      modelSettings: { invocationTimeoutMs: 60_000 },
+    });
+    await using source = await agent.session();
+    await source.update({ modelSettings: { invocationTimeoutMs: timeout } });
+    const state = await source.fork();
+    expect(latestSettings(state).invocation_timeout_ms ?? null).toBe(timeout);
+    expect(
+      latestSettings(await source.saveState()).invocation_timeout_ms ?? null,
+    ).toBe(timeout);
+    await using restored = await agent.session({ state });
+    expect(
+      latestSettings(await restored.saveState()).invocation_timeout_ms ?? null,
+    ).toBe(timeout);
+    const result = track((await restored.submit('continue')).wait());
+    try {
+      await held.entered.promise;
+      if (timeout === null) {
+        held.release.resolve();
+        expect((await result.outcome).value?.finalOutput).toBe('fork finished');
+      } else {
+        await expectDeadline(result);
+      }
+    } finally {
+      held.release.resolve();
+    }
+    expect(server.requests).toHaveLength(1);
+  },
+);
 
 it.each([false, true])(
   'settles a real entered receipt writer after expiry (failure=%s)',

@@ -1,9 +1,24 @@
-/** Nonnegative provider-reported counters. Nested counters are subsets, not additions. */
-export interface NativeRealtimeUsageCounters {
-  readonly [name: string]: number | NativeRealtimeUsageCounters;
+interface UsageCounterTree {
+  readonly [name: string]: number | UsageCounterTree;
 }
+
+/** Optional modality and cache counts. Nested counts describe subsets. */
+export interface NativeRealtimeUsageCounters {
+  readonly text_tokens?: number;
+  readonly audio_tokens?: number;
+  readonly image_tokens?: number;
+  readonly cached_tokens?: number;
+  readonly cached_tokens_details?: {
+    readonly text_tokens?: number;
+    readonly audio_tokens?: number;
+    readonly image_tokens?: number;
+  };
+}
+
 /**
- * Speech-model usage, separate from backend thread usage. Missing fields stay unknown.
+ * Observed speech-model counts, separate from backend thread usage.
+ * Counts may be partial when a response omits usage or the owner closes before
+ * its terminal event. Missing fields stay unknown; nested counts are subsets.
  * Counts are nonnegative safe integers; invalid counts or cumulative overflow end
  * the owner with an error. Unknown vendor fields remain raw-only.
  */
@@ -17,10 +32,10 @@ export interface NativeRealtimeUsage {
 
 /** @internal Add measured counters without filling absent values with invented zeros. */
 export function addRealtimeUsage(
-  total: NativeRealtimeUsageCounters,
-  current: NativeRealtimeUsageCounters,
-): NativeRealtimeUsageCounters {
-  const result: Record<string, number | NativeRealtimeUsageCounters> =
+  total: UsageCounterTree,
+  current: UsageCounterTree,
+): UsageCounterTree {
+  const result: Record<string, number | UsageCounterTree> =
     structuredClone(total);
   for (const [key, value] of Object.entries(current)) {
     const previous = result[key];
@@ -42,16 +57,14 @@ export function addRealtimeUsage(
 }
 
 /** @internal Select the bounded provider counter schema; vendor fields stay raw-only. */
-export function reportedRealtimeUsage(
-  value: unknown,
-): NativeRealtimeUsageCounters {
+export function reportedRealtimeUsage(value: unknown): UsageCounterTree {
   if (value === null || typeof value !== 'object' || Array.isArray(value))
     throw new TypeError('Realtime usage must be a counter object');
   function counters(
     source: Record<string, unknown>,
     names: readonly string[],
-  ): Record<string, number | NativeRealtimeUsageCounters> {
-    const result: Record<string, number | NativeRealtimeUsageCounters> = {};
+  ): Record<string, number | UsageCounterTree> {
+    const result: Record<string, number | UsageCounterTree> = {};
     for (const key of names) {
       const count = Object.hasOwn(source, key) ? source[key] : undefined;
       if (count === null || count === undefined) continue;

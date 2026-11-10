@@ -2,6 +2,8 @@
 
 Choose the provider, model, and tools for a conversation. For a two-turn example, see [Open and run a session](sessions.md#open-and-run-a-session).
 
+The [typed Decisions guide](decisions.md) has been showing Agent `decisions` configuration, standalone `agent.decide()` calls, and callback checks through `ctx.decide()`.
+
 ## Validate agent defaults
 
 `await agent.validate()` checks the Agent's default tool declarations and output schema without opening a Session, reading credentials, or connecting to services. It returns `undefined` on success and throws if a declaration is invalid. The packaged native addon must be available.

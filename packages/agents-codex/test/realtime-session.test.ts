@@ -3,7 +3,7 @@ import type { NativeRealtimeResponseOptions } from '../src';
 import { Session } from '../src/runtime/session';
 import { captureTools } from '../src/runtime/tools';
 import type { NativeRealtimeSipConfigOptions } from '../src/runtime/realtime';
-import type { Engine, NativeThread } from '../src/runtime/binding';
+import type { Engine, NativeThread, JsonObject } from '../src/runtime/binding';
 
 // A native event source, so these exercise the actual sole Session reader and
 // public lifecycle rather than calling the Realtime owner's control route.
@@ -270,6 +270,11 @@ it('rejects callback lifecycle reentrancy before mutating or joining its own Rea
   ).rejects.toThrow();
   await expect(
     f.session._runVoiceCallback(() => voice.interrupt()),
+  ).rejects.toThrow();
+  await expect(
+    f.session._runVoiceCallback(() =>
+      voice.sendEvent({ type: 'response.cancel' }),
+    ),
   ).rejects.toThrow();
   expect(f.native.call.mock.calls).toHaveLength(before);
   await voice.sendText('still open');
@@ -654,3 +659,377 @@ it('admits repeated SIP acceptance options as the expected native configuration'
   await voice.close();
   await f.session.close();
 });
+
+it('captures raw provider events in input order and returns nullable native results', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const blocked = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  f.native.call.mockImplementationOnce(async () => {
+    entered.resolve();
+    await blocked.promise;
+    return 'null';
+  });
+  const prior = voice.sendText('Before the raw event');
+  await entered.promise;
+  const event = {
+    type: 'response.create',
+    event_id: 'client-request',
+    response: { metadata: { topic: 'original' } },
+  };
+  const pending = voice.sendEvent(event);
+  event.response.metadata.topic = 'changed';
+  blocked.resolve();
+  await prior;
+  await expect(pending).resolves.toBeNull();
+  const sent = f.native.call.mock.calls.find(
+    ([operation]) => operation === 'realtime_conversation_send_event_sdk',
+  );
+  expect(JSON.parse(sent![1])).toEqual({
+    generation: expect.any(String),
+    event: {
+      type: 'response.create',
+      event_id: 'client-request',
+      response: { metadata: { topic: 'original' } },
+    },
+  });
+  const item = {
+    id: 'provider-item',
+    type: 'message',
+    role: 'user',
+    content: [],
+  };
+  f.native.call.mockImplementationOnce(async () => JSON.stringify(item));
+  await expect(
+    voice.sendEvent({
+      type: 'conversation.item.retrieve',
+      item_id: 'provider-item',
+    }),
+  ).resolves.toEqual(item);
+  await voice.close();
+  const calls = f.native.call.mock.calls.length;
+  await expect(voice.sendEvent({ type: 'response.create' })).rejects.toThrow();
+  expect(f.native.call.mock.calls).toHaveLength(calls);
+  await f.session.close();
+});
+
+it('rejects non-JSON and oversized raw events before native dispatch', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const cyclic: Record<string, unknown> = { type: 'response.create' };
+  cyclic.self = cyclic;
+  const calls = f.native.call.mock.calls.length;
+  for (const event of [
+    null,
+    [],
+    { type: 'response.create', ignored: undefined },
+    { type: 'response.create', value: Infinity },
+    cyclic,
+    { type: 'response.create', instructions: '界'.repeat(800000) },
+  ]) {
+    await expect(voice.sendEvent(event as JsonObject)).rejects.toThrow();
+  }
+  expect(f.native.call.mock.calls).toHaveLength(calls);
+  await voice.close();
+  await f.session.close();
+});
+
+it('charges raw events to the shared input allocation budget and releases capacity', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const blocked = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  f.native.call.mockImplementationOnce(async () => {
+    entered.resolve();
+    await blocked.promise;
+    return 'null';
+  });
+  const event = {
+    type: 'response.create',
+    response: { instructions: 'A'.repeat(750000) },
+  };
+  const first = voice.sendEvent(event);
+  await entered.promise;
+  const second = voice.sendEvent(event);
+  const calls = f.native.call.mock.calls.length;
+  await expect(voice.sendEvent(event)).rejects.toThrow(
+    /event.*input queue.*budget/,
+  );
+  expect(f.native.call.mock.calls).toHaveLength(calls);
+  blocked.resolve();
+  await Promise.all([first, second]);
+  await expect(voice.sendEvent(event)).resolves.toBeNull();
+  await voice.close();
+  await f.session.close();
+});
+
+it('applies the native raw cancellation receipt to buffered output without returning private fields', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const events = voice.events();
+  expect((await events.next()).value).toMatchObject({
+    type: 'lifecycle',
+    status: 'started',
+  });
+  f.emit('realtime_conversation_realtime', {
+    payload: {
+      AudioOut: {
+        data: 'AQACAA==',
+        sample_rate: 24000,
+        num_channels: 1,
+        response_id: 'retired',
+      },
+    },
+  });
+  // Let the sole Session reader buffer the old audio before cancellation.
+  await vi.waitFor(() =>
+    expect(f.native._next_session_events.mock.calls.length).toBeGreaterThan(2),
+  );
+  f.native.call.mockImplementationOnce(async (operation) => {
+    expect(operation).toBe('realtime_conversation_send_event_sdk');
+    return JSON.stringify({
+      retired_response_ids: ['retired'],
+      cancelled_response_id: 'retired',
+      joined_root_turn_ids: [],
+    });
+  });
+  await expect(
+    voice.sendEvent({
+      type: 'response.cancel',
+      response_id: 'retired',
+      event_id: 'cancel-request',
+    }),
+  ).resolves.toBeNull();
+  expect((await events.next()).value).toMatchObject({
+    type: 'playback_interrupted',
+    responseId: 'retired',
+    retiredResponseIds: ['retired'],
+    cancelledResponseId: 'retired',
+  });
+  const raw = f.native.call.mock.calls.find(
+    ([operation]) => operation === 'realtime_conversation_send_event_sdk',
+  );
+  expect(JSON.parse(raw![1]).event).toEqual({
+    type: 'response.cancel',
+    response_id: 'retired',
+    event_id: 'cancel-request',
+  });
+  await voice.close();
+  await f.session.close();
+});
+
+it('keeps the owner live when native validation rejects a malformed raw cancellation', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  f.native.call.mockRejectedValueOnce(
+    new Error('Invalid response.cancel field'),
+  );
+  await expect(
+    voice.sendEvent({ type: 'response.cancel', unexpected: true }),
+  ).rejects.toThrow('Invalid response.cancel field');
+  await expect(
+    voice.sendText('Still accepting input.'),
+  ).resolves.toBeUndefined();
+  await voice.close();
+  await f.session.close();
+});
+
+it('keeps newer response output when an unscoped raw cancel receipt arrives late', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const events = voice.events();
+  await events.next();
+  const entered = Promise.withResolvers<void>();
+  const receipt = Promise.withResolvers<string>();
+  f.native.call.mockImplementationOnce(async () => {
+    entered.resolve();
+    return receipt.promise;
+  });
+  const cancelling = voice.sendEvent({ type: 'response.cancel' });
+  await entered.promise;
+  const reads = f.native._next_session_events.mock.calls.length;
+  f.emit('realtime_conversation_realtime', {
+    payload: { ResponseCreated: { response_id: 'newer' } },
+  });
+  f.emit('realtime_conversation_realtime', {
+    payload: {
+      AudioOut: {
+        data: 'AwAEAA==',
+        sample_rate: 24000,
+        num_channels: 1,
+        response_id: 'newer',
+      },
+    },
+  });
+  // The created response proves that newer work has started before the receipt.
+  expect((await events.next()).value).toMatchObject({
+    type: 'response',
+    responseId: 'newer',
+    status: 'created',
+  });
+  await vi.waitFor(() =>
+    expect(f.native._next_session_events.mock.calls.length).toBeGreaterThan(
+      reads + 1,
+    ),
+  );
+  receipt.resolve(
+    JSON.stringify({
+      retired_response_ids: ['older'],
+      cancelled_response_id: 'older',
+      joined_root_turn_ids: [],
+    }),
+  );
+  await expect(cancelling).resolves.toBeNull();
+  expect((await events.next()).value).toMatchObject({
+    type: 'audio',
+    responseId: 'newer',
+    data: new Uint8Array([3, 0, 4, 0]),
+  });
+  expect((await events.next()).value).toMatchObject({
+    type: 'playback_interrupted',
+    retiredResponseIds: ['older'],
+  });
+  f.emit('realtime_conversation_realtime', {
+    payload: {
+      AudioOut: {
+        data: 'BQAGAA==',
+        sample_rate: 24000,
+        num_channels: 1,
+        response_id: 'newer',
+      },
+    },
+  });
+  expect((await events.next()).value).toMatchObject({
+    type: 'audio',
+    responseId: 'newer',
+  });
+  await voice.close();
+  await f.session.close();
+});
+
+it('rejects adapter text behind a queued raw event and releases the admission barrier afterward', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const entered = Promise.withResolvers<void>();
+  const proceed = Promise.withResolvers<void>();
+  f.native.call.mockImplementationOnce(async () => {
+    entered.resolve();
+    await proceed.promise;
+    await expect(
+      f.session._runVoiceCallback(() => voice.sendText('nested text'), voice),
+    ).rejects.toThrow('Realtime adapter callback cannot');
+    await expect(
+      f.session._runVoiceCallback(
+        () => voice.sendMessage('nested message'),
+        voice,
+      ),
+    ).rejects.toThrow('Realtime adapter callback cannot');
+    return 'null';
+  });
+  const prior = voice.sendText('outer input');
+  await entered.promise;
+  const raw = voice.sendEvent({ type: 'response.create' });
+  proceed.resolve();
+  await Promise.all([prior, raw]);
+  await expect(
+    f.session._runVoiceCallback(() => voice.sendText('after raw event'), voice),
+  ).resolves.toBeUndefined();
+  const texts = f.native.call.mock.calls
+    .filter(([operation]) => operation === 'realtime_conversation_text_sdk')
+    .map(([, raw]) => JSON.parse(raw).text);
+  expect(texts).toEqual(['outer input', 'after raw event']);
+  await voice.close();
+  await f.session.close();
+});
+
+it('releases the raw cancellation queue before joining guardrail cleanup that sends text', async () => {
+  const f = fixture();
+  await f.session._start();
+  vi.spyOn(f.session, '_realtimeGuardrailSource').mockReturnValue({
+    agent: {} as never,
+    context: null,
+  });
+  const entered = Promise.withResolvers<void>();
+  const voice = await f.session.realtime({
+    guardrailTextThreshold: null,
+    outputGuardrails: [
+      {
+        name: 'reentrant-cleanup',
+        callback: async (input) => {
+          entered.resolve();
+          await new Promise<void>((resolve) =>
+            input.signal.addEventListener('abort', () => resolve(), {
+              once: true,
+            }),
+          );
+          await voice.sendText('guardrail cleanup input');
+          return { tripwireTriggered: false };
+        },
+      },
+    ],
+  });
+  f.emit('realtime_conversation_realtime', {
+    payload: {
+      OutputTranscriptDone: {
+        text: 'Retire this output.',
+        response_id: 'retired',
+        item_id: 'guarded-item',
+        content_index: 0,
+        output_kind: 'text',
+      },
+    },
+  });
+  await entered.promise;
+  f.native.call.mockImplementationOnce(async () =>
+    JSON.stringify({
+      retired_response_ids: ['retired'],
+      cancelled_response_id: 'retired',
+      joined_root_turn_ids: [],
+    }),
+  );
+  await expect(
+    voice.sendEvent({ type: 'response.cancel' }),
+  ).resolves.toBeNull();
+  expect(
+    f.native.call.mock.calls
+      .filter(([operation]) => operation === 'realtime_conversation_text_sdk')
+      .map(([, raw]) => JSON.parse(raw).text),
+  ).toContain('guardrail cleanup input');
+  await voice.close();
+  await f.session.close();
+}, 3000);
+
+it('releases raw cancellation dispatch while native waits for a host callback to send text', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  f.native.call.mockImplementationOnce(async (operation) => {
+    expect(operation).toBe('realtime_conversation_send_event_sdk');
+    // Native cancellation joins an already entered host callback before its receipt.
+    await f.session._runVoiceCallback(() =>
+      voice.sendText('entered host callback input'),
+    );
+    return JSON.stringify({
+      retired_response_ids: ['retired'],
+      cancelled_response_id: 'retired',
+      joined_root_turn_ids: [],
+    });
+  });
+  await expect(
+    voice.sendEvent({ type: 'response.cancel' }),
+  ).resolves.toBeNull();
+  expect(
+    f.native.call.mock.calls
+      .filter(([operation]) => operation === 'realtime_conversation_text_sdk')
+      .map(([, raw]) => JSON.parse(raw).text),
+  ).toContain('entered host callback input');
+  await voice.close();
+  await f.session.close();
+}, 3000);

@@ -1262,6 +1262,7 @@ mod native_question_tests {
 }
 
 params!(RealtimeSdkGeneration { generation: String });
+params!(RealtimeSdkEvent { generation: String, event: Value });
 params!(RealtimeSdkResponse {
     generation: String,
     #[serde(default)]
@@ -1519,6 +1520,18 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
                 function_tools,
                 expected_selection_id: p.expected_selection_id,
                 hosted_mcp_auto_response: p.hosted_mcp_auto_response,
+                reply,
+            })
+            .await?;
+        return Ok(serde_json::to_value(result.await??)?);
+    }
+    if operation == "realtime_conversation_send_event_sdk" {
+        let p: RealtimeSdkEvent = decode(params)?;
+        let (reply, result) = oneshot::channel();
+        thread
+            .submit(Op::RealtimeConversationSendEventSdk {
+                generation: p.generation,
+                event: p.event,
                 reply,
             })
             .await?;
