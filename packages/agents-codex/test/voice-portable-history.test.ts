@@ -331,6 +331,22 @@ async function nativeFixture(
 
 const native = process.env.OPENAI_AGENTS_PORTABLE_TESTS === '1';
 it.runIf(native)(
+  'reports direct deletion after closing synchronously without a provider request',
+  async () => {
+    const onError = vi.fn();
+    const { session, frames } = await nativeFixture({ onError });
+    await session.close();
+    const frameCount = frames.length;
+
+    expect(() => session.deleteItem('external')).toThrow(
+      'Portable voice session is closed.',
+    );
+    expect(frames).toHaveLength(frameCount);
+    expect(onError).not.toHaveBeenCalled();
+  },
+);
+
+it.runIf(native)(
   'expires an unanswered direct lookup through the shared edit timeout and reports once',
   async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });

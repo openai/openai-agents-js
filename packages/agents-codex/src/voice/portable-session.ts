@@ -440,6 +440,7 @@ export class PortableVoiceSession {
     this.#dispatch({ type: 'input', item });
   }
   deleteItem(itemId: string): void {
+    if (this.#closed) throw new Error('Portable voice session is closed.');
     void this.#historyUpdates.delete(itemId).catch(() => {});
   }
   truncateItem(itemId: string, contentIndex: number, audioEndMs: number): void {
