@@ -293,6 +293,7 @@ nativeIt(
         error: {
           type: 'invalid_request_error',
           code: 'fixture_prompt_rejected',
+          message: 'Synthetic prompt rejection.',
           event_id: frame.event_id,
         },
       });
