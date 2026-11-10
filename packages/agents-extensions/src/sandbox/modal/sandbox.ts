@@ -5,6 +5,7 @@ import {
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   normalizeSandboxClientCreateArgs,
+  normalizeExposedPort,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
@@ -20,6 +21,7 @@ import {
   type Mount,
   type ReadFileArgs,
   type SandboxSession,
+  type SandboxSessionLike,
   type SandboxSessionState,
   type TypedMount,
   type ViewImageArgs,
@@ -1443,6 +1445,29 @@ export class ModalSandboxClient implements SandboxClient<
 
   constructor(options: Partial<ModalSandboxClientOptions> = {}) {
     this.options = options;
+  }
+
+  assertBorrowedSessionManifestAuthority(
+    session: SandboxSessionLike<ModalSandboxSessionState>,
+    _manifest: Manifest,
+    options?: ModalSandboxClientOptions,
+  ): void {
+    const current = resolveOptions(this.options, options);
+    if (current.exposedPorts === undefined) return;
+    const recorded = new Set(
+      (readOptionalNumberArray(session.state.configuredExposedPorts) ?? []).map(
+        normalizeExposedPort,
+      ),
+    );
+    const requested = new Set(current.exposedPorts.map(normalizeExposedPort));
+    if (
+      requested.size !== recorded.size ||
+      [...requested].some((port) => !recorded.has(port))
+    ) {
+      throw new UserError(
+        'Current Modal networking options require a fresh sandbox session',
+      );
+    }
   }
 
   resolveTrustedEnvironment(

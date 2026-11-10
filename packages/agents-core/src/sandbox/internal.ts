@@ -26,6 +26,7 @@ export {
   captureLiveMountCredentialAuthorityIfAbsent,
   captureLiveMountEnvironmentAuthority,
   captureLiveMountRuntimeAuthority,
+  copySandboxStateRuntimeAuthority,
   copyValidatedMountEffectivePaths,
   copyTrustedMountCredentialRebindProvenance,
   configuredMountCredentialFields,
