@@ -167,7 +167,7 @@ it.each([false, true])(
   async (reject) => {
     const effects: string[] = [],
       checked: string[] = [],
-      completed: string[] = [];
+      completed: (string | null)[] = [];
     const { provider } = await fixture([
       [
         call('finish', {}, { callId: 'live-held' }),
