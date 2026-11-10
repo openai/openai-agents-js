@@ -578,8 +578,8 @@
     },
     {
       "path": "sdk-bounded-original-history-reads.patch",
-      "sha256": "2e81a829b1b01ed18adeb74af06ae69ca6d418ab12f8ebccf4008bf58bc03666"
+      "sha256": "3b5b1fbab18a6d0aef5416f82c4765871e1835bf2544b3a346168430a9f2f2cf"
     }
   ],
-  "result_tree": "b725bee2940a07a80034d056f83674b9c1e80c30"
+  "result_tree": "58e2cbc40d78b66b98cb612207a822e73e62883a"
 }

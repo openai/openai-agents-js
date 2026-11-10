@@ -211,6 +211,19 @@ index 276739a2..04252c2c 100644
          Ok(self.sdk_load_original_history().await?.snapshot(limit))
      }
  
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 6d18e707..78ddbbfb 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -243,6 +243,8 @@ pub(crate) mod extension_metrics;
+ mod guardian_checkpoint;
+ mod handlers;
+ mod inject;
++mod original_history_lookup;
++mod original_history_read;
+ pub(crate) mod owned_turn_stop;
+ mod reasoning_effort;
+ mod submission;
 diff --git a/codex-rs/core/src/session/original_history_cursor.rs b/codex-rs/core/src/session/original_history_cursor.rs
 new file mode 100644
 index 00000000..dac67083
