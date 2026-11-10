@@ -1191,3 +1191,64 @@ it.each([
     expect(JSON.stringify(server.requests[1])).toContain('validated result');
   },
 );
+
+it('rejects computer history substituted for a managed function approval', async () => {
+  const effects: string[] = [];
+  const risky = tool({
+    name: 'risky',
+    parameters: z.object({}),
+    needsApproval: true,
+    finishTurn: true,
+    execute: () => {
+      effects.push('effect');
+      return 'terminal result';
+    },
+  });
+  const server = new ModelServer([
+    [call('risky', {}, { callId: 'foreign-observation' })],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use risky.',
+    model: 'gpt-5',
+    provider,
+    tools: [risky],
+  });
+  let saved;
+  {
+    await using source = await agent.session();
+    await source.submit('begin');
+    await nextApproval(source);
+    saved = await source.suspend();
+  }
+  const forged = JSON.parse(JSON.stringify(saved)) as {
+    history: { type: string; payload: Record<string, unknown> }[];
+  };
+  const original = forged.history.find(
+    (item) =>
+      item.type === 'response_item' &&
+      item.payload.call_id === 'foreign-observation',
+  );
+  expect(original).toBeDefined();
+  original!.payload = {
+    type: 'computer_call',
+    call_id: 'foreign-observation',
+    actions: [{ type: 'wait' }],
+    pending_safety_checks: [],
+  };
+  const outcome = await agent
+    .session({ state: parseSessionState(JSON.stringify(forged)) })
+    .then(
+      async (session) => {
+        await session.close();
+        return undefined;
+      },
+      (error: unknown) => error,
+    );
+  expect(outcome).toBeInstanceOf(Error);
+  expect(String(outcome)).toMatch(
+    /Recovered tool outcomes lack a retained completed response/,
+  );
+  expect(effects).toEqual([]);
+  expect(server.requests).toHaveLength(1);
+});
