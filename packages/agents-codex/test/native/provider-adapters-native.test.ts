@@ -48,9 +48,27 @@ const penaltyCases = (['chat', 'ai-sdk-chat'] as const).map((adapter) => ({
   cacheKey: undefined,
   penalties: true,
 }));
-it.each([...ordinaryCases, ...cacheCases, ...penaltyCases])(
+const reasoningCases = (['reasoning-summary', 'reasoning-empty'] as const).map(
+  (outcome) => ({
+    adapter: 'ai-sdk-responses' as const,
+    outcome,
+    cacheMode: 'reasoning',
+    cacheKey: 'private-reasoning-cache-key',
+    penalties: false,
+  }),
+);
+it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
   'keeps borrowed $adapter $outcome $cacheMode cache key inside the native tool loop',
   async ({ adapter, outcome, cacheMode, cacheKey, penalties }) => {
+    const reasoning = outcome.startsWith('reasoning-');
+    const success = outcome === 'complete' || reasoning;
+    const reasoningSummary =
+      outcome === 'reasoning-empty'
+        ? []
+        : [
+            { type: 'summary_text', text: 'first summary' },
+            { type: 'summary_text', text: 'second summary' },
+          ];
     const seen: any[] = [];
     let enter!: () => void;
     const entered = new Promise<void>((resolve) => {
@@ -78,6 +96,19 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases])(
       enter();
       if (outcome === 'cancel') await released;
       const final = seen.length > 1;
+      if (reasoning) {
+        expect(body.metadata).toEqual({ owner: 'private-options' });
+        expect(body.reasoning.summary).toBe('detailed');
+        if (final)
+          expect(
+            body.input.find((item: any) => item.type === 'reasoning'),
+          ).toEqual({
+            type: 'reasoning',
+            id: 'rs_native',
+            encrypted_content: 'opaque-native-reasoning',
+            summary: reasoningSummary,
+          });
+      }
       if (final)
         expect(JSON.stringify(body.input ?? body.messages)).toContain('42');
       let result: any;
@@ -158,6 +189,13 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases])(
           ],
           usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
         };
+      if (reasoning && !final)
+        result.output.unshift({
+          type: 'reasoning',
+          id: 'rs_native',
+          encrypted_content: 'opaque-native-reasoning',
+          summary: reasoningSummary,
+        });
       if (outcome === 'refusal') {
         if (adapter !== 'ai-sdk-chat')
           result.output.push({
@@ -196,11 +234,18 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases])(
       });
       const options =
         cacheKey === undefined ? {} : { promptCacheKey: cacheKey };
-      const openaiOptions: Record<string, string | boolean> = {
+      const openaiOptions: Record<
+        string,
+        string | boolean | Record<string, string>
+      > = {
         store: true,
         parallelToolCalls: false,
       };
       if (cacheKey !== undefined) openaiOptions.promptCacheKey = cacheKey;
+      if (reasoning) {
+        openaiOptions.metadata = { owner: 'private-options' };
+        openaiOptions.reasoningSummary = 'detailed';
+      }
       const providerOptions = { openai: openaiOptions };
       const backend =
         adapter === 'responses'
@@ -213,18 +258,21 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases])(
                       'gpt-4.1',
                     )
                   : createOpenAI({ apiKey: 'synthetic', baseURL }).responses(
-                      'gpt-4.1',
+                      reasoning ? 'gpt-5' : 'gpt-4.1',
                     ),
                 cacheMode === 'ordinary' ? {} : providerOptions,
               );
       options.promptCacheKey = 'mutated-after-declaration';
       providerOptions.openai.promptCacheKey = 'mutated-after-declaration';
+      if (reasoning)
+        (openaiOptions.metadata as Record<string, string>).owner =
+          'mutated-after-declaration';
       await using provider = new NativeProvider({
         baseUrl: `http://127.0.0.1:${address.port}/fallback/v1`,
         modelBackend: backend,
       });
       await using session = await new Agent({
-        model: 'gpt-4.1',
+        model: reasoning ? 'gpt-5' : 'gpt-4.1',
         instructions: 'Use double.',
         ...(cacheMode !== 'ordinary'
           ? {
@@ -264,13 +312,20 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases])(
         );
         expect(String(failure)).not.toContain('synthetic-private-refusal');
       } else {
-        const result = await turn.wait();
+        const result = await turn.wait().catch((error) => {
+          if (reasoning)
+            throw new Error(
+              `Reasoning replay failed after ${effects.length} tool effects and ${seen.length} client requests`,
+              { cause: error },
+            );
+          throw error;
+        });
         expect(result.finalOutput).toBe('42');
         expect(result.threadUsage?.totalTokenUsage.inputTokens).toBe(6);
         expect(result.threadUsage?.totalTokenUsage.outputTokens).toBe(4);
       }
-      expect(effects).toEqual(outcome === 'complete' ? [21] : []);
-      expect(seen).toHaveLength(outcome === 'complete' ? 2 : 1);
+      expect(effects).toEqual(success ? [21] : []);
+      expect(seen).toHaveLength(success ? 2 : 1);
       expect(fallback).toEqual([]);
       expect(seen[0].stream ?? false).toBe(false);
       if (penalties) {

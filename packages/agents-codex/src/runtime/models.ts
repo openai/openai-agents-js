@@ -585,6 +585,39 @@ export class AiSdkModel implements NativeModel {
         });
         if (previous?.role !== 'assistant')
           prompt.push({ role: 'assistant', content });
+      } else if (item.type === 'reasoning') {
+        if (this.model.provider !== 'openai.responses')
+          throw new TypeError(
+            'AiSdkModel supports native reasoning replay only with OpenAI Responses',
+          );
+        const summary = (item.summary ?? []) as JsonObject[];
+        if (
+          summary.some(
+            (part) =>
+              part.type !== 'summary_text' || typeof part.text !== 'string',
+          )
+        )
+          throw new TypeError(
+            'AiSdkModel received unsupported reasoning summary',
+          );
+        const metadata = {
+          ...(item.id != null ? { itemId: item.id } : {}),
+          ...(item.encrypted_content != null
+            ? { reasoningEncryptedContent: item.encrypted_content }
+            : {}),
+        };
+        const previous = prompt.at(-1);
+        const content = previous?.role === 'assistant' ? previous.content : [];
+        for (const text of summary.length
+          ? summary.map((part) => part.text)
+          : [''])
+          content.push({
+            type: 'reasoning',
+            text,
+            providerOptions: { openai: metadata },
+          });
+        if (previous?.role !== 'assistant')
+          prompt.push({ role: 'assistant', content });
       } else if (item.type === 'function_call_output') {
         let value = item.output;
         if (typeof value !== 'string') {
