@@ -406,3 +406,51 @@ it.each([
   ).rejects.toThrow();
   expect(calls).toBe(0);
 });
+
+it('rejects a complete oversized audio receipt before native effects and retains the live session', async () => {
+  let calls = 0;
+  await using provider = new NativeProvider({
+    baseUrl: 'https://example.invalid/v1',
+    modelBackend: {
+      complete() {
+        calls++;
+        return {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'ok' }],
+            },
+          ],
+        };
+      },
+    },
+  });
+  const agent = new Agent({
+    model: 'custom-model',
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { inputModalities: ['text', 'audio'] },
+  });
+  await using session = await agent.session();
+  const oversized: UserMessage = {
+    role: 'user',
+    content: [
+      { type: 'input_audio', audio_url: 'a'.repeat(64 * 1024 * 1024 - 33) },
+    ],
+  };
+  await expect(
+    (async () => {
+      await (await session.submit(oversized)).wait();
+    })(),
+  ).rejects.toThrow(RangeError);
+  expect(calls).toBe(0);
+  const valid: UserMessage = {
+    role: 'user',
+    content: [
+      { type: 'input_audio', audio_url: 'data:audio/wav;base64,UklGRg==' },
+    ],
+  };
+  expect((await (await session.submit(valid)).wait()).finalOutput).toBe('ok');
+  expect(calls).toBe(1);
+});

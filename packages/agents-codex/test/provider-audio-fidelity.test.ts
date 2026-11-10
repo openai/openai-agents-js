@@ -350,3 +350,70 @@ it('shares the audio budget across manually constructed initial messages', async
     ]),
   ).toThrow(RangeError);
 });
+
+it('shares first-run audio capacity across seeds and input before opening resources', async () => {
+  const { Agent } = await import('../src');
+  const agent = new Agent({ model: 'fixture', instructions: 'Test.' });
+  const open = vi
+    .spyOn(agent, 'session')
+    .mockRejectedValue(new Error('opened'));
+  const message = {
+    role: 'user' as const,
+    content: [
+      { type: 'input_audio' as const, audio_url: 'a'.repeat(40 * 1024 * 1024) },
+    ],
+  };
+  await expect(
+    agent.run(message, { initialMessages: [message] }),
+  ).rejects.toThrow(RangeError);
+  expect(open).not.toHaveBeenCalled();
+});
+
+it('reserves the full first-run envelope before quoting a near-limit audio value', async () => {
+  const { Agent } = await import('../src');
+  const agent = new Agent({ model: 'fixture', instructions: 'Test.' });
+  const open = vi
+    .spyOn(agent, 'session')
+    .mockRejectedValue(new Error('opened'));
+  const audio = 'a'.repeat(audioCapacity - 33);
+  const real = JSON.stringify;
+  let largeQuotes = 0;
+  const serialise = vi.spyOn(JSON, 'stringify').mockImplementation(((
+    value: unknown,
+    ...args: unknown[]
+  ) => {
+    if (typeof value === 'string' && value.length > 32_768) largeQuotes++;
+    return Reflect.apply(real, JSON, [value, ...args]);
+  }) as typeof JSON.stringify);
+  try {
+    await expect(
+      agent.run({
+        role: 'user',
+        content: [{ type: 'input_audio', audio_url: audio }],
+      }),
+    ).rejects.toThrow(RangeError);
+    expect(open).not.toHaveBeenCalled();
+    expect(largeQuotes).toBe(0);
+  } finally {
+    serialise.mockRestore();
+  }
+});
+
+it('checks complete receipt bytes including trailing fields and exact native integer tokens', async () => {
+  const { encode, encodeReceipt } = await import('../src/runtime/binding');
+  const dto = {
+    generation: '18446744073709551615',
+    input: [{ type: 'audio', audio_url: '😀\n"' }],
+    trailing: 'tail',
+  };
+  const expected = encodeReceipt(dto);
+  const bytes = Buffer.byteLength(expected);
+  expect(encodeReceipt(dto, bytes)).toBe(expected);
+  expect(() => encodeReceipt(dto, bytes - 1)).toThrow(RangeError);
+  const ordinary = encode(dto);
+  expect(encode(dto, Buffer.byteLength(ordinary))).toBe(ordinary);
+  expect(() => encode(dto, Buffer.byteLength(ordinary) - 1)).toThrow(
+    RangeError,
+  );
+  expect(encodeReceipt(dto)).toBe(expected);
+});

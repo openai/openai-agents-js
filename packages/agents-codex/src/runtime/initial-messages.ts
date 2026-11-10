@@ -1,4 +1,5 @@
-import { MAX_AUDIO_INPUT_BYTES } from './media';
+import { checkEncodedCapacity } from './binding';
+import { MAX_AUDIO_INPUT_BYTES, type AudioInputBudget } from './media';
 import { nativeInput, responseContent, type UserMessage } from './input';
 
 /** Settled assistant text, without caller identity, reasoning or tool work. */
@@ -31,6 +32,7 @@ export function captureInitialMessages(
   messages: readonly InitialMessage[] | undefined,
   state?: unknown,
   resume?: unknown,
+  audioBudget: AudioInputBudget = { remaining: MAX_AUDIO_INPUT_BYTES },
 ): InitialMessage[] | undefined {
   if (messages === undefined) return undefined;
   if (state != null || resume !== undefined)
@@ -39,8 +41,7 @@ export function captureInitialMessages(
     );
   if (!Array.isArray(messages))
     throw new TypeError('initialMessages must be an array of settled messages');
-  const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
-  return messages.map<InitialMessage>((message) => {
+  const captured = messages.map<InitialMessage>((message) => {
     if (!message || typeof message !== 'object' || Array.isArray(message))
       throw new TypeError(
         'initialMessages entries must be user or assistant messages',
@@ -71,4 +72,7 @@ export function captureInitialMessages(
     assertNativeText(message.content);
     return { role: 'assistant', content: message.content };
   });
+  if (audioBudget.remaining !== MAX_AUDIO_INPUT_BYTES)
+    checkEncodedCapacity(captured, MAX_AUDIO_INPUT_BYTES);
+  return captured;
 }

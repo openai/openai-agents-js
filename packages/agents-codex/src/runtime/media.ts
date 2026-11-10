@@ -49,8 +49,22 @@ function url(value: string, schemes: readonly string[]): void {
     throw new TypeError('Unsupported media URL scheme');
 }
 
-// Reuse the native model WebSocket request ceiling before receipt encoding.
+// Host audio-operation budget, using the model WebSocket ceiling as a precedent.
+// This does not bound arbitrary provider requests or previously admitted history.
 export const MAX_AUDIO_INPUT_BYTES = 64 * 1024 * 1024;
+export function audioInputByteLimit(
+  parts: readonly unknown[],
+): number | undefined {
+  return parts.some(
+    (part) =>
+      part !== null &&
+      typeof part === 'object' &&
+      'type' in part &&
+      part.type === 'audio',
+  )
+    ? MAX_AUDIO_INPUT_BYTES
+    : undefined;
+}
 export interface AudioInputBudget {
   remaining: number;
 }
