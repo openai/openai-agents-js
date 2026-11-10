@@ -257,8 +257,10 @@ nativeIt.each([false, true])(
           expect(session.realtimeUsage?.total_tokens).toBe(7),
         );
         peer.call('inspect_usage', {}, 'usage-tool');
-        await peer.frame((frame) => frame.item?.call_id === 'usage-tool');
-        expect(contexts).toHaveLength(1);
+        const usageOutput = await peer.frame(
+          (frame) => frame.item?.call_id === 'usage-tool',
+        );
+        expect(contexts, JSON.stringify(usageOutput)).toHaveLength(1);
         if (managed) {
           expect(policyContexts).toHaveLength(1);
           expect(policyContexts[0].realtimeUsage).toEqual(
@@ -2458,6 +2460,10 @@ nativeIt(
         for await (const event of voice.events()) seen.push(event);
       })();
       void reading.catch(() => {});
+      peer.send({
+        type: 'response.created',
+        response: { id: 'catalog-response' },
+      });
       peer.send({
         type: 'response.output_item.done',
         response_id: 'catalog-response',

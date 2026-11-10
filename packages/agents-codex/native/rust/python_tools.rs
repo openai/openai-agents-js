@@ -760,8 +760,34 @@ impl PythonTools {
         flags: [bool; 4],
         _reuse_initial: bool,
     ) -> Result<ProfileCatalog> {
+        self.allocate_profile_catalog(specs, manual_slots, terminal_slots, defaults, flags, true)
+    }
+
+    pub(crate) fn voice_profile_catalog(
+        &self,
+        specs: Vec<DynamicToolSpec>,
+        manual_slots: &[usize],
+        terminal_slots: &[usize],
+        defaults: Option<&[usize]>,
+        flags: [bool; 4],
+    ) -> Result<ProfileCatalog> {
+        self.allocate_profile_catalog(specs, manual_slots, terminal_slots, defaults, flags, false)
+    }
+
+    fn allocate_profile_catalog(
+        &self,
+        specs: Vec<DynamicToolSpec>,
+        manual_slots: &[usize],
+        terminal_slots: &[usize],
+        defaults: Option<&[usize]>,
+        flags: [bool; 4],
+        durable: bool,
+    ) -> Result<ProfileCatalog> {
         let id = self.allocate_generation()?;
-        let mut generation = self.prepare(id, specs)?;
+        // An explicitly admitted voice Agent supplies its own callback catalog.
+        // The opening policy still governs all durable profiles and turns.
+        let policy = durable.then_some(self.policy.as_ref());
+        let mut generation = self.prepare_catalog(id, specs, policy)?;
         let mut manual = HashSet::new();
         for &slot in manual_slots {
             ensure!(
@@ -899,9 +925,11 @@ impl PythonTools {
                     .as_ref()
                     .map(|source| source.receipt.clone())
             });
+        let (selection_id, function_tools) =
+            thread.realtime_agent_source_selection(None, None).await?;
         Ok(json!({
-            "selection_id": codex_extension_api::realtime_tool_selection_id(
-                thread.thread_extension_data().level_id(), catalog.generation.id, profile.as_ref()),
+            "selection_id": selection_id,
+            "function_tools": function_tools,
             "profile_receipt":profile,
             "catalog_generation":catalog.generation.id.to_string(),
         }))
@@ -1351,6 +1379,15 @@ impl PythonTools {
     }
 
     fn prepare(&self, id: u64, specs: Vec<DynamicToolSpec>) -> Result<Generation> {
+        self.prepare_catalog(id, specs, Some(self.policy.as_ref()))
+    }
+
+    fn prepare_catalog(
+        &self,
+        id: u64,
+        specs: Vec<DynamicToolSpec>,
+        policy: Option<&ToolPolicy>,
+    ) -> Result<Generation> {
         let mut entries = Vec::new();
         let schema_token = self
             .preserve_schemas
@@ -1364,7 +1401,7 @@ impl PythonTools {
                 "JavaScript tool collides with fixed tool: {key}"
             );
             ensure!(
-                self.policy.allows(&key),
+                policy.is_none_or(|policy| policy.allows(&key)),
                 "JavaScript tool is excluded by ToolPolicy: {key}"
             );
             let mut function = dynamic_tool_to_responses_api_tool(&tool)?;
@@ -1762,7 +1799,7 @@ impl PythonTools {
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
             thread, generation, slot, turn, call, arguments, source, model, media, admission, None,
-            None,
+            None, None,
         )
     }
 
@@ -1780,6 +1817,7 @@ impl PythonTools {
         admission: Option<Arc<crate::turn_settlement::Turn>>,
         profile: Option<&codex_extension_api::AgentProfileReceipt>,
         manual: Option<bool>,
+        realtime_tool_call: Option<Value>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -1832,6 +1870,7 @@ impl PythonTools {
                 "namespace": entry.name.namespace, "tool": entry.name.name,
                 "arguments": arguments, "_sdk_python_tool": key.reply,
                 "_sdk_code_origin":code_origin, "_sdk_model":model,
+                "_sdk_realtime_tool_call":realtime_tool_call,
                 "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
@@ -2490,7 +2529,7 @@ impl PythonContributor {
             .iter()
             .copied()
             .map(|slot| {
-                Arc::new(PythonExecutor {
+                let callback = Arc::new(PythonExecutor {
                     admission: thread
                         .get::<ModelPresentation>()
                         .and_then(|state| state.admission.clone()),
@@ -2503,7 +2542,14 @@ impl PythonContributor {
                     receipts: receipts.clone(),
                     use_deferred_specs,
                     code_mode_enabled: self.code_mode_enabled,
-                }) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>
+                })
+                    as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>;
+                crate::agent_profiles::wrap_handoff_callback(
+                    thread,
+                    profile.as_ref(),
+                    slot,
+                    callback,
+                )
             })
             .collect()
     }
@@ -2554,6 +2600,14 @@ impl ToolContributor for PythonContributor {
                         .map(|source| source.receipt.clone())
                 })
         };
+        let voice = input.profile.is_some_and(|profile| {
+            profile
+                .profile
+                .data
+                .get::<codex_extension_api::RealtimeVoiceProfileScope>()
+                .is_some()
+        });
+        let allows = |name: &ToolName| voice || tools.policy.allows(name);
         let mut declarations = Vec::new();
         for (slot, (namespace, raw)) in functions(&catalog.generation.specs).into_iter().enumerate()
         {
@@ -2563,7 +2617,7 @@ impl ToolContributor for PythonContributor {
                     .defaults
                     .as_ref()
                     .is_some_and(|names| !names.contains(&entry.name))
-                || !tools.policy.allows(&entry.name)
+                || !allows(&entry.name)
                 || entry.exposure == ToolExposure::Deferred
             {
                 continue;
@@ -2595,16 +2649,20 @@ impl ToolContributor for PythonContributor {
                 .get::<codex_extension_api::AgentProfileHandoffTools>()
         }) {
             declarations.extend(
-                crate::agent_profiles::realtime_handoff_declarations(&handoffs)
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .filter(|declaration| tools.policy.allows(&declaration.native_name)),
+                crate::agent_profiles::realtime_handoff_declarations(
+                    &handoffs,
+                    input.thread_store,
+                    profile.as_ref(),
+                )
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .filter(|declaration| allows(&declaration.native_name)),
             );
         }
         if let Some(binding) = input.mcp {
             for info in binding.tools() {
                 let native_name = info.canonical_tool_name();
-                if !tools.policy.allows(&native_name) {
+                if !allows(&native_name) {
                     continue;
                 }
                 let server = binding
@@ -3268,6 +3326,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     self.manual
                         .as_ref()
                         .map(|manual| manual.slots.contains(&self.slot)),
+                    call.conversation_history.realtime_tool_call().cloned(),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
@@ -3700,6 +3759,7 @@ mod pending_tests {
                 None,
                 None,
                 Some(manual.slots.contains(&0)),
+                None,
             )
             .unwrap();
         assert!(key.reply.manual_grant.is_some());
