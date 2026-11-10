@@ -613,6 +613,18 @@
       "sha256": "1be1deb3a070c604b4beae48c58124edc7c9ca86c487c5d15e3decf99c537662"
     },
     {
+      "path": "sdk-commit-completed-compaction-summary.patch",
+      "sha256": "c74885da289ac6a70d76550cef98c99bea51c0b305d5d537db74e4f7263ce6dc"
+    },
+    {
+      "path": "sdk-chatgpt-plan-compaction-outcomes.patch",
+      "sha256": "8c4f0a0e579315f3889dd2b1fabe3805b47f9d09f12ac6563b75f9808708d9fd"
+    },
+    {
+      "path": "sdk-chatgpt-plan-sse-rate-limit.patch",
+      "sha256": "53ae1b894604c1e9e658564f44f983d31a7527b26bc5d99eeb3eb64d94683365"
+    },
+    {
       "path": "sdk-bounded-original-history-reads.patch",
       "sha256": "3b5b1fbab18a6d0aef5416f82c4765871e1835bf2544b3a346168430a9f2f2cf"
     },
@@ -622,8 +634,8 @@
     },
     {
       "path": "sdk-terminal-candidate-admission.patch",
-      "sha256": "6efc18fb1c1767622129346bd312c3397bccdcbae94855b6b158092fc5341c84"
+      "sha256": "81e0fb0a23d63afd6a0d0826c7f74750eabb087e140eee22b05c65f5bd32c25b"
     }
   ],
-  "result_tree": "365c2a6cc864b41098269daf59b8e109b424e422"
+  "result_tree": "d21210cfb9c2f7561838a2f0b84ee6746bb503b8"
 }

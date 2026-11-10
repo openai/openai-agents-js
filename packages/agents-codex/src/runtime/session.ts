@@ -12108,10 +12108,6 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   async compact(options?: SuppliedCompactionOptions): Promise<void> {
-    if (this.options.chatGPTPlan && options === undefined)
-      throw new TypeError(
-        'Sign in with ChatGPT does not support model-backed compaction',
-      );
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
       throw new TypeError(

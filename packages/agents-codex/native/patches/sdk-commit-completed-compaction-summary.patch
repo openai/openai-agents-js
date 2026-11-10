@@ -1,0 +1,2000 @@
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index 08dde6c7cb033321e281154c48a87586649d13c9..390a74c971d877512f36c0df8775cfc1297c8c3e 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -46,6 +46,7 @@ use codex_protocol::models::ResponseInputItem;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::EventMsg;
++use codex_protocol::protocol::ResponseObservationStatus;
+ use codex_protocol::protocol::WarningEvent;
+ use codex_protocol::user_input::UserInput;
+ use codex_rollout_trace::InferenceTraceContext;
+@@ -53,6 +54,7 @@ use codex_utils_output_truncation::TruncationPolicy;
+ use codex_utils_output_truncation::approx_token_count;
+ use codex_utils_output_truncation::truncate_text;
+ use futures::prelude::*;
++use tokio_util::sync::CancellationToken;
+ use tracing::error;
+ 
+ pub use codex_prompts::SUMMARIZATION_PROMPT;
+@@ -73,6 +75,13 @@ pub(crate) struct CompactedHistoryMetadata {
+     pub(crate) reviewer_compaction_hash: Option<String>,
+ }
+ 
++pub(crate) struct CompletedCompactionOutput<'a> {
++    pub(crate) source: &'a StepContext,
++    pub(crate) registered_turn: &'a TurnContext,
++    pub(crate) cancellation_token: &'a CancellationToken,
++    pub(crate) items: Vec<ResponseItem>,
++}
++
+ /// Render replacement context and its comparison baseline from the same captured step.
+ /// Initial context is installed only after compaction returns, above the last real user message
+ /// (or the summary when no user message remains), keeping the compaction summary last.
+@@ -97,6 +106,7 @@ pub(crate) async fn run_inline_auto_compact_task(
+     world_state: Arc<WorldState>,
+     reason: CompactionReason,
+     phase: CompactionPhase,
++    cancellation_token: &CancellationToken,
+ ) -> CodexResult<()> {
+     let turn_context = &source_step_context.turn;
+     let prompt = turn_context
+@@ -123,6 +133,7 @@ pub(crate) async fn run_inline_auto_compact_task(
+             CompactionImplementation::Responses,
+             phase,
+         ),
++        cancellation_token,
+     )
+     .await?;
+     Ok(())
+@@ -133,6 +144,7 @@ pub(crate) async fn run_compact_task(
+     step_context: Arc<StepContext>,
+     world_state: Arc<WorldState>,
+     input: Vec<UserInput>,
++    cancellation_token: &CancellationToken,
+ ) -> CodexResult<()> {
+     run_compact_task_inner(
+         sess.clone(),
+@@ -146,6 +158,7 @@ pub(crate) async fn run_compact_task(
+             CompactionImplementation::Responses,
+             CompactionPhase::StandaloneTurn,
+         ),
++        cancellation_token,
+     )
+     .await?;
+     Ok(())
+@@ -158,6 +171,7 @@ async fn run_compact_task_inner(
+     input: Vec<UserInput>,
+     world_state: Arc<WorldState>,
+     compaction_metadata: CompactionTurnMetadata,
++    cancellation_token: &CancellationToken,
+ ) -> CodexResult<()> {
+     let turn_context = Arc::clone(&source_step_context.turn);
+     let trigger = compaction_metadata.trigger();
+@@ -195,6 +209,7 @@ async fn run_compact_task_inner(
+         input,
+         world_state,
+         compaction_metadata,
++        cancellation_token,
+     )
+     .await;
+     let status = compaction_status_from_result(&result);
+@@ -282,14 +297,14 @@ pub(crate) async fn try_custom_compaction(
+             }
+             publish_compaction_summary(
+                 sess,
+-                turn_context,
++                source_step_context,
+                 replacement_step_context,
+                 world_state,
+                 &summary,
+                 input_goal_ids,
+-                None,
++                /*compaction_response*/ None,
+             )
+-            .await;
++            .await?;
+             return Ok(Some(summary));
+         }
+     }
+@@ -298,13 +313,21 @@ pub(crate) async fn try_custom_compaction(
+ 
+ async fn publish_compaction_summary(
+     sess: &Session,
+-    turn_context: &TurnContext,
++    source_step_context: &StepContext,
+     replacement_step_context: &StepContext,
+     world_state: &WorldState,
+     summary_suffix: &str,
+     input_goal_ids: HashSet<ResponseItemId>,
+-    compaction_response_id: Option<String>,
+-) {
++    compaction_response: Option<(CompactionResponse, &CancellationToken)>,
++) -> CodexResult<()> {
++    let turn_context = source_step_context.turn.as_ref();
++    let (compaction_response_id, completed_output) = match compaction_response {
++        Some((response, cancellation_token)) => (
++            Some(response.response_id),
++            Some((source_step_context, cancellation_token, response.output)),
++        ),
++        None => (None, None),
++    };
+     let history_snapshot = sess.clone_history().await;
+     let history_items = history_snapshot.annotated_items();
+     let compaction_model_hash = compaction_response_id
+@@ -319,13 +342,23 @@ async fn publish_compaction_summary(
+         // belongs to this compaction turn.
+         summary_item.set_turn_id_if_missing(&turn_context.sub_id);
+     }
+-    let (window_number, window_ids) = sess.advance_auto_compact_window().await;
+-
+-    let (initial_context, world_state_baseline) =
+-        build_compaction_initial_context(sess, replacement_step_context, world_state).await;
+-    new_history =
+-        insert_initial_context_before_last_real_user_or_summary(new_history, initial_context);
+-    sess.replace_compacted_history(
++    let (window_number, window_ids) = if completed_output.is_some() {
++        // Render with the next window's IDs before committing them to live history.
++        sess.preview_auto_compact_window().await
++    } else {
++        sess.advance_auto_compact_window().await
++    };
++    let (initial_context, world_state_baseline) = sess
++        .build_initial_context_with_window(replacement_step_context, world_state, Some(window_ids))
++        .await;
++    new_history = insert_initial_context_before_last_real_user_or_summary(
++        new_history,
++        initial_context
++            .into_iter()
++            .map(ResponseItemEnvelope::new)
++            .collect(),
++    );
++    sess.replace_compacted_history_with_output(
+         new_history,
+         replacement_step_context.to_turn_context_item(),
+         world_state_baseline,
+@@ -334,13 +367,24 @@ async fn publish_compaction_summary(
+             message: summary_text,
+             window_number,
+             window_ids,
+-            compaction_response_id: compaction_response_id,
++            compaction_response_id,
+             compaction_model_hash,
+             reviewer_compaction_hash: None,
+         },
++        completed_output.map(
++            |(source, cancellation_token, items)| CompletedCompactionOutput {
++                source,
++                // A previous-model step can use a derived context. Terminal ownership
++                // belongs to the registered turn that will receive the replacement.
++                registered_turn: &replacement_step_context.turn,
++                cancellation_token,
++                items,
++            },
++        ),
+     )
+-    .await;
++    .await?;
+     sess.recompute_token_usage(replacement_step_context).await;
++    Ok(())
+ }
+ 
+ async fn run_compact_task_inner_impl(
+@@ -350,6 +394,7 @@ async fn run_compact_task_inner_impl(
+     input: Vec<UserInput>,
+     world_state: Arc<WorldState>,
+     compaction_metadata: CompactionTurnMetadata,
++    cancellation_token: &CancellationToken,
+ ) -> CodexResult<String> {
+     let turn_context = Arc::clone(&source_step_context.turn);
+     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
+@@ -392,7 +437,10 @@ async fn run_compact_task_inner_impl(
+     } else {
+         None
+     };
+-    let compaction_response = loop {
++    let mut compaction_response = loop {
++        if cancellation_token.is_cancelled() {
++            return Err(CodexErr::TurnAborted);
++        }
+         // Clone is required because of the loop
+         let mut turn_input = history.clone().for_prompt(
+             &source_step_context
+@@ -432,7 +480,6 @@ async fn run_compact_task_inner_impl(
+             &mut client_session,
+             &responses_metadata,
+             &prompt,
+-            compaction_metadata.phase(),
+         )
+         .await;
+ 
+@@ -505,28 +552,28 @@ async fn run_compact_task_inner_impl(
+         }
+     };
+ 
+-    let history_snapshot = sess.clone_history().await;
+-    let summary_suffix = if matches!(compaction_metadata.phase(), CompactionPhase::PostTurn) {
+-        get_last_assistant_message_from_turn(compaction_response.output.iter())
+-            .filter(|summary| !summary.trim().is_empty())
+-            .ok_or_else(|| {
+-                CodexErr::Stream(
+-                    "Post-turn compaction completed without an assistant summary".to_string(),
+-                )
+-            })?
+-    } else {
+-        get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default()
+-    };
++    if compaction_response.interrupted {
++        return Err(CodexErr::Stream(
++            "Compaction response did not complete successfully".into(),
++        ));
++    }
++    let summary_suffix = get_last_assistant_message_from_turn(compaction_response.output.iter())
++        .ok_or_else(|| {
++            CodexErr::Stream("Compaction completed without an assistant summary".to_string())
++        })?;
++    if matches!(compaction_metadata.phase(), CompactionPhase::PostTurn) {
++        compaction_response.output.clear();
++    }
+     publish_compaction_summary(
+         &sess,
+-        &turn_context,
++        &source_step_context,
+         &replacement_step_context,
+         &world_state,
+         &summary_suffix,
+         input_goal_ids,
+-        Some(compaction_response.response_id),
++        Some((compaction_response, cancellation_token)),
+     )
+-    .await;
++    .await?;
+ 
+     sess.emit_turn_item_completed(&turn_context, compaction_item)
+         .await;
+@@ -880,6 +927,7 @@ fn build_compacted_history_with_limit(
+ struct CompactionResponse {
+     response_id: String,
+     output: Vec<ResponseItem>,
++    interrupted: bool,
+ }
+ 
+ fn reject_compaction_tool_output(item: &ResponseItem) -> CodexResult<()> {
+@@ -913,7 +961,6 @@ async fn drain_to_completed(
+     client_session: &mut ModelClientSession,
+     responses_metadata: &CodexResponsesMetadata,
+     prompt: &Prompt,
+-    phase: CompactionPhase,
+ ) -> CodexResult<CompactionResponse> {
+     let turn_context = source_step_context.turn.as_ref();
+     sess.ensure_rollout_durable().await?;
+@@ -937,6 +984,7 @@ async fn drain_to_completed(
+         .await?;
+     let mut output = Vec::new();
+     let mut response_observation_id = None;
++    let mut incomplete_response_id = None;
+     let mut response_fact_budget = codex_protocol::response_facts::ResponseFactBudget::default();
+     loop {
+         let maybe_event = stream.next().await;
+@@ -948,26 +996,9 @@ async fn drain_to_completed(
+         match event {
+             Ok(ResponseEvent::OutputItemDone(item)) => {
+                 // A source-only admission provides callback attribution, never tool authority.
+-                // Reject before either canonical recording or post-turn buffering.
++                // Buffer validated output until the whole response succeeds.
+                 reject_compaction_tool_output(&item)?;
+-                if matches!(phase, CompactionPhase::PostTurn) {
+-                    // Commit post-turn summaries only after success; failures must leave both
+-                    // the live history and persisted rollout intact.
+-                    output.push(item);
+-                } else {
+-                    sess.record_annotated_conversation_items(
+-                        turn_context,
+-                        source_step_context.settings.model_info.as_ref(),
+-                        vec![ResponseItemEnvelope {
+-                            item,
+-                            metadata: Some(CodexHarnessMetadata {
+-                                compaction_output: true,
+-                                ..Default::default()
+-                            }),
+-                        }],
+-                    )
+-                    .await;
+-                }
++                output.push(item);
+             }
+             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {
+                 sess.set_server_reasoning_included(included).await;
+@@ -990,6 +1021,10 @@ async fn drain_to_completed(
+                 .await?;
+             }
+             Ok(ResponseEvent::ResponseObserved(observation)) => {
++                incomplete_response_id = (observation.status
++                    == ResponseObservationStatus::Incomplete)
++                    .then(|| observation.response_id.clone())
++                    .flatten();
+                 response_observation_id = sess
+                     .record_response_observation(turn_context, observation)
+                     .await?;
+@@ -1011,6 +1046,7 @@ async fn drain_to_completed(
+                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
+                     .await?;
+                 return Ok(CompactionResponse {
++                    interrupted: incomplete_response_id.as_ref() == Some(&response_id),
+                     response_id,
+                     output,
+                 });
+diff --git a/codex-rs/core/src/compact_tests.rs b/codex-rs/core/src/compact_tests.rs
+index 53dd3641bde57e358894d79cacb247380433fbb5..5f984fca266d37d719e05625223379f140e8d3c2 100644
+--- a/codex-rs/core/src/compact_tests.rs
++++ b/codex-rs/core/src/compact_tests.rs
+@@ -170,6 +170,7 @@ async fn local_compaction_respects_tool_metadata_state(
+             text: "Summarize the conversation.".to_string(),
+             text_elements: Vec::new(),
+         }],
++        &tokio_util::sync::CancellationToken::new(),
+     )
+     .await?;
+ 
+@@ -710,7 +711,7 @@ fn insert_initial_context_before_last_real_user_or_summary_keeps_compaction_last
+     assert_eq!(refreshed, expected);
+ }
+ 
+-#[test_case(CompactionPhase::StandaloneTurn; "canonical summary history")]
++#[test_case(CompactionPhase::StandaloneTurn; "standalone summary buffer")]
+ #[test_case(CompactionPhase::PostTurn; "post turn summary buffer")]
+ #[tokio::test]
+ async fn source_only_compaction_rejects_tool_output_before_history(
+@@ -770,8 +771,7 @@ async fn source_only_compaction_rejects_tool_output_before_history(
+         )
+         .await;
+     let mut client = session.services.model_client.new_session();
+-    let rejected =
+-        drain_to_completed(&session, &source, &mut client, &metadata, &prompt, phase).await;
++    let rejected = drain_to_completed(&session, &source, &mut client, &metadata, &prompt).await;
+     assert!(rejected.is_err());
+     assert!(
+         !session
+@@ -784,8 +784,7 @@ async fn source_only_compaction_rejects_tool_output_before_history(
+             ))
+     );
+     let mut client = session.services.model_client.new_session();
+-    let accepted =
+-        drain_to_completed(&session, &source, &mut client, &metadata, &prompt, phase).await?;
++    let accepted = drain_to_completed(&session, &source, &mut client, &metadata, &prompt).await?;
+     assert_eq!(accepted.response_id, "valid-response");
+     assert!(
+         !session
+@@ -797,8 +796,6 @@ async fn source_only_compaction_rejects_tool_output_before_history(
+                 ResponseItem::FunctionCall { .. } | ResponseItem::FunctionCallOutput { .. }
+             ))
+     );
+-    if matches!(phase, CompactionPhase::PostTurn) {
+-        assert_eq!(accepted.output.len(), 1);
+-    }
++    assert_eq!(accepted.output.len(), 1);
+     Ok(())
+ }
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 6d18e707caca4354e02ee6579493c2e70c84c25b..72676a8313a29c099fc5fec9dd46ba3482a21e6e 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -22,6 +22,7 @@ use crate::agents_md_manager::SessionInstructions;
+ use crate::attestation::AttestationProvider;
+ use crate::compact;
+ use crate::compact::CompactedHistoryMetadata;
++use crate::compact::CompletedCompactionOutput;
+ use crate::config::ManagedFeatures;
+ use crate::context::ContextualUserFragment;
+ use crate::context::DeveloperInstructions;
+@@ -4341,14 +4342,39 @@ impl Session {
+         world_state_baseline: WorldStateSnapshot,
+         metadata: CompactedHistoryMetadata,
+     ) {
++        let _ = self
++            .replace_compacted_history_with_commit(
++                items,
++                reference_context_item,
++                world_state_baseline,
++                /*stop*/ None,
++                /*completed_output*/ None,
++                |_| metadata,
++            )
++            .await;
++    }
++
++    pub(crate) async fn replace_compacted_history_with_output(
++        &self,
++        items: Vec<ResponseItemEnvelope>,
++        reference_context_item: TurnContextItem,
++        world_state_baseline: WorldStateSnapshot,
++        metadata: CompactedHistoryMetadata,
++        completed_output: Option<CompletedCompactionOutput<'_>>,
++    ) -> CodexResult<()> {
++        let stop = completed_output.as_ref().and_then(|completed| {
++            crate::model_request::turn_sampling_stop(&completed.registered_turn.extension_data)
++        });
+         self.replace_compacted_history_with_commit(
+             items,
+             reference_context_item,
+             world_state_baseline,
+-            None,
++            stop.as_deref(),
++            completed_output,
+             |_| metadata,
+         )
+-        .await;
++        .await
++        .map(|_| ())
+     }
+ 
+     async fn replace_compacted_history_with_commit(
+@@ -4357,8 +4383,40 @@ impl Session {
+         reference_context_item: TurnContextItem,
+         world_state_baseline: WorldStateSnapshot,
+         stop: Option<&codex_extension_api::TurnSamplingStop>,
++        completed_output: Option<CompletedCompactionOutput<'_>>,
+         metadata: impl FnOnce(&mut SessionState) -> CompactedHistoryMetadata,
+-    ) -> Option<u64> {
++    ) -> CodexResult<u64> {
++        let source_step_context = completed_output.as_ref().map(|completed| completed.source);
++        let registered_turn = completed_output
++            .as_ref()
++            .map(|completed| completed.registered_turn);
++        let cancellation_token = completed_output
++            .as_ref()
++            .map(|completed| completed.cancellation_token);
++        let (mut output, image_preparations) = if let Some(CompletedCompactionOutput {
++            source,
++            items: output,
++            ..
++        }) = completed_output
++        {
++            self.prepare_annotated_conversation_items_for_history(
++                source.turn.as_ref(),
++                source.settings.model_info.as_ref(),
++                output
++                    .into_iter()
++                    .map(|item| ResponseItemEnvelope {
++                        item,
++                        metadata: Some(CodexHarnessMetadata {
++                            compaction_output: true,
++                            ..Default::default()
++                        }),
++                    })
++                    .collect(),
++            )
++            .await
++        } else {
++            (Vec::new(), Vec::new())
++        };
+         for envelope in &mut items {
+             Self::assign_missing_response_item_id(&mut envelope.item);
+         }
+@@ -4372,15 +4430,48 @@ impl Session {
+                     revision
+                 })
+             });
+-        // Wait for accepted updates to finish persisting, then keep later updates from
+-        // overtaking the current settings snapshot while its checkpoint is written.
+-        let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
+         let world_state_item = WorldStateItem::full(world_state_baseline.clone().into_object());
+-        let compacted_item = {
+-            let mut state = self.state.lock().await;
++        let finalization = cancellation_token.map(|_| {
++            self.services
++                .thread_extension_data
++                .get_or_init(crate::tasks::TaskFinalization::default)
++        });
++        let commit_locks = async {
++            let finalization_guard = match &finalization {
++                Some(finalization) => Some(finalization.0.lock().await),
++                None => None,
++            };
++            // Keep accepted settings and the checkpoint in persistence order.
++            let settings_guard = thread_settings::acquire_persistence_lock(self).await;
++            (finalization_guard, settings_guard, self.state.lock().await)
++        };
++        let (finalization_guard, settings_guard, state) = match cancellation_token {
++            Some(token) => tokio::select! {
++                biased;
++                _ = token.cancelled() => return Err(CodexErr::TurnAborted),
++                locks = commit_locks => locks,
++            },
++            None => commit_locks.await,
++        };
++        let (compacted_item, window_number, window_ids, reviewer_compaction_hash) = {
++            let mut state = state;
+             let mcp_resource_origins = self.services.mcp_runtime.resource_origin_checkpoint();
+             let commit = || {
++                if cancellation_token.is_some_and(CancellationToken::is_cancelled)
++                    || registered_turn.is_some_and(|turn| {
++                        turn.extension_data
++                            .get::<owned_turn_stop::OwnedTurnTask>()
++                            .is_some_and(|owner| owner.stopping())
++                    })
++                {
++                    return None;
++                }
+                 let metadata = metadata(&mut state);
++                let (window_number, window_ids) = if source_step_context.is_some() {
++                    state.preview_auto_compact_window_with_id(metadata.window_ids.window_id)
++                } else {
++                    (metadata.window_number, metadata.window_ids)
++                };
+                 if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
+                     matches!(
+                         envelope.item,
+@@ -4412,31 +4503,53 @@ impl Session {
+                         .cloned(),
+                 );
+                 let replacement_history = items.clone();
+-                state.replace_annotated_history(
+-                    items,
+-                    Some(reference_context_item.clone()),
+-                    HistoryReplacement::Compaction {
+-                        reviewer_compaction_hash: metadata.reviewer_compaction_hash,
+-                    },
+-                );
+-                state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+-                state.history.set_world_state_baseline(world_state_baseline);
+-                CompactedItem {
++                let (guardian_history, retained_context) = if let Some(source) = source_step_context
++                {
++                    // Build the checkpoint without publishing it. Readers keep the original
++                    // model window and catalog until the writer acknowledges durability.
++                    let mut history = state.clone_history();
++                    history.record_annotated_items(
++                        &mut output,
++                        source.settings.model_info.truncation_policy.into(),
++                    );
++                    history.replace_compacted(
++                        items.clone(),
++                        metadata.reviewer_compaction_hash.as_deref(),
++                    );
++                    (
++                        history.guardian_history_checkpoint(),
++                        history.retained_context().clone(),
++                    )
++                } else {
++                    state.replace_annotated_history(
++                        std::mem::take(&mut items),
++                        Some(reference_context_item.clone()),
++                        HistoryReplacement::Compaction {
++                            reviewer_compaction_hash: metadata.reviewer_compaction_hash.clone(),
++                        },
++                    );
++                    state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
++                    state
++                        .history
++                        .set_world_state_baseline(world_state_baseline.clone());
++                    (
++                        state.history.guardian_history_checkpoint(),
++                        state.history.retained_context().clone(),
++                    )
++                };
++                let compacted_item = CompactedItem {
+                     sdk_originals: Some(
+                         codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::preserve(),
+                     ),
+                     message: metadata.message,
+                     replacement_history: Some(replacement_history),
+-                    guardian_history: state.history.guardian_history_checkpoint(),
+-                    retained_context: Some(state.history.retained_context().clone()),
++                    guardian_history,
++                    retained_context: Some(retained_context),
+                     mcp_resource_origins,
+-                    window_number: Some(metadata.window_number),
+-                    first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
+-                    previous_window_id: metadata
+-                        .window_ids
+-                        .previous_window_id
+-                        .map(|id| id.to_string()),
+-                    window_id: Some(metadata.window_ids.window_id.to_string()),
++                    window_number: Some(window_number),
++                    first_window_id: Some(window_ids.first_window_id.to_string()),
++                    previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
++                    window_id: Some(window_ids.window_id.to_string()),
+                     compaction_response_id: metadata.compaction_response_id,
+                     latest_token_usage_record: state.latest_token_usage_record.clone(),
+                     resume_metadata: Some(CompactionResumeMetadata {
+@@ -4444,34 +4557,97 @@ impl Session {
+                         last_started_turn_id: state.last_started_turn_id.clone(),
+                         previous_turn_settings: state.previous_turn_settings(),
+                     }),
+-                }
++                };
++                Some((
++                    compacted_item,
++                    window_number,
++                    window_ids,
++                    metadata.reviewer_compaction_hash,
++                ))
+             };
+             match stop {
+-                Some(stop) => stop.try_commit(commit),
+-                None => Some(commit()),
+-            }?
++                Some(stop) => stop.try_commit(commit).flatten(),
++                None => commit(),
++            }
++            .ok_or(CodexErr::TurnAborted)?
+         };
+-        let window_number = compacted_item.window_number;
+ 
+-        let rollout_items = [
++        if let Some(source) = source_step_context {
++            for image in image_preparations {
++                self.services
++                    .analytics_events_client
++                    .track_image_preparation(ImagePreparationFact {
++                        turn_id: source.turn.sub_id.clone(),
++                        metadata: image,
++                    });
++            }
++        }
++        let mut rollout_items: Vec<RolloutItem> = output
++            .iter()
++            .cloned()
++            .map(RolloutItem::ResponseItem)
++            .collect();
++        rollout_items.extend([
+             RolloutItem::Compacted(compacted_item),
+             RolloutItem::WorldState(world_state_item),
+-            RolloutItem::TurnContext(reference_context_item),
++            RolloutItem::TurnContext(reference_context_item.clone()),
+             // The frozen turn context must not override current settings in persisted metadata.
+             RolloutItem::EventMsg(thread_settings::applied_event(self).await),
+-        ];
+-        if self.persist_rollout_items(&rollout_items).await
+-            && let Some(revision) = mcp_revision
+-        {
++        ]);
++        let persisted = self.persist_rollout_items(&rollout_items).await;
++        // Once admitted, the task owns this checkpoint through the writer's
++        // durability barrier. Abort waits on the same gate before retiring it.
++        if let Some(turn) = registered_turn {
++            let flushed = self
++                .flush_rollout()
++                .await
++                .inspect_err(|err| warn!("failed to flush compaction checkpoint: {err}"))
++                .is_ok();
++            if !persisted || !flushed {
++                return Err(self.stage_compaction_fatal(turn));
++            }
++        }
++        if let Some(source) = source_step_context {
++            let mut state = self.state.lock().await;
++            // Apply to current state: retained reservations and host facts can arrive
++            // while the writer is pending and must survive successful publication.
++            state.advance_auto_compact_window_with_id(window_ids.window_id);
++            if !output.is_empty() {
++                state.record_annotated_items(
++                    &mut output,
++                    source.settings.model_info.truncation_policy.into(),
++                );
++            }
++            state.replace_annotated_history(
++                items,
++                Some(reference_context_item.clone()),
++                HistoryReplacement::Compaction {
++                    reviewer_compaction_hash,
++                },
++            );
++            state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
++            state.history.set_world_state_baseline(world_state_baseline);
++        }
++        if persisted && let Some(revision) = mcp_revision {
+             self.services
+                 .executed_tool_calls
+                 .mark_mcp_attribution_persisted(revision);
+         }
+-        {
+-            let mut state = self.state.lock().await;
+-            state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
++        self.state
++            .lock()
++            .await
++            .queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
++        drop(settings_guard);
++        drop(finalization_guard);
++        if let Some(source) = source_step_context.filter(|_| !output.is_empty()) {
++            let response_items = output
++                .into_iter()
++                .map(|envelope| envelope.item)
++                .collect::<Vec<_>>();
++            self.send_raw_response_items(source.turn.as_ref(), &response_items)
++                .await;
+         }
+-        window_number
++        Ok(window_number)
+     }
+ 
+     pub fn enabled(&self, feature: Feature) -> bool {
+@@ -4568,7 +4744,7 @@ impl Session {
+             .await
+     }
+ 
+-    async fn build_initial_context_with_window(
++    pub(crate) async fn build_initial_context_with_window(
+         &self,
+         step_context: &StepContext,
+         world_state: &WorldState,
+@@ -4884,6 +5060,10 @@ impl Session {
+         )
+     }
+ 
++    pub(crate) async fn preview_auto_compact_window(&self) -> (u64, AutoCompactWindowIds) {
++        self.state.lock().await.preview_new_context_window()
++    }
++
+     pub(crate) async fn advance_auto_compact_window(&self) -> (u64, AutoCompactWindowIds) {
+         let mut state = self.state.lock().await;
+         state.advance_auto_compact_window()
+@@ -4950,6 +5130,7 @@ impl Session {
+                 turn_context_item,
+                 world_state_snapshot,
+                 stop,
++                /*completed_output*/ None,
+                 |state| {
+                     let (window_number, window_ids) =
+                         state.start_new_context_window(window_ids.window_id);
+@@ -4964,7 +5145,8 @@ impl Session {
+                     }
+                 },
+             )
+-            .await?;
++            .await
++            .ok()?;
+         self.recompute_token_usage(step_context).await;
+         Some(committed)
+     }
+diff --git a/codex-rs/core/src/session/terminal_tool_tests.rs b/codex-rs/core/src/session/terminal_tool_tests.rs
+index 30df96e9113164aa1798dbc000ae1e95ddf2810e..6ca41db7cf688e5baf1ad42423c376d3312a8bdd 100644
+--- a/codex-rs/core/src/session/terminal_tool_tests.rs
++++ b/codex-rs/core/src/session/terminal_tool_tests.rs
+@@ -1,8 +1,14 @@
+ //! Tool-origin completion keeps the original finishing task through the canonical fence.
+ use super::*;
+ use crate::tasks::SessionTask;
++use codex_protocol::protocol::ErrorEvent;
+ use codex_protocol::turn_input::NotSubmittedReason;
+ use codex_thread_store::*;
++use core_test_support::responses::ev_assistant_message;
++use core_test_support::responses::ev_completed;
++use core_test_support::responses::sse;
++use core_test_support::responses::start_mock_server;
++use pretty_assertions::assert_eq;
+ use std::any::Any;
+ use tokio::sync::{mpsc, oneshot};
+ 
+@@ -14,6 +20,7 @@ struct TerminalStore {
+     inner: InMemoryThreadStore,
+     terminal_seen: std::sync::atomic::AtomicBool,
+     fail_append: bool,
++    compaction_checkpoint: bool,
+     hold_append: std::sync::atomic::AtomicBool,
+     flushes: mpsc::UnboundedSender<TerminalFlush>,
+ }
+@@ -45,8 +52,15 @@ impl ThreadStore for TerminalStore {
+     }
+     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
+         Box::pin(async move {
+-            let terminal = params.items.iter().any(|item| matches!(item,
+-                RolloutItem::EventMsg(EventMsg::TurnComplete(event)) if event.tool_completion.is_some()));
++            let terminal = if self.compaction_checkpoint {
++                params
++                    .items
++                    .iter()
++                    .any(|item| matches!(item, RolloutItem::Compacted(_)))
++            } else {
++                params.items.iter().any(|item| matches!(item,
++                    RolloutItem::EventMsg(EventMsg::TurnComplete(event)) if event.tool_completion.is_some()))
++            };
+             if terminal && self.fail_append {
+                 return Err(ThreadStoreError::Internal {
+                     message: "terminal append failed".into(),
+@@ -147,6 +161,7 @@ async fn gated_terminal_session(
+         inner: InMemoryThreadStore::default(),
+         terminal_seen: std::sync::atomic::AtomicBool::new(false),
+         fail_append,
++        compaction_checkpoint: false,
+         hold_append: std::sync::atomic::AtomicBool::new(false),
+         flushes,
+     });
+@@ -715,3 +730,904 @@ async fn tool_terminal_conditional_interrupt_cannot_take_held_append_or_flush()
+     session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+     assert!(session.active_turn.lock().await.is_none());
+ }
++
++async fn compaction_checkpoint_context(
++    configure: impl FnOnce(&mut Config),
++) -> (
++    Arc<Session>,
++    Arc<TurnContext>,
++    async_channel::Receiver<Event>,
++) {
++    make_session_and_context_with_auth_and_config_and_rx(
++        CodexAuth::from_api_key("Test API Key"),
++        Vec::new(),
++        |config| {
++            config
++                .features
++                .disable(Feature::GuardianReuseParentCompaction)
++                .unwrap();
++            configure(config);
++        },
++    )
++    .await
++}
++
++// The store holds only Compacted batches, leaving seed records and ordinary flushes alone.
++async fn compaction_checkpoint_session(
++    persisted: bool,
++    configure: impl FnOnce(&mut Config),
++) -> (
++    Arc<Session>,
++    Arc<TurnContext>,
++    async_channel::Receiver<Event>,
++    mpsc::UnboundedReceiver<TerminalFlush>,
++    Arc<TerminalStore>,
++) {
++    let (session, turn, events) = compaction_checkpoint_context(configure).await;
++    let mut session = Arc::try_unwrap(session).ok().expect("unshared session");
++    let (flushes, pending) = mpsc::unbounded_channel();
++    let store = Arc::new(TerminalStore {
++        inner: InMemoryThreadStore::default(),
++        terminal_seen: std::sync::atomic::AtomicBool::new(false),
++        fail_append: false,
++        compaction_checkpoint: true,
++        hold_append: std::sync::atomic::AtomicBool::new(true),
++        flushes,
++    });
++    if persisted {
++        attach_terminal_thread_store(&mut session, store.clone()).await;
++    }
++    let step = StepContext::for_test(turn.clone());
++    session
++        .record_conversation_items(
++            &turn,
++            &step.settings.model_info,
++            &[
++                user_message("original input"),
++                assistant_message("original answer"),
++            ],
++        )
++        .await;
++    session.flush_rollout().await.unwrap();
++    {
++        let mut state = session.state.lock().await;
++        state.set_auto_compact_window_estimated_prefill(123);
++        state.reasoning_effort_pin.pin(
++            "synthetic-model",
++            codex_protocol::openai_models::ReasoningEffort::Medium,
++        );
++    }
++    while events.try_recv().is_ok() {}
++    (Arc::new(session), turn, events, pending, store)
++}
++
++async fn compaction_checkpoint_live_state(session: &Session) -> serde_json::Value {
++    let state = session.state.lock().await;
++    let ids = state.auto_compact_window_ids();
++    serde_json::json!({
++        "model_context": state.history.annotated_items(),
++        "catalog": state.sdk_originals.snapshot(None),
++        "window_number": state.auto_compact_window_number(),
++        "first_window_id": ids.first_window_id.to_string(),
++        "previous_window_id": ids.previous_window_id.map(|id| id.to_string()),
++        "window_id": ids.window_id.to_string(),
++        "prefill": state.auto_compact_window_snapshot().prefill_input_tokens,
++        "reference": state.reference_context_item(),
++        "world_state": state.history.world_state_checkpoint(),
++        "guardian": state.history.guardian_history_checkpoint(),
++        "retained": state.history.retained_context(),
++        "effort": state.reasoning_effort_pin.get("synthetic-model"),
++        "effort_compacted": matches!(state.reasoning_effort_pin, ReasoningEffortPin::Compacted),
++        "pending_hooks": state.pending_session_start_sources.len(),
++    })
++}
++
++async fn commit_compaction_checkpoint(
++    session: Arc<Session>,
++    turn: Arc<TurnContext>,
++    cancel: CancellationToken,
++) -> CodexResult<()> {
++    let step = StepContext::for_test(turn);
++    let (window_number, window_ids) = session.state.lock().await.preview_new_context_window();
++    session
++        .replace_compacted_history_with_output(
++            vec![ResponseItemEnvelope::new(user_message(
++                "replacement summary",
++            ))],
++            step.to_turn_context_item(),
++            WorldStateSnapshot::default(),
++            CompactedHistoryMetadata {
++                input_goal_ids: Default::default(),
++                message: "replacement summary".into(),
++                window_number,
++                window_ids,
++                compaction_response_id: Some("synthetic-compaction".into()),
++                compaction_model_hash: None,
++                reviewer_compaction_hash: None,
++            },
++            Some(CompletedCompactionOutput {
++                source: &step,
++                registered_turn: &step.turn,
++                cancellation_token: &cancel,
++                items: vec![assistant_message("raw summary output")],
++            }),
++        )
++        .await
++}
++
++fn start_compaction_checkpoint(
++    session: Arc<Session>,
++    turn: Arc<TurnContext>,
++    cancel: CancellationToken,
++) -> tokio::task::JoinHandle<CodexResult<()>> {
++    tokio::spawn(commit_compaction_checkpoint(session, turn, cancel))
++}
++
++struct CompactionCheckpointTask;
++
++impl SessionTask for CompactionCheckpointTask {
++    fn kind(&self) -> TaskKind {
++        TaskKind::Regular
++    }
++
++    fn span_name(&self) -> &'static str {
++        "session_task.compaction_checkpoint_test"
++    }
++
++    async fn run(
++        self: Arc<Self>,
++        session: Arc<Session>,
++        turn: Arc<TurnContext>,
++        _input: Vec<TurnInput>,
++        cancel: CancellationToken,
++    ) -> crate::tasks::SessionTaskResult {
++        session.emit_turn_started(&turn).await;
++        commit_compaction_checkpoint(session, turn, cancel).await?;
++        Ok(None)
++    }
++}
++
++async fn hold_owned_compaction_flush(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    fences: &mut mpsc::UnboundedReceiver<TerminalFlush>,
++) -> TerminalFlush {
++    session
++        .spawn_task(turn.clone(), Vec::new(), CompactionCheckpointTask)
++        .await;
++    let append = timeout(Duration::from_secs(2), fences.recv())
++        .await
++        .unwrap()
++        .unwrap();
++    append.release.send(Ok(())).unwrap();
++    timeout(Duration::from_secs(2), fences.recv())
++        .await
++        .unwrap()
++        .unwrap()
++}
++
++async fn stored_compaction_checkpoints(
++    store: &TerminalStore,
++    session: &Session,
++) -> Vec<RolloutItem> {
++    store
++        .inner
++        .load_history(LoadThreadHistoryParams {
++            thread_id: session.thread_id,
++            include_archived: true,
++        })
++        .await
++        .unwrap()
++        .items
++}
++
++async fn compaction_checkpoint_failure_keeps_live_state(fail_flush: bool) {
++    let (session, turn, events, mut fences, store) =
++        compaction_checkpoint_session(true, |_| {}).await;
++    let before = compaction_checkpoint_live_state(&session).await;
++    let compact = start_compaction_checkpoint(session.clone(), turn, CancellationToken::new());
++    let append = timeout(Duration::from_secs(2), fences.recv())
++        .await
++        .unwrap()
++        .unwrap();
++    // Direct readers must finish while the writer has not acknowledged its append.
++    assert_eq!(
++        timeout(
++            Duration::from_secs(2),
++            compaction_checkpoint_live_state(&session)
++        )
++        .await
++        .unwrap(),
++        before,
++    );
++    assert!(
++        !stored_compaction_checkpoints(&store, &session)
++            .await
++            .iter()
++            .any(|item| matches!(item, RolloutItem::Compacted(_)))
++    );
++    if fail_flush {
++        append.release.send(Ok(())).unwrap();
++        let flush = timeout(Duration::from_secs(2), fences.recv())
++            .await
++            .unwrap()
++            .unwrap();
++        assert_eq!(compaction_checkpoint_live_state(&session).await, before);
++        // An acknowledged append can already have stored a checkpoint despite failed flush.
++        assert!(
++            stored_compaction_checkpoints(&store, &session)
++                .await
++                .iter()
++                .any(|item| matches!(item, RolloutItem::Compacted(_)))
++        );
++        flush
++            .release
++            .send(Err("synthetic checkpoint flush failure".into()))
++            .unwrap();
++    } else {
++        append
++            .release
++            .send(Err("synthetic checkpoint append rejection".into()))
++            .unwrap();
++    }
++    let error = timeout(Duration::from_secs(2), compact)
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap_err();
++    assert!(
++        matches!(error.details(), codex_protocol::error::CodexErrorDetails::Fatal(message)
++        if message == "Canonical thread persistence failed; turn completion stopped")
++    );
++    assert_eq!(compaction_checkpoint_live_state(&session).await, before);
++    assert_eq!(
++        stored_compaction_checkpoints(&store, &session)
++            .await
++            .iter()
++            .any(|item| matches!(item, RolloutItem::Compacted(_))),
++        fail_flush
++    );
++    assert!(
++        events.try_recv().is_err(),
++        "failed checkpoint published raw output"
++    );
++    assert!(
++        matches!(
++            session.ensure_rollout_durable().await,
++            Err(error) if matches!(error.details(), codex_protocol::error::CodexErrorDetails::Fatal(_))
++        ),
++        "writer failure must remain sticky"
++    );
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_rejected_append_keeps_original_live_state() {
++    compaction_checkpoint_failure_keeps_live_state(false).await;
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_failed_flush_keeps_original_live_state_after_accepted_append() {
++    compaction_checkpoint_failure_keeps_live_state(true).await;
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_publishes_after_flush_despite_late_cancel_and_stop() {
++    let (session, turn, events, mut fences, store) =
++        compaction_checkpoint_session(true, |_| {}).await;
++    let stop = codex_extension_api::TurnSamplingStop::default();
++    turn.extension_data.insert(stop.clone());
++    let cancel = CancellationToken::new();
++    let before = compaction_checkpoint_live_state(&session).await;
++    let compact = start_compaction_checkpoint(session.clone(), turn, cancel.clone());
++    let append = timeout(Duration::from_secs(2), fences.recv())
++        .await
++        .unwrap()
++        .unwrap();
++    let finalization = session
++        .services
++        .thread_extension_data
++        .get::<crate::tasks::TaskFinalization>()
++        .unwrap();
++    assert!(finalization.0.try_lock().is_err());
++    assert_eq!(compaction_checkpoint_live_state(&session).await, before);
++    cancel.cancel();
++    stop.request();
++    append.release.send(Ok(())).unwrap();
++    let flush = timeout(Duration::from_secs(2), fences.recv())
++        .await
++        .unwrap()
++        .unwrap();
++    assert!(finalization.0.try_lock().is_err());
++    assert_eq!(compaction_checkpoint_live_state(&session).await, before);
++    assert!(events.try_recv().is_err());
++    // Host-owned retained facts and acceptance-order reservations may arrive while flushing.
++    let (delivery, _) =
++        session.record_delivered_assistant_message(codex_history::RetainedUserMessage {
++            origin: codex_history::UserInputOrigin::User,
++            turn_id: "synthetic-host-turn".into(),
++            message_id: Some("synthetic-delivery".into()),
++            text: "May I run tests?".into(),
++            complete: true,
++            phase: None,
++        });
++    let retained = session
++        .state
++        .lock()
++        .await
++        .history
++        .retained_context()
++        .clone();
++    assert_ne!(serde_json::to_value(&retained).unwrap(), before["retained"]);
++    assert!(
++        !delivery.is_finished(),
++        "delivery persistence must follow the checkpoint"
++    );
++    flush.release.send(Ok(())).unwrap();
++    timeout(Duration::from_secs(2), compact)
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap();
++    delivery.await.unwrap();
++    assert!(finalization.0.try_lock().is_ok());
++    let after = compaction_checkpoint_live_state(&session).await;
++    assert_eq!(
++        after["window_number"],
++        before["window_number"].as_u64().unwrap() + 1
++    );
++    assert_eq!(after["previous_window_id"], before["window_id"]);
++    assert_eq!(after["first_window_id"], before["first_window_id"]);
++    assert_eq!(after["effort_compacted"], true);
++    assert_eq!(after["pending_hooks"], 1);
++    let state = session.state.lock().await;
++    assert_eq!(state.history.retained_context(), &retained);
++    assert_eq!(state.history.annotated_items().len(), 1);
++    assert!(matches!(&state.history.annotated_items()[0].item,
++        ResponseItem::Message { content, .. } if matches!(&content[0],
++            ContentItem::InputText { text } if text == "replacement summary")));
++    let (_, count, originals) = state.sdk_originals.snapshot(None).unwrap();
++    assert_eq!(count, 3);
++    assert!(originals.last().unwrap().contains("raw summary output"));
++    drop(state);
++    let stored = stored_compaction_checkpoints(&store, &session).await;
++    let checkpoint_index = stored
++        .iter()
++        .position(|item| matches!(item, RolloutItem::Compacted(_)))
++        .unwrap();
++    let delivery_index = stored.iter().position(|item| matches!(item,
++        RolloutItem::RetainedContext(codex_history::RetainedContextEvent::DeliveredAssistantMessage { message, .. })
++            if message.message_id.as_deref() == Some("synthetic-delivery"))).unwrap();
++    assert!(checkpoint_index < delivery_index);
++    let checkpoint = stored
++        .iter()
++        .find_map(|item| match item {
++            RolloutItem::Compacted(checkpoint) => Some(checkpoint),
++            _ => None,
++        })
++        .unwrap();
++    assert_eq!(checkpoint.window_number, after["window_number"].as_u64());
++    assert_eq!(checkpoint.window_id.as_deref(), after["window_id"].as_str());
++    assert_eq!(
++        checkpoint.replacement_history.as_deref(),
++        Some(session.clone_history().await.annotated_items())
++    );
++    assert!(stored.iter().any(|item| matches!(item,
++        RolloutItem::ResponseItem(envelope) if envelope.metadata.as_ref()
++            .is_some_and(|metadata| metadata.compaction_output
++                && metadata.delivered_assistant_message.is_none()
++                && metadata.sender_user_messages.is_none()))));
++    assert!(matches!(
++        events.try_recv().unwrap().msg,
++        EventMsg::RawResponseItem(_)
++    ));
++    assert!(events.try_recv().is_err());
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_without_recorder_publishes_live_summary() {
++    let (session, turn, events, mut fences, _store) =
++        compaction_checkpoint_session(false, |_| {}).await;
++    start_compaction_checkpoint(session.clone(), turn, CancellationToken::new())
++        .await
++        .unwrap()
++        .unwrap();
++    let after = compaction_checkpoint_live_state(&session).await;
++    assert_eq!(after["window_number"], 1);
++    assert_eq!(after["effort_compacted"], true);
++    assert_eq!(after["pending_hooks"], 1);
++    assert_eq!(session.clone_history().await.annotated_items().len(), 1);
++    assert!(matches!(
++        events.try_recv().unwrap().msg,
++        EventMsg::RawResponseItem(_)
++    ));
++    assert!(fences.try_recv().is_err());
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_owned_retirement_preserves_accepted_steer_after_flush() {
++    let (session, turn, events, mut fences, store) =
++        compaction_checkpoint_session(true, |_| {}).await;
++    let original_guardian = session
++        .clone_history()
++        .await
++        .guardian_history_checkpoint()
++        .unwrap();
++    assert_eq!(original_guardian.0.len(), 2);
++    let flush = hold_owned_compaction_flush(&session, &turn, &mut fences).await;
++    let expected_order = session
++        .clone_history()
++        .await
++        .retained_context()
++        .clone()
++        .reserve_order();
++    let steer_text = "steer accepted during checkpoint flush";
++    let steer = timeout(
++        Duration::from_secs(2),
++        submit_steer_only(
++            &session,
++            vec![UserInput::Text {
++                text: steer_text.into(),
++                text_elements: Vec::new(),
++            }],
++            &turn.sub_id,
++        ),
++    )
++    .await
++    .unwrap();
++    assert_eq!(
++        steer,
++        TurnInputSubmission::Steered {
++            turn_id: turn.sub_id.clone(),
++        }
++    );
++    let before = compaction_checkpoint_live_state(&session).await;
++    let owner = turn
++        .extension_data
++        .get::<crate::session::owned_turn_stop::OwnedTurnTask>()
++        .unwrap();
++    let retired = session.stop_owned_turn(&owner).await.unwrap();
++    // Retirement captured the original task, but must not start draining its
++    // accepted input while the checkpoint still owns publication.
++    assert!(
++        session
++            .active_turn
++            .lock()
++            .await
++            .as_ref()
++            .is_some_and(|active| active.task.is_none())
++    );
++    let early_drain = timeout(Duration::from_millis(100), async {
++        loop {
++            if compaction_checkpoint_live_state(&session).await != before {
++                break;
++            }
++            sleep(Duration::from_millis(1)).await;
++        }
++    })
++    .await;
++    flush.release.send(Ok(())).unwrap();
++    timeout(Duration::from_secs(2), retired.join())
++        .await
++        .unwrap()
++        .unwrap();
++    assert!(
++        early_drain.is_err(),
++        "steer was recorded before publication"
++    );
++    let aborted = recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
++    assert!(matches!(aborted.msg, EventMsg::TurnAborted(event) if event.error.is_none()));
++
++    let stored = stored_compaction_checkpoints(&store, &session).await;
++    let (compacted_at, checkpoint) = stored
++        .iter()
++        .enumerate()
++        .find_map(|(index, item)| match item {
++            RolloutItem::Compacted(checkpoint) => Some((index, checkpoint)),
++            _ => None,
++        })
++        .unwrap();
++    assert_eq!(
++        checkpoint.guardian_history.as_ref().unwrap().0,
++        original_guardian.0,
++    );
++    let mut stored_steers = stored.iter().enumerate().filter_map(|(index, item)| {
++        let RolloutItem::ResponseItem(envelope) = item else {
++            return None;
++        };
++        matches!(
++            crate::parse_turn_item(&envelope.item),
++            Some(TurnItem::UserMessage(message)) if message.message() == steer_text
++        )
++        .then_some((index, envelope))
++    });
++    let (steer_at, stored_steer) = stored_steers.next().unwrap();
++    assert!(compacted_at < steer_at);
++    assert!(stored_steers.next().is_none());
++    let stored_metadata = stored_steer.metadata.as_ref().unwrap();
++    assert_eq!(stored_steer.item.turn_id(), Some(turn.sub_id.as_str()));
++    assert_eq!(stored_metadata.user_input_order, Some(expected_order));
++    let source = stored_metadata.retained_source.as_ref().unwrap();
++    assert_eq!(source.id.turn_id, turn.sub_id);
++    assert_eq!(
++        source.id.message_id,
++        stored_steer.item.id().unwrap().as_str()
++    );
++    assert_eq!(source.id.role, codex_history::RetainedSourceRole::User);
++    assert!(source.complete);
++
++    let (mut restored, restored_turn, _events) = compaction_checkpoint_context(|_| {}).await;
++    // Read the replayed catalog through the SDK snapshot's normal cold-store path.
++    Arc::get_mut(&mut restored).unwrap().services.live_thread = session.live_thread().cloned();
++    restored
++        .apply_rollout_reconstruction(&restored_turn, &stored)
++        .await;
++    let live = session.clone_history().await;
++    let replay = restored.clone_history().await;
++    assert_eq!(
++        live.raw_items().collect::<Vec<_>>(),
++        replay.raw_items().collect::<Vec<_>>()
++    );
++    let live_guardian = live.guardian_history_checkpoint().unwrap();
++    let replay_guardian = replay.guardian_history_checkpoint().unwrap();
++    let (live_steer, live_evidence) = live_guardian.0.split_last().unwrap();
++    let (replayed_steer, replayed_evidence) = replay_guardian.0.split_last().unwrap();
++    assert_eq!(live_evidence, original_guardian.0.as_slice());
++    assert_eq!(replayed_evidence, original_guardian.0.as_slice());
++    for history in [&live, &replay] {
++        let retained = history.retained_context();
++        let mut steers = retained.ordered_entries().filter(|(_, entry)| {
++            matches!(entry, codex_history::RetainedContextEntry::UserMessage(message)
++                if message.text == steer_text)
++        });
++        let (order, entry) = steers.next().unwrap();
++        assert_eq!(
++            order,
++            codex_history::RetainedContextOrder::Local(expected_order)
++        );
++        assert_eq!(retained.source(entry).as_ref(), Some(source));
++        assert!(steers.next().is_none());
++    }
++    assert_eq!(replayed_steer, stored_steer);
++    // Live Guardian capture precedes the retained-source stamp on the stored steer.
++    let mut replayed_without_source = replayed_steer.clone();
++    let metadata = replayed_without_source.metadata.as_mut().unwrap();
++    assert_eq!(metadata.retained_source.take().as_ref(), Some(source));
++    assert_eq!(live_steer, &replayed_without_source);
++    let live_originals = session.sdk_history_snapshot(None).await.unwrap();
++    let raw = live_originals
++        .2
++        .iter()
++        .position(|row| row.contains("raw summary output"))
++        .unwrap();
++    let steer = live_originals
++        .2
++        .iter()
++        .position(|row| row.contains(steer_text))
++        .unwrap();
++    assert!(raw < steer);
++    assert_eq!(
++        live_originals
++            .2
++            .iter()
++            .filter(|row| row.contains(steer_text))
++            .count(),
++        1
++    );
++    assert_eq!(
++        live_originals,
++        restored.sdk_history_snapshot(None).await.unwrap()
++    );
++}
++
++fn assert_compaction_checkpoint_failure_events(
++    events: &async_channel::Receiver<Event>,
++    turn: &TurnContext,
++    expected: &ErrorEvent,
++    retired: bool,
++    original_prompt: Option<&str>,
++) {
++    let mut notices = 0;
++    let mut settlements = 0;
++    let mut prompts = 0;
++    while let Ok(event) = events.try_recv() {
++        match event.msg {
++            EventMsg::Error(error) => {
++                assert_eq!(settlements, 0, "error must precede terminal delivery");
++                assert_eq!(error, *expected);
++                assert_eq!(prompts, usize::from(original_prompt.is_some()));
++                notices += 1;
++            }
++            EventMsg::TurnAborted(aborted) => {
++                assert!(retired, "uncancelled task aborted");
++                assert_eq!(notices, 1);
++                assert_eq!(aborted.turn_id.as_deref(), Some(turn.sub_id.as_str()));
++                assert_eq!(aborted.error.as_ref(), Some(expected));
++                settlements += 1;
++            }
++            EventMsg::TurnComplete(completed) => {
++                assert!(!retired, "retired task completed normally");
++                assert_eq!(notices, 1);
++                assert_eq!(completed.turn_id, turn.sub_id);
++                assert_eq!(completed.error.as_ref(), Some(expected));
++                assert!(completed.last_agent_message.is_none());
++                settlements += 1;
++            }
++            EventMsg::ContextCompacted(_)
++            | EventMsg::ItemCompleted(ItemCompletedEvent {
++                item: TurnItem::ContextCompaction(_),
++                ..
++            }) => panic!("unexpected compaction success"),
++            EventMsg::UserMessage(message)
++                if original_prompt.is_some_and(|prompt| message.message == prompt) =>
++            {
++                assert_eq!(notices, 0, "original prompt must precede the failure");
++                prompts += 1;
++            }
++            EventMsg::RawResponseItem(raw) => {
++                assert!(
++                    !serde_json::to_string(&raw.item)
++                        .unwrap()
++                        .contains("raw summary output")
++                );
++            }
++            _ => {}
++        }
++    }
++    assert_eq!(notices, 1);
++    assert_eq!(settlements, 1);
++    assert_eq!(prompts, usize::from(original_prompt.is_some()));
++}
++
++fn compaction_checkpoint_persistence_error() -> ErrorEvent {
++    CodexErr::Fatal("Canonical thread persistence failed; turn completion stopped".into())
++        .to_error_event(None)
++}
++
++#[test_case::test_case(false, false; "normal completion reports checkpoint fatal")]
++#[test_case::test_case(true, false; "retirement reports checkpoint fatal")]
++#[test_case::test_case(true, true; "retirement keeps earlier fatal")]
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_failed_flush_settles_once(retired: bool, earlier_fatal: bool) {
++    let (session, turn, events, mut fences, store) =
++        compaction_checkpoint_session(true, |_| {}).await;
++    let flush = hold_owned_compaction_flush(&session, &turn, &mut fences).await;
++    let before = compaction_checkpoint_live_state(&session).await;
++    let expected = if earlier_fatal {
++        let prior = CodexErr::Fatal("original task fatal".into()).to_error_event(None);
++        session
++            .send_event(&turn, EventMsg::Error(prior.clone()))
++            .await;
++        prior
++    } else {
++        compaction_checkpoint_persistence_error()
++    };
++    let (cancel, owner) = {
++        let active = session.active_turn.lock().await;
++        let task = active.as_ref().unwrap().task.as_ref().unwrap();
++        (task.cancellation_token.clone(), task.handle.owner().clone())
++    };
++    let abort = retired.then(|| {
++        let session = session.clone();
++        let turn = turn.clone();
++        tokio::spawn(async move {
++            session
++                .abort_turn_if_active(&turn.sub_id, TurnAbortReason::Interrupted, None)
++                .await
++        })
++    });
++    if retired {
++        timeout(Duration::from_secs(2), cancel.cancelled())
++            .await
++            .unwrap();
++    }
++    flush
++        .release
++        .send(Err("synthetic checkpoint flush failure".into()))
++        .unwrap();
++    if let Some(abort) = abort {
++        assert!(
++            timeout(Duration::from_secs(2), abort)
++                .await
++                .unwrap()
++                .unwrap()
++        );
++    }
++    timeout(Duration::from_secs(2), owner.join())
++        .await
++        .unwrap()
++        .unwrap();
++    assert_compaction_checkpoint_failure_events(&events, &turn, &expected, retired, None);
++    let after = compaction_checkpoint_live_state(&session).await;
++    assert_eq!(after["pending_hooks"], before["pending_hooks"]);
++    assert_eq!(after["window_id"], before["window_id"]);
++    let model_context = after["model_context"].to_string();
++    assert!(model_context.contains("original input"));
++    assert!(!model_context.contains("replacement summary"));
++    assert!(
++        stored_compaction_checkpoints(&store, &session)
++            .await
++            .iter()
++            .any(|item| matches!(item, RolloutItem::Compacted(_)))
++    );
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_detached_completion_yields_to_abort_error() {
++    let (session, turn, events, mut fences, _store) =
++        compaction_checkpoint_session(true, |_| {}).await;
++    session
++        .spawn_task(
++            turn.clone(),
++            Vec::new(),
++            NeverEndingTask {
++                kind: TaskKind::Regular,
++                listen_to_cancellation_token: true,
++            },
++        )
++        .await;
++    let cancel = {
++        let active = session.active_turn.lock().await;
++        let task = active.as_ref().unwrap().task.as_ref().unwrap();
++        assert!(Arc::ptr_eq(&task.turn_context, &turn));
++        task.cancellation_token.clone()
++    };
++    let checkpoint = start_compaction_checkpoint(session.clone(), turn.clone(), cancel);
++    let append = timeout(Duration::from_secs(2), fences.recv())
++        .await
++        .unwrap()
++        .unwrap();
++    append.release.send(Ok(())).unwrap();
++    let flush = timeout(Duration::from_secs(2), fences.recv())
++        .await
++        .unwrap()
++        .unwrap();
++    flush
++        .release
++        .send(Err("synthetic checkpoint flush failure".into()))
++        .unwrap();
++    let writer_error = timeout(Duration::from_secs(2), checkpoint)
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap_err();
++    let finalization = session
++        .services
++        .thread_extension_data
++        .get::<crate::tasks::TaskFinalization>()
++        .unwrap();
++    let held = finalization.0.lock().await;
++    let completing = session.on_task_finished(turn.clone(), Err(writer_error));
++    tokio::pin!(completing);
++    assert!(futures::poll!(completing.as_mut()).is_pending());
++
++    let earlier = CodexErr::Fatal("original strict Guardian abort".into()).to_error_event(None);
++    let aborting = session.abort_turn_if_active(
++        &turn.sub_id,
++        TurnAbortReason::Interrupted,
++        Some(earlier.clone()),
++    );
++    tokio::pin!(aborting);
++    assert!(futures::poll!(aborting.as_mut()).is_pending());
++    assert!(session.active_turn.lock().await.is_none());
++    drop(held);
++    let ((), aborted) = timeout(Duration::from_secs(2), async {
++        tokio::join!(completing, aborting)
++    })
++    .await
++    .unwrap();
++    assert!(aborted);
++    assert_compaction_checkpoint_failure_events(&events, &turn, &earlier, true, None);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compaction_checkpoint_pre_sampling_failure_records_prompt_before_error() {
++    const PROMPT: &str = "original pre-sampling prompt";
++    let server = start_mock_server().await;
++    mount_sse_once(
++        &server,
++        sse(vec![
++            ev_assistant_message("summary", "raw summary output"),
++            ev_completed("synthetic-compaction"),
++        ]),
++    )
++    .await;
++    let (session, turn, events, mut fences, store) =
++        compaction_checkpoint_session(true, |config| {
++            config.model_provider.name = "OpenAI (test)".into();
++            config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
++            config.model_provider.supports_websockets = false;
++            config.features.disable(Feature::TokenBudget).unwrap();
++            config.model_auto_compact_token_limit_scope =
++                codex_protocol::config_types::AutoCompactTokenLimitScope::BodyAfterPrefix;
++            config.model_auto_compact_token_limit = Some(1);
++        })
++        .await;
++    // The seed answer is the last model item. Give it a provider usage
++    // receipt so it contributes to the next turn's compaction threshold.
++    let output_tokens = turn.config.token_budget.as_ref().map_or(1024, |budget| {
++        budget.fallback_buffer_tokens().saturating_add(1024)
++    });
++    session
++        .update_token_usage_info(
++            &turn,
++            Some(&TokenUsage {
++                input_tokens: 64,
++                output_tokens,
++                total_tokens: 64 + output_tokens,
++                ..Default::default()
++            }),
++        )
++        .await
++        .unwrap();
++    assert!(
++        crate::session::context_window::context_window_token_status(&session, &turn)
++            .await
++            .token_limit_reached
++    );
++    let before = compaction_checkpoint_live_state(&session).await;
++    session
++        .spawn_task(
++            turn.clone(),
++            vec![TurnInput::UserInput {
++                content: vec![UserInput::Text {
++                    text: PROMPT.into(),
++                    text_elements: Vec::new(),
++                }],
++                client_id: None,
++                metadata: Default::default(),
++            }],
++            crate::tasks::RegularTask::new(),
++        )
++        .await;
++    let append = timeout(Duration::from_secs(5), fences.recv())
++        .await
++        .expect("pre-sampling compaction must reach its checkpoint append")
++        .unwrap();
++    let owner = {
++        let active = session.active_turn.lock().await;
++        active
++            .as_ref()
++            .unwrap()
++            .task
++            .as_ref()
++            .unwrap()
++            .handle
++            .owner()
++            .clone()
++    };
++    append
++        .release
++        .send(Err("synthetic checkpoint append rejection".into()))
++        .unwrap();
++    timeout(Duration::from_secs(5), owner.join())
++        .await
++        .unwrap()
++        .unwrap();
++    assert_compaction_checkpoint_failure_events(
++        &events,
++        &turn,
++        &compaction_checkpoint_persistence_error(),
++        false,
++        Some(PROMPT),
++    );
++    let after = compaction_checkpoint_live_state(&session).await;
++    assert_eq!(after["pending_hooks"], before["pending_hooks"]);
++    assert_eq!(after["window_id"], before["window_id"]);
++    let model_context = after["model_context"].to_string();
++    assert!(model_context.find("original answer").unwrap() < model_context.find(PROMPT).unwrap());
++    assert_eq!(model_context.matches(PROMPT).count(), 1);
++    assert!(!model_context.contains("raw summary output"));
++    assert!(
++        !stored_compaction_checkpoints(&store, &session)
++            .await
++            .iter()
++            .any(|item| matches!(item, RolloutItem::Compacted(_)))
++    );
++    let requests = server.received_requests().await.unwrap();
++    let responses: Vec<_> = requests
++        .iter()
++        .filter(|request| request.url.path() == "/v1/responses")
++        .collect();
++    assert_eq!(responses.len(), 1);
++    assert!(!String::from_utf8_lossy(&responses[0].body).contains(PROMPT));
++}
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 435f16c39174e57d1f0e10a08cfca0145617c0c6..1bf61f16b0eab7344154b7a570a69de63c700692 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -51,6 +51,7 @@ use crate::stream_events_utils::last_assistant_message_from_item;
+ use crate::stream_events_utils::mark_thread_memory_mode_polluted_if_external_context;
+ use crate::stream_events_utils::raw_assistant_output_text_from_item;
+ use crate::stream_events_utils::record_completed_response_item_with_finalized_facts;
++use crate::tasks::PendingCompactionFatal;
+ use crate::tasks::emit_compact_metric;
+ use crate::tools::ToolRouter;
+ use crate::tools::context::SharedTurnDiffTracker;
+@@ -1504,6 +1505,16 @@ async fn pre_sampling_compaction_or_report(
+         if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {
+             return Err(err);
+         }
++        // An admitted checkpoint hands its fatal to task finalization. The
++        // prompt still belongs in history, including when retirement owns settlement.
++        if matches!(err.details(), CodexErrorDetails::Fatal(_))
++            && turn_context
++                .extension_data
++                .get::<PendingCompactionFatal>()
++                .is_some()
++        {
++            return Err(err);
++        }
+         let error = err.to_codex_protocol_error();
+         sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), &err)
+             .await;
+@@ -1779,6 +1790,7 @@ async fn run_auto_compact(
+                 world_state,
+                 reason,
+                 phase,
++                cancellation_token,
+             )
+             .await?;
+         }
+diff --git a/codex-rs/core/src/state/session.rs b/codex-rs/core/src/state/session.rs
+index 5d75c38bad28f66abb9f8c53688efe98bb825ba4..c69309e3fb5362509f1b363bfea55de3618f4570 100644
+--- a/codex-rs/core/src/state/session.rs
++++ b/codex-rs/core/src/state/session.rs
+@@ -356,11 +356,26 @@ impl SessionState {
+         window.advance()
+     }
+ 
++    pub(crate) fn preview_auto_compact_window_with_id(
++        &self,
++        window_id: uuid::Uuid,
++    ) -> (u64, AutoCompactWindowIds) {
++        let mut window = self.auto_compact_window;
++        window.advance_with_id(window_id)
++    }
++
++    pub(crate) fn advance_auto_compact_window_with_id(
++        &mut self,
++        window_id: uuid::Uuid,
++    ) -> (u64, AutoCompactWindowIds) {
++        self.auto_compact_window.advance_with_id(window_id)
++    }
++
+     pub(crate) fn start_new_context_window(
+         &mut self,
+         window_id: uuid::Uuid,
+     ) -> (u64, AutoCompactWindowIds) {
+-        let window = self.auto_compact_window.advance_with_id(window_id);
++        let window = self.advance_auto_compact_window_with_id(window_id);
+         self.auto_compact_window.clear_prefill();
+         window
+     }
+diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
+index ffbc8ea08f153b4d48a771edfd474810b5767d22..4ddd1e96c3ebc522fdf5cf32e61454b8ad6c57d8 100644
+--- a/codex-rs/core/src/tasks/compact.rs
++++ b/codex-rs/core/src/tasks/compact.rs
+@@ -86,8 +86,14 @@ impl SessionTask for CompactTask {
+                     // Compaction prompt is synthesized; no UI element ranges to preserve.
+                     text_elements: Vec::new(),
+                 }];
+-                crate::compact::run_compact_task(session.clone(), step_context, world_state, input)
+-                    .await
++                crate::compact::run_compact_task(
++                    session.clone(),
++                    step_context,
++                    world_state,
++                    input,
++                    &cancellation_token,
++                )
++                .await
+             }
+         };
+         if let Err(err) = result {
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 2e83c32d57d45b41d4d7d02ea6ec7d7af12b96b5..b8c5f3bd95d45a85b3992ba1239fd1513a9239f9 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -82,6 +82,22 @@ pub(crate) type SessionTaskResult = CodexResult<Option<String>>;
+ #[derive(Default)]
+ pub(crate) struct TaskFinalization(pub(crate) Mutex<()>);
+ 
++/// An admitted checkpoint's writer failure, handed to the turn's terminal owner.
++pub(crate) struct PendingCompactionFatal(std::sync::Mutex<Option<CodexErr>>);
++
++impl PendingCompactionFatal {
++    fn take(&self) -> Option<CodexErr> {
++        self.0
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .take()
++    }
++}
++
++fn persistence_completion_fatal() -> CodexErr {
++    CodexErr::Fatal("Canonical thread persistence failed; turn completion stopped".to_string())
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum InterruptedTurnHistoryMarker {
+     Disabled,
+@@ -289,6 +305,29 @@ where
+ }
+ 
+ impl Session {
++    /// Leave an earlier owned callback fatal to task finalization.
++    pub(crate) fn rollout_completion_error(&self, turn_context: &TurnContext) -> Option<CodexErr> {
++        if self
++            .services
++            .code_mode_service
++            .has_pending_fatal_for_turn(turn_context)
++        {
++            return None;
++        }
++        Some(persistence_completion_fatal())
++    }
++
++    // The checkpoint holds TaskFinalization until the selected failure is visible
++    // to either normal completion or retirement. Leave the published error to them.
++    pub(crate) fn stage_compaction_fatal(&self, turn: &TurnContext) -> CodexErr {
++        let Some(error) = self.rollout_completion_error(turn) else {
++            return CodexErr::TurnAborted;
++        };
++        turn.extension_data
++            .get_or_init(|| PendingCompactionFatal(std::sync::Mutex::new(Some(error))));
++        persistence_completion_fatal()
++    }
++
+     pub async fn spawn_task<T: SessionTask>(
+         self: &Arc<Self>,
+         turn_context: Arc<TurnContext>,
+@@ -443,10 +482,8 @@ impl Session {
+                 warn!("failed to flush rollout before completing turn: {err}");
+                 // An earlier owned callback fatal remains primary; the existing
+                 // persistence warning still reports this secondary flush failure.
+-                if !sess.services.code_mode_service.has_pending_fatal_for_turn(&ctx_for_finish) {
+-                    task_result = Err(CodexErr::Fatal(
+-                        "Canonical thread persistence failed; turn completion stopped".to_string(),
+-                    ));
++                if let Some(error) = sess.rollout_completion_error(&ctx_for_finish) {
++                    task_result = Err(error);
+                 }
+                 sess.send_event(
+                     ctx_for_finish.as_ref(),
+@@ -710,34 +747,37 @@ impl Session {
+         let mut errors = Vec::new();
+         // No active_turn lock is held. An already-drained batch finishes once
+         // under its original context before we drain the remaining accepted input.
+-        {
+-            let recording = owner.recording.lock().await;
+-            let pending = self
+-                .input_queue
+-                .take_pending_input_for_turn_state(&state)
+-                .await;
+-            // This owner is already interrupting the task; retain cancellation as primary.
+-            let _ = run_hooks_and_record_inputs(
+-                self,
+-                &context,
+-                &context.capture_current_model_info(),
+-                &pending,
+-                PersistContext::Standard,
+-            )
++        // An admitted checkpoint publishes before retirement records its steer
++        // suffix. The exact owner is stopping, so no later checkpoint can enter.
++        let finalization = self
++            .services
++            .thread_extension_data
++            .get_or_init(TaskFinalization::default);
++        drop(finalization.0.lock().await);
++        let recording = owner.recording.lock().await;
++        let pending = self
++            .input_queue
++            .take_pending_input_for_turn_state(&state)
+             .await;
+-            if let Err(error) = self
+-                .try_ensure_rollout_materialized(PersistContext::Standard)
+-                .await
+-            {
+-                errors.push(error.to_string());
+-            }
+-            if let Err(error) = self.flush_rollout().await {
+-                errors.push(error.to_string());
+-            }
+-            drop(recording);
++        // This owner is already interrupting the task; retain cancellation as primary.
++        let _ = run_hooks_and_record_inputs(
++            self,
++            &context,
++            &context.capture_current_model_info(),
++            &pending,
++            PersistContext::Standard,
++        )
++        .await;
++        if let Err(error) = self
++            .try_ensure_rollout_materialized(PersistContext::Standard)
++            .await
++        {
++            errors.push(error.to_string());
+         }
+-        // Neither task cleanup nor the physical join borrows the recording
+-        // guard. The original task can therefore finish its own recording path.
++        if let Err(error) = self.flush_rollout().await {
++            errors.push(error.to_string());
++        }
++        drop(recording);
+         self.handle_task_abort(
+             task,
+             TurnAbortReason::Interrupted,
+@@ -790,7 +830,8 @@ impl Session {
+             .thread_extension_data
+             .get_or_init(TaskFinalization::default);
+         let _finalization = finalization.0.lock().await;
+-        if cancelled_owned_fatal {
++        let checkpoint = turn_context.extension_data.get::<PendingCompactionFatal>();
++        let checkpoint_fatal = if cancelled_owned_fatal || checkpoint.is_some() {
+             let active = self.active_turn.lock().await;
+             if !active
+                 .as_ref()
+@@ -800,7 +841,10 @@ impl Session {
+                 // An external abort took this exact task and owns its settlement.
+                 return;
+             }
+-        }
++            checkpoint.as_deref().and_then(PendingCompactionFatal::take)
++        } else {
++            None
++        };
+         // Retire this owner's sampling authority before any success selection. A
+         // deliberately yielded callback may outlive a successful turn; only an
+         // already failed owner closes/joins its admitted receipts here.
+@@ -810,6 +854,7 @@ impl Session {
+             .finish_turn(&turn_context)
+             .await;
+         let already_reported = turn_context.terminal_error.lock().await.is_some();
++        let task_result = checkpoint_fatal.map_or(task_result, Err);
+         let task_result = match (task_result, owned_fatal) {
+             (result, Some(_)) if already_reported => {
+                 warn!("Additional owned code-mode failure after the primary turn error");
+@@ -1277,11 +1322,31 @@ impl Session {
+                 .code_mode_service
+                 .finish_turn(&task.turn_context)
+                 .await;
+-            let primary = error.or(task.turn_context.terminal_error.lock().await.clone());
+-            match (primary, owned_fatal) {
++            let reported = task.turn_context.terminal_error.lock().await.clone();
++            let checkpoint = task
++                .turn_context
++                .extension_data
++                .get::<PendingCompactionFatal>();
++            let primary = if checkpoint.is_some() {
++                // Keep the terminal result consistent with an error already delivered
++                // by the turn. A supplied abort error can outrank the pending writer fatal.
++                if reported.is_none()
++                    && let Some(primary) = &error
++                {
++                    self.send_event(&task.turn_context, EventMsg::Error(primary.clone()))
++                        .await;
++                }
++                reported.or(error)
++            } else {
++                error.or(reported)
++            };
++            let fatal = checkpoint
++                .as_deref()
++                .and_then(PendingCompactionFatal::take)
++                .or_else(|| owned_fatal.map(CodexErr::Fatal));
++            match (primary, fatal) {
+                 (Some(primary), _) => Some(primary),
+-                (None, Some(message)) => {
+-                    let fatal = CodexErr::Fatal(message);
++                (None, Some(fatal)) => {
+                     self.emit_turn_error_lifecycle(
+                         task.turn_context.as_ref(),
+                         fatal.to_codex_protocol_error(),

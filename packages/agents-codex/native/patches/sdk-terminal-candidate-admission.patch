@@ -1,8 +1,23 @@
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index 41fe00224a72ed225b003e16b0efea80de746c7d..cb24780b545c34a360dd1ce51897db0af2a24574 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -531,6 +531,10 @@ impl TurnInputQueue {
+         self.items.is_empty()
+     }
+
++    pub(crate) fn snapshot(&self) -> Vec<TurnInput> {
++        self.items.clone()
++    }
++
+     fn pending_activity(&self) -> Option<InputQueueActivity> {
+         if self.items.iter().any(|input| {
+             matches!(
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acddd5c9f31 100644
+index 1bf61f16b0eab7344154b7a570a69de63c700692..b4ae25db19578cb75dd4cf798da8d4d5503c0179 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -54,6 +54,7 @@ use crate::stream_events_utils::record_completed_response_item_with_finalized_fa
+@@ -55,6 +55,7 @@ use crate::tasks::PendingCompactionFatal;
  use crate::tasks::emit_compact_metric;
  use crate::tools::ToolRouter;
  use crate::tools::context::SharedTurnDiffTracker;
@@ -10,7 +25,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
  use crate::tools::parallel::ToolCallRuntime;
  use crate::tools::registry::ToolArgumentDiffConsumer;
  use crate::tools::router::ToolSuggestCandidates;
-@@ -172,6 +173,7 @@ pub(crate) async fn run_turn(
+@@ -173,6 +174,7 @@ pub(crate) async fn run_turn(
      cancellation_token: CancellationToken,
  ) -> CodexResult<Option<String>> {
      sess.check_agent_profile_admission()?;
@@ -18,7 +33,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
      if crate::guardian::is_basic_session_source(&turn_context.session_source) {
          crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
      }
-@@ -426,6 +428,14 @@ pub(crate) async fn run_turn(
+@@ -427,6 +429,14 @@ pub(crate) async fn run_turn(
              &turn_context.sub_id,
              &history.items,
          )?;
@@ -33,7 +48,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
          if try_complete_tool_turn(
              &sess,
              &first_step_context,
-@@ -607,6 +617,7 @@ pub(crate) async fn run_turn(
+@@ -608,6 +618,7 @@ pub(crate) async fn run_turn(
                  Arc::clone(&turn_diff_tracker),
                  &mut client_session,
                  sampling_request_input,
@@ -41,7 +56,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
                  cancellation_token.child_token(),
              )
              .await
-@@ -1889,6 +1900,7 @@ async fn run_sampling_request(
+@@ -1901,6 +1912,7 @@ async fn run_sampling_request(
      turn_diff_tracker: SharedTurnDiffTracker,
      client_session: &mut ModelClientSession,
      input: Vec<ResponseItem>,
@@ -49,7 +64,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
      cancellation_token: CancellationToken,
  ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
      if sess.captured_provider_image_reference_policy() == codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses {
-@@ -2079,6 +2091,7 @@ async fn run_sampling_request(
+@@ -2091,6 +2103,7 @@ async fn run_sampling_request(
                  &responses_metadata,
                  Arc::clone(&turn_diff_tracker),
                  &sampling_prompt,
@@ -57,7 +72,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
                  cancellation_token.child_token(),
                  invocation_deadline.clone(),
              )
-@@ -2439,6 +2452,24 @@ fn recovered_tools_from_history(
+@@ -2451,6 +2464,24 @@ fn recovered_tools_from_history(
              }
          }
      }
@@ -82,7 +97,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
      let mut ordered_outputs = Vec::with_capacity(calls.len());
      let mut all_succeeded = true;
      for (call, id) in calls.iter().zip(&ids) {
-@@ -2477,6 +2508,60 @@ fn recovered_tools_from_history(
+@@ -2489,6 +2520,60 @@ fn recovered_tools_from_history(
      })
  }
 
@@ -143,7 +158,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
  async fn try_complete_tool_turn(
      sess: &Arc<Session>,
      step_context: &Arc<StepContext>,
-@@ -2485,15 +2570,16 @@ async fn try_complete_tool_turn(
+@@ -2497,15 +2582,16 @@ async fn try_complete_tool_turn(
      stop_hook_active: &mut bool,
      completion_continuations: &mut usize,
  ) -> CodexResult<bool> {
@@ -163,7 +178,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
          let stop = run_turn_stop_hooks(sess, step_context, *stop_hook_active, None).await;
          if stop.should_stop {
              return Err(CodexErr::TurnAborted);
-@@ -2581,6 +2667,7 @@ async fn propose_tool_completion(
+@@ -2593,6 +2679,7 @@ async fn propose_tool_completion(
              match decision {
                  None => continue,
                  Some(codex_extension_api::ToolCompletionDecision::Continue { feedback }) => {
@@ -171,7 +186,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
                      if let Some(feedback) = feedback {
                          *completion_continuations =
                              completion_continuations.checked_add(1).ok_or_else(|| {
-@@ -3208,6 +3295,7 @@ async fn drain_in_flight(
+@@ -3220,6 +3307,7 @@ async fn drain_in_flight(
      sess: Arc<Session>,
      step_context: &StepContext,
      settled_tools: &mut SettledDirectTools,
@@ -179,7 +194,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
  ) -> CodexResult<()> {
      let turn_context = &step_context.turn;
      while let Some(res) = in_flight.next().await {
-@@ -3221,8 +3309,48 @@ async fn drain_in_flight(
+@@ -3233,8 +3321,48 @@ async fn drain_in_flight(
                      &result.envelope.item,
                  )
                  .await;
@@ -229,7 +244,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
              }
              Err(err) => return Err(err),
          }
-@@ -3262,6 +3390,7 @@ async fn try_run_sampling_request(
+@@ -3274,6 +3402,7 @@ async fn try_run_sampling_request(
      responses_metadata: &CodexResponsesMetadata,
      turn_diff_tracker: SharedTurnDiffTracker,
      prompt: &Prompt,
@@ -237,7 +252,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
      cancellation_token: CancellationToken,
      logical_deadline: Option<Arc<super::model_invocation_deadline::ModelInvocationDeadline>>,
  ) -> CodexResult<SamplingRequestResult> {
-@@ -4074,7 +4203,7 @@ async fn try_run_sampling_request(
+@@ -4086,7 +4215,7 @@ async fn try_run_sampling_request(
      if timeout_ms.is_some() {
          deadline_cleanup_errors.extend(deadline.retire_tasks().await);
      }
@@ -246,7 +261,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
          let _tool_blocking_timing_guard = turn_context.turn_timing_state.begin_tool_blocking();
          let _tool_blocking_span = trace_span!(
              "codex.tool_blocking",
-@@ -4087,29 +4216,37 @@ async fn try_run_sampling_request(
+@@ -4099,29 +4228,37 @@ async fn try_run_sampling_request(
              sess.clone(),
              &step_context,
              &mut settled_tools,
@@ -297,7 +312,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acd
          let durable = sess.ensure_rollout_durable().await;
          if durable.is_ok() && should_emit_token_count {
              sess.send_token_count_event(&turn_context).await;
-@@ -4136,9 +4273,13 @@ async fn try_run_sampling_request(
+@@ -4148,9 +4285,13 @@ async fn try_run_sampling_request(
          // Preserve an earlier provider/tool failure. A successful response must
          // not publish success when its owned request retirement failed.
          if outcome.is_ok() && tool_cleanup.is_ok() {
@@ -340,10 +355,10 @@ index 99a5f411e4a177e778eb8695e7c0b07074f21e7d..55430b52a68085649639083b7ab4f4b1
          response_observation_id: "batch".into(),
          call_ids: ["prefix", "fresh", "suffix"]
 diff --git a/codex-rs/core/src/tasks/regular.rs b/codex-rs/core/src/tasks/regular.rs
-index 68eebb777c25b1ce10de5a7b7000a0103d657535..8e4e512bcd6ac6c0f084cf7d32d638d0ce454cd2 100644
+index 68eebb777c25b1ce10de5a7b7000a0103d657535..ac056719f93f12cb2f0baa81767dd3bbd6a0eb36 100644
 --- a/codex-rs/core/src/tasks/regular.rs
 +++ b/codex-rs/core/src/tasks/regular.rs
-@@ -45,6 +45,36 @@ impl SessionTask for RegularTask {
+@@ -45,6 +45,49 @@ impl SessionTask for RegularTask {
          cancellation_token: CancellationToken,
      ) -> SessionTaskResult {
          let run_turn_span = trace_span!("run_turn");
@@ -355,8 +370,21 @@ index 68eebb777c25b1ce10de5a7b7000a0103d657535..8e4e512bcd6ac6c0f084cf7d32d638d0
 +            .get::<codex_extension_api::InitialTurnInput>()
 +            .is_some_and(|initial| initial.0.is_none())
 +        {
++            // Mailbox-triggered children can start with an empty task input.
++            // Snapshot this turn's admitted queue without consuming its records.
++            let pending_input = if let Some(state) = sess
++                .input_queue
++                .turn_state_for_sub_id(&sess.active_turn, &ctx.sub_id)
++                .await
++            {
++                let pending = state.lock().await;
++                pending.pending_input.snapshot()
++            } else {
++                Vec::new()
++            };
 +            let initial = input
 +                .iter()
++                .chain(pending_input.iter())
 +                .filter(|item| {
 +                    matches!(
 +                        item,
