@@ -201,6 +201,15 @@ it('composes native audio and named selection through the real Chat library', as
       return 'found';
     },
   });
+  const other = tool({
+    name: 'other',
+    description: 'Unselected.',
+    parameters: z.object({}),
+    execute() {
+      effects.push('other');
+      return 'unselected';
+    },
+  });
   await using provider = new NativeProvider({
     baseUrl: 'https://example.invalid/v1',
     modelBackend: new ChatCompletionsModel(client),
@@ -208,7 +217,7 @@ it('composes native audio and named selection through the real Chat library', as
   const result = await new Agent({
     model: 'custom-model',
     instructions: 'Use lookup once.',
-    tools: [lookup],
+    tools: [lookup, other],
     provider,
     modelSettings: {
       inputModalities: ['text', 'audio'],
@@ -223,10 +232,10 @@ it('composes native audio and named selection through the real Chat library', as
   expect(result.finalOutput).toBe('ok');
   expect(effects).toEqual(['lookup']);
   expect(seen).toHaveLength(2);
-  expect(seen[0].tool_choice).toEqual({
-    type: 'function',
-    function: { name: 'lookup' },
-  });
+  expect(seen[0].tool_choice).toBe('required');
+  expect(seen[0].tools.map((item: any) => item.function.name)).toEqual([
+    'lookup',
+  ]);
   for (const body of seen) {
     expect(
       body.messages.find((item: any) => item.role === 'user').content,
