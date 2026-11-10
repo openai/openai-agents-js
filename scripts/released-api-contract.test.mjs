@@ -2753,3 +2753,107 @@ describe('release-specific package membership', () => {
     }
   });
 });
+
+describe('raw WebAssembly asset exports', () => {
+  test('checks source shape, built bytes and installed public resolution without inventing JS declarations', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'api-wasm-asset-'));
+    try {
+      const roots = {};
+      for (const [name] of PUBLIC_PACKAGES) {
+        const packageRoot = path.join(root, 'node_modules', name);
+        await mkdir(packageRoot, { recursive: true });
+        roots[name] = packageRoot;
+        await writeFile(
+          path.join(packageRoot, 'package.json'),
+          JSON.stringify({
+            name,
+            exports:
+              name === '@openai/agents'
+                ? { './voice/control.wasm': './native/control.wasm' }
+                : {},
+          }),
+        );
+      }
+      const packages = await contractSurface.loadPackageSet(roots, 'source');
+      const surfaces = await inspectPackageSet(packages, 'source');
+      expect(
+        packages['@openai/agents'].entries['./voice/control.wasm'].declarations,
+      ).toEqual([]);
+      expect(await contractSurface.assertAllTargetsExist(packages)).toContain(
+        '@openai/agents/voice/control.wasm export target ./native/control.wasm is missing',
+      );
+      const artifact = path.join(
+        roots['@openai/agents'],
+        'native/control.wasm',
+      );
+      await mkdir(path.dirname(artifact), { recursive: true });
+      await writeFile(artifact, Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]));
+      expect(await contractSurface.assertAllTargetsExist(packages)).toEqual([]);
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toEqual([]);
+      expect(
+        await contractExecution.validatePublicSpecifiers(
+          packages,
+          surfaces,
+          root,
+        ),
+      ).toEqual([]);
+      await writeFile(artifact, 'export default "not WebAssembly";');
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toEqual([expect.stringContaining('Wasm asset failed to compile')]);
+      expect(
+        await contractExecution.validatePublicSpecifiers(
+          packages,
+          surfaces,
+          root,
+        ),
+      ).toEqual([
+        expect.stringContaining('import public specifier failed to load'),
+        expect.stringContaining('require public specifier failed to load'),
+      ]);
+      await rm(artifact);
+      expect(
+        await contractExecution.validatePublicSpecifiers(
+          packages,
+          surfaces,
+          root,
+        ),
+      ).toEqual([
+        expect.stringContaining('import public specifier failed to load'),
+        expect.stringContaining('require public specifier failed to load'),
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ['./module', './module.js', 'no types export target'],
+    ['./module.wasm', './module.js', 'no types export target'],
+    ['./module.wasm', '../escape.wasm', 'invalid package export target'],
+  ])(
+    'keeps rejecting unsupported or invalid exports %s -> %s',
+    async (subpath, target, error) => {
+      const root = await mkdtemp(path.join(tmpdir(), 'api-wasm-shape-'));
+      try {
+        const roots = {};
+        for (const [name] of PUBLIC_PACKAGES) {
+          const packageRoot = path.join(root, name);
+          await mkdir(packageRoot, { recursive: true });
+          roots[name] = packageRoot;
+          await writeFile(
+            path.join(packageRoot, 'package.json'),
+            JSON.stringify({ name, exports: { [subpath]: target } }),
+          );
+        }
+        await expect(
+          contractSurface.loadPackageSet(roots, 'source'),
+        ).rejects.toThrow(error);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+});

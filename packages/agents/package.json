@@ -193,6 +193,17 @@
         "default": "./dist/voice/twilio.js"
       }
     },
+    "./voice/portable": {
+      "import": {
+        "types": "./dist/voice/portable.d.mts",
+        "default": "./dist/voice/portable.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/portable.d.ts",
+        "default": "./dist/voice/portable.js"
+      }
+    },
+    "./voice/control.wasm": "./native/codex-realtime-control.wasm",
     "./memory": {
       "import": {
         "types": "./dist/memory/index.d.mts",
@@ -262,7 +273,9 @@
   },
   "files": [
     "dist",
-    "CLASSIC.md"
+    "CLASSIC.md",
+    "native/codex-realtime-control.wasm",
+    "native/portable-build-receipt.json"
   ],
   "typesVersions": {
     "*": {
@@ -325,6 +338,9 @@
       ],
       "voice/twilio": [
         "dist/voice/twilio.d.ts"
+      ],
+      "voice/portable": [
+        "dist/voice/portable.d.ts"
       ],
       "memory": [
         "dist/memory/index.d.ts"

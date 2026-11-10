@@ -1,3 +1,9 @@
+import {
+  NativeVoiceControl,
+  PortableVoiceSession,
+  type PortableVoiceOptions,
+} from './portable';
+
 /** Exchange SDP with the application's authenticated native voice server.
  * Resolve only after the server's native control connection is ready.
  */
@@ -7,7 +13,12 @@ export type VoiceSdpExchange = (
 ) => Promise<string>;
 
 export interface NativeVoiceWebRTCOptions {
-  audioElement: Pick<HTMLMediaElement, 'play' | 'srcObject'>;
+  audioElement?: Pick<HTMLMediaElement, 'play' | 'srcObject'>;
+  /** Platform-owned factories allow WebRTC integrations without global shims. */
+  createPeerConnection?: () => RTCPeerConnection | Promise<RTCPeerConnection>;
+  getUserMedia?: () => Promise<MediaStream>;
+  onRemoteStream?: (stream: MediaStream) => void;
+  onDataChannel?: (channel: RTCDataChannel) => void;
   /** Supplied tracks remain owned by the application after close. */
   mediaStream?: MediaStream;
   /** Provider observations confer no native tool or approval authority. */
@@ -75,14 +86,15 @@ export class NativeVoiceWebRTC {
     const { signal } = this.#abort;
     const stream =
       this.options.mediaStream ??
-      (await navigator.mediaDevices.getUserMedia({
-        audio: {
-          autoGainControl: true,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
-        video: false,
-      }));
+      (await (this.options.getUserMedia?.() ??
+        navigator.mediaDevices.getUserMedia({
+          audio: {
+            autoGainControl: true,
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+          video: false,
+        })));
     if (signal.aborted) {
       if (!this.options.mediaStream)
         for (const track of stream.getTracks()) track.stop();
@@ -92,10 +104,6 @@ export class NativeVoiceWebRTC {
     const tracks = stream.getAudioTracks();
     if (tracks.length !== 1 || tracks[0].readyState === 'ended')
       throw new Error('Voice media requires one live microphone audio track.');
-    const peer = new RTCPeerConnection();
-    this.#peer = peer;
-    const channel = peer.createDataChannel('oai-events');
-    this.#channel = channel;
     const fail = (error: Error) => {
       if (signal.aborted) return;
       this.#abort.abort(error);
@@ -108,6 +116,15 @@ export class NativeVoiceWebRTC {
     };
     this.#trackEnded = () => fail(new Error('Voice microphone ended.'));
     tracks[0].addEventListener('ended', this.#trackEnded);
+    const peer = await (this.options.createPeerConnection?.() ??
+      new RTCPeerConnection());
+    if (signal.aborted) {
+      peer.close();
+      signal.throwIfAborted();
+    }
+    this.#peer = peer;
+    const channel = peer.createDataChannel('oai-events');
+    this.#channel = channel;
     channel.onmessage = ({ data }) => {
       if (signal.aborted) return;
       let event: unknown;
@@ -119,15 +136,19 @@ export class NativeVoiceWebRTC {
       }
       this.options.onTransportEvent?.(event);
     };
+    this.options.onDataChannel?.(channel);
     channel.onerror = () => fail(new Error('Voice data channel failed.'));
     channel.onclose = () => fail(new Error('Voice data channel closed.'));
     peer.ontrack = ({ streams }) => {
       if (signal.aborted || !streams[0]) return;
       this.#playback = streams[0];
-      this.options.audioElement.srcObject = streams[0];
-      void this.options.audioElement
-        .play()
-        .catch(() => fail(new Error('Voice audio playback failed.')));
+      this.options.onRemoteStream?.(streams[0]);
+      if (this.options.audioElement) {
+        this.options.audioElement.srcObject = streams[0];
+        void this.options.audioElement
+          .play()
+          .catch(() => fail(new Error('Voice audio playback failed.')));
+      }
     };
     peer.onconnectionstatechange = () => {
       if (signal.aborted) return;
@@ -191,7 +212,11 @@ export class NativeVoiceWebRTC {
       }
     };
     if (channel) {
-      channel.onmessage = channel.onerror = channel.onclose = null;
+      channel.onmessage =
+        channel.onerror =
+        channel.onclose =
+        channel.onopen =
+          null;
       clean(() => channel.close());
     }
     if (peer) {
@@ -206,10 +231,127 @@ export class NativeVoiceWebRTC {
       for (const track of stream?.getTracks() ?? []) clean(() => track.stop());
     if (
       this.#playback &&
-      this.options.audioElement.srcObject === this.#playback
+      this.options.audioElement?.srcObject === this.#playback
     )
       this.options.audioElement.srcObject = null;
     this.#playback = undefined;
     if (failure !== undefined) throw failure;
+  }
+}
+
+/** Browser-hosted Rust control over the provider's WebRTC data channel.
+ * Supply a short-lived client credential and the reviewed native control module.
+ */
+export async function connectPortableVoiceBrowser(options: {
+  control: NativeVoiceControl;
+  apiKey: string;
+  /** Explicitly allow a regular API key in this browser-owned connection. */
+  useInsecureApiKey?: boolean;
+  agent: PortableVoiceOptions;
+  media: NativeVoiceWebRTCOptions;
+  callUrl?: string;
+  signal?: AbortSignal;
+}): Promise<{ session: PortableVoiceSession; media: NativeVoiceWebRTC }> {
+  options.signal?.throwIfAborted();
+  const apiKey = options.apiKey;
+  if (typeof apiKey !== 'string' || !/^[\x21-\x7e]+$/.test(apiKey))
+    throw new TypeError(
+      'Voice credential must be nonempty text without whitespace or control characters.',
+    );
+  const isClientKey = apiKey.startsWith('ek_') && apiKey.length > 3;
+  if (!isClientKey && options.useInsecureApiKey !== true)
+    throw new TypeError(
+      'Browser voice requires an ephemeral client key. To explicitly use a regular API key, set useInsecureApiKey: true.',
+    );
+  const sessionConfig = isClientKey
+    ? undefined
+    : JSON.stringify({ type: 'realtime', model: options.agent.model });
+  const endpoint = new URL(
+    options.callUrl ?? 'https://api.openai.com/v1/realtime/calls',
+  );
+  if (endpoint.protocol !== 'https:')
+    throw new TypeError('Provider call URL must use https.');
+  let channel: RTCDataChannel | undefined;
+  let openResolve!: () => void;
+  let openReject!: (error: unknown) => void;
+  const opened = new Promise<void>((resolve, reject) => {
+    openResolve = resolve;
+    openReject = reject;
+  });
+  void opened.catch(() => {});
+  const session = new PortableVoiceSession(
+    options.control,
+    {
+      async send(frame) {
+        await opened;
+        if (!channel || channel.readyState !== 'open')
+          throw new Error('Voice data channel is not open.');
+        channel.send(frame);
+      },
+      close() {
+        openReject(new Error('Voice data channel closed.'));
+        options.signal?.removeEventListener('abort', abort);
+        media.close();
+      },
+    },
+    options.agent,
+  );
+  const abort = () =>
+    session.fail(
+      options.signal?.reason ?? new Error('Voice connection aborted.'),
+    );
+  const media = new NativeVoiceWebRTC({
+    ...options.media,
+    onDataChannel(dataChannel) {
+      channel = dataChannel;
+      channel.onopen = () => openResolve();
+      if (channel.readyState === 'open') openResolve();
+      options.media.onDataChannel?.(channel);
+    },
+    onTransportEvent(event) {
+      session.receive(event);
+      options.media.onTransportEvent?.(event);
+    },
+    onError(error) {
+      session.fail(error);
+      options.media.onError?.(error);
+    },
+  });
+  options.signal?.addEventListener('abort', abort, { once: true });
+  try {
+    await media.connect({
+      exchangeSdp: async (offer, signal) => {
+        let body: string | FormData = offer;
+        if (!isClientKey) {
+          body = new FormData();
+          body.set('sdp', offer);
+          body.set('session', sessionConfig!);
+        }
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            ...(isClientKey ? { 'Content-Type': 'application/sdp' } : {}),
+          },
+          body,
+          signal,
+          redirect: 'error',
+        });
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(`Voice SDP exchange failed (${response.status}).`);
+        }
+        return response.text();
+      },
+    });
+    await session.start();
+    return { session, media };
+  } catch (error) {
+    try {
+      await session.close();
+    } catch {
+      // Preserve the opening error while releasing the acquired media.
+    }
+    throw error;
   }
 }

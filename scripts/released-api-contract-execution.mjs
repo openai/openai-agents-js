@@ -1,7 +1,7 @@
 // Package acquisition and runtime probes. Importing this module performs no installs or probes.
 import { execFile as execFileCallback } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -226,6 +226,7 @@ async function loadPublicSpecifiers(
   format,
   conditions = [],
   identityPairs = CONVENIENCE_IDENTITY_PAIRS,
+  wasmSpecifiers = [],
 ) {
   const describeLoaded = `const describeLoaded = (loaded) => {
   const keys = Object.keys(loaded);
@@ -245,6 +246,12 @@ async function loadPublicSpecifiers(
 const loadedModules = {};
 for (const specifier of JSON.parse(process.argv[1])) {
   try {
+    if (JSON.parse(process.argv[5]).includes(specifier)) {
+      const { readFile } = await import('node:fs/promises');
+      new WebAssembly.Module(await readFile(new URL(import.meta.resolve(specifier))));
+      result[specifier] = { keys: [], namespaceKeys: {} };
+      continue;
+    }
     const loaded = await import(specifier);
     loadedModules[specifier] = loaded;
     result[specifier] = describeLoaded(loaded);
@@ -265,6 +272,11 @@ console.log(JSON.stringify({
 const loadedModules = {};
 for (const specifier of JSON.parse(process.argv[1])) {
   try {
+    if (JSON.parse(process.argv[5]).includes(specifier)) {
+      new WebAssembly.Module(require('node:fs').readFileSync(require.resolve(specifier)));
+      result[specifier] = { keys: [], namespaceKeys: {} };
+      continue;
+    }
     const loaded = require(specifier);
     loadedModules[specifier] = loaded;
     result[specifier] = describeLoaded(loaded);
@@ -293,6 +305,7 @@ console.log(JSON.stringify({
     JSON.stringify(identityPairs),
     format,
     conditionLabel,
+    JSON.stringify(wasmSpecifiers),
   ];
   const { stdout } = await execFile(process.execPath, args, {
     cwd: installRoot,
@@ -314,6 +327,7 @@ export async function validatePublicSpecifiers(
       if (!entryFilter(name, subpath)) continue;
       entriesBySpecifier.set(packageKey(name, subpath), {
         exportNode: packageInfo.entries[subpath].exportNode,
+        asset: packageInfo.entries[subpath].asset,
         variants: surfaces[name]?.[subpath],
       });
     }
@@ -332,6 +346,9 @@ export async function validatePublicSpecifiers(
         format,
         conditions,
         convenienceIdentityPairs(packages),
+        specifiers.filter(
+          (specifier) => entriesBySpecifier.get(specifier).asset === 'wasm',
+        ),
       );
       errors.push(...results.identityErrors);
       for (const specifier of specifiers) {
@@ -408,6 +425,20 @@ export async function validateRuntime(
   for (const [name, packageInfo] of Object.entries(packages)) {
     for (const [subpath, entry] of Object.entries(packageInfo.entries)) {
       if (!entryFilter(name, subpath)) continue;
+      if (entry.asset === 'wasm') {
+        try {
+          new globalThis.WebAssembly.Module(
+            await readFile(
+              path.join(packageInfo.packageRoot, entry.exportNode),
+            ),
+          );
+        } catch (error) {
+          errors.push(
+            `${packageKey(name, subpath)} Wasm asset failed to compile: ${error.message}`,
+          );
+        }
+        continue;
+      }
       for (const format of ['import', 'require']) {
         for (const { condition, target } of collectRuntimeTargets(
           entry.exportNode,

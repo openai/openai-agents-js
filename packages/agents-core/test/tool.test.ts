@@ -2983,20 +2983,25 @@ describe('tool.invoke', () => {
   });
 
   it('enforces timeout when invoking FunctionTool directly', async () => {
+    const execution = Promise.withResolvers<void>();
     const t = tool({
       name: 'direct_slow',
       description: 'slow direct invoke',
       parameters: z.object({}),
       timeoutMs: 5,
       execute: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await execution.promise;
         return 'done';
       },
     });
 
-    const result = await t.invoke(new RunContext(), '{}');
+    try {
+      const result = await t.invoke(new RunContext(), '{}');
 
-    expect(result).toBe("Tool 'direct_slow' timed out after 5ms.");
+      expect(result).toBe("Tool 'direct_slow' timed out after 5ms.");
+    } finally {
+      execution.resolve();
+    }
   });
 
   it('uses timeoutErrorFunction when timeoutBehavior is error_as_result', async () => {

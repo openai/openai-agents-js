@@ -12,7 +12,7 @@ const workspacePackages = readWorkspacePackages(resolve(rootDir, 'packages'));
 const aliases = createWorkspacePackageAliases(workspacePackages);
 
 describe('workspace package aliases', () => {
-  it('maps every public package export to a source entrypoint', () => {
+  it('maps public code to sources and portable control assets to native products', () => {
     const expectedAliases = workspacePackages.flatMap((workspacePackage) =>
       Object.keys(workspacePackage.exports).map((exportPath) => {
         const subpath = exportPath === '.' ? '' : exportPath.slice(1);
@@ -29,7 +29,13 @@ describe('workspace package aliases', () => {
       const pathSegments = relativePath.split(sep);
 
       expect(relativePath).not.toMatch(/^\.\./u);
-      expect(pathSegments).toContain('src');
+      if (sourcePath.endsWith('.wasm')) {
+        expect(relativePath.split(sep).join('/')).toMatch(
+          /^agents(?:-codex)?\/native\/codex-realtime-control\.wasm$/u,
+        );
+      } else {
+        expect(pathSegments).toContain('src');
+      }
       expect(pathSegments).not.toContain('dist');
     }
   });
@@ -84,6 +90,14 @@ describe('workspace package aliases', () => {
     expect(aliases['@openai/agents/a2a']).toBe(
       resolve(rootDir, 'packages/agents/src/a2a/index.ts'),
     );
+  });
+
+  it('maps the owner and facade portable control assets without a JS replacement', () => {
+    for (const name of ['agents', 'agents-codex']) {
+      expect(aliases[`@openai/${name}/voice/control.wasm`]).toBe(
+        resolve(rootDir, `packages/${name}/native/codex-realtime-control.wasm`),
+      );
+    }
   });
 
   it('fails fast when a published export has no source entrypoint', () => {

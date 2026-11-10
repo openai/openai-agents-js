@@ -7,3 +7,5 @@ bin/
 dist/
 node_modules/
 native/build-receipt.json
+native/*.wasm
+native/portable-build-receipt.json

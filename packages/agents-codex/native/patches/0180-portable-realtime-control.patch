@@ -1,0 +1,1519 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index e77d512..8158b46 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -2980,6 +2980,7 @@ dependencies = [
+  "codex-plugin",
+  "codex-prompts",
+  "codex-protocol",
++ "codex-realtime-control",
+  "codex-response-debug-context",
+  "codex-rmcp-client",
+  "codex-rollout",
+@@ -4365,6 +4366,15 @@ dependencies = [
+  "uuid",
+ ]
+ 
++[[package]]
++name = "codex-realtime-control"
++version = "0.1.0"
++dependencies = [
++ "serde",
++ "serde_json",
++ "sha2 0.10.9",
++]
++
+ [[package]]
+ name = "codex-realtime-webrtc"
+ version = "0.0.0"
+diff --git a/codex-rs/Cargo.toml b/codex-rs/Cargo.toml
+index ce7ed1f..742c235 100644
+--- a/codex-rs/Cargo.toml
++++ b/codex-rs/Cargo.toml
+@@ -1,4 +1,5 @@
+ [workspace]
++exclude = ["realtime-control"]
+ members = [
+     "aws-auth",
+     "analytics",
+diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
+index 92a29b6..0566129 100644
+--- a/codex-rs/core/Cargo.toml
++++ b/codex-rs/core/Cargo.toml
+@@ -12,6 +12,7 @@ path = "src/lib.rs"
+ workspace = true
+ 
+ [dependencies]
++codex-realtime-control = { path = "../realtime-control" }
+ codex-utils-process = { workspace = true }
+ anyhow = { workspace = true }
+ arc-swap = { workspace = true }
+diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
+index 93dd80a..911f8c4 100644
+--- a/codex-rs/core/src/realtime_conversation.rs
++++ b/codex-rs/core/src/realtime_conversation.rs
+@@ -87,7 +87,6 @@ use http::HeaderMap;
+ use http::HeaderValue;
+ use http::header::AUTHORIZATION;
+ use serde_json::json;
+-use sha2::{Digest, Sha256};
+ use std::collections::BTreeMap;
+ use std::collections::HashMap;
+ use std::collections::HashSet;
+@@ -370,7 +369,6 @@ enum RealtimeSessionKind {
+ 
+ const SDK_HANDOFF_LIMIT: usize = 1024;
+ const SDK_FUNCTION_CALL_LIMIT: usize = 256;
+-const SDK_FUNCTION_CALL_MAX_BYTES: usize = 256 * 1024;
+ 
+ pub(crate) type SdkHostedMcpReply =
+     Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<CodexResult<()>>>>>;
+@@ -525,7 +523,7 @@ struct RealtimeFunctionBatch {
+ struct SdkFunctionCall {
+     preparation: Option<Arc<preparation::SdkToolPreparation>>,
+     request: codex_protocol::protocol::RealtimeFunctionCallRequested,
+-    claimed: bool,
++    claim: codex_realtime_control::CallClaim,
+     native_turn_id: Option<String>,
+     cancel: CancellationToken,
+     completed: CancellationToken,
+@@ -783,7 +781,7 @@ impl SdkRealtimeState {
+                     .as_ref()
+                     .is_none_or(|job| job.completion.clone().now_or_never().is_some());
+                 let execution_settled = call.completed.is_cancelled()
+-                    || (!call.claimed && call.native_turn_id.is_none());
++                    || (!call.claim.is_claimed() && call.native_turn_id.is_none());
+                 let batch_settled = call.batch.as_ref().is_none_or(|batch| {
+                     batch
+                         .completed
+@@ -1087,14 +1085,19 @@ struct NativeResponseRequest {
+ }
+ 
+ #[derive(Default)]
+-struct RealtimeResponseCreateQueue {
+-    sdk_response_id: Option<String>,
+-    sdk_cancelled_response: Option<String>,
+-    active_default_response: bool,
+-    pending_create: bool,
+-    pending_user_create: bool,
+-    pending_native_create: Option<NativeResponseRequest>,
+-    pending_guardrail_response: Option<String>,
++struct RealtimeResponseCreateQueue(
++    codex_realtime_control::ResponseCreateState<NativeResponseRequest>,
++);
++impl std::ops::Deref for RealtimeResponseCreateQueue {
++    type Target = codex_realtime_control::ResponseCreateState<NativeResponseRequest>;
++    fn deref(&self) -> &Self::Target {
++        &self.0
++    }
++}
++impl std::ops::DerefMut for RealtimeResponseCreateQueue {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        &mut self.0
++    }
+ }
+ 
+ impl RealtimeResponseCreateQueue {
+@@ -1103,20 +1106,14 @@ impl RealtimeResponseCreateQueue {
+         writer: &RealtimeWebsocketWriter,
+         reason: &str,
+     ) -> anyhow::Result<()> {
+-        self.pending_guardrail_response = None;
+-        if self.active_default_response {
+-            self.pending_create = true;
++        if !self.0.request_create() {
+             return Ok(());
+         }
+-        // This foreground request consumes the coalesced pending intent.
+-        self.pending_create = false;
+-        self.pending_user_create = false;
+-        self.pending_native_create = None;
+         self.send_create_now(writer, reason).await
+     }
+ 
+     fn mark_started(&mut self) {
+-        self.active_default_response = true;
++        self.0.mark_started();
+     }
+ 
+     async fn mark_finished(
+@@ -1124,24 +1121,23 @@ impl RealtimeResponseCreateQueue {
+         writer: &RealtimeWebsocketWriter,
+         reason: &str,
+     ) -> anyhow::Result<()> {
+-        self.active_default_response = false;
+-        if !self.pending_create {
+-            return Ok(());
+-        }
+-        self.pending_create = false;
+-        let explicit = std::mem::take(&mut self.pending_user_create);
+-        let native = self.pending_native_create.take();
+-        if !explicit && let Some(native) = native {
+-            self.active_default_response = send_native_response_request(writer, &native).await?;
+-            return Ok(());
+-        }
+-        if let Some(response_id) = self.pending_guardrail_response.take() {
+-            self.active_default_response = writer
+-                .send_response_create_for_response(&response_id)
+-                .await?;
+-            return Ok(());
++        match self.0.mark_finished() {
++            None => Ok(()),
++            Some(codex_realtime_control::CreateIntent::Native(native)) => {
++                self.active_default_response =
++                    send_native_response_request(writer, &native).await?;
++                Ok(())
++            }
++            Some(codex_realtime_control::CreateIntent::Guardrail(response_id)) => {
++                self.active_default_response = writer
++                    .send_response_create_for_response(&response_id)
++                    .await?;
++                Ok(())
++            }
++            Some(codex_realtime_control::CreateIntent::Default) => {
++                self.send_create_now(writer, reason).await
++            }
+         }
+-        self.send_create_now(writer, reason).await
+     }
+ 
+     async fn send_create_now(
+@@ -1153,8 +1149,7 @@ impl RealtimeResponseCreateQueue {
+             if matches!(&err, ApiError::Stream(message) if message.starts_with(REALTIME_ACTIVE_RESPONSE_ERROR_PREFIX))
+             {
+                 warn!("realtime response.create raced an active response; deferring");
+-                self.active_default_response = true;
+-                self.pending_create = true;
++                self.0.raced_active_response();
+                 return Ok(());
+             }
+             warn!("failed to send {reason} response.create: {err}");
+@@ -1293,7 +1288,7 @@ impl RealtimeConversationManager {
+         let mut calls = sdk.function_calls.lock().await;
+         let call = calls
+             .get_mut(call_id)
+-            .filter(|call| !call.claimed)
++            .filter(|call| !call.claim.is_claimed())
+             .ok_or_else(|| {
+                 CodexErr::InvalidRequest("Realtime function is unknown or already admitted".into())
+             })?;
+@@ -1310,7 +1305,7 @@ impl RealtimeConversationManager {
+                 "Realtime function lacks its accepted source configuration".into(),
+             ));
+         };
+-        call.claimed = true;
++        assert!(call.claim.claim(), "validated unclaimed function");
+         call.native_turn_id = Some(turn_id.to_owned());
+         Ok(RealtimeToolTask::single(
+             Arc::clone(sdk),
+@@ -1352,7 +1347,7 @@ impl RealtimeConversationManager {
+             let call = calls
+                 .get(id)
+                 .filter(|call| {
+-                    !call.claimed
++                    !call.claim.is_claimed()
+                         && call
+                             .batch
+                             .as_ref()
+@@ -1381,7 +1376,7 @@ impl RealtimeConversationManager {
+         }
+         for id in call_ids {
+             let call = calls.get_mut(id).expect("validated call");
+-            call.claimed = true;
++            assert!(call.claim.claim(), "validated unclaimed function");
+             call.native_turn_id = Some(turn_id.to_owned());
+         }
+         Ok(RealtimeToolTask::batch(
+@@ -1401,7 +1396,7 @@ impl RealtimeConversationManager {
+             .filter(|sdk| sdk.generation == generation)
+         {
+             if let Some(call) = sdk.function_calls.lock().await.get_mut(call_id) {
+-                call.claimed = false;
++                call.claim.release();
+                 call.native_turn_id = None;
+             }
+         }
+@@ -1534,7 +1529,9 @@ impl RealtimeConversationManager {
+                 ));
+             }
+             SdkRealtimeCommand::Fail { handoff_id }
+-                if calls.get(handoff_id).is_some_and(|call| call.claimed) =>
++                if calls
++                    .get(handoff_id)
++                    .is_some_and(|call| call.claim.is_claimed()) =>
+             {
+                 return Err(CodexErr::InvalidRequest(
+                     "An admitted native function is owned by its task".into(),
+@@ -5596,7 +5593,7 @@ async fn handle_realtime_server_event_with_configuration(
+                             _ => anyhow::bail!("Completed function changed its native source"),
+                         }
+                     }
+-                    if call.claimed {
++                    if call.claim.is_claimed() {
+                         anyhow::bail!("Completed function was already admitted outside its batch");
+                     }
+                 }
+@@ -5641,23 +5638,19 @@ async fn handle_realtime_server_event_with_configuration(
+                 return Ok(());
+             };
+             let mut request = request.clone();
+-            if request.namespace.is_some() {
+-                anyhow::bail!("Namespaced Realtime functions are not supported");
+-            }
+             if let Some(configuration) = &configuration {
+                 tool_task::captured_definition(configuration, &request.name)?;
+             }
+-            if serde_json::to_vec(&request)?.len() > SDK_FUNCTION_CALL_MAX_BYTES {
+-                anyhow::bail!("SDK Realtime function request exceeds capacity");
+-            }
+-            let fingerprint: [u8; 32] = Sha256::digest(serde_json::to_vec(&(
+-                &request.namespace,
+-                &request.call_id,
+-                &request.item_id,
+-                &request.name,
+-                &request.arguments,
+-            ))?)
+-            .into();
++            let fingerprint = codex_realtime_control::FunctionCall {
++                namespace: request.namespace.clone(),
++                call_id: request.call_id.clone(),
++                item_id: request.item_id.clone(),
++                name: request.name.clone(),
++                arguments: request.arguments.clone(),
++                response_id: request.response_id.clone(),
++            }
++            .fingerprint()
++            .map_err(anyhow::Error::msg)?;
+             sdk.reclaim_terminal_calls(&request.call_id).await;
+             let mut calls = sdk.function_calls.lock().await;
+             if let Some(previous) = calls.get_mut(&request.call_id) {
+@@ -5714,7 +5707,7 @@ async fn handle_realtime_server_event_with_configuration(
+                 SdkFunctionCall {
+                     preparation: None,
+                     request: request.clone(),
+-                    claimed: false,
++                    claim: codex_realtime_control::CallClaim::default(),
+                     native_turn_id: None,
+                     cancel: sdk.stop.child_token(),
+                     completed: CancellationToken::new(),
+diff --git a/codex-rs/core/src/realtime_conversation/preparation.rs b/codex-rs/core/src/realtime_conversation/preparation.rs
+index b7c84df..344f8f5 100644
+--- a/codex-rs/core/src/realtime_conversation/preparation.rs
++++ b/codex-rs/core/src/realtime_conversation/preparation.rs
+@@ -450,7 +450,7 @@ async fn dispatch_tools(
+     let valid = !call_ids.is_empty()
+         && call_ids.iter().all(|id| {
+             calls.get(id).is_some_and(|call| {
+-                !call.claimed
++                !call.claim.is_claimed()
+                     && call
+                         .preparation
+                         .as_ref()
+diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
+index d6caa4e..6646444 100644
+--- a/codex-rs/core/src/realtime_conversation_tests.rs
++++ b/codex-rs/core/src/realtime_conversation_tests.rs
+@@ -1784,7 +1784,7 @@ async fn register_realtime_tool(sdk: &Arc<super::SdkRealtimeState>) {
+             ),
+             batch: None,
+             request,
+-            claimed: false,
++            claim: codex_realtime_control::CallClaim::default(),
+             native_turn_id: None,
+             cancel: tokio_util::sync::CancellationToken::new(),
+             completed: tokio_util::sync::CancellationToken::new(),
+@@ -2059,7 +2059,7 @@ async fn sdk_function_busy_admission_preserves_root_and_can_settle_unclaimed_fai
+             ),
+             batch: None,
+             request: second,
+-            claimed: false,
++            claim: codex_realtime_control::CallClaim::default(),
+             native_turn_id: None,
+             cancel: tokio_util::sync::CancellationToken::new(),
+             completed: tokio_util::sync::CancellationToken::new(),
+@@ -2094,7 +2094,11 @@ async fn sdk_function_busy_admission_preserves_root_and_can_settle_unclaimed_fai
+             .sub_id,
+         "native-tool-turn"
+     );
+-    assert!(!sdk.function_calls.lock().await["second-provider-call"].claimed);
++    assert!(
++        !sdk.function_calls.lock().await["second-provider-call"]
++            .claim
++            .is_claimed()
++    );
+     assert!(
+         session
+             .conversation
+@@ -2153,7 +2157,11 @@ async fn sdk_function_does_not_acknowledge_a_task_rejected_by_tree_shutdown() {
+     .await;
+     assert!(result.is_err());
+     assert!(session.active_turn.lock().await.is_none());
+-    assert!(!sdk.function_calls.lock().await["provider-call"].claimed);
++    assert!(
++        !sdk.function_calls.lock().await["provider-call"]
++            .claim
++            .is_claimed()
++    );
+     assert!(http.received_requests().await.unwrap().is_empty());
+     super::handle_close_sdk(&session, "tools-generation".into())
+         .await
+@@ -2778,7 +2786,7 @@ async fn sdk_response_batch_runs_two_native_calls_under_one_source_without_model
+             .lock()
+             .await
+             .values()
+-            .all(|call| !call.claimed)
++            .all(|call| !call.claim.is_claimed())
+     );
+     let mut init = codex_extension_api::ExtensionDataInit::new();
+     init.insert(Arc::clone(&policy.owner));
+@@ -3118,7 +3126,7 @@ async fn sdk_handoff_ack_race(interrupt: bool, queued_user: bool) {
+                 name: "transfer_to_B".into(),
+                 arguments: "{}".into(),
+             },
+-            claimed: true,
++            claim: codex_realtime_control::CallClaim::from(true),
+             native_turn_id: None,
+             cancel: tokio_util::sync::CancellationToken::new(),
+             completed: tokio_util::sync::CancellationToken::new(),
+@@ -4560,7 +4568,7 @@ async fn sdk_scoped_batch_interrupt_joins_its_policy_while_later_batch_executes(
+             request.response_id = Some("later-response".into());
+             calls.insert(request.call_id.clone(), super::SdkFunctionCall {
+                 request, configuration: Some(configuration.clone()), batch: Some(batch_b),
+-                preparation: None, claimed: false, native_turn_id: None,
++                preparation: None, claim: codex_realtime_control::CallClaim::default(), native_turn_id: None,
+                 cancel: tokio_util::sync::CancellationToken::new(),
+             completed: tokio_util::sync::CancellationToken::new(),
+             });
+@@ -4758,7 +4766,7 @@ async fn sdk_terminal_function_rollover_preserves_payload_response_and_kind_iden
+         // Model terminal native publication and physical callback settlement independently.
+         let mut calls = sdk.function_calls.lock().await;
+         let call = calls.get_mut(&request.call_id).unwrap();
+-        call.claimed = true;
++        assert!(call.claim.claim());
+         call.completed.cancel();
+         drop(calls);
+         sdk.pending.lock().await.remove(&request.call_id);
+@@ -4906,7 +4914,7 @@ async fn sdk_terminal_reclamation_keeps_pending_physical_preparation_and_handoff
+                     arguments: "{}".into(),
+                     response_id: Some(format!("response-{index}")),
+                 },
+-                claimed: index != 0,
++                claim: codex_realtime_control::CallClaim::from(index != 0),
+                 native_turn_id: (index != 0).then(|| "native-root".into()),
+                 cancel,
+                 completed,
+diff --git a/codex-rs/realtime-control/.gitignore b/codex-rs/realtime-control/.gitignore
+new file mode 100644
+index 0000000..b83d222
+--- /dev/null
++++ b/codex-rs/realtime-control/.gitignore
+@@ -0,0 +1 @@
++/target/
+diff --git a/codex-rs/realtime-control/Cargo.lock b/codex-rs/realtime-control/Cargo.lock
+new file mode 100644
+index 0000000..0f401ba
+--- /dev/null
++++ b/codex-rs/realtime-control/Cargo.lock
+@@ -0,0 +1,191 @@
++# This file is automatically @generated by Cargo.
++# It is not intended for manual editing.
++version = 4
++
++[[package]]
++name = "block-buffer"
++version = "0.10.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
++dependencies = [
++ "generic-array",
++]
++
++[[package]]
++name = "cfg-if"
++version = "1.0.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
++
++[[package]]
++name = "codex-realtime-control"
++version = "0.1.0"
++dependencies = [
++ "serde",
++ "serde_json",
++ "sha2",
++]
++
++[[package]]
++name = "cpufeatures"
++version = "0.2.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "crypto-common"
++version = "0.1.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
++dependencies = [
++ "generic-array",
++ "typenum",
++]
++
++[[package]]
++name = "digest"
++version = "0.10.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
++dependencies = [
++ "block-buffer",
++ "crypto-common",
++]
++
++[[package]]
++name = "generic-array"
++version = "0.14.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
++dependencies = [
++ "typenum",
++ "version_check",
++]
++
++[[package]]
++name = "itoa"
++version = "1.0.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
++
++[[package]]
++name = "libc"
++version = "0.2.186"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
++
++[[package]]
++name = "memchr"
++version = "2.8.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
++
++[[package]]
++name = "proc-macro2"
++version = "1.0.106"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
++dependencies = [
++ "unicode-ident",
++]
++
++[[package]]
++name = "quote"
++version = "1.0.45"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
++dependencies = [
++ "proc-macro2",
++]
++
++[[package]]
++name = "serde"
++version = "1.0.228"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
++dependencies = [
++ "serde_core",
++ "serde_derive",
++]
++
++[[package]]
++name = "serde_core"
++version = "1.0.228"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
++dependencies = [
++ "serde_derive",
++]
++
++[[package]]
++name = "serde_derive"
++version = "1.0.228"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
++[[package]]
++name = "serde_json"
++version = "1.0.149"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
++dependencies = [
++ "itoa",
++ "memchr",
++ "serde",
++ "serde_core",
++ "zmij",
++]
++
++[[package]]
++name = "sha2"
++version = "0.10.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
++dependencies = [
++ "cfg-if",
++ "cpufeatures",
++ "digest",
++]
++
++[[package]]
++name = "syn"
++version = "2.0.117"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "unicode-ident",
++]
++
++[[package]]
++name = "typenum"
++version = "1.20.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
++
++[[package]]
++name = "unicode-ident"
++version = "1.0.22"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9312f7c4f6ff9069b165498234ce8be658059c6728633667c526e27dc2cf1df5"
++
++[[package]]
++name = "version_check"
++version = "0.9.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
++
++[[package]]
++name = "zmij"
++version = "1.0.19"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3ff05f8caa9038894637571ae6b9e29466c1f4f829d26c9b28f869a29cbe3445"
+diff --git a/codex-rs/realtime-control/Cargo.toml b/codex-rs/realtime-control/Cargo.toml
+new file mode 100644
+index 0000000..35a045a
+--- /dev/null
++++ b/codex-rs/realtime-control/Cargo.toml
+@@ -0,0 +1,20 @@
++[package]
++name = "codex-realtime-control"
++version = "0.1.0"
++edition = "2024"
++publish = false
++
++[workspace]
++
++[lib]
++crate-type = ["rlib", "cdylib"]
++
++[dependencies]
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
++sha2 = "0.10"
++
++[profile.release]
++opt-level = "s"
++lto = true
++panic = "abort"
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+new file mode 100644
+index 0000000..8d25c9d
+--- /dev/null
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -0,0 +1,838 @@
++//! Target-neutral Realtime control. Hosts execute effects; they never admit calls.
++use serde::{Deserialize, Serialize};
++use serde_json::{Value, json};
++use sha2::{Digest, Sha256};
++use std::collections::{BTreeMap, BTreeSet};
++
++const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
++const MAX_CALL_BYTES: usize = 256 * 1024;
++const MAX_CALLS: usize = 256;
++
++/// A single-use execution claim shared with the server Core tool lifecycle.
++#[derive(Debug, Default)]
++pub struct CallClaim(bool);
++impl From<bool> for CallClaim {
++    fn from(value: bool) -> Self {
++        Self(value)
++    }
++}
++impl CallClaim {
++    pub fn is_claimed(&self) -> bool {
++        self.0
++    }
++    pub fn claim(&mut self) -> bool {
++        if self.0 {
++            return false;
++        }
++        self.0 = true;
++        true
++    }
++    pub fn release(&mut self) {
++        self.0 = false;
++    }
++}
++
++/// Shared response admission state. Physical sends stay in each host driver.
++#[derive(Debug)]
++pub enum CreateIntent<T> {
++    Default,
++    Native(T),
++    Guardrail(String),
++}
++pub struct ResponseCreateState<T> {
++    pub sdk_response_id: Option<String>,
++    pub sdk_cancelled_response: Option<String>,
++    pub active_default_response: bool,
++    pub pending_create: bool,
++    pub pending_user_create: bool,
++    pub pending_native_create: Option<T>,
++    pub pending_guardrail_response: Option<String>,
++}
++impl<T> Default for ResponseCreateState<T> {
++    fn default() -> Self {
++        Self {
++            sdk_response_id: None,
++            sdk_cancelled_response: None,
++            active_default_response: false,
++            pending_create: false,
++            pending_user_create: false,
++            pending_native_create: None,
++            pending_guardrail_response: None,
++        }
++    }
++}
++impl<T> ResponseCreateState<T> {
++    /// True authorizes one immediate physical send; false coalesces the intent.
++    pub fn request_create(&mut self) -> bool {
++        self.pending_guardrail_response = None;
++        if self.active_default_response {
++            self.pending_create = true;
++            return false;
++        }
++        self.pending_create = false;
++        self.pending_user_create = false;
++        self.pending_native_create = None;
++        true
++    }
++    pub fn mark_started(&mut self) {
++        self.active_default_response = true;
++    }
++    /// Consume exactly one deferred continuation after the active response ends.
++    pub fn mark_finished(&mut self) -> Option<CreateIntent<T>> {
++        self.active_default_response = false;
++        if !self.pending_create {
++            return None;
++        }
++        self.pending_create = false;
++        let explicit = std::mem::take(&mut self.pending_user_create);
++        let native = self.pending_native_create.take();
++        if !explicit && let Some(native) = native {
++            return Some(CreateIntent::Native(native));
++        }
++        if let Some(id) = self.pending_guardrail_response.take() {
++            return Some(CreateIntent::Guardrail(id));
++        }
++        Some(CreateIntent::Default)
++    }
++    /// A provider active-response error is a deferral, never a replay.
++    pub fn raced_active_response(&mut self) {
++        self.active_default_response = true;
++        self.pending_create = true;
++    }
++}
++
++/// Provider identity excludes response_id: that identity can arrive after arguments.
++#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
++pub struct FunctionCall {
++    pub namespace: Option<String>,
++    pub call_id: String,
++    pub item_id: String,
++    pub name: String,
++    pub arguments: String,
++    pub response_id: Option<String>,
++}
++impl FunctionCall {
++    pub fn fingerprint(&self) -> Result<[u8; 32], String> {
++        if self.namespace.is_some() {
++            return Err("Namespaced Realtime functions are not supported".into());
++        }
++        if serde_json::to_vec(self)
++            .map_err(|_| "Invalid function request")?
++            .len()
++            > MAX_CALL_BYTES
++        {
++            return Err("SDK Realtime function request exceeds capacity".into());
++        }
++        Ok(Sha256::digest(
++            serde_json::to_vec(&(
++                &self.namespace,
++                &self.call_id,
++                &self.item_id,
++                &self.name,
++                &self.arguments,
++            ))
++            .map_err(|_| "Invalid function request")?,
++        )
++        .into())
++    }
++}
++
++#[derive(Clone, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Tool {
++    pub name: String,
++    pub description: String,
++    pub parameters: Value,
++    #[serde(default)]
++    pub needs_approval: bool,
++}
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct Config {
++    pub model: String,
++    pub instructions: String,
++    #[serde(default)]
++    pub tools: Vec<Tool>,
++}
++#[derive(Deserialize)]
++#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
++pub enum Command {
++    Start { config: Config },
++    Provider { event: Value },
++    Approve { call_id: String, approved: bool },
++    ToolResult { call_id: String, output: String },
++    Sent { id: u64 },
++    Text { text: String },
++    Close,
++}
++#[derive(Debug, Serialize, PartialEq)]
++#[serde(tag = "type", rename_all = "snake_case")]
++pub enum Effect {
++    Send {
++        id: u64,
++        event: Value,
++    },
++    Approve {
++        call_id: String,
++        name: String,
++        arguments: Value,
++    },
++    Execute {
++        call_id: String,
++        name: String,
++        arguments: Value,
++    },
++    Event {
++        event: Value,
++    },
++    Ready,
++    Closed,
++}
++#[derive(Clone, Copy, PartialEq)]
++enum Phase {
++    New,
++    Configuring,
++    Ready,
++    Closed,
++}
++#[derive(Clone, Copy, PartialEq)]
++enum CallPhase {
++    Discovered,
++    Approval,
++    Executing,
++    Publishing(u64),
++    Published,
++}
++struct Call {
++    request: FunctionCall,
++    fingerprint: [u8; 32],
++    phase: CallPhase,
++    claim: CallClaim,
++}
++struct Batch {
++    calls: Vec<String>,
++    continued: bool,
++}
++/// All mutation is synchronous and serialized by the host's Wasm instance.
++/// No OS, executor, socket, callback, filesystem, or ambient credential access.
++pub struct Control {
++    phase: Phase,
++    tools: BTreeMap<String, Tool>,
++    calls: BTreeMap<String, Call>,
++    batches: BTreeMap<String, Batch>,
++    responses: ResponseCreateState<()>,
++    next_send: u64,
++    pending_send: BTreeSet<u64>,
++    startup_send: Option<u64>,
++    startup_sent: bool,
++    startup_accepted: bool,
++}
++impl Default for Control {
++    fn default() -> Self {
++        Self {
++            phase: Phase::New,
++            tools: BTreeMap::new(),
++            calls: BTreeMap::new(),
++            batches: BTreeMap::new(),
++            responses: ResponseCreateState::default(),
++            next_send: 0,
++            pending_send: BTreeSet::new(),
++            startup_send: None,
++            startup_sent: false,
++            startup_accepted: false,
++        }
++    }
++}
++impl Control {
++    fn send(&mut self, event: Value, effects: &mut Vec<Effect>) -> u64 {
++        self.next_send += 1;
++        self.pending_send.insert(self.next_send);
++        effects.push(Effect::Send {
++            id: self.next_send,
++            event,
++        });
++        self.next_send
++    }
++    pub fn apply(&mut self, command: Command) -> Result<Vec<Effect>, String> {
++        if self.phase == Phase::Closed {
++            return if matches!(command, Command::Close) {
++                Ok(vec![])
++            } else {
++                Err("Realtime control is closed".into())
++            };
++        }
++        let mut effects = vec![];
++        match command {
++            Command::Start { config } => {
++                if self.phase != Phase::New {
++                    return Err("Realtime control already started".into());
++                }
++                if config.model.is_empty() || config.tools.len() > MAX_CALLS {
++                    return Err("Invalid Realtime configuration".into());
++                }
++                let mut tools = BTreeMap::new();
++                let mut wire_tools = vec![];
++                for tool in config.tools {
++                    if tool.name.is_empty()
++                        || !tool.parameters.is_object()
++                        || tools.contains_key(&tool.name)
++                    {
++                        return Err("Invalid or duplicate Realtime tool".into());
++                    }
++                    wire_tools.push(json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters}));
++                    tools.insert(tool.name.clone(), tool);
++                }
++                self.tools = tools;
++                self.phase = Phase::Configuring;
++                self.startup_send = Some(self.send(json!({"type":"session.update","session":{"type":"realtime","model":config.model,"instructions":config.instructions,"tools":wire_tools,"tool_choice":"auto"}}), &mut effects));
++            }
++            Command::Sent { id } => {
++                if !self.pending_send.remove(&id) {
++                    return Err("Unknown or already settled send receipt".into());
++                }
++                if self.startup_send == Some(id) {
++                    self.startup_sent = true;
++                }
++                for call in self.calls.values_mut() {
++                    if call.phase == CallPhase::Publishing(id) {
++                        call.phase = CallPhase::Published;
++                    }
++                }
++                self.continue_batches(&mut effects);
++            }
++            Command::Provider { event } => self.provider(event, &mut effects)?,
++            Command::Approve { call_id, approved } => {
++                self.require_ready()?;
++                let call = self.calls.get_mut(&call_id).ok_or("Unknown approval")?;
++                if call.phase != CallPhase::Approval {
++                    return Err("Approval is stale or already settled".into());
++                }
++                if approved {
++                    call.phase = CallPhase::Executing;
++                    effects.push(execute(&call.request)?);
++                } else {
++                    self.publish(
++                        &call_id,
++                        "Tool execution was not approved.".into(),
++                        &mut effects,
++                    )?;
++                }
++            }
++            Command::ToolResult { call_id, output } => {
++                self.require_ready()?;
++                if self
++                    .calls
++                    .get(&call_id)
++                    .is_none_or(|call| call.phase != CallPhase::Executing)
++                {
++                    return Err("Tool result has no live execution claim".into());
++                }
++                self.publish(&call_id, output, &mut effects)?;
++            }
++            Command::Text { text } => {
++                self.require_ready()?;
++                self.send(json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}), &mut effects);
++                if self.responses.request_create() {
++                    self.responses.mark_started();
++                    self.send(json!({"type":"response.create"}), &mut effects);
++                }
++            }
++            Command::Close => {
++                self.phase = Phase::Closed;
++                self.calls.clear();
++                self.batches.clear();
++                self.pending_send.clear();
++                effects.push(Effect::Closed);
++            }
++        }
++        if self.phase == Phase::Configuring && self.startup_sent && self.startup_accepted {
++            self.phase = Phase::Ready;
++            effects.push(Effect::Ready);
++        }
++        Ok(effects)
++    }
++    fn require_ready(&self) -> Result<(), String> {
++        if self.phase != Phase::Ready {
++            Err("Realtime configuration is not accepted".into())
++        } else {
++            Ok(())
++        }
++    }
++    fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
++        if serde_json::to_vec(&event)
++            .map_err(|_| "Invalid provider event")?
++            .len()
++            > MAX_FRAME_BYTES
++        {
++            return Err("Provider event exceeds capacity".into());
++        }
++        let kind = event
++            .get("type")
++            .and_then(Value::as_str)
++            .ok_or("Provider event has no type")?;
++        match kind {
++            "session.updated" => {
++                if self.phase == Phase::Configuring || self.phase == Phase::Ready {
++                    let session = event
++                        .get("session")
++                        .ok_or("Invalid accepted configuration")?;
++                    let advertised = session
++                        .get("tools")
++                        .and_then(Value::as_array)
++                        .ok_or("Accepted configuration omitted tools")?;
++                    if advertised.len() != self.tools.len()
++                        || advertised.iter().any(|tool| {
++                            tool.get("type").and_then(Value::as_str) != Some("function")
++                                || tool.get("name").and_then(Value::as_str).is_none_or(|name| {
++                                    self.tools.get(name).is_none_or(|declared| {
++                                        tool.get("parameters") != Some(&declared.parameters)
++                                    })
++                                })
++                        })
++                    {
++                        return Err("Provider accepted another tool configuration".into());
++                    }
++                    self.startup_accepted = true;
++                }
++            }
++            "response.created" => {
++                self.require_ready()?;
++                let id = string(&event["response"], "id")?;
++                if self
++                    .responses
++                    .sdk_response_id
++                    .as_ref()
++                    .is_some_and(|active| active != &id)
++                {
++                    return Err("Concurrent default responses are not supported".into());
++                }
++                self.responses.sdk_response_id = Some(id);
++                self.responses.mark_started();
++            }
++            "response.output_item.done" => {
++                self.require_ready()?;
++                let item = event.get("item").ok_or("Provider item is missing")?;
++                if item.get("type").and_then(Value::as_str) == Some("function_call") {
++                    self.discover(FunctionCall {
++                        namespace: item
++                            .get("namespace")
++                            .and_then(Value::as_str)
++                            .map(str::to_owned),
++                        call_id: string(item, "call_id")?,
++                        item_id: string(item, "id")?,
++                        name: string(item, "name")?,
++                        arguments: string(item, "arguments")?,
++                        response_id: Some(string(&event, "response_id")?),
++                    })?;
++                }
++            }
++            "response.done" => {
++                self.require_ready()?;
++                let response = event.get("response").ok_or("Missing response")?;
++                let id = string(response, "id")?;
++                if self.responses.sdk_response_id.as_ref() != Some(&id) {
++                    return Err("Completed response does not own the active response".into());
++                }
++                let output = response
++                    .get("output")
++                    .and_then(Value::as_array)
++                    .ok_or("Missing response output")?;
++                let mut ids = vec![];
++                for item in output {
++                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
++                        let request = FunctionCall {
++                            namespace: item
++                                .get("namespace")
++                                .and_then(Value::as_str)
++                                .map(str::to_owned),
++                            call_id: string(item, "call_id")?,
++                            item_id: string(item, "id")?,
++                            name: string(item, "name")?,
++                            arguments: string(item, "arguments")?,
++                            response_id: Some(id.clone()),
++                        };
++                        if ids.contains(&request.call_id) {
++                            return Err("Duplicate function in completed response".into());
++                        }
++                        ids.push(request.call_id.clone());
++                        self.discover(request)?;
++                    }
++                }
++                if self.calls.values().any(|call| {
++                    call.request.response_id.as_ref() == Some(&id)
++                        && !ids.contains(&call.request.call_id)
++                }) {
++                    return Err("Completed response omitted a discovered function".into());
++                }
++                self.responses.sdk_response_id = None;
++                if self.responses.mark_finished().is_some() {
++                    self.responses.mark_started();
++                    self.send(json!({"type":"response.create"}), effects);
++                }
++                if !ids.is_empty() {
++                    if self.batches.contains_key(&id) {
++                        return Err("Response batch already admitted".into());
++                    }
++                    self.batches.insert(
++                        id,
++                        Batch {
++                            calls: ids.clone(),
++                            continued: false,
++                        },
++                    );
++                    for call_id in ids {
++                        let call = self.calls.get_mut(&call_id).ok_or("Missing function")?;
++                        if !call.claim.claim() {
++                            return Err("Function already admitted".into());
++                        }
++                        let tool = self
++                            .tools
++                            .get(&call.request.name)
++                            .ok_or("Function is outside accepted configuration")?;
++                        if tool.needs_approval {
++                            call.phase = CallPhase::Approval;
++                            effects.push(Effect::Approve {
++                                call_id,
++                                name: call.request.name.clone(),
++                                arguments: arguments(&call.request)?,
++                            });
++                        } else {
++                            call.phase = CallPhase::Executing;
++                            effects.push(execute(&call.request)?);
++                        }
++                    }
++                }
++            }
++            "error" => return Err("Realtime provider rejected the operation".into()),
++            _ => {}
++        }
++        effects.push(Effect::Event { event });
++        Ok(())
++    }
++    fn discover(&mut self, request: FunctionCall) -> Result<(), String> {
++        let fingerprint = request.fingerprint()?;
++        if !self.tools.contains_key(&request.name) {
++            return Err("Function is outside accepted configuration".into());
++        }
++        arguments(&request)?;
++        if let Some(old) = self.calls.get(&request.call_id) {
++            if old.fingerprint != fingerprint || old.request.response_id != request.response_id {
++                return Err("Realtime function identity changed".into());
++            }
++            return Ok(());
++        }
++        if self.calls.len() == MAX_CALLS {
++            return Err("SDK Realtime function capacity exceeded".into());
++        }
++        self.calls.insert(
++            request.call_id.clone(),
++            Call {
++                request,
++                fingerprint,
++                phase: CallPhase::Discovered,
++                claim: CallClaim::default(),
++            },
++        );
++        Ok(())
++    }
++    fn publish(
++        &mut self,
++        call_id: &str,
++        output: String,
++        effects: &mut Vec<Effect>,
++    ) -> Result<(), String> {
++        if output.len() > MAX_CALL_BYTES {
++            return Err("Tool output exceeds capacity".into());
++        }
++        let id = self.send(json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":call_id,"output":output}}), effects);
++        self.calls.get_mut(call_id).ok_or("Unknown function")?.phase = CallPhase::Publishing(id);
++        Ok(())
++    }
++    fn continue_batches(&mut self, effects: &mut Vec<Effect>) {
++        if self.responses.active_default_response {
++            return;
++        }
++        let ready: Vec<_> = self
++            .batches
++            .iter()
++            .filter(|(_, batch)| {
++                !batch.continued
++                    && batch.calls.iter().all(|id| {
++                        self.calls
++                            .get(id)
++                            .is_some_and(|call| call.phase == CallPhase::Published)
++                    })
++            })
++            .map(|(id, _)| id.clone())
++            .collect();
++        if let Some(id) = ready.into_iter().next() {
++            self.responses.mark_started();
++            self.batches.get_mut(&id).unwrap().continued = true;
++            self.send(json!({"type":"response.create"}), effects);
++        }
++    }
++    pub fn apply_json(&mut self, input: &str) -> String {
++        let result = if input.len() > MAX_FRAME_BYTES {
++            Err("Command exceeds capacity".into())
++        } else {
++            serde_json::from_str::<Command>(input)
++                .map_err(|_| "Invalid control command".into())
++                .and_then(|command| self.apply(command))
++        };
++        match result {
++            Ok(effects) => json!({"effects":effects}).to_string(),
++            Err(error) => {
++                self.phase = Phase::Closed;
++                self.calls.clear();
++                self.batches.clear();
++                self.pending_send.clear();
++                json!({"error":error}).to_string()
++            }
++        }
++    }
++}
++fn string(value: &Value, key: &str) -> Result<String, String> {
++    value
++        .get(key)
++        .and_then(Value::as_str)
++        .filter(|s| !s.is_empty())
++        .map(str::to_owned)
++        .ok_or_else(|| format!("Provider event omitted {key}"))
++}
++fn arguments(request: &FunctionCall) -> Result<Value, String> {
++    let args: Value =
++        serde_json::from_str(&request.arguments).map_err(|_| "Invalid function arguments")?;
++    if !args.is_object() {
++        return Err("Function arguments must be an object".into());
++    }
++    Ok(args)
++}
++fn execute(request: &FunctionCall) -> Result<Effect, String> {
++    Ok(Effect::Execute {
++        call_id: request.call_id.clone(),
++        name: request.name.clone(),
++        arguments: arguments(request)?,
++    })
++}
++
++#[cfg(target_arch = "wasm32")]
++mod wasm;
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn command(control: &mut Control, input: Value) -> Value {
++        serde_json::from_str(&control.apply_json(&input.to_string())).unwrap()
++    }
++    fn tool() -> Value {
++        json!({"name":"lookup","description":"Look up a value","parameters":{"type":"object"},"needs_approval":true})
++    }
++    fn startup(control: &mut Control) -> Value {
++        command(
++            control,
++            json!({"type":"start","config":{"model":"test-realtime","instructions":"Help.","tools":[tool()]}}),
++        )
++    }
++    fn accepted(control: &mut Control) -> Value {
++        command(
++            control,
++            json!({"type":"provider","event":{"type":"session.updated","session":{"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}}}),
++        )
++    }
++    fn ready() -> Control {
++        let mut control = Control::default();
++        startup(&mut control);
++        command(&mut control, json!({"type":"sent","id":1}));
++        accepted(&mut control);
++        control
++    }
++    fn item() -> Value {
++        json!({"type":"function_call","id":"item-1","call_id":"call-1","name":"lookup","arguments":"{\"value\":7}"})
++    }
++    fn request(control: &mut Control) -> Value {
++        command(
++            control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"response-1"}}}),
++        );
++        command(
++            control,
++            json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"response-1","item":item()}}),
++        )
++    }
++    fn batch(control: &mut Control) -> Value {
++        command(
++            control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","output":[item()]}}}),
++        )
++    }
++    #[test]
++    fn readiness_requires_send_receipt_and_accepted_configuration_in_either_order() {
++        for receipt_first in [true, false] {
++            let mut c = Control::default();
++            let output = startup(&mut c);
++            assert_eq!(output["effects"][0]["event"]["session"]["type"], "realtime");
++            let first = if receipt_first {
++                command(&mut c, json!({"type":"sent","id":1}))
++            } else {
++                accepted(&mut c)
++            };
++            assert!(
++                !first["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|e| e["type"] == "ready")
++            );
++            let second = if receipt_first {
++                accepted(&mut c)
++            } else {
++                command(&mut c, json!({"type":"sent","id":1}))
++            };
++            assert!(
++                second["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|e| e["type"] == "ready")
++            );
++        }
++    }
++    #[test]
++    fn functions_wait_for_complete_batch_and_single_use_approval() {
++        let mut c = ready();
++        let discovered = request(&mut c);
++        assert_eq!(discovered["effects"].as_array().unwrap().len(), 1);
++        let admitted = batch(&mut c);
++        assert_eq!(
++            admitted["effects"][0],
++            json!({"type":"approve","call_id":"call-1","name":"lookup","arguments":{"value":7}})
++        );
++        let approved = command(
++            &mut c,
++            json!({"type":"approve","call_id":"call-1","approved":true}),
++        );
++        assert_eq!(approved["effects"][0]["type"], "execute");
++        let reused = command(
++            &mut c,
++            json!({"type":"approve","call_id":"call-1","approved":true}),
++        );
++        assert!(
++            reused["error"]
++                .as_str()
++                .unwrap()
++                .contains("already settled")
++        );
++    }
++    #[test]
++    fn continuation_waits_for_physical_tool_output_receipt() {
++        let mut c = ready();
++        request(&mut c);
++        batch(&mut c);
++        command(
++            &mut c,
++            json!({"type":"approve","call_id":"call-1","approved":true}),
++        );
++        let output = command(
++            &mut c,
++            json!({"type":"tool_result","call_id":"call-1","output":"seven"}),
++        );
++        assert_eq!(
++            output["effects"],
++            json!([{"type":"send","id":2,"event":{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"call-1","output":"seven"}}}])
++        );
++        let sent = command(&mut c, json!({"type":"sent","id":2}));
++        assert_eq!(
++            sent["effects"],
++            json!([{"type":"send","id":3,"event":{"type":"response.create"}}])
++        );
++        let late = command(
++            &mut c,
++            json!({"type":"tool_result","call_id":"call-1","output":"duplicate"}),
++        );
++        assert!(late.get("error").is_some());
++    }
++    #[test]
++    fn denied_approval_never_executes_callback() {
++        let mut c = ready();
++        request(&mut c);
++        batch(&mut c);
++        let denied = command(
++            &mut c,
++            json!({"type":"approve","call_id":"call-1","approved":false}),
++        );
++        assert_eq!(
++            denied["effects"][0]["event"]["item"]["output"],
++            "Tool execution was not approved."
++        );
++        assert!(
++            !denied["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|e| e["type"] == "execute")
++        );
++    }
++    #[test]
++    fn changed_function_identity_closes_control_before_execution() {
++        let mut c = ready();
++        request(&mut c);
++        let mut changed = item();
++        changed["arguments"] = json!("{\"value\":9}");
++        let result = command(
++            &mut c,
++            json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"response-1","item":changed}}),
++        );
++        assert!(
++            result["error"]
++                .as_str()
++                .unwrap()
++                .contains("identity changed")
++        );
++        assert_eq!(
++            command(
++                &mut c,
++                json!({"type":"approve","call_id":"call-1","approved":true})
++            )["error"],
++            "Realtime control is closed"
++        );
++    }
++    #[test]
++    fn unrelated_tools_and_unaccepted_settings_fail_before_execution() {
++        let mut c = Control::default();
++        startup(&mut c);
++        let result = command(
++            &mut c,
++            json!({"type":"provider","event":{"type":"session.updated","session":{"tools":[{"type":"function","name":"foreign","parameters":{}}]}}}),
++        );
++        assert_eq!(
++            result["error"],
++            "Provider accepted another tool configuration"
++        );
++    }
++    #[test]
++    fn shared_response_state_coalesces_and_preserves_native_and_guardrail_intents() {
++        let mut q = ResponseCreateState::default();
++        assert!(q.request_create());
++        q.mark_started();
++        assert!(!q.request_create());
++        assert!(!q.request_create());
++        q.pending_native_create = Some("native");
++        assert!(matches!(
++            q.mark_finished(),
++            Some(CreateIntent::Native("native"))
++        ));
++        assert!(!q.pending_create);
++        q.raced_active_response();
++        q.pending_guardrail_response = Some("guarded".into());
++        assert!(matches!(q.mark_finished(),Some(CreateIntent::Guardrail(id)) if id=="guarded"));
++        assert!(q.mark_finished().is_none());
++    }
++    #[test]
++    fn shared_claim_rejects_duplicate_admission_and_can_release_preparation() {
++        let mut claim = CallClaim::default();
++        assert!(claim.claim());
++        assert!(!claim.claim());
++        claim.release();
++        assert!(claim.claim());
++    }
++}
+diff --git a/codex-rs/realtime-control/src/wasm.rs b/codex-rs/realtime-control/src/wasm.rs
+new file mode 100644
+index 0000000..ce87b7d
+--- /dev/null
++++ b/codex-rs/realtime-control/src/wasm.rs
+@@ -0,0 +1,35 @@
++//! Small synchronous ABI: every instance owns one control session and bounded input.
++use super::Control;
++use std::cell::RefCell;
++thread_local! {
++    static CONTROL: RefCell<Control> = RefCell::new(Control::default());
++    static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
++    static OUTPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
++}
++#[unsafe(no_mangle)]
++pub extern "C" fn input_buffer(length: usize) -> *mut u8 {
++    if length > super::MAX_FRAME_BYTES {
++        return std::ptr::null_mut();
++    }
++    INPUT.with_borrow_mut(|input| {
++        input.resize(length, 0);
++        input.as_mut_ptr()
++    })
++}
++#[unsafe(no_mangle)]
++pub extern "C" fn apply() {
++    let output = INPUT.with_borrow(|input| match std::str::from_utf8(input) {
++        Ok(input) => CONTROL.with_borrow_mut(|control| control.apply_json(input)),
++        Err(_) => "{\"error\":\"Invalid UTF-8 command\"}".into(),
++    });
++    OUTPUT.with_borrow_mut(|out| *out = output.into_bytes());
++    INPUT.with_borrow_mut(|input| input.clear());
++}
++#[unsafe(no_mangle)]
++pub extern "C" fn output_pointer() -> *const u8 {
++    OUTPUT.with_borrow(|out| out.as_ptr())
++}
++#[unsafe(no_mangle)]
++pub extern "C" fn output_length() -> usize {
++    OUTPUT.with_borrow(|out| out.len())
++}

@@ -423,7 +423,19 @@
     {
       "path": "0211-native-computer-guardian.patch",
       "sha256": "70a07e4e7e46d5e0ae324fd80d53da0b18a9e944287a7cb59f8bd5e2e05a3887"
+    },
+    {
+      "path": "0180-portable-realtime-control.patch",
+      "sha256": "83f796bd2ec4bf671ebba69bf3cf34c348908e711b2c4cb9173f5d2a8db8f5b9"
+    },
+    {
+      "path": "0181-retire-portable-cancelled-work.patch",
+      "sha256": "c973e1824da67ef769db151b9658a328aab51fe7b81196477c991b5957e8fddb"
+    },
+    {
+      "path": "0182-preempt-retirement-and-fence-continuation.patch",
+      "sha256": "e181d7460d3b958e034169baf84906909d70933814c6feb7a4680dbd2ca05a75"
     }
   ],
-  "result_tree": "177bf81251bdd03a5f06e6a9f6f5bb4c205f3ea0"
+  "result_tree": "86e999c8e5a61ec547e594d42a1430437fccdeb8"
 }

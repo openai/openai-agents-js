@@ -1,0 +1,493 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 8158b46..208e364 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -2046,6 +2046,7 @@ dependencies = [
+  "codex-client",
+  "codex-http-client",
+  "codex-protocol",
++ "codex-realtime-control",
+  "codex-utils-rustls-provider",
+  "codex-websocket-client",
+  "eventsource-stream",
+diff --git a/codex-rs/codex-api/Cargo.toml b/codex-rs/codex-api/Cargo.toml
+index 8cbcac3..a5d219f 100644
+--- a/codex-rs/codex-api/Cargo.toml
++++ b/codex-rs/codex-api/Cargo.toml
+@@ -5,6 +5,7 @@ edition.workspace = true
+ license.workspace = true
+ 
+ [dependencies]
++codex-realtime-control = { path = "../realtime-control" }
+ async-channel = { workspace = true }
+ async-stream = { workspace = true }
+ base64 = { workspace = true }
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+index cf974a4..ce4953b 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+@@ -4,6 +4,7 @@ use codex_protocol::agent_profile::AgentProfileReceipt;
+ use codex_protocol::protocol::{RealtimeAudioFrame, RealtimeOutputGuard};
+ use codex_protocol::realtime_settings::RealtimeAudioFormat;
+ use codex_protocol::realtime_settings::RealtimeSessionUpdate;
++use codex_realtime_control::contains_expected;
+ use serde_json::Value;
+ use std::collections::VecDeque;
+ use std::sync::Arc;
+@@ -1436,79 +1437,6 @@ impl SessionReadiness {
+     }
+ }
+ 
+-// Provider-added defaults are allowed. Caller-supplied values must be retained;
+-// map keys and positional array values retain their actual schema meanings.
+-fn contains_expected(accepted: &Value, expected: &Value) -> bool {
+-    contains_expected_at(accepted, expected, MatchSite::Session)
+-}
+-#[derive(Clone, Copy, PartialEq)]
+-enum MatchSite {
+-    Session,
+-    Tools,
+-    HostedTool,
+-    Value,
+-}
+-fn contains_expected_at(accepted: &Value, expected: &Value, site: MatchSite) -> bool {
+-    match (accepted, expected) {
+-        (Value::Object(accepted), Value::Object(expected)) => {
+-            let hosted = site == MatchSite::HostedTool;
+-            expected.iter().all(|(key, value)| {
+-                // Credential values are write-only provider inputs. The ordered
+-                // ACK accepts our request; it does not disclose those secrets.
+-                if hosted && matches!(key.as_str(), "authorization" | "headers") {
+-                    return true;
+-                }
+-                accepted.get(key).is_some_and(|accepted| {
+-                    contains_expected_at(
+-                        accepted,
+-                        value,
+-                        if site == MatchSite::Session && key == "tools" {
+-                            MatchSite::Tools
+-                        } else {
+-                            MatchSite::Value
+-                        },
+-                    )
+-                })
+-            })
+-        }
+-        (Value::Array(accepted), Value::Array(expected)) => {
+-            accepted.len() == expected.len()
+-                && accepted.iter().zip(expected).all(|(accepted, expected)| {
+-                    contains_expected_at(
+-                        accepted,
+-                        expected,
+-                        if site == MatchSite::Tools && expected["type"] == "mcp" {
+-                            MatchSite::HostedTool
+-                        } else {
+-                            MatchSite::Value
+-                        },
+-                    )
+-                })
+-        }
+-        (Value::Number(accepted), Value::Number(expected)) => {
+-            // Tolerate integer/float spelling only where neither side can lose
+-            // integer precision. Large metadata integers must still match exactly.
+-            let lossless = |number: &serde_json::Number| {
+-                const EXACT_INTEGER_LIMIT: u64 = 1 << 53;
+-                if let Some(value) = number.as_i64() {
+-                    value.unsigned_abs() <= EXACT_INTEGER_LIMIT
+-                } else if let Some(value) = number.as_u64() {
+-                    value <= EXACT_INTEGER_LIMIT
+-                } else {
+-                    number
+-                        .as_f64()
+-                        .is_some_and(|value| value.abs() <= EXACT_INTEGER_LIMIT as f64)
+-                }
+-            };
+-            accepted == expected
+-                || (lossless(accepted)
+-                    && lossless(expected)
+-                    && accepted.as_f64() == expected.as_f64())
+-        }
+-        _ => accepted == expected,
+-    }
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+index 8d25c9d..dc4a750 100644
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -137,6 +137,79 @@ impl FunctionCall {
+     }
+ }
+ 
++// Provider-added defaults are allowed. Caller-supplied values must be retained;
++// map keys and positional array values retain their actual schema meanings.
++pub fn contains_expected(accepted: &Value, expected: &Value) -> bool {
++    contains_expected_at(accepted, expected, MatchSite::Session)
++}
++#[derive(Clone, Copy, PartialEq)]
++enum MatchSite {
++    Session,
++    Tools,
++    HostedTool,
++    Value,
++}
++fn contains_expected_at(accepted: &Value, expected: &Value, site: MatchSite) -> bool {
++    match (accepted, expected) {
++        (Value::Object(accepted), Value::Object(expected)) => {
++            let hosted = site == MatchSite::HostedTool;
++            expected.iter().all(|(key, value)| {
++                // Credential values are write-only provider inputs. The ordered
++                // ACK accepts our request; it does not disclose those secrets.
++                if hosted && matches!(key.as_str(), "authorization" | "headers") {
++                    return true;
++                }
++                accepted.get(key).is_some_and(|accepted| {
++                    contains_expected_at(
++                        accepted,
++                        value,
++                        if site == MatchSite::Session && key == "tools" {
++                            MatchSite::Tools
++                        } else {
++                            MatchSite::Value
++                        },
++                    )
++                })
++            })
++        }
++        (Value::Array(accepted), Value::Array(expected)) => {
++            accepted.len() == expected.len()
++                && accepted.iter().zip(expected).all(|(accepted, expected)| {
++                    contains_expected_at(
++                        accepted,
++                        expected,
++                        if site == MatchSite::Tools && expected["type"] == "mcp" {
++                            MatchSite::HostedTool
++                        } else {
++                            MatchSite::Value
++                        },
++                    )
++                })
++        }
++        (Value::Number(accepted), Value::Number(expected)) => {
++            // Tolerate integer/float spelling only where neither side can lose
++            // integer precision. Large metadata integers must still match exactly.
++            let lossless = |number: &serde_json::Number| {
++                const EXACT_INTEGER_LIMIT: u64 = 1 << 53;
++                if let Some(value) = number.as_i64() {
++                    value.unsigned_abs() <= EXACT_INTEGER_LIMIT
++                } else if let Some(value) = number.as_u64() {
++                    value <= EXACT_INTEGER_LIMIT
++                } else {
++                    number
++                        .as_f64()
++                        .is_some_and(|value| value.abs() <= EXACT_INTEGER_LIMIT as f64)
++                }
++            };
++            accepted == expected
++                || (lossless(accepted)
++                    && lossless(expected)
++                    && accepted.as_f64() == expected.as_f64())
++        }
++        _ => accepted == expected,
++    }
++}
++
+ #[derive(Clone, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct Tool {
+@@ -218,6 +291,7 @@ struct Batch {
+ pub struct Control {
+     phase: Phase,
+     tools: BTreeMap<String, Tool>,
++    expected_session: Value,
+     calls: BTreeMap<String, Call>,
+     batches: BTreeMap<String, Batch>,
+     responses: ResponseCreateState<()>,
+@@ -232,6 +306,7 @@ impl Default for Control {
+         Self {
+             phase: Phase::New,
+             tools: BTreeMap::new(),
++            expected_session: Value::Null,
+             calls: BTreeMap::new(),
+             batches: BTreeMap::new(),
+             responses: ResponseCreateState::default(),
+@@ -254,6 +329,22 @@ impl Control {
+         self.next_send
+     }
+     pub fn apply(&mut self, command: Command) -> Result<Vec<Effect>, String> {
++        let result = self.transition(command);
++        if result.is_err() {
++            self.retire();
++        }
++        result
++    }
++    fn retire(&mut self) {
++        self.phase = Phase::Closed;
++        self.tools.clear();
++        self.expected_session = Value::Null;
++        self.calls.clear();
++        self.batches.clear();
++        self.pending_send.clear();
++        self.responses = ResponseCreateState::default();
++    }
++    fn transition(&mut self, command: Command) -> Result<Vec<Effect>, String> {
+         if self.phase == Phase::Closed {
+             return if matches!(command, Command::Close) {
+                 Ok(vec![])
+@@ -284,7 +375,12 @@ impl Control {
+                 }
+                 self.tools = tools;
+                 self.phase = Phase::Configuring;
+-                self.startup_send = Some(self.send(json!({"type":"session.update","session":{"type":"realtime","model":config.model,"instructions":config.instructions,"tools":wire_tools,"tool_choice":"auto"}}), &mut effects));
++                let session = json!({"type":"realtime","model":config.model,"instructions":config.instructions,"tools":wire_tools,"tool_choice":"auto"});
++                self.expected_session = session.clone();
++                self.startup_send = Some(self.send(
++                    json!({"type":"session.update","session":session}),
++                    &mut effects,
++                ));
+             }
+             Command::Sent { id } => {
+                 if !self.pending_send.remove(&id) {
+@@ -338,10 +434,7 @@ impl Control {
+                 }
+             }
+             Command::Close => {
+-                self.phase = Phase::Closed;
+-                self.calls.clear();
+-                self.batches.clear();
+-                self.pending_send.clear();
++                self.retire();
+                 effects.push(Effect::Closed);
+             }
+         }
+@@ -376,25 +469,25 @@ impl Control {
+                     let session = event
+                         .get("session")
+                         .ok_or("Invalid accepted configuration")?;
+-                    let advertised = session
+-                        .get("tools")
+-                        .and_then(Value::as_array)
+-                        .ok_or("Accepted configuration omitted tools")?;
+-                    if advertised.len() != self.tools.len()
+-                        || advertised.iter().any(|tool| {
+-                            tool.get("type").and_then(Value::as_str) != Some("function")
+-                                || tool.get("name").and_then(Value::as_str).is_none_or(|name| {
+-                                    self.tools.get(name).is_none_or(|declared| {
+-                                        tool.get("parameters") != Some(&declared.parameters)
+-                                    })
+-                                })
+-                        })
+-                    {
++                    if !contains_expected(session, &self.expected_session) {
+                         return Err("Provider accepted another tool configuration".into());
+                     }
+                     self.startup_accepted = true;
+                 }
+             }
++            "response.cancelled" => {
++                return Err("Portable voice generation was cancelled".into());
++            }
++            "input_audio_buffer.speech_started" => {
++                if self.responses.active_default_response
++                    || self
++                        .calls
++                        .values()
++                        .any(|call| call.phase != CallPhase::Published)
++                {
++                    return Err("Portable voice interruption requires a new generation".into());
++                }
++            }
+             "response.created" => {
+                 self.require_ready()?;
+                 let id = string(&event["response"], "id")?;
+@@ -429,6 +522,9 @@ impl Control {
+             "response.done" => {
+                 self.require_ready()?;
+                 let response = event.get("response").ok_or("Missing response")?;
++                if response.get("status").and_then(Value::as_str) != Some("completed") {
++                    return Err("Incomplete Realtime response cannot admit functions".into());
++                }
+                 let id = string(response, "id")?;
+                 if self.responses.sdk_response_id.as_ref() != Some(&id) {
+                     return Err("Completed response does not own the active response".into());
+@@ -582,10 +678,7 @@ impl Control {
+         match result {
+             Ok(effects) => json!({"effects":effects}).to_string(),
+             Err(error) => {
+-                self.phase = Phase::Closed;
+-                self.calls.clear();
+-                self.batches.clear();
+-                self.pending_send.clear();
++                self.retire();
+                 json!({"error":error}).to_string()
+             }
+         }
+@@ -636,7 +729,7 @@ mod tests {
+     fn accepted(control: &mut Control) -> Value {
+         command(
+             control,
+-            json!({"type":"provider","event":{"type":"session.updated","session":{"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}}}),
++            json!({"type":"provider","event":{"type":"session.updated","session":{"type":"realtime","model":"test-realtime","instructions":"Help.","tool_choice":"auto","tools":[{"type":"function","name":"lookup","description":"Look up a value","parameters":{"type":"object"}}]}}}),
+         )
+     }
+     fn ready() -> Control {
+@@ -662,7 +755,7 @@ mod tests {
+     fn batch(control: &mut Control) -> Value {
+         command(
+             control,
+-            json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","output":[item()]}}}),
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
+         )
+     }
+     #[test]
+@@ -810,6 +903,147 @@ mod tests {
+         );
+     }
+     #[test]
++    fn non_completed_responses_never_admit_functions_and_retire_the_owner() {
++        for status in [
++            json!("cancelled"),
++            json!("failed"),
++            json!("incomplete"),
++            json!("in_progress"),
++            Value::Null,
++        ] {
++            let mut control = ready();
++            request(&mut control);
++            let response = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":status,"output":[item()]}}}),
++            );
++            assert_eq!(
++                response["error"],
++                "Incomplete Realtime response cannot admit functions"
++            );
++            assert_eq!(
++                command(
++                    &mut control,
++                    json!({"type":"approve","call_id":"call-1","approved":true})
++                )["error"],
++                "Realtime control is closed"
++            );
++        }
++    }
++    #[test]
++    fn provider_cancellation_retires_discovery_approval_execution_and_publication() {
++        for stage in 0..4 {
++            let mut control = ready();
++            request(&mut control);
++            if stage >= 1 {
++                batch(&mut control);
++            }
++            if stage >= 2 {
++                command(
++                    &mut control,
++                    json!({"type":"approve","call_id":"call-1","approved":true}),
++                );
++            }
++            if stage >= 3 {
++                command(
++                    &mut control,
++                    json!({"type":"tool_result","call_id":"call-1","output":"late"}),
++                );
++            }
++            let cancelled = control.apply(Command::Provider {
++                event: json!({"type":"response.cancelled","response_id":"response-1"}),
++            });
++            assert_eq!(
++                cancelled.unwrap_err(),
++                "Portable voice generation was cancelled"
++            );
++            assert_eq!(
++                command(
++                    &mut control,
++                    json!({"type":"tool_result","call_id":"call-1","output":"late"})
++                )["error"],
++                "Realtime control is closed"
++            );
++            assert!(control.calls.is_empty());
++            assert!(control.pending_send.is_empty());
++        }
++    }
++    #[test]
++    fn first_user_speech_is_allowed_but_live_response_or_function_work_retires() {
++        let speech = json!({"type":"provider","event":{"type":"input_audio_buffer.speech_started","item_id":"input-1"}});
++        let mut idle = ready();
++        assert!(command(&mut idle, speech.clone()).get("error").is_none());
++        for stage in 0..3 {
++            let mut control = ready();
++            request(&mut control);
++            if stage >= 1 {
++                batch(&mut control);
++            }
++            if stage >= 2 {
++                command(
++                    &mut control,
++                    json!({"type":"approve","call_id":"call-1","approved":true}),
++                );
++            }
++            assert_eq!(
++                command(&mut control, speech.clone())["error"],
++                "Portable voice interruption requires a new generation"
++            );
++            assert!(control.calls.is_empty());
++        }
++    }
++    #[test]
++    fn duplicate_accepted_names_cannot_replace_a_declared_tool() {
++        let mut control = Control::default();
++        let mut other = tool();
++        other["name"] = json!("other");
++        command(
++            &mut control,
++            json!({"type":"start","config":{"model":"test-realtime","instructions":"Help.","tools":[tool(),other]}}),
++        );
++        command(&mut control, json!({"type":"sent","id":1}));
++        let mut wire_tool = tool();
++        wire_tool.as_object_mut().unwrap().remove("needs_approval");
++        wire_tool["type"] = json!("function");
++        let accepted = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"session.updated","session":{"type":"realtime","model":"test-realtime","instructions":"Help.","tool_choice":"auto","tools":[wire_tool,wire_tool]}}}),
++        );
++        assert_eq!(
++            accepted["error"],
++            "Provider accepted another tool configuration"
++        );
++    }
++    #[test]
++    fn configuration_acceptance_preserves_all_requested_values() {
++        let mut control = Control::default();
++        startup(&mut control);
++        command(&mut control, json!({"type":"sent","id":1}));
++        let changed = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"session.updated","session":{"type":"realtime","model":"test-realtime","instructions":"Different instructions","tool_choice":"auto","tools":[{"type":"function","name":"lookup","description":"Look up a value","parameters":{"type":"object"}}]}}}),
++        );
++        assert_eq!(
++            changed["error"],
++            "Provider accepted another tool configuration"
++        );
++    }
++    #[test]
++    fn shared_contract_matcher_keeps_defaults_numeric_aliases_and_schema_values() {
++        assert!(contains_expected(
++            &json!({"speed":1.0,"default":true}),
++            &json!({"speed":1})
++        ));
++        assert!(!contains_expected(
++            &json!({"metadata":{"id":9007199254740993u64}}),
++            &json!({"metadata":{"id":9007199254740992u64}})
++        ));
++        assert!(!contains_expected(
++            &json!({"tools":[{"type":"function","parameters":{"properties":{"authorization":{"type":"number"}}}}]}),
++            &json!({"tools":[{"type":"function","parameters":{"properties":{"authorization":{"type":"string"}}}}]})
++        ));
++    }
++    #[test]
+     fn shared_response_state_coalesces_and_preserves_native_and_guardrail_intents() {
+         let mut q = ResponseCreateState::default();
+         assert!(q.request_create());
