@@ -12,7 +12,7 @@ const png = Buffer.from(
 );
 
 export async function writeRule(root: string, name: string, source: string) {
-  const directory = join(root, '.claude', 'rules');
+  const directory = join(root, '.agents', 'rules');
   await mkdir(directory, { recursive: true });
   const path = join(directory, `${name}.md`);
   await writeFile(path, source);

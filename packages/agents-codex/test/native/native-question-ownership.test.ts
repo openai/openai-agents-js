@@ -54,7 +54,7 @@ async function ownershipPeer() {
   }[] = [];
   const effects: string[] = [];
   const failures: unknown[] = [];
-  let unsolicited: ServerResponse | undefined;
+  const unsolicitedStreams = new Map<ServerResponse, string>();
   const pending = new Map<string, PeerCall>();
   const event = (response: ServerResponse, value: unknown) => {
     if (response.destroyed || response.writableEnded)
@@ -76,7 +76,11 @@ async function ownershipPeer() {
       if (request.method === 'GET') {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.flushHeaders();
-        unsolicited = response;
+        const session = request.headers['mcp-session-id'];
+        if (typeof session === 'string' && session) {
+          unsolicitedStreams.set(response, session);
+          response.once('close', () => unsolicitedStreams.delete(response));
+        }
         return;
       }
       if (request.method !== 'POST') {
@@ -205,12 +209,19 @@ async function ownershipPeer() {
       pending.set(selected.session, selected);
       event(selected.response, form());
     },
-    async emitUnsolicited() {
+    async emitUnsolicited(session: string) {
       const stream = await vi.waitFor(
         () => {
-          if (!unsolicited || unsolicited.destroyed)
-            throw new Error('No unsolicited GET stream');
-          return unsolicited;
+          for (const [response, responseSession] of unsolicitedStreams) {
+            if (
+              responseSession === session &&
+              !response.destroyed &&
+              !response.writableEnded
+            ) {
+              return response;
+            }
+          }
+          throw new Error('No unsolicited GET stream');
         },
         { timeout: 8000, interval: 20 },
       );
@@ -459,7 +470,7 @@ it('declines late unassociated delivery while a successor uses the same server',
   const nextCall = await peer.entered('successor');
   // A server can retain an old callback, but its unsolicited GET request has
   // no trusted response-stream admission. Current-server membership is no grant.
-  await peer.emitUnsolicited();
+  await peer.emitUnsolicited(nextCall.session);
   await vi.waitFor(
     () =>
       expect(peer.replies).toMatchObject([

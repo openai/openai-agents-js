@@ -107,7 +107,7 @@ it('records sampled instructions, build identity and matching live and retained 
     const source = join(await realpath(workspace), 'explicit.md');
     const instructions = 'Use the fixture command.\r\n';
     await writeFile(source, instructions);
-    const rules = join(executor.cwd, '.claude', 'rules');
+    const rules = join(executor.cwd, '.agents', 'rules');
     await mkdir(rules, { recursive: true });
     const guidance = 'Use the RECEIPT-GUIDANCE marker when asked.\n';
     await writeFile(join(rules, 'general.md'), guidance);

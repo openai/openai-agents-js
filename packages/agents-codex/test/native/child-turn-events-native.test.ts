@@ -646,11 +646,30 @@ describe('exact native child cancellation', () => {
       try {
         await (await session.submit('Start both children.')).wait();
         await vi.waitFor(() => expect(children.size).toBe(2));
-        const captured = await Array.fromAsync(session.subagents());
-        expect(captured).toHaveLength(2);
-        const [selected, sibling] = captured;
-        if (!selected?.turn || !sibling?.turn)
-          throw new Error('Missing real native child Turns');
+        const expectedChildIds = [...children.keys()].sort();
+        const { selected, sibling, selectedTurn, siblingTurn } =
+          await vi.waitUntil(
+            async () => {
+              const captured = await Array.fromAsync(session.subagents());
+              expect(captured).toHaveLength(2);
+              expect(captured.map((child) => child.id).sort()).toEqual(
+                expectedChildIds,
+              );
+              for (const child of captured) {
+                expect(child.status).toBe('active');
+                if (child.turn === null) continue;
+                expect(child.isLive).toBe(true);
+                expect(child.turn.childId).toBe(child.id);
+              }
+              const selected = captured[0]!;
+              const sibling = captured[1]!;
+              const selectedTurn = selected.turn;
+              const siblingTurn = sibling.turn;
+              if (selectedTurn === null || siblingTurn === null) return false;
+              return { selected, sibling, selectedTurn, siblingTurn };
+            },
+            { timeout: 3000 },
+          );
         const foreignServer = new ModelServer([[message('foreign complete')]]);
         await using foreignProvider = await providerFor(foreignServer);
         await using foreignSession = await new Agent({
@@ -664,13 +683,13 @@ describe('exact native child cancellation', () => {
           'Turn does not belong to this captured child instance',
         );
         foreignServer.assertExhausted();
-        await expect(selected.tryCancel(sibling.turn)).rejects.toThrow(
+        await expect(selected.tryCancel(siblingTurn)).rejects.toThrow(
           'Turn does not belong to this captured child instance',
         );
-        const attention = selected.turn.waitForAttention();
+        const attention = selectedTurn.waitForAttention();
         void attention.catch(() => {});
-        await expect(selected.tryCancel(selected.turn)).resolves.toBe(true);
-        const error: unknown = await selected.turn
+        await expect(selected.tryCancel(selectedTurn)).resolves.toBe(true);
+        const error: unknown = await selectedTurn
           .wait()
           .catch((cause: unknown) => cause);
         expect(error).toBeInstanceOf(TurnAborted);
@@ -680,9 +699,9 @@ describe('exact native child cancellation', () => {
           reason: 'interrupted',
           error,
         });
-        await expect(selected.tryCancel(selected.turn)).resolves.toBe(false);
+        await expect(selected.tryCancel(selectedTurn)).resolves.toBe(false);
         let siblingFinished = false;
-        const surviving = sibling.turn.wait().then((result) => {
+        const surviving = siblingTurn.wait().then((result) => {
           siblingFinished = true;
           return result;
         });

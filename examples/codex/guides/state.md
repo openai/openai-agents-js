@@ -5,6 +5,7 @@ Choose the record that matches your task. The application reconciles external ef
 | Task | Read |
 | --- | --- |
 | Inspect conversation progress and retained usage | [Native history snapshots](#history-and-state). |
+| Original objects and revision-checked edits | [Original history reads and edits](#original-history-reads-and-edits). |
 | Move a supported conversation to another Session | [Save or suspend a session](#save-or-suspend-a-session), then [restore its declarations](#restore-instructions-and-tools). |
 | Branch from full conversation history | [Fork a conversation](#fork-a-conversation). |
 | Inspect the settings recorded for a native turn | [Inspect effective turn settings](#inspect-effective-turn-settings). |
@@ -61,6 +62,54 @@ Usage has different live and serialized representations:
 `inputTokensDetails.cacheWriteTokens` is optional. An omitted count is unknown, not zero. Response-based totals omit cache writes when any contributing response omits that count.
 
 This encoding applies to response, turn, and thread usage, including retained compacted records and descendant histories. Preserve those strings in JSON storage. Restore and `readSessionInstructions()` reject older unsafe numeric counters because they may already have rounded; converting such a number to a string cannot recover the original value. Core's stored history and application tool data keep their existing formats.
+
+## Original history reads and edits
+
+Matching source builds have been exposing original JSON object records independently of the current model context and projected `items()` view. Each read has been returning independent copies.
+
+| Operation | Contract |
+| --- | --- |
+| `await session.historySnapshot()` | Original records, the revision for all records, and the total count, including inspection-only records. |
+| `await session.historySnapshot({ limit: n })` | Latest `n` records, with the same full revision and count. Zero: revision and count only. |
+| `await session.transactHistory({ expectedRevision, keep: total, items })` | Append for positive `total`, with current model context preserved before the new items. |
+| `keep: 0` | Explicit replacement of all original history and model context. |
+| `0 < keep < total` | First `keep` original records, including inspection-only objects, with their current model content. Ambiguous partial edits across a compaction summary: rejection before commit. |
+
+Imported objects: unknown fields and missing IDs unchanged on read and restore. Records with unknown, missing, or non-string types: inspection only, without model input or tool execution. Known malformed executable records and incomplete client tool call/result pairs: rejection before commit. Object records only; scalar, array, and null records unsupported.
+
+Native capture: after provider decoding, native identity assignment, and tool-result processing, before model-context truncation. No recovery of fields discarded before that boundary or in older checkpoints. Imported originals: no added execution IDs. JSON number precision: JavaScript's existing number representation.
+
+Example fragment in an ES module, with the application's configured `agent`:
+
+```ts
+import assert from 'node:assert/strict';
+
+async function saveHistoryNote() {
+  await using session = await agent.session({
+    initialMessages: [{ role: 'user', content: 'Keep this original input.' }],
+  });
+  const before = await session.historySnapshot();
+  const note = { type: 'application_note', label: 'retained application data' };
+  const revision = await session.transactHistory({
+    expectedRevision: before.revision,
+    keep: before.total,
+    items: [note],
+  });
+  const tail = await session.historySnapshot({ limit: 1 });
+  assert.equal(tail.revision, revision);
+  assert.equal(tail.total, before.total + 1);
+  assert.deepEqual(tail.items, [note]);
+  return { state: await session.saveState(), tail };
+}
+
+const saved = await saveHistoryNote();
+await using restored = await agent.session({ state: saved.state });
+assert.deepEqual(await restored.historySnapshot({ limit: 1 }), saved.tail);
+```
+
+Current application bindings and an idle Session required. Revision conflicts: unchanged accepted state. Uncertain persistence: Session retirement, followed by closure and restore before further work. Storage audit records retained after edits. Existing restrictions for child graphs, goals, background work, and unresolved tool effects.
+
+Hot limited reads: copies of selected records only. Durable reopen: full stored-history loading.
 
 ## Save or suspend a session
 

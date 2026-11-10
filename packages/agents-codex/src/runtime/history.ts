@@ -1841,7 +1841,7 @@ export function projectNativeHostedToolItem(
   }
 }
 
-/** Effective canonical response items; raw rollout audit records remain separate. */
+/** Core has been retaining original JSON object records separately from model projections. */
 export interface CanonicalHistorySnapshot {
   readonly revision: string;
   readonly total: number;
