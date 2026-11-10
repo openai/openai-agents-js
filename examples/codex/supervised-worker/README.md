@@ -1,4 +1,75 @@
-# Supervise a durable native worker
+# Supervise a native worker
+
+## Attach to a running worker
+
+The live example has been keeping one Session and one root Turn in an owner process. Separate supervisor processes have been observing events, sending exact steering, answering live questions, and cancelling work through a private Unix socket. Disconnecting a supervisor has been leaving that same Turn running.
+
+Prerequisites: a POSIX host, workspace dependencies, the matching [native SDK build](../guides/building.md), and `OPENAI_API_KEY` in the owner's environment. Optional owner settings: `OPENAI_MODEL` (default `gpt-5`) and `OPENAI_BASE_URL`. This source example has been using the current checkout's public `@openai/agents` APIs.
+
+The owner and supervisors have been using the same trusted temporary root from Node's `os.tmpdir()`. If the default directory fails the ownership check, create a private `0700` directory owned by your user and export its absolute path as `TMPDIR` in both terminals. Keep the path short enough for a Unix socket.
+
+Terminal 1, from the repository root:
+
+```sh
+pnpm exec tsx examples/codex/supervised-worker/live.ts serve \
+  'Write a short release note. First ask me which release date to use.'
+```
+
+The first JSON line has been reporting `directory`, `sessionId`, `turnId`, and `submissionId`. The owner has been retaining terminal status until Ctrl-C or SIGTERM, then joining cancellation and closing its resources. Killing the owner has been ending this in-memory run; the durable recovery example below has been covering process replacement.
+
+Terminal 2, with `LIVE_DIR` set to the reported directory:
+
+```sh
+LIVE_DIR=/path/from/owner/output
+pnpm exec tsx examples/codex/supervised-worker/live.ts status "$LIVE_DIR"
+pnpm exec tsx examples/codex/supervised-worker/live.ts observe "$LIVE_DIR"
+```
+
+Ctrl-C in Terminal 2 has been detaching only that observer. Reconnecting with the last event's `sequence` has been continuing after that native cursor:
+
+```sh
+pnpm exec tsx examples/codex/supervised-worker/live.ts observe "$LIVE_DIR" 12
+```
+
+The stream has been returning native events directly, including retention `gap` events. In the JSON stream, `usage_updated` events have been encoding `bigint` counters as exact decimal strings and numeric counters as JSON numbers. `status` has been returning the current questions independently of event retention, along with `running`, `cancelling`, `completed`, `cancelled`, or `failed` state and any final `result`. A completed stream has been ending naturally.
+
+Exact steering, with `TURN_ID` from the latest `turn_started` event:
+
+```sh
+TURN_ID=REPLACE_ME
+pnpm exec tsx examples/codex/supervised-worker/live.ts steer \
+  "$LIVE_DIR" "$TURN_ID" 'Keep the release note under 100 words.'
+```
+
+The steering command has been returning the SDK receipt, including `inputId`, or rejecting a stale ID with HTTP 409. It has been submitting once, without falling back to another Turn.
+
+A live reply, with `QUESTION_TURN_ID` and `CALL_ID` copied from `status.questions`:
+
+```sh
+QUESTION_TURN_ID=REPLACE_ME
+CALL_ID=REPLACE_ME
+pnpm exec tsx examples/codex/supervised-worker/live.ts answer \
+  "$LIVE_DIR" "$QUESTION_TURN_ID" "$CALL_ID" 'Use November 10.'
+pnpm exec tsx examples/codex/supervised-worker/live.ts status "$LIVE_DIR"
+```
+
+The owner has been matching the current `ask_supervisor` request and delivering its typed reply through `session.respond`. Duplicate and stale answers have been failing. A lost control response has been leaving delivery uncertain; `status` has been exposing the current state without retrying the mutation.
+
+Cancellation, including the Turn's cleanup:
+
+```sh
+pnpm exec tsx examples/codex/supervised-worker/live.ts cancel "$LIVE_DIR"
+```
+
+The owner has been creating a random `0700` directory under the trusted temporary root, a `0600` bearer-token file, and a private Unix socket. Clients have been checking ownership and file types before connecting directly. This example has been trusting processes running as the same OS user. It has been exposing model content only to authenticated clients and granting the model no command executor, MCP connection, or host filesystem access.
+
+Scripted verification without live provider credentials:
+
+```sh
+pnpm test:native packages/agents-codex/test/native/supervised-worker-live.test.ts
+```
+
+## Supervise a durable worker
 
 The supervisor runs one process per worker directory at a time. Each worker has a private directory, executor workspace, local history, and MCP credentials.
 
