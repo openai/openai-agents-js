@@ -88,6 +88,28 @@ The optional signal aborts this waiter with its reason. It does not cancel the T
 
 The [supervised worker](../supervised-worker/README.md) combines this method with deadlines, explicit stop and cleanup, and application-owned status. Its account-level signals are additional application policy; `waitForAttention()` alone does not monitor an account or recover stopped work.
 
+### Read saved Codex plan usage
+
+With a [current source build](building.md), call `session.planUsage()` on an open Session that [uses a saved Codex login](session-configuration.md#use-a-saved-codex-login-on-a-headless-host). The method returns `null` for other authentication modes, including API keys and registered Sign in with ChatGPT. Pass a signal to limit the read. If the signal aborts, the read rejects with the signal's reason.
+
+```ts
+import type { Session } from '@openai/agents';
+
+export async function readSavedPlanUsage(session: Session) {
+  const usage = await session.planUsage({ signal: AbortSignal.timeout(5_000) });
+  if (!usage?.identityVerified) return null;
+
+  const codex = usage.rateLimitsByLimitId.codex;
+  return {
+    observedAt: new Date(usage.observedAt * 1_000).toISOString(),
+    primaryUsedPercent: codex?.primary?.usedPercent ?? null,
+    spendHeadroomPercent: codex?.individualLimit?.remainingPercent ?? null,
+  };
+}
+```
+
+The SDK sets `identityVerified` when the reported account and user match the saved login. The example returns `null` if it has no verified snapshot. Use `usage.observedAt`, the receipt time in Unix seconds, to decide how long to display a snapshot. If the provider omits the primary window or individual spend limit, the example returns `null` for that value. The provider decides whether to admit the next request.
+
 ### When requests are available
 
 A Session-scoped URL request has null turn and submission IDs and stays outside exact-turn waits. Closing or retiring its issuing Session expires the wrapper and declines the unanswered request.

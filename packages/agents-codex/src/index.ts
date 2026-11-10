@@ -181,6 +181,7 @@ export type {
   ModelRequestDispatching,
   ModelResponseLinked,
   ApiRateLimitsUpdated,
+  AgentProfileChanged,
 } from './runtime/observation';
 export type {
   ApiRateLimits,
@@ -413,3 +414,9 @@ export type {
   NativeRealtimeUsage,
   NativeRealtimeUsageCounters,
 } from './runtime/realtime-usage';
+
+export type {
+  NativeRealtimePolicyContext,
+  NativeRealtimeTool,
+  NativeRealtimeToolErrorContext,
+} from './runtime/realtime-policy';
