@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import process from 'node:process';
 import console from 'node:console';
-import { pathToFileURL } from 'node:url';
+import { URL } from 'node:url';
 import { promisify } from 'node:util';
 import { Agent, Environment, NativeProvider, tool } from '@openai/agents';
 import { z } from 'zod';
@@ -144,8 +144,8 @@ for (const name of ['@openai/agents', '@openai/agents-codex']) {
   const specifier = `${name}/voice/control.wasm`;
   assert.equal(require.resolve(specifier), wasm, `CJS export: ${specifier}`);
   assert.equal(
-    import.meta.resolve(specifier),
-    pathToFileURL(wasm).href,
+    await realpath(new URL(import.meta.resolve(specifier))),
+    wasm,
     `ESM export: ${specifier}`,
   );
   const portableReceipt = JSON.parse(await readFile(receiptFile, 'utf8'));
