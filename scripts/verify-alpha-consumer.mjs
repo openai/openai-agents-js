@@ -127,8 +127,6 @@ const portableReceiptFile = 'portable-build-receipt.json';
 const portableHermesFiles = [
   'codex-realtime-control.mjs',
   'codex-realtime-control.cjs',
-  'codex-realtime-control.d.mts',
-  'codex-realtime-control.d.ts',
 ];
 const facadeNative = join(facadeRoot, 'native');
 assert(

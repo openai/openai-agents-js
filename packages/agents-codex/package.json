@@ -171,11 +171,11 @@
     },
     "./voice/control.hermes": {
       "import": {
-        "types": "./native/codex-realtime-control.d.mts",
+        "types": "./dist/voice/control.hermes.d.mts",
         "default": "./native/codex-realtime-control.mjs"
       },
       "require": {
-        "types": "./native/codex-realtime-control.d.ts",
+        "types": "./dist/voice/control.hermes.d.ts",
         "default": "./native/codex-realtime-control.cjs"
       }
     }
@@ -237,9 +237,7 @@
     "native/portable-build-receipt.json",
     "PORTABLE_CONTROL.md",
     "native/codex-realtime-control.mjs",
-    "native/codex-realtime-control.cjs",
-    "native/codex-realtime-control.d.mts",
-    "native/codex-realtime-control.d.ts"
+    "native/codex-realtime-control.cjs"
   ],
   "typesVersions": {
     "*": {
@@ -289,7 +287,7 @@
         "dist/mcp-apps/index.d.ts"
       ],
       "voice/control.hermes": [
-        "native/codex-realtime-control.d.ts"
+        "dist/voice/control.hermes.d.ts"
       ]
     }
   },

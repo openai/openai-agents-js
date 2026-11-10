@@ -198,8 +198,10 @@ nativeIt(
         await voice.updateAgent(second);
         const update = await peer.frame('session.update', after);
         expect(update.session.instructions).toBe('Second voice agent');
-        expect(update.session.tools).toEqual([
-          expect.objectContaining({ type: 'function', name: 'second_tool' }),
+        expect(update.session.tools.map((tool: Frame) => tool.name)).toEqual([
+          'background_agent',
+          'remain_silent',
+          'second_tool',
         ]);
         await expect(voice.getActiveAgent()).resolves.toBe(second);
         await expect(session.getActiveAgent()).resolves.toBe(first);
@@ -214,7 +216,10 @@ nativeIt(
       await expect(reopened.getActiveAgent()).resolves.toBe(first);
       const update = await peer.frame('session.update', after);
       expect(update.session.instructions).toBe('First agent');
-      expect(update.session.tools).toEqual([]);
+      expect(update.session.tools.map((tool: Frame) => tool.name)).toEqual([
+        'background_agent',
+        'remain_silent',
+      ]);
     } finally {
       await peer.close();
       await ModelServer.closeAll();

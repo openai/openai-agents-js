@@ -62,6 +62,7 @@ function fixture(
     _checkVoiceOperation: vi.fn(),
     _checkVoiceAdapterOperation: vi.fn(),
     _runVoiceCallback: vi.fn(async (callback: () => unknown) => callback()),
+    _hasRealtimeAgentConfiguration: vi.fn(() => false),
     _realtimeCurrentProfile: vi.fn(async () => null),
     _realtimeProfileTarget: vi.fn((target: unknown) => target ?? null),
     _realtimeGuardrailSource: vi.fn((_receipt: unknown) => ({
@@ -1372,6 +1373,13 @@ it('keeps the reader moving during a bound ACK and joins its rejection on close'
       },
     }),
   ).toBe(true);
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([operation]) => operation === 'realtime_conversation_update_sdk',
+      ),
+    ).toBe(true),
+  );
   peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } });
   let closed = false;
   const closing = peer.owner.close().then(() => {
@@ -2029,7 +2037,9 @@ it.each([false, true])(
       await refreshing;
       expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
     } else {
-      expect(peer.session._prepareRealtimeMcp).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(peer.session._prepareRealtimeMcp).toHaveBeenCalledOnce(),
+      );
       expect(peer.call).not.toHaveBeenCalled();
       promoted.resolve();
       await refreshing;

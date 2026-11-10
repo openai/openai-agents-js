@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import process from 'node:process';
 import console from 'node:console';
@@ -83,9 +83,9 @@ const before = snapshot();
 const target = resolve(native, '.cache/portable-target');
 const environment = { ...process.env, CARGO_TARGET_DIR: target };
 delete environment.OPENAI_API_KEY;
-function run(program, args) {
+function run(program, args, cwd = native) {
   const result = spawnSync(program, args, {
-    cwd: native,
+    cwd,
     env: environment,
     stdio: ['ignore', 'pipe', 'inherit'],
     maxBuffer: 16 * 1024 * 1024,
@@ -129,19 +129,29 @@ for (const [name, kind] of [
 ])
   if (exports.get(name) !== kind)
     throw new Error(`Portable control omitted ABI export ${name}.`);
-const loweredPath = join(target, 'codex-realtime-control.lowered.js');
-run(process.execPath, [
-  wasm2js,
-  built,
-  '-o',
-  loweredPath,
-  '--emscripten',
-  '--enable-multivalue',
-  '--enable-bulk-memory',
-  '--enable-nontrapping-float-to-int',
-  '--strip-debug',
-  '-O',
-]);
+// Binaryen's virtual filesystem does not consistently resolve Windows drive paths.
+// Keep its input and output local to an explicit working directory.
+const loweringDirectory = dirname(built);
+const loweredPath = join(
+  loweringDirectory,
+  'codex-realtime-control.lowered.js',
+);
+run(
+  process.execPath,
+  [
+    wasm2js,
+    basename(built),
+    '-o',
+    basename(loweredPath),
+    '--emscripten',
+    '--enable-multivalue',
+    '--enable-bulk-memory',
+    '--enable-nontrapping-float-to-int',
+    '--strip-debug',
+    '-O',
+  ],
+  loweringDirectory,
+);
 const lowered = readFileSync(loweredPath, 'utf8');
 if (
   lowered.includes('WebAssembly') ||
@@ -165,12 +175,6 @@ for (const [index, directory] of products.entries()) {
     'codex-realtime-control.cjs': owner
       ? `${body}const { PortableVoiceControlBinding } = require('../dist/voice/portable-binding.js');\nexports.createHermesVoiceControl = function () { return new PortableVoiceControlBinding(instantiate({})); };\n`
       : `module.exports = require('@openai/agents-codex/voice/control.hermes');\n`,
-    'codex-realtime-control.d.mts': owner
-      ? `import type { PortableVoiceControlBinding } from '../dist/voice/portable-binding.mjs';\nexport declare function createHermesVoiceControl(): PortableVoiceControlBinding;\n`
-      : `export { createHermesVoiceControl } from '@openai/agents-codex/voice/control.hermes';\n`,
-    'codex-realtime-control.d.ts': owner
-      ? `import type { PortableVoiceControlBinding } from '../dist/voice/portable-binding.js';\nexport declare function createHermesVoiceControl(): PortableVoiceControlBinding;\n`
-      : `export { createHermesVoiceControl } from '@openai/agents-codex/voice/control.hermes';\n`,
   };
   const hashes = {};
   for (const [name, content] of Object.entries(generated)) {

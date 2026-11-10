@@ -132,7 +132,7 @@ index 8e674c19cde5ce4bde6298bdcd527811c5f1981a..6a26811e8acf24f13acf044425fa9411
  }
  
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
-index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739af1c56af 100644
+index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e2842a757982 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
 @@ -33,6 +33,7 @@ use codex_http_client::NetworkPolicyDenied;
@@ -143,34 +143,40 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
  use codex_protocol::protocol::RealtimeTranscriptDelta;
  use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
  #[cfg(test)]
-@@ -92,6 +93,8 @@ struct QueuedWireMessage {
+@@ -91,7 +92,10 @@ struct QueuedWireMessage {
+     configuration: Option<Arc<super::readiness::RealtimeAcceptedConfiguration>>,
      output_guard: codex_protocol::protocol::RealtimeOutputGuard,
      out_of_band: bool,
++    unscoped_function_item: bool,
      hosted_mcp_events: Vec<RealtimeEvent>,
 +    request_error: Option<codex_protocol::protocol::RealtimeProviderRequestError>,
 +    history_observation: bool,
  }
  
  impl QueuedWireMessage {
-@@ -126,6 +129,8 @@ impl QueuedWireMessage {
+@@ -125,7 +129,10 @@ impl QueuedWireMessage {
+             configuration: None,
              output_guard: Default::default(),
              out_of_band: false,
++            unscoped_function_item: false,
              hosted_mcp_events: Vec::new(),
 +            request_error: None,
 +            history_observation: false,
          })
      }
  
-@@ -167,6 +172,8 @@ impl QueuedWireMessage {
+@@ -166,7 +173,10 @@ impl QueuedWireMessage {
+             configuration: None,
              output_guard: Default::default(),
              out_of_band: false,
++            unscoped_function_item: false,
              hosted_mcp_events: Vec::new(),
 +            request_error: None,
 +            history_observation: false,
          }
      }
  }
-@@ -355,17 +362,28 @@ impl WsStream {
+@@ -355,17 +365,28 @@ impl WsStream {
                                  }
                              }
                              WsCommand::CreateAfterTools {response_id,require_hosted,native_call,expected,tx_result} => {
@@ -204,7 +210,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
                                      Ok(()) => { let _ = tx_result.send(Ok(true)); }
                                      Err(error) => { report_write_policy_error(&error); let _ = tx_result.send(Err(error)); break; }
                                  }
-@@ -420,9 +438,9 @@ impl WsStream {
+@@ -420,9 +441,9 @@ impl WsStream {
                                  let _ = tx_result.send(result);
                                  if failed { break; }
                              }
@@ -217,7 +223,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
                                      if event["type"]=="response.create" {
                                          let rejection = match observer.configuration().observe_response_create(&event["response"]) {
                                              Ok(true) => None,
-@@ -433,6 +451,8 @@ impl WsStream {
+@@ -433,6 +454,8 @@ impl WsStream {
                                              let _=tx_result.send(Err(WsError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput,message))));
                                              continue;
                                          }
@@ -226,16 +232,17 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
                                      } else if (event["type"]=="conversation.item.create" && event["item"]["role"]=="user") || event["type"]=="input_audio_buffer.commit" {
                                          observer.configuration().observe_user_input();
                                      }
-@@ -515,6 +535,8 @@ impl WsStream {
+@@ -515,6 +538,9 @@ impl WsStream {
                                          queued.configuration=observation.configuration;
                                          queued.output_guard=observation.output_guard;
                                          queued.out_of_band=observation.out_of_band;
++                                        queued.unscoped_function_item=observation.unscoped_function_item;
 +                                        queued.request_error=observation.request_error;
 +                                        queued.history_observation=observation.history_observation;
                                          if queued.charge_hosted_events(observation.hosted_mcp_events,wire_budget.clone()).is_err() {
                                              pump_overflow.store(true,Ordering::Release);break;
                                          }
-@@ -658,6 +680,8 @@ pub struct RealtimeWebsocketWriter {
+@@ -658,6 +684,8 @@ pub struct RealtimeWebsocketWriter {
  pub struct RealtimeWebsocketEvents {
      ingress_overflow: Arc<AtomicBool>,
      rx_message: async_channel::Receiver<QueuedWireMessage>,
@@ -244,7 +251,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
      pending_events: Arc<
          Mutex<
              VecDeque<(
-@@ -792,6 +816,7 @@ impl RealtimeWebsocketConnection {
+@@ -792,6 +820,7 @@ impl RealtimeWebsocketConnection {
              events: RealtimeWebsocketEvents {
                  ingress_overflow: Arc::clone(&stream.ingress_overflow),
                  rx_message,
@@ -252,7 +259,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
                  pending_events: Arc::new(Mutex::new(VecDeque::new())),
                  transcript_state,
                  event_parser,
-@@ -1311,6 +1336,21 @@ impl RealtimeWebsocketEvents {
+@@ -1311,6 +1340,21 @@ impl RealtimeWebsocketEvents {
              Option<Arc<super::readiness::RealtimeAcceptedConfiguration>>,
          )>,
          ApiError,
@@ -274,7 +281,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
      > {
          if self.is_closed.load(Ordering::SeqCst) {
              return Ok(None);
-@@ -1333,47 +1373,88 @@ impl RealtimeWebsocketEvents {
+@@ -1333,47 +1377,91 @@ impl RealtimeWebsocketEvents {
                      "SDK Realtime wire event queue capacity exceeded".into(),
                  ));
              }
@@ -353,6 +360,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
 +                configuration,
 +                output_guard,
 +                out_of_band,
++                unscoped_function_item,
 +                hosted_mcp_events,
 +                request_error,
 +                permit,
@@ -362,6 +370,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
 +                    configuration,
 +                    output_guard,
 +                    out_of_band,
++                    unscoped_function_item,
 +                    hosted_mcp_events,
 +                    request_error,
 +                    _permit,
@@ -371,6 +380,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
 +                    configuration,
 +                    output_guard,
 +                    out_of_band,
++                    unscoped_function_item,
 +                    hosted_mcp_events,
 +                    request_error,
 +                    _permit,
@@ -402,7 +412,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
  
              let permit = permit.map(Arc::new);
              self.pending_events.lock().await.extend(
-@@ -1387,6 +1468,9 @@ impl RealtimeWebsocketEvents {
+@@ -1387,9 +1475,19 @@ impl RealtimeWebsocketEvents {
                          let diagnostic = super::hosted_mcp::wire_diagnostic(&text);
                          trace!(target: REALTIME_WIRE_LOG_TARGET, "realtime websocket event: {diagnostic}");
                      }
@@ -412,7 +422,17 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
                      if let Some(mut event) = parse_realtime_event(&text, self.event_parser) {
                          if out_of_band {
                              match &mut event {
-@@ -1415,6 +1499,16 @@ impl RealtimeWebsocketEvents {
++                                RealtimeEvent::ConversationItemAdded { .. }
++                                | RealtimeEvent::FunctionCallRequested(_)
++                                    if unscoped_function_item =>
++                                {
++                                    // Core must match the exact pending history receipt.
++                                    event = RealtimeEvent::DetachedResponse(Box::new(event));
++                                }
+                                 RealtimeEvent::FunctionCallRequested(call)
+                                     if call.response_id.is_some()
+                                         && !output_guard.is_retired()
+@@ -1415,6 +1513,16 @@ impl RealtimeWebsocketEvents {
                          {
                              continue;
                          }
@@ -429,7 +449,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
                          match &mut event {
                              RealtimeEvent::AudioOut(frame) => {
                                  frame.output_guard = output_guard.clone()
-@@ -1463,6 +1557,19 @@ impl RealtimeWebsocketEvents {
+@@ -1463,6 +1571,19 @@ impl RealtimeWebsocketEvents {
                          {
                              continue;
                          }
@@ -449,7 +469,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
                          debug!(?event, "realtime websocket parsed event");
                          return Ok(Some((event, configuration)));
                      }
-@@ -1606,6 +1713,9 @@ impl RealtimeWebsocketEvents {
+@@ -1606,6 +1727,9 @@ impl RealtimeWebsocketEvents {
              | RealtimeEvent::FunctionBatchFinished { .. }
              | RealtimeEvent::ConversationItemAdded { .. }
              | RealtimeEvent::ConversationItemRetrieved(_)
@@ -459,7 +479,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
              | RealtimeEvent::Error(_)
              | RealtimeEvent::HistoryItemStarted(_)
              | RealtimeEvent::HistoryTranscriptDelta { .. }
-@@ -2520,12 +2630,203 @@ mod tests {
+@@ -2520,12 +2644,203 @@ mod tests {
          );
      }
  
@@ -663,7 +683,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: RealtimeTranscriptState::default(),
              event_parser: RealtimeEventParser::V1,
-@@ -2595,6 +2896,7 @@ mod tests {
+@@ -2595,6 +2910,7 @@ mod tests {
          let first_events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message: first_rx,
@@ -671,7 +691,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: transcript_state.clone(),
              event_parser: RealtimeEventParser::FramelessBidi,
-@@ -2616,6 +2918,7 @@ mod tests {
+@@ -2616,6 +2932,7 @@ mod tests {
          let second_events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message: second_rx,
@@ -679,7 +699,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state,
              event_parser: RealtimeEventParser::FramelessBidi,
-@@ -2649,6 +2952,7 @@ mod tests {
+@@ -2649,6 +2966,7 @@ mod tests {
          let events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message,
@@ -687,7 +707,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: RealtimeTranscriptState::default(),
              event_parser: RealtimeEventParser::FramelessBidi,
-@@ -2699,6 +3003,7 @@ mod tests {
+@@ -2699,6 +3017,7 @@ mod tests {
          let events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message,
@@ -695,7 +715,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..5755e08aa89a2bb09ce27d43db799739
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: RealtimeTranscriptState::default(),
              event_parser,
-@@ -4662,6 +4967,7 @@ mod tests {
+@@ -4662,6 +4981,7 @@ mod tests {
          let events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(true)),
              rx_message,
@@ -1579,7 +1599,7 @@ index 3bfb11fab0a001a6ba5af97291667c7d1d27f37d..8eaa05c0f2985dd0cf49ef02ef9a9915
  
  #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a342acaa01e 100644
+index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..75268744973f730f90b30cf998be3e47cd5b545c 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 @@ -7,6 +7,7 @@ use codex_protocol::realtime_settings::RealtimeAudioFormat;
@@ -1756,7 +1776,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
      // Runtime-only lineage: automatic replies inherit, explicit user work replaces.
      request_owner: Arc<()>,
      pub(super) output_guard: RealtimeOutputGuard,
-@@ -253,6 +320,8 @@ pub(super) struct ActiveResponse {
+@@ -253,17 +320,23 @@ pub(super) struct ActiveResponse {
  
  pub(super) struct FrameObservation {
      pub hosted_mcp_events: Vec<codex_protocol::protocol::RealtimeEvent>,
@@ -1765,7 +1785,9 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
      pub configuration: Option<Arc<RealtimeAcceptedConfiguration>>,
      pub output_guard: RealtimeOutputGuard,
      pub out_of_band: bool,
-@@ -261,6 +330,8 @@ impl Default for FrameObservation {
++    pub unscoped_function_item: bool,
+ }
+ impl Default for FrameObservation {
      fn default() -> Self {
          Self {
              hosted_mcp_events: Vec::new(),
@@ -1774,7 +1796,11 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
              configuration: None,
              output_guard: RealtimeOutputGuard::default(),
              out_of_band: false,
-@@ -271,6 +342,8 @@ impl FrameObservation {
++            unscoped_function_item: false,
+         }
+     }
+ }
+@@ -271,9 +344,12 @@ impl FrameObservation {
      fn response(response: &ActiveResponse) -> Self {
          Self {
              hosted_mcp_events: Vec::new(),
@@ -1783,7 +1809,11 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
              configuration: Some(Arc::clone(&response.configuration)),
              output_guard: response.output_guard.clone(),
              out_of_band: response.out_of_band,
-@@ -314,12 +387,15 @@ struct ConfigurationState {
++            unscoped_function_item: false,
+         }
+     }
+     fn suppressed() -> Self {
+@@ -314,12 +390,15 @@ struct ConfigurationState {
      accepted: Option<Arc<RealtimeAcceptedConfiguration>>,
      pending: Option<PendingConfiguration>,
      active_response: Option<Arc<ActiveResponse>>,
@@ -1799,7 +1829,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
      latest_response_id: Option<Arc<str>>,
      cancelled_response_id: Option<Arc<str>>,
      feedback_response_id: Option<Arc<str>>,
-@@ -381,6 +457,19 @@ fn invalid(message: &str) -> ApiError {
+@@ -381,6 +460,19 @@ fn invalid(message: &str) -> ApiError {
  }
  
  impl RealtimeConfiguration {
@@ -1819,7 +1849,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
      fn settled(state: &ConfigurationState) -> Result<Arc<RealtimeAcceptedConfiguration>, ApiError> {
          if state.failure.is_some() {
              return Err(invalid("Realtime configuration is retired"));
-@@ -442,13 +531,21 @@ impl RealtimeConfiguration {
+@@ -442,13 +534,21 @@ impl RealtimeConfiguration {
          tools: Option<&Value>,
          choice: Option<&Value>,
      ) -> Result<(), ApiError> {
@@ -1844,7 +1874,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
              })
          {
              return Err(invalid(
-@@ -636,6 +733,13 @@ impl RealtimeConfiguration {
+@@ -636,6 +736,13 @@ impl RealtimeConfiguration {
              completion.send_replace(ReceiptState::Failed(state.failure.clone().unwrap()));
          }
          state.output_owner.retire_owner();
@@ -1858,7 +1888,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
          state.active_response = None;
          state.response_contexts.clear();
          state.hosted_mcp = Default::default();
-@@ -832,7 +936,13 @@ impl RealtimeConfiguration {
+@@ -832,7 +939,13 @@ impl RealtimeConfiguration {
              .map(|r| Arc::clone(&r.request_owner));
          let source_matches = state.accepted.as_ref().is_some_and(|current| {
              if let Some(expected) = expected {
@@ -1873,7 +1903,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
              }
              state
                  .response_contexts
-@@ -882,9 +992,30 @@ impl RealtimeConfiguration {
+@@ -882,9 +995,30 @@ impl RealtimeConfiguration {
              state.response_create_pending = true;
              state.pending_create_owner = request_owner;
              state.pending_create_guard = Some(state.output_owner.new_response());
@@ -1904,7 +1934,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
      /// Response IDs stay reserved after an issued decision, before provider ACK.
      pub fn is_raw_approval_item_id(&self, id: &str) -> bool {
          self.inner
-@@ -895,6 +1026,16 @@ impl RealtimeConfiguration {
+@@ -895,6 +1029,16 @@ impl RealtimeConfiguration {
              .is_approval_response_id(id)
      }
  
@@ -1921,7 +1951,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
      pub(super) fn decide_hosted_mcp_response(
          &self,
          request_id: &str,
-@@ -945,19 +1086,76 @@ impl RealtimeConfiguration {
+@@ -945,19 +1089,76 @@ impl RealtimeConfiguration {
              };
              Self::validate_wire_response_tools(accepted.as_deref(), tools, choice)?;
          }
@@ -2004,7 +2034,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
      pub(super) fn prepare_interrupt(
          &self,
          response_id: Option<&str>,
-@@ -996,7 +1194,7 @@ impl RealtimeConfiguration {
+@@ -996,7 +1197,7 @@ impl RealtimeConfiguration {
              let ids = state
                  .response_contexts
                  .iter()
@@ -2013,7 +2043,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                  .map(|response| response.id.to_string())
                  .collect();
              state.output_owner.retire_owner();
-@@ -1008,10 +1206,9 @@ impl RealtimeConfiguration {
+@@ -1008,10 +1209,9 @@ impl RealtimeConfiguration {
              .as_ref()
              .map(|active| active.id.to_string());
          let target = match response_id {
@@ -2027,7 +2057,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
              None => active_response_id.clone(),
          };
          let mut payloads = Vec::new();
-@@ -1019,13 +1216,16 @@ impl RealtimeConfiguration {
+@@ -1019,13 +1219,16 @@ impl RealtimeConfiguration {
              target.filter(|id| state.cancelled_response_id.as_deref() != Some(id.as_str()));
          if let Some(id) = &cancelled_response_id {
              payloads.push(serde_json::json!({"type": "response.cancel", "response_id": id}));
@@ -2048,7 +2078,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
          {
              payloads.push(serde_json::json!({"type": "response.cancel"}));
          }
-@@ -1096,7 +1296,12 @@ fn retained_metadata_bytes(state: &ConfigurationState) -> usize {
+@@ -1096,7 +1299,12 @@ fn retained_metadata_bytes(state: &ConfigurationState) -> usize {
      state
          .response_contexts
          .iter()
@@ -2062,7 +2092,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
          .chain(
              state
                  .received_audio
-@@ -1105,6 +1310,12 @@ fn retained_metadata_bytes(state: &ConfigurationState) -> usize {
+@@ -1105,6 +1313,12 @@ fn retained_metadata_bytes(state: &ConfigurationState) -> usize {
          )
          .chain(state.audio_input_sources.iter().map(|(id, _)| id.len()))
          .sum::<usize>()
@@ -2075,7 +2105,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
          .saturating_add(state.hosted_mcp.bytes())
  }
  
-@@ -1205,6 +1416,7 @@ fn evict_completed_context(state: &mut ConfigurationState, protected: Option<&st
+@@ -1205,6 +1419,7 @@ fn evict_completed_context(state: &mut ConfigurationState, protected: Option<&st
      let Some(index) = state.response_contexts.iter().position(|r| {
          Some(r.id.as_ref()) != active
              && Some(r.id.as_ref()) != protected
@@ -2083,7 +2113,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
              && !state.hosted_mcp.pins(&r.id)
      }) else {
          return false;
-@@ -1329,6 +1541,7 @@ impl SessionReadiness {
+@@ -1329,6 +1544,7 @@ impl SessionReadiness {
                              completion: None,
                          }),
                          active_response: None,
@@ -2091,7 +2121,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                          response_contexts: VecDeque::new(),
                          output_owner: RealtimeOutputGuard::default(),
                          pending_create_guard: None,
-@@ -1339,6 +1552,8 @@ impl SessionReadiness {
+@@ -1339,6 +1555,8 @@ impl SessionReadiness {
                          cancelled_response_id: None,
                          feedback_response_id: None,
                          response_create_pending: false,
@@ -2100,7 +2130,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                          out_of_band_response_pending: false,
                          received_audio: VecDeque::new(),
                          audio_input_sources: VecDeque::new(),
-@@ -1383,12 +1598,30 @@ impl SessionReadiness {
+@@ -1383,12 +1601,30 @@ impl SessionReadiness {
          if let Some(accepted) = state.accepted.clone() {
              state.hosted_mcp.invalidate(&accepted);
          }
@@ -2132,7 +2162,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
          loop {
              let base_bytes =
                  retained_metadata_bytes(&state).saturating_sub(state.hosted_mcp.bytes());
-@@ -1457,6 +1690,54 @@ impl SessionReadiness {
+@@ -1457,6 +1693,54 @@ impl SessionReadiness {
                  self.configuration.inner.signal.send_replace(failure);
                  return FrameObservation::default();
              }
@@ -2187,7 +2217,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
              Some("conversation.item.truncated") => {
                  if let (Some(item), Some(index), Some(end_ms)) = (
                      event["item_id"].as_str(),
-@@ -1511,6 +1792,9 @@ impl SessionReadiness {
+@@ -1511,6 +1795,9 @@ impl SessionReadiness {
                              output_format: accepted_format(accepted, "output"),
                              contract: Arc::new(pending.contract),
                              response_tool_scope: None,
@@ -2197,7 +2227,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                              detached_functions: None,
                          });
                          state.accepted = Some(Arc::clone(&accepted));
-@@ -1558,11 +1842,8 @@ impl SessionReadiness {
+@@ -1558,11 +1845,8 @@ impl SessionReadiness {
              .and_then(Value::as_str)
              .or_else(|| event["response"]["id"].as_str())
              .or_else(|| event["item"]["response_id"].as_str());
@@ -2211,7 +2241,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
          match kind {
              // Interrupting speech and committed audio start a new user request.
              // Provider echoes of our owned outgoing items do not change ownership.
-@@ -1603,44 +1884,122 @@ impl SessionReadiness {
+@@ -1603,44 +1887,122 @@ impl SessionReadiness {
              Some("input_audio_buffer.committed") => return FrameObservation::default(),
              Some("response.created") => {
                  if let Some(id) = response_id {
@@ -2369,7 +2399,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                          }
                      }
                  }
-@@ -1669,6 +2028,7 @@ impl SessionReadiness {
+@@ -1669,6 +2031,7 @@ impl SessionReadiness {
                      .active_response
                      .as_ref()
                      .is_none_or(|active| !Arc::ptr_eq(active, &response))
@@ -2377,7 +2407,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                  {
                      return FrameObservation::suppressed();
                  }
-@@ -1723,6 +2083,22 @@ impl SessionReadiness {
+@@ -1723,6 +2086,22 @@ impl SessionReadiness {
                  }
              }
              Some("response.done" | "response.cancelled") => {
@@ -2400,7 +2430,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                  if state
                      .active_response
                      .as_ref()
-@@ -1753,14 +2129,7 @@ impl SessionReadiness {
+@@ -1753,14 +2132,7 @@ impl SessionReadiness {
              }
              _ => {
                  let is_function_item = event["item"]["type"] == "function_call";
@@ -2416,7 +2446,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                      event["item"]["call_id"]
                          .as_str()
                          .and_then(|call_id| state.hosted_mcp.tool_response_id(call_id))
-@@ -1774,22 +2143,13 @@ impl SessionReadiness {
+@@ -1774,22 +2146,22 @@ impl SessionReadiness {
                      .find(|response| response_id == Some(response.id.as_ref()))
                      .map(|response| FrameObservation::response(response))
                      .unwrap_or_else(|| match kind {
@@ -2432,6 +2462,15 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
 +                        // observations, never native function/handoff authority.
 +                        _ if is_function_item => FrameObservation {
                              out_of_band: true,
++                            unscoped_function_item: response_id.is_none()
++                                && matches!(
++                                    kind,
++                                    Some(
++                                        "conversation.item.added"
++                                            | "conversation.item.created"
++                                            | "conversation.item.done"
++                                    )
++                                ),
                              ..FrameObservation::default()
                          },
 -                        _ if is_function_item && response_id.is_none() => scoped_response
@@ -2443,7 +2482,7 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..d138d9cb521151edb1fd4777809e4a34
                          Some(
                              "response.output_audio_transcript.delta"
                              | "response.output_audio_transcript.done"
-@@ -2952,6 +3312,631 @@ mod tests {
+@@ -2952,6 +3324,631 @@ mod tests {
          acknowledge(&observer, contract);
          observer
      }
@@ -3120,7 +3159,7 @@ index 2d48454aafa299a9d13d8fa19af01baa6f810c43..4aff417145afe6579f806958b17dbe23
      pub async fn prepare_agent_profile_mcp(
          &self,
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..49ffa18c797e66d7e357a31cc9381c03223f5ff7 100644
+index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26cb9ddb88 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -95,6 +95,7 @@ use serde_json::json;
@@ -3627,7 +3666,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..49ffa18c797e66d7e357a31cc9381c03
  async fn handle_realtime_server_event_with_configuration(
      event: RealtimeEvent,
      writer: &RealtimeWebsocketWriter,
-@@ -5993,6 +6248,35 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5993,6 +6248,42 @@ async fn handle_realtime_server_event_with_configuration(
      response_create_queue: &mut RealtimeResponseCreateQueue,
      configuration: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
  ) -> anyhow::Result<()> {
@@ -3642,6 +3681,13 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..49ffa18c797e66d7e357a31cc9381c03
 +    } else {
 +        event
 +    };
++    // Keep unmatched history receipts away from the native tool dispatcher.
++    if matches!(&event, RealtimeEvent::DetachedResponse(inner)
++        if matches!(inner.as_ref(), RealtimeEvent::ConversationItemAdded { .. }
++            | RealtimeEvent::FunctionCallRequested(_)))
++    {
++        return Ok(());
++    }
 +    let advances_response_queue = matches!(
 +        &event,
 +        RealtimeEvent::ResponseCreated(_)
@@ -3663,7 +3709,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..49ffa18c797e66d7e357a31cc9381c03
      // A detached completion can have an unscoped duplicate conversation event.
      if let (Some(sdk), RealtimeEvent::FunctionCallRequested(call)) = (&handoff_state.sdk, &event)
          && call.response_id.is_none()
-@@ -6369,10 +6653,10 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6369,10 +6660,10 @@ async fn handle_realtime_server_event_with_configuration(
                  return Ok(());
              };
              if request.response_id.is_none()
@@ -3678,7 +3724,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..49ffa18c797e66d7e357a31cc9381c03
              {
                  return Ok(());
              }
-@@ -6603,6 +6887,34 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6603,6 +6894,34 @@ async fn handle_realtime_server_event_with_configuration(
              }
              false
          }
@@ -3713,7 +3759,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..49ffa18c797e66d7e357a31cc9381c03
          RealtimeEvent::Error(_) => true,
          RealtimeEvent::SessionUpdated {
              realtime_session_id,
-@@ -6611,7 +6923,8 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6611,7 +6930,8 @@ async fn handle_realtime_server_event_with_configuration(
              info!(realtime_session_id = %realtime_session_id, "realtime session updated");
              false
          }
@@ -3723,7 +3769,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..49ffa18c797e66d7e357a31cc9381c03
          | RealtimeEvent::HostedMcpToolsListed(_)
          | RealtimeEvent::InputTranscriptDelta(_)
          | RealtimeEvent::InputTranscriptDone(_)
-@@ -6636,6 +6949,20 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6636,6 +6956,20 @@ async fn handle_realtime_server_event_with_configuration(
          error!("realtime stream error event received");
          anyhow::bail!("realtime stream error event received");
      }
