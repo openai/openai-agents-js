@@ -1,12 +1,11 @@
-name: Compare stock macOS Go system trust in strict and trusted SDK Sessions
+name: Compare stock GitHub CLI trust in one strict macOS SDK Session
 
 on:
   push:
     branches: [mark/nov9-js-macos-read-roots-receipt]
     paths:
       - '.github/workflows/macos-read-roots-receipt.yml'
-      - '.github/diagnostics/macos-go-trust.mjs'
-      - '.github/diagnostics/github-trust.go'
+      - '.github/diagnostics/macos-gh-trust.mjs'
 
 permissions:
   contents: read
@@ -29,7 +28,9 @@ jobs:
       NATIVE_INPUTS: 95ea144d6d19acb8fdf60e1a8e5599d08831e400453be7f07e498d6035e19b0e
       ALPHA_VERSION: 0.22.0-alpha.2
       GO_VERSION: '1.26.10'
-      GO_SOURCE_SHA256: ab88e2580dd1d489ade900ce6a4310c2bd3d4c73aba5939e3f8bd66fb3fdfc99
+      GH_VERSION: '2.103.3'
+      GH_ZIP_SHA256: d700207eae9ae98fe2b89535c2c087c07823d4628c56364695a5a07ef311c062
+      GH_BINARY_SHA256: 5f8d7527e2bdf584249b030cdd1550c91d75e8afb40aa3c11573d416817a1260
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -42,20 +43,16 @@ jobs:
           ref: ${{ github.sha }}
           path: .macos-receipt
           sparse-checkout: |
-            /.github/diagnostics/macos-go-trust.mjs
-            /.github/diagnostics/github-trust.go
+            /.github/diagnostics/macos-gh-trust.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: Stage the exact diagnostic blobs
         run: |
-          scratch="$RUNNER_TEMP/agents-go-trust"
+          scratch="$RUNNER_TEMP/agents-gh-trust"
           mkdir "$scratch"
           test "$(git -C .macos-receipt rev-parse HEAD)" = "$GITHUB_SHA"
-          git -C .macos-receipt show "$GITHUB_SHA:.github/diagnostics/macos-go-trust.mjs" > "$scratch/macos-go-trust.mjs"
-          git -C .macos-receipt show "$GITHUB_SHA:.github/diagnostics/github-trust.go" > "$scratch/github-trust.go"
+          git -C .macos-receipt show "$GITHUB_SHA:.github/diagnostics/macos-gh-trust.mjs" > "$scratch/macos-gh-trust.mjs"
           rm -rf .macos-receipt
-          source_digest=$(/usr/bin/shasum -a 256 < "$scratch/github-trust.go")
-          test "${source_digest%% *}" = "$GO_SOURCE_SHA256"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
         with:
           run_install: false
@@ -84,24 +81,30 @@ jobs:
           printf 'Runner image %s %s, architecture %s\n' "${ImageOS:?}" "${ImageVersion:?}" "$(/usr/bin/uname -m)"
           /usr/bin/sw_vers
           printf 'Node %s, npm %s, pnpm %s\n' "$(node --version)" "$(npm --version)" "$(pnpm --version)"
-      - name: Build the retained probe with cached Go
+      - name: Verify the official stock GitHub CLI release and embedded Go
         run: |
-          scratch="$RUNNER_TEMP/agents-go-trust"
+          scratch="$RUNNER_TEMP/agents-gh-trust"
           go_bin="$RUNNER_TOOL_CACHE/go/$GO_VERSION/arm64/bin/go"
           test -x "$go_bin"
-          mkdir "$scratch/go-cache" "$scratch/go-home"
-
-          stock_go() {
-            /usr/bin/env -i HOME="$scratch/go-home" GOCACHE="$scratch/go-cache" \
-              GOPROXY=off GOENV=off GOTOOLCHAIN=local GO111MODULE=off GOSUMDB=off CGO_ENABLED=0 \
-              "$go_bin" "$@"
-          }
-          go_version=$(stock_go version)
-          test "$go_version" = "go version go$GO_VERSION darwin/arm64"
-          stock_go build -trimpath -buildvcs=false -o "$scratch/github-trust" "$scratch/github-trust.go"
-          binary_digest=$(/usr/bin/shasum -a 256 < "$scratch/github-trust")
-          printf '%s\n' "${binary_digest%% *}" > "$scratch/github-trust.sha256"
-          printf '%s; probe SHA-256 %s\n' "$go_version" "${binary_digest%% *}"
+          archive="gh_${GH_VERSION}_macOS_arm64.zip"
+          /usr/bin/env -i /usr/bin/curl --disable --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --max-time 90 \
+            --output "$scratch/gh.zip" "https://github.com/cli/cli/releases/download/v$GH_VERSION/$archive"
+          zip_digest=$(/usr/bin/shasum -a 256 < "$scratch/gh.zip")
+          test "${zip_digest%% *}" = "$GH_ZIP_SHA256"
+          /usr/bin/unzip -p "$scratch/gh.zip" "${archive%.zip}/bin/gh" > "$scratch/gh"
+          binary_digest=$(/usr/bin/shasum -a 256 < "$scratch/gh")
+          test "${binary_digest%% *}" = "$GH_BINARY_SHA256"
+          chmod 0700 "$scratch/gh"
+          mkdir "$scratch/version-home" "$scratch/version-config"
+          gh_version=$(/usr/bin/env -i HOME="$scratch/version-home" GH_CONFIG_DIR="$scratch/version-config" \
+            GH_NO_UPDATE_NOTIFIER=1 GH_TELEMETRY=0 "$scratch/gh" --version | /usr/bin/sed -n '1p')
+          case "$gh_version" in "gh version $GH_VERSION ("*) ;; *) exit 1 ;; esac
+          go_build=$(/usr/bin/env -i HOME="$scratch/version-home" GOENV=off GOTOOLCHAIN=local \
+            GOPROXY=off "$go_bin" version "$scratch/gh")
+          test "${go_build##* }" = go1.27.3
+          printf '%s; embedded Go %s; stock binary SHA-256 %s\n' \
+            "$gh_version" "${go_build##* }" "$GH_BINARY_SHA256"
       - name: Restore the pinned transfer from Alpha run 42903346108
         env:
           GH_TOKEN: ${{ github.token }}
@@ -109,7 +112,7 @@ jobs:
         run: node scripts/restore-native-bundle.mjs
       - name: Verify native products and assemble the local diagnostic starter
         run: |
-          scratch="$RUNNER_TEMP/agents-go-trust"
+          scratch="$RUNNER_TEMP/agents-gh-trust"
           pnpm install --frozen-lockfile
           node --input-type=module <<'JS'
           import { verifyNativeReceipt } from './scripts/alpha-package.mjs';
@@ -125,7 +128,7 @@ jobs:
           import { verifyStarterLock } from './scripts/alpha-package.mjs';
           import { verifyArtifactDirectory } from './scripts/verify-alpha-package.mjs';
 
-          const scratch = join(process.env.RUNNER_TEMP, 'agents-go-trust');
+          const scratch = join(process.env.RUNNER_TEMP, 'agents-gh-trust');
           const artifacts = join(scratch, 'alpha');
           const build = await verifyArtifactDirectory(artifacts, 'darwin-arm64');
           assert.equal(build.sourceCommit, process.env.SDK_COMMIT);
@@ -140,18 +143,18 @@ jobs:
           );
           console.log('Verified the local starter assembly using the official Darwin native transfer.');
           JS
-          cp "$scratch/macos-go-trust.mjs" "$scratch/agents-starter/macos-go-trust.mjs"
+          cp "$scratch/macos-gh-trust.mjs" "$scratch/agents-starter/macos-gh-trust.mjs"
           node_bin=$(command -v node)
           npm_cli="$(dirname "$node_bin")/../lib/node_modules/npm/bin/npm-cli.js"
           cd "$scratch/agents-starter"
           PATH='' "$node_bin" "$npm_cli" ci --ignore-scripts --no-audit --no-fund
-      - name: Compare one Go system probe per SDK policy with its live-listener host control
+      - name: Compare default and explicit PEM with the stock CLI through one strict SDK listener
         run: |
-          scratch="$RUNNER_TEMP/agents-go-trust"
+          scratch="$RUNNER_TEMP/agents-gh-trust"
           node_bin=$(command -v node)
           mkdir "$scratch/codex-home" "$scratch/session-tmp"
           cd "$scratch/agents-starter"
           /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
             SHELL="${SHELL:-/bin/bash}" CODEX_HOME="$scratch/codex-home" TMPDIR="$scratch/session-tmp" \
             OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1 \
-            "$node_bin" macos-go-trust.mjs "$scratch/github-trust" "$(cat "$scratch/github-trust.sha256")" 2>/dev/null
+            "$node_bin" macos-gh-trust.mjs "$scratch/gh" "$GH_BINARY_SHA256" 2>/dev/null
