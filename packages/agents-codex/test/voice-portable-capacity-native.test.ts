@@ -55,6 +55,13 @@ async function fixture(active?: 'default' | 'detached') {
               });
           });
         }
+        if (event.type === 'conversation.item.delete')
+          queueMicrotask(() =>
+            session.receive({
+              type: 'conversation.item.deleted',
+              item_id: event.item_id,
+            }),
+          );
         if (event.type === 'response.cancel')
           queueMicrotask(() =>
             session.receive({
@@ -122,6 +129,123 @@ function fill(
   return count + 1;
 }
 describe.runIf(enabled)('actual native portable egress admission', () => {
+  it.each(
+    (['deleteItem', 'truncateItem'] as const).flatMap((method) =>
+      (['count', 'bytes'] as const).map((boundary) => ({ method, boundary })),
+    ),
+  )(
+    'keeps $method nonfatal at $boundary pressure',
+    async ({ method, boundary }) => {
+      const f = await fixture();
+      f.session.receive({
+        type: 'conversation.item.created',
+        item: {
+          id: 'history-item',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'Earlier' }],
+        },
+      });
+      const count = fill(f.session, boundary);
+      const invoke = () =>
+        method === 'deleteItem'
+          ? f.session.deleteItem('history-item')
+          : f.session.truncateItem('history-item', 0, 1);
+      expect(invoke).toThrow(RangeError);
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+      f.release();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter((e) => e.type === 'input_audio_buffer.append'),
+        ).toHaveLength(count),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      invoke();
+      const type =
+        method === 'deleteItem'
+          ? 'conversation.item.delete'
+          : 'conversation.item.truncate';
+      await vi.waitFor(() =>
+        expect(f.frames.filter((e) => e.type === type)).toHaveLength(1),
+      );
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+    },
+  );
+
+  it.each([
+    'sendText',
+    'sendMessage',
+    'createResponse',
+    'deleteItem',
+    'truncateItem',
+  ] as const)(
+    'revalidates %s after a history callback fills the physical queue',
+    async (method) => {
+      const f = await fixture();
+      f.session.receive({
+        type: 'conversation.item.created',
+        item: {
+          id: 'history-item',
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: 'Earlier' }],
+        },
+      });
+      const editing = f.session.updateHistory((history) => {
+        fill(f.session, 'count');
+        return history;
+      });
+      const invoke = () => {
+        if (method === 'sendText') f.session.sendText('Deferred');
+        else if (method === 'sendMessage')
+          f.session.sendMessage({
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Deferred' }],
+          });
+        else if (method === 'deleteItem') f.session.deleteItem('history-item');
+        else if (method === 'truncateItem')
+          f.session.truncateItem('history-item', 0, 1);
+        else f.session.createResponse();
+      };
+      invoke();
+      await editing;
+      await vi.waitFor(() =>
+        expect(f.errors.some((error) => error instanceof RangeError)).toBe(
+          true,
+        ),
+      );
+      expect(f.closed()).toBe(0);
+      expect(
+        f.frames.filter(
+          (e) =>
+            !['session.update', 'input_audio_buffer.append'].includes(e.type),
+        ),
+      ).toEqual([]);
+      f.release();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter((e) => e.type === 'input_audio_buffer.append'),
+        ).toHaveLength(256),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      invoke();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.some(
+            (e) =>
+              !['session.update', 'input_audio_buffer.append'].includes(e.type),
+          ),
+        ).toBe(true),
+      );
+      expect(f.closed()).toBe(0);
+    },
+  );
+
   it.each(
     (['commitAudio', 'clearAudio', 'createResponse'] as const).flatMap(
       (method) =>

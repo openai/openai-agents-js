@@ -147,6 +147,7 @@ export type PortableVoiceEffect =
       out_of_band: boolean;
       history?: readonly Readonly<Record<string, unknown>>[];
     }
+  | { type: 'history_rejected'; item_id: string; message: string }
   | { type: 'event'; event: unknown }
   | { type: 'abort'; call_id: string }
   | { type: 'ready' | 'configured' | 'closed' };
@@ -231,10 +232,13 @@ export class PortableVoiceSession {
     this.#historyUpdates = new PortableVoiceHistory(
       () => this.#history.providerSnapshot(),
       (command) =>
-        (command as { type?: string }).type === 'validate_history'
+        command.type === 'validate_history'
           ? this.#apply(command)
-          : this.#dispatch(command),
+          : this.#dispatch(this.#preflightHistoryCommand(command)),
       (error) => this.fail(error),
+      (error) => {
+        if (!this.#closed) this.#notify(this.options.onError, error);
+      },
     );
     this.#profile = this.#makeProfile(options);
     this.options = this.#profile.options;
@@ -270,6 +274,7 @@ export class PortableVoiceSession {
     try {
       this.#notify(this.options.onProviderEvent, event);
       this.#emit('provider_event', event);
+      this.#historyUpdates.receive(event);
       this.#dispatch({ type: 'provider', event });
     } catch (error) {
       this.fail(error);
@@ -277,28 +282,7 @@ export class PortableVoiceSession {
   }
 
   sendText(text: string): void {
-    const input = this.#captureInput(
-      { type: 'text', text },
-      JSON.stringify({
-        type: 'conversation.item.create',
-        item: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: '' }],
-        },
-      }).length - JSON.stringify({ type: 'text', text: '' }).length,
-    );
-    this.#preflightResponse(
-      undefined,
-      256 - this.#queuedSends - 1,
-      8 * 1024 * 1024 - this.#queuedSendBytes - input.bytes,
-    );
-    try {
-      this.#dispatch(input.command);
-    } catch (error) {
-      this.fail(error);
-      throw error;
-    }
+    this.#dispatchAfterHistory({ type: 'text', text });
   }
 
   fail(error: unknown): void {
@@ -444,15 +428,10 @@ export class PortableVoiceSession {
   }
 
   createResponse(response?: Record<string, unknown>): void {
-    const command = JSON.parse(
-      boundedVoiceJSON({
-        type: 'create_response',
-        ...(response ? { response } : {}),
-        history: this.#history.providerSnapshot(),
-      }),
-    );
-    this.#preflightResponse(command.response);
-    this.#dispatch(command);
+    this.#dispatchAfterHistory({
+      type: 'create_response',
+      ...(response ? { response } : {}),
+    });
   }
 
   cancel(responseId?: string): void {
@@ -466,22 +445,15 @@ export class PortableVoiceSession {
     });
   }
   sendMessage(item: Readonly<Record<string, unknown>>): void {
-    const input = this.#captureInput(
-      { type: 'input', item },
-      'conversation.item.create'.length - 'input'.length,
-    );
-    this.#preflightResponse(
-      undefined,
-      256 - this.#queuedSends - 1,
-      8 * 1024 * 1024 - this.#queuedSendBytes - input.bytes,
-    );
-    this.#dispatch(input.command);
+    this.#dispatchAfterHistory({ type: 'input', item });
   }
   deleteItem(itemId: string): void {
-    this.#dispatch({ type: 'delete', item_id: itemId });
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    this.#preflight({ type: 'validate_delete', item_id: itemId });
+    void this.#historyUpdates.delete(itemId).catch(() => {});
   }
   truncateItem(itemId: string, contentIndex: number, audioEndMs: number): void {
-    this.#dispatch({
+    this.#dispatchAfterHistory({
       type: 'truncate',
       item_id: itemId,
       content_index: contentIndex,
@@ -503,7 +475,13 @@ export class PortableVoiceSession {
     const snapshot = JSON.parse(json);
     const event =
       snapshot.type === 'input'
-        ? { type: 'conversation.item.create', item: snapshot.item }
+        ? {
+            type: 'conversation.item.create',
+            item: snapshot.item,
+            ...('previous_item_id' in snapshot
+              ? { previous_item_id: snapshot.previous_item_id }
+              : {}),
+          }
         : snapshot.type === 'text'
           ? {
               type: 'conversation.item.create',
@@ -909,6 +887,55 @@ export class PortableVoiceSession {
     }
   }
 
+  #dispatchAfterHistory(command: Record<string, unknown>): void {
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    const snapshot = this.#preflightHistoryCommand(command);
+    this.#historyUpdates.dispatchAfterEdits(snapshot, (captured) => {
+      const ready =
+        captured.type === 'create_response'
+          ? { ...captured, history: this.#history.providerSnapshot() }
+          : captured;
+      // History edits can suspend admission while the transport budget changes.
+      this.#dispatch(this.#preflightHistoryCommand(ready));
+    });
+  }
+
+  #preflightHistoryCommand(
+    command: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (command.type === 'text' || command.type === 'input') {
+      const overhead =
+        command.type === 'input'
+          ? 'conversation.item.create'.length - 'input'.length
+          : JSON.stringify({
+              type: 'conversation.item.create',
+              item: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: '' }],
+              },
+            }).length - JSON.stringify({ type: 'text', text: '' }).length;
+      const input = this.#captureInput(command, overhead);
+      if (command.type === 'text' || command.create_response !== false)
+        this.#preflightResponse(
+          undefined,
+          256 - this.#queuedSends - 1,
+          8 * 1024 * 1024 - this.#queuedSendBytes - input.bytes,
+        );
+      return input.command as Record<string, unknown>;
+    }
+    const snapshot = JSON.parse(boundedVoiceJSON(command));
+    if (snapshot.type === 'delete' || snapshot.type === 'truncate')
+      this.#preflight({
+        ...snapshot,
+        type:
+          snapshot.type === 'delete' ? 'validate_delete' : 'validate_truncate',
+      });
+    if (snapshot.type === 'create_response')
+      this.#preflightResponse(snapshot.response);
+    return snapshot;
+  }
+
   #dispatch(command: unknown): void {
     try {
       this.#apply(command);
@@ -1027,6 +1054,12 @@ export class PortableVoiceSession {
         }
         case 'abort':
           break;
+        case 'history_rejected': {
+          const error = new Error(effect.message);
+          if (!this.#historyUpdates.rejectDeletion(effect.item_id, error))
+            this.#notify(this.options.onError, error);
+          break;
+        }
         case 'event':
           this.#observe(effect.event);
           this.#capture(effect.event, true);
@@ -1061,6 +1094,7 @@ export class PortableVoiceSession {
             .finally(release);
           this.#send = sending.catch(() => {});
           this.#track(sending);
+          this.#historyUpdates.trackSend(effect.event, sending);
           break;
         }
         case 'approve':
