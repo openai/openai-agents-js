@@ -10,6 +10,7 @@
   "dependencies": {
     "@openai/agents": "latest",
     "@openai/agents-codex": "latest",
+    "@openai/agents-core": "latest",
     "@openai/agents-openai": "latest",
     "openai": "^7.27.0",
     "zod": "^4.6.5"

@@ -11,6 +11,9 @@
     ".": {
       "node": {
         "types": "./dist/index.d.ts",
+        "import": {
+          "module-sync": "./node/index.mjs"
+        },
         "module-sync": "./dist/index.js"
       },
       "import": {
@@ -234,6 +237,10 @@
       }
     },
     "./voice/control.hermes": {
+      "node": {
+        "types": "./dist/voice/control.hermes.d.ts",
+        "module-sync": "./native/codex-realtime-control.cjs"
+      },
       "import": {
         "types": "./dist/voice/control.hermes.d.mts",
         "default": "./native/codex-realtime-control.mjs"
@@ -283,6 +290,7 @@
   },
   "files": [
     "dist",
+    "node",
     "native/index.js",
     "native/index.d.ts",
     "native/codex.node",

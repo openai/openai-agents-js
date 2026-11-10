@@ -7,23 +7,8 @@ import type {
   SandboxSessionLike,
   SandboxSessionState,
 } from '@openai/agents-core/sandbox';
-import {
-  cloneManifest,
-  copySandboxStateRuntimeAuthority,
-  Manifest,
-  cleanupSandboxSession,
-  rebindPersistedMountCredentials,
-  rebindPersistedPathGrants,
-  assertHostPathGrantsRebound,
-  assertMountCredentialsRebound,
-  assertLiveMountCredentialAuthorityMatches,
-  assertLiveMountEnvironmentAuthorityMatches,
-  assertSandboxSessionStateUsable,
-  captureLiveMountCredentialAuthorityIfAbsent,
-  materializeEnvironment,
-  withExclusiveSandboxStateInspection,
-  validateMountEnvironmentCredentialBoundaries,
-} from '@openai/agents-core/sandbox/internal';
+import * as sandboxRuntime from '@openai/agents-core/sandbox/internal';
+import type { Manifest } from '@openai/agents-core/sandbox/internal';
 import type { Environment } from './environment';
 import {
   acquireEnvironment,
@@ -77,6 +62,36 @@ export function sandboxEnvironment<
 >(
   options: SandboxEnvironmentOptions<Context, Options, State>,
 ): EnvironmentSource<Context> {
+  return sandboxEnvironmentWithRuntime(options, sandboxRuntime);
+}
+
+// The private Node ESM entry supplies its own core authority namespace while
+// native Environment lease ownership stays in this canonical implementation.
+export function sandboxEnvironmentWithRuntime<
+  Context = any,
+  Options extends SandboxClientOptions = SandboxClientOptions,
+  State extends SandboxSessionState = SandboxSessionState,
+>(
+  options: SandboxEnvironmentOptions<Context, Options, State>,
+  runtime: typeof sandboxRuntime,
+): EnvironmentSource<Context> {
+  const {
+    cloneManifest,
+    copySandboxStateRuntimeAuthority,
+    Manifest,
+    cleanupSandboxSession,
+    rebindPersistedMountCredentials,
+    rebindPersistedPathGrants,
+    assertHostPathGrantsRebound,
+    assertMountCredentialsRebound,
+    assertLiveMountCredentialAuthorityMatches,
+    assertLiveMountEnvironmentAuthorityMatches,
+    assertSandboxSessionStateUsable,
+    captureLiveMountCredentialAuthorityIfAbsent,
+    materializeEnvironment,
+    withExclusiveSandboxStateInspection,
+    validateMountEnvironmentCredentialBoundaries,
+  } = runtime;
   const { client, connect } = options;
   const create = client.create?.bind(client);
   const borrowed = options.session;
@@ -106,7 +121,9 @@ export function sandboxEnvironment<
   const deleteResource = client.delete?.bind(client);
   const providerOptions =
     options.options === undefined ? undefined : captureOptions(options.options);
-  const capturedManifest = cloneManifest(requireManifest(options.manifest));
+  const capturedManifest = cloneManifest(
+    requireManifest(options.manifest, Manifest),
+  );
   const manifest =
     (borrowed || resume) && client.resolveTrustedManifestForResume
       ? client.resolveTrustedManifestForResume(
@@ -131,7 +148,10 @@ export function sandboxEnvironment<
   const resumeState = resume
     ? rebindPersistedPathGrants(
         rebindPersistedMountCredentials(
-          captureResumeState(originalResumeState!),
+          captureResumeState(
+            originalResumeState!,
+            copySandboxStateRuntimeAuthority,
+          ),
           manifest,
         ),
         manifest,
@@ -228,7 +248,10 @@ export function sandboxEnvironment<
             ? undefined
             : captureOptions(providerOptions);
         if (resumeState) {
-          const state = captureResumeState(resumeState);
+          const state = captureResumeState(
+            resumeState,
+            copySandboxStateRuntimeAuthority,
+          );
           const resumeOptions = {
             clientOptions: currentOptions,
             trustedManifest: cloneManifest(manifest),
@@ -314,7 +337,15 @@ export function sandboxEnvironment<
 
 /** Render only paths, access and caller descriptions, never provider config or environment values. */
 export function renderStorageLayout(input: Manifest): string {
-  const manifest = requireManifest(input);
+  return renderStorageLayoutWithManifest(input, sandboxRuntime.Manifest);
+}
+
+/** @internal Same-format Manifest authority for the private Node ESM entry. */
+export function renderStorageLayoutWithManifest(
+  input: Manifest,
+  ManifestConstructor: typeof Manifest,
+): string {
+  const manifest = requireManifest(input, ManifestConstructor);
   const storage = manifest.mountTargets().map(({ mountPath, entry }) => {
     const readOnly =
       entry.mountStrategy?.type === 'blaxel_drive'
@@ -331,8 +362,11 @@ export function renderStorageLayout(input: Manifest): string {
   return JSON.stringify({ workspace: manifest.root, storage }, null, 2);
 }
 
-function requireManifest(value: Manifest): Manifest {
-  if (!(value instanceof Manifest)) {
+function requireManifest(
+  value: Manifest,
+  ManifestConstructor: typeof Manifest,
+): Manifest {
+  if (!(value instanceof ManifestConstructor)) {
     throw new TypeError('manifest must be a trusted Manifest instance');
   }
   return value;
@@ -366,6 +400,7 @@ function captureOptions<T>(value: T, seen = new WeakMap<object, object>()): T {
 // Preserve only authority registered by the SDK; public state fields grant none.
 function captureResumeState<State extends SandboxSessionState>(
   state: State,
+  copySandboxStateRuntimeAuthority: typeof sandboxRuntime.copySandboxStateRuntimeAuthority,
 ): State {
   const captured = captureOptions(state);
   copySandboxStateRuntimeAuthority(state, captured);
