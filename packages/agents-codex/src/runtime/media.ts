@@ -49,6 +49,30 @@ function url(value: string, schemes: readonly string[]): void {
     throw new TypeError('Unsupported media URL scheme');
 }
 
+export function captureAudio(value: unknown): { audio_url: string } {
+  const data = mediaRecord(value);
+  only(data, ['audio_url']);
+  return { audio_url: source(data.audio_url) };
+}
+
+/** Split admitted inline audio without fetching, decoding or sniffing its content. */
+export function inlineAudioSource(value: unknown): {
+  data: string;
+  mediaType: string;
+} {
+  const reference = source(value);
+  const comma = reference.indexOf(',');
+  const header = reference.slice(0, comma);
+  if (
+    comma < 0 ||
+    comma === reference.length - 1 ||
+    !header.toLowerCase().startsWith('data:audio/') ||
+    !header.toLowerCase().endsWith(';base64')
+  )
+    throw new TypeError('Audio projection requires an inline audio data URL');
+  return { mediaType: header.slice(5, -7), data: reference.slice(comma + 1) };
+}
+
 export function captureImage(value: unknown): ImageReference {
   const data = mediaRecord(value);
   only(data, ['image_url', 'file_id', 'detail']);

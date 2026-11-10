@@ -387,3 +387,60 @@ describe('plain entry admission', () => {
     expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('declared input modalities retain ordinary native session opening', () => {
+  it.each(['audio', 'text', 'clear'] as const)(
+    '%s bypasses a retained plain admission',
+    async (selection) => {
+      const p = retained();
+      await p.run();
+      expect(p.lease.privateRuntime?.peek()?.plainAdmission).toBeDefined();
+      const acquisitions = vi.mocked(nativeBinding.binding).mock.calls.length;
+      const owner = await tryOpenPlainRun(
+        p.setup,
+        {
+          initialModelSettings: {
+            inputModalities:
+              selection === 'clear'
+                ? null
+                : selection === 'audio'
+                  ? ['text', 'audio']
+                  : ['text'],
+          },
+        },
+        p.lease,
+        'input',
+      );
+      expect(owner).toBeUndefined();
+      expect(nativeBinding.binding).toHaveBeenCalledTimes(acquisitions);
+      expect(p.engine._plain_run).toHaveBeenCalledTimes(1);
+      expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['audio', 'text', 'clear'] as const)(
+    '%s does not acquire the private plain-run owner',
+    async (selection) => {
+      const p = prepared();
+      const result = await tryOpenPlainRun(
+        p.setup,
+        {
+          initialModelSettings: {
+            inputModalities:
+              selection === 'clear'
+                ? null
+                : selection === 'audio'
+                  ? ['text', 'audio']
+                  : ['text'],
+          },
+        },
+        p.lease,
+        'input',
+      );
+      expect(result).toBeUndefined();
+      expect(nativeBinding.binding).not.toHaveBeenCalled();
+      expect(p.engine._plain_run).not.toHaveBeenCalled();
+      expect(p.release).not.toHaveBeenCalled();
+    },
+  );
+});
