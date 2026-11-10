@@ -453,17 +453,54 @@ export interface AiSdkLanguageModel {
   doGenerate(options: any): PromiseLike<any> | any;
 }
 
-/** Completed AI SDK generation within the native Core turn and tool loop. */
+function aiSdkImageSource(source: string): {
+  data: string | URL;
+  mediaType: string;
+} {
+  captureImage({ image_url: source });
+  const comma = source.startsWith('data:') ? source.indexOf(',') : -1;
+  return comma < 0
+    ? { data: new URL(source), mediaType: 'image/*' }
+    : {
+        data: source.slice(comma + 1),
+        mediaType: source.slice(5, comma).split(';')[0],
+      };
+}
+
+function aiSdkToolArguments(input: unknown, schema: any): string | undefined {
+  const type = schema?.type;
+  const object =
+    type === 'object' ||
+    (Array.isArray(type) && type.includes('object')) ||
+    (type === undefined &&
+      Boolean(schema?.properties || schema?.additionalProperties));
+  if ((input === '' || input === undefined) && object) return '{}';
+  return typeof input === 'string' ? input : JSON.stringify(input);
+}
+
+/** Completed AI SDK generation within the native Core turn and tool loop.
+ * Renamed OpenAI factories: new AiSdkModel(model, {}, {providerFamily: 'openai'}).
+ */
 export class AiSdkModel implements NativeModel {
   readonly #providerOptions: JsonObject;
+  readonly #openai: boolean;
+  readonly #openaiChat: boolean;
+  readonly #openaiResponses: boolean;
 
   constructor(
     readonly model: AiSdkLanguageModel,
     providerOptions: JsonObject = {},
+    adapterOptions: { readonly providerFamily?: 'openai' } = {},
   ) {
     if (!['v2', 'v3', 'v4'].includes(model.specificationVersion))
       throw new TypeError('AiSdkModel supports AI SDK v2, v3 and v4 models');
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
+    this.#openai =
+      adapterOptions.providerFamily === 'openai' ||
+      model.provider.startsWith('openai.');
+    this.#openaiResponses =
+      this.#openai && model.provider.endsWith('.responses');
+    this.#openaiChat = this.#openai && model.provider.endsWith('.chat');
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
@@ -502,7 +539,7 @@ export class AiSdkModel implements NativeModel {
       throw new TypeError(
         'AiSdkModel does not support configured Anthropic thinking',
       );
-    if (this.model.provider.startsWith('openai.')) {
+    if (this.#openai) {
       const openaiOptions = (providerOptions.openai ?? {}) as JsonObject;
       providerOptions.openai = {
         ...openaiOptions,
@@ -550,16 +587,10 @@ export class AiSdkModel implements NativeModel {
           if (part.type === 'input_text' || part.type === 'output_text')
             return { type: 'text', text: part.text };
           if (part.type === 'input_image' && part.image_url) {
-            const imageSource = part.image_url as string;
-            captureImage({ image_url: imageSource });
-            const comma = imageSource.startsWith('data:')
-              ? imageSource.indexOf(',')
-              : -1;
-            const image =
-              comma < 0 ? new URL(imageSource) : imageSource.slice(comma + 1);
-            const mediaType =
-              comma < 0 ? 'image/*' : imageSource.slice(5, comma).split(';')[0];
-            const openai = this.model.provider.startsWith('openai.');
+            const { data: image, mediaType } = aiSdkImageSource(
+              part.image_url as string,
+            );
+            const openai = this.#openai;
             if (part.detail != null && part.detail !== 'auto' && !openai)
               throw new TypeError(
                 'AiSdkModel requires an OpenAI provider for explicit image detail',
@@ -609,7 +640,7 @@ export class AiSdkModel implements NativeModel {
         if (previous?.role !== 'assistant')
           prompt.push({ role: 'assistant', content });
       } else if (item.type === 'reasoning') {
-        if (this.model.provider !== 'openai.responses')
+        if (!this.#openaiResponses)
           throw new TypeError(
             'AiSdkModel supports native reasoning replay only with OpenAI Responses',
           );
@@ -642,18 +673,47 @@ export class AiSdkModel implements NativeModel {
         if (previous?.role !== 'assistant')
           prompt.push({ role: 'assistant', content });
       } else if (item.type === 'function_call_output') {
-        let value = item.output;
+        const value = item.output;
+        let output: any;
         if (typeof value !== 'string') {
-          if (
-            !Array.isArray(value) ||
-            value.some(
-              (part: any) =>
-                part.type !== 'input_text' || typeof part.text !== 'string',
-            )
-          )
-            throw new TypeError('AiSdkModel supports only text tool outputs');
-          value = value.map((part: any) => part.text).join('');
-        }
+          if (!Array.isArray(value))
+            throw new TypeError('AiSdkModel received unsupported tool output');
+          const content = value.map((part: any) => {
+            if (part.type === 'input_text' && typeof part.text === 'string')
+              return { type: 'text', text: part.text };
+            if (
+              part.type === 'input_image' &&
+              typeof part.image_url === 'string'
+            ) {
+              const { data, mediaType } = aiSdkImageSource(part.image_url);
+              if (this.model.specificationVersion === 'v4')
+                return {
+                  type: 'file',
+                  mediaType: data instanceof URL ? 'image' : mediaType,
+                  data:
+                    typeof data === 'string'
+                      ? { type: 'data', data }
+                      : { type: 'url', url: data },
+                };
+              if (this.model.specificationVersion === 'v3')
+                return typeof data === 'string'
+                  ? { type: 'image-data', data, mediaType }
+                  : { type: 'image-url', url: data.toString() };
+              if (data instanceof URL)
+                throw new TypeError(
+                  'AiSdkModel v2 does not support remote image tool outputs',
+                );
+              return { type: 'media', data, mediaType };
+            }
+            throw new TypeError('AiSdkModel received unsupported tool output');
+          });
+          output = value.some((part: any) => part.type === 'input_image')
+            ? { type: 'content', value: content }
+            : {
+                type: 'text',
+                value: content.map((part: any) => part.text).join(''),
+              };
+        } else output = { type: 'text', value };
         prompt.push({
           role: 'tool',
           content: [
@@ -661,7 +721,7 @@ export class AiSdkModel implements NativeModel {
               type: 'tool-result',
               toolCallId: item.call_id,
               toolName: names.get(item.call_id as string),
-              output: { type: 'text', value },
+              output,
             },
           ],
         });
@@ -697,16 +757,9 @@ export class AiSdkModel implements NativeModel {
       toolChoice = { type: 'tool', toolName: selected.name };
     }
     const format = (text.format ?? {}) as JsonObject;
-    if (
-      this.model.provider.startsWith('openai.') &&
-      format.type === 'json_schema' &&
-      format.strict != null
-    )
+    if (this.#openai && format.type === 'json_schema' && format.strict != null)
       (providerOptions.openai as JsonObject).strictJsonSchema = format.strict;
-    if (
-      !this.model.provider.startsWith('openai.') &&
-      body.parallel_tool_calls === false
-    )
+    if (!this.#openai && body.parallel_tool_calls === false)
       throw new TypeError(
         'AiSdkModel received unsupported parallel tool controls',
       );
@@ -744,7 +797,7 @@ export class AiSdkModel implements NativeModel {
         responseBody?: string;
       } | null;
       if (
-        this.model.provider === 'openai.responses' &&
+        this.#openaiResponses &&
         failure?.name === 'AI_APICallError' &&
         failure.message === 'Invalid JSON response' &&
         failure.statusCode === 200 &&
@@ -769,24 +822,36 @@ export class AiSdkModel implements NativeModel {
         ? result.finishReason
         : result.finishReason?.unified;
     const raw = result.response?.body;
-    const refusal =
-      this.model.provider === 'openai.chat'
-        ? raw?.choices?.[0]?.message?.refusal
-        : this.model.provider === 'openai.responses'
-          ? raw?.output
-              ?.flatMap((item: any) =>
-                item.type === 'message' ? item.content : [],
-              )
-              ?.find((part: any) => part.type === 'refusal')?.refusal
-          : undefined;
+    const refusal = this.#openaiChat
+      ? raw?.choices?.[0]?.message?.refusal
+      : this.#openaiResponses
+        ? raw?.output
+            ?.flatMap((item: any) =>
+              item.type === 'message' ? item.content : [],
+            )
+            ?.find((part: any) => part.type === 'refusal')?.refusal
+        : undefined;
     if (
       finishReason !== 'stop' &&
       finishReason !== 'tool-calls' &&
       refusal == null
     )
       throw new TypeError('AiSdkModel requires a completed response');
-    if (this.model.provider === 'openai.responses' && raw?.status != null)
-      return projectResponsesResponse(raw);
+    if (this.#openaiResponses && raw?.status != null)
+      return projectResponsesResponse({
+        ...raw,
+        output: raw.output?.map((item: any) =>
+          item.type === 'function_call'
+            ? {
+                ...item,
+                arguments: aiSdkToolArguments(
+                  item.arguments,
+                  tools.find((tool) => tool.name === item.name)?.inputSchema,
+                ),
+              }
+            : item,
+        ),
+      });
     const output: JsonObject[] = [];
     let pendingTextParts: string[] = [];
     const flushText = () => {
@@ -816,17 +881,18 @@ export class AiSdkModel implements NativeModel {
         continue;
       }
       flushText();
-      if (part.type === 'tool-call' && !part.providerExecuted)
+      if (part.type === 'tool-call' && !part.providerExecuted) {
+        const args = aiSdkToolArguments(
+          part.input,
+          tools.find((tool) => tool.name === part.toolName)?.inputSchema,
+        );
         output.push({
           type: 'function_call',
           call_id: part.toolCallId,
           name: part.toolName,
-          arguments:
-            typeof part.input === 'string'
-              ? part.input
-              : JSON.stringify(part.input),
+          ...(args === undefined ? {} : { arguments: args }),
         });
-      else
+      } else
         throw new TypeError('AiSdkModel received unsupported output content');
     }
     flushText();

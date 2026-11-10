@@ -49,16 +49,23 @@ const penaltyCases = (['chat', 'ai-sdk-chat'] as const).map((adapter) => ({
   cacheKey: undefined,
   penalties: true,
 }));
-const reasoningCases = (['reasoning-summary', 'reasoning-empty'] as const).map(
-  (outcome) => ({
-    adapter: 'ai-sdk-responses' as const,
-    outcome,
-    cacheMode: 'reasoning',
-    cacheKey: 'private-reasoning-cache-key',
-    penalties: false,
-  }),
-);
+const reasoningCases = (
+  ['reasoning-summary', 'reasoning-empty', 'reasoning-renamed'] as const
+).map((outcome) => ({
+  adapter: 'ai-sdk-responses' as const,
+  outcome,
+  cacheMode: 'reasoning',
+  cacheKey: 'private-reasoning-cache-key',
+  penalties: false,
+}));
 const controlCases = [
+  ...(['ai-sdk-chat', 'ai-sdk-responses'] as const).map((adapter) => ({
+    adapter,
+    outcome: 'refusal' as const,
+    cacheMode: 'renamed-openai',
+    cacheKey: undefined,
+    penalties: false,
+  })),
   ...(['responses', 'ai-sdk-responses'] as const).map((adapter) => ({
     adapter,
     outcome: 'cache-write' as const,
@@ -84,6 +91,8 @@ it.each([
   'keeps borrowed $adapter $outcome $cacheMode cache key inside the native tool loop',
   async ({ adapter, outcome, cacheMode, cacheKey, penalties }) => {
     const reasoning = outcome.startsWith('reasoning-');
+    const renamed =
+      outcome === 'reasoning-renamed' || cacheMode === 'renamed-openai';
     const success =
       outcome === 'complete' ||
       reasoning ||
@@ -276,6 +285,9 @@ it.each([
         openaiOptions.reasoningSummary = 'detailed';
       }
       const providerOptions = { openai: openaiOptions };
+      const adapterOptions: { providerFamily?: 'openai' } = renamed
+        ? { providerFamily: 'openai' }
+        : {};
       const backend =
         adapter === 'responses'
           ? new ResponsesModel(client, undefined, options)
@@ -283,16 +295,24 @@ it.each([
             ? new ChatCompletionsModel(client, undefined, options)
             : new AiSdkModel(
                 adapter === 'ai-sdk-chat'
-                  ? createOpenAI({ apiKey: 'synthetic', baseURL }).chat(
-                      'gpt-4.1',
-                    )
-                  : createOpenAI({ apiKey: 'synthetic', baseURL }).responses(
+                  ? createOpenAI({
+                      apiKey: 'synthetic',
+                      baseURL,
+                      ...(renamed ? { name: 'proxy' } : {}),
+                    }).chat('gpt-4.1')
+                  : createOpenAI({
+                      apiKey: 'synthetic',
+                      baseURL,
+                      ...(renamed ? { name: 'proxy' } : {}),
+                    }).responses(
                       reasoning || outcome === 'summary-auto'
                         ? 'gpt-5'
                         : 'gpt-4.1',
                     ),
                 cacheMode === 'ordinary' ? {} : providerOptions,
+                adapterOptions,
               );
+      delete adapterOptions.providerFamily;
       options.promptCacheKey = 'mutated-after-declaration';
       providerOptions.openai.promptCacheKey = 'mutated-after-declaration';
       if (reasoning)
