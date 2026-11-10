@@ -3,6 +3,15 @@ import {
   resolveRealtimeAgentConfiguration,
 } from './realtime-agent-config';
 import { resolveRealtimePolicy } from './realtime-policy';
+import type { ChildBeforeStepContext } from './native-agents';
+import type { Agent } from './public-agent';
+import {
+  GuardrailTripwire,
+  captureGuardrailResult,
+  type GuardrailRecord,
+  type InputGuardrail,
+  type OutputGuardrail,
+} from './guardrails';
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
@@ -18,6 +27,7 @@ import {
 import {
   captureCompletionDecision,
   type BeforeComplete,
+  type CompletionContext,
   type CompletionDecision,
   type BeforeCompact,
   type ContextTransform,
@@ -275,6 +285,7 @@ import {
 import {
   managedApproval,
   ToolOutput,
+  toolOutputSchema,
   captureTools,
   isDirectFunctionTool,
   toolIdentity,
@@ -332,6 +343,12 @@ export interface SessionOptions {
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
+  inputGuardrails?: readonly InputGuardrail<any>[];
+  outputGuardrails?: readonly OutputGuardrail<any>[];
+  /** @internal Captured root declaration; profile declarations own child guards. */
+  agentInputGuardrails?: readonly InputGuardrail<any>[];
+  /** @internal Captured root declaration; profile declarations own child guards. */
+  agentOutputGuardrails?: readonly OutputGuardrail<any>[];
   beforeCompact?: BeforeCompact<any>;
   transformContext?: ContextTransform<any>;
   contextTransformPurpose?: 'turn' | 'output_repair';
@@ -546,6 +563,7 @@ export interface Completed<OutputT = string> {
   readonly threadUsage: TokenUsageInfo | null;
   readonly state?: SessionState;
   readonly repairAttempts: readonly RecordedTurn[];
+  readonly guardrailResults?: readonly GuardrailRecord[];
 }
 
 /** Wait for the captured turn's completion or its current manual request batch. */
@@ -627,6 +645,7 @@ export interface TurnCompletion<T> {
 /** @internal The Session supplies live requests; observations carry no authority. */
 export interface TurnRequestWait<T, NativeId extends string | null = string> {
   rootResultReady?(): boolean;
+  guardrailResults?(): readonly GuardrailRecord[];
   notify(): void;
   rateLimits(): ApiRateLimits;
   wait(
@@ -708,6 +727,10 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
         requests,
         steerExact,
       );
+  }
+
+  get guardrailResults(): readonly GuardrailRecord[] {
+    return Object.freeze([...(this.requests?.guardrailResults?.() ?? [])]);
   }
 
   get turnId(): NativeId {
@@ -1045,6 +1068,10 @@ interface NativeCallbackDelivery {
 }
 
 class NativeTurn {
+  readonly guardrailResults: GuardrailRecord[] = [];
+  guardrailInput?: UserInput;
+  inputGuardrailsStarted = false;
+  inputGuardrailsTask?: Promise<void>;
   parentTrace?: TraceContext;
   readonly accepted = Promise.withResolvers<AcceptedSubmission>();
   readonly completion = Promise.withResolvers<NativeRunResult>();
@@ -2184,15 +2211,18 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly terminalProposals = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     {
-      readonly requestId: string;
-      readonly nativeStep: string;
-      readonly accepted: boolean;
-      readonly generation: bigint;
-      readonly callId: string;
-      readonly name: string;
-      readonly namespace: string | null;
-      readonly value?: unknown;
-      readonly json?: JsonValue;
+      proposal?: {
+        readonly requestId: string;
+        readonly nativeStep: string;
+        readonly accepted: boolean;
+        readonly generation: bigint;
+        readonly callId: string;
+        readonly name: string;
+        readonly namespace: string | null;
+        readonly value?: unknown;
+        readonly json?: JsonValue;
+      };
+      observations: Map<string, { identity: ToolIdentity; status: ToolStatus }>;
     }
   >();
   private readonly terminalCalls = new WeakMap<NativeTurn, ToolCallInfo>();
@@ -2779,7 +2809,10 @@ export class Session<OutputT = string, Context = unknown> {
         this.retireNativeQuestions(owner);
     const pending = this.childCallbacks.retireObservations(
       producer,
-      () => this.observations.notify(),
+      (owner) => {
+        this.flushTerminalObservations(owner);
+        this.observations.notify();
+      },
       matches,
     );
     if (!pending) return;
@@ -3761,6 +3794,7 @@ export class Session<OutputT = string, Context = unknown> {
         (mode) => this.cancelTurn(run, mode),
         undefined,
         {
+          guardrailResults: () => run.guardrailResults,
           rootResultReady: () => scope.phase() === 'ended',
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
@@ -3799,6 +3833,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? { toolCall: this.terminalCalls.get(run)! }
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
+      guardrailResults: Object.freeze([...run.guardrailResults]),
       repairAttempts: Object.freeze(
         this.repairTurns
           .filter((turn) => turn.parentTurnId === result.turnId)
@@ -3964,6 +3999,7 @@ export class Session<OutputT = string, Context = unknown> {
     callerSignal?: AbortSignal,
     maxModelSteps?: number,
     budget?: RunBudgetTracker,
+    guardrailInput?: UserInput,
   ): Promise<NativeRunResult> {
     this.startTurn(
       input,
@@ -3980,6 +4016,10 @@ export class Session<OutputT = string, Context = unknown> {
         budget,
       ),
       callerSignal,
+      undefined,
+      undefined,
+      undefined,
+      guardrailInput,
     );
 
     return this.#waitResult();
@@ -4032,6 +4072,7 @@ export class Session<OutputT = string, Context = unknown> {
         : this.captureExecutorRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
     run.parentTrace = parentTrace;
+    run.guardrailInput = structuredClone(input);
     run.selection = selection;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
@@ -4131,6 +4172,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.tracing,
       options?.writableRoots,
       parentTrace,
+      structuredClone(input),
     );
     await afterSubmissionRetirement(run, run.accepted.promise);
     return this.#turnFor(run);
@@ -4555,7 +4597,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (receipt.status !== 'steered' || receipt.turn_id !== run.id)
         throw new TurnNotSubmitted('Unexpected steering receipt');
-      this.terminalProposals.delete(run);
+      this.clearTerminalProposal(run);
       if (expectedTurnId === undefined) return;
       if (!receipt.input_id)
         throw new NativeError('Native steering input ID is unavailable');
@@ -4999,6 +5041,7 @@ export class Session<OutputT = string, Context = unknown> {
     tracing?: TraceOptions,
     writableRoots?: readonly string[],
     parentTrace = this.options.parentTrace,
+    guardrailInput?: UserInput,
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -5013,6 +5056,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : this.captureExecutorRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
+    run.guardrailInput = guardrailInput;
     run.parentTrace = parentTrace;
     run.writableRoots = roots;
     submissions.get(run)!.callerSignal = callerSignal;
@@ -5060,6 +5104,8 @@ export class Session<OutputT = string, Context = unknown> {
               names: selection.names ?? null,
               before_step:
                 this.options.agentGraph !== undefined ||
+                !!this.options.inputGuardrails?.length ||
+                !!this.options.agentInputGuardrails?.length ||
                 selection.beforeStep !== undefined ||
                 selection.maxModelSteps !== undefined ||
                 selection.budget !== undefined,
@@ -5618,7 +5664,8 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     error = cleanupFailure(run, error);
-    if (error !== undefined) this.terminalProposals.delete(run);
+    this.flushTerminalObservations(run);
+    if (error !== undefined) this.clearTerminalProposal(run);
     if (run.toolCleanupErrors.length) {
       this.retire(error);
       void this.close().catch(() => {});
@@ -6300,6 +6347,9 @@ export class Session<OutputT = string, Context = unknown> {
       this.observations.notify();
     }
     owner.instanceId ??= event.subagent_instance_id;
+    if (msg.type === 'raw_response_item')
+      this.releaseTerminalObservation(owner, msg.item);
+
     const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
@@ -6352,8 +6402,9 @@ export class Session<OutputT = string, Context = unknown> {
     ) {
       if (owner.observationPhase !== 'open') return;
       owner.observationPhase = 'finishing';
+      this.flushTerminalObservations(owner);
       if (msg.type === 'turn_aborted' || msg.tool_completion === undefined)
-        this.terminalProposals.delete(owner);
+        this.clearTerminalProposal(owner);
       this.childCallbacks.end(id, incarnation, turnId);
       this.clearManualCalls();
       const continuation = (async () => {
@@ -6842,6 +6893,8 @@ export class Session<OutputT = string, Context = unknown> {
       msg.turn_id === run.id
     )
       this.observeMcp(run, event);
+    if (kind === 'raw_response_item' && event.id === run.id)
+      this.releaseTerminalObservation(run, msg.item);
     if (
       kind === 'raw_response_item' &&
       event.id === run.id &&
@@ -6996,7 +7049,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (error === undefined && msg.tool_completion !== undefined) {
         try {
           const fact = toolCompletionSchema.parse(msg.tool_completion);
-          const proposal = this.terminalProposals.get(run);
+          const proposal = this.terminalProposals.get(run)?.proposal;
           if (
             !proposal ||
             !proposal.accepted ||
@@ -7027,7 +7080,7 @@ export class Session<OutputT = string, Context = unknown> {
           error = cause;
         }
       }
-      this.terminalProposals.delete(run);
+      this.clearTerminalProposal(run);
       this.finish(
         run,
         error,
@@ -7074,11 +7127,113 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
   }
+  private terminalState(owner: NativeTurn | ChildCallbackOwner) {
+    let state = this.terminalProposals.get(owner);
+    if (!state) {
+      state = { observations: new Map() };
+      this.terminalProposals.set(owner, state);
+    }
+    return state;
+  }
+
+  private clearTerminalProposal(owner: NativeTurn | ChildCallbackOwner): void {
+    const state = this.terminalProposals.get(owner);
+    if (state) state.proposal = undefined;
+  }
+
+  private registerTerminalObservation(
+    owner: NativeTurn | ChildCallbackOwner,
+    identity: ToolIdentity,
+    status: ToolStatus,
+  ): void {
+    const state = this.terminalState(owner);
+    if (state.observations.has(identity.callId))
+      throw new NativeError('Repeated terminal tool observation identity');
+    state.observations.set(identity.callId, {
+      identity: { ...identity },
+      status,
+    });
+  }
+
+  private releaseTerminalObservation(
+    owner: NativeTurn | ChildCallbackOwner,
+    value: unknown,
+  ): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const item = value as Record<string, unknown>;
+    if (
+      item.type !== 'function_call_output' ||
+      typeof item.call_id !== 'string'
+    )
+      return;
+    const state = this.terminalProposals.get(owner);
+    const observation = state?.observations.get(item.call_id);
+    if (!observation) return;
+    state!.observations.delete(item.call_id);
+    const parts =
+      typeof item.output === 'string'
+        ? [{ type: 'inputText', text: item.output }]
+        : Array.isArray(item.output)
+          ? item.output.map((part: unknown) => {
+              if (!part || typeof part !== 'object' || Array.isArray(part))
+                return null;
+              const { type, ...fields } = part as Record<string, unknown>;
+              if (type === 'input_text')
+                return { ...fields, type: 'inputText' };
+              if (type === 'input_file')
+                return { ...fields, type: 'inputFile' };
+              if (type === 'input_audio')
+                return { type: 'inputAudio', audioUrl: fields.audio_url };
+              if (type === 'input_image')
+                return {
+                  type: 'inputImage',
+                  ...('image_url' in fields
+                    ? { imageUrl: fields.image_url }
+                    : { fileId: fields.file_id }),
+                  ...(fields.detail === undefined
+                    ? {}
+                    : { detail: fields.detail }),
+                };
+              return null;
+            })
+          : null;
+    const output = toolOutputSchema.safeParse({
+      contentItems: parts,
+      success: observation.status === 'completed',
+    });
+    this.observeTool(
+      owner,
+      observation.identity,
+      'tool_finished',
+      observation.status,
+      output.success
+        ? new ToolOutput(output.data.contentItems, output.data.success)
+        : null,
+    );
+  }
+
+  private flushTerminalObservations(
+    owner: NativeTurn | ChildCallbackOwner,
+  ): void {
+    const state = this.terminalProposals.get(owner);
+    if (!state) return;
+    const pending = [...state.observations.values()];
+    state.observations.clear();
+    for (const observation of pending)
+      this.observeTool(
+        owner,
+        observation.identity,
+        'tool_finished',
+        owner.controller.signal.aborted ? 'cancelled' : observation.status,
+        null,
+      );
+  }
+
   private discardTerminalValue(owner: NativeTurn | ChildCallbackOwner): void {
-    const proposal = this.terminalProposals.get(owner);
+    const proposal = this.terminalProposals.get(owner)?.proposal;
     if (!proposal) return;
     const { value: _value, json: _json, ...attempt } = proposal;
-    this.terminalProposals.set(owner, { ...attempt, accepted: false });
+    this.terminalState(owner).proposal = { ...attempt, accepted: false };
   }
 
   /** Strict Core failure has no TurnComplete; this notice settles its exact waiter. */
@@ -7088,7 +7243,7 @@ export class Session<OutputT = string, Context = unknown> {
   ): boolean {
     const msg = event.msg;
     const child = !(owner instanceof NativeTurn);
-    const proposal = this.terminalProposals.get(owner);
+    const proposal = this.terminalProposals.get(owner)?.proposal;
     if (
       !proposal ||
       msg.thread !== (child ? owner.childId : this.id) ||
@@ -7099,7 +7254,8 @@ export class Session<OutputT = string, Context = unknown> {
       msg.native_step !== proposal.nativeStep
     )
       return false;
-    this.terminalProposals.delete(owner);
+    this.clearTerminalProposal(owner);
+    this.flushTerminalObservations(owner);
     owner.failure ??= new NativeError(
       'Terminal tool completion failed before durable publication',
     );
@@ -7191,12 +7347,15 @@ export class Session<OutputT = string, Context = unknown> {
         };
         signal.addEventListener('abort', abort, { once: true });
         try {
-          this.terminalProposals.delete(owner);
+          this.clearTerminalProposal(owner);
           capturedCatalog = this.sourceCatalog(
             msg,
             z.string().parse(msg.generation),
           );
           check();
+          await this.awaitInputGuardrails(
+            owner instanceof NativeTurn ? this.rootRun(owner) : owner,
+          );
           const slot = z.number().int().nonnegative().safe().parse(msg.slot);
           const captured = capturedCatalog.tools[slot];
           const declaration =
@@ -7223,7 +7382,7 @@ export class Session<OutputT = string, Context = unknown> {
             name: declaration.name,
             namespace: toolNamespace(declaration),
           };
-          this.terminalProposals.set(owner, { ...attempt, accepted: false });
+          this.terminalState(owner).proposal = { ...attempt, accepted: false };
           let output: PreparedOutput = this.childOutput;
           if (!child) {
             const submission = submissions.get(owner)!;
@@ -7308,12 +7467,49 @@ export class Session<OutputT = string, Context = unknown> {
             }
           }
           check();
-          this.terminalProposals.set(owner, {
-            ...attempt,
-            accepted: true,
-            value: converted.value,
-            json: converted.json,
-          });
+          await this.checkOutputGuardrails(
+            owner,
+            msg,
+            {
+              context: this.options.context,
+              text: null,
+              sessionId: this.id,
+              turnId: z.string().parse(turnId),
+              ...(child ? { subagentId: owner.childId } : {}),
+              model: z.string().parse(msg.model),
+              signal,
+              continuationCount: z
+                .number()
+                .int()
+                .nonnegative()
+                .parse(msg.continuation_count),
+              finalOutput: converted.value,
+              toolCall: terminalCallInfo(
+                {
+                  sessionId: this.id,
+                  turnId: z.string().parse(turnId),
+                  childId: child ? owner.childId : null,
+                  childIncarnation: child ? owner.incarnation : null,
+                },
+                {
+                  call_id: z.string().parse(msg.call_id),
+                  name: declaration.name,
+                  namespace: toolNamespace(declaration),
+                  final_output: converted.json,
+                },
+              ),
+            },
+            check,
+          );
+          check();
+          if (msg.guard_only === true) this.clearTerminalProposal(owner);
+          else
+            this.terminalState(owner).proposal = {
+              ...attempt,
+              accepted: true,
+              value: converted.value,
+              json: converted.json,
+            };
           check();
           if (
             !native._reply_tool_completion(
@@ -7339,6 +7535,152 @@ export class Session<OutputT = string, Context = unknown> {
         }
       }),
     );
+  }
+
+  private async awaitInputGuardrails(
+    run: NativeTurn | ChildCallbackOwner,
+  ): Promise<void> {
+    await run.inputGuardrailsTask;
+    if (run.failure !== undefined) throw run.failure;
+  }
+
+  private async checkInputGuardrails(
+    run: NativeTurn | ChildCallbackOwner,
+    message: Record<string, unknown>,
+    agent: Agent<any, any>,
+    guards: readonly InputGuardrail<any>[],
+    childContext?: ChildBeforeStepContext<Context>,
+  ): Promise<void> {
+    if (!guards.length) return;
+    const signal = run.controller.signal;
+    const check = () => {
+      signal.throwIfAborted();
+      if (!this.current(run))
+        throw new NativeError('Expired input guardrail owner');
+    };
+    const scope = this.decisionScope(message, signal);
+    try {
+      const settled = await Promise.allSettled(
+        guards.map(async (guard) => {
+          check();
+          const result = captureGuardrailResult(
+            await (childContext
+              ? guard.childCallback!(
+                  Object.freeze({
+                    ...childContext,
+                    decide: scope.decide,
+                    signal,
+                    agent,
+                    input: structuredClone(
+                      (run as ChildCallbackOwner).guardrailInput!,
+                    ),
+                  }),
+                )
+              : guard.callback(
+                  Object.freeze({
+                    decide: scope.decide,
+                    context: this.options.context,
+                    submission: this.#turnFor(this.rootRun(run as NativeTurn)),
+                    signal,
+                    agent,
+                    input: structuredClone((run as NativeTurn).guardrailInput!),
+                  }),
+                )),
+          );
+          check();
+          return Object.freeze({
+            kind: 'input' as const,
+            name: guard.name,
+            result,
+            agent,
+            sessionId: this.id,
+            turnId: z
+              .string()
+              .parse(run instanceof NativeTurn ? run.id : run.turnId),
+            ...(run instanceof NativeTurn ? {} : { subagentId: run.childId }),
+          });
+        }),
+      );
+      const records = settled.flatMap((entry) =>
+        entry.status === 'fulfilled' ? [entry.value] : [],
+      );
+      run.guardrailResults.push(...records);
+      const failed = settled.find((entry) => entry.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      check();
+      const tripped = records.find((record) => record.result.tripwireTriggered);
+      if (tripped)
+        throw new GuardrailTripwire(
+          tripped,
+          Object.freeze([...run.guardrailResults]),
+        );
+    } finally {
+      await scope.close();
+    }
+  }
+
+  private async checkOutputGuardrails(
+    owner: NativeTurn | ChildCallbackOwner,
+    message: Record<string, unknown>,
+    request: Omit<CompletionContext<any, unknown>, 'decide'>,
+    check: () => void,
+  ): Promise<void> {
+    const source = this.messageProfile(message);
+    const agent = source
+      ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+      : this.options.applicationAgent;
+    if (!agent) throw new NativeError('Guardrail has no source Agent');
+    const guards = [
+      ...(this.options.outputGuardrails ?? []),
+      ...(source
+        ? agent.outputGuardrails
+        : (this.options.agentOutputGuardrails ?? [])),
+    ];
+    if (!guards.length) return;
+    const scope = this.decisionScope(message, request.signal);
+    try {
+      const settled = await Promise.allSettled(
+        guards.map(async (guard) => {
+          check();
+          const result = captureGuardrailResult(
+            await guard.callback(
+              Object.freeze({
+                ...request,
+                finalOutput: structuredClone(request.finalOutput),
+                decide: scope.decide,
+              }),
+              agent,
+            ),
+          );
+          check();
+          return Object.freeze({
+            kind: 'output' as const,
+            name: guard.name,
+            result,
+            agent,
+            sessionId: request.sessionId,
+            turnId: request.turnId,
+            ...(request.subagentId ? { subagentId: request.subagentId } : {}),
+            ...(request.toolCall ? { toolCall: request.toolCall } : {}),
+          });
+        }),
+      );
+      const records = settled.flatMap((entry) =>
+        entry.status === 'fulfilled' ? [entry.value] : [],
+      );
+      owner.guardrailResults.push(...records);
+      const failed = settled.find((entry) => entry.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      check();
+      const tripped = records.find((record) => record.result.tripwireTriggered);
+      if (tripped)
+        throw new GuardrailTripwire(
+          tripped,
+          Object.freeze([...owner.guardrailResults]),
+        );
+    } finally {
+      await scope.close();
+    }
   }
 
   private sourceModelCallbacks(message: Record<string, unknown>): {
@@ -7419,6 +7761,12 @@ export class Session<OutputT = string, Context = unknown> {
           signal.addEventListener('abort', reject, { once: true });
           try {
             check();
+            if (msg.type === '_sdk_before_complete')
+              await this.awaitInputGuardrails(
+                child
+                  ? (owner as ChildCallbackOwner)
+                  : this.rootRun(owner as NativeTurn),
+              );
             const base = {
               context: this.options.context,
               sessionId: this.id,
@@ -7555,6 +7903,54 @@ export class Session<OutputT = string, Context = unknown> {
                       this.decodedOutputs.set(owner, repaired.output);
                     }
                   }
+                }
+              }
+              if (decision === undefined) {
+                const source = this.messageProfile(msg);
+                const agent = source
+                  ? this.profileRuntimes.get(source.profile_id)!.profile
+                      .declaration
+                  : this.options.applicationAgent;
+                if (
+                  (this.options.outputGuardrails?.length ?? 0) +
+                    (source
+                      ? (agent?.outputGuardrails.length ?? 0)
+                      : (this.options.agentOutputGuardrails?.length ?? 0)) >
+                  0
+                ) {
+                  let value: unknown = text ?? '';
+                  if (!child) {
+                    const submission = submissions.get(owner)!;
+                    const prepared =
+                      source &&
+                      !submission.outputOverride &&
+                      !submission.realtimeTools
+                        ? this.profileRuntimes.get(source.profile_id)!.output
+                        : submission.output;
+                    if (this.decodedOutputs.has(owner))
+                      value = this.decodedOutputs.get(owner);
+                    else {
+                      value = prepared.parse
+                        ? prepared.parse(text ?? '')
+                        : (text ?? '');
+                      this.decodedOutputs.set(owner, value);
+                    }
+                  }
+                  await this.checkOutputGuardrails(
+                    owner,
+                    msg,
+                    {
+                      ...base,
+                      text,
+                      finalOutput: value,
+                      continuationCount: z
+                        .number()
+                        .int()
+                        .nonnegative()
+                        .parse(msg.continuation_count),
+                    },
+                    check,
+                  );
                 }
               }
               if (!child && decision !== undefined)
@@ -7776,6 +8172,37 @@ export class Session<OutputT = string, Context = unknown> {
           assertActive();
           selection.budget?.check(assertActive);
           const stepIndex = selection.stepIndex++;
+          if (run.inputGuardrailsStarted) {
+            await this.awaitInputGuardrails(run);
+          } else if (run.guardrailInput !== undefined) {
+            run.inputGuardrailsStarted = true;
+            const source = this.messageProfile(msg);
+            const agent = source
+              ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+              : this.options.applicationAgent;
+            if (!agent) throw new NativeError('Guardrail has no source Agent');
+            const guards = [
+              ...(this.options.inputGuardrails ?? []),
+              ...(source
+                ? agent.inputGuardrails
+                : (this.options.agentInputGuardrails ?? [])),
+            ];
+            await this.checkInputGuardrails(
+              run,
+              msg,
+              agent,
+              guards.filter((guard) => guard.runInParallel === false),
+            );
+            const parallel = guards.filter(
+              (guard) => guard.runInParallel !== false,
+            );
+            if (parallel.length) {
+              run.inputGuardrailsTask = this.invokeCallback(run, () =>
+                this.checkInputGuardrails(run, msg, agent, parallel),
+              );
+              this.track(run, run.inputGuardrailsTask);
+            }
+          }
           const scope = this.decisionScope(event.msg, signal);
           let names: ReturnType<typeof this.selectedStepNames> = [];
           let stopped = false;
@@ -7969,6 +8396,59 @@ export class Session<OutputT = string, Context = unknown> {
         this.callbackAuthorityFailed(delivery, error);
       }
       signal.throwIfAborted();
+      if (owner.inputGuardrailsStarted) {
+        await this.awaitInputGuardrails(owner);
+      } else {
+        const source = this.messageProfile(event.msg);
+        const agent = source
+          ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+          : this.options.applicationAgent;
+        const guards = [
+          ...(this.options.inputGuardrails ?? []),
+          ...(source
+            ? agent!.inputGuardrails
+            : (this.options.agentInputGuardrails ?? [])),
+        ].filter((guard) => guard.childCallback !== undefined);
+        if (guards.length) {
+          if (!agent)
+            throw new NativeError('Child guardrail has no source Agent');
+          const initial = event.msg.initial_input;
+          if (
+            !Array.isArray(initial) ||
+            !initial.every(
+              (item) =>
+                item !== null &&
+                typeof item === 'object' &&
+                !Array.isArray(item),
+            )
+          )
+            throw new NativeError(
+              'Child guardrail lacks admitted initial input',
+            );
+          owner.guardrailInput = structuredClone(initial) as JsonObject[];
+          owner.inputGuardrailsStarted = true;
+          await this.checkInputGuardrails(
+            owner,
+            event.msg,
+            agent,
+            guards.filter((guard) => guard.runInParallel === false),
+            context,
+          );
+          const parallel = guards.filter(
+            (guard) => guard.runInParallel !== false,
+          );
+          if (parallel.length)
+            owner.inputGuardrailsTask = this.trackOwnedCallback(owner, () =>
+              this.checkInputGuardrails(
+                owner,
+                event.msg,
+                agent,
+                parallel,
+                context,
+              ),
+            );
+        }
+      }
       capturedSelection.stepIndex++;
       let names: ReturnType<typeof this.selectedStepNames> = [];
       let stopped = false;
@@ -8223,7 +8703,14 @@ export class Session<OutputT = string, Context = unknown> {
     identity: ToolIdentity,
     status: ToolStatus,
     output: ToolOutput | null = null,
+    deferred = false,
   ): void {
+    if (deferred) {
+      const state = this.terminalProposals.get(owner);
+      if (status !== 'completed' && state?.observations.delete(identity.callId))
+        this.observeTool(owner, identity, 'tool_finished', status, null);
+      return;
+    }
     this.observeTool(owner, identity, 'tool_finished', status, output);
   }
 
@@ -9476,6 +9963,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.observeToolStart(owner, identity);
       let status: ToolStatus | undefined;
       let observedOutput: ToolOutput | null = null;
+      let deferredObservation = false;
       try {
         if (
           !(await this.realtimeFunctionEnabled(owner, msg, tool.name, signal))
@@ -9552,6 +10040,10 @@ export class Session<OutputT = string, Context = unknown> {
           return;
         }
         const responseOutput = structuredClone(response);
+        if (tool.finishTurn && responseOutput.success) {
+          this.registerTerminalObservation(owner, identity, 'completed');
+          deferredObservation = true;
+        }
         let accepted: boolean;
         try {
           accepted = await native._respond_python_tool(
@@ -9570,7 +10062,7 @@ export class Session<OutputT = string, Context = unknown> {
         } catch (error) {
           this.callbackAuthorityFailed(delivery, error);
         }
-        if (accepted)
+        if (accepted && !deferredObservation)
           observedOutput = new ToolOutput(
             responseOutput.contentItems,
             responseOutput.success,
@@ -9620,6 +10112,7 @@ export class Session<OutputT = string, Context = unknown> {
           identity,
           finalStatus ?? 'failed',
           finalStatus === 'cancelled' ? null : observedOutput,
+          deferredObservation,
         );
       }
     };
@@ -11115,8 +11608,8 @@ export class Session<OutputT = string, Context = unknown> {
           }),
         toolCompletion: (raw) => {
           const fact = toolCompletionSchema.parse(raw);
-          const proposal = this.terminalProposals.get(owner);
-          this.terminalProposals.delete(owner);
+          const proposal = this.terminalProposals.get(owner)?.proposal;
+          this.clearTerminalProposal(owner);
           if (
             !proposal ||
             !proposal.accepted ||
@@ -11148,6 +11641,7 @@ export class Session<OutputT = string, Context = unknown> {
             native.turn_id,
           ),
         requests: {
+          guardrailResults: () => owner.guardrailResults,
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>

@@ -4083,7 +4083,9 @@ impl NativeThread {
                     .await
                     .map_err(native_error)?;
             }
-            let terminal = frame.terminal_seed();
+            let terminal = frame
+                .terminal_seed(&saved["history"])
+                .map_err(native_error)?;
             let result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,

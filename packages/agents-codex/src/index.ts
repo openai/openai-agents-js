@@ -426,3 +426,10 @@ export type {
   NativeRealtimeTool,
   NativeRealtimeToolErrorContext,
 } from './runtime/realtime-policy';
+export { GuardrailTripwire } from './runtime/guardrails';
+export type {
+  GuardrailResult,
+  GuardrailRecord,
+  InputGuardrail,
+  OutputGuardrail,
+} from './runtime/guardrails';

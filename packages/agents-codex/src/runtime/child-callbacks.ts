@@ -1,3 +1,5 @@
+import type { JsonObject } from './binding';
+import type { GuardrailRecord } from './guardrails';
 import type { ObservationPhase } from './observation';
 
 /** Shared by a native owner's readers and their observed child turns. */
@@ -9,6 +11,10 @@ export interface ChildObservationProducer {
 
 /** Internal callback ownership for independently running native child turns. */
 export interface ChildCallbackOwner {
+  readonly guardrailResults: GuardrailRecord[];
+  guardrailInput?: readonly JsonObject[];
+  inputGuardrailsStarted: boolean;
+  inputGuardrailsTask?: Promise<void>;
   readonly childId: string;
   readonly incarnation: string;
   readonly turnId: string;
@@ -48,6 +54,8 @@ export class ChildCallbacks {
     let owner = this.owners.get(key);
     if (!owner) {
       owner = {
+        guardrailResults: [],
+        inputGuardrailsStarted: false,
         childId,
         incarnation,
         turnId,
@@ -70,7 +78,7 @@ export class ChildCallbacks {
   /** End observation after entered callback work, without revoking authority. */
   retireObservations(
     producer: ChildObservationProducer,
-    notify: () => void,
+    notify: (owner: ChildCallbackOwner) => void,
     matches?: (owner: ChildCallbackOwner) => boolean,
   ): Promise<void> | undefined {
     const pending: Promise<void>[] = [];
@@ -88,7 +96,7 @@ export class ChildCallbacks {
           .catch(() => {})
           .finally(() => {
             owner.observationPhase = 'ended';
-            notify();
+            notify(owner);
           }),
       );
     }

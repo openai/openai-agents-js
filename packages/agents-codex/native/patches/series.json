@@ -575,7 +575,11 @@
     {
       "path": "sdk-realtime-application-update-rejections.patch",
       "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
+    },
+    {
+      "path": "sdk-terminal-candidate-admission.patch",
+      "sha256": "79cd4458385ebefac423d02bccaa124b845d092582cfa679aa764d1a06648b12"
     }
   ],
-  "result_tree": "998cbcdce049884d45162f070a849613376e2cdb"
+  "result_tree": "4aa04c3e60ee6b6df2f06fe9ca1701e76afc66ec"
 }

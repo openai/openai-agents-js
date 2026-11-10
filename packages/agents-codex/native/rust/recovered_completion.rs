@@ -11,6 +11,8 @@ pub(crate) struct ToolOutcomes {
     pub response_observation_id: String,
     pub call_ids: Vec<String>,
     pub outcomes: Vec<(String, bool)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held_call_ids: Vec<String>,
 }
 
 impl ToolOutcomes {
@@ -107,6 +109,7 @@ impl ToolOutcomes {
             .filter_map(|id| known.get(id).map(|success| (id.clone(), *success)))
             .collect();
         Ok(Some(Self {
+            held_call_ids: Vec::new(),
             response_observation_id: record.id.clone(),
             call_ids,
             outcomes,
@@ -145,8 +148,13 @@ impl ToolOutcomes {
             self.outcomes.push((id.to_owned(), success));
         }
     }
-    fn candidates(&self, turn: &str) -> codex_extension_api::RecoveredToolCompletionCandidates {
+    fn candidates(
+        &self,
+        turn: &str,
+        held_outputs: Vec<(codex_history::ResponseItemEnvelope, bool)>,
+    ) -> codex_extension_api::RecoveredToolCompletionCandidates {
         codex_extension_api::RecoveredToolCompletionCandidates {
+            held_outputs,
             turn_id: turn.to_owned(),
             response_observation_id: self.response_observation_id.clone(),
             call_ids: self.call_ids.clone(),
@@ -208,13 +216,24 @@ impl FreshTerminalReceipts {
 
 pub(crate) struct RecoveredToolCompletionSeed {
     turn: String,
-    pending: Mutex<Option<(ToolOutcomes, FreshTerminalReceipts)>>,
+    pending: Mutex<
+        Option<(
+            ToolOutcomes,
+            Option<FreshTerminalReceipts>,
+            Vec<(codex_history::ResponseItemEnvelope, bool)>,
+        )>,
+    >,
 }
 impl RecoveredToolCompletionSeed {
-    pub(super) fn new(turn: String, outcomes: ToolOutcomes, fresh: FreshTerminalReceipts) -> Self {
+    pub(super) fn new(
+        turn: String,
+        outcomes: ToolOutcomes,
+        fresh: Option<FreshTerminalReceipts>,
+        held_outputs: Vec<(codex_history::ResponseItemEnvelope, bool)>,
+    ) -> Self {
         Self {
             turn,
-            pending: Mutex::new(Some((outcomes, fresh))),
+            pending: Mutex::new(Some((outcomes, fresh, held_outputs))),
         }
     }
     pub(crate) fn attach(self, init: &mut codex_extension_api::ExtensionDataInit) {
@@ -224,14 +243,18 @@ impl RecoveredToolCompletionSeed {
         if self.turn != input.turn_id {
             return;
         }
-        if let Some((outcomes, fresh)) = self
+        if let Some((outcomes, fresh, held_outputs)) = self
             .pending
             .lock()
             .expect("terminal recovery seed poisoned")
             .take()
         {
-            input.turn_store.insert(outcomes.candidates(input.turn_id));
-            input.turn_store.insert(fresh);
+            input
+                .turn_store
+                .insert(outcomes.candidates(input.turn_id, held_outputs));
+            if let Some(fresh) = fresh {
+                input.turn_store.insert(fresh);
+            }
         }
     }
 }
