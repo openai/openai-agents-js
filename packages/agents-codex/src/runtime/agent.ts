@@ -61,6 +61,8 @@ export interface SessionSetup {
   apiKey?: string;
   /** Live application capability, excluded from persisted config/runtime. */
   applicationAppsJson?: string;
+  /** Live inference credential, excluded from persisted config/runtime. */
+  plan?: { bearer: string; identity: string };
 }
 
 /** @internal Open one native Session from the public Agent's captured declaration. */
@@ -329,30 +331,40 @@ export async function openSession(
     if (lease.codexLogin === undefined)
       await carrier.start(config, runtime, apiKey);
     options.environmentOwner?.signal.throwIfAborted();
-    engine = saved
-      ? await native.create_checkpoint_engine(
+    engine = setup.plan
+      ? await native._create_plan_engine(
           encode(initialConfig),
           encode(runtime),
-          apiKey ?? null,
-          checkpointJson,
-          catalog.specsJson,
-          freshManual,
-          setup.applicationAppsJson ?? null,
+          setup.plan.bearer,
+          setup.plan.identity,
+          checkpointJson ?? null,
+          saved ? catalog.specsJson : null,
+          options.customStore ?? null,
         )
-      : options.customStore
-        ? await native.create_store_engine(
+      : saved
+        ? await native.create_checkpoint_engine(
             encode(initialConfig),
             encode(runtime),
             apiKey ?? null,
-            options.customStore,
+            checkpointJson,
+            catalog.specsJson,
+            freshManual,
             setup.applicationAppsJson ?? null,
           )
-        : await native.create_engine(
-            encode(initialConfig),
-            encode(runtime),
-            apiKey ?? null,
-            setup.applicationAppsJson ?? null,
-          );
+        : options.customStore
+          ? await native.create_store_engine(
+              encode(initialConfig),
+              encode(runtime),
+              apiKey ?? null,
+              options.customStore,
+              setup.applicationAppsJson ?? null,
+            )
+          : await native.create_engine(
+              encode(initialConfig),
+              encode(runtime),
+              apiKey ?? null,
+              setup.applicationAppsJson ?? null,
+            );
     options.environmentOwner?.signal.throwIfAborted();
     const transports = lease.httpTransports(
       native._create_provider_http_transports,

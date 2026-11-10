@@ -1,4 +1,8 @@
 import { NativeError } from './native-error';
+import {
+  capturePlanCredential,
+  type SignInWithChatGPT,
+} from './sign-in-with-chatgpt';
 import { outputOf, ToolOutput } from './tools';
 
 /**
@@ -120,6 +124,7 @@ export interface ReconciledToolResult {
 export async function reconcileSessionStore(
   store: SessionStore,
   result: ReconciledToolResult,
+  options?: { signInWithChatGPT?: SignInWithChatGPT },
 ): Promise<void> {
   for (const value of [result.sessionId, result.turnId, result.callId])
     if (typeof value !== 'string' || !value)
@@ -132,16 +137,30 @@ export async function reconcileSessionStore(
   )
     throw new TypeError('Reconciled result must be a string or ToolOutput');
   const output = outputOf(result.result);
+  const callback = captureThreadStore(store);
+  const source = options?.signInWithChatGPT;
+  let planIdentity: string | undefined;
+  if (source !== undefined) {
+    const getCredential = source?.getCredential;
+    if (typeof getCredential !== 'function') {
+      throw new TypeError('signInWithChatGPT requires getCredential');
+    }
+    ({ identity: planIdentity } = await capturePlanCredential(
+      getCredential.bind(source),
+      new AbortController().signal,
+    ));
+  }
   const { binding } = await import('./binding');
   const native = await binding();
   const operation = native.reconcile_thread_store(
-    captureThreadStore(store),
+    callback,
     JSON.stringify({
       threadId: result.sessionId,
       turnId: result.turnId,
       callId: result.callId,
       result: output,
     }),
+    planIdentity,
   );
   const cleanup = new ReconciliationCleanup(operation);
   try {

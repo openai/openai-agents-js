@@ -477,9 +477,13 @@
       "sha256": "0ab7da8b87a0bcfe84d3e60b6d2850953c781880efbb82b196f8c8a123559f18"
     },
     {
+      "path": "sdk-chatgpt-plan-responses-and-storage.patch",
+      "sha256": "e994ea870e8243269cc6cddaa1b523921cfe0aa898143b0ee533da3caac6833d"
+    },
+    {
       "path": "sdk-saved-codex-login.patch",
-      "sha256": "0305bfd06c7970254db7405bddf3e2be9bab5670f0e2f45e1a05764690da4dff"
+      "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
     }
   ],
-  "result_tree": "6d80269661aa8f2f250b84637e692d84e53594d1"
+  "result_tree": "b8e196c184a9076caad504b4f8417e395d2c595d"
 }

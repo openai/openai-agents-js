@@ -13,6 +13,10 @@ import {
   type PrivateRuntimeBorrow,
 } from './private-engine-reuse';
 import { NativeError } from './native-error';
+import {
+  capturePlanCredential,
+  type SignInWithChatGPT,
+} from './sign-in-with-chatgpt';
 
 export interface NativeProviderOptions {
   modelBackend?: NativeModel | ModelProvider;
@@ -44,6 +48,8 @@ export interface NativeProviderOptions {
   project?: string;
   /** Explicit personal Apps credentials; never used for Model requests or refreshed. */
   chatGPT?: ChatGPTAuth;
+  /** Use an explicitly selected ChatGPT plan for native Responses Lite inference. */
+  signInWithChatGPT?: SignInWithChatGPT;
   /** Failed HTTP request retries. Native default: 4; native cap: 100; zero disables. */
   requestMaxRetries?: number;
   /** Dropped response stream reconnections. Native default: 5; native cap: 100; zero disables. */
@@ -93,8 +99,36 @@ export class NativeProvider {
     http_headers?: Readonly<Record<string, string>>;
   }>;
   #runtime?: PrivateRuntimeSlot;
+  #getPlanCredential?: SignInWithChatGPT['getCredential'];
 
   constructor(options: NativeProviderOptions = {}) {
+    const signIn = options.signInWithChatGPT;
+    if (signIn !== undefined) {
+      if (options.codexLogin !== undefined)
+        throw new TypeError('Choose either codexLogin or signInWithChatGPT');
+      const callback = signIn?.getCredential;
+      if (typeof callback !== 'function')
+        throw new TypeError('signInWithChatGPT requires getCredential');
+      if (
+        options.apiKey !== undefined ||
+        options.chatGPT !== undefined ||
+        options.modelBackend !== undefined ||
+        options.baseUrl !== undefined ||
+        options.queryParams !== undefined ||
+        options.headers !== undefined ||
+        options.envHeaders !== undefined ||
+        options.organization !== undefined ||
+        options.project !== undefined ||
+        options.supportsWebsockets === true ||
+        options.responseMode === 'buffered' ||
+        (options.requestMaxRetries ?? 0) !== 0 ||
+        (options.streamMaxRetries ?? 0) !== 0
+      )
+        throw new TypeError(
+          'signInWithChatGPT requires the default streaming HTTP route without other credentials or retries',
+        );
+      this.#getPlanCredential = callback.bind(signIn);
+    }
     if (options.modelBackend !== undefined) {
       if (
         !options.modelBackend ||
@@ -158,6 +192,10 @@ export class NativeProvider {
 
   get modelBackend(): NativeModel | ModelProvider | undefined {
     return this.#options.modelBackend;
+  }
+  /** @internal */
+  get _usesChatGPTPlan(): boolean {
+    return this.#getPlanCredential !== undefined;
   }
   #schedulePrivateCleanup(): void {
     const slot = this.#runtime;
@@ -225,12 +263,14 @@ export class NativeProvider {
       pendingIdle.idle = undefined;
     }
     const options = this.#options;
-    const realtimeApiKey =
-      options.codexLogin !== undefined
-        ? undefined
-        : captured
-          ? captured.apiKey
-          : (options.apiKey ?? process.env.OPENAI_API_KEY);
+    const getPlanCredential = this.#getPlanCredential;
+    const nativeChatGPTInference =
+      getPlanCredential !== undefined || options.codexLogin !== undefined;
+    const realtimeApiKey = nativeChatGPTInference
+      ? undefined
+      : captured
+        ? captured.apiKey
+        : (options.apiKey ?? process.env.OPENAI_API_KEY);
     const apiKey =
       options.modelBackend !== undefined
         ? 'native-model-producer'
@@ -246,7 +286,7 @@ export class NativeProvider {
         apiKey === options.apiKey) &&
       options.responseMode !== 'buffered';
     const websocketsAllowed =
-      options.codexLogin === undefined &&
+      !nativeChatGPTInference &&
       options.modelBackend === undefined &&
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ??
@@ -358,13 +398,16 @@ export class NativeProvider {
       },
       websocketsAllowed,
       httpTransports: (create, engine) => {
-        if (options.chatGPT || options.codexLogin) return undefined;
+        if (options.chatGPT || nativeChatGPTInference) return undefined;
         if (released || this.#closed)
           throw new Error('NativeProvider lease is closed');
         // Synchronous empty allocation: no first-opening signal or pending task.
         return (this.#httpTransports ??= create(engine));
       },
       chatGPT: options.chatGPT,
+      capturePlan: getPlanCredential
+        ? (signal) => capturePlanCredential(getPlanCredential, signal)
+        : undefined,
       codexLogin: options.codexLogin,
       apiKey,
       realtimeApiKey,
@@ -377,13 +420,17 @@ export class NativeProvider {
             ? 'https://chatgpt.com/backend-api/codex'
             : (options.baseUrl ?? 'https://api.openai.com/v1'),
           wire_api: 'responses',
-          requires_openai_auth: true,
+          requires_openai_auth: !getPlanCredential,
           supports_websockets: websocketsAllowed,
           ...this.#routing,
           ...Object.fromEntries(
             Object.entries({
-              request_max_retries: options.requestMaxRetries,
-              stream_max_retries: options.streamMaxRetries,
+              request_max_retries: getPlanCredential
+                ? 0
+                : options.requestMaxRetries,
+              stream_max_retries: getPlanCredential
+                ? 0
+                : options.streamMaxRetries,
               stream_idle_timeout_ms: options.streamIdleTimeoutMs,
               websocket_connect_timeout_ms: options.websocketConnectTimeoutMs,
             }).filter(([, value]) => value !== undefined),
@@ -473,6 +520,9 @@ export class NativeProvider {
 export interface ProviderLease {
   readonly privateRuntime?: PrivateRuntimeBorrow;
   readonly chatGPT?: Readonly<ChatGPTAuth>;
+  readonly capturePlan?: (
+    signal: AbortSignal,
+  ) => ReturnType<typeof capturePlanCredential>;
   readonly codexLogin?: NativeProviderOptions['codexLogin'];
   readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
   readonly websocketsAllowed: boolean;

@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
 import {
+  chmod,
   copyFile,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -40,6 +43,9 @@ type Mode =
   | 'cancel-refresh'
   | 'cancel-all-refresh'
   | 'stalled-refresh'
+  | 'refresh-cache-read'
+  | 'refresh-cache-save'
+  | 'refresh-cache-save-flush'
   | 'restart'
   | 'repair'
   | 'realtime'
@@ -125,12 +131,41 @@ function json(response: ServerResponse, status: number, body: object) {
 
 // On Linux native proxy resolution uses the child environment. System proxy
 // settings can take precedence on macOS and Windows.
-it.runIf(
-  process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
-    process.platform === 'linux',
-)(
-  'finishes saved login rotation after Turn cancellation, isolates Realtime auth, and restores configured execution',
-  async () => {
+it
+  .runIf(
+    process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
+      process.platform === 'linux',
+  )
+  .for([
+    {
+      title:
+        'finishes saved login rotation after Turn cancellation, isolates Realtime auth, and restores configured execution',
+      closeFailure: undefined,
+    },
+    {
+      title: 'reports a saved login refresh cache read failure on owner close',
+      closeFailure: 'refresh-cache-read',
+    },
+    {
+      title:
+        'reports both saved login cache save and SessionStore release failures on owner close',
+      closeFailure: 'refresh-cache-save',
+    },
+    {
+      title:
+        'reports a retained SessionStore flush failure and a separate saved login refresh failure',
+      closeFailure: 'refresh-cache-save-flush',
+    },
+  ] as const)(
+  '$title',
+  { timeout: 110_000 },
+  async ({ closeFailure }, { skip }) => {
+    if (
+      closeFailure?.startsWith('refresh-cache-save') &&
+      process.getuid?.() === 0
+    ) {
+      skip('The saved login file write denial requires a non-root runner');
+    }
     const directory = await realpath(
       await mkdtemp(join(tmpdir(), 'agents-saved-codex-login-')),
     );
@@ -175,6 +210,7 @@ it.runIf(
       const loginAlias = join(directory, 'login-alias');
       await symlink(codexHome, loginAlias);
       const source = join(sourceHome, 'auth.json');
+      const heldSource = join(directory, 'held-auth.json');
       const cache = join(codexHome, 'auth.json');
       const claims = Buffer.from(
         JSON.stringify({
@@ -211,7 +247,23 @@ it.runIf(
       ];
       const sourceBytes = JSON.stringify(original);
       await writeFile(source, sourceBytes, { mode: 0o600 });
-      await copyFile(source, cache);
+      if (closeFailure) {
+        // An unrelated healthy cache proves the process-wide permit was released.
+        await writeFile(
+          cache,
+          JSON.stringify({
+            ...original,
+            tokens: {
+              ...original.tokens,
+              access_token: rotatedAccess,
+              refresh_token: rotatedRefresh,
+            },
+          }),
+          { mode: 0o600 },
+        );
+      } else {
+        await copyFile(source, cache);
+      }
 
       const tls = createTlsServer(await certificates(directory));
       const voice = new WebSocketServer({ noServer: true });
@@ -313,7 +365,7 @@ it.runIf(
               return fail('Waiting Turns did not cancel');
             await delay(10);
           }
-          if (cancelAll) {
+          if (cancelAll || closeFailure) {
             while (
               !(await readFile(join(directory, 'owner-closing')).catch(
                 () => undefined,
@@ -330,8 +382,31 @@ it.runIf(
               )
             )
               return fail('The refresh owner closed before OAuth responded');
-            if ((await readFile(cache, 'utf8')) !== sourceBytes)
+            if (
+              (await readFile(closeFailure ? source : cache, 'utf8')) !==
+              sourceBytes
+            )
               return fail('The cache changed before OAuth responded');
+          }
+          if (closeFailure) {
+            try {
+              if (closeFailure === 'refresh-cache-read') {
+                await rename(source, heldSource);
+                await assert.rejects(readFile(source), { code: 'ENOENT' });
+              } else {
+                await chmod(source, 0o400);
+                assert((await readFile(source, 'utf8')) === sourceBytes);
+                await assert.rejects(
+                  async () => {
+                    const handle = await open(source, 'r+');
+                    await handle.close();
+                  },
+                  { code: 'EACCES' },
+                );
+              }
+            } catch {
+              return fail('Could not establish the synthetic cache failure');
+            }
           }
           if (response.socket?.destroyed) {
             failures.push(
@@ -434,7 +509,9 @@ it.runIf(
         if (typeof thread !== 'string' || !thread)
           return fail('Missing Responses thread ID');
         if (authorization === `Bearer ${expiredAccess}`) {
-          if (execution === 'stalled-refresh') {
+          if (execution === 'stalled-refresh' || closeFailure) {
+            if (closeFailure)
+              expired.set(thread, (expired.get(thread) ?? 0) + 1);
             return json(response, 401, { error: { message: 'Expired' } });
           }
           const attempt = (expired.get(thread) ?? 0) + 1;
@@ -550,7 +627,7 @@ it.runIf(
         let stdout: string;
         try {
           const loginHome =
-            mode === 'stalled-refresh'
+            mode === 'stalled-refresh' || mode === closeFailure
               ? sourceHome
               : mode === 'overlap' || mode === 'local'
                 ? loginAlias
@@ -603,6 +680,28 @@ it.runIf(
         expect(failures).toEqual([]);
         return stdout;
       };
+
+      if (closeFailure) {
+        try {
+          await run(closeFailure);
+          expect([...expired.values()]).toEqual([2]);
+          expect(grantCount).toBe(1);
+          expect(rotated).toHaveLength(1);
+          expect(tunnels).toContain(`${authHost}:443`);
+        } finally {
+          if (closeFailure === 'refresh-cache-read') {
+            await rename(heldSource, source).catch(
+              (error: NodeJS.ErrnoException) => {
+                if (error.code !== 'ENOENT') throw error;
+              },
+            );
+          } else {
+            await chmod(source, 0o600);
+          }
+          expect((await readFile(source, 'utf8')) === sourceBytes).toBe(true);
+        }
+        return;
+      }
 
       await run('mismatch');
       expect(tunnels).toHaveLength(0);
@@ -740,5 +839,4 @@ it.runIf(
       await rm(directory, { recursive: true, force: true });
     }
   },
-  110_000,
 );

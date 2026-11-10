@@ -1069,7 +1069,10 @@ async fn native_local_close_report_remote_drain_retains_diagnostic_on_retry() {
         inner: Arc::new(Mutex::new(EngineOwner {
             live: None,
             remote_drain: Some(receiver),
-            close_diagnostic: Some("original completed persistence failure".to_owned()),
+            close_report: engine::EngineCloseReport {
+                diagnostic: Some("original completed persistence failure".to_owned()),
+                saved_login_refresh: Some("Saved Codex login refresh failed."),
+            },
         })),
         startup_warnings: Vec::new(),
     };
@@ -1077,7 +1080,13 @@ async fn native_local_close_report_remote_drain_retains_diagnostic_on_retry() {
     assert!(timeout.reason.contains("environment shutdown timed out"));
     assert!(engine.inner.lock().unwrap().remote_drain.is_some());
     assert_eq!(
-        engine.inner.lock().unwrap().close_diagnostic.as_deref(),
+        engine
+            .inner
+            .lock()
+            .unwrap()
+            .close_report
+            .diagnostic
+            .as_deref(),
         Some("original completed persistence failure")
     );
     let mut retry = Box::pin(engine._close_report());
@@ -1090,12 +1099,16 @@ async fn native_local_close_report_remote_drain_retains_diagnostic_on_retry() {
     assert!(futures_util::poll!(retry.as_mut()).is_pending());
     drop(retry);
     drop(sender);
-    let diagnostic = engine._close_report().await.unwrap();
+    let diagnostic = engine._close_report_defer_saved_login().await.unwrap();
     assert_eq!(
         diagnostic.as_deref(),
         Some("original completed persistence failure")
     );
     assert!(engine.inner.lock().unwrap().remote_drain.is_none());
+    assert_eq!(
+        engine._close_report().await.unwrap().as_deref(),
+        Some("original completed persistence failure; Saved Codex login refresh failed.")
+    );
     assert!(engine.close().await.is_err());
 }
 

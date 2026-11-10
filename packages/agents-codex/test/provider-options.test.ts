@@ -96,6 +96,19 @@ describe('NativeProvider option capture', () => {
     );
   });
 
+  it('rejects mixed ChatGPT inference options before reading the credential callback', () => {
+    const getCredential = vi.fn();
+    const signInWithChatGPT = {
+      get getCredential() {
+        return getCredential();
+      },
+    };
+    expect(
+      () => new NativeProvider({ codexLogin: {}, signInWithChatGPT }),
+    ).toThrow('Choose either codexLogin or signInWithChatGPT');
+    expect(getCredential).not.toHaveBeenCalled();
+  });
+
   it('captures saved-login options and skips ambient API-key selection', async () => {
     vi.stubEnv('OPENAI_API_KEY', 'synthetic-api-key');
     const login = { accountId: 'synthetic-workspace' };

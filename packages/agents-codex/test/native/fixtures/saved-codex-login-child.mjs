@@ -8,6 +8,7 @@ import {
   realpath,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -16,6 +17,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 
 const [codexHome, accountId, mode, sandboxPolicy] = process.argv.slice(2);
+const flushFailure = mode === 'refresh-cache-save-flush';
+const saveFailure = mode === 'refresh-cache-save' || flushFailure;
+const cacheFailure = mode === 'refresh-cache-read' || saveFailure;
 
 async function waitForGrant(directory) {
   while (
@@ -29,8 +33,15 @@ async function waitForGrant(directory) {
 
 let stage = 'import the root SDK';
 try {
-  const { Agent, Environment, NativeProvider, imageGeneration, webSearch } =
-    await import('@openai/agents');
+  const {
+    Agent,
+    Environment,
+    NativeError,
+    NativeProvider,
+    fileSessionStore,
+    imageGeneration,
+    webSearch,
+  } = await import('@openai/agents');
   stage = 'construct the provider';
   const provider = new NativeProvider({
     codexLogin: {
@@ -334,22 +345,130 @@ try {
       } finally {
         await session.close();
       }
-    } else if (mode === 'stalled-refresh') {
+    } else if (mode === 'stalled-refresh' || cacheFailure) {
       const directory = dirname(codexHome);
+      const storeDirectory = join(directory, 'session-store');
+      const releases = [];
+      let flushArmed = false;
+      let failedFlushes = 0;
+      const releaseCount = flushFailure ? 1 : 2;
+      const durable = saveFailure ? fileSessionStore(storeDirectory) : null;
+      const storage = durable && {
+        ...durable,
+        async flush() {
+          if (flushFailure && flushArmed) {
+            failedFlushes++;
+            throw new Error('Synthetic SessionStore flush failure.');
+          }
+        },
+        async release(...lease) {
+          releases.push(lease);
+          if (!flushFailure && releases.length === 1)
+            throw new Error('Synthetic SessionStore release failure.');
+          await durable.release(...lease);
+        },
+      };
       stage = 'open a Session with the expired saved login';
-      const session = await agent.session();
-      try {
-        stage = 'cancel the Turn while the OAuth response body stalls';
-        const turn = await session.submit('Exercise a stalled refresh.');
-        const completed = turn.wait();
-        void completed.catch(() => undefined);
-        await waitForGrant(directory);
-        await turn.cancel({ mode: 'force' });
-        await assert.rejects(completed, /interrupt|cancel/i);
-        stage = 'close the Session while the OAuth response body stalls';
-      } finally {
+      const session = await agent.session(storage ? { storage } : undefined);
+      stage = 'cancel the Turn while the admitted OAuth grant waits';
+      const turn = await session.submit('Exercise an admitted refresh.');
+      const completed = turn.wait();
+      void completed.catch(() => undefined);
+      await waitForGrant(directory);
+      flushArmed = true;
+      await turn.cancel({ mode: 'force' });
+      await assert.rejects(
+        completed,
+        flushFailure
+          ? /interrupt|cancel|canonical storage operation failed/i
+          : /interrupt|cancel/i,
+      );
+      assert.equal(releases.length, 0);
+      if (cacheFailure) {
+        await writeFile(join(directory, 'turn-cancelled'), 'yes');
+      }
+      stage = 'join the owner close and its concurrent caller';
+      const closing = Promise.allSettled(
+        [session.close(), session.close()].map((pending) =>
+          pending.finally(async () => {
+            if (cacheFailure) {
+              await writeFile(join(directory, 'owner-closed'), 'yes');
+            }
+          }),
+        ),
+      );
+      if (cacheFailure) {
+        await writeFile(join(directory, 'owner-closing'), 'yes');
+      }
+      const [first, second] = await closing;
+      stage =
+        first.status === 'fulfilled' && second.status === 'fulfilled'
+          ? 'both close calls fulfilled after the failed refresh'
+          : 'expect both close calls to reject after the OAuth response';
+      assert(first.status === 'rejected' && second.status === 'rejected');
+      assert.strictEqual(first.reason, second.reason);
+      assert(first.reason instanceof NativeError);
+      let refresh = first.reason;
+      if (storage) {
+        stage = 'check the durable writer release retry';
+        assert.equal(releases.length, releaseCount);
+        if (flushFailure) assert(failedFlushes > 0);
+        assert(
+          releases.every(
+            ([id, fence]) => id === session.id && fence === releases[0][1],
+          ),
+        );
+        await assert.rejects(stat(join(storeDirectory, `${session.id}.lock`)), {
+          code: 'ENOENT',
+        });
+        stage = 'check the sanitized store diagnostic';
+        const aggregate = first.reason.cause;
+        const diagnostics =
+          aggregate instanceof AggregateError
+            ? aggregate.errors
+            : [first.reason];
+        const [storeError, refreshError] = diagnostics;
+        assert(storeError instanceof NativeError);
+        if (flushFailure) {
+          assert.match(
+            storeError.message,
+            /canonical (?:storage operation|thread persistence) failed/i,
+          );
+        } else {
+          assert.equal(
+            storeError.message,
+            'thread-store internal error: canonical storage operation failed; close and reconcile the application backend',
+          );
+        }
+        assert.equal(storeError.cause, undefined);
+        assert.equal(first.reason.message, storeError.message);
+        stage =
+          diagnostics.length === 1
+            ? 'sanitized store diagnostic reached both close callers without the refresh diagnostic'
+            : 'check both completed close diagnostics';
+        assert.equal(diagnostics.length, 2);
+        refresh = refreshError;
+      }
+      stage = 'check the saved login close diagnostic';
+      assert(refresh instanceof NativeError);
+      if (refresh.message.includes('canonical storage operation failed'))
+        stage = 'refresh diagnostic repeats the canonical storage failure';
+      assert.equal(refresh.message, 'Saved Codex login refresh failed.');
+      assert.equal(refresh.cause, undefined);
+      assert(!('response' in refresh));
+      assert(!/synthetic|auth\.json/.test(refresh.stack ?? ''));
+      assert(!(refresh.stack ?? '').includes(directory));
+      stage = 'release the provider lease and repeat the completed close';
+      await provider.close();
+      if (flushFailure) {
+        await assert.rejects(
+          session.close(),
+          /canonical storage operation failed/,
+        );
+      } else {
         await session.close();
       }
+      if (storage) assert.equal(releases.length, releaseCount);
       stage = 'open another saved login in the same process';
       const nextProvider = new NativeProvider({
         codexLogin: { codexHome: join(directory, 'copied-login'), accountId },

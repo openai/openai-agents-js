@@ -1,4 +1,4 @@
-export { applyDiff } from '@openai/agents-core';
+export { applyDiff } from '@openai/agents-core/utils';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
 export { Agent, Runner } from './runtime/public-agent';
@@ -33,6 +33,7 @@ export type {
   CheckpointStatus,
 } from './runtime/capabilities';
 export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
+export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
 export type {
   NativeErrorOptions,
   ResponseIntegrityReason,
@@ -383,9 +384,15 @@ export type {
   ContextTransform,
 } from './runtime/model-callbacks';
 
-export { ChatCompletionsModel } from './runtime/models';
+export {
+  ChatCompletionsModel,
+  ResponsesModel,
+  AiSdkModel,
+} from './runtime/models';
 export type {
   NativeModel,
+  AiSdkLanguageModel,
+  ModelAdapterOptions,
   ModelProvider,
   ModelRequest,
   ModelResponse,
