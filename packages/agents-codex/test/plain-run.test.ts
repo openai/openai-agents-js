@@ -395,7 +395,7 @@ describe('declared input modalities retain ordinary native session opening', () 
       const p = retained();
       await p.run();
       expect(p.lease.privateRuntime?.peek()?.plainAdmission).toBeDefined();
-      const acquisitions = nativeBinding.binding.mock.calls.length;
+      const acquisitions = vi.mocked(nativeBinding.binding).mock.calls.length;
       const owner = await tryOpenPlainRun(
         p.setup,
         {
