@@ -18,6 +18,34 @@ The default `NativeProvider` transport has been sending model requests through C
 - A custom endpoint uses HTTP by default.
 - When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
 
+### Use Sign in with ChatGPT
+
+With the current source build, a registered application can use a user's ChatGPT plan for native text Sessions. Supply a `SignInWithChatGPT` credential source to `NativeProvider`. Each Session opening, including resume, calls `getCredential()` once and uses that access token for the Session's lifetime.
+
+```ts
+import { Agent, NativeProvider, type SignInWithChatGPT } from '@openai/agents';
+
+export async function runOnChatGPTPlan(
+  getCredential: SignInWithChatGPT['getCredential'],
+) {
+  await using provider = new NativeProvider({
+    signInWithChatGPT: { getCredential },
+  });
+  const agent = new Agent({ instructions: 'Answer briefly.', provider });
+  return (await agent.run('What is a prime number?')).finalOutput;
+}
+```
+
+At sign-in, your application verifies the ID token's signature using OpenAI's published JWKS and checks its issuer, audience, expiration, and nonce. Use `https://auth.openai.com` as the issuer and the issued OAuth client ID as the expected audience. Store the verified issuer and subject with that client ID and the access token from the same code exchange. [Sign-in validation](https://developers.openai.com/siwc/token-sharing-open-source/sign-in#4-validate-the-id-token-and-chatgpt-plan-permission)
+
+Implement `getCredential()` to return `{ accessToken, issuer, clientId, subject }` from one protected record for the selected account. On refresh, keep the verified identity paired with the renewed access token. When refresh returns a replacement ID token, verify it and confirm it belongs to the same profile before updating the record. For a self-hosted VM, import the protected record using the VM's stable host identity and a protected transfer, or read it from an application-controlled credential broker. Keep the refresh token with the application that handles renewal. [Self-hosted VM guide](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms)
+
+The SDK checks decoded access-token claims for route eligibility, including the resource audience, matching client ID, validity window, and `resource.invoke` and `chatgpt.tokens.use.direct` scopes. OpenAI verifies the access token signature and plan entitlement on model requests. [Token reference](https://developers.openai.com/siwc/token-sharing-open-source/token-reference#access-token-claims)
+
+The provider uses streaming Responses Lite over HTTP. Use a Lite model with one Agent and direct local function tools. Use a separate provider for API keys, ChatGPT Apps, Realtime, custom endpoints, or model backends. If a token expires, obtain a renewed token through your application and open a new Session. The SDK sends each model request once.
+
+Save a settled Session as portable state or open it with `localStorage(path)` or a `SessionStore`. To resume, supply the state, or the original store and Session ID, with the current credential record for the same registration and verified OIDC subject. The SDK saves only a digest of the issued client ID and verified ID-token subject as the plan identity. If a tool result needs application-store reconciliation, pass `{ signInWithChatGPT }` as the third argument to `reconcileSessionStore`.
+
 ### Capture provider routing and buffered JSON
 
 With the current [source build](building.md), provider options accept `headers`, `queryParams`, and `envHeaders` maps, plus `organization` and `project`. `envHeaders` maps header names to environment-variable names. The descriptor copies maps and resolves those environment values at construction; missing or empty values stay omitted. Create a new provider to refresh them. Native authentication, protocol and private-hop headers remain reserved, and configured routing does not follow redirects.

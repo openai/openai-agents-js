@@ -1073,13 +1073,22 @@ impl ContextChange {
         )
         .await
         .map_err(native_error)?;
-        let mut state = engine::EngineState::new_owned(
+        let source = &change.state.engine;
+        let plan = source.plan_authorization.clone().map(|authorization| {
+            (
+                authorization,
+                source.service_config.model_provider_id.clone(),
+            )
+        });
+        let mut state = engine::EngineState::new_owned_with_store(
             serde_json::to_string(&config).map_err(native_error)?,
             runtime,
             true,
             api_key,
             Some(&self.prospective),
             initial_models,
+            None,
+            plan,
         )
         .await
         .map_err(native_error)?;
@@ -4340,10 +4349,15 @@ impl SessionStoreReconciliation {
 pub fn reconcile_thread_store(
     callback: custom_storage::Callback,
     result_json: String,
+    plan_identity: Option<String>,
 ) -> napi::Result<SessionStoreReconciliation> {
     let result: ReconciliationInput = serde_json::from_str(&result_json).map_err(input_error)?;
+    let mut store = custom_storage::CustomThreadStore::new(callback);
+    if let Some(identity) = plan_identity {
+        store = store.with_plan_provider(plan_provider_id(&identity)?);
+    }
     Ok(SessionStoreReconciliation {
-        store: Arc::new(custom_storage::CustomThreadStore::new(callback)),
+        store: Arc::new(store),
         thread_id: result.thread_id,
         input: std::sync::Mutex::new(Some(result)),
     })
@@ -4368,6 +4382,7 @@ pub async fn create_store_engine(
         None,
         Default::default(),
         Some(store),
+        None,
     )
     .await
     .map_err(native_error)?;
@@ -4427,23 +4442,12 @@ pub async fn create_checkpoint_engine(
 
     let config_json = config_json.to_owned();
     let runtime_json = runtime_json.to_owned();
-    let specs: Option<Vec<codex_protocol::dynamic_tools::DynamicToolSpec>> = initial_specs_json
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(input_error)?;
-    let initial_models = initial_checkpoint
-        .as_deref()
-        .map(|encoded| {
-            let raw = checkpoint_wire_value(encoded).map_err(input_error)?;
-            let checkpoint: checkpoint::Checkpoint =
-                serde_json::from_value(raw).map_err(input_error)?;
-            checkpoint
-                .initial_models(specs.as_deref(), fresh_manual.unwrap_or(false))
-                .map_err(input_error)
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let initial_models = checkpoint_initial_models(
+        initial_checkpoint.as_deref(),
+        initial_specs_json.as_deref(),
+        fresh_manual.unwrap_or(false),
+        None,
+    )?;
     (async move {
         let inner = engine::EngineState::new_owned_with_application(
             config_json,
@@ -4459,6 +4463,92 @@ pub async fn create_checkpoint_engine(
         Ok(Engine::new(inner))
     })
     .await
+}
+
+fn checkpoint_initial_models(
+    initial_checkpoint: Option<&str>,
+    initial_specs_json: Option<&str>,
+    fresh_manual: bool,
+    plan_provider: Option<&str>,
+) -> napi::Result<checkpoint::InitialModels> {
+    let specs: Option<Vec<codex_protocol::dynamic_tools::DynamicToolSpec>> = initial_specs_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(input_error)?;
+    Ok(initial_checkpoint
+        .map(|encoded| {
+            let raw = checkpoint_wire_value(encoded).map_err(input_error)?;
+            let checkpoint: checkpoint::Checkpoint =
+                serde_json::from_value(raw).map_err(input_error)?;
+            checkpoint
+                .validate_plan_binding(plan_provider)
+                .map_err(input_error)?;
+            checkpoint
+                .initial_models(specs.as_deref(), fresh_manual)
+                .map_err(input_error)
+        })
+        .transpose()?
+        .unwrap_or_default())
+}
+
+#[napi(js_name = "_create_plan_engine")]
+pub async fn _create_plan_engine(
+    config_json: String,
+    runtime_json: String,
+    bearer: String,
+    identity: String,
+    initial_checkpoint: Option<String>,
+    initial_specs_json: Option<String>,
+    store: Option<custom_storage::Callback>,
+) -> napi::Result<Engine> {
+    let plan_provider = plan_provider_id(&identity)?;
+    if bearer.is_empty() {
+        return Err(input_error("Invalid Sign in with ChatGPT access token"));
+    }
+    let mut authorization = http::HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|_| input_error("Invalid Sign in with ChatGPT access token"))?;
+    authorization.set_sensitive(true);
+    let checkpoint = initial_checkpoint.is_some();
+    let initial_models = checkpoint_initial_models(
+        initial_checkpoint.as_deref(),
+        initial_specs_json.as_deref(),
+        false,
+        Some(&plan_provider),
+    )?;
+    let inner = engine::EngineState::new_owned_with_store(
+        config_json,
+        runtime_json,
+        checkpoint,
+        None,
+        None,
+        initial_models,
+        store.map(|callback| {
+            Arc::new(
+                custom_storage::CustomThreadStore::new(callback)
+                    .with_plan_provider(plan_provider.clone()),
+            )
+        }),
+        Some((authorization, plan_provider)),
+    )
+    .await
+    .map_err(native_error)?;
+    Ok(Engine::new(inner))
+}
+
+fn plan_provider_id(identity: &str) -> napi::Result<String> {
+    if identity.len() != 64
+        || !identity
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(input_error(
+            "Invalid Sign in with ChatGPT registration binding",
+        ));
+    }
+    Ok(format!(
+        "{}{identity}",
+        codex_thread_store::CHATGPT_PLAN_PROVIDER_PREFIX
+    ))
 }
 
 // Only the exact trusted private HTTP route reaches this function. EndpointSession
@@ -4721,8 +4811,31 @@ async fn sentinel_stream_dispatch(
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let mut request = provider
         .build_request("POST".parse().map_err(native_error)?, "responses")
-        .with_raw_body(body);
+        .with_raw_body(body.clone());
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
+    if let Some(authorization) = &inner.plan_authorization {
+        let body: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|_| input_error("Invalid Sign in with ChatGPT request body"))?;
+        if provider_id != inner.service_config.model_provider_id
+            || request.url != "https://api.openai.com/v1/responses"
+            || request.method != http::Method::POST
+            || request
+                .headers
+                .get("x-openai-internal-codex-responses-lite")
+                != Some(&http::HeaderValue::from_static("true"))
+            || body.get("stream").and_then(serde_json::Value::as_bool) != Some(true)
+            || body.get("store").and_then(serde_json::Value::as_bool) != Some(false)
+            || !body.get("input").is_some_and(serde_json::Value::is_array)
+            || body.get("previous_response_id").is_some()
+        {
+            return Err(input_error(
+                "Invalid Sign in with ChatGPT Responses Lite request",
+            ));
+        }
+        request
+            .headers
+            .insert(http::header::AUTHORIZATION, authorization.clone());
+    }
     // Reuse the physical transport's existing streaming and error-body bounds.
     request.response_body_limit_bytes = response_body_limit_bytes;
     let result = match request.into_prepared() {
@@ -4750,6 +4863,11 @@ async fn sentinel_stream_dispatch(
             .await
         }
         Err(error) => Err(TransportError::Build(error)),
+    };
+    let result = if let Some(authorization) = &inner.plan_authorization {
+        sanitize_plan_transport(result, authorization)
+    } else {
+        result
     };
     let (status, headers, body) = match result {
         Ok(response) => (
@@ -4782,6 +4900,67 @@ async fn sentinel_stream_dispatch(
         }
     };
     Ok((status, headers, body))
+}
+
+fn sanitize_plan_transport(
+    result: Result<codex_client::StreamResponse, TransportError>,
+    authorization: &http::HeaderValue,
+) -> Result<codex_client::StreamResponse, TransportError> {
+    // The physical request is the sole bearer consumer. Keep only bounded
+    // recovery details and remove echoed credentials before Core sees them.
+    let bearer = &authorization.as_bytes()[b"Bearer ".len()..];
+    let clean_headers = |headers: &mut http::HeaderMap| {
+        let echoed: Vec<_> = headers
+            .iter()
+            .filter(|(_, value)| {
+                value
+                    .as_bytes()
+                    .windows(bearer.len())
+                    .any(|part| part == bearer)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in echoed {
+            headers.remove(name);
+        }
+    };
+    match result {
+        Ok(mut response) => {
+            clean_headers(&mut response.headers);
+            if response
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                != Some("text/event-stream")
+            {
+                return Err(TransportError::Network(
+                    "Sign in with ChatGPT requires an SSE response".into(),
+                ));
+            }
+            Ok(response)
+        }
+        Err(TransportError::Http {
+            status,
+            headers,
+            body,
+            ..
+        }) => {
+            let mut headers = headers.unwrap_or_default();
+            clean_headers(&mut headers);
+            let body = body
+                .as_deref()
+                .and_then(|body| provider_error::sanitize_plan_http_body(body, bearer));
+            Err(TransportError::Http {
+                status,
+                url: None,
+                retry_after: codex_client::RetryAfter::from_headers(&headers),
+                headers: Some(headers),
+                body,
+            })
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn model_transport_error(error: TransportError) -> TransportError {

@@ -88,6 +88,7 @@ import { captureThreadStore, type SessionStore } from './custom-thread-store';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
+  isDirectFunctionTool,
   toolIdentity,
   type Tool,
   type SessionTool,
@@ -828,6 +829,29 @@ export class Agent<Context = undefined, Output = string> {
         ? Object.freeze({ ...declaredOutput })
         : declaredOutput;
     const output = opening ? opening.output : prepareOutput(outputType);
+    if (provider._usesChatGPTPlan && settings?.store === true)
+      throw new TypeError('Sign in with ChatGPT requires store=false');
+    if (
+      provider._usesChatGPTPlan &&
+      (owned?.prepareRequest !== undefined ||
+        selection !== undefined ||
+        isManualSessionState(stateResult?.data) ||
+        this.handoffs.length !== 0 ||
+        programmaticToolCalling ||
+        projectGuidance ||
+        environmentInput !== undefined ||
+        declarations.nativeAgents ||
+        declarations.nativeGoals ||
+        declarations.checklist ||
+        search ||
+        declarations.hostedTools.length !== 0 ||
+        declarations.mcp.length !== 0 ||
+        declarations.tools.some((tool) => !isDirectFunctionTool(tool)) ||
+        output.repair)
+    )
+      throw new TypeError(
+        'Sign in with ChatGPT supports a single Agent with direct local function tools and settled state',
+      );
     const profiles = opening
       ? opening.profiles
       : this.handoffs.length
@@ -1239,6 +1263,7 @@ export class Agent<Context = undefined, Output = string> {
               : {}),
           })
         : undefined;
+      const plan = await lease.capturePlan?.(environmentOwner.signal);
       const home = await lease.open();
       environmentOwner.signal.throwIfAborted();
       if (nativeAgents)
@@ -1254,9 +1279,16 @@ export class Agent<Context = undefined, Output = string> {
         tools: declarations.tools,
         apiKey: lease.apiKey,
         applicationAppsJson,
+        plan,
         config: {
           ...config,
           ...lease.config,
+          ...(plan
+            ? {
+                'features.remote_compaction_v2': false,
+                'features.unbounded_connection_retries': false,
+              }
+            : {}),
           'model_providers.native_agent': {
             ...(lease.config['model_providers.native_agent'] as JsonObject),
             supports_standalone_web_search: search?.route === 'standalone',
@@ -1358,6 +1390,7 @@ export class Agent<Context = undefined, Output = string> {
       };
       const session: CoreSessionOptions = {
         modelBackend: provider.modelBackend,
+        chatGPTPlan: plan !== undefined,
         realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
         initialMessages: options.initialMessages,

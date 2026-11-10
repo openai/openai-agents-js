@@ -27,16 +27,26 @@ const config = JSON.parse(process.argv[2]) as {
   local?: boolean;
   label?: string;
   apiKey?: string;
+  plan?: boolean;
 };
 if (config.local) process.on('SIGXFSZ', () => {});
-const provider = new NativeProvider({
-  baseUrl: config.url,
-  apiKey: config.apiKey ?? 'synthetic-custom-storage',
-  supportsWebsockets: false,
-});
+const provider = new NativeProvider(
+  config.plan
+    ? {
+        signInWithChatGPT: {
+          getCredential: async () =>
+            JSON.parse(process.env.SYNTHETIC_PLAN_CREDENTIAL ?? 'null'),
+        },
+      }
+    : {
+        baseUrl: config.url,
+        apiKey: config.apiKey ?? 'synthetic-custom-storage',
+        supportsWebsockets: false,
+      },
+);
 const agent = new Agent({
   instructions: 'Use record when requested.',
-  model: 'gpt-5',
+  model: config.plan ? undefined : 'gpt-5',
   provider,
   tools: [
     tool({
@@ -52,7 +62,7 @@ const agent = new Agent({
             businessKey: 'synthetic-order',
           });
         await appendFile(config.effects, (config.label ?? 'effect') + '\n');
-        process.send?.({ type: 'effect' });
+        process.send?.({ type: 'effect', threadId, turnId, callId });
         if (config.mode === 'hold-effect') await new Promise(() => {});
         if (config.mode === 'hold-abort')
           await new Promise<void>((_resolve, reject) => {
