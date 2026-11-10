@@ -31,22 +31,31 @@ export class PortableVoiceHistory {
 
   update(update: PortableHistoryUpdate): Promise<void> {
     if (this.closed) return Promise.reject(this.closed);
-    let captured: { items: VoiceHistoryItem[]; bytes: number };
+    let captured: { items: VoiceHistoryItem[]; bytes: number } | undefined;
     try {
-      captured = capture(
-        typeof update === 'function' ? update(this.snapshot()) : update,
-      );
+      if (typeof update !== 'function') captured = capture(update);
     } catch (error) {
       return Promise.reject(error);
     }
-    if (this.queued >= 16 || this.queuedBytes + captured.bytes > CAPACITY)
+    let retainedBytes = captured?.bytes ?? 0;
+    if (this.queued >= 16 || this.queuedBytes + retainedBytes > CAPACITY)
       return Promise.reject(
         new Error('Portable history queue exceeds capacity.'),
       );
     this.queued++;
-    this.queuedBytes += captured.bytes;
+    this.queuedBytes += retainedBytes;
     const operation = this.tail.then(async () => {
       if (this.closed) throw this.closed;
+      if (!captured) {
+        captured = capture(
+          typeof update === 'function' ? update(this.snapshot()) : update,
+        );
+        if (this.closed) throw this.closed;
+        if (this.queuedBytes + captured.bytes > CAPACITY)
+          throw new Error('Portable history queue exceeds capacity.');
+        retainedBytes = captured.bytes;
+        this.queuedBytes += retainedBytes;
+      }
       const edits = plan(this.snapshot(), captured.items);
       if (!edits.length) return;
       // Pure native preflight: every edit must be valid before the first write.
@@ -67,7 +76,7 @@ export class PortableVoiceHistory {
     this.tail = operation.catch(() => {});
     return operation.finally(() => {
       this.queued--;
-      this.queuedBytes -= captured.bytes;
+      this.queuedBytes -= retainedBytes;
     });
   }
 

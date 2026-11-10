@@ -202,6 +202,7 @@ const localEnvironmentSchema = remoteEnvironmentSchema
   .extend({
     local: z.literal(true),
     mounts: z.array(storageMountWireSchema).optional(),
+    read_only_roots: z.array(capabilityDirectory).optional(),
   });
 const environmentSchema = z.union([
   remoteEnvironmentSchema,
@@ -239,6 +240,7 @@ export interface ExecutorContext<Context = unknown> {
 export interface EnvironmentOptions<Context = unknown> {
   /** Storage mounts are available only through Environment.local. */
   mounts?: never;
+  readOnlyRoots?: never;
   url: string;
   cwd: string;
   capabilityDirectories?: readonly string[];
@@ -281,19 +283,32 @@ export interface EnvironmentOptions<Context = unknown> {
 
 export type LocalEnvironmentOptions<Context = unknown> = Omit<
   EnvironmentOptions<Context>,
-  'url' | 'headers' | 'connectTimeout' | 'mounts' | 'writePolicy'
+  | 'url'
+  | 'headers'
+  | 'connectTimeout'
+  | 'mounts'
+  | 'readOnlyRoots'
+  | 'writePolicy'
 > & {
   /** Local environments only support strict writes. */
   writePolicy?: 'strict';
   /** Linux only: canonical same-path read-only local_bind mounts. */
   mounts?: readonly LocalStorageMount[];
+  /**
+   * macOS only. Existing canonical application-owned directories to read at
+   * their original paths. Keep them outside the workspace, writable roots,
+   * and SDK private state. For a symlinked skill, grant its canonical target
+   * directory. Keep the trees stable during use and repeat the same grants
+   * when restoring the Session.
+   */
+  readOnlyRoots?: readonly string[];
 };
 
 export class Environment<Context = any> {
   /**
    * Execute in the local Linux or macOS sandbox using packaged helpers.
-   * Commands can read the workspace, declared writable roots, and platform
-   * runtime files. They start with a system PATH and no inherited host variables.
+   * Commands can read the workspace, declared roots, and platform runtime
+   * files. They start with a system PATH and no inherited host variables.
    * Install the SDK helpers outside every writable root, including the workspace.
    */
   static local<Context>(
@@ -329,6 +344,7 @@ export class Environment<Context = any> {
   readonly capabilityDirectories?: readonly string[];
   readonly writableRoots?: readonly string[];
   readonly mounts?: readonly LocalStorageMount[];
+  readonly readOnlyRoots?: readonly string[];
   readonly tools: readonly ExecutorToolName[];
   readonly network?: CapturedNetworkPolicy;
   readonly headers: Readonly<Record<string, string>>;
@@ -493,6 +509,22 @@ export class Environment<Context = any> {
         this.cwd,
         this.writableRoots ?? [],
       );
+    if (options.readOnlyRoots !== undefined) {
+      const roots = z
+        .array(capabilityDirectory)
+        .safeParse(options.readOnlyRoots);
+      if (!roots.success)
+        throw new TypeError(
+          'readOnlyRoots must contain absolute paths or file URIs',
+        );
+      if (roots.data.length) {
+        if (this.kind !== 'local' || process.platform !== 'darwin')
+          throw new TypeError(
+            'readOnlyRoots requires Environment.local on macOS',
+          );
+        this.readOnlyRoots = Object.freeze(roots.data);
+      }
+    }
     this.tools = Object.freeze(tools);
     this.network =
       options.network === undefined
@@ -541,6 +573,9 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
             read_only: true as const,
           })),
         }),
+    ...(environment.readOnlyRoots === undefined
+      ? {}
+      : { read_only_roots: environment.readOnlyRoots }),
     ...(environment.capabilityDirectories === undefined
       ? {}
       : { capability_directories: environment.capabilityDirectories }),

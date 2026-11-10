@@ -382,7 +382,7 @@ describe('plain entry admission', () => {
     const failure = new NativeError('request validation failed');
     p.request.wait.mockRejectedValueOnce(failure);
     await expect(p.run()).rejects.toBe(failure);
-    expect(p.finish).toHaveBeenLastCalledWith(false);
+    expect(p.finish).toHaveBeenLastCalledWith(false, true);
     await p.run();
     expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
   });

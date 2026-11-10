@@ -18,7 +18,15 @@ export interface PrivateKernel {
   pending?: Promise<string | null>;
 }
 
+export interface PrivateRuntimeSlot {
+  active?: object;
+  entry?: PrivateKernel;
+  idle?: ReturnType<typeof setImmediate>;
+  closing?: Promise<void>;
+}
+
 export interface PrivateRuntimeBorrow {
+  readonly plainOnly?: boolean;
   readonly done: boolean;
   peek(): PrivateKernel | undefined;
   bind(
@@ -27,7 +35,7 @@ export interface PrivateRuntimeBorrow {
     transports: _ProviderHttpTransports,
   ): void;
   reset(): Promise<{ codex_home: string; cwd: string }>;
-  finish(keep: boolean): Promise<void>;
+  finish(keep: boolean, plain?: boolean): Promise<void>;
 }
 
 const grants = new WeakSet<object>();
