@@ -6,10 +6,30 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { Agent, NativeProvider } from '@openai/agents';
 import { startWebStarter } from '../../../../examples/codex/web-starter/server';
+
+// Node 22 warns when SQLite is first imported. Expect only that import diagnostic;
+// restore normal warning handling before any test executes.
+const restoreSqliteWarning = vi.hoisted(() => {
+  const emitWarning = process.emitWarning;
+  const warning = vi
+    .spyOn(process, 'emitWarning')
+    .mockImplementation((...args: unknown[]) => {
+      if (
+        args[0] ===
+          'SQLite is an experimental feature and might change at any time' &&
+        args[1] === 'ExperimentalWarning' &&
+        args.slice(2).every((argument) => argument === undefined)
+      )
+        return;
+      Reflect.apply(emitWarning, process, args);
+    });
+  return () => warning.mockRestore();
+});
+restoreSqliteWarning();
 
 const exec = promisify(execFile);
 const browserIt = it.skipIf(

@@ -152,18 +152,6 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
     const tracks = stream.getAudioTracks();
     if (tracks.length !== 1 || tracks[0].readyState === 'ended')
       throw new Error('Voice media requires one live microphone audio track.');
-    const peer = await this.options.createPeerConnection();
-    if (signal.aborted) {
-      try {
-        peer.close();
-      } catch {
-        /* Preserve the cancellation. */
-      }
-      this.throwIfAborted();
-    }
-    this.#peer = peer;
-    const channel = channelEvents(peer.createDataChannel('oai-events'));
-    this.#channel = channel;
     const fail = (error: Error) => {
       if (signal.aborted) return;
       this.abort(error);
@@ -176,6 +164,18 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
     };
     this.#trackEnded = () => fail(new Error('Voice microphone ended.'));
     trackEvents(tracks[0]).addEventListener('ended', this.#trackEnded);
+    const peer = await this.options.createPeerConnection();
+    if (signal.aborted) {
+      try {
+        peer.close();
+      } catch {
+        /* Preserve the cancellation. */
+      }
+      this.throwIfAborted();
+    }
+    this.#peer = peer;
+    const channel = channelEvents(peer.createDataChannel('oai-events'));
+    this.#channel = channel;
     channel.onmessage = ({ data }) => {
       if (signal.aborted) return;
       let event: unknown;

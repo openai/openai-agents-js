@@ -154,7 +154,7 @@ export async function closeComputerResources(owner: object): Promise<void> {
       }
     }
   }
-  if (errors.length === 1) throw errors[0];
+  if (errors.length === 1 && errors[0] !== undefined) throw errors[0];
   if (errors.length)
     throw new AggregateError(errors, 'Computer disposal failed');
 }

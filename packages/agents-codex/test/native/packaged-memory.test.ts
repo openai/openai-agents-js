@@ -1,11 +1,32 @@
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent } from '@openai/agents';
 import { SQLiteMemory } from '@openai/agents/memory';
 import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
+
+// Node 22 warns when SQLite is first imported. Expect only that import diagnostic;
+// restore normal warning handling before any test executes.
+const restoreSqliteWarning = vi.hoisted(() => {
+  const emitWarning = process.emitWarning;
+  const warning = vi
+    .spyOn(process, 'emitWarning')
+    .mockImplementation((...args: unknown[]) => {
+      if (
+        args[0] ===
+          'SQLite is an experimental feature and might change at any time' &&
+        args[1] === 'ExperimentalWarning' &&
+        args.slice(2).every((argument) => argument === undefined)
+      )
+        return;
+      Reflect.apply(emitWarning, process, args);
+    });
+  return () => warning.mockRestore();
+});
+restoreSqliteWarning();
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -58,25 +79,36 @@ describe('packaged scoped memory', () => {
     },
   );
 
-  it('preserves non-BMP characters, replacement characters and empty values through reopen', async () => {
-    const path = await databasePath();
-    const scope = 'user-\0🚀-\ufffd';
-    const key = 'key-\0𝄞-\ufffd';
-    const value = 'value-\0😀-\ufffd';
-    {
-      using memory = new SQLiteMemory(path, { scope });
-      memory.set(key, value);
-      memory.set('empty', '');
-    }
-    using reopened = new SQLiteMemory(path, { scope });
-    expect(reopened.scope).toBe(scope);
-    expect(reopened.get(key)).toBe(value);
-    expect(reopened.get('empty')).toBe('');
-    using differentScope = new SQLiteMemory(path, {
-      scope: 'user-\0\ufffd-\ufffd',
-    });
-    expect(differentScope.get(key)).toBeNull();
-  });
+  it.each(['UTF-8', 'UTF-16'])(
+    'preserves non-BMP characters, replacement characters and empty values through reopen (%s)',
+    async (encoding) => {
+      const path = await databasePath();
+      const database = new DatabaseSync(path);
+      try {
+        database.exec(
+          `PRAGMA encoding='${encoding}'; CREATE TABLE seed(value TEXT)`,
+        );
+      } finally {
+        database.close();
+      }
+      const scope = 'user-\0🚀-\ufffd';
+      const key = 'key-\0𝄞-\ufffd';
+      const value = 'value-\0😀-\ufffd';
+      {
+        using memory = new SQLiteMemory(path, { scope });
+        memory.set(key, value);
+        memory.set('empty', '');
+      }
+      using reopened = new SQLiteMemory(path, { scope });
+      expect(reopened.scope).toBe(scope);
+      expect(reopened.get(key)).toBe(value);
+      expect(reopened.get('empty')).toBe('');
+      using differentScope = new SQLiteMemory(path, {
+        scope: 'user-\0\ufffd-\ufffd',
+      });
+      expect(differentScope.get(key)).toBeNull();
+    },
+  );
 
   it('binds SQL parameters, preserves empty values, validates bounds, and closes', async () => {
     const path = await databasePath();

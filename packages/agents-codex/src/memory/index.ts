@@ -15,7 +15,8 @@ const valueSchema = textSchema.max(65_536);
 
 /**
  * Explicit string facts for one trusted application-selected scope.
- * Requires Node.js 24 and a private application-owned SQLite path.
+ * Requires Node.js 22+ with built-in `node:sqlite` and a private
+ * application-owned SQLite path.
  * Keys/scopes contain 1–256 characters; values contain at most 65,536 and may
  * be empty. All text must contain well-formed Unicode; lone surrogates fail
  * before database access. Applications authorize writes and treat recalled text as data.
@@ -56,9 +57,15 @@ export class SQLiteMemory {
   get(key: string): string | null {
     const selected = keySchema.parse(key);
     const row = this.#connection()
-      .prepare('SELECT value FROM agents_memory WHERE scope = ? AND key = ?')
+      .prepare(
+        'SELECT json_quote(value) AS value FROM agents_memory WHERE scope = ? AND key = ?',
+      )
       .get(this.#scope, selected);
-    return row === undefined ? null : valueSchema.parse(row.value);
+    // Node 22 truncates raw SQLite TEXT at NUL; JSON retains the full text
+    // without assuming the database uses UTF-8 storage.
+    return row === undefined
+      ? null
+      : valueSchema.parse(JSON.parse(z.string().parse(row.value)));
   }
 
   /** Replace one scoped value and commit before returning. */

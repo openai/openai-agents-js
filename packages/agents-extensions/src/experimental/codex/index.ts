@@ -1882,6 +1882,45 @@ function isReasoningItem(item: ThreadItem): item is ReasoningItem {
   return item?.type === 'reasoning';
 }
 
+const nativeCliEnvironmentNames = new Set([
+  'PATH',
+  'PATHEXT',
+  'COMSPEC',
+  'SYSTEMROOT',
+  'WINDIR',
+  'SYSTEMDRIVE',
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'SHELL',
+  'LOGNAME',
+  'USER',
+  'USERNAME',
+  'USERDOMAIN',
+  'TERM',
+  'CODEX_HOME',
+  'CODEX_API_KEY',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+]);
+
 export type NativeCodexToolOptions = Pick<
   CodexToolOptions,
   | 'name'
@@ -1904,14 +1943,28 @@ export type NativeCodexToolOptions = Pick<
  * reuse the most recently completed thread in the same native Session unless
  * threadId selects another. Different native Sessions keep independent state.
  * Configured turn signals also cancel calls waiting for persistent-session admission.
+ * Default subprocess environment: platform paths, Codex credentials and transport
+ * settings only. Explicit codexOptions.env mappings and supplied Codex instances:
+ * application-owned environment policy. Full inheritance: pass an explicit copy
+ * of the process environment in codexOptions.env.
  */
 export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
-  const resolveCodex = createCodexResolver(
-    options.codex,
-    resolveCodexOptions(
-      options.codexOptions ? structuredClone(options.codexOptions) : undefined,
-    ),
+  let codexOptions = resolveCodexOptions(
+    options.codexOptions ? structuredClone(options.codexOptions) : undefined,
   );
+  if (!options.codex && codexOptions?.env === undefined) {
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(loadEnv())) {
+      if (
+        typeof value === 'string' &&
+        nativeCliEnvironmentNames.has(name.toUpperCase())
+      ) {
+        env[name] = value;
+      }
+    }
+    codexOptions = { ...codexOptions, env };
+  }
+  const resolveCodex = createCodexResolver(options.codex, codexOptions);
   const threadOptions = options.defaultThreadOptions
     ? structuredClone(options.defaultThreadOptions)
     : undefined;

@@ -7998,8 +7998,8 @@ export class Session<OutputT = string, Context = unknown> {
             )
           )
             return;
-          if (decision.effective !== undefined)
-            grant.setEffectiveArguments(decision.effective);
+          if (decision.denial === undefined)
+            grant.setValidatedEffectiveArguments(decision.validated);
           const action = grant.request();
           if (!isFunctionApprovalRequest(action))
             throw new NativeError('Managed approval capability was not issued');
@@ -8899,6 +8899,16 @@ export class Session<OutputT = string, Context = unknown> {
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
             : losslessJsonValueSchema.parse(msg.arguments);
+        const approved =
+          msg._sdk_managed_approved === true
+            ? this.manualCalls
+                .get(this.manualCallKey(event, true) ?? '')
+                ?.grant.executionArguments()
+            : undefined;
+        if (msg._sdk_managed_approved === true && !approved)
+          throw new NativeError(
+            'Managed approval arguments are no longer available',
+          );
         const response = await invokeFunctionTool(
           tool,
           args,
@@ -8927,6 +8937,7 @@ export class Session<OutputT = string, Context = unknown> {
           msg._sdk_effective_arguments === undefined
             ? undefined
             : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
+          approved,
         );
         if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';
@@ -12848,11 +12859,24 @@ export class Session<OutputT = string, Context = unknown> {
             parent: toolInvocation.getStore(),
           };
           try {
-            await toolInvocation.run(computerScope, () =>
-              closeComputerResources(this.toolSessionOwner),
-            );
-          } finally {
-            computerScope.active = false;
+            try {
+              await toolInvocation.run(computerScope, () =>
+                closeComputerResources(this.toolSessionOwner),
+              );
+            } finally {
+              computerScope.active = false;
+            }
+          } catch (error) {
+            try {
+              await this.options.onClose?.();
+            } catch (releaseError) {
+              throw new AggregateError(
+                [error, releaseError],
+                'Computer and provider lease cleanup failed',
+                { cause: error },
+              );
+            }
+            throw error;
           }
           await this.options.onClose?.();
         } finally {

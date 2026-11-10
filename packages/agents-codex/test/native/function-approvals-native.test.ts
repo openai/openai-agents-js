@@ -195,8 +195,11 @@ it.each([false, true])(
     expect((await turn.wait()).finalOutput).toBe('done');
     expect(calls).toEqual(
       runBeforeApproval
-        ? ['before:1', 'policy:2', 'before:2', 'body:3']
-        : ['policy:1', 'before:1', 'body:2'],
+        ? ['before:1', 'policy:2', 'before:2']
+        : ['policy:1', 'before:1'],
+    );
+    expect(JSON.stringify(server.requests[1]!.input)).toContain(
+      'Tool input policy changed approved arguments',
     );
     server.assertExhausted();
   },
@@ -489,7 +492,7 @@ it.each([
       ).toContain(
         approve
           ? guarded
-            ? 'accepted-B-pre-post'
+            ? 'accepted-B-pre'
             : 'accepted-B'
           : 'restored rejection',
       );

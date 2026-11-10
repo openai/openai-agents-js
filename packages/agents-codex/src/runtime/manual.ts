@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   copyJsonValue,
@@ -95,6 +96,12 @@ export function isFunctionApprovalRequest(
     'approvalRequired' in value &&
     value.approvalRequired === true
   );
+}
+
+/** @internal Data bound to a consumed grant, never an additional execution capability. */
+export interface ApprovedArguments {
+  readonly value: unknown;
+  matches(value: unknown): boolean;
 }
 
 export interface ApprovalDecision {
@@ -281,6 +288,7 @@ export function createManualRequest<Input, Result>(
   }
   checkCurrent();
   let effectiveArguments = parsed;
+  let approvedArguments: { value: unknown } | undefined;
   let cachedRequest: ManualToolRequest<Input, Result> | undefined;
   const approvalReply = (
     approve: boolean,
@@ -305,12 +313,28 @@ export function createManualRequest<Input, Result>(
       effectiveArguments = copyInput(definition.parseInput(value));
       checkCurrent();
     },
+    setValidatedEffectiveArguments(value: unknown): void {
+      checkCurrent();
+      effectiveArguments = copyInput(value);
+    },
+    executionArguments(): ApprovedArguments | undefined {
+      const approved = approvedArguments;
+      if (!approved) return undefined;
+      return {
+        get value() {
+          return copyInput(approved.value);
+        },
+        matches: (value) => isDeepStrictEqual(value, approved.value),
+      };
+    },
     takeApprovalReply(reply: unknown): ApprovalDecision | undefined {
       if (!managedApproval || !authority.current() || !isObject(reply))
         return undefined;
       const found = replies.get(reply);
       if (found?.identity !== replyIdentity || !found.approval)
         return undefined;
+      if (found.approval.approve)
+        approvedArguments = { value: copyInput(effectiveArguments) };
       active = false;
       return found.approval;
     },

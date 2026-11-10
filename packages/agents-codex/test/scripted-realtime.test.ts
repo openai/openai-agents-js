@@ -1,7 +1,11 @@
-import { expect, it } from 'vitest';
+import { expect, expectTypeOf, it } from 'vitest';
 import { Agent, NativeProvider, tool } from '../src';
 import { z } from 'zod';
-import { ScriptedRealtimeAdapter, type RealtimeScenario } from '../src/testing';
+import {
+  ScriptedRealtimeAdapter,
+  type RealtimeConnectCall,
+  type RealtimeScenario,
+} from '../src/testing';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 const scriptedContext = {
@@ -9,6 +13,76 @@ const scriptedContext = {
   headers: {},
   signal: new AbortController().signal,
 };
+
+it('records detached endpoints and authorization presence without credentials', async () => {
+  expectTypeOf<{
+    model?: string;
+    headersProvided: boolean;
+  }>().toMatchTypeOf<RealtimeConnectCall>();
+  const adapter = new ScriptedRealtimeAdapter();
+  const configured = {
+    ...scriptedContext,
+    model: 'fixture',
+    url: 'wss://url-user:url-password@synthetic.invalid/v1/realtime?token=query-secret#fragment-secret',
+    headers: {
+      aUtHoRiZaTiOn: 'Bearer header-secret',
+      'X-Trace': 'trace-secret',
+    },
+  };
+  await adapter.connect(configured);
+  configured.url = 'wss://changed.invalid';
+  configured.headers.aUtHoRiZaTiOn = 'changed';
+  expect(adapter.connectCalls).toEqual([
+    {
+      model: 'fixture',
+      url: 'wss://synthetic.invalid/v1/realtime',
+      apiKeyProvided: true,
+      headersProvided: true,
+    },
+  ]);
+  const snapshot = adapter.connectCalls;
+  Object.assign(snapshot[0]!, { url: 'wss://snapshot-mutated.invalid' });
+  expect(adapter.connectCalls[0]!.url).toBe(
+    'wss://synthetic.invalid/v1/realtime',
+  );
+  for (const secret of [
+    'url-user',
+    'url-password',
+    'query-secret',
+    'fragment-secret',
+    'header-secret',
+    'trace-secret',
+  ])
+    expect(JSON.stringify(adapter.connectCalls)).not.toContain(secret);
+  await adapter.close();
+});
+
+it.each([
+  [{}, false],
+  [{ 'X-Trace': 'present' }, false],
+  [{ authorization: '' }, true],
+] as const)(
+  'records authorization-name presence for %j',
+  async (headers, expected) => {
+    const adapter = new ScriptedRealtimeAdapter();
+    await adapter.connect({ ...scriptedContext, headers });
+    expect(adapter.connectCalls[0]!.apiKeyProvided).toBe(expected);
+    expect(adapter.connectCalls[0]!.headersProvided).toBe(
+      Object.keys(headers).length > 0,
+    );
+    await adapter.close();
+  },
+);
+
+it.each(['relative?token=secret', 'not a URL', 'data:text/plain,secret'])(
+  'preserves synthetic connection behavior without retaining unsafe URL %s',
+  async (url) => {
+    const adapter = new ScriptedRealtimeAdapter();
+    await adapter.connect({ ...scriptedContext, url });
+    expect(adapter.connectCalls[0]).not.toHaveProperty('url');
+    await adapter.close();
+  },
+);
 
 it('coordinates asynchronous frames and preserves expectation snapshots', async () => {
   const adapter = new ScriptedRealtimeAdapter();
@@ -359,7 +433,12 @@ nativeIt(
     }
     adapter.assertComplete();
     expect(adapter.connectCalls).toEqual([
-      { model: 'fixture', headersProvided: true },
+      expect.objectContaining({
+        model: 'fixture',
+        url: 'ws://127.0.0.1:1/v1/realtime',
+        apiKeyProvided: true,
+        headersProvided: true,
+      }),
     ]);
     expect(JSON.stringify(adapter.connectCalls)).not.toContain('synthetic-key');
     const snapshot = adapter.sentEvents;
@@ -374,6 +453,7 @@ it('matches objects independent of key order and retains unexpected-send failure
     headers: {},
     signal: new AbortController().signal,
   };
+
   const adapter = new ScriptedRealtimeAdapter([
     { expect: { type: 'first', nested: { value: 1 } } },
     { expect: (frame) => frame.type === 'last' },

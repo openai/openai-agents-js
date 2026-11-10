@@ -22,12 +22,7 @@ async function main() {
     before: guarded
       ? (context) => {
           guards.push(String(context.effectiveArguments.value));
-          return {
-            action: 'replaceArguments',
-            arguments: {
-              value: String(context.effectiveArguments.value) + '-post',
-            },
-          };
+          return { action: 'allow' };
         }
       : undefined,
     needsApproval: (context) => {

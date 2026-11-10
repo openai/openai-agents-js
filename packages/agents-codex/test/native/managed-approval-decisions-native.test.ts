@@ -142,11 +142,13 @@ nativeIt.each([
     await session.respond(request.approve());
     expect((await completion).finalOutput).toBe('done');
     expect(effects).toEqual(['explicit input']);
-    expect(decisions.getDecision).toHaveBeenCalledTimes(2);
+    const expectedDecisions = policy === 'before' ? 3 : 2;
+    expect(policyContexts).toHaveLength(policy === 'before' ? 2 : 1);
+    expect(decisions.getDecision).toHaveBeenCalledTimes(expectedDecisions);
     await expect(
       retainedExecution!('Expired callback?', { input: 'explicit input' }),
     ).rejects.toThrow(/no longer|abort/i);
-    expect(decisions.getDecision).toHaveBeenCalledTimes(2);
+    expect(decisions.getDecision).toHaveBeenCalledTimes(expectedDecisions);
     expect(server.requests).toHaveLength(2);
     server.assertExhausted();
   },

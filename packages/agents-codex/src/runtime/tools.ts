@@ -1,3 +1,4 @@
+import type { ApprovedArguments } from './manual';
 import {
   decisionBinding,
   withDecisionSignal,
@@ -184,6 +185,7 @@ type Invocation<Context> = (
   onTimeout: (error: Error) => void,
   admit: () => void,
   effectiveArgs?: JsonValue,
+  approved?: ApprovedArguments,
 ) => Promise<ToolResponse>;
 
 /** A tool-local decision made before its execution callback runs. */
@@ -203,7 +205,12 @@ interface ManagedApproval<Context = unknown> {
     admit: () => void,
     skipPredicate?: boolean,
     effectiveArgs?: JsonValue,
-  ): Promise<{ required: boolean; effective?: JsonValue; denial?: string }>;
+  ): Promise<{
+    required: boolean;
+    effective?: JsonValue;
+    validated?: unknown;
+    denial?: string;
+  }>;
 }
 /** @internal Captured declarations share the existing manual owner before callback admission. */
 export function managedApproval(
@@ -457,6 +464,7 @@ export function tool<
       onTimeout: (error: Error) => void,
       admit: () => void,
       effectiveArgs?: JsonValue,
+      approved?: ApprovedArguments,
     ) {
       admit();
       const originalArguments = Object.freeze(
@@ -465,6 +473,7 @@ export function tool<
       let parsed = parameters.parse(
         effectiveArgs === undefined ? args : effectiveArgs,
       );
+      if (approved) parsed = approved.value as typeof parsed;
       let callContext: ToolContext<Context> = {
         ...context,
         decide:
@@ -507,6 +516,25 @@ export function tool<
         }
       }
       admit();
+      if (approved && !approved.matches(parsed))
+        return {
+          success: false,
+          contentItems: [
+            {
+              type: 'inputText' as const,
+              text: 'Tool input policy changed approved arguments',
+            },
+          ],
+        };
+      if (approved) {
+        parsed = approved.value as typeof parsed;
+        callContext = {
+          ...callContext,
+          effectiveArguments: Object.freeze({
+            ...(parsed as Record<string, unknown>),
+          }),
+        };
+      }
       const timeoutError =
         callbackTimeout === undefined
           ? undefined
@@ -651,7 +679,7 @@ export function tool<
       admit();
       if (typeof required !== 'boolean')
         throw new TypeError('needsApproval must return a boolean');
-      return { required, effective };
+      return { required, effective, validated: parsed };
     },
   };
   return Object.freeze({ ...declaration, [approvalDefinition]: approval });
@@ -781,6 +809,7 @@ export async function invokeFunctionTool(
   onTimeout: (error: Error) => void,
   checkAdmission?: () => void,
   effectiveArgs?: JsonValue,
+  approved?: ApprovedArguments,
 ): Promise<ToolResponse> {
   const admit = () => {
     context.signal.throwIfAborted();
@@ -792,6 +821,7 @@ export async function invokeFunctionTool(
     onTimeout,
     admit,
     effectiveArgs,
+    approved,
   );
 }
 

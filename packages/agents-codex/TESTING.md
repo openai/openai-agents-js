@@ -166,7 +166,7 @@ Command: `npx tsx scripted-realtime.mts`. Expected result: a silent exit after t
 
 Each adapter has been allowing one connection and one scenario. Constructor `RealtimeStep[]` entries have been supporting fixed exchanges separately; mixed static steps and `runScenario` have been triggering rejection before either callback. All scenario operations have been rejecting use after scope completion.
 
-The helper has been releasing its own waiters and abort listener. The exercise has been retaining responsibility for session cleanup and caller-created background work, including after cancellation. `assertComplete()` and `assertClosed()` have been providing explicit completeness and terminal-state checks. `sentEvents` has been retaining full synthetic frame snapshots; `connectCalls` has been retaining only model and header-presence metadata.
+The helper has been releasing its own waiters and abort listener. The exercise has been retaining responsibility for session cleanup and caller-created background work, including after cancellation. `assertComplete()` and `assertClosed()` have been providing explicit completeness and terminal-state checks. `sentEvents` has been retaining full synthetic frame snapshots. `connectCalls` has been retaining the model, a redacted endpoint, and header-presence flags. The `apiKeyProvided` flag has been recording Authorization header-name presence, including an empty value. Endpoint snapshots have been excluding userinfo, queries, and fragments; invalid, relative, or opaque URLs have been leaving `url` absent. Header values and signals have been remaining outside snapshots.
 
 ## Use classic test doubles separately
 
