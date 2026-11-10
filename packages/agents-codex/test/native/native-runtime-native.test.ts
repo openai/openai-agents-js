@@ -1,12 +1,22 @@
-import { stat } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import type { Server } from 'node:http';
 import type { Engine, _PlainRun } from '../../native/index.js';
 import type { Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeError, NativeProvider, NativeRuntime } from '../../src';
 import { binding, type JsonObject } from '../../src/runtime/binding';
 import { NativeProviderRoutes } from '../../src/runtime/http-model';
-import { ModelServer, message } from './fixtures/model-server';
+import { ModelServer, call, message } from './fixtures/model-server';
 
 function connections(model: ModelServer) {
   const server = (model as unknown as { server: Server }).server;
@@ -633,6 +643,104 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(new Set(calls.map((c) => c.engine)).size).toBe(3);
       model.assertExhausted();
     }, 30_000);
+    it.skipIf(process.platform !== 'linux')(
+      'keeps trusted host reads separate from strict Sessions on one NativeRuntime',
+      async () => {
+        const { Agent, Environment, NativeProvider, NativeRuntime } =
+          await import('@openai/agents-codex');
+        const directory = await realpath(
+          await mkdtemp(join(tmpdir(), 'sdk-shared-policy-')),
+        );
+        const cwd = join(directory, 'workspace');
+        const hostSentinel = join(directory, 'host-sentinel');
+        const sentinel = 'synthetic-host-sentinel';
+        try {
+          await mkdir(cwd);
+          await Promise.all([
+            writeFile(join(cwd, 'workspace-control'), ''),
+            writeFile(hostSentinel, sentinel),
+          ]);
+          const cmd =
+            'test -r workspace-control || exit 17; cat ../host-sentinel';
+          const cases = [
+            {
+              callId: 'trusted-read',
+              exitCode: 0,
+              policy: { writePolicy: 'trusted_workspace_write' },
+            },
+            { callId: 'strict-read', exitCode: 1, policy: {} },
+          ] as const;
+          const model = new ModelServer([
+            [message('plain warmed')],
+            ...cases.flatMap(({ callId }) => [
+              [call('exec_command', { cmd }, { callId })],
+              [message(callId)],
+            ]),
+          ]);
+          await using owner = new NativeRuntime();
+          const options = {
+            runtime: owner,
+            baseUrl: await baseUrl(model),
+            apiKey: 'synthetic-shared-policy',
+          };
+          const agentForProvider = (
+            provider: InstanceType<typeof NativeProvider>,
+          ) => new Agent({ provider, model: 'gpt-5', instructions: 'Answer.' });
+          const starts = await runtimeStarts();
+          await using first = new NativeProvider(options);
+          const warmed = await agentForProvider(first).run(
+            'Warm the plain Engine.',
+          );
+          expect(warmed.finalOutput).toBe('plain warmed');
+          await first.close();
+          expect(starts.map(({ kind }) => kind)).toEqual(['plain']);
+          expect(starts[0]!.engine._private_reuse_ready).toBe(true);
+
+          await using second = new NativeProvider(options);
+          const agent = agentForProvider(second);
+          for (const { callId, exitCode, policy } of cases) {
+            await using session = await agent.session({
+              environment: Environment.local({
+                cwd,
+                tools: ['exec_command'],
+                ...policy,
+              }),
+            });
+            const turn = await session.submit('Read the synthetic sentinel.');
+            expect((await turn.wait()).finalOutput).toBe(callId);
+            const executions = (await Array.fromAsync(session.items())).filter(
+              (item) => item.type === 'command_execution',
+            );
+            expect(executions).toEqual([
+              expect.objectContaining({ callId, exitCode }),
+            ]);
+            const output = (model.requests.at(-1)!.input as JsonObject[]).find(
+              (item) =>
+                item.type === 'function_call_output' && item.call_id === callId,
+            );
+            expect(output).toBeDefined();
+            if (exitCode === 0)
+              expect(JSON.stringify(output!.output)).toContain(sentinel);
+            else expect(JSON.stringify(output!.output)).not.toContain(sentinel);
+          }
+
+          expect(starts.map(({ kind }) => kind)).toEqual([
+            'plain',
+            'session',
+            'session',
+          ]);
+          for (const start of starts.slice(1))
+            expect(start.engine).not.toBe(starts[0]!.engine);
+          expect(starts[0]!.engine._private_reuse_ready).toBe(true);
+          model.assertExhausted();
+          expect(await readFile(hostSentinel, 'utf8')).toBe(sentinel);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      },
+      30_000,
+    );
+
     it('does not park an Engine when joined native result projection fails late', async () => {
       const model = new ModelServer([
         [message('corrupted projection')],
