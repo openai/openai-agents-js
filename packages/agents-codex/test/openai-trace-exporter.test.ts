@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { expect, it } from 'vitest';
 import { OpenAITraceExporter } from '../src/runtime/telemetry';
+import { invokeTraceDelivery } from '../src/runtime/trace-delivery';
 import type { TraceEvent } from '../src/runtime/telemetry';
 
 const event: TraceEvent = {
@@ -449,3 +450,102 @@ it.each([false, true])(
     }
   },
 );
+
+it('routes original native snapshots by credential and retires forwarding authority', async () => {
+  const received: {
+    authorization: string | undefined;
+    organization: string | undefined;
+    body: any;
+  }[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    received.push({
+      authorization: request.headers.authorization,
+      organization: request.headers['openai-organization'] as
+        string | undefined,
+      body: JSON.parse(Buffer.concat(chunks).toString()),
+    });
+    response.writeHead(200).end();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string')
+    throw new Error('Collector did not start');
+  try {
+    const exporter = new OpenAITraceExporter({
+      apiKey: 'fallback-key',
+      organization: 'fallback-org',
+      endpoint: `http://127.0.0.1:${address.port}/v1/traces/ingest`,
+    });
+    const a = Object.freeze({
+      ...event,
+      credential_required: true,
+      sequence: 2,
+    });
+    const b = Object.freeze({
+      ...event,
+      credential_required: true,
+      sequence: 3,
+      span_id: 'c'.repeat(16),
+    });
+    const routes = {
+      '2': {
+        identity: 'native-A',
+        headers: { authorization: 'Bearer scope-A' },
+      },
+      '3': {
+        identity: 'native-B',
+        headers: { authorization: 'Bearer scope-B' },
+      },
+    };
+    await invokeTraceDelivery([a, b], routes, async () => {
+      await expect(
+        exporter.onEvent({ ...a, name: 'copied foreign root' }),
+      ).rejects.toThrow('credential delivery is unavailable');
+      await exporter.onEvents([a, b]);
+    });
+    await expect(exporter.onEvent(a)).rejects.toThrow(
+      'credential delivery is unavailable',
+    );
+    await invokeTraceDelivery([a], routes, () => exporter.onEvent(a));
+    await exporter.onEvent({ ...event, trace_id: 'd'.repeat(32), sequence: 4 });
+    const stopped = new AbortController();
+    await invokeTraceDelivery(
+      [a],
+      routes,
+      async () => {
+        stopped.abort();
+        await expect(exporter.onEvent(a)).rejects.toThrow(
+          'credential delivery is unavailable',
+        );
+      },
+      stopped.signal,
+    );
+    expect(received.map((request) => request.authorization)).toEqual([
+      'Bearer scope-A',
+      'Bearer scope-B',
+      'Bearer scope-A',
+      'Bearer fallback-key',
+    ]);
+    expect(
+      received.every((request) => request.organization === 'fallback-org'),
+    ).toBe(true);
+    expect(
+      received.map(
+        (request) =>
+          request.body.data.filter((item: any) => item.object === 'trace')
+            .length,
+      ),
+    ).toEqual([1, 1, 1, 1]);
+    expect(received[0].body.data[0].workflow_name).toBe('synthetic operation');
+    expect(JSON.stringify(received.map((request) => request.body))).not.toMatch(
+      /scope-A|scope-B|fallback-key|credential_required|native-A|native-B/,
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});

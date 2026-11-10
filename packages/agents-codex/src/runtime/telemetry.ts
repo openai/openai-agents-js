@@ -1,3 +1,4 @@
+import { invokeTraceDelivery } from './trace-delivery';
 export {
   OpenAITraceExporter,
   ConsoleTraceProcessor,
@@ -49,7 +50,22 @@ export type Exporter =
 
 let configuredHere = false;
 
+/** Local native diagnostic events as JSON lines on process stdout. */
+export interface ConsoleDiagnostics {
+  /** Minimum severity, defaulting to warn. */
+  readonly level?: 'error' | 'warn' | 'info' | 'debug' | 'trace';
+  /** Exact targets or ::-delimited prefixes. An empty array selects all. */
+  readonly targets?: readonly string[];
+  /**
+   * Include messages and arbitrary fields, which may contain sensitive data.
+   * Default false; independent of trace and OTLP capture controls.
+   */
+  readonly includeFields?: boolean;
+}
+
 export interface TelemetryOptions {
+  /** Optional local diagnostics; default records contain only static source metadata. */
+  readonly diagnostics?: ConsoleDiagnostics | null;
   /** Nonempty initial routes opt in to native tracing without a built-in exporter. */
   readonly traceProcessors?: readonly TraceProcessorRegistration[];
   readonly traces?: Exporter | null;
@@ -148,7 +164,16 @@ export async function configure(options: TelemetryOptions = {}): Promise<void> {
     invalid('toolResultMaxBytes');
   // Capture a fresh wire value before the first await. Never use the general
   // schema error formatter with endpoint, header, or private-key values.
+  const diagnostics =
+    input.diagnostics === undefined || input.diagnostics === null
+      ? undefined
+      : object(input.diagnostics, 'diagnostics');
   const encoded = JSON.stringify({
+    'sdk.console_diagnostics': diagnostics && {
+      level: diagnostics.level,
+      targets: diagnostics.targets,
+      include_fields: diagnostics.includeFields,
+    },
     'otel.exporter': exporter(input.logs, 'logs'),
     'otel.trace_exporter': exporter(input.traces, 'traces'),
     'otel.trace_processors': initialProcessors.length > 0,
@@ -192,6 +217,7 @@ export async function shutdown(
   try {
     await (await binding()).shutdown_telemetry(timeout);
   } finally {
+    processorDeliveryStop.abort();
     processors.clear();
     activeProcessorIds.clear();
     retiredProcessorIds.clear();
@@ -229,6 +255,8 @@ export interface FlushResult {
   readonly barrier: number;
 }
 export interface TraceEvent {
+  /** Nonsecret provenance: credential delivery requires the original active snapshot. */
+  readonly credential_required?: boolean;
   readonly sequence: number;
   /** Native sequence cutoff for known record loss; preserved by forwarding snapshots. */
   readonly recovery_sequence?: number;
@@ -328,6 +356,7 @@ function retireProcessors(): void {
   }
 }
 let nextProcessor = 0;
+const processorDeliveryStop = new AbortController();
 let pump: Promise<void> | undefined;
 let wakePump: (() => void) | undefined;
 async function route(
@@ -371,101 +400,135 @@ async function route(
       (async () => {
         while (processors.size) {
           const batch = JSON.parse(await native.drain_trace_events(128));
-          let failures = 0;
-          if (batch.dropped_records > droppedRecords) {
-            // No-op route merge captures the sequence, including a drop-only tail.
-            lossWatermark = native.set_trace_routes(
-              '{"processor_ids":[],"replace":false}',
-            );
-            droppedRecords = batch.dropped_records;
-          }
-          const watermark = lossWatermark;
-          const groups: TraceEvent[][] =
-            watermark && batch.through_sequence >= watermark
-              ? [
-                  batch.events.filter(
-                    (event: TraceEvent) => event.sequence <= watermark,
-                  ),
-                  batch.events.filter(
-                    (event: TraceEvent) => event.sequence > watermark,
-                  ),
-                ]
-              : [batch.events];
-          for (const [index, group] of groups.entries()) {
-            if (index === 1) {
-              recoveryEpoch = watermark;
-              lossWatermark = 0;
+          const retireCredentials = () => {
+            for (const route of Object.values(
+              batch.credential_routes ?? {},
+            ) as { headers: Record<string, string> }[]) {
+              for (const key of Object.keys(route.headers))
+                delete route.headers[key];
             }
-            const routes = new Map<string, TraceEvent[]>();
-            const snapshots: TraceEvent[] = [];
-            for (const event of group) {
-              const descriptor =
-                batch.root_descriptors?.[String(event.sequence)];
-              const snapshot = freezeSnapshot({
-                ...event,
-                recovery_sequence: recoveryEpoch,
-                ...(descriptor === undefined
-                  ? {}
-                  : { root_descriptor: descriptor }),
-              });
-              snapshots.push(snapshot);
-              for (const id of event.processor_ids) {
-                const events = routes.get(id) ?? [];
-                events.push(snapshot);
-                routes.set(id, events);
+            delete batch.credential_routes;
+          };
+          processorDeliveryStop.signal.addEventListener(
+            'abort',
+            retireCredentials,
+            { once: true },
+          );
+          try {
+            let failures = 0;
+            if (batch.dropped_records > droppedRecords) {
+              // No-op route merge captures the sequence, including a drop-only tail.
+              lossWatermark = native.set_trace_routes(
+                '{"processor_ids":[],"replace":false}',
+              );
+              droppedRecords = batch.dropped_records;
+            }
+            const watermark = lossWatermark;
+            const groups: TraceEvent[][] =
+              watermark && batch.through_sequence >= watermark
+                ? [
+                    batch.events.filter(
+                      (event: TraceEvent) => event.sequence <= watermark,
+                    ),
+                    batch.events.filter(
+                      (event: TraceEvent) => event.sequence > watermark,
+                    ),
+                  ]
+                : [batch.events];
+            for (const [index, group] of groups.entries()) {
+              if (index === 1) {
+                recoveryEpoch = watermark;
+                lossWatermark = 0;
               }
-            }
-            for (const event of snapshots) {
-              for (const id of event.processor_ids) {
-                const events = routes.get(id);
-                if (!events) continue;
-                const processor = processors.get(id);
-                if (
-                  processor &&
-                  (processorEpochs.get(processor) ?? 0) < recoveryEpoch
-                ) {
-                  const recover = (
-                    processor as TraceProcessorRegistration & {
-                      _onNativeTraceLoss?: () => void | Promise<void>;
+              const routes = new Map<string, TraceEvent[]>();
+              const snapshots: TraceEvent[] = [];
+              for (const event of group) {
+                const descriptor =
+                  batch.root_descriptors?.[String(event.sequence)];
+                const snapshot = freezeSnapshot({
+                  ...event,
+                  recovery_sequence: recoveryEpoch,
+                  ...(descriptor === undefined
+                    ? {}
+                    : { root_descriptor: descriptor }),
+                });
+                snapshots.push(snapshot);
+                for (const id of event.processor_ids) {
+                  const events = routes.get(id) ?? [];
+                  events.push(snapshot);
+                  routes.set(id, events);
+                }
+              }
+              for (const event of snapshots) {
+                for (const id of event.processor_ids) {
+                  const events = routes.get(id);
+                  if (!events) continue;
+                  const processor = processors.get(id);
+                  if (
+                    processor &&
+                    (processorEpochs.get(processor) ?? 0) < recoveryEpoch
+                  ) {
+                    const recover = (
+                      processor as TraceProcessorRegistration & {
+                        _onNativeTraceLoss?: () => void | Promise<void>;
+                      }
+                    )._onNativeTraceLoss;
+                    try {
+                      if (recover)
+                        await suppressTracing(() => recover.call(processor));
+                      processorEpochs.set(processor, recoveryEpoch);
+                    } catch {
+                      failures++;
+                      continue;
                     }
-                  )._onNativeTraceLoss;
-                  try {
-                    if (recover)
-                      await suppressTracing(() => recover.call(processor));
-                    processorEpochs.set(processor, recoveryEpoch);
-                  } catch {
-                    failures++;
-                    continue;
                   }
-                }
-                if (typeof processor?.onEvents === 'function') {
-                  // Deliver each batch at its first event's position. Ordinary
-                  // processors retain event-by-event registration order.
-                  routes.delete(id);
-                  try {
-                    await suppressTracing(() =>
-                      processor.onEvents!(Object.freeze(events)),
-                    );
-                  } catch {
-                    failures += events.length;
-                  }
-                } else {
-                  try {
-                    await suppressTracing(() => processor?.onEvent?.(event));
-                  } catch {
-                    failures++;
+                  if (typeof processor?.onEvents === 'function') {
+                    // Deliver each batch at its first event's position. Ordinary
+                    // processors retain event-by-event registration order.
+                    routes.delete(id);
+                    try {
+                      await invokeTraceDelivery(
+                        events,
+                        batch.credential_routes,
+                        () =>
+                          suppressTracing(() =>
+                            processor.onEvents!(Object.freeze(events)),
+                          ),
+                        processorDeliveryStop.signal,
+                      );
+                    } catch {
+                      failures += events.length;
+                    }
+                  } else {
+                    try {
+                      await invokeTraceDelivery(
+                        [event],
+                        batch.credential_routes,
+                        () =>
+                          suppressTracing(() => processor?.onEvent?.(event)),
+                        processorDeliveryStop.signal,
+                      );
+                    } catch {
+                      failures++;
+                    }
                   }
                 }
               }
             }
-          }
-          if (batch.through_sequence > acknowledgedSequence) {
-            native.ack_trace_events(batch.through_sequence, failures);
-            acknowledgedSequence = Math.max(
-              acknowledgedSequence,
-              batch.through_sequence,
+            if (batch.through_sequence > acknowledgedSequence) {
+              native.ack_trace_events(batch.through_sequence, failures);
+              acknowledgedSequence = Math.max(
+                acknowledgedSequence,
+                batch.through_sequence,
+              );
+              retireProcessors();
+            }
+          } finally {
+            retireCredentials();
+            processorDeliveryStop.signal.removeEventListener(
+              'abort',
+              retireCredentials,
             );
-            retireProcessors();
           }
           if (!batch.events.length)
             await new Promise<void>((resolve) => {

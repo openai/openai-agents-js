@@ -639,7 +639,11 @@
     {
       "path": "sdk-held-terminal-eligibility.patch",
       "sha256": "92383d61f3a047490b1e88ed6930ee7018d58d14e5f068e7c3a09ff703516e3f"
+    },
+    {
+      "path": "sdk-host-trace-credentials.patch",
+      "sha256": "88a7876ebaee3fd063e0edfa5ae0997e6c36dae38b7df6b8ff4eb2c0128c88e7"
     }
   ],
-  "result_tree": "96ded168c7056bb5772b185659e694de8b77df0b"
+  "result_tree": "3e1e377206bb66679b760abd9c61e96086328402"
 }

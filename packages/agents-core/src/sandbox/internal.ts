@@ -142,3 +142,5 @@ export {
   readLocalSourceEntriesAt,
   walkLocalSourceDirectoryEntries,
 } from './shared/localSourceReader';
+
+export { retainManagedWorkspaceSnapshot } from './sandboxes/shared/localSnapshots';

@@ -1,4 +1,9 @@
 import {
+  ManagedWorkspaceCheckpoint,
+  managedWorkspaceRestore,
+  validateManagedWorkspaceOpening,
+} from './managed-workspace';
+import {
   captureRealtimeConfig,
   isRealtimeHandoff,
   realtimeHandoffTool,
@@ -224,8 +229,18 @@ export interface SessionBaseOptions<Context = undefined> {
   tools?: readonly Tool<Context>[];
 }
 
-export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
+type NativeSessionOptions<Context> = SessionBaseOptions<Context> &
   SessionPersistenceOptions;
+export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
+  (
+    | {
+        state?: SessionState | ManagedWorkspaceCheckpoint;
+        storage?: never;
+        resume?: never;
+        reconciledCalls?: never;
+      }
+    | Exclude<SessionPersistenceOptions, { storage?: never }>
+  );
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionBaseOptions<Context>,
@@ -282,7 +297,8 @@ interface CapturedOpening {
   readonly beforeCompact?: BeforeCompact<any>;
   readonly transformContext?: ContextTransform<any>;
 }
-type OwnedSessionOptions<Context> = SessionOptions<Context> & {
+type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
+  [managedWorkspaceRestore]?: true;
   [outputSelection]?: OutputSpec<unknown>;
   [ownedRun]?: OneShotOptions & {
     decisions?: DecisionProvider;
@@ -342,6 +358,11 @@ export type Session<Output = string, Context = any> = Pick<
   | 'pendingInteractions'
   | 'items'
   | 'turns'
+  | 'storedTurns'
+  | 'storedItems'
+  | 'searchHistory'
+  | 'revertStored'
+  | 'deleteStored'
   | 'rateLimits'
   | 'planUsage'
   | 'buildRealtimeSipConfig'
@@ -365,6 +386,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'compact'
   | 'executeCommand'
   | 'saveState'
+  | 'suspendWorkspace'
   | 'fork'
   | 'suspend'
   | 'close'
@@ -533,10 +555,20 @@ export class Agent<Context = undefined, Output = string> {
   ): Promise<
     { session: CoreSession<Output, Context> } | { plainRun: PreparedPlainRun }
   > {
+    const managedOpening =
+      suppliedOptions?.state instanceof ManagedWorkspaceCheckpoint
+        ? validateManagedWorkspaceOpening(
+            suppliedOptions.state,
+            suppliedOptions.environment,
+          )
+        : undefined;
     const options = {
       ...(suppliedOptions ?? {}),
+      ...(managedOpening
+        ? { state: managedOpening.state, [managedWorkspaceRestore]: true }
+        : {}),
       parentTrace: captureTraceContext(suppliedOptions?.parentTrace),
-    };
+    } as OwnedSessionOptions<Context>;
     if (
       options.observationRetention !== undefined &&
       options.observationRetention !== 'bounded' &&
@@ -775,7 +807,7 @@ export class Agent<Context = undefined, Output = string> {
   }
 
   private async prepare(
-    options: SessionOptions<Context>,
+    options: NativeSessionOptions<Context>,
     acquiredEnvironment: (owner: EnvironmentAcquisition) => void,
     cleanupAcquired: () => void,
   ) {
@@ -1594,6 +1626,10 @@ export class Agent<Context = undefined, Output = string> {
         checklist: declarations.checklist,
         websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
+        managedWorkspace: environmentOwner.managedWorkspace,
+        [managedWorkspaceRestore]: (options as OwnedSessionOptions<Context>)[
+          managedWorkspaceRestore
+        ],
         environmentOwner,
         openCorrection: lease.codexLogin
           ? undefined

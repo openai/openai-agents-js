@@ -1,3 +1,10 @@
+import { parseNative } from './binding';
+import {
+  bindManagedWorkspaceSource,
+  capturedWorkspaceJson,
+  type ManagedWorkspaceBinding,
+  type ManagedWorkspaceAuthorization,
+} from './managed-workspace';
 import type {
   SandboxClient,
   SandboxArchiveLimits,
@@ -32,6 +39,8 @@ export interface SandboxEnvironmentOptions<
   options?: Options;
   /** Workspace snapshot used only for resource creation. */
   snapshot?: SnapshotSpec;
+  /** Enable retiring paired checkpoints; omitted snapshots use existing local storage. */
+  managedWorkspace?: boolean;
   /** Live application-owned session. The adapter only closes its gateway. */
   session?: SandboxSessionLike<State>;
   /**
@@ -40,7 +49,11 @@ export interface SandboxEnvironmentOptions<
    * The current manifest supplies filesystem authority. This source can resume
    * the resource only once, including when opening fails after acquisition.
    */
-  authorizedResumeState?: { backendId: string; state: State };
+  /** serializedState: exact authorized JSON for managed paired restore; state: ordinary typed resume. */
+  authorizedResumeState?: { backendId: string } & (
+    | { state: State; serializedState?: never }
+    | { serializedState: Record<string, unknown>; state?: never }
+  );
   concurrencyLimits?: SandboxConcurrencyLimits;
   archiveLimits?: SandboxArchiveLimits | null;
   /** Connect an authenticated native executor to this exact sandbox. */
@@ -75,11 +88,24 @@ export function sandboxEnvironmentWithRuntime<
   options: SandboxEnvironmentOptions<Context, Options, State>,
   runtime: typeof sandboxRuntime,
 ): EnvironmentSource<Context> {
+  return createSandboxEnvironment(options, runtime);
+}
+
+function createSandboxEnvironment<
+  Context,
+  Options extends SandboxClientOptions,
+  State extends SandboxSessionState,
+>(
+  options: SandboxEnvironmentOptions<Context, Options, State>,
+  runtime: typeof sandboxRuntime,
+  inheritedManaged?: ManagedWorkspaceAuthorization,
+): EnvironmentSource<Context> {
   const {
     cloneManifest,
     copySandboxStateRuntimeAuthority,
     Manifest,
     cleanupSandboxSession,
+    retainManagedWorkspaceSnapshot,
     rebindPersistedMountCredentials,
     rebindPersistedPathGrants,
     assertHostPathGrantsRebound,
@@ -93,6 +119,84 @@ export function sandboxEnvironmentWithRuntime<
     validateMountEnvironmentCredentialBoundaries,
   } = runtime;
   const { client, connect } = options;
+  if (
+    options.managedWorkspace !== undefined &&
+    typeof options.managedWorkspace !== 'boolean'
+  )
+    throw new TypeError('managedWorkspace must be a boolean');
+  if (options.managedWorkspace && options.session)
+    throw new TypeError('Managed retirement requires an owned sandbox');
+  if (
+    options.managedWorkspace &&
+    options.snapshot &&
+    options.snapshot.type !== 'local' &&
+    options.snapshot.type !== 'remote'
+  )
+    throw new TypeError(
+      'Managed retirement requires a local or remote snapshot',
+    );
+  const serialize = client.serializeSessionState?.bind(client);
+  if (options.managedWorkspace && !serialize)
+    throw new TypeError('Managed retirement requires provider serialization');
+  const granted = options.authorizedResumeState;
+  if (granted?.serializedState !== undefined) {
+    if (granted.state !== undefined || options.session || options.snapshot)
+      throw new TypeError(
+        'serializedState, state, session and snapshot are mutually exclusive',
+      );
+    const deserialize = client.deserializeSessionState?.bind(client);
+    if (
+      granted.backendId !== client.backendId ||
+      !deserialize ||
+      !client.resume
+    )
+      throw new TypeError(
+        'authorized serialized resume requires a matching backend and deserializer',
+      );
+    const grantedBackendId = granted.backendId;
+    const serialized = capturedWorkspaceJson(granted.serializedState);
+    const currentOptions = captureOptions({
+      ...options,
+      manifest: cloneManifest(requireManifest(options.manifest, Manifest)),
+      connect,
+    });
+    const binding: ManagedWorkspaceAuthorization | undefined =
+      inheritedManaged ??
+      (options.managedWorkspace
+        ? {
+            authorizedReceipt: capturedWorkspaceJson({
+              backendId: grantedBackendId,
+              providerState: parseNative(serialized),
+            }),
+          }
+        : undefined);
+    let consumed = false;
+    const source: EnvironmentSource<Context> = async (acquisition) => {
+      acquisition.signal.throwIfAborted();
+      if (consumed)
+        throw new TypeError('authorizedResumeState has already been acquired');
+      consumed = true;
+      const state = await deserialize(
+        parseNative(serialized) as Record<string, unknown>,
+      );
+      acquisition.signal.throwIfAborted();
+      return createSandboxEnvironment(
+        {
+          ...currentOptions,
+          authorizedResumeState: { backendId: grantedBackendId, state },
+        },
+        runtime,
+        binding,
+      )(acquisition);
+    };
+    return binding ? bindManagedWorkspaceSource(source, binding) : source;
+  }
+  if (options.managedWorkspace && granted && !inheritedManaged)
+    throw new TypeError(
+      'Managed paired restore requires explicitly authorized serializedState',
+    );
+  const managedAuthorization: ManagedWorkspaceAuthorization | undefined =
+    inheritedManaged ?? (options.managedWorkspace ? {} : undefined);
   const create = client.create?.bind(client);
   const borrowed = options.session;
   const resume = options.authorizedResumeState;
@@ -135,7 +239,10 @@ export function sandboxEnvironmentWithRuntime<
     throw new TypeError('concurrencyLimits applies only to resource creation');
   const concurrencyLimits = captureOptions(options.concurrencyLimits);
   const archiveLimits = captureOptions(options.archiveLimits);
-  const snapshot = captureOptions(options.snapshot);
+  const snapshot = captureOptions(
+    options.snapshot ??
+      (managedAuthorization && !resume ? { type: 'local' } : undefined),
+  );
   // Explicit authorization covers provider identity. Current config is the sole
   // source of mount/path authority, using the provider's existing rebind rules.
   if (originalResumeState) {
@@ -170,7 +277,10 @@ export function sandboxEnvironmentWithRuntime<
   }
 
   let resumeConsumed = false;
-  return async ({ signal }) => {
+  const source: EnvironmentSource<Context> = async ({ signal }) => {
+    const managed: ManagedWorkspaceBinding | undefined = managedAuthorization
+      ? { ...managedAuthorization, captureRequested: false }
+      : undefined;
     signal.throwIfAborted();
     if (resumeState) {
       if (resumeConsumed)
@@ -189,7 +299,29 @@ export function sandboxEnvironmentWithRuntime<
           () =>
             !borrowed &&
             sandbox &&
-            cleanupSandboxSession(sandbox, { preserveOwnedSessions: false }),
+            cleanupSandboxSession(
+              sandbox,
+              { preserveOwnedSessions: false },
+              async () => {
+                if (!managed?.captureRequested) return;
+                const providerState = await serialize!(sandbox!.state, {
+                  preserveOwnedSession: false,
+                  reuseLiveSession: false,
+                  willCloseAfterSerialize: true,
+                });
+                if (
+                  sandbox!.state.snapshot?.type !== 'local' &&
+                  sandbox!.state.snapshot?.type !== 'remote'
+                )
+                  throw new TypeError(
+                    'Managed retirement produced no durable snapshot',
+                  );
+                managed.receipt = capturedWorkspaceJson({
+                  backendId: client.backendId,
+                  providerState,
+                });
+              },
+            ),
           () => !borrowed && sandbox && deleteResource?.(sandbox.state),
         ]) {
           try {
@@ -303,6 +435,21 @@ export function sandboxEnvironmentWithRuntime<
           await sandbox.start({ reason: 'native session opening' });
         }
         signal.throwIfAborted();
+        if (managed && !sandbox.stop)
+          throw new TypeError(
+            'Managed retirement requires a provider stop boundary',
+          );
+        if (managed && resumeState) {
+          if (
+            !sandbox.state.snapshot ||
+            (sandbox.state.snapshot.type !== 'local' &&
+              sandbox.state.snapshot.type !== 'remote')
+          )
+            throw new TypeError(
+              'Managed resume requires a local or remote snapshot',
+            );
+          retainManagedWorkspaceSnapshot(sandbox.state.snapshot as any);
+        }
         const created = sandbox;
         gateway = await acquireEnvironment(
           ({ signal }) => connect(created, { signal }),
@@ -314,6 +461,7 @@ export function sandboxEnvironmentWithRuntime<
           gateway.environment! as Environment<Context>,
           dispose,
           gateway.signal,
+          managed,
         );
       };
       const inspectedState = borrowed?.state ?? originalResumeState;
@@ -333,6 +481,9 @@ export function sandboxEnvironmentWithRuntime<
       throw error;
     }
   };
+  return managedAuthorization
+    ? bindManagedWorkspaceSource(source, managedAuthorization)
+    : source;
 }
 
 /** Render only paths, access and caller descriptions, never provider config or environment values. */

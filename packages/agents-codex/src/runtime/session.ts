@@ -1,5 +1,10 @@
 import { audioInputByteLimit } from './media';
 import {
+  ManagedWorkspaceCheckpoint,
+  managedWorkspaceRestore,
+  type ManagedWorkspaceBinding,
+} from './managed-workspace';
+import {
   hasRealtimeAgentConfiguration,
   resolveRealtimeAgentConfiguration,
 } from './realtime-agent-config';
@@ -274,6 +279,15 @@ import {
 } from './history';
 import type { ThreadOptions } from './options';
 import {
+  storedOptions,
+  storedTurnPage,
+  storedItemPage,
+  storedMatchPage,
+  type StoredTurnPage,
+  type StoredItemPage,
+  type StoredMatchPage,
+} from './stored-history';
+import {
   parseSessionState,
   parseNativeCheckpoint,
   fromNativeCheckpoint,
@@ -408,6 +422,10 @@ export interface SessionOptions {
   onClose?: () => Promise<void>;
   /** @internal Live application source, never persisted or inherited from state. */
   environmentOwner?: EnvironmentAcquisition;
+  /** @internal Current application source; never persisted. */
+  managedWorkspace?: ManagedWorkspaceBinding;
+  /** @internal Reauthorize only a validated paired workspace opening. */
+  [managedWorkspaceRestore]?: true;
   environment?: Environment;
   state?: SessionState;
   localStorage?: boolean;
@@ -2471,6 +2489,9 @@ export class Session<OutputT = string, Context = unknown> {
   // Only one-shot manual handlers report child cleanup to the owning run.
   private readonly oneShotChildCleanupErrors: unknown[] = [];
   #native: NativeThread;
+  private storedHistoryClose?: ReturnType<
+    NativeThread['_stored_history_close_action']
+  >;
   #engine: Engine;
   private environmentDisposalFinished = false;
   private environmentCloseFailure?: Promise<void>;
@@ -12082,6 +12103,111 @@ export class Session<OutputT = string, Context = unknown> {
     return this.publicChildTurn(native, producer);
   }
 
+  /** Core has been closing this Session before reverting its stored conversation.
+   * The named turn and every later turn: excluded. Immutable Session.id;
+   * subsequent opening through the same LocalStorage and current Agent. */
+  async revertStored(options: { beforeTurnId: string }): Promise<void> {
+    const { beforeTurnId } = options;
+    if (typeof beforeTurnId !== 'string' || !beforeTurnId)
+      throw new TypeError('beforeTurnId must be a nonempty string');
+    return this.closeStoredHistory({
+      kind: 'revert',
+      before_turn_id: beforeTurnId,
+    });
+  }
+
+  /** Core has been closing this Session before deleting its stored conversation.
+   * LocalStorage only; native writer/reference exclusion and sidecar cleanup.
+   * Explicit rejection after a concurrent prior close; no silent success. */
+  async deleteStored(): Promise<void> {
+    return this.closeStoredHistory({ kind: 'delete' });
+  }
+
+  private closeStoredHistory(action: Record<string, string>): Promise<void> {
+    this.checkCallbackOperation('change stored history while closing');
+    this.idle('change stored history while closing');
+    this.storedHistoryClose = this.#native._stored_history_close_action(
+      JSON.stringify(action),
+    );
+    return this.close();
+  }
+
+  /** Core has been returning committed turn metadata and optional summary items.
+   * Active/approval-paused availability; opaque native cursors without CAS
+   * revisions. Full indexed item detail through storedItems. Unsupported stores
+   * fail without a hidden full-journal fallback. */
+  async storedTurns(
+    options: {
+      limit?: number;
+      cursor?: string;
+      direction?: 'asc' | 'desc';
+      includeSummary?: boolean;
+    } = {},
+  ): Promise<StoredTurnPage> {
+    const {
+      limit = 50,
+      cursor,
+      direction = 'asc',
+      includeSummary = false,
+    } = options;
+    const query = storedOptions(limit, cursor, direction);
+    if (typeof includeSummary !== 'boolean')
+      throw new TypeError('includeSummary must be a boolean');
+    return storedTurnPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'turns',
+          ...query,
+          include_items: includeSummary,
+        }),
+      ),
+    );
+  }
+
+  /** Core has been paging committed item projections in creation order.
+   * Raw original JSON records through historySnapshot; independent copied pages. */
+  async storedItems(
+    options: {
+      turnId?: string;
+      limit?: number;
+      cursor?: string;
+      direction?: 'asc' | 'desc';
+    } = {},
+  ): Promise<StoredItemPage> {
+    const { limit = 50, cursor, direction = 'asc', turnId } = options;
+    const query = storedOptions(limit, cursor, direction);
+    if (turnId !== undefined && (typeof turnId !== 'string' || !turnId))
+      throw new TypeError('turnId must be a nonempty string');
+    return storedItemPage(
+      await this.#native._stored_history(
+        JSON.stringify({ kind: 'items', ...query, turn_id: turnId ?? null }),
+      ),
+    );
+  }
+
+  /** Core has been searching indexed visible messages by literal substring.
+   * Case-insensitive matching; UTF-16 snippet offsets. Inclusive turnCursor for
+   * storedTurns at the matching turn. */
+  async searchHistory(
+    text: string,
+    options: { limit?: number; cursor?: string } = {},
+  ): Promise<StoredMatchPage> {
+    const { limit = 50, cursor } = options;
+    const query = storedOptions(limit, cursor);
+    if (typeof text !== 'string' || !text.trim())
+      throw new TypeError('Stored history search requires nonempty text');
+    return storedMatchPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'search',
+          limit: query.limit,
+          cursor: query.cursor,
+          text,
+        }),
+      ),
+    );
+  }
+
   async #readHistory(subagentId?: string) {
     return decode(
       threadHistorySchema,
@@ -12841,7 +12967,67 @@ export class Session<OutputT = string, Context = unknown> {
       .catch(() => {});
     return pending;
   }
+  /** Retire this owned Session and capture its associated durable workspace. */
+  async suspendWorkspace(): Promise<ManagedWorkspaceCheckpoint> {
+    this.checkCallbackOperation('suspend managed workspace on');
+    const managed = this.options.managedWorkspace;
+    if (!managed)
+      throw new TypeError(
+        'Managed capture requires an owned managed sandbox source',
+      );
+    if (managed.capture) return managed.capture;
+    managed.captureRequested = true;
+    let capture: Promise<SessionState>;
+    try {
+      capture =
+        this.lifecycle.kind === 'turn'
+          ? this.captureSuspendedState()
+          : this.captureIdleState(true);
+    } catch (error) {
+      managed.captureRequested = false;
+      throw error;
+    }
+    if (
+      this.lifecycle.kind !== 'mutation' &&
+      !this.manualSeal &&
+      !this.manualSealed
+    ) {
+      managed.captureRequested = false;
+      return capture.then(() => {
+        throw new NativeError('Managed capture admission was not retained');
+      });
+    }
+    const pending = capture.then(
+      async (state) => {
+        await this.close();
+        if (!managed.receipt)
+          throw new NativeError(
+            'Managed retirement omitted its workspace receipt',
+          );
+        return ManagedWorkspaceCheckpoint._capture(state, managed.receipt);
+      },
+      async (error) => {
+        try {
+          await this.close();
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'Managed capture and cleanup failed',
+            { cause: error },
+          );
+        }
+        throw error;
+      },
+    );
+    managed.capture = pending;
+    void pending.catch(() => {});
+    return pending;
+  }
+
   async saveState(): Promise<SessionState> {
+    return this.captureIdleState(false);
+  }
+  private captureIdleState(retire: boolean): Promise<SessionState> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
@@ -12857,7 +13043,7 @@ export class Session<OutputT = string, Context = unknown> {
 
     this.idle('saveState');
     let snapshot: SessionState | null = null;
-    await this.mutate(async () => {
+    return this.mutate(async () => {
       const state = this.decorateState(
         parseNativeCheckpoint(
           await this.#native._export_checkpoint(null, false),
@@ -12865,11 +13051,22 @@ export class Session<OutputT = string, Context = unknown> {
       );
 
       snapshot = state;
+      if (retire) {
+        this.manualSealed = true;
+        this.sealedStateJson = encode(state);
+      }
+    }).then(() => {
+      if (!snapshot)
+        throw new NativeError('Native checkpoint was not captured');
+      return snapshot;
     });
-    if (!snapshot) throw new NativeError('Native checkpoint was not captured');
-    return snapshot;
   }
   async suspend(): Promise<SessionState> {
+    if (this.options.managedWorkspace?.capture)
+      throw new NativeError('Session is retiring a managed workspace');
+    return this.captureSuspendedState();
+  }
+  private captureSuspendedState(): Promise<SessionState> {
     if (this.options.chatGPTPlan)
       throw new TypeError('Sign in with ChatGPT requires settled state');
     if (this.realtimeOwner)
@@ -12881,7 +13078,7 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
       );
     if (this.sealedStateJson !== undefined)
-      return parseSessionState(this.sealedStateJson);
+      return Promise.resolve(parseSessionState(this.sealedStateJson));
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.length)
       throw new NativeError('Cannot suspend while roots are queued');
@@ -13996,6 +14193,8 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private async closeNative(): Promise<NativeError | undefined> {
+    const storedAction = this.storedHistoryClose;
+    this.storedHistoryClose = undefined;
     // Join exact form replies, including retirements started by earlier stops.
     // Native shutdown must still precede held schema compilation cleanup.
     await Promise.allSettled([...this.nativeFormRetirementReplies]);
@@ -14013,6 +14212,15 @@ export class Session<OutputT = string, Context = unknown> {
         ? await this.#native._close_private_root_report()
         : await this.#native._close_report();
       if (message) return new NativeError(message);
+    }
+    if (storedAction) {
+      try {
+        await storedAction.apply();
+      } catch (error) {
+        // Native shutdown has joined. Preserve the operation failure through
+        // the existing report channel while engine/carrier teardown continues.
+        return error as NativeError;
+      }
     }
     return undefined;
   }
