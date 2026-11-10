@@ -473,9 +473,13 @@
       "sha256": "8d243ea5efea735d6d1ac9241df7a04d05d654e4c5ce78070541d58b57ae41ba"
     },
     {
+      "path": "sdk-realtime-raw-settings-and-item-deletion.patch",
+      "sha256": "0ab7da8b87a0bcfe84d3e60b6d2850953c781880efbb82b196f8c8a123559f18"
+    },
+    {
       "path": "0098-private-plain-modelclient-bridge.patch",
       "sha256": "94111877b4a837ca0425f6d935de253fd603a895ff50a4a11cb913a9e4b1246a"
     }
   ],
-  "result_tree": "45db7eaa872449f10bca2d2668f2f6294e8e3c3b"
+  "result_tree": "fc1d15b2fd98c3077da660c981bb1583762a607d"
 }

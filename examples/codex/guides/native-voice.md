@@ -95,9 +95,36 @@ if (userItemId) await voice.deleteConversationItem(userItemId);
 
 `await voice.sendEvent(event)` sends a captured JSON object through the same native generation, input queue, and provider writer as the typed controls. Use provider field names, such as `output_modalities`, rather than the typed helper's camelCase names. Ordinary sends return `null`; `conversation.item.retrieve` returns the retrieved provider item, including available media. Each captured event counts toward the shared 128-operation and 8 MiB input allocation limits.
 
-Supported events include `response.create`, `response.cancel`, `conversation.item.create`, `conversation.item.retrieve`, `conversation.item.delete`, `conversation.item.truncate`, `session.update`, `input_audio_buffer.append`, `input_audio_buffer.clear`, `input_audio_buffer.commit`, and `output_audio_buffer.clear`. A raw response request can supply alternate `input`, including item references or an explicitly empty array, plus `conversation`, instructions, modality, token cap, `metadata`, `parallel_tool_calls`, `reasoning`, and `event_id`. Use `conversation: 'none'` for a detached response. Detached responses share the native response queue, run with tools disabled, and emit output outside the provider conversation.
+Supported events include `response.create`, `response.cancel`, `conversation.item.create`, `conversation.item.retrieve`, `conversation.item.delete`, `conversation.item.truncate`, `session.update`, `input_audio_buffer.append`, `input_audio_buffer.clear`, `input_audio_buffer.commit`, and `output_audio_buffer.clear`. A raw response request can supply alternate `input`, including item references or an explicitly empty array, plus `conversation`, instructions, modality, token cap, `metadata`, `parallel_tool_calls`, `reasoning`, and `event_id`. Use `conversation: 'none'` for a detached response outside the provider conversation. Detached responses default to an empty tool list. For a function declared in the detached request's `response.tools`, `voice.events()` has been reporting each completed call once as `detached_function_call`, with `responseId`, `itemId`, `callId`, `name`, and the JSON string `arguments`. Detached calls have been bypassing native tool execution and linked conversation history. Applications have been returning results through a later detached response's `input`, using a `function_call_output` item with the same `call_id` and a string `output`.
+
+Per-response prompt and audio overrides have been using the provider's `response.prompt` and `response.audio.output` fields. Prompt references have been accepting an `id`, optional `version` and `variables`, or explicit `null`. The following example has been assuming an open `voice` owner and your saved prompt ID:
+
+```ts
+await voice.sendEvent({
+  type: 'response.create',
+  response: {
+    prompt: {
+      id: 'pmpt_your_prompt_id',
+      version: '2',
+      variables: { recipient: 'Sam' },
+    },
+    audio: {
+      output: {
+        voice: 'marin',
+        format: { type: 'audio/pcm', rate: 24000 },
+      },
+    },
+  },
+});
+```
+
+Output voice overrides have been accepting a voice name or `{ id: 'voice_your_voice_id' }`. Output formats have been accepting 24 kHz `audio/pcm`, `audio/pcmu`, or `audio/pcma`. Received `audio` events have been retaining each response's codec: `pcm16` at 24 kHz, or `g711_ulaw`/`g711_alaw` at 8 kHz. These overrides have been leaving the session defaults unchanged for later responses.
 
 A raw `session.update` accepts sparse provider settings. Truncation requires a known received audio item and a bounded playback offset. `output_audio_buffer.clear` applies to provider-managed playback. Raw cancellation uses the same local audio, guardrail, and delegated-work cleanup as `interrupt()` and emits `playback_interrupted`. Append audio as base64 in the accepted input format and use `response.create` to request a response after committing audio.
+
+Use `session.update.session.tools` to replace the provider tool list, including hosted MCP declarations. Send `[]` to clear the list or omit `tools` to keep it. Reuse the exact advertised declarations for native functions. Hosted MCP calls follow the same approval flow as typed configuration.
+
+For a linked application function declared in the raw tool list, wait for a `conversation_item` event with `kind: 'function_call'` and `status: 'done'`. Use `retrieveConversationItem(event.itemId)` to read its name, arguments, and `call_id`. After handling a function you own, send a `conversation.item.create` event with a `function_call_output` item, a fresh `id`, the same `call_id`, and the string `output`. Send `response.create` when the response's tool outputs have settled.
 
 For message creation, use the supported role-specific content below. Set `previous_item_id` to a known provider item or `'root'` to position the item, or omit it to append. You can also import a completed historical `function_call` followed by one `function_call_output` with its `call_id`. These rows serve as context. To answer a pending hosted MCP approval, send an `mcp_approval_response` with the provider's issued `approval_request_id` and a Boolean `approve` value.
 
@@ -105,7 +132,7 @@ These sends are controls, not a replacement for consuming `voice.events()`. A ra
 
 ### Delete a provider conversation item
 
-`conversation_item` events report provider item IDs and their `added`/`done` status. Pass one of those IDs to `await voice.deleteConversationItem(providerItemId)`. Core checks dependencies and waits for the exact provider acknowledgement and durable audit append before the call completes. A `conversation_item_deleted` event reports that receipt.
+`conversation_item` events report provider item IDs and their `added`/`done` status. Pass one of those IDs to `await voice.deleteConversationItem(providerItemId)`. For an application-known ID from before attachment, Core first retrieves the item and requires a completed user, assistant, or system message. Core checks dependencies and waits for the exact provider acknowledgement and durable audit append before the call completes. A `conversation_item_deleted` event reports that receipt.
 
 Deletion removes the item from the provider conversation; canonical history retains prior entries and adds a `provider_item_deleted` marker with its target in `providerItemId`. Canonical history IDs are separate from provider item IDs.
 
