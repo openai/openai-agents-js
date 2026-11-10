@@ -6580,6 +6580,31 @@ export class Session<OutputT = string, Context = unknown> {
     ) {
       if (owner.observationPhase !== 'open') return;
       owner.observationPhase = 'finishing';
+      const completed = toolCompletionSchema.safeParse(msg.tool_completion);
+      const fact = completed.success ? completed.data : undefined;
+      const proposal = this.terminalProposals.get(owner)?.proposal;
+      if (
+        msg.type !== 'turn_aborted' &&
+        event.subagent_turn_failed === false &&
+        owner.failure === undefined &&
+        !owner.controller.signal.aborted &&
+        fact &&
+        proposal?.accepted &&
+        proposal.callId === fact.call_id &&
+        proposal.name === fact.name &&
+        (proposal.namespace ?? 'functions') ===
+          (fact.namespace ?? 'functions') &&
+        typeof fact.final_output === 'string' &&
+        isDeepStrictEqual(proposal.json, fact.final_output)
+      ) {
+        // Matching native completion receipt; publication of the accepted
+        // single-text body through the existing observation budget/reader path.
+        this.releaseTerminalObservation(owner, {
+          type: 'function_call_output',
+          call_id: fact.call_id,
+          output: fact.final_output,
+        });
+      }
       this.flushTerminalObservations(owner);
       if (msg.type === 'turn_aborted' || msg.tool_completion === undefined)
         this.clearTerminalProposal(owner);
