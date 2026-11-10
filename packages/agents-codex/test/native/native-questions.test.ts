@@ -62,6 +62,7 @@ async function fixture(
     missingSelectedTool?: boolean;
     formOrigin?: 'previous' | 'current';
     deferGetUntilPostHeaders?: boolean;
+    retireExtraGetBeforeQuestion?: boolean;
     urlQuestion?: boolean;
     urlCompletion?: boolean;
     urlRequired?: boolean;
@@ -181,7 +182,10 @@ async function fixture(
   let finishForm: (() => void) | undefined;
   let activeGet: { get: number; response: ServerResponse } | undefined;
   const liveGets = new Map<string, ServerResponse>();
-  const openGets = new Set<ServerResponse>();
+  const openGets = new Map<
+    ServerResponse,
+    { get: number; clientSession: string }
+  >();
   let urlOwnerSession: string | undefined;
   let nextClientSession = 0;
   let nextGet = Promise.withResolvers<void>();
@@ -220,9 +224,9 @@ async function fixture(
         const clientSession = String(
           request.headers['mcp-session-id'] ?? 'questions-fixture',
         );
-        openGets.add(response);
         liveGets.set(clientSession, response);
         const get = ++getCount;
+        openGets.set(response, { get, clientSession });
         firstGet ??= get;
         latestGet = get;
         trace('get_connected', {
@@ -235,10 +239,29 @@ async function fixture(
             destroyed: response.destroyed,
             writableEnded: response.writableEnded,
           });
-          if (activeGet?.response === response) activeGet = undefined;
           openGets.delete(response);
-          if (liveGets.get(clientSession) === response)
-            liveGets.delete(clientSession);
+          const remaining = [...openGets.entries()]
+            .reverse()
+            .filter(
+              ([stream]) =>
+                !stream.destroyed && !stream.writableEnded && stream.writable,
+            );
+          if (activeGet?.response === response) {
+            const newest = remaining[0];
+            activeGet = newest
+              ? { get: newest[1].get, response: newest[0] }
+              : undefined;
+          }
+          if (liveGets.get(clientSession) === response) {
+            const newest = remaining.find(
+              ([, identity]) => identity.clientSession === clientSession,
+            );
+            if (newest) liveGets.set(clientSession, newest[0]);
+            else liveGets.delete(clientSession);
+          }
+          const ready = nextGet;
+          nextGet = Promise.withResolvers<void>();
+          ready.resolve();
         });
         response.writeHead(200, {
           'content-type': 'text/event-stream',
@@ -346,6 +369,35 @@ async function fixture(
           break;
         case 'tools/call':
           calls.push(rpc.params);
+          if (options.retireExtraGetBeforeQuestion && calls.length === 2) {
+            expect(openGets.size).toBeGreaterThan(0);
+            await new Promise<void>((resolve, reject) => {
+              const probe = forwardHttp(
+                `http://127.0.0.1:${endpointPort}`,
+                {
+                  headers: {
+                    accept: 'text/event-stream',
+                    'mcp-session-id': clientSession,
+                    'mcp-protocol-version': '2024-11-05',
+                  },
+                },
+                (response) => {
+                  const stream = activeGet?.response;
+                  if (!stream) {
+                    response.destroy();
+                    reject(new Error('Expected the redundant GET stream'));
+                    return;
+                  }
+                  const closed = once(stream, 'close');
+                  response.on('error', () => {});
+                  response.destroy();
+                  void closed.then(() => resolve(), reject);
+                },
+              );
+              probe.once('error', reject);
+              probe.end();
+            });
+          }
           if (options.urlQuestion || options.urlRequired)
             urlOwnerSession = clientSession;
           if (options.urlRequired) {
@@ -1033,13 +1085,38 @@ it('starts the sole real event reader before publishing MCP and refuses an unown
   }
 }, 30_000);
 
-for (const { formOrigin, deferGetUntilPostHeaders } of [
-  { formOrigin: 'previous', deferGetUntilPostHeaders: false },
-  { formOrigin: 'current', deferGetUntilPostHeaders: false },
-  { formOrigin: 'previous', deferGetUntilPostHeaders: true },
+for (const {
+  formOrigin,
+  deferGetUntilPostHeaders,
+  retireExtraGetBeforeQuestion,
+} of [
+  {
+    formOrigin: 'previous',
+    deferGetUntilPostHeaders: false,
+    retireExtraGetBeforeQuestion: false,
+  },
+  {
+    formOrigin: 'current',
+    deferGetUntilPostHeaders: false,
+    retireExtraGetBeforeQuestion: false,
+  },
+  {
+    formOrigin: 'previous',
+    deferGetUntilPostHeaders: true,
+    retireExtraGetBeforeQuestion: false,
+  },
+  {
+    formOrigin: 'current',
+    deferGetUntilPostHeaders: false,
+    retireExtraGetBeforeQuestion: true,
+  },
 ] as const) {
-  it(`refuses an unsolicited GET-stream form from ${formOrigin} during same-server B without issuing a grant${deferGetUntilPostHeaders ? ' when GET follows POST headers' : ''}`, async () => {
-    const f = await fixture({ formOrigin, deferGetUntilPostHeaders });
+  it(`refuses an unsolicited GET-stream form from ${formOrigin} during same-server B without issuing a grant${deferGetUntilPostHeaders ? ' when GET follows POST headers' : ''}${retireExtraGetBeforeQuestion ? ' after redundant GET retirement' : ''}`, async () => {
+    const f = await fixture({
+      formOrigin,
+      deferGetUntilPostHeaders,
+      retireExtraGetBeforeQuestion,
+    });
     let issued = 0;
     try {
       f.trace('agent_run_wait');
