@@ -38,7 +38,7 @@ try {
     loader: { ignore_user_config: true, ignore_project_config: true },
   };
   // The existing late-config control uses this invalid config. It also
-  // keeps a missed platform guard from continuing to executor startup.
+  // keeps a missed policy guard from continuing to executor startup.
   const invalidConfig = '{"not_a_native_option":true}';
   if (mode === 'unsupported') {
     await assert.rejects(
@@ -47,14 +47,14 @@ try {
         JSON.stringify({
           ...runtime,
           environment: {
-            local: true,
+            local: false,
             cwd: pathToFileURL(cwd).href,
             write_policy: 'trusted_workspace_write',
           },
         }),
         'synthetic-darwin-admission',
       ),
-      /Trusted workspace writes require Linux\b/,
+      /Trusted workspace writes require a local Environment/,
     );
   }
   if (mode === 'late') {

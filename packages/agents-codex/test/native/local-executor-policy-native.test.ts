@@ -16,8 +16,8 @@ import {
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createUnixServer } from 'node:net';
-import { homedir, tmpdir } from 'node:os';
-import { basename, delimiter, join } from 'node:path';
+import { homedir, tmpdir, userInfo } from 'node:os';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -55,13 +55,12 @@ async function providerFor(server: ModelServer) {
   });
 }
 
-const trustedSupported = process.platform === 'linux';
-const supported = trustedSupported || process.platform === 'darwin';
+const supported = process.platform === 'linux' || process.platform === 'darwin';
 const packageRoot = join(import.meta.dirname, '..', '..');
 
 const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
-it.skipIf(!trustedSupported)(
+it.skipIf(!supported)(
   'scopes trusted local workspace writes, private authentication and command temp',
   async (context) => {
     const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-local-'));
@@ -183,7 +182,7 @@ it.skipIf(!trustedSupported)(
           network: {
             allowedDomains: ['sdk-fixture.invalid'],
             deniedDomains: ['denied.invalid'],
-            allowAllUnixSockets: true,
+            allowAllUnixSockets: process.platform === 'linux',
           },
         });
       const opened = await agent
@@ -274,7 +273,7 @@ it.skipIf(!trustedSupported)(
   45_000,
 );
 
-it.skipIf(!trustedSupported)(
+it.skipIf(!supported)(
   'scopes Git and SSH settings for local commands',
   async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'sdk-git-'));
@@ -390,17 +389,19 @@ it.skipIf(!trustedSupported)(
         model: 'gpt-5',
         instructions: 'Work.',
       });
-      await expect(
-        agent.session({
-          environment: Environment.local({
-            cwd,
-            writePolicy: 'trusted_workspace_write',
-            tools: ['exec_command'],
-            network: { allowedDomains: ['sdk-fixture.invalid'] },
+      if (process.platform === 'linux') {
+        await expect(
+          agent.session({
+            environment: Environment.local({
+              cwd,
+              writePolicy: 'trusted_workspace_write',
+              tools: ['exec_command'],
+              network: { allowedDomains: ['sdk-fixture.invalid'] },
+            }),
           }),
-        }),
-      ).rejects.toThrow('Linux requires explicit access to all Unix sockets');
-      expect(server.requests).toHaveLength(0);
+        ).rejects.toThrow('Linux requires explicit access to all Unix sockets');
+        expect(server.requests).toHaveLength(0);
+      }
       for (const { name, trusted, allowSockets } of modes) {
         await using session = await agent.session({
           environment: Environment.local({
@@ -442,15 +443,8 @@ it.skipIf(!trustedSupported)(
 );
 
 it.skipIf(process.platform !== 'darwin')(
-  'rejects trusted workspace writes on macOS',
+  'keeps telemetry configurable after rejecting trusted writes for a remote environment',
   () => {
-    expect(() =>
-      Environment.local({
-        cwd: process.cwd(),
-        writePolicy: 'trusted_workspace_write',
-      }),
-    ).toThrow('Trusted workspace writes require Linux');
-
     const env = { ...process.env };
     delete env.CODEX_HOME;
     delete env.OPENAI_API_KEY;
@@ -477,13 +471,88 @@ it.skipIf(process.platform !== 'darwin')(
   150_000,
 );
 
-it
-  .skipIf(!supported)
-  .for(
-    trustedSupported
-      ? (['strict', 'trusted_workspace_write'] as const)
-      : (['strict'] as const),
-  )(
+it.skipIf(process.platform !== 'darwin')(
+  'allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants',
+  async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-darwin-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'granted');
+      const outside = join(base, 'outside');
+      await Promise.all([
+        mkdir(cwd),
+        mkdir(extra),
+        writeFile(outside, 'outside'),
+      ]);
+      vi.stubEnv(
+        'PATH',
+        [dirname(process.execPath), process.env.PATH].join(delimiter),
+      );
+      const host = userInfo();
+      const command = [
+        'set -eu',
+        `test "$(/usr/bin/id -u)" = ${host.uid} || exit 11`,
+        `test "$(/usr/bin/id -un)" = ${shellQuote(host.username)} || exit 12`,
+        '/usr/bin/ssh -G -F /dev/null sdk-fixture.invalid > "$TMPDIR/ssh-config"',
+        '/usr/bin/grep -qx "hostname sdk-fixture.invalid" "$TMPDIR/ssh-config"',
+        `test "$(node --version)" = ${shellQuote(process.version)} || exit 13`,
+        'verify=$(/usr/bin/curl --disable --fail --silent --show-error --max-time 20 --proto "=https" --write-out "%{ssl_verify_result}" https://github.com/robots.txt -o "$TMPDIR/robots.txt")',
+        'test "$verify" = 0 || exit 14',
+        'test -s "$TMPDIR/robots.txt"',
+        `test "$(cat ${shellQuote(outside)})" = outside`,
+        `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 15; fi`,
+        'printf workspace > result',
+        `printf grant > ${shellQuote(join(extra, 'result'))}`,
+      ].join('; ');
+      const server = new ModelServer([
+        [
+          call(
+            'exec_command',
+            { cmd: command, yield_time_ms: 25_000 },
+            { callId: 'trusted-macos' },
+          ),
+        ],
+        [message('done')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      await using session = await agent.session({
+        environment: Environment.local({
+          cwd,
+          writableRoots: [extra],
+          writePolicy: 'trusted_workspace_write',
+          tools: ['exec_command'],
+          network: { allowedDomains: ['github.com'] },
+        }),
+      });
+      expect(
+        (await (await session.submit('Run the fixture.')).wait()).finalOutput,
+      ).toBe('done');
+      expect(await Array.fromAsync(session.items())).toContainEqual(
+        expect.objectContaining({
+          type: 'command_execution',
+          callId: 'trusted-macos',
+          exitCode: 0,
+          status: 'completed',
+        }),
+      );
+      expect(await readFile(join(cwd, 'result'), 'utf8')).toBe('workspace');
+      expect(await readFile(join(extra, 'result'), 'utf8')).toBe('grant');
+      expect(await readFile(outside, 'utf8')).toBe('outside');
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  45_000,
+);
+
+it.skipIf(!supported).for(['strict', 'trusted_workspace_write'] as const)(
   'records the selected local proxy in child and grandchild receipts with %s',
   { timeout: 75_000 },
   async (writePolicy, context) => {
@@ -2197,13 +2266,7 @@ it.skipIf(!supported)(
   30_000,
 );
 
-it
-  .skipIf(!supported)
-  .for(
-    trustedSupported
-      ? (['portable', 'local', 'trusted portable'] as const)
-      : (['portable', 'local'] as const),
-  )(
+it.skipIf(!supported).for(['portable', 'local', 'trusted portable'] as const)(
   'applies a per-turn write policy and requires the current policy on %s restore',
   { timeout: 45_000 },
   async (kind, context) => {
@@ -2839,11 +2902,7 @@ it
         process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
   )
-  .for(
-    trustedSupported
-      ? (['portable', 'local', 'trusted local'] as const)
-      : (['portable', 'local'] as const),
-  )(
+  .for(['portable', 'local', 'trusted local'] as const)(
   'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
   { timeout: 120_000 },
   async (route) => {

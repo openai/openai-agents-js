@@ -17,7 +17,7 @@ it('keeps the omitted local write policy identical to explicit strict', () => {
   expect(environmentConfig(strict)).not.toHaveProperty('write_policy');
 });
 
-it('accepts an immutable trusted workspace write policy only on local Linux', () => {
+it('accepts an immutable trusted workspace write policy only on supported local platforms', () => {
   const options = {
     cwd: process.cwd(),
     writePolicy: 'trusted_workspace_write' as const,
@@ -31,8 +31,8 @@ it('accepts an immutable trusted workspace write policy only on local Linux', ()
         writePolicy: options.writePolicy as never,
       }),
   ).toThrow('Trusted workspace writes require Environment.local');
-  if (process.platform !== 'linux') {
-    expect(() => Environment.local(options)).toThrow(/require Linux/);
+  if (process.platform !== 'linux' && process.platform !== 'darwin') {
+    expect(() => Environment.local(options)).toThrow(/Linux or macOS/);
     return;
   }
   expect(() => Environment.local({ ...options, readOnly: true })).toThrow(

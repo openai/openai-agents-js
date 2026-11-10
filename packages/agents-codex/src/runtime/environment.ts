@@ -291,7 +291,7 @@ export type LocalEnvironmentOptions<Context = unknown> = Omit<
   | 'readOnlyRoots'
   | 'writePolicy'
 > & {
-  /** Linux only. Trusted mode permits host reads and toolchain discovery with scoped writes. */
+  /** Linux or macOS. Trusted mode permits host reads and toolchain discovery with scoped writes. */
   writePolicy?: 'strict' | 'trusted_workspace_write';
   /** Linux only: canonical same-path read-only local_bind mounts. */
   mounts?: readonly LocalStorageMount[];
@@ -381,8 +381,8 @@ export class Environment<Context = any> {
         throw new TypeError(
           'Trusted workspace writes require Environment.local',
         );
-      if (process.platform !== 'linux')
-        throw new TypeError('Trusted workspace writes require Linux');
+      if (!['linux', 'darwin'].includes(process.platform))
+        throw new TypeError('Trusted workspace writes require Linux or macOS');
     } else if (this.writePolicy !== 'strict' && this.writePolicy !== 'legacy') {
       throw new TypeError(
         this.kind === 'local'

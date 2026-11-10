@@ -4,8 +4,6 @@
 mod linux_apparmor_probe;
 #[cfg(target_os = "linux")]
 mod linux_supervisor;
-#[cfg(target_os = "linux")]
-mod local_command_path;
 
 fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
@@ -39,30 +37,6 @@ fn main() -> anyhow::Result<()> {
         {
             let helper = executable.with_file_name("codex-linux-sandbox");
             return linux_supervisor::run(&helper, args);
-        }
-        if executable.file_name() == Some("codex-linux-sandbox".as_ref())
-            && let Some(path) = std::env::var_os(local_command_path::COMMAND_PATH_ENV)
-        {
-            // Bubblewrap resolves and probes host helpers in the outer stage.
-            // Only its inner stage will use PATH to exec the payload.
-            let inner_stage = std::env::args_os()
-                .skip(1)
-                .take_while(|argument| argument != "--")
-                .any(|argument| argument == "--apply-seccomp-then-exec");
-            // SAFETY: this is the fresh helper before dispatch starts any threads.
-            unsafe {
-                std::env::set_var(
-                    "PATH",
-                    if inner_stage {
-                        path.as_os_str()
-                    } else {
-                        local_command_path::LOCAL_HELPER_PATH.as_ref()
-                    },
-                );
-                if inner_stage {
-                    std::env::remove_var(local_command_path::COMMAND_PATH_ENV);
-                }
-            }
         }
     }
     codex_arg0::arg0_dispatch_or_else(|_| async {
