@@ -294,7 +294,27 @@ it('restores raw originals through canonical storage without promoting audit rec
       await session.close();
     }
     await using restored = await agent.session({ storage, resume: identity });
-    expect(await restored.historySnapshot()).toEqual(retained);
+    const current = await restored.historySnapshot();
+    expect(current.items.slice(0, retained.total)).toEqual(retained.items);
+    expect(current.total).toBe(current.items.length);
+    for (const item of current.items.slice(retained.total)) {
+      expect(item).toMatchObject({ type: 'message', role: 'developer' });
+      const metadata = item.internal_chat_message_metadata_passthrough as {
+        content_item_kinds: unknown[];
+      };
+      expect(metadata.content_item_kinds.length).toBeGreaterThan(0);
+      for (const kind of metadata.content_item_kinds) {
+        expect([
+          'collaboration_mode.instructions',
+          'sdk_application.accepted',
+        ]).toContain(kind);
+      }
+    }
+    expect(await restored.historySnapshot({ limit: 1 })).toEqual({
+      revision: current.revision,
+      total: current.total,
+      items: current.items.slice(-1),
+    });
     expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
       'durable originals continued',
     );

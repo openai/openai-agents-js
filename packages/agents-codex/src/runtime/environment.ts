@@ -149,6 +149,7 @@ const environmentValues = z
           name.length > 0 &&
           name !== 'CODEX_SDK_BWRAP_SEARCH_PATH' &&
           name !== 'CARGO_BIN_EXE_bwrap' &&
+          name !== 'CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE' &&
           !name.includes('\0') &&
           !name.includes('=') &&
           typeof entry === 'string' &&

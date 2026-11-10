@@ -36,6 +36,7 @@ it.each([
   { 'BAD\0NAME': 'value' },
   { CODEX_SDK_BWRAP_SEARCH_PATH: 'private-environment-value' },
   { CARGO_BIN_EXE_bwrap: 'private-environment-value' },
+  { CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE: 'private-environment-value' },
   { NAME: 'bad\0private-environment-value' },
   { NAME: 1 },
   { 'BAD\ud800': 'value' },
