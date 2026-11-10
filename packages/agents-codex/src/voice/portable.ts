@@ -5,6 +5,10 @@ import {
 } from '../runtime/realtime-usage';
 export type { NativeRealtimeUsage } from '../runtime/realtime-usage';
 
+const MAX_COMMAND_BYTES = 8 * 1024 * 1024;
+const MAX_QUEUED_SEND_BYTES = 8 * 1024 * 1024;
+const MAX_QUEUED_SENDS = 256;
+
 /** Host effects for the target-neutral Rust Realtime control crate. */
 export interface PortableVoiceTransport {
   send(frame: string): void | Promise<void>;
@@ -217,13 +221,24 @@ export class PortableVoiceSession {
       throw new TypeError('Portable voice audio must be an ArrayBuffer.');
     if (typeof commit !== 'boolean')
       throw new TypeError('Portable voice audio commit must be a boolean.');
-    // Match the native command limit before allocating the binary/base64 strings.
-    const headerBytes = JSON.stringify({
-      type: 'audio',
-      audio: '',
-      commit,
-    }).length;
-    if (Math.ceil(audio.byteLength / 3) * 4 > 8 * 1024 * 1024 - headerBytes)
+    // Check both native JSON bytes and the existing host UTF-16 queue budget
+    // before encoding or reserving any native send receipts.
+    const encodedLength = Math.ceil(audio.byteLength / 3) * 4;
+    const commandLength =
+      JSON.stringify({ type: 'audio', audio: '', commit }).length +
+      encodedLength;
+    const appendLength =
+      JSON.stringify({ type: 'input_audio_buffer.append', audio: '' }).length +
+      encodedLength;
+    const commitLength = commit
+      ? JSON.stringify({ type: 'input_audio_buffer.commit' }).length
+      : 0;
+    if (
+      commandLength > MAX_COMMAND_BYTES ||
+      this.#queuedSends + (commit ? 2 : 1) > MAX_QUEUED_SENDS ||
+      this.#queuedSendBytes + (appendLength + commitLength) * 2 >
+        MAX_QUEUED_SEND_BYTES
+    )
       throw new RangeError('Audio input exceeds capacity.');
     const bytes = new Uint8Array(audio);
     const chunks: string[] = [];
@@ -322,8 +337,8 @@ export class PortableVoiceSession {
           const frame = JSON.stringify(effect.event);
           const bytes = frame.length * 2;
           if (
-            this.#queuedSends === 256 ||
-            this.#queuedSendBytes + bytes > 8 * 1024 * 1024
+            this.#queuedSends >= MAX_QUEUED_SENDS ||
+            this.#queuedSendBytes + bytes > MAX_QUEUED_SEND_BYTES
           )
             throw new Error('Portable voice egress exceeds capacity.');
           this.#queuedSends++;

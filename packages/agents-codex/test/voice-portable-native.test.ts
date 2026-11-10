@@ -562,13 +562,17 @@ describe.runIf(enabled)('portable Rust control', () => {
   });
 
   it.each([false, true])(
-    'rejects oversized audio before encoding with commit %s',
+    'enforces audio capacity through transport with commit %s',
     async (commit) => {
+      const frames: { type: string; audio?: string }[] = [];
+      const onError = vi.fn();
+      const close = vi.fn();
       const session: PortableVoiceSession = new PortableVoiceSession(
         control(),
         {
           send(frame) {
             const event = JSON.parse(frame);
+            frames.push(event);
             if (event.type === 'session.update')
               queueMicrotask(() =>
                 session.receive({
@@ -577,27 +581,215 @@ describe.runIf(enabled)('portable Rust control', () => {
                 }),
               );
           },
-          close() {},
+          close,
         },
-        { model: 'test-realtime', instructions: 'Help.' },
+        { model: 'test-realtime', instructions: 'Help.', onError },
       );
-      await session.start();
-      const encode = vi.spyOn(String, 'fromCharCode').mockImplementation(() => {
-        throw new Error('Encoding started.');
-      });
       try {
-        // 8 MiB command limit, at most42 ASCII header bytes,4 base64 bytes per3 raw bytes.
-        const largestSegment = 6_291_423;
-        expect(() =>
-          session.sendAudio(new ArrayBuffer(largestSegment), { commit }),
-        ).toThrow('Encoding started.');
-        encode.mockClear();
-        expect(() =>
-          session.sendAudio(new ArrayBuffer(largestSegment + 1), { commit }),
-        ).toThrow('Audio input exceeds capacity');
-        expect(encode).not.toHaveBeenCalled();
+        await session.start();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        // The existing host budget counts two bytes per frame character,
+        // including the optional36-character commit frame.
+        const largestSegment = commit ? 3_145_665 : 3_145_692;
+        const audio = new Uint8Array(largestSegment);
+        audio[0] = 1;
+        audio[audio.length - 1] = 255;
+        session.sendAudio(audio.buffer, { commit });
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((frame) =>
+              frame.type.startsWith('input_audio_buffer.'),
+            ),
+          ).toHaveLength(commit ? 2 : 1),
+        );
+        const appended = frames.find(
+          (frame) => frame.type === 'input_audio_buffer.append',
+        );
+        const decoded = Buffer.from(appended!.audio!, 'base64');
+        expect(decoded.byteLength).toBe(largestSegment);
+        expect(decoded[0]).toBe(1);
+        expect(decoded[decoded.length - 1]).toBe(255);
+        if (commit)
+          expect(frames.at(-1)?.type).toBe('input_audio_buffer.commit');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const encode = vi
+          .spyOn(String, 'fromCharCode')
+          .mockImplementation(() => {
+            throw new Error('Encoding started.');
+          });
+        try {
+          expect(() =>
+            session.sendAudio(new ArrayBuffer(largestSegment + 1), { commit }),
+          ).toThrow('Audio input exceeds capacity');
+          expect(encode).not.toHaveBeenCalled();
+        } finally {
+          encode.mockRestore();
+        }
+        session.requestResponse();
+        await vi.waitFor(() =>
+          expect(frames.at(-1)?.type).toBe('response.create'),
+        );
+        expect(onError).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
       } finally {
-        encode.mockRestore();
+        await session.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'enforces audio capacity against pending bytes with commit %s',
+    async (commit) => {
+      const held = Promise.withResolvers<void>();
+      const frames: { type: string; audio?: string }[] = [];
+      const onError = vi.fn();
+      const close = vi.fn();
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+            if (
+              event.type === 'input_audio_buffer.append' &&
+              frames.filter(
+                (frame) => frame.type === 'input_audio_buffer.append',
+              ).length === 1
+            )
+              return held.promise;
+          },
+          close,
+        },
+        { model: 'test-realtime', instructions: 'Help.', onError },
+      );
+      try {
+        await session.start();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        session.sendAudio(new ArrayBuffer(3));
+        await vi.waitFor(() =>
+          expect(frames.at(-1)?.type).toBe('input_audio_buffer.append'),
+        );
+        const largestSegment = commit ? 3_145_665 : 3_145_692;
+        const encode = vi
+          .spyOn(String, 'fromCharCode')
+          .mockImplementation(() => {
+            throw new Error('Encoding started.');
+          });
+        try {
+          expect(() =>
+            session.sendAudio(new ArrayBuffer(largestSegment), { commit }),
+          ).toThrow('Audio input exceeds capacity');
+          expect(encode).not.toHaveBeenCalled();
+        } finally {
+          encode.mockRestore();
+        }
+        expect(onError).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        held.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        session.sendAudio(new ArrayBuffer(largestSegment), { commit });
+        await vi.waitFor(() =>
+          expect(
+            frames.filter(
+              (frame) => frame.type === 'input_audio_buffer.append',
+            ),
+          ).toHaveLength(2),
+        );
+        if (commit)
+          await vi.waitFor(() =>
+            expect(frames.at(-1)?.type).toBe('input_audio_buffer.commit'),
+          );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        session.requestResponse();
+        await vi.waitFor(() =>
+          expect(frames.at(-1)?.type).toBe('response.create'),
+        );
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        held.resolve();
+        await session.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'enforces audio capacity against queued sends with commit %s',
+    async (commit) => {
+      const held = Promise.withResolvers<void>();
+      const frames: { type: string }[] = [];
+      const onError = vi.fn();
+      const close = vi.fn();
+      let appends = 0;
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+            if (event.type === 'input_audio_buffer.append' && ++appends === 1)
+              return held.promise;
+          },
+          close,
+        },
+        { model: 'test-realtime', instructions: 'Help.', onError },
+      );
+      try {
+        await session.start();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        for (let index = 0; index < (commit ? 254 : 255); index++)
+          session.sendAudio(new ArrayBuffer(0));
+        // Exactly256 pending physical frames remain supported in both modes.
+        session.sendAudio(new ArrayBuffer(0), { commit });
+        const encode = vi
+          .spyOn(String, 'fromCharCode')
+          .mockImplementation(() => {
+            throw new Error('Encoding started.');
+          });
+        try {
+          expect(() =>
+            session.sendAudio(new ArrayBuffer(1), { commit }),
+          ).toThrow('Audio input exceeds capacity');
+          expect(encode).not.toHaveBeenCalled();
+        } finally {
+          encode.mockRestore();
+        }
+        expect(onError).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        held.resolve();
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((frame) =>
+              frame.type.startsWith('input_audio_buffer.'),
+            ),
+          ).toHaveLength(256),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        session.sendAudio(new Uint8Array([7]).buffer, { commit });
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((frame) =>
+              frame.type.startsWith('input_audio_buffer.'),
+            ),
+          ).toHaveLength(commit ? 258 : 257),
+        );
+        expect(onError).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+      } finally {
+        held.resolve();
         await session.close();
       }
     },

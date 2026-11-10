@@ -80,7 +80,7 @@ export function submitInputs(
 
 Audio input has been following the format in the accepted provider configuration. `commitAudio()` and `clearAudio()` have been controlling buffered input independently; committing audio has not been starting a response automatically.
 
-`sendAudio()` has been rejecting segments above 6,291,423 raw bytes before encoding, within the existing 8 MiB command limit. Larger audio inputs: application-owned segments, followed by `commitAudio()`.
+`sendAudio()` idle-queue segment limits: 3,145,692 raw bytes, or 3,145,665 with `commit: true`. Pending frames: smaller available capacity within the existing 8 MiB host queue and 256-frame limit. Capacity checks before encoding against both the native command limit and all resulting append/commit frames; synchronous `RangeError` on rejection, with the session still usable. Larger inputs: application-owned smaller segments, followed by `commitAudio()`, or retry after earlier sends settle.
 
 `interrupt()` has been cancelling the active provider response while keeping the session available for more input. Previously admitted tool callbacks from completed responses have been retaining their authority to finish. Local audio playback and playback-position truncation have been remaining application responsibilities.
 
