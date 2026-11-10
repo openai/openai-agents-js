@@ -477,6 +477,10 @@
       "sha256": "0ab7da8b87a0bcfe84d3e60b6d2850953c781880efbb82b196f8c8a123559f18"
     },
     {
+      "path": "sdk-chatgpt-plan-responses-and-storage.patch",
+      "sha256": "e994ea870e8243269cc6cddaa1b523921cfe0aa898143b0ee533da3caac6833d"
+    },
+    {
       "path": "sdk-bwrap-search-path.patch",
       "sha256": "1b1f87bda8fca4a75ca687ae5662bf28ad6eb7538af8b882576daea23c8b01fa"
     },
@@ -493,5 +497,5 @@
       "sha256": "627e429ded864fb3388b6562c22460e604ca9ba6ad25ec72e38480c1ba61e6ed"
     }
   ],
-  "result_tree": "c07d4555e3968ab1d1fa3b3e70e9ff72f69fe77d"
+  "result_tree": "9b290ed875106181c196e0800b5226668c7e04ef"
 }
