@@ -912,3 +912,124 @@ it('keeps newer response output when an unscoped raw cancel receipt arrives late
   await voice.close();
   await f.session.close();
 });
+
+it('rejects adapter text behind a queued raw event and releases the admission barrier afterward', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const entered = Promise.withResolvers<void>();
+  const proceed = Promise.withResolvers<void>();
+  f.native.call.mockImplementationOnce(async () => {
+    entered.resolve();
+    await proceed.promise;
+    await expect(
+      f.session._runVoiceCallback(() => voice.sendText('nested text'), voice),
+    ).rejects.toThrow('Realtime adapter callback cannot');
+    await expect(
+      f.session._runVoiceCallback(
+        () => voice.sendMessage('nested message'),
+        voice,
+      ),
+    ).rejects.toThrow('Realtime adapter callback cannot');
+    return 'null';
+  });
+  const prior = voice.sendText('outer input');
+  await entered.promise;
+  const raw = voice.sendEvent({ type: 'response.create' });
+  proceed.resolve();
+  await Promise.all([prior, raw]);
+  await expect(
+    f.session._runVoiceCallback(() => voice.sendText('after raw event'), voice),
+  ).resolves.toBeUndefined();
+  const texts = f.native.call.mock.calls
+    .filter(([operation]) => operation === 'realtime_conversation_text_sdk')
+    .map(([, raw]) => JSON.parse(raw).text);
+  expect(texts).toEqual(['outer input', 'after raw event']);
+  await voice.close();
+  await f.session.close();
+});
+
+it('releases the raw cancellation queue before joining guardrail cleanup that sends text', async () => {
+  const f = fixture();
+  await f.session._start();
+  vi.spyOn(f.session, '_realtimeGuardrailSource').mockReturnValue({
+    agent: {} as never,
+    context: null,
+  });
+  const entered = Promise.withResolvers<void>();
+  const voice = await f.session.realtime({
+    guardrailTextThreshold: null,
+    outputGuardrails: [
+      {
+        name: 'reentrant-cleanup',
+        callback: async (input) => {
+          entered.resolve();
+          await new Promise<void>((resolve) =>
+            input.signal.addEventListener('abort', () => resolve(), {
+              once: true,
+            }),
+          );
+          await voice.sendText('guardrail cleanup input');
+          return { tripwireTriggered: false };
+        },
+      },
+    ],
+  });
+  f.emit('realtime_conversation_realtime', {
+    payload: {
+      OutputTranscriptDone: {
+        text: 'Retire this output.',
+        response_id: 'retired',
+        item_id: 'guarded-item',
+        content_index: 0,
+        output_kind: 'text',
+      },
+    },
+  });
+  await entered.promise;
+  f.native.call.mockImplementationOnce(async () =>
+    JSON.stringify({
+      retired_response_ids: ['retired'],
+      cancelled_response_id: 'retired',
+      joined_root_turn_ids: [],
+    }),
+  );
+  await expect(
+    voice.sendEvent({ type: 'response.cancel' }),
+  ).resolves.toBeNull();
+  expect(
+    f.native.call.mock.calls
+      .filter(([operation]) => operation === 'realtime_conversation_text_sdk')
+      .map(([, raw]) => JSON.parse(raw).text),
+  ).toContain('guardrail cleanup input');
+  await voice.close();
+  await f.session.close();
+}, 3000);
+
+it('releases raw cancellation dispatch while native waits for a host callback to send text', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  f.native.call.mockImplementationOnce(async (operation) => {
+    expect(operation).toBe('realtime_conversation_send_event_sdk');
+    // Native cancellation joins an already entered host callback before its receipt.
+    await f.session._runVoiceCallback(() =>
+      voice.sendText('entered host callback input'),
+    );
+    return JSON.stringify({
+      retired_response_ids: ['retired'],
+      cancelled_response_id: 'retired',
+      joined_root_turn_ids: [],
+    });
+  });
+  await expect(
+    voice.sendEvent({ type: 'response.cancel' }),
+  ).resolves.toBeNull();
+  expect(
+    f.native.call.mock.calls
+      .filter(([operation]) => operation === 'realtime_conversation_text_sdk')
+      .map(([, raw]) => JSON.parse(raw).text),
+  ).toContain('entered host callback input');
+  await voice.close();
+  await f.session.close();
+}, 3000);

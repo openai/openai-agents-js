@@ -895,7 +895,7 @@ class NativeRealtimeOwner {
   }
 
   private enqueueInput(
-    send: () => Promise<void>,
+    send: () => Promise<void | { completion: Promise<void> }>,
     bytes = 0,
     capture?: () => void,
   ): Promise<void> {
@@ -920,17 +920,22 @@ class NativeRealtimeOwner {
       this.inputBytes -= bytes;
       throw error;
     }
-    const pending = this.inputTail
-      .then(() => {
-        this.checkLive();
-        return send();
-      })
+    const dispatched = this.inputTail.then(() => {
+      this.checkLive();
+      return send();
+    });
+    // A cancellation can join host callbacks that enqueue their own input.
+    // Keep its allocation reserved while allowing that input after dispatch.
+    this.inputTail = dispatched.then(
+      () => {},
+      () => {},
+    );
+    return dispatched
+      .then((result) => (result ? result.completion : undefined))
       .finally(() => {
         this.inputCount--;
         this.inputBytes -= bytes;
       });
-    this.inputTail = pending.catch(() => {});
-    return pending;
   }
   /** Send nonempty text within the 1 MiB UTF-8 user input limit. */
   async sendText(text: string): Promise<void> {
@@ -1099,6 +1104,7 @@ class NativeRealtimeOwner {
    * Returns the provider item for conversation.item.retrieve, otherwise null.
    * Supports response controls, message creation/retrieval/deletion, sparse session
    * settings, input audio buffers, known audio truncation and provider playback clear.
+   * Cancellation allows later input after dispatch and resolves after retirement.
    * Tool and approval authority remains with the native Session.
    */
   async sendEvent(event: JsonObject): Promise<JsonObject | null> {
@@ -1117,33 +1123,40 @@ class NativeRealtimeOwner {
     );
     let snapshot: JsonObject;
     let result: JsonObject | null = null;
-    await this.enqueueInput(
-      async () => {
-        if (snapshot.type === 'response.cancel') {
-          await this.interruptOwned(
-            typeof snapshot.response_id === 'string'
-              ? snapshot.response_id
-              : undefined,
-            {},
-            undefined,
-            () => this.call('send_event', { event: snapshot }),
-          );
-          return;
-        }
-        const raw = await this.call('send_event', { event: snapshot });
-        const value: unknown = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (
-          value !== null &&
-          (!value || typeof value !== 'object' || Array.isArray(value))
-        )
-          throw new Error('Native Realtime event returned an invalid result');
-        result = value as JsonObject | null;
-      },
-      bytes,
-      () => {
-        snapshot = copyJsonValue(event) as JsonObject;
-      },
-    );
+    this.pendingCommittedAudio++;
+    try {
+      await this.enqueueInput(
+        async () => {
+          if (snapshot.type === 'response.cancel') {
+            const completion = this.interruptOwned(
+              typeof snapshot.response_id === 'string'
+                ? snapshot.response_id
+                : undefined,
+              {},
+              undefined,
+              () => this.call('send_event', { event: snapshot }),
+            );
+            void completion.catch(() => {});
+            return { completion };
+          }
+          const raw = await this.call('send_event', { event: snapshot });
+          const value: unknown =
+            typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (
+            value !== null &&
+            (!value || typeof value !== 'object' || Array.isArray(value))
+          )
+            throw new Error('Native Realtime event returned an invalid result');
+          result = value as JsonObject | null;
+        },
+        bytes,
+        () => {
+          snapshot = copyJsonValue(event) as JsonObject;
+        },
+      );
+    } finally {
+      this.pendingCommittedAudio--;
+    }
     return result;
   }
   /**

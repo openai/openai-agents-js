@@ -1511,7 +1511,18 @@ nativeIt(
         provider,
         instructions: 'Preserve retained authority.',
       }).session();
-      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: {
+          hostedMcpTools: [
+            {
+              serverLabel: 'docs',
+              serverUrl: 'https://mcp.example.test/server',
+              requireApproval: 'never',
+            },
+          ],
+        },
+      });
       const seen: NativeRealtimeEvent[] = [];
       const reading = (async () => {
         for await (const event of voice.events()) seen.push(event);
@@ -1525,17 +1536,47 @@ nativeIt(
           tools: [],
         };
         const last = userItem('anchor-last', 'Move this before the catalog.');
-        for (const item of [first, authority, last]) {
-          await observe(peer, seen, item);
+        await observe(peer, seen, first);
+        peer.send({
+          type: 'conversation.item.added',
+          previous_item_id: first.id,
+          item: authority,
+        });
+        peer.send({
+          type: 'conversation.item.added',
+          previous_item_id: authority.id,
+          item: last,
+        });
+        peer.send({
+          type: 'conversation.item.done',
+          item: { ...last, status: 'completed' },
+        });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'conversation_item' &&
+                event.itemId === last.id &&
+                event.status === 'done',
+            ),
+          ).toBe(true),
+        );
+        for (const item of [first, authority, last])
           peer.retrievals.set(item.id as string, item);
-        }
         const before = await voice.retrieveConversationHistory();
         expect(before).toEqual([first, authority, last]);
         let after = peer.frames.length;
         const moving = voice.updateHistory([first, last, authority]);
         void moving.catch(() => {});
         expect(
-          (await peer.frame('conversation.item.delete', after)).item_id,
+          (
+            await Promise.race([
+              peer.frame('conversation.item.delete', after),
+              moving.then(() => {
+                throw new Error('Move completed without the expected deletion');
+              }),
+            ])
+          ).item_id,
         ).toBe(last.id);
         peer.send({ type: 'conversation.item.deleted', item_id: last.id });
         const created = await peer.frame('conversation.item.create', after);
@@ -1570,10 +1611,44 @@ nativeIt(
             ),
         ).toEqual([]);
         after = peer.frames.length;
+        await expect(voice.updateHistory([first, last])).rejects.toThrow(
+          /unresolved work/,
+        );
+        expect(
+          peer.frames
+            .slice(after)
+            .filter((frame) => frame.type === 'conversation.item.delete'),
+        ).toEqual([]);
+        // Generic item.done records presence; MCP's completion settles its effect.
+        peer.send({
+          type: 'response.output_item.done',
+          response_id: 'catalog-response',
+          output_index: 0,
+          item: authority,
+        });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'hosted_mcp_tools_listed' &&
+                event.itemId === authority.id,
+            ),
+          ).toBe(true),
+        );
+        after = peer.frames.length;
         const removing = voice.updateHistory([first, last]);
         void removing.catch(() => {});
         expect(
-          (await peer.frame('conversation.item.delete', after)).item_id,
+          (
+            await Promise.race([
+              peer.frame('conversation.item.delete', after),
+              removing.then(() => {
+                throw new Error(
+                  'Removal completed without the expected deletion',
+                );
+              }),
+            ])
+          ).item_id,
         ).toBe(authority.id);
         peer.send({ type: 'conversation.item.deleted', item_id: authority.id });
         await removing;

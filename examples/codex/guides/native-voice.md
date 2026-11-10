@@ -232,7 +232,7 @@ It implements the factory, incoming iterator, send, and cleanup methods with the
 
 ### Keep adapter callbacks independent
 
-Call `update()`, `approveHostedMcp()`, `deleteConversationItem()`, and `sendAudio(..., { commit: true })` from application code outside this owner's adapter callbacks. They need the same ordered transport and reject calls from its active callbacks. An adapter callback can submit nested text when no committed audio call is pending. Once a committed audio call is waiting or running, callbacks also reject nested input behind it. This includes a commit waiting to start in the input queue.
+Call `update()`, `approveHostedMcp()`, `deleteConversationItem()`, `sendEvent()`, and `sendAudio(..., { commit: true })` from application code outside this owner's adapter callbacks. They share the ordered transport and reject calls from its active callbacks. A pending committed audio call or raw event also blocks nested input from adapter callbacks. This includes operations waiting to start in the input queue.
 
 The native runtime still checks configuration acknowledgements, tool authority, response ordering, and history. A translating adapter must implement the applicable [Realtime client events](https://developers.openai.com/api/reference/resources/realtime/client-events) and [server events](https://developers.openai.com/api/reference/resources/realtime/server-events), including configuration acknowledgements and actual response/item IDs. Replacing I/O does not bypass these checks.
 
