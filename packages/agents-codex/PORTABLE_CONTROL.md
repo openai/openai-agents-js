@@ -86,7 +86,7 @@ The `usage` getter has been accumulating reported counters from terminal provide
 
 ## Current limits
 
-Pending capabilities: native Agent projection, full schema validation, guardrails, handoffs, profile changes, history replacement, settings updates, and deletion. The prototype has been retaining at most 256 function IDs. Valid cancelled, failed, and incomplete response receipts have been keeping the session available. Protocol failures have been closing the generation.
+Pending capabilities: native Agent projection, full schema validation, guardrails, handoffs, profile changes, history replacement, settings updates, and deletion. The prototype has been retaining at most 256 function IDs. Recent-terminal replay defense: 256 finished response identities, plus unfinished callback batches. Older terminal identities: eviction without stopping a healthy session; no arbitrary historical-ID deduplication guarantee. Valid cancelled, failed, and incomplete response receipts have been keeping the session available. Protocol failures have been closing the generation.
 
 Closing aborts callbacks and waits for their promises to settle. Callbacks must observe cancellation. A callback must not await closing its own session.
 

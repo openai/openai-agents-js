@@ -226,6 +226,7 @@ describe.runIf(enabled)('portable Rust control', () => {
   it.each([true, false])(
     'keeps the session after speech with automatic interruption %s',
     async (automatic) => {
+      const definition = agent();
       const frames: { type: string; response_id?: string }[] = [];
       const onError = vi.fn();
       const session: PortableVoiceSession = new PortableVoiceSession(
@@ -245,8 +246,7 @@ describe.runIf(enabled)('portable Rust control', () => {
           close() {},
         },
         {
-          model: 'test-realtime',
-          instructions: 'Help.',
+          ...definition.options,
           sessionSettings: {
             audio: {
               input: {
@@ -275,7 +275,11 @@ describe.runIf(enabled)('portable Rust control', () => {
         session.receive({ type: 'input_audio_buffer.speech_started' });
         session.receive({
           type: 'response.done',
-          response: { id: 'first', status: 'cancelled', output: [] },
+          response: {
+            id: 'first',
+            status: automatic ? 'cancelled' : 'completed',
+            output: automatic ? [] : [item],
+          },
         });
         session.sendText('Continue.');
         await vi.waitFor(() =>
@@ -285,13 +289,216 @@ describe.runIf(enabled)('portable Rust control', () => {
         );
         expect(
           frames.filter((event) => event.type === 'response.cancel'),
-        ).toHaveLength(automatic ? 0 : 1);
+        ).toHaveLength(0);
+        expect(definition.execute).toHaveBeenCalledTimes(automatic ? 0 : 1);
+        expect(definition.onApproval).toHaveBeenCalledTimes(automatic ? 0 : 1);
         expect(onError).not.toHaveBeenCalled();
       } finally {
         await session.close();
       }
     },
   );
+
+  it.each([
+    { status: 'cancelled', interrupt: true },
+    { status: 'failed', interrupt: false },
+    { status: 'incomplete', interrupt: false },
+    { status: 'completed', interrupt: true },
+    { status: 'completed', interrupt: false },
+  ])(
+    'rejects a retired $status response identity with interrupt $interrupt',
+    async ({ status, interrupt }) => {
+      const definition = agent();
+      const onError = vi.fn();
+      const frames: { type: string; item?: { type: string } }[] = [];
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+          },
+          close() {},
+        },
+        { ...definition.options, onError },
+      );
+      try {
+        await session.start();
+        session.receive({
+          type: 'response.created',
+          response: { id: 'retired' },
+        });
+        if (interrupt) session.interrupt();
+        session.receive({
+          type: 'response.done',
+          response: { id: 'retired', status, output: [] },
+        });
+        session.receive({
+          type: 'response.created',
+          response: { id: 'retired' },
+        });
+        session.receive({
+          type: 'response.done',
+          response: { id: 'retired', status: 'completed', output: [item] },
+        });
+        await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+        expect(definition.execute).not.toHaveBeenCalled();
+        expect(definition.onApproval).not.toHaveBeenCalled();
+        expect(
+          frames.some((frame) => frame.item?.type === 'function_call_output'),
+        ).toBe(false);
+        expect(() => session.requestResponse()).toThrow('closed');
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.each(
+    ['cancelled', 'failed', 'incomplete', 'completed'].flatMap((status) =>
+      [false, true].map((queued) => ({ status, queued })),
+    ),
+  )(
+    'continues a published callback after $status with queued input $queued',
+    async ({ status, queued }) => {
+      const definition = agent();
+      const result = Promise.withResolvers<string>();
+      const execute = vi.fn(() => result.promise);
+      const onError = vi.fn();
+      const frames: { type: string; item?: { type: string } }[] = [];
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+          },
+          close() {},
+        },
+        {
+          ...definition.options,
+          tools: [{ ...definition.options.tools[0], execute }],
+          onError,
+        },
+      );
+      try {
+        await session.start();
+        session.receive({
+          type: 'response.created',
+          response: { id: 'first' },
+        });
+        session.receive({
+          type: 'response.done',
+          response: { id: 'first', status: 'completed', output: [item] },
+        });
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+        session.receive({
+          type: 'response.created',
+          response: { id: 'second' },
+        });
+        result.resolve('Authorized result.');
+        await vi.waitFor(() =>
+          expect(
+            frames.some((frame) => frame.item?.type === 'function_call_output'),
+          ).toBe(true),
+        );
+        // The serialized clear frame follows the output's physical send receipt.
+        session.clearAudio();
+        await vi.waitFor(() =>
+          expect(
+            frames.some((frame) => frame.type === 'input_audio_buffer.clear'),
+          ).toBe(true),
+        );
+        if (queued) session.sendText('Next input.');
+        expect(
+          frames.filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(0);
+        session.receive({
+          type: 'response.done',
+          response: { id: 'second', status, output: [] },
+        });
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((frame) => frame.type === 'response.create'),
+          ).toHaveLength(1),
+        );
+        expect(execute).toHaveBeenCalledOnce();
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        result.resolve('Cleanup.');
+        await session.close();
+      }
+    },
+  );
+
+  it('keeps a healthy session beyond the response identity window', () => {
+    const native = control();
+    const started = native.apply({
+      type: 'start',
+      config: { model: 'test-realtime', instructions: 'Help.', tools: [] },
+    });
+    const send = started[0];
+    if (send.type !== 'send') throw new Error('Missing session update.');
+    const update = send.event as { session: unknown };
+    native.apply({ type: 'sent', id: send.id });
+    native.apply({
+      type: 'provider',
+      event: { type: 'session.updated', session: update.session },
+    });
+    for (let index = 0; index < 288; index++) {
+      const id = `response-${index}`;
+      native.apply({
+        type: 'provider',
+        event: { type: 'response.created', response: { id } },
+      });
+      // Repeated creation for the current identity is harmless before settlement.
+      native.apply({
+        type: 'provider',
+        event: { type: 'response.created', response: { id } },
+      });
+      native.apply({
+        type: 'provider',
+        event: {
+          type: 'response.done',
+          response: { id, status: 'completed', output: [] },
+        },
+      });
+    }
+    // An old identity outside the replay window is not permanently blacklisted.
+    expect(() =>
+      native.apply({
+        type: 'provider',
+        event: { type: 'response.created', response: { id: 'response-0' } },
+      }),
+    ).not.toThrow();
+    native.apply({
+      type: 'provider',
+      event: {
+        type: 'response.done',
+        response: { id: 'response-0', status: 'completed', output: [] },
+      },
+    });
+    expect(() =>
+      native.apply({
+        type: 'provider',
+        event: { type: 'response.created', response: { id: 'response-287' } },
+      }),
+    ).toThrow('already retired');
+  });
 
   it('waits for the response identity when interrupting a pending creation', async () => {
     const frames: { type: string; response_id?: string }[] = [];
