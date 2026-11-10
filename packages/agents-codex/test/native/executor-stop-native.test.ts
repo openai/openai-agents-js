@@ -115,7 +115,7 @@ async function open(
     code?: boolean;
     children?: boolean;
     tools?: Tool[];
-    usage?: JsonObject;
+    usage?: ConstructorParameters<typeof ModelServer>[1];
     storage?: ReturnType<typeof localStorage>;
   } = {},
 ) {
