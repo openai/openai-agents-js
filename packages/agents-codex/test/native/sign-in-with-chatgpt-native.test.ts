@@ -737,7 +737,20 @@ it.each(['portable', 'local', 'application'] as const)(
           await Promise.all(
             (await readdir(root, { recursive: true, withFileTypes: true }))
               .filter((entry) => entry.isFile())
-              .map((entry) => readFile(join(entry.parentPath, entry.name))),
+              .map((entry) => {
+                const path = join(entry.parentPath, entry.name);
+                return readFile(path).catch((error: NodeJS.ErrnoException) => {
+                  if (
+                    kind === 'local' &&
+                    path === join(root, 'thread_history_1.sqlite-shm') &&
+                    error.code === 'ENOENT'
+                  ) {
+                    // SQLite can remove this sidecar after enumeration.
+                    return Buffer.alloc(0);
+                  }
+                  throw error;
+                });
+              }),
           ),
         )
       : Buffer.from(JSON.stringify(bound));
