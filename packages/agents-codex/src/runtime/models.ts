@@ -539,13 +539,23 @@ export class AiSdkModel implements NativeModel {
             return { type: 'text', text: part.text };
           if (part.type === 'input_image' && part.image_url) {
             const image = new URL(part.image_url as string);
+            const openai = this.model.provider.startsWith('openai.');
+            if (part.detail != null && part.detail !== 'auto' && !openai)
+              throw new TypeError(
+                'AiSdkModel requires an OpenAI provider for explicit image detail',
+              );
+            const imageOptions =
+              part.detail != null && openai
+                ? { providerOptions: { openai: { imageDetail: part.detail } } }
+                : {};
             return this.model.specificationVersion === 'v4'
               ? {
                   type: 'file',
                   mediaType: 'image/*',
                   data: { type: 'url', url: image },
+                  ...imageOptions,
                 }
-              : { type: 'image', image };
+              : { type: 'image', image, ...imageOptions };
           }
           throw new TypeError(
             'AiSdkModel received unsupported message content',
@@ -616,6 +626,7 @@ export class AiSdkModel implements NativeModel {
           name: item.name,
           description: item.description,
           inputSchema: item.parameters,
+          ...(item.strict == null ? {} : { strict: item.strict }),
         });
       else throw new TypeError('AiSdkModel supports function tools');
     };
