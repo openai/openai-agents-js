@@ -8376,9 +8376,10 @@ export class Session<OutputT = string, Context = unknown> {
           assertActive();
           selection.budget?.check(assertActive);
           const stepIndex = selection.stepIndex++;
-          if (run.inputGuardrailsStarted) {
-            await this.awaitInputGuardrails(run);
-          } else if (run.guardrailInput !== undefined) {
+          if (run.failure !== undefined) throw run.failure;
+          // Selection can repeat before the first provider request. Parallel
+          // input checks join at completion, not during this preparation.
+          if (!run.inputGuardrailsStarted && run.guardrailInput !== undefined) {
             run.inputGuardrailsStarted = true;
             const source = this.messageProfile(msg);
             const agent = source
@@ -8610,9 +8611,8 @@ export class Session<OutputT = string, Context = unknown> {
         this.callbackAuthorityFailed(delivery, error);
       }
       signal.throwIfAborted();
-      if (owner.inputGuardrailsStarted) {
-        await this.awaitInputGuardrails(owner);
-      } else {
+      if (owner.failure !== undefined) throw owner.failure;
+      if (!owner.inputGuardrailsStarted) {
         const source = this.messageProfile(event.msg);
         const agent = source
           ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
