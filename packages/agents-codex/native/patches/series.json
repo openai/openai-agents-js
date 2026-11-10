@@ -535,7 +535,19 @@
     {
       "path": "0175-portable-realtime-agent-control.patch",
       "sha256": "65b82aacfe62c2c33d9123ce5db61994efd2e3fe5b239a884095d295637cc9fe"
+    },
+    {
+      "path": "sdk-realtime-provider-events-and-scopes.patch",
+      "sha256": "e0df2298b44b234982347e03f967f00655e11cfd3fb010ef315f962e4621e319"
+    },
+    {
+      "path": "sdk-realtime-tool-context-history.patch",
+      "sha256": "93617a4dd22929b78760ccbdac152b6af3ffd143acb1cfb755c1bb3606bfe7ca"
+    },
+    {
+      "path": "0176-portable-realtime-response-scopes.patch",
+      "sha256": "edb99414fa1228281a69a3125e8c1e2ce67c1a8c42d235e05c3739fba4e519d0"
     }
   ],
-  "result_tree": "bb52b37ba9b9c145e3c68116621aa1cfe2184257"
+  "result_tree": "d9cc6a057971d977a3c21ec7ecd0f78b6e1eb185"
 }

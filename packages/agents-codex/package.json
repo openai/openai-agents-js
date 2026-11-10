@@ -168,6 +168,16 @@
         "types": "./dist/mcp-apps/index.d.ts",
         "default": "./dist/mcp-apps/index.js"
       }
+    },
+    "./voice/control.hermes": {
+      "import": {
+        "types": "./native/codex-realtime-control.d.mts",
+        "default": "./native/codex-realtime-control.mjs"
+      },
+      "require": {
+        "types": "./native/codex-realtime-control.d.ts",
+        "default": "./native/codex-realtime-control.cjs"
+      }
     }
   },
   "scripts": {
@@ -225,7 +235,11 @@
     "A2A.md",
     "native/codex-realtime-control.wasm",
     "native/portable-build-receipt.json",
-    "PORTABLE_CONTROL.md"
+    "PORTABLE_CONTROL.md",
+    "native/codex-realtime-control.mjs",
+    "native/codex-realtime-control.cjs",
+    "native/codex-realtime-control.d.mts",
+    "native/codex-realtime-control.d.ts"
   ],
   "typesVersions": {
     "*": {
@@ -273,6 +287,9 @@
       ],
       "mcp-apps": [
         "dist/mcp-apps/index.d.ts"
+      ],
+      "voice/control.hermes": [
+        "native/codex-realtime-control.d.ts"
       ]
     }
   },

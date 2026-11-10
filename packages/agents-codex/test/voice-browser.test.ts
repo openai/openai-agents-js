@@ -305,3 +305,30 @@ it.each([false, true])(
     }
   },
 );
+
+it('creates default audio playback and clears its stream after close', async () => {
+  const mic = microphone();
+  const peer = new Peer();
+  const audio = {
+    srcObject: null as MediaStream | null,
+    play: vi.fn(async () => {}),
+  };
+  const createElement = vi.fn(() => audio);
+  vi.stubGlobal('document', { createElement });
+  try {
+    const media = new NativeVoiceWebRTC({
+      mediaStream: mic.stream,
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+    });
+    await media.connect({ exchangeSdp: async () => 'answer' });
+    peer.ontrack?.({ streams: [mic.stream] });
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
+    expect(createElement).toHaveBeenCalledWith('audio');
+    expect(audio.srcObject).toBe(mic.stream);
+    media.close();
+    expect(audio.srcObject).toBeNull();
+    expect(mic.track.stop).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
