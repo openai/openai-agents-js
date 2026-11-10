@@ -54,3 +54,19 @@ const credentialMount: LocalStorageMount = {
   token: 'synthetic',
 };
 void credentialMount;
+
+const localReads = Environment.local({
+  cwd: '/workspace',
+  readOnlyRoots: directories,
+});
+expectTypeOf(localReads.readOnlyRoots).toEqualTypeOf<
+  readonly string[] | undefined
+>();
+// @ts-expect-error The captured grants are readonly.
+localReads.readOnlyRoots?.push('/new');
+new Environment({
+  // @ts-expect-error Read-only roots belong only to local environments.
+  url: 'wss://executor.invalid',
+  cwd: '/workspace',
+  readOnlyRoots: directories,
+});

@@ -49,6 +49,70 @@ function url(value: string, schemes: readonly string[]): void {
     throw new TypeError('Unsupported media URL scheme');
 }
 
+// Host audio-operation budget, using the model WebSocket ceiling as a precedent.
+// This does not bound arbitrary provider requests or previously admitted history.
+export const MAX_AUDIO_INPUT_BYTES = 64 * 1024 * 1024;
+export function audioInputByteLimit(
+  parts: readonly unknown[],
+): number | undefined {
+  return parts.some(
+    (part) =>
+      part !== null &&
+      typeof part === 'object' &&
+      'type' in part &&
+      part.type === 'audio',
+  )
+    ? MAX_AUDIO_INPUT_BYTES
+    : undefined;
+}
+export interface AudioInputBudget {
+  remaining: number;
+}
+
+export function captureAudio(
+  value: unknown,
+  budget: AudioInputBudget = { remaining: MAX_AUDIO_INPUT_BYTES },
+): { audio_url: string } {
+  const data = mediaRecord(value);
+  only(data, ['audio_url']);
+  const audio = source(data.audio_url);
+  // Reserve the canonical single-part input envelope as well as the source.
+  let bytes = '[{"type":"audio","audio_url":""}]'.length;
+  if (audio.length > budget.remaining - bytes)
+    throw new RangeError('Audio input exceeds the native request capacity');
+  // Bound quoting scratch space; never encode the complete untrusted reference.
+  for (let start = 0; start < audio.length;) {
+    let end = Math.min(start + 32_768, audio.length);
+    const last = audio.charCodeAt(end - 1);
+    if (end < audio.length && last >= 0xd800 && last <= 0xdbff) end--;
+    bytes +=
+      Buffer.byteLength(JSON.stringify(audio.slice(start, end)), 'utf8') - 2;
+    if (bytes > budget.remaining)
+      throw new RangeError('Audio input exceeds the native request capacity');
+    start = end;
+  }
+  budget.remaining -= bytes;
+  return { audio_url: audio };
+}
+
+/** Split admitted inline audio without fetching, decoding or sniffing its content. */
+export function inlineAudioSource(value: unknown): {
+  data: string;
+  mediaType: string;
+} {
+  const reference = source(value);
+  const comma = reference.indexOf(',');
+  const header = reference.slice(0, comma);
+  if (
+    comma < 0 ||
+    comma === reference.length - 1 ||
+    !header.toLowerCase().startsWith('data:audio/') ||
+    !header.toLowerCase().endsWith(';base64')
+  )
+    throw new TypeError('Audio projection requires an inline audio data URL');
+  return { mediaType: header.slice(5, -7), data: reference.slice(comma + 1) };
+}
+
 export function captureImage(value: unknown): ImageReference {
   const data = mediaRecord(value);
   only(data, ['image_url', 'file_id', 'detail']);

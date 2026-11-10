@@ -30,6 +30,8 @@ export class NativeVoiceWebRTC extends NativeVoiceMedia<MediaStream> {
     const captured = { ...options };
     // An explicit remote-stream handler owns playback; otherwise provide audio.
     let audio = captured.audioElement;
+    let playbackRevision = 0;
+    let attachedStream: MediaStream | undefined;
     super({
       ...captured,
       acquireMedia: () =>
@@ -47,16 +49,25 @@ export class NativeVoiceWebRTC extends NativeVoiceMedia<MediaStream> {
       onDataChannel: (channel) =>
         captured.onDataChannel?.(channel as RTCDataChannel),
       play: async (stream) => {
-        captured.onRemoteStream?.(stream);
-        if (!audio && !captured.onRemoteStream)
-          audio = document.createElement('audio');
-        if (audio) {
-          audio.srcObject = stream;
-          await audio.play();
+        const revision = ++playbackRevision;
+        try {
+          if (captured.onRemoteStream) await captured.onRemoteStream(stream);
+          if (this.status === 'closed' || revision !== playbackRevision) return;
+          if (!audio && !captured.onRemoteStream)
+            audio = document.createElement('audio');
+          if (audio) {
+            audio.srcObject = stream;
+            attachedStream = stream;
+            await audio.play();
+          }
+        } catch (error) {
+          if (revision === playbackRevision) throw error;
         }
       },
-      clear: (stream) => {
-        if (audio?.srcObject === stream) audio.srcObject = null;
+      clear: () => {
+        playbackRevision++;
+        if (audio && audio.srcObject === attachedStream) audio.srcObject = null;
+        attachedStream = undefined;
       },
     });
   }

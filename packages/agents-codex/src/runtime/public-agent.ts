@@ -54,7 +54,8 @@ import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
 import { isDeepStrictEqual } from 'node:util';
-import { binding, type JsonObject } from './binding';
+import { binding, checkEncodedCapacity, type JsonObject } from './binding';
+import { MAX_AUDIO_INPUT_BYTES } from './media';
 import {
   assertOutputRepairSupported,
   prepareOutput,
@@ -652,9 +653,12 @@ export class Agent<Context = undefined, Output = string> {
     ...args: RunArguments<Context>
   ): Promise<Completed<Output>> {
     const options = { ...(args[0] ?? {}) };
+    const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
     const initialMessages = captureInitialMessages(
       options.initialMessages,
       options.state,
+      undefined,
+      audioBudget,
     );
 
     if ('tools' in options)
@@ -681,7 +685,13 @@ export class Agent<Context = undefined, Output = string> {
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
     const guardrailInput = input === null ? undefined : structuredClone(input);
-    const preparedInput = input === null ? null : nativeInput(input);
+    const preparedInput =
+      input === null ? null : nativeInput(input, audioBudget);
+    if (audioBudget.remaining !== MAX_AUDIO_INPUT_BYTES)
+      checkEncodedCapacity(
+        { input: preparedInput, initial_messages: initialMessages ?? [] },
+        MAX_AUDIO_INPUT_BYTES,
+      );
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
       ...(initialMessages === undefined ? {} : { initialMessages }),

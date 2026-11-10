@@ -1,3 +1,4 @@
+import { MAX_AUDIO_INPUT_BYTES } from './media';
 import {
   attachPrivateRuntime,
   privateRuntime,
@@ -74,10 +75,12 @@ export async function openSession(
   catalog: ToolCatalog = captureTools(setup.tools),
 ): Promise<Session> {
   const { initialMessages, ...liveOptions } = options;
+  const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   const capturedInitialMessages = captureInitialMessages(
     initialMessages,
     options.state,
     setup.threadOptions._sdk_resume_thread_id,
+    audioBudget,
   );
   options = liveOptions;
   const { model, config, apiKey } = setup;
@@ -270,7 +273,7 @@ export async function openSession(
     : undefined;
   const freshManual = isManualSessionState(saved);
   const borrow = lease.privateRuntime;
-  const idle = borrow?.peek();
+  let idle = borrow?.peek();
   let carrier = idle?.carrier ?? new NativeProviderRoutes();
   let engine: import('./binding').Engine | undefined = idle?.engine;
   let thread: import('./binding').NativeThread | undefined;
@@ -302,6 +305,16 @@ export async function openSession(
     );
     if (completedFailure) throw completedFailure;
   });
+  // The explicit runtime parks plain executions only. An ordinary fallback
+  // receives a fresh Engine/home and cannot inherit a previously parked kernel.
+  if (borrow?.plainOnly && idle) {
+    const home = await borrow.reset();
+    runtime = { ...runtime, ...home };
+    threadOptions = { ...threadOptions, runtime };
+    idle = undefined;
+    carrier = new NativeProviderRoutes();
+    engine = undefined;
+  }
   if (idle) {
     const holder = lease.httpTransports(
       native._create_provider_http_transports,
@@ -411,7 +424,12 @@ export async function openSession(
           : await engine._start_seeded_replaceable_thread(
               encode({ ...threadOptions, config: initialConfig }),
               catalog.specsJson,
-              encode(capturedInitialMessages),
+              encode(
+                capturedInitialMessages,
+                audioBudget.remaining === MAX_AUDIO_INPUT_BYTES
+                  ? undefined
+                  : MAX_AUDIO_INPUT_BYTES,
+              ),
             );
     }
   }

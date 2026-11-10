@@ -1,3 +1,4 @@
+import { audioInputByteLimit } from './media';
 import {
   hasRealtimeAgentConfiguration,
   resolveRealtimeAgentConfiguration,
@@ -1830,7 +1831,9 @@ export class Session<OutputT = string, Context = unknown> {
       retained && generation
         ? await this.#native._realtime_agent_source(
             generation,
-            JSON.stringify(target),
+            encodeProfileReceipt(
+              checkProfileReceipt(target, this.callbackProfileGraph(target)!),
+            ),
           )
         : await this.#native.call('realtime_tool_selection_sdk', '{}'),
     );
@@ -1870,7 +1873,14 @@ export class Session<OutputT = string, Context = unknown> {
         generation,
         JSON.stringify(profileRoster(graph, this.options.environment)),
         graph.rootId,
-        JSON.stringify(expected),
+        expected === null
+          ? 'null'
+          : encodeProfileReceipt(
+              checkProfileReceipt(
+                expected,
+                this.callbackProfileGraph(expected)!,
+              ),
+            ),
       ),
     );
     const allocated = allocatedProfileCatalogs(
@@ -1888,6 +1898,30 @@ export class Session<OutputT = string, Context = unknown> {
       this.profileStepMcp.set(key, profile.mcp);
     }
     return realtimeToolSelection(raw, allocated);
+  }
+
+  /** @internal Discard only an admitted graph whose update has never been invoked. */
+  async _discardRealtimeGraph(
+    generation: string,
+    receipt: JsonObject | null,
+  ): Promise<void> {
+    const graph =
+      receipt && this.voiceProfileGraphs.get(receipt.profile_id as string);
+    if (this.voiceGraphGeneration !== generation || !graph)
+      throw new NativeError('Voice has no matching staged Agent graph');
+    const target = checkProfileReceipt(receipt, graph);
+    await this.#native._discard_realtime_agent_graph(
+      generation,
+      encodeProfileReceipt(target),
+    );
+    for (const [id, profile] of graph.profiles) {
+      this.voiceProfileGraphs.delete(id);
+      const key = this.profileKey(id, profile.catalog.generation);
+      this.profileCatalogs.delete(key);
+      this.profileMcp.delete(key);
+      this.profileStepMcp.delete(key);
+    }
+    if (!this.voiceProfileGraphs.size) this.voiceGraphGeneration = undefined;
   }
 
   _hasRetainedRealtimeProfile(receipt: JsonObject | null | undefined): boolean {
@@ -2306,6 +2340,7 @@ export class Session<OutputT = string, Context = unknown> {
       active: boolean;
     }
   >();
+  private readonly nativeFormRetirementReplies = new Set<Promise<void>>();
   private readonly nativeQuestionKeys = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     Set<string>
@@ -3096,6 +3131,14 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
+  private trackNativeFormRetirement(reply: Promise<void>): void {
+    this.nativeFormRetirementReplies.add(reply);
+    void reply.then(
+      () => this.nativeFormRetirementReplies.delete(reply),
+      () => this.nativeFormRetirementReplies.delete(reply),
+    );
+  }
+
   private retireNativeQuestions(
     run: NativeTurn | ChildCallbackOwner,
     formsOnly = false,
@@ -3111,6 +3154,7 @@ export class Session<OutputT = string, Context = unknown> {
         preparation.decline,
         preparation.questionId,
       );
+      this.trackNativeFormRetirement(reply);
       replies.push(reply);
       void reply.catch(() => {});
     }
@@ -3128,6 +3172,7 @@ export class Session<OutputT = string, Context = unknown> {
           record.decline,
           record.questionId,
         );
+        if (record.form) this.trackNativeFormRetirement(reply);
         replies.push(reply);
         void reply.catch(() => {});
       }
@@ -4599,13 +4644,16 @@ export class Session<OutputT = string, Context = unknown> {
       const receipt = decode(
         submissionSchema,
         await this.#native._submit(
-          encode({
-            mode: 'steer',
-            expected_turn_id: run.id,
-            input,
-            ...(expectedTurnId !== undefined ? { exact_steering: true } : {}),
-            ...(tracingContext ? { tracing_context: tracingContext } : {}),
-          }),
+          encode(
+            {
+              mode: 'steer',
+              expected_turn_id: run.id,
+              input,
+              ...(expectedTurnId !== undefined ? { exact_steering: true } : {}),
+              ...(tracingContext ? { tracing_context: tracingContext } : {}),
+            },
+            audioInputByteLimit(input),
+          ),
         ),
       );
       if (receipt.status === 'not_submitted') {
@@ -5118,7 +5166,8 @@ export class Session<OutputT = string, Context = unknown> {
         'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
       );
     if (selection) selection.generation = this.catalog.generation;
-    const wire = encodeReceipt({
+    const byteLimit = audioInputByteLimit(parts);
+    const receipt = {
       ...(selection
         ? {
             selection: {
@@ -5153,20 +5202,21 @@ export class Session<OutputT = string, Context = unknown> {
       ...(output.schema === undefined
         ? {}
         : { start: { final_output_json_schema: output.schema } }),
-    });
+    };
+    const wire = run.tracing ? undefined : encodeReceipt(receipt, byteLimit);
     // Active-only state never changes when another root merely registers.
     this.manualCheckpointRun = run;
     this.dispatchRun(
       run,
       () => {
-        if (!run.tracing) return this.#native._submit(wire);
+        if (!run.tracing) return this.#native._submit(wire!);
         return this.tracingContext(run).then((context) => {
           if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
             throw new TurnAborted(
               'Tracing admission stopped before native submission',
             );
           return this.#native._submit(
-            JSON.stringify({ ...JSON.parse(wire), tracing_context: context }),
+            encodeReceipt({ ...receipt, tracing_context: context }, byteLimit),
           );
         });
       },
@@ -5899,7 +5949,7 @@ export class Session<OutputT = string, Context = unknown> {
     const profile = this.messageProfile(message);
     const provider =
       (profile
-        ? this.profileRuntimes.get(profile.profile_id)!.profile.declaration
+        ? this.callbackProfileRuntime(profile.profile_id)!.profile.declaration
             .decisions
         : undefined) ?? this.options.decisions;
     let active = true;
@@ -11831,10 +11881,11 @@ export class Session<OutputT = string, Context = unknown> {
       throw new NativeError('Session graph is stopping');
     const thread = this.#native;
     const producer = this.childObservationProducer;
+    const parts = nativeInput(input as UserInput);
     const native = await thread._child_submit(
       id,
       instance,
-      encode({ input: nativeInput(input as UserInput) }),
+      encode({ input: parts }, audioInputByteLimit(parts)),
     );
     return this.publicChildTurn(native, producer);
   }
@@ -13757,6 +13808,9 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private async closeNative(): Promise<NativeError | undefined> {
+    // Join exact form replies, including retirements started by earlier stops.
+    // Native shutdown must still precede held schema compilation cleanup.
+    await Promise.allSettled([...this.nativeFormRetirementReplies]);
     if (
       this.environment instanceof Environment &&
       !this.selectedEnvironmentRetirementAttempted

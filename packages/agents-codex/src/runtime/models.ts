@@ -1,7 +1,34 @@
 import { randomUUID } from 'node:crypto';
 import { APIUserAbortError } from 'openai';
-import { captureImage } from './media';
+import { captureImage, inlineAudioSource } from './media';
 import { copyJsonValue, type JsonObject } from './binding';
+
+function selectedFunctionName(
+  choice: unknown,
+  offered: readonly unknown[],
+): string {
+  if (!choice || typeof choice !== 'object' || Array.isArray(choice))
+    throw new TypeError('Named tool choice must select an offered function');
+  const declaration = choice as Record<string, unknown>;
+  const selected = (declaration.function ?? declaration) as Record<
+    string,
+    unknown
+  >;
+  if (
+    declaration.type !== 'function' ||
+    (declaration.namespace != null && declaration.namespace !== 'functions') ||
+    !selected ||
+    typeof selected !== 'object' ||
+    Array.isArray(selected) ||
+    (selected.namespace != null && selected.namespace !== 'functions') ||
+    typeof selected.name !== 'string' ||
+    !offered.includes(selected.name)
+  )
+    throw new TypeError(
+      'Named tool choice must select an offered default-namespace function',
+    );
+  return selected.name;
+}
 
 /** Detached native provider input; Core retains canonical history and tool execution. */
 export interface ModelRequest {
@@ -117,6 +144,26 @@ export class ChatCompletionsModel implements NativeModel {
         const content = (raw.content as JsonObject[]).map((part) => {
           if (part.type === 'input_text' || part.type === 'output_text')
             return { type: 'text', text: part.text };
+          if (part.type === 'input_audio') {
+            const audio = inlineAudioSource(part.audio_url);
+            const mediaType = audio.mediaType.split(';', 1)[0].toLowerCase();
+            const format = [
+              'audio/wav',
+              'audio/x-wav',
+              'audio/wave',
+              'audio/vnd.wave',
+            ].includes(mediaType)
+              ? 'wav'
+              : ['audio/mpeg', 'audio/mp3'].includes(mediaType)
+                ? 'mp3'
+                : undefined;
+            if (!format)
+              throw new TypeError('Chat audio requires WAV or MP3 input');
+            return {
+              type: 'input_audio',
+              input_audio: { data: audio.data, format },
+            };
+          }
           if (part.type === 'input_image' && part.image_url)
             return {
               type: 'image_url',
@@ -194,6 +241,10 @@ export class ChatCompletionsModel implements NativeModel {
           ? (declaration.tools as JsonObject[])
           : [declaration];
       return leaves.map(({ type, ...tool }) => {
+        if (tool.namespace != null && tool.namespace !== 'functions')
+          throw new TypeError(
+            'Chat adapters support the default function namespace',
+          );
         if (type !== 'function')
           throw new TypeError(
             'ChatCompletionsModel supports native function tools',
@@ -294,6 +345,16 @@ export class ChatCompletionsModel implements NativeModel {
       );
     if ('max_output_tokens' in request.body)
       options.max_completion_tokens = request.body.max_output_tokens;
+    if (options.tool_choice != null && typeof options.tool_choice === 'object')
+      options.tool_choice = {
+        type: 'function',
+        function: {
+          name: selectedFunctionName(
+            options.tool_choice,
+            tools.map((tool: any) => tool.function.name),
+          ),
+        },
+      };
     if (tools.length) options.tools = tools;
     else {
       delete options.tool_choice;
@@ -586,6 +647,17 @@ export class AiSdkModel implements NativeModel {
         const content = ((item.content ?? []) as JsonObject[]).map((part) => {
           if (part.type === 'input_text' || part.type === 'output_text')
             return { type: 'text', text: part.text };
+          if (part.type === 'input_audio') {
+            const audio = inlineAudioSource(part.audio_url);
+            return {
+              type: 'file',
+              mediaType: audio.mediaType,
+              data:
+                this.model.specificationVersion === 'v4'
+                  ? { type: 'data', data: audio.data }
+                  : audio.data,
+            };
+          }
           if (part.type === 'input_image' && part.image_url) {
             const { data: image, mediaType } = aiSdkImageSource(
               part.image_url as string,
@@ -730,6 +802,10 @@ export class AiSdkModel implements NativeModel {
     }
     const tools: any[] = [];
     const addTool = (item: JsonObject): void => {
+      if (item.namespace != null && item.namespace !== 'functions')
+        throw new TypeError(
+          'AiSdkModel supports the default function namespace',
+        );
       if (item.type === 'namespace') {
         if (item.name !== 'functions')
           throw new TypeError(
@@ -751,10 +827,13 @@ export class AiSdkModel implements NativeModel {
     let toolChoice: any;
     if (typeof choice === 'string') toolChoice = { type: choice };
     else if (choice != null) {
-      const selected = choice as JsonObject;
-      if (selected.type !== 'function')
-        throw new TypeError('AiSdkModel received unsupported tool choice');
-      toolChoice = { type: 'tool', toolName: selected.name };
+      toolChoice = {
+        type: 'tool',
+        toolName: selectedFunctionName(
+          choice,
+          tools.map((tool: any) => tool.name),
+        ),
+      };
     }
     const format = (text.format ?? {}) as JsonObject;
     if (this.#openai && format.type === 'json_schema' && format.strict != null)

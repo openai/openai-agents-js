@@ -577,6 +577,42 @@
       "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
     },
     {
+      "path": "sdk-local-project-guidance-cwd.patch",
+      "sha256": "5ba8abea56c5abcd70d371bd4fb8d7c1f626dc890ce73451850a8cf3dc82f2e6"
+    },
+    {
+      "path": "native-model-input-modalities.patch",
+      "sha256": "5bece16f3599d550006f178f1e903f6b9bfaab18395daad81235ea0fd5587946"
+    },
+    {
+      "path": "native-box-model-deadline-futures.patch",
+      "sha256": "68f27e496efe84385243d8067e9b45aae4948222d810af32cb2399716f15a717"
+    },
+    {
+      "path": "sdk-realtime-unpublished-agent-source.patch",
+      "sha256": "e0311387868c576d81dce16ee47a1ce4d345c35c182b799eade073475efc044c"
+    },
+    {
+      "path": "sdk-realtime-historical-delete-terminal.patch",
+      "sha256": "8442a703759550a806a5f640b8d2a50047ba4e9f9c6d9455396c5d97ff2e3ab7"
+    },
+    {
+      "path": "sdk-realtime-historical-delete-terminal-tests.patch",
+      "sha256": "48d2df857342b269a96fe97822c51937fbbd2f5fa528a340072dd60ac681cd02"
+    },
+    {
+      "path": "sdk-realtime-finish-batch-test-fixture.patch",
+      "sha256": "61a544805338b79ec8bb0cec3e177389b47c9fa3fee4e4790cd7a83d3ede2d76"
+    },
+    {
+      "path": "sdk-realtime-portable-history-deletion.patch",
+      "sha256": "31486f942f4e9138d6f7b012cd3c330566fa3dff0061357165551cd03a404c2c"
+    },
+    {
+      "path": "portable-realtime-session-parity.patch",
+      "sha256": "f0b2a4ac68af3a29733f6c7a596b7643fe93b805fb5b5bfedf4887eb60523740"
+    },
+    {
       "path": "sdk-bounded-original-history-reads.patch",
       "sha256": "3b5b1fbab18a6d0aef5416f82c4765871e1835bf2544b3a346168430a9f2f2cf"
     },
@@ -589,5 +625,5 @@
       "sha256": "79cd4458385ebefac423d02bccaa124b845d092582cfa679aa764d1a06648b12"
     }
   ],
-  "result_tree": "58e2cbc40d78b66b98cb612207a822e73e62883a"
+  "result_tree": "522513fd2a3af151bdb661177b1347d04c896c18"
 }

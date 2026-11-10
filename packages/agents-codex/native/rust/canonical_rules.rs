@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail, ensure};
 use codex_code_mode::CodeModeNestedToolCall;
 use codex_config::config_toml::ConfigToml;
 use codex_config::{ProjectTrustLookup, ProjectTrustPath};
+use codex_core::project_read_path::ProjectReadPathMapping;
 use codex_core_api::{EnvironmentManager, Feature, ThreadManager};
 use codex_extension_api::{
     ContextContributor, ExtensionData, ExtensionFuture, PreviousWorldStateSection,
@@ -426,7 +427,15 @@ impl CanonicalRules {
             FileSystemEnvironmentAccessor::new(environment.filesystem_ref(), sandbox.clone());
         let fs = ReadAccess::Authorized(&bound);
         let key = bound.cache_key();
-        let canonical_root = fs.canonicalize(&rules.1, None).await?;
+        let mapping = input.thread_store.get::<ProjectReadPathMapping>();
+        let read_root = ProjectReadPathMapping::resolve(
+            mapping.as_deref(),
+            &selection.environment_id,
+            &selection.cwd,
+            "",
+        )?
+        .into_read_path();
+        let canonical_root = fs.canonicalize(&read_root, None).await?;
         {
             let mut trusted = rules.2.lock().expect("trusted root poisoned");
             if let Some(original) = trusted.as_ref() {
@@ -468,20 +477,26 @@ impl CanonicalRules {
             );
             (paths, scope.identity.clone())
         };
-        // Trust follows the captured executor cwd and native Git trust root.
+        // Discover trust on the admitted read path while retaining the original cwd key.
         let native_config: ConfigToml = config.config_layer_stack.effective_config().try_into()?;
         let convention = selection
             .cwd
             .infer_path_convention()
             .context("unknown executor path convention")?;
-        let repo =
-            codex_git_utils::resolve_root_git_project_uri_for_trust(&fs, &selection.cwd).await;
+        let repo = codex_git_utils::resolve_root_git_project_uri_for_trust(&fs, &read_root).await;
         let repo = match repo {
             Some(path) => Some(trust_path(&fs, &path).await),
             None => None,
         };
-        let lookup =
-            ProjectTrustLookup::from_paths(convention, trust_path(&fs, &selection.cwd).await, repo);
+        let cwd = if read_root == selection.cwd {
+            trust_path(&fs, &selection.cwd).await
+        } else {
+            ProjectTrustPath {
+                original: selection.cwd.inferred_native_path_string(),
+                canonical: Some(canonical_root.inferred_native_path_string()),
+            }
+        };
+        let lookup = ProjectTrustLookup::from_paths(convention, cwd, repo);
         let project = native_config.get_active_project_for_lookup(&lookup);
         // The SDK opt-in grants guidance at the captured cwd. An explicit
         // untrusted project overrides it; absent entries preserve that grant.
@@ -585,6 +600,7 @@ impl ToolLifecycleContributor for CanonicalRules {
             let Ok(args) = serde_json::from_str::<ImageArguments>(arguments) else {
                 return;
             };
+            let mapping = input.thread_store.get::<ProjectReadPathMapping>();
             let (context, path) = {
                 let mut scope = rules.0.lock().expect("canonical rules scope poisoned");
                 if scope.turn != input.turn_id || scope.active.is_none() {
@@ -626,10 +642,15 @@ impl ToolLifecycleContributor for CanonicalRules {
                 {
                     return;
                 }
-                let Ok(path) = context.cwd.join(&args.path) else {
+                let Ok(path) = ProjectReadPathMapping::resolve(
+                    mapping.as_deref(),
+                    &context.environment_id,
+                    &context.cwd,
+                    &args.path,
+                ) else {
                     return;
                 };
-                (context, path)
+                (context, path.into_read_path())
             };
             let Some(environment) = self.environments.get_environment(&context.environment_id)
             else {
@@ -821,6 +842,7 @@ impl ToolContributor for CanonicalRules {
                 vec![Arc::new(ReadText {
                     rules,
                     step: Arc::new(StepAccess::default()),
+                    mapping: thread.get::<ProjectReadPathMapping>(),
                 })
                     as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>]
             })
@@ -839,6 +861,7 @@ impl ToolContributor for CanonicalRules {
                 vec![Arc::new(ReadText {
                     rules,
                     step: step.get_or_init(StepAccess::default),
+                    mapping: thread.get::<ProjectReadPathMapping>(),
                 })
                     as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>]
             })
@@ -849,6 +872,7 @@ impl ToolContributor for CanonicalRules {
 struct ReadText {
     rules: Arc<Rules>,
     step: Arc<StepAccess>,
+    mapping: Option<Arc<ProjectReadPathMapping>>,
 }
 
 #[derive(Deserialize)]
@@ -892,7 +916,13 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadText {
                 );
                 let args: ReadArguments = serde_json::from_str(call.function_arguments()?)?;
                 let env = call.environments.first().context("no selected executor")?;
-                let path = env.cwd.join(&args.path)?;
+                let path = ProjectReadPathMapping::resolve(
+                    self.mapping.as_deref(),
+                    &env.environment_id,
+                    &env.cwd,
+                    &args.path,
+                )?
+                .into_read_path();
                 let context = self
                     .step
                     .0

@@ -25,6 +25,7 @@ export type {
 export { OpenAIDecisions } from './runtime/openai-decisions';
 export type { OpenAIDecisionsOptions } from './runtime/openai-decisions';
 export { NativeProvider } from './runtime/provider';
+export { NativeRuntime } from './runtime/native-runtime';
 export { CapabilityError } from './runtime/capabilities';
 export type {
   Capabilities,
@@ -163,6 +164,7 @@ export type {
   UserInput,
   UserMessage,
   InputText,
+  InputAudio,
   InputImage,
   InputImageFile,
   InputFile,

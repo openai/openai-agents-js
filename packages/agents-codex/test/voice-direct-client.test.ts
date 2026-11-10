@@ -491,7 +491,10 @@ describe.runIf(enabled)('direct client Rust authority', () => {
       async setRemoteDescription() {},
       close: vi.fn(),
     };
-    const fetch = vi.fn(async () => new Response('mobile-answer'));
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      text: async () => 'mobile-answer',
+    }));
     vi.stubGlobal('fetch', fetch);
     const call = await connectPortableVoiceReactNative({
       control: owner,

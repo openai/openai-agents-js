@@ -3207,3 +3207,44 @@ it('keeps the first explicit tool capture when profile policy reads a newer sour
   });
   await peer.owner.close();
 });
+
+it('closes a staged replacement after native publication errors without discarding its source', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const target = { profile_id: 'staged', epoch: 1 };
+  const agent = {
+    name: 'Candidate',
+    handoffs: [],
+    realtime: { instructions: 'Candidate' },
+  };
+  const discard = vi.fn(async () => {});
+  const release = vi.fn(async () => {});
+  const admit = vi.fn(async () => ({
+    profile_receipt: target,
+    function_tools: [],
+    selection_id: 'staged-selection',
+  }));
+  Object.assign(peer.session, {
+    _admitRealtimeGraph: admit,
+    _discardRealtimeGraph: discard,
+    _releaseRealtimeGraph: release,
+    _realtimeConfigurationSource: () => ({
+      agent,
+      declaration: agent,
+      context: undefined,
+    }),
+    _hasRetainedRealtimeProfile: () => true,
+  });
+  const failure = new Error('ambiguous native update');
+  const base = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (operation === 'realtime_conversation_update_sdk') throw failure;
+    return base(operation, params);
+  });
+  await expect(peer.owner.updateAgent(agent as never)).rejects.toBe(failure);
+  await expect(peer.owner.updateAgent(agent as never)).rejects.toBe(failure);
+  await peer.owner.close();
+  expect(admit).toHaveBeenCalledOnce();
+  expect(discard).not.toHaveBeenCalled();
+  expect(release).toHaveBeenCalledWith(peer.generation);
+});

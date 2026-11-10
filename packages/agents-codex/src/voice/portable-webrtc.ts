@@ -7,11 +7,14 @@ import {
   type PortableVoiceControl,
   type PortableVoiceOptions,
 } from './portable-session';
-import type { NativeVoiceDataChannel, VoiceSdpExchange } from './webrtc';
+import {
+  listenVoiceChannel,
+  type NativeVoiceDataChannel,
+  type VoiceSdpExchange,
+} from './webrtc';
 
 interface PortableVoiceDataChannel extends NativeVoiceDataChannel {
   readonly readyState: string;
-  onopen: (() => void) | null;
   send(frame: string): void;
 }
 interface MediaCallbacks {
@@ -66,6 +69,7 @@ export async function connectPortableVoiceWebRTC<Media extends MediaConnection>(
   if (endpoint.protocol !== 'https:')
     throw new TypeError('Provider call URL must use https.');
   let channel: PortableVoiceDataChannel | undefined;
+  let removeOpenListener: (() => void) | undefined;
   let openResolve!: () => void;
   let openReject!: (error: unknown) => void;
   const opened = new Promise<void>((resolve, reject) => {
@@ -84,6 +88,8 @@ export async function connectPortableVoiceWebRTC<Media extends MediaConnection>(
       },
       close() {
         openReject(new Error('Voice data channel closed.'));
+        removeOpenListener?.();
+        removeOpenListener = undefined;
         options.signal?.removeEventListener('abort', abort);
         media.close();
       },
@@ -97,17 +103,17 @@ export async function connectPortableVoiceWebRTC<Media extends MediaConnection>(
   const media = createMedia({
     onDataChannel(dataChannel) {
       channel = dataChannel as PortableVoiceDataChannel;
-      channel.onopen = () => openResolve();
+      removeOpenListener = listenVoiceChannel(channel, 'open', openResolve);
       if (channel.readyState === 'open') openResolve();
       options.media.onDataChannel?.(channel);
     },
     onTransportEvent(event) {
       session.receive(event);
-      options.media.onTransportEvent?.(event);
+      return options.media.onTransportEvent?.(event);
     },
     onError(error) {
       session.fail(error);
-      options.media.onError?.(error);
+      return options.media.onError?.(error);
     },
   });
   options.signal?.addEventListener('abort', abort, { once: true });

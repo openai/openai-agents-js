@@ -331,7 +331,15 @@ export async function tryOpenPlainRun(
     }
     if (phase === 'borrow') {
       try {
-        await borrow?.finish(keep && !signal?.aborted);
+        await borrow?.finish(
+          keep &&
+            !signal?.aborted &&
+            (!borrow?.plainOnly ||
+              (diagnostic === undefined &&
+                environmentFailure === undefined &&
+                cancellationError === undefined)),
+          true,
+        );
       } finally {
         if (!borrow || borrow.done) {
           engine = undefined;
@@ -459,9 +467,11 @@ export async function tryOpenPlainRun(
             : undefined,
         );
       }
+      // Validate/project the detached result before permitting cross-Provider reuse.
+      const result = await completedPlainRun(dto, options.observationRetention);
       await cleanup(true);
       signal?.throwIfAborted();
-      return await completedPlainRun(dto, options.observationRetention);
+      return result;
     } catch (error) {
       const primary = signal?.aborted ? signal.reason : error;
       try {

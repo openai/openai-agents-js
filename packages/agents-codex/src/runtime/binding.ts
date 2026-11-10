@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { Buffer } from 'node:buffer';
 export type { Engine, NativeThread } from '../../native/index.js';
 
 declare global {
   interface JSON {
     rawJSON(text: string): { readonly rawJSON: string };
+    isRawJSON(value: unknown): value is { readonly rawJSON: string };
   }
 }
 
@@ -168,8 +170,67 @@ export async function binding() {
 export function decode<T>(schema: z.ZodType<T>, source: string): T {
   return schema.parse(JSON.parse(source));
 }
-export function encode(value: unknown): string {
-  return JSON.stringify(losslessJsonValueSchema.parse(value));
+/** Count captured JSON before allocating its encoded representation. */
+function checkJsonCapacity(
+  value: JsonValue,
+  limit: number,
+  replace: (this: object, key: string, value: unknown) => unknown = (
+    _key,
+    item,
+  ) => item,
+): void {
+  let remaining = limit;
+  const add = (bytes: number) => {
+    remaining -= bytes;
+    if (remaining < 0)
+      throw new RangeError('Audio input exceeds the native request capacity');
+  };
+  const string = (text: string) => {
+    if (text.length > remaining - 2)
+      throw new RangeError('Audio input exceeds the native request capacity');
+    add(2);
+    for (let start = 0; start < text.length;) {
+      let end = Math.min(start + 32_768, text.length);
+      const last = text.charCodeAt(end - 1);
+      if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+      add(
+        Buffer.byteLength(JSON.stringify(text.slice(start, end)), 'utf8') - 2,
+      );
+      start = end;
+    }
+  };
+  const visit = (parent: object, key: string, raw: unknown): void => {
+    const item = replace.call(parent, key, raw);
+    if (JSON.isRawJSON(item)) add(item.rawJSON.length);
+    else if (typeof item === 'string') string(item);
+    else if (item === null) add(4);
+    else if (typeof item === 'number' || typeof item === 'boolean')
+      add(JSON.stringify(item).length);
+    else if (Array.isArray(item)) {
+      add(2 + Math.max(0, item.length - 1));
+      item.forEach((child, index) => visit(item, String(index), child));
+    } else if (item && typeof item === 'object') {
+      const entries = Object.entries(item);
+      add(2 + Math.max(0, entries.length - 1));
+      for (const [name, child] of entries) {
+        string(name);
+        add(1);
+        visit(item, name, child);
+      }
+    }
+  };
+  visit({ '': value }, '', value);
+}
+
+/** @internal Check a captured audio operation without encoding the complete value. */
+export function checkEncodedCapacity(value: unknown, byteLimit: number): void {
+  checkJsonCapacity(losslessJsonValueSchema.parse(value), byteLimit);
+}
+
+export function encode(value: unknown, byteLimit?: number): string {
+  const captured = losslessJsonValueSchema.parse(value);
+  if (byteLimit !== undefined) checkJsonCapacity(captured, byteLimit);
+  return JSON.stringify(captured);
 }
 
 // Convert only an authority's exact integer token; never return a rounded JS number.
@@ -308,7 +369,7 @@ export function encodeOperationSelection(value: unknown): string {
   });
 }
 
-export function encodeReceipt(value: unknown): string {
+export function encodeReceipt(value: unknown, byteLimit?: number): string {
   const originals = checkpointCodeStates(value);
   for (const state of originals)
     codeModeCellKeysSchema.parse(state.completed_cells);
@@ -349,27 +410,26 @@ export function encodeReceipt(value: unknown): string {
     typeof request === 'object' && request !== null && !Array.isArray(request)
       ? request._sdk_python_tool
       : validated._sdk_python_tool;
-  return JSON.stringify(
-    validated,
-    function (this: object, key: string, item: unknown) {
-      if (
-        (((this === validated || this === marker) &&
-          (key === 'generation' ||
-            key === 'nonce' ||
-            key === 'old_nonce' ||
-            key === 'delivery' ||
-            key === 'subagent_instance_id' ||
-            key === 'profile_epoch')) ||
-          (this === declarationSource && key === 'epoch') ||
-          (this === budget && (key === 'admitted' || key === 'limit')) ||
-          (codeStates.has(this) && key === 'next_cell_id')) &&
-        typeof item === 'string'
-      ) {
-        if (!/^(0|[1-9][0-9]*)$/.test(item))
-          throw new TypeError('Invalid native receipt ID');
-        return JSON.rawJSON(item);
-      }
-      return item;
-    },
-  );
+  const replace = function (this: object, key: string, item: unknown) {
+    if (
+      (((this === validated || this === marker) &&
+        (key === 'generation' ||
+          key === 'nonce' ||
+          key === 'old_nonce' ||
+          key === 'delivery' ||
+          key === 'subagent_instance_id' ||
+          key === 'profile_epoch')) ||
+        (this === declarationSource && key === 'epoch') ||
+        (this === budget && (key === 'admitted' || key === 'limit')) ||
+        (codeStates.has(this) && key === 'next_cell_id')) &&
+      typeof item === 'string'
+    ) {
+      if (!/^(0|[1-9][0-9]*)$/.test(item))
+        throw new TypeError('Invalid native receipt ID');
+      return JSON.rawJSON(item);
+    }
+    return item;
+  };
+  if (byteLimit !== undefined) checkJsonCapacity(validated, byteLimit, replace);
+  return JSON.stringify(validated, replace);
 }
