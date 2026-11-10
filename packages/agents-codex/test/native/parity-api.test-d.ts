@@ -56,7 +56,7 @@ const screenshot: import('@openai/agents').Computer['screenshot'] = (
 };
 const publicContext: (
   context: import('@openai/agents').ToolCallContext,
-) => string = screenshot;
+) => string | Promise<string> = screenshot;
 void publicContext;
 // @ts-expect-error Session owner lookup is internal to sibling packages.
 void import('@openai/agents').then((sdk) => sdk._nativeToolSessionOwner);
