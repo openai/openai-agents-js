@@ -491,7 +491,43 @@
     {
       "path": "0153-sdk-codex-login-terminal-rate-limits.patch",
       "sha256": "27ffb695fffd05cea70165710d3d0fd93039f22d76fde67fa96c827188fe5339"
+    },
+    {
+      "path": "sdk-bwrap-search-path.patch",
+      "sha256": "1b1f87bda8fca4a75ca687ae5662bf28ad6eb7538af8b882576daea23c8b01fa"
+    },
+    {
+      "path": "sdk-root-metadata-readback.patch",
+      "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
+    },
+    {
+      "path": "0171-original-history-catalog.patch",
+      "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
+    },
+    {
+      "path": "sdk-rpc-json-fidelity.patch",
+      "sha256": "627e429ded864fb3388b6562c22460e604ca9ba6ad25ec72e38480c1ba61e6ed"
+    },
+    {
+      "path": "0172-linear-original-history-checkpoints.patch",
+      "sha256": "c5e73f497228483f88c78123702b6daeb348de0e4a9cadc7f4e538f43e6fd2c1"
+    },
+    {
+      "path": "sdk-linux-bootstrap-environment.patch",
+      "sha256": "4f453674465f30d922f2bfc0016d3bf47cd6f9016fe3e679abe0bfa9c780fd5e"
+    },
+    {
+      "path": "sdk-environment-name-validation.patch",
+      "sha256": "117f2da7c540d33ba72cfe8eac6601c6d534fa89e5c920a2be7b19d7431c7590"
+    },
+    {
+      "path": "0173-bounded-live-original-history.patch",
+      "sha256": "84fc550142df445f33385eff6eface16f33004c8ef40898588f9481c0c437840"
+    },
+    {
+      "path": "0174-sdk-command-environment-overrides.patch",
+      "sha256": "4a6d3118ac0f5512fabe53aa80f8e82bc6fca1274ffba2731bde2ecca89d6532"
     }
   ],
-  "result_tree": "f6d7d4ef0ef2ad011c4308d8b84b0c6764edb902"
+  "result_tree": "9172e66de67da4c184b7c161d8aa998b22cff6fb"
 }

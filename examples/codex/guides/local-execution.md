@@ -14,6 +14,8 @@ Pass the declaration as the `environment` option when opening `agent.session`. O
 
 Commands start with a system `PATH` and a fresh environment rather than inheriting the application's variables. A provider API key in the application does not become a command environment variable. The command sandbox permits reads of the workspace, declared writable roots, and platform runtime files. A separately declared host stdio MCP process has its own [process permissions](mcp.md#run-a-stdio-server-on-the-host-or-executor).
 
+Application-defined command variables in source builds: [`Environment.env`](executors.md#command-environment), including a captured custom `PATH`.
+
 ## Inspect a read-only workspace
 
 This option is available in current source builds. The `0.22.0-alpha.2` release does not include it.
