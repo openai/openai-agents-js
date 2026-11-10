@@ -575,7 +575,11 @@
     {
       "path": "sdk-realtime-application-update-rejections.patch",
       "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
+    },
+    {
+      "path": "sdk-bounded-original-history-reads.patch",
+      "sha256": "2e81a829b1b01ed18adeb74af06ae69ca6d418ab12f8ebccf4008bf58bc03666"
     }
   ],
-  "result_tree": "998cbcdce049884d45162f070a849613376e2cdb"
+  "result_tree": "b725bee2940a07a80034d056f83674b9c1e80c30"
 }
