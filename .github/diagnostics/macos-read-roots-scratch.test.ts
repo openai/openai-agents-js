@@ -133,7 +133,7 @@ function summarizeCurl(output: string) {
   const version = output.match(/^curl \d[^\n]*$/m)?.[0];
   const selectedBackend = version?.replace(/\([^)]*\)/g, '');
   return {
-    version,
+    curlVersion: version?.match(/^curl (\d+(?:\.\d+)+)\b/)?.[1],
     secureTransport: /\bSecure-?Transport\b/i.test(selectedBackend ?? ''),
     exit: output.match(/^CURL_EXIT=(\d+)$/m)?.[1],
     http: output.match(/^TLS http=(\d{3}) /m)?.[1],
@@ -157,6 +157,11 @@ it('verifies stock Darwin native TLS trust under strict Seatbelt', async () => {
   const cwd = await realpath(
     await mkdtemp(join(homedir(), '.agents-darwin-tls-')),
   );
+  const receipts: {
+    mode: 'native' | 'pem';
+    location: 'host' | 'session';
+    result: ReturnType<typeof summarizeCurl>;
+  }[] = [];
   try {
     const runPair = async (mode: 'native' | 'pem') => {
       const command = curlCommand(mode);
@@ -169,11 +174,11 @@ it('verifies stock Darwin native TLS trust under strict Seatbelt', async () => {
       expect(control.error).toBeUndefined();
       expect(control.status).toBe(0);
       const outside = summarizeCurl(control.stdout);
-      console.log('Stock TLS host control', mode, outside);
+      receipts.push({ mode, location: 'host', result: outside });
       const inside = summarizeCurl(
         await runCommand({ cwd, network: { allowedDomains: [host] } }, command),
       );
-      console.log('Stock TLS strict Session', mode, inside);
+      receipts.push({ mode, location: 'session', result: inside });
       return { outside, inside };
     };
     const { outside, inside } = await runPair('native');
@@ -204,5 +209,7 @@ it('verifies stock Darwin native TLS trust under strict Seatbelt', async () => {
     ).toBe(true);
   } finally {
     await rm(cwd, { recursive: true, force: true });
+    const report = process.env.SDK_DARWIN_TLS_RECEIPT;
+    if (report) await writeFile(report, JSON.stringify(receipts));
   }
 }, 90_000);

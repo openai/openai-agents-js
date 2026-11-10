@@ -3,7 +3,9 @@ name: Strict macOS read-only roots with the release native bundle
 on:
   push:
     branches: [mark/nov9-js-macos-read-roots-receipt]
-    paths: ['.github/workflows/macos-read-roots-receipt.yml']
+    paths:
+      - '.github/workflows/macos-read-roots-receipt.yml'
+      - '.github/diagnostics/macos-read-roots-scratch.test.ts'
 
 permissions:
   contents: read
@@ -105,11 +107,24 @@ jobs:
         run: |
           probe=packages/agents-codex/test/native/macos-read-roots-scratch.test.ts
           result="$RUNNER_TEMP/strict-darwin-scratch.json"
+          export SDK_DARWIN_TLS_RECEIPT="$RUNNER_TEMP/strict-darwin-tls-receipt.json"
           test ! -e "$probe"
+          test ! -e "$SDK_DARWIN_TLS_RECEIPT"
           cp ".macos-receipt/.github/diagnostics/macos-read-roots-scratch.test.ts" "$probe"
           trap 'rm -f "$probe"' EXIT
+          status=0
           env -u OPENAI_API_KEY -u CODEX_API_KEY pnpm test:native "$probe" \
-            --maxWorkers=1 --reporter=verbose --reporter=json --outputFile.json="$result"
+            --maxWorkers=1 --reporter=verbose --reporter=json --outputFile.json="$result" || status=$?
+          if test -s "$SDK_DARWIN_TLS_RECEIPT"; then
+            node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+
+          const receipts = JSON.parse(readFileSync(process.env.SDK_DARWIN_TLS_RECEIPT, 'utf8'));
+          console.log('Stock Darwin TLS receipts', JSON.stringify(receipts));
+          JS
+          fi
+          test "$status" -eq 0
+          test -s "$SDK_DARWIN_TLS_RECEIPT"
           node --input-type=module - "$result" <<'JS'
           import assert from 'node:assert/strict';
           import { readFileSync } from 'node:fs';
