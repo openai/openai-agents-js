@@ -447,7 +447,7 @@ index 0906f3aa6997d270cc075627c933e67c1a8abd9d..63be224e7b356e2301fbe3f74a0cbe8d
              "tools".into(),
              tools_json(
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index da236689d1f0a07975ca0e0042142441e210a58f..f2e9c239d998c88fe2643bb624dac1b21357073b 100644
+index da236689d1f0a07975ca0e0042142441e210a58f..6dbc6d1c2af80ec799201a92c5a08589516cae79 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -375,6 +375,21 @@ enum RealtimeSessionKind {
@@ -615,18 +615,15 @@ index da236689d1f0a07975ca0e0042142441e210a58f..f2e9c239d998c88fe2643bb624dac1b2
          (Some(sdk), RealtimeEvent::FunctionCallRequested(call))
              if sdk
                  .history
-@@ -5922,10 +6001,22 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5922,10 +6001,19 @@ async fn handle_realtime_server_event_with_configuration(
          }
          _ => event,
      };
-+    if let Some(sdk) = &handoff_state.sdk {
-+        let mut history = sdk.history.lock().unwrap();
-+        match &mut event {
-+            RealtimeEvent::ResponseDone(response) => response
-+                .function_call_ids
-+                .retain(|id| !history.is_caller_call(id, response.response_id.as_deref())),
-+            _ => {}
-+        }
++    if let (Some(sdk), RealtimeEvent::ResponseDone(response)) = (&handoff_state.sdk, &mut event) {
++        let history = sdk.history.lock().unwrap();
++        response
++            .function_call_ids
++            .retain(|id| !history.is_caller_call(id, response.response_id.as_deref()));
 +    }
      if let Some(sdk) = &handoff_state.sdk {
          let action = match &event {
@@ -639,7 +636,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..f2e9c239d998c88fe2643bb624dac1b2
              }
              RealtimeEvent::ConversationItemAdded {
                  item,
-@@ -6111,6 +6202,12 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6111,6 +6199,12 @@ async fn handle_realtime_server_event_with_configuration(
              {
                  return Ok(());
              }
@@ -652,7 +649,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..f2e9c239d998c88fe2643bb624dac1b2
              defer_sdk_create_until_handoff(handoff_state, response_create_queue).await;
              if response.response_id == response_create_queue.sdk_response_id {
                  response_create_queue.sdk_response_id = None;
-@@ -6246,24 +6343,95 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6246,24 +6340,95 @@ async fn handle_realtime_server_event_with_configuration(
              }
              false
          }
@@ -1373,7 +1370,7 @@ index 67df20febdf169d70f46c55c4bbfbec7d8a8d459..5ccb45313777a53e3827dfbc6c3a2c27
          tool_choice: response.tool_choice,
          event_id,
 diff --git a/codex-rs/core/src/realtime_conversation/raw_settings.rs b/codex-rs/core/src/realtime_conversation/raw_settings.rs
-index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300a0163489 100644
+index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..cb2bcca110b02df30a0f262c4ecdeb157675a256 100644
 --- a/codex-rs/core/src/realtime_conversation/raw_settings.rs
 +++ b/codex-rs/core/src/realtime_conversation/raw_settings.rs
 @@ -1,6 +1,10 @@
@@ -1388,11 +1385,17 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300
  use codex_protocol::realtime_settings::RealtimeSessionUpdate;
  use serde_json::Map;
  use serde_json::Value;
-@@ -17,15 +21,20 @@ fn object<'a>(value: &'a Value, keys: &[&str]) -> CodexResult<&'a Map<String, Va
+@@ -17,15 +21,26 @@ fn object<'a>(value: &'a Value, keys: &[&str]) -> CodexResult<&'a Map<String, Va
      Ok(fields)
  }
  
 -fn format(value: &Value) -> CodexResult<Value> {
++fn nonempty_string(value: Option<&Value>) -> bool {
++    value
++        .and_then(Value::as_str)
++        .is_some_and(|value| !value.trim().is_empty())
++}
++
 +fn format(value: &Value) -> CodexResult<RealtimeAudioFormat> {
      let fields = object(value, &["type", "rate"])?;
 -    let name = match fields.get("type").and_then(Value::as_str) {
@@ -1416,21 +1419,35 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300
  }
  
  // Protocol DTOs intentionally tolerate extra fields on several settings. Raw
-@@ -95,6 +104,13 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
+@@ -81,8 +96,15 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
+             };
+             object(value, keys)?;
+         }
+-        "voice" if value.is_object() => {
+-            object(value, &["id"])?;
++        "voice" => {
++            let voice = if value.is_object() {
++                object(value, &["id"])?.get("id")
++            } else {
++                Some(value)
++            };
++            if !nonempty_string(voice) {
++                return Err(invalid());
++            }
+         }
+         "tool_choice" if value.is_object() => {
+             object(value, &["type", "name"])?;
+@@ -95,6 +117,9 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
          }
          "prompt" => {
              let fields = object(value, &["id", "version", "variables"])?;
-+            if !fields
-+                .get("id")
-+                .and_then(Value::as_str)
-+                .is_some_and(|id| !id.trim().is_empty())
-+            {
++            if !nonempty_string(fields.get("id")) {
 +                return Err(invalid());
 +            }
              if let Some(variables) = fields.get("variables").filter(|value| !value.is_null()) {
                  for value in variables.as_object().ok_or_else(invalid)?.values() {
                      if value.is_string() {
-@@ -117,8 +133,28 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
+@@ -117,8 +142,28 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
      Ok(())
  }
  
@@ -1461,7 +1478,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300
  pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate> {
      let fields = object(
          &value,
-@@ -128,6 +164,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+@@ -128,6 +173,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
              "instructions",
              "output_modalities",
              "audio",
@@ -1469,7 +1486,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300
              "tool_choice",
              "prompt",
              "tracing",
-@@ -188,7 +225,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+@@ -188,7 +234,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
                          } else {
                              "output_format"
                          },
@@ -1478,7 +1495,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300
                      )
                  } else {
                      nested(name, value)?;
-@@ -205,7 +242,31 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+@@ -205,7 +251,31 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
              }
          }
      }
@@ -1511,7 +1528,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300
  }
  
  #[cfg(test)]
-@@ -238,7 +299,8 @@ mod tests {
+@@ -238,7 +308,8 @@ mod tests {
      fn rejects_unknown_nested_fields_and_authority_changes() {
          for value in [
              json!([]),

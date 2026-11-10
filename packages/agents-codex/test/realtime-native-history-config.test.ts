@@ -457,7 +457,7 @@ nativeIt(
 );
 
 nativeIt(
-  'preserves raw per-response prompt references, variables, and explicit null',
+  'validates raw prompt and voice settings and preserves prompt references and null',
   async () => {
     const model = new ModelServer([]);
     const peer = new HistoryPeer(model);
@@ -468,6 +468,24 @@ nativeIt(
         instructions: 'Use the accepted Session instructions by default.',
       }).session();
       await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const invalid: JsonObject[] = [
+        { prompt: { id: ' ' } },
+        { audio: { output: { voice: ' ' } } },
+        { audio: { output: { voice: { id: '' } } } },
+      ];
+      for (const [index, response] of invalid.entries()) {
+        const eventId = `invalid-response-settings-${index}`;
+        await expect(
+          voice.sendEvent({
+            type: 'response.create',
+            event_id: eventId,
+            response,
+          }),
+        ).rejects.toThrow(/raw Realtime session settings/);
+        expect(peer.frames.some((frame) => frame.event_id === eventId)).toBe(
+          false,
+        );
+      }
       const prompts: (JsonObject | null)[] = [
         { id: 'pmpt_fixture' },
         {
@@ -808,7 +826,7 @@ nativeIt(
         expect(
           peer.frames.filter((frame) => frame.type === 'response.create'),
         ).toEqual([event]);
-        const continuation: JsonObject = {
+        const continuation = {
           type: 'response.create',
           response: {
             conversation: 'none',
@@ -820,12 +838,17 @@ nativeIt(
               },
             ],
           },
-        };
+        } satisfies JsonObject;
         const after = peer.frames.length;
         await voice.sendEvent(continuation);
-        expect(await peer.frame('response.create', after)).toEqual(
-          continuation,
-        );
+        expect(await peer.frame('response.create', after)).toEqual({
+          ...continuation,
+          response: {
+            ...continuation.response,
+            tools: [],
+            tool_choice: 'none',
+          },
+        });
         expect(model.requests).toEqual([]);
       } finally {
         await voice.close();
