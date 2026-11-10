@@ -278,6 +278,7 @@ nativeIt(
           provider,
           name: 'Valid',
           instructions: 'Still updatable',
+          realtime: { instructions: 'Still updatable' },
         });
         await voice.updateAgent(valid);
         await expect(voice.getActiveAgent()).resolves.toBe(valid);
