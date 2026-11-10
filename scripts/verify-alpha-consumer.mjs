@@ -96,7 +96,11 @@ for (const esm of [false, true]) {
       : require(`@openai/agents-codex${suffix}`);
     const keys = (module) =>
       Object.keys(module)
-        .filter((key) => key !== 'default')
+        .filter(
+          (key) =>
+            key !== 'default' &&
+            (!esm || (key !== '__esModule' && key !== 'module.exports')),
+        )
         .sort();
     assert.deepEqual(
       keys(facade),
@@ -124,6 +128,10 @@ for (const path of ['bin', 'licenses']) {
 
 const portableWasm = 'codex-realtime-control.wasm';
 const portableReceiptFile = 'portable-build-receipt.json';
+const portableHermesFiles = [
+  'codex-realtime-control.mjs',
+  'codex-realtime-control.cjs',
+];
 const facadeNative = join(facadeRoot, 'native');
 assert(
   (await lstat(facadeNative)).isDirectory(),
@@ -131,7 +139,7 @@ assert(
 );
 assert.deepEqual(
   (await readdir(facadeNative)).sort(),
-  [portableWasm, portableReceiptFile],
+  [portableWasm, portableReceiptFile, ...portableHermesFiles].sort(),
   'Unexpected facade native inventory',
 );
 const portableReceipts = [];
@@ -163,6 +171,37 @@ for (const name of ['@openai/agents', '@openai/agents-codex']) {
     portableReceipt.artifact.sha256,
     `Changed portable Wasm: ${name}`,
   );
+  assert.equal(portableReceipt.hermes?.binaryen, '108.0.0');
+  for (const file of portableHermesFiles) {
+    assert.equal(
+      createHash('sha256')
+        .update(await readFile(join(installed[name], 'native', file)))
+        .digest('hex'),
+      portableReceipt.hermes.artifacts[name][file],
+      `Changed Hermes control: ${name}/${file}`,
+    );
+  }
+  const savedWebAssembly = globalThis.WebAssembly;
+  try {
+    globalThis.WebAssembly = undefined;
+    for (const module of [
+      require(`${name}/voice/control.hermes`),
+      await import(`${name}/voice/control.hermes`),
+    ]) {
+      const first = module.createHermesVoiceControl();
+      const second = module.createHermesVoiceControl();
+      const config = {
+        model: 'test-realtime',
+        instructions: 'Independent Hermes 海豚',
+      };
+      const start = first.apply({ type: 'start', config });
+      assert.equal(start[0].event.session.instructions, config.instructions);
+      first.apply({ type: 'close' });
+      assert.equal(second.apply({ type: 'start', config })[0].id, 1);
+    }
+  } finally {
+    globalThis.WebAssembly = savedWebAssembly;
+  }
   portableReceipts.push(portableReceipt);
 }
 assert.deepEqual(

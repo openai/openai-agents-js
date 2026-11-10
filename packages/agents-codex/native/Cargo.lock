@@ -1682,6 +1682,7 @@ dependencies = [
  "codex-extension-api",
  "codex-file-system",
  "codex-git-attribution",
+ "codex-git-utils",
  "codex-goal-extension",
  "codex-guardian-v2",
  "codex-history",
@@ -1701,6 +1702,7 @@ dependencies = [
  "codex-thread-store",
  "codex-tools",
  "codex-utils-path-uri",
+ "codex-utils-stream-parser",
  "codex-web-search-extension",
  "codex-websocket-client",
  "futures-core",
@@ -2656,6 +2658,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

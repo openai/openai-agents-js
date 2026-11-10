@@ -54,6 +54,7 @@ codex-exec-server = { path = ".upstream/reviewed-codex/codex-rs/exec-server" }
 codex-core = { path = ".upstream/reviewed-codex/codex-rs/core" }
 codex-protocol = { path = ".upstream/reviewed-codex/codex-rs/protocol" }
 codex-config = { path = ".upstream/reviewed-codex/codex-rs/config" }
+codex-git-utils = { path = ".upstream/reviewed-codex/codex-rs/git-utils" }
 codex-file-system = { path = ".upstream/reviewed-codex/codex-rs/file-system" }
 codex-extension-api = { path = ".upstream/reviewed-codex/codex-rs/ext/extension-api" }
 codex-rollout = { path = ".upstream/reviewed-codex/codex-rs/rollout" }
@@ -79,6 +80,7 @@ codex-code-mode = { path = ".upstream/reviewed-codex/codex-rs/code-mode" }
 codex-code-mode-host = { path = ".upstream/reviewed-codex/codex-rs/code-mode-host" }
 codex-execpolicy = { path = ".upstream/reviewed-codex/codex-rs/execpolicy" }
 codex-utils-path-uri = { path = ".upstream/reviewed-codex/codex-rs/utils/path-uri" }
+codex-utils-stream-parser = { path = ".upstream/reviewed-codex/codex-rs/utils/stream-parser" }
 futures-core = "0.3"
 futures-util = "0.3"
 napi = { version = "3.16.1", default-features = false, features = ["napi8", "async-runtime", "serde-json", "dyn-symbols"] }

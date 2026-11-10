@@ -1,10 +1,22 @@
 import { copyJsonValue, type JsonValue } from './binding';
-import { captureFile, captureImage, mediaRecord } from './media';
+import {
+  captureAudio,
+  captureFile,
+  captureImage,
+  mediaRecord,
+  MAX_AUDIO_INPUT_BYTES,
+  type AudioInputBudget,
+} from './media';
 import type { FileReference, ImageDetail, NativeToolContent } from './media';
 
 export interface InputText {
   type: 'input_text';
   text: string;
+}
+/** Core-owned audio reference; no local file or transport access. */
+export interface InputAudio {
+  type: 'input_audio';
+  audio_url: string;
 }
 /** URL/data URL image. Core owns current-model preparation. */
 export interface InputImage {
@@ -22,7 +34,10 @@ export type InputFile = { type: 'input_file' } & FileReference;
 export interface UserMessage {
   role: 'user';
   content:
-    string | readonly (InputText | InputImage | InputImageFile | InputFile)[];
+    | string
+    | readonly (
+        InputText | InputImage | InputImageFile | InputFile | InputAudio
+      )[];
   type?: 'message';
 }
 export interface FunctionCallOutput {
@@ -33,7 +48,10 @@ export interface FunctionCallOutput {
 export type UserInput = string | UserMessage;
 
 /** Capture complete ordered input before native admission. */
-export function nativeInput(input: UserInput): JsonValue[] {
+export function nativeInput(
+  input: UserInput,
+  audioBudget: AudioInputBudget = { remaining: MAX_AUDIO_INPUT_BYTES },
+): JsonValue[] {
   if (typeof input === 'string') return [{ type: 'text', text: input }];
   const captured = mediaRecord(input);
   if (
@@ -59,6 +77,11 @@ export function nativeInput(input: UserInput): JsonValue[] {
         throw new TypeError('input_text requires a text string');
       return { type: 'text', text: part.text };
     }
+    if (kind === 'input_audio')
+      return copyJsonValue({
+        type: 'audio',
+        ...captureAudio(part, audioBudget),
+      });
     if (kind === 'input_image')
       return copyJsonValue({ type: 'image', ...captureImage(part) });
     if (kind === 'input_file')
@@ -75,9 +98,11 @@ export function responseContent(
     text: 'input_text',
     image: 'input_image',
     file: 'input_file',
+    audio: 'input_audio',
     inputText: 'input_text',
     inputImage: 'input_image',
     inputFile: 'input_file',
+    inputAudio: 'input_audio',
   };
   return parts.map((value): JsonValue => {
     const part = mediaRecord(value);
@@ -97,10 +122,18 @@ export function responseContent(
               item,
             ]),
           )
-        : part;
+        : kind === 'inputAudio'
+          ? Object.fromEntries(
+              Object.entries(part).map(([key, item]) => [
+                key === 'audioUrl' ? 'audio_url' : key,
+                item,
+              ]),
+            )
+          : part;
     const tag = tags[kind];
     const fields: Record<string, readonly string[]> = {
       input_text: ['text'],
+      input_audio: ['audio_url'],
       input_image: ['image_url', 'file_id', 'detail'],
       input_file: ['file_id', 'file_data', 'file_url', 'filename'],
     };

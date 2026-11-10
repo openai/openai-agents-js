@@ -12,8 +12,13 @@ import {
 it('runs sequential public Sessions and closes the borrowed provider', async () => {
   let retained!: ScriptedResponses;
   let agent!: Agent;
-  await withScriptedResponses([[text('one')], [text('two')]], async (peer) => {
+  await withScriptedResponses([[text('discard')]], async (peer) => {
     retained = peer;
+    expect(peer.remainingSteps).toBe(1);
+    peer.clear();
+    expect(peer.remainingSteps).toBe(0);
+    peer.append([text('one')], [text('two')]);
+    expect(peer.remainingSteps).toBe(2);
     agent = new Agent({
       instructions: 'Reply.',
       model: 'gpt-5.5',
@@ -24,13 +29,21 @@ it('runs sequential public Sessions and closes the borrowed provider', async () 
       try {
         const turn = await session.submit('Reply.');
         expect((await turn.wait()).finalOutput).toBe(expected);
+        expect(peer.remainingSteps).toBe(1);
       } finally {
         await session.close();
       }
+      if (expected === 'one') {
+        peer.append([text('discard later')]);
+        expect(peer.remainingSteps).toBe(2);
+      }
     }
+    peer.clear();
+    expect(peer.remainingSteps).toBe(0);
     expect(peer.requests).toHaveLength(2);
   });
   retained.assertExhausted();
+  expect(retained.remainingSteps).toBe(0);
   await expect(agent.session()).rejects.toThrow('closed');
 });
 

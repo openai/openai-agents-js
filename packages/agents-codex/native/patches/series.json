@@ -486,12 +486,144 @@
     },
     {
       "path": "sdk-saved-codex-login.patch",
-      "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
+      "sha256": "7d2bbf0e23b754e7d25a5bba75d9f0114ee6eaed6003e0b54dc13df8e6a5f211"
     },
     {
       "path": "0153-sdk-codex-login-terminal-rate-limits.patch",
       "sha256": "27ffb695fffd05cea70165710d3d0fd93039f22d76fde67fa96c827188fe5339"
+    },
+    {
+      "path": "sdk-bwrap-search-path.patch",
+      "sha256": "1b1f87bda8fca4a75ca687ae5662bf28ad6eb7538af8b882576daea23c8b01fa"
+    },
+    {
+      "path": "sdk-root-metadata-readback.patch",
+      "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
+    },
+    {
+      "path": "sdk-linux-protected-metadata-mount-race.patch",
+      "sha256": "22137e6318edf060270e1fd558005d6fadb4c04297bdad1ba46dad141ddc2b7b"
+    },
+    {
+      "path": "sdk-linux-protected-metadata-bootstrap.patch",
+      "sha256": "76ced00372b6b83f300b3ddc798517b632c92eee5d4e78445d76bb7206bf1130"
+    },
+    {
+      "path": "0171-original-history-catalog.patch",
+      "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
+    },
+    {
+      "path": "sdk-rpc-json-fidelity.patch",
+      "sha256": "627e429ded864fb3388b6562c22460e604ca9ba6ad25ec72e38480c1ba61e6ed"
+    },
+    {
+      "path": "0172-linear-original-history-checkpoints.patch",
+      "sha256": "c5e73f497228483f88c78123702b6daeb348de0e4a9cadc7f4e538f43e6fd2c1"
+    },
+    {
+      "path": "sdk-linux-bootstrap-environment.patch",
+      "sha256": "4f453674465f30d922f2bfc0016d3bf47cd6f9016fe3e679abe0bfa9c780fd5e"
+    },
+    {
+      "path": "sdk-environment-name-validation.patch",
+      "sha256": "117f2da7c540d33ba72cfe8eac6601c6d534fa89e5c920a2be7b19d7431c7590"
+    },
+    {
+      "path": "0173-bounded-live-original-history.patch",
+      "sha256": "84fc550142df445f33385eff6eface16f33004c8ef40898588f9481c0c437840"
+    },
+    {
+      "path": "0174-sdk-command-environment-overrides.patch",
+      "sha256": "4a6d3118ac0f5512fabe53aa80f8e82bc6fca1274ffba2731bde2ecca89d6532"
+    },
+    {
+      "path": "0098-private-plain-modelclient-bridge.patch",
+      "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
+    },
+    {
+      "path": "sdk-realtime-voice-policies.patch",
+      "sha256": "2097a7e96d764c7e49335b35ee3b8bfe7d39924eba52fb346914888b0f583e2e"
+    },
+    {
+      "path": "sdk-agent-profile-observations.patch",
+      "sha256": "6e7ccb5f3b38d26fa69dbfc33338d829011692ab29a544baa074fb71bbcea607"
+    },
+    {
+      "path": "sdk-realtime-retrieved-caller-profile.patch",
+      "sha256": "f164f6e1362464563628f47f88ef425c12716e6177cf72f4ee4703cf3a4b8368"
+    },
+    {
+      "path": "sdk-realtime-filter-forwarded-batches.patch",
+      "sha256": "3ad6dcf410800d6314a9930ffac558a57eba21c8cfbb6ea6294706df4196c5db"
+    },
+    {
+      "path": "0175-portable-realtime-agent-control.patch",
+      "sha256": "65b82aacfe62c2c33d9123ce5db61994efd2e3fe5b239a884095d295637cc9fe"
+    },
+    {
+      "path": "sdk-realtime-provider-events-and-scopes.patch",
+      "sha256": "75499f3213bb235e1724d95d8adbe53b19e192b0bd01b42afa19023dd6a8630b"
+    },
+    {
+      "path": "sdk-realtime-tool-context-history.patch",
+      "sha256": "93617a4dd22929b78760ccbdac152b6af3ffd143acb1cfb755c1bb3606bfe7ca"
+    },
+    {
+      "path": "0176-portable-realtime-response-scopes.patch",
+      "sha256": "edb99414fa1228281a69a3125e8c1e2ce67c1a8c42d235e05c3739fba4e519d0"
+    },
+    {
+      "path": "sdk-realtime-application-update-rejections.patch",
+      "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
+    },
+    {
+      "path": "sdk-local-project-guidance-cwd.patch",
+      "sha256": "5ba8abea56c5abcd70d371bd4fb8d7c1f626dc890ce73451850a8cf3dc82f2e6"
+    },
+    {
+      "path": "native-model-input-modalities.patch",
+      "sha256": "5bece16f3599d550006f178f1e903f6b9bfaab18395daad81235ea0fd5587946"
+    },
+    {
+      "path": "native-box-model-deadline-futures.patch",
+      "sha256": "68f27e496efe84385243d8067e9b45aae4948222d810af32cb2399716f15a717"
+    },
+    {
+      "path": "sdk-realtime-unpublished-agent-source.patch",
+      "sha256": "e0311387868c576d81dce16ee47a1ce4d345c35c182b799eade073475efc044c"
+    },
+    {
+      "path": "sdk-realtime-historical-delete-terminal.patch",
+      "sha256": "8442a703759550a806a5f640b8d2a50047ba4e9f9c6d9455396c5d97ff2e3ab7"
+    },
+    {
+      "path": "sdk-realtime-historical-delete-terminal-tests.patch",
+      "sha256": "48d2df857342b269a96fe97822c51937fbbd2f5fa528a340072dd60ac681cd02"
+    },
+    {
+      "path": "sdk-realtime-finish-batch-test-fixture.patch",
+      "sha256": "61a544805338b79ec8bb0cec3e177389b47c9fa3fee4e4790cd7a83d3ede2d76"
+    },
+    {
+      "path": "sdk-realtime-portable-history-deletion.patch",
+      "sha256": "31486f942f4e9138d6f7b012cd3c330566fa3dff0061357165551cd03a404c2c"
+    },
+    {
+      "path": "portable-realtime-session-parity.patch",
+      "sha256": "1be1deb3a070c604b4beae48c58124edc7c9ca86c487c5d15e3decf99c537662"
+    },
+    {
+      "path": "sdk-commit-completed-compaction-summary.patch",
+      "sha256": "c74885da289ac6a70d76550cef98c99bea51c0b305d5d537db74e4f7263ce6dc"
+    },
+    {
+      "path": "sdk-chatgpt-plan-compaction-outcomes.patch",
+      "sha256": "8c4f0a0e579315f3889dd2b1fabe3805b47f9d09f12ac6563b75f9808708d9fd"
+    },
+    {
+      "path": "sdk-chatgpt-plan-sse-rate-limit.patch",
+      "sha256": "53ae1b894604c1e9e658564f44f983d31a7527b26bc5d99eeb3eb64d94683365"
     }
   ],
-  "result_tree": "f6d7d4ef0ef2ad011c4308d8b84b0c6764edb902"
+  "result_tree": "01e0d9de80133812abe0c5a0d96156c437c80b7d"
 }

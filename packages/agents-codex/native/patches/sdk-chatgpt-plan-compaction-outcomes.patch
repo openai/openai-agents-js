@@ -1,0 +1,63 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 399fa8c2b2b8337fa9ddd82b6ee0c6683bb44ba0..673dc2c7d4845211e1b313c9ad627852bc7018d8 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -733,6 +733,12 @@ impl ModelClient {
+         }
+     }
+
++    pub(crate) fn uses_chatgpt_plan(&self) -> bool {
++        self.request_contributors
++            .iter()
++            .any(|contributor| contributor.uses_chatgpt_plan())
++    }
++
+     /// Creates a fresh turn-scoped streaming session.
+     ///
+     /// This constructor does not perform network I/O itself; the session opens a websocket lazily
+@@ -2070,11 +2076,7 @@ impl ModelClientSession {
+                 .iter()
+                 .filter_map(|contributor| contributor.http_stream(&url));
+             let direct = selected.next();
+-            let chatgpt_plan = self
+-                .client
+-                .request_contributors
+-                .iter()
+-                .any(|c| c.uses_chatgpt_plan());
++            let chatgpt_plan = self.client.uses_chatgpt_plan();
+             if chatgpt_plan && direct.is_none() {
+                 return Err(CodexErr::Fatal(
+                     "Sign in with ChatGPT requires native model dispatch".into(),
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index ce935bc65e76a1074beb1ecb86c38dcbebdd2296..c8171964137bf57e0da71ce6bacdc38372e59284 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -504,6 +504,10 @@ async fn run_compact_task_inner_impl(
+                 return Err(e);
+             }
+             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
++                // Registered plan requests permit one physical model attempt.
++                if sess.services.model_client.uses_chatgpt_plan() {
++                    return Err(e);
++                }
+                 if turn_input_len > 1 {
+                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
+                     error!(
+diff --git a/codex-rs/core/src/tasks/compact.rs b/codex-rs/core/src/tasks/compact.rs
+index 4ddd1e96c3ebc522fdf5cf32e61454b8ad6c57d8..90c1f5e9aa509bb43fff2a6971e5e060a72d2300 100644
+--- a/codex-rs/core/src/tasks/compact.rs
++++ b/codex-rs/core/src/tasks/compact.rs
+@@ -103,8 +103,11 @@ impl SessionTask for CompactTask {
+                 return Err(err);
+             }
+             let error = err.to_codex_protocol_error();
+-            if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
+-                // Compaction already emitted the error; notify extensions without emitting it twice.
++            if matches!(error, CodexErrorInfo::UsageLimitExceeded)
++                || (session.services.model_client.uses_chatgpt_plan()
++                    && !matches!(err.details(), CodexErrorDetails::Interrupted))
++            {
++                // Compaction already emitted the notice. Retain the original error for settlement.
+                 session
+                     .emit_turn_error_lifecycle(ctx.as_ref(), error, &err)
+                     .await;

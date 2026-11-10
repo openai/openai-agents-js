@@ -392,6 +392,9 @@ export type OutputTextPart = z.infer<typeof outputTextPartSchema>;
 type InputTextPart = { type: 'input_text'; text: string };
 // History is passive canonical JSON, not a new user-input capability. Preserve
 // provider fields without requiring callers to construct these observed DTOs.
+const historyAudioPartSchema = z
+  .object({ type: z.literal('input_audio'), audio_url: z.string() })
+  .catchall(jsonValue);
 const historyImagePartSchema = z
   .object({
     type: z.literal('input_image'),
@@ -409,6 +412,7 @@ const historyFilePartSchema = z
     filename: z.string().nullable().optional(),
   })
   .catchall(jsonValue);
+type AudioPart = z.infer<typeof historyAudioPartSchema>;
 type ImagePart = z.infer<typeof historyImagePartSchema>;
 type FilePart = z.infer<typeof historyFilePartSchema>;
 const webSearchSourcesSchema = z.array(
@@ -435,7 +439,9 @@ export type SessionItem = ItemIdentity &
         role: 'user' | 'assistant';
         status: ItemStatus;
         phase: string | null;
-        content: (InputTextPart | OutputTextPart | ImagePart | FilePart)[];
+        content: (
+          InputTextPart | OutputTextPart | ImagePart | FilePart | AudioPart
+        )[];
         /** Visible assistant text when Core removed markup from the original parts. */
         displayText?: string;
       }
@@ -594,6 +600,7 @@ const repairItemProjectionSchema = z.intersection(
             text: z.string(),
           }),
           outputTextPartSchema,
+          historyAudioPartSchema,
           historyImagePartSchema,
           historyFilePartSchema,
         ]),
@@ -971,7 +978,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   ) {
     const accepted =
       raw.role === 'user'
-        ? ['input_text', 'input_image', 'input_file']
+        ? ['input_text', 'input_image', 'input_file', 'input_audio']
         : ['output_text'];
     return {
       ...common,
@@ -981,7 +988,9 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       phase: raw.role === 'assistant' ? text(raw.phase) : null,
       content: objects(raw.content).filter((part) =>
         accepted.includes(String(part.type)),
-      ) as (InputTextPart | OutputTextPart | ImagePart | FilePart)[],
+      ) as (
+        InputTextPart | OutputTextPart | ImagePart | FilePart | AudioPart
+      )[],
     };
   }
   if (raw.type === 'reasoning')
@@ -1131,10 +1140,10 @@ function nativeItems(
           status: 'completed',
           phase: null,
           content: objects(raw.content).flatMap(
-            (part): (InputTextPart | ImagePart | FilePart)[] =>
-              ['text', 'image', 'file'].includes(String(part.type))
+            (part): (InputTextPart | ImagePart | FilePart | AudioPart)[] =>
+              ['text', 'image', 'file', 'audio'].includes(String(part.type))
                 ? (responseContent([part]) as (
-                    InputTextPart | ImagePart | FilePart
+                    InputTextPart | ImagePart | FilePart | AudioPart
                   )[])
                 : [],
           ),
@@ -1841,7 +1850,7 @@ export function projectNativeHostedToolItem(
   }
 }
 
-/** Effective canonical response items; raw rollout audit records remain separate. */
+/** Core has been retaining original JSON object records separately from model projections. */
 export interface CanonicalHistorySnapshot {
   readonly revision: string;
   readonly total: number;

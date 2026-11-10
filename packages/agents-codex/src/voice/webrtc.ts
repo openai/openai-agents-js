@@ -1,3 +1,5 @@
+import { notifyVoiceObserver } from './event-observers';
+
 /** Client media primitives shared by browser and app-owned mobile WebRTC. */
 export type VoiceSdpExchange = (
   offerSdp: string,
@@ -57,12 +59,45 @@ function trackEvents(track: NativeVoiceMediaTrack) {
     removeEventListener(type: 'ended', listener: () => void): void;
   };
 }
-function channelEvents(channel: NativeVoiceDataChannel) {
-  return channel as NativeVoiceDataChannel & {
-    onopen: (() => void) | null;
-    onmessage: ((event: { data: string }) => void) | null;
-    onerror: (() => void) | null;
-    onclose: (() => void) | null;
+type VoiceChannelEvent = {
+  open: unknown;
+  message: { data: string };
+  error: unknown;
+  close: unknown;
+};
+export function listenVoiceChannel<Type extends keyof VoiceChannelEvent>(
+  channel: NativeVoiceDataChannel,
+  type: Type,
+  listener: (event: VoiceChannelEvent[Type]) => void,
+): () => void {
+  const events = channel as NativeVoiceDataChannel & {
+    addEventListener?: (
+      type: string,
+      listener: (event: VoiceChannelEvent[Type]) => void,
+    ) => void;
+    removeEventListener?: (
+      type: string,
+      listener: (event: VoiceChannelEvent[Type]) => void,
+    ) => void;
+  };
+  if (events.addEventListener && events.removeEventListener) {
+    events.addEventListener(type, listener);
+    return () => events.removeEventListener!(type, listener);
+  }
+  // Preserve injected mobile peers that expose only property handlers.
+  const handlers = channel as unknown as Record<
+    string,
+    ((event: VoiceChannelEvent[Type]) => void) | null
+  >;
+  const key = `on${type}`;
+  const previous = handlers[key];
+  const handler = (event: VoiceChannelEvent[Type]) => {
+    listener(event);
+    previous?.call(channel, event);
+  };
+  handlers[key] = handler;
+  return () => {
+    if (handlers[key] === handler) handlers[key] = previous ?? null;
   };
 }
 function peerEvents<Stream>(peer: NativeVoicePeerConnection) {
@@ -79,6 +114,7 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
     'new';
   #peer: NativeVoicePeerConnection | undefined;
   #channel: NativeVoiceDataChannel | undefined;
+  #removeChannelListeners: (() => void) | undefined;
   #stream: Stream | undefined;
   #trackEnded: (() => void) | undefined;
   #playback: Stream | undefined;
@@ -160,7 +196,7 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
       } catch {
         /* Report the primary media error. */
       }
-      this.options.onError?.(error);
+      notifyVoiceObserver(this.options.onError, error);
     };
     this.#trackEnded = () => fail(new Error('Voice microphone ended.'));
     trackEvents(tracks[0]).addEventListener('ended', this.#trackEnded);
@@ -174,9 +210,9 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
       this.throwIfAborted();
     }
     this.#peer = peer;
-    const channel = channelEvents(peer.createDataChannel('oai-events'));
+    const channel = peer.createDataChannel('oai-events');
     this.#channel = channel;
-    channel.onmessage = ({ data }) => {
+    const onMessage = ({ data }: { data: string }) => {
       if (signal.aborted) return;
       let event: unknown;
       try {
@@ -185,11 +221,19 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
         fail(new Error('Voice data channel received invalid JSON.'));
         return;
       }
-      this.options.onTransportEvent?.(event);
+      notifyVoiceObserver(this.options.onTransportEvent, event);
     };
-    this.options.onDataChannel?.(this.#channel!);
-    channel.onerror = () => fail(new Error('Voice data channel failed.'));
-    channel.onclose = () => fail(new Error('Voice data channel closed.'));
+    const onError = () => fail(new Error('Voice data channel failed.'));
+    const onClose = () => fail(new Error('Voice data channel closed.'));
+    const removeMessage = listenVoiceChannel(channel, 'message', onMessage);
+    const removeError = listenVoiceChannel(channel, 'error', onError);
+    const removeClose = listenVoiceChannel(channel, 'close', onClose);
+    this.#removeChannelListeners = () => {
+      removeMessage();
+      removeError();
+      removeClose();
+    };
+    this.options.onDataChannel?.(channel);
     const callbacks = peerEvents<Stream>(peer);
     callbacks.ontrack = ({ streams }) => {
       if (signal.aborted || !streams[0]) return;
@@ -266,12 +310,8 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
       }
     };
     if (channel) {
-      const callbacks = channelEvents(channel);
-      callbacks.onopen =
-        callbacks.onmessage =
-        callbacks.onerror =
-        callbacks.onclose =
-          null;
+      clean(() => this.#removeChannelListeners?.());
+      this.#removeChannelListeners = undefined;
       clean(() => channel.close());
     }
     if (peer) {

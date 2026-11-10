@@ -1076,6 +1076,103 @@ it('declines an unpublished real form on close while joining its held compilatio
   }
 }, 30_000);
 
+for (const { origin, rejectReply } of [
+  { origin: 'close', rejectReply: false },
+  { origin: 'force cancel', rejectReply: false },
+  { origin: 'close', rejectReply: true },
+] as const) {
+  it(`joins an owned form decline started by ${origin} before native close${rejectReply ? ' even when the bridge rejects' : ''}`, async () => {
+    const gate = holdNextSchemaPreparation();
+    const replyEntered = Promise.withResolvers<void>();
+    const releaseReply = Promise.withResolvers<void>();
+    const { NativeThread: Thread } = await binding();
+    const respond = Thread.prototype._respond_owned_native_question;
+    const close = Thread.prototype._close_report;
+    let nativeCloseStarted = false;
+    let declineAccepted: boolean | undefined;
+    let declineCount = 0;
+    const replySpy = vi
+      .spyOn(Thread.prototype, '_respond_owned_native_question')
+      .mockImplementation(async function (this: NativeThread, id, raw) {
+        if (JSON.parse(raw).kind !== 'decline_elicitation')
+          return respond.call(this, id, raw);
+        declineCount++;
+        replyEntered.resolve();
+        await releaseReply.promise;
+        if (rejectReply) throw new Error('Controlled form reply rejection');
+        declineAccepted = await respond.call(this, id, raw);
+        return declineAccepted;
+      });
+    const closeSpy = vi
+      .spyOn(Thread.prototype, '_close_report')
+      .mockImplementation(function (this: NativeThread) {
+        nativeCloseStarted = true;
+        return close.call(this);
+      });
+    const f = await formPeer('openai/form', extensionSchema);
+    let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
+    let cleanupError: PromiseRejectedResult | undefined;
+    try {
+      session = await f.agent.session();
+      const turn = await session.submit('Read the fixture');
+      const completion = turn.wait();
+      completion.catch(() => {});
+      await gate.entered;
+      expect(await session.pendingInteractions()).toEqual([]);
+      const stopping =
+        origin === 'force cancel' ? turn.cancel({ mode: 'force' }) : undefined;
+      stopping?.catch(() => {});
+      if (stopping) await replyEntered.promise;
+      let closed = false;
+      const closing = session.close();
+      const closeOutcome = closing.then(
+        () => {
+          closed = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          closed = true;
+          return error;
+        },
+      );
+      await replyEntered.promise;
+      // Drain the close setup while its exact native reply remains held.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(nativeCloseStarted).toBe(false);
+      expect(closed).toBe(false);
+      releaseReply.resolve();
+      const reply = await f.waitForReply(873);
+      expect(reply).toMatchObject({
+        result: { action: rejectReply ? 'cancel' : 'decline' },
+      });
+      expect(reply.result?.content ?? null).toBeNull();
+      if (!rejectReply) expect(declineAccepted).toBe(true);
+      expect(closed).toBe(false);
+      gate.release();
+      const closeError = await closeOutcome;
+      if (rejectReply) expect(closeError).toBeInstanceOf(Error);
+      else expect(closeError).toBeUndefined();
+      await stopping;
+      await expect(completion).rejects.toThrow();
+      expect(nativeCloseStarted).toBe(true);
+      expect(declineCount).toBe(1);
+      expect(f.replies).toMatchObject([
+        { id: 873, result: { action: rejectReply ? 'cancel' : 'decline' } },
+      ]);
+      expect(f.replies).toHaveLength(1);
+    } finally {
+      releaseReply.resolve();
+      gate.release();
+      f.releaseTools();
+      const cleanup = await Promise.allSettled([session?.close(), f.close()]);
+      replySpy.mockRestore();
+      closeSpy.mockRestore();
+      cleanupError = cleanup.find((result) => result.status === 'rejected');
+    }
+    if (cleanupError) throw cleanupError.reason;
+  }, 30_000);
+}
+
 it('delivers a target-only MCP form after handoff using the issuing step selection', async () => {
   const f = await formPeer('form', standardSchema, 873, false, true);
   let count = 0;

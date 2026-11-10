@@ -122,8 +122,9 @@ async function expectVerifierRejection(operation: Promise<unknown>) {
 function agent(
   provider: NativeProvider,
   tools: ConstructorParameters<typeof Agent>[0]['tools'] = [],
+  model?: string,
 ) {
-  return new Agent({ instructions: 'Answer briefly.', provider, tools });
+  return new Agent({ instructions: 'Answer briefly.', provider, tools, model });
 }
 
 async function send(session: Session, input: string) {
@@ -133,7 +134,13 @@ async function send(session: Session, input: string) {
 type ModelResponses = ConstructorParameters<typeof ModelServer>[0];
 
 /** CONNECT terminates on loopback and never resolves or forwards an external host. */
-async function planEndpoint(responses: ModelResponses) {
+async function planEndpoint(
+  responses: ModelResponses,
+  options: {
+    usage?: ConstructorParameters<typeof ModelServer>[1];
+    beforeEnd?: ConstructorParameters<typeof ModelServer>[6];
+  } = {},
+) {
   const root = await directory();
   const ca = join(root, 'ca.pem');
   const caKey = join(root, 'ca.key');
@@ -193,7 +200,7 @@ async function planEndpoint(responses: ModelResponses) {
   );
   const server = new ModelServer(
     responses,
-    [],
+    options.usage ?? [],
     undefined,
     undefined,
     undefined,
@@ -201,6 +208,7 @@ async function planEndpoint(responses: ModelResponses) {
       key: await readFile(key),
       cert: await readFile(cert),
     },
+    options.beforeEnd,
   );
   const port = await server.port();
   const sockets = new Set<Duplex>();
@@ -355,6 +363,23 @@ it('rejects a model without Lite metadata before sending a request', async () =>
   server.assertExhausted();
 });
 
+it('refuses registered beforeCompact callbacks before invocation or inference', async () => {
+  const { server } = await planEndpoint([]);
+  const beforeCompact = vi.fn(() => undefined);
+  await using provider = plan(token()).provider;
+  await using session = await new PublicAgent({
+    instructions: 'Answer briefly.',
+    provider,
+    beforeCompact,
+  }).session();
+  await expect(session.compact()).rejects.toThrow(
+    'Sign in with ChatGPT does not support beforeCompact callbacks',
+  );
+  expect(beforeCompact).not.toHaveBeenCalled();
+  expect(server.requests).toHaveLength(0);
+  server.assertExhausted();
+});
+
 it('sends Lite HTTP with native-only authorization, local tool continuation, and settled checkpoint renewal', async () => {
   const bearer = token();
   const renewed = token(2, { sub: 'rotated-synthetic-bearer-subject' });
@@ -394,9 +419,6 @@ it('sends Lite HTTP with native-only authorization, local tool continuation, and
     );
     await expect(session.buildRealtimeSipConfig()).rejects.toThrow(
       /does not support Realtime/,
-    );
-    await expect(session.compact()).rejects.toThrow(
-      /does not support model-backed compaction/,
     );
     expect((await send(session, 'remember this')).finalOutput).toBe('resolved');
     await session.compact({ summary: 'Supplied summary: remember this' });
@@ -485,6 +507,818 @@ it('sends Lite HTTP with native-only authorization, local tool continuation, and
   }
   server.assertExhausted();
 });
+
+it.each([
+  { kind: 'local', automatic: false },
+  { kind: 'application', automatic: false },
+  { kind: 'local', automatic: true },
+  { kind: 'application', automatic: true },
+] as const)(
+  'keeps a registered local compaction summary through $kind reopen without replaying tools (pre-turn=$automatic)',
+  async ({ kind, automatic }) => {
+    const root = await directory();
+    const storage =
+      kind === 'local' ? localStorage(root) : fileSessionStore(root);
+    const summary = 'Compacted summary: the lookup result is amber.';
+    const bearer = token();
+    const renewed = token(2);
+    const paths: string[] = [];
+    const { server } = await planEndpoint(
+      [
+        [call('lookup', {}, { callId: 'before-compaction' })],
+        [message('Original answer')],
+        [message(summary)],
+        [message('Answer after reopening')],
+      ],
+      {
+        usage: automatic
+          ? [
+              () => undefined,
+              JSON.stringify({
+                input_tokens: 260_000,
+                output_tokens: 1_000,
+                total_tokens: 261_000,
+              }),
+              () => undefined,
+              () => undefined,
+            ]
+          : [],
+      },
+    );
+    server.onRecord = (phase, detail) => {
+      if (phase === 'MODEL_REQUEST') {
+        const { method, path } = detail as { method: string; path: string };
+        paths.push(`${method} ${path}`);
+      }
+    };
+    const execute = vi.fn(() => 'amber lookup result');
+    const tools = [tool({ name: 'lookup', parameters: z.object({}), execute })];
+    let id: string;
+    {
+      await using provider = plan(bearer).provider;
+      await using session = await agent(
+        provider,
+        tools,
+        automatic ? 'gpt-6.1-sol' : undefined,
+      ).session({ storage });
+      id = session.id;
+      expect(
+        (await send(session, 'Remember the lookup result')).finalOutput,
+      ).toBe('Original answer');
+      if (!automatic) {
+        await session.compact();
+        expect(server.requests).toHaveLength(3);
+        expect(JSON.stringify((await session.modelContext()).items)).toContain(
+          summary,
+        );
+      }
+      expect(execute).toHaveBeenCalledTimes(1);
+    }
+    {
+      await using provider = plan(renewed).provider;
+      await using session = await agent(
+        provider,
+        tools,
+        automatic ? 'gpt-6.1-sol' : undefined,
+      ).session({
+        storage,
+        resume: id,
+      });
+      expect(
+        (await send(session, 'Continue after reopening')).finalOutput,
+      ).toBe('Answer after reopening');
+      expect(JSON.stringify(server.requests[2]?.input)).toContain(
+        'amber lookup result',
+      );
+      expect(JSON.stringify(server.requests[3]?.input)).toContain(summary);
+      expect(JSON.stringify(server.requests[3]?.input)).toContain(
+        'Continue after reopening',
+      );
+      expect(JSON.stringify((await session.modelContext()).items)).toContain(
+        summary,
+      );
+      expect(execute).toHaveBeenCalledTimes(1);
+    }
+    expect(server.requests).toHaveLength(4);
+    expect(paths).toEqual(Array(4).fill('POST /v1/responses'));
+    expect(
+      server.requestHeaders.map((headers) => headers.authorization),
+    ).toEqual([
+      `Bearer ${bearer}`,
+      `Bearer ${bearer}`,
+      `Bearer ${automatic ? renewed : bearer}`,
+      `Bearer ${renewed}`,
+    ]);
+    for (const [index, request] of server.requests.entries()) {
+      expect(request).toMatchObject({ stream: true, store: false });
+      expect(request).not.toHaveProperty('previous_response_id');
+      expect(
+        server.requestHeaders[index]?.[
+          'x-openai-internal-codex-responses-lite'
+        ],
+      ).toBe('true');
+      expect(server.requestHeaders[index]?.authorization).not.toContain(
+        'synthetic-ambient-api-key',
+      );
+    }
+    server.assertExhausted();
+  },
+  20_000,
+);
+
+function sseFrames(...events: object[]) {
+  return events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+}
+
+const unacceptedSummary = 'Partial summary that must never replace the context';
+function compactionPartial() {
+  return [
+    { type: 'response.created', response: { id: 'compaction-failure' } },
+    {
+      type: 'response.output_text.delta',
+      output_index: 0,
+      content_index: 0,
+      delta: unacceptedSummary,
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 0,
+      item: message(unacceptedSummary),
+    },
+    {
+      type: 'response.output_item.done',
+      output_index: 1,
+      item: call('lookup', {}, { callId: 'unaccepted-compaction-call' }),
+    },
+  ];
+}
+
+async function beforeFixtureDeadline<T>(pending: Promise<T>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(new Error('Compaction fixture did not settle before EOF')),
+          5_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+it.each([
+  {
+    name: 'held-open partial quota',
+    code: limit,
+    category: 'usage_limit_exceeded',
+    reason: 'quota_blocked',
+    retryable: false,
+  },
+  {
+    name: 'held-open partial throttle',
+    code: 'rate_limit_exceeded',
+    category: 'rate_limit_exceeded',
+    reason: 'rate_limited',
+    retryable: true,
+  },
+] as const)(
+  'settles registered local compaction $name before EOF and restores its prior context',
+  async ({ code, category, reason, retryable }) => {
+    const root = await directory();
+    const storage =
+      reason === 'quota_blocked' ? localStorage(root) : fileSessionStore(root);
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const { server } = await planEndpoint(
+      [
+        [call('lookup', {}, { callId: 'accepted-before-failure' })],
+        [message('Original settled answer')],
+        {
+          status: 200,
+          headers: {
+            'content-type': 'text/event-stream',
+            'x-request-id': 'registered-compaction-failure',
+          },
+          body: sseFrames(...compactionPartial(), {
+            type: 'response.failed',
+            response: {
+              error: {
+                code,
+                message: 'Synthetic provider rejection',
+                headers: { 'Retry-After': '3600' },
+              },
+            },
+          }),
+        },
+        [message('Recovered original context')],
+      ],
+      {
+        beforeEnd: async () => {
+          if (server.requests.length === 3) {
+            held.resolve();
+            await release.promise;
+          }
+        },
+      },
+    );
+    const execute = vi.fn(() => 'accepted local tool output');
+    const tools = [tool({ name: 'lookup', parameters: z.object({}), execute })];
+    let id: string;
+    {
+      await using provider = plan(token()).provider;
+      await using session = await agent(provider, tools).session({ storage });
+      id = session.id;
+      await send(session, 'Original user input');
+    }
+    await using provider = plan(token(2)).provider;
+    await using session = await agent(provider, tools).session({
+      storage,
+      resume: id,
+    });
+    const before = await session.modelContext();
+    const history = await session.historySnapshot();
+    const command = await session.executeCommand('/compact');
+    assert(command.command === 'compact');
+    const failed = command.turn.wait().then(
+      () => {
+        throw new Error('Failed compaction unexpectedly succeeded');
+      },
+      (error: unknown) => error,
+    );
+    try {
+      await beforeFixtureDeadline(
+        Promise.race([
+          held.promise,
+          failed.then((error) => {
+            throw error;
+          }),
+        ]),
+      );
+      const attention = await command.turn.waitForAttention({
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(attention).toMatchObject({ type: 'needs_attention', reason });
+      assert('type' in attention && attention.type === 'needs_attention');
+      expect(attention.error).toBeInstanceOf(NativeError);
+      expect(attention.error).toMatchObject({
+        code,
+        category,
+        retryable,
+        statusCode: 200,
+        requestId: 'registered-compaction-failure',
+      });
+      expect(attention.error.retryAfterMs).toBeGreaterThan(0);
+      expect(attention.error.retryAfterMs).toBeLessThanOrEqual(3_600_000);
+      expect(await beforeFixtureDeadline(failed)).toBe(attention.error);
+      expect(server.requests).toHaveLength(3);
+      expect((await session.modelContext()).items).toEqual(before.items);
+      expect((await session.historySnapshot()).items).toEqual(history.items);
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+    }
+    await session.close();
+    await using renewedProvider = plan(token(3)).provider;
+    await using recovered = await agent(renewedProvider, tools).session({
+      storage,
+      resume: id,
+    });
+    expect((await recovered.modelContext()).items).toEqual(before.items);
+    expect((await recovered.historySnapshot()).items).toEqual(history.items);
+    expect((await send(recovered, 'Continue after failure')).finalOutput).toBe(
+      'Recovered original context',
+    );
+    const input = JSON.stringify(server.requests[3]?.input);
+    expect(input).toContain('Original user input');
+    expect(input).toContain('accepted local tool output');
+    expect(input).not.toContain(unacceptedSummary);
+    expect(input).not.toContain('unaccepted-compaction-call');
+    expect(execute).toHaveBeenCalledTimes(1);
+    server.assertExhausted();
+  },
+  20_000,
+);
+
+it.each([
+  {
+    name: 'HTTP throttle',
+    status: 429,
+    code: 'rate_limit_exceeded',
+    category: 'rate_limit_exceeded',
+  },
+  {
+    name: 'HTTP overload',
+    status: 503,
+    code: 'server_is_overloaded',
+    category: 'server_overloaded',
+  },
+  {
+    name: 'context overflow',
+    status: 400,
+    code: 'context_length_exceeded',
+    category: 'invalid_request',
+  },
+  {
+    name: 'completed without a summary',
+    status: 200,
+    code: undefined,
+    category: undefined,
+  },
+] as const)(
+  'keeps registered local compaction $name to one physical attempt after restore',
+  async ({ name, status, code, category }) => {
+    const body =
+      status !== 200
+        ? JSON.stringify({
+            error: { code, message: 'Synthetic provider rejection' },
+          })
+        : sseFrames(
+            {
+              type: 'response.created',
+              response: { id: 'empty-compaction' },
+            },
+            {
+              type: 'response.output_item.done',
+              output_index: 0,
+              item: message('  \n'),
+            },
+            {
+              type: 'response.completed',
+              response: { id: 'empty-compaction' },
+            },
+          );
+    const { server } = await planEndpoint([
+      [message('Original answer before compaction')],
+      {
+        status,
+        body,
+        headers: {
+          'content-type':
+            status === 200 ? 'text/event-stream' : 'application/json',
+          'x-request-id': 'single-compaction-attempt',
+          'retry-after': '3600',
+        },
+      },
+      [message('Continued after rejected compaction')],
+    ]);
+    await using provider = plan(token()).provider;
+    const owner = agent(provider);
+    let state;
+    {
+      await using session = await owner.session();
+      await send(session, 'Original input before compaction');
+      if (name === 'completed without a summary')
+        await session.compact({
+          summary: 'Previous accepted summary, never a new result',
+        });
+      state = parseSessionState(JSON.stringify(await session.saveState()));
+    }
+    await using session = await owner.session({ state });
+    const before = await session.modelContext();
+    const history = await session.historySnapshot();
+    const error = await session.compact().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(NativeError);
+    if (category) expect(error).toMatchObject({ category });
+    if (status !== 200) {
+      expect(error).toMatchObject({
+        statusCode: status,
+        code,
+        requestId: 'single-compaction-attempt',
+      });
+      if (status !== 400) expect(error).toHaveProperty('retryable', true);
+      expect((error as NativeError).retryAfterMs).toBeGreaterThan(0);
+    }
+    expect(server.requests).toHaveLength(2);
+    if (name === 'context overflow') {
+      const input = server.requests[1]?.input;
+      assert(Array.isArray(input));
+      expect(input.length).toBeGreaterThan(1);
+      expect(JSON.stringify(input)).toContain(
+        'Original input before compaction',
+      );
+      expect(JSON.stringify(input)).toContain(
+        'Original answer before compaction',
+      );
+      expect(
+        (await session.saveState()).history.filter(
+          (record) => record.type === 'compacted',
+        ),
+      ).toEqual(state.history.filter((record) => record.type === 'compacted'));
+    }
+    expect((await session.modelContext()).items).toEqual(before.items);
+    expect((await session.historySnapshot()).items).toEqual(history.items);
+    expect(
+      (await send(session, 'Continue after compaction failure')).finalOutput,
+    ).toBe('Continued after rejected compaction');
+    expect(JSON.stringify(server.requests[2]?.input)).toContain(
+      name === 'completed without a summary'
+        ? 'Previous accepted summary, never a new result'
+        : 'Original input before compaction',
+    );
+    server.assertExhausted();
+  },
+  20_000,
+);
+
+it.each(['cancel', 'timeout'] as const)(
+  'rolls registered local compaction back after consumed output_item.done and %s',
+  async (ending) => {
+    const release = Promise.withResolvers<void>();
+    const { server } = await planEndpoint(
+      [
+        [message('Original settled answer')],
+        {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: sseFrames(...compactionPartial().slice(0, 3), {
+            type: 'response.metadata',
+            headers: { 'x-ratelimit-remaining-requests': '7' },
+          }),
+        },
+        [message('Continued after stopped compaction')],
+      ],
+      {
+        beforeEnd: async () => {
+          if (server.requests.length === 2) await release.promise;
+        },
+      },
+    );
+    await using provider = new NativeProvider({
+      signInWithChatGPT: { getCredential: async () => credential(token()) },
+      streamIdleTimeoutMs: ending === 'timeout' ? 250 : 10_000,
+    });
+    const execute = vi.fn(() => 'must not execute');
+    const owner = agent(provider, [
+      tool({ name: 'lookup', parameters: z.object({}), execute }),
+    ]);
+    await using session = await owner.session();
+    await send(session, 'Original user input');
+    const before = await session.modelContext();
+    const history = await session.historySnapshot();
+    const command = await session.executeCommand('/compact');
+    assert(command.command === 'compact');
+    const failed = command.turn.wait().then(
+      () => {
+        throw new Error('Stopped compaction unexpectedly succeeded');
+      },
+      (error: unknown) => error,
+    );
+    const events = command.turn.events();
+    try {
+      const consumed = (async () => {
+        for await (const event of events) {
+          if (
+            event.type === 'api_rate_limits_updated' &&
+            event.snapshot.requests?.remaining === 7
+          )
+            return;
+        }
+        throw new Error('Compaction ended before consuming the output marker');
+      })();
+      await beforeFixtureDeadline(
+        Promise.race([
+          consumed,
+          failed.then((error) => {
+            throw error;
+          }),
+        ]),
+      );
+      if (ending === 'cancel') await command.turn.cancel();
+      const error = await beforeFixtureDeadline(failed);
+      expect(error).toBeInstanceOf(NativeError);
+      if (ending === 'cancel') {
+        expect(await command.turn.waitForAttention()).toMatchObject({
+          type: 'needs_attention',
+          reason: 'interrupted',
+          error,
+        });
+      } else expect(String(error)).toContain('idle timeout');
+      expect(server.requests).toHaveLength(2);
+      expect((await session.modelContext()).items).toEqual(before.items);
+      const retained = (await session.historySnapshot()).items;
+      expect(retained).toEqual(
+        ending === 'cancel'
+          ? [
+              ...history.items,
+              expect.objectContaining({
+                type: 'message',
+                role: 'user',
+                content: [
+                  expect.objectContaining({
+                    type: 'input_text',
+                    text: expect.stringMatching(/^<turn_aborted>\n/),
+                  }),
+                ],
+                internal_chat_message_metadata_passthrough:
+                  expect.objectContaining({
+                    content_item_kinds: ['generic.turn_aborted'],
+                    turn_id: command.turn.turnId,
+                  }),
+              }),
+            ]
+          : history.items,
+      );
+      expect(JSON.stringify(retained)).not.toContain(unacceptedSummary);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await events.return?.();
+    }
+    const state = parseSessionState(JSON.stringify(await session.saveState()));
+    await session.close();
+    await using restored = await owner.session({ state });
+    expect((await send(restored, 'Continue after stop')).finalOutput).toBe(
+      'Continued after stopped compaction',
+    );
+    expect(JSON.stringify(server.requests[2]?.input)).toContain(
+      'Original user input',
+    );
+    expect(JSON.stringify(server.requests[2]?.input)).not.toContain(
+      unacceptedSummary,
+    );
+    expect(execute).not.toHaveBeenCalled();
+    server.assertExhausted();
+  },
+  20_000,
+);
+
+it.each(['pre_turn', 'mid_turn'] as const)(
+  'preserves registered %s local compaction quota failure and settled tool effects',
+  async (phase) => {
+    const release = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    const { server } = await planEndpoint(
+      [
+        phase === 'mid_turn'
+          ? [
+              call(
+                'lookup',
+                {},
+                { callId: 'settled-before-mid-turn-compaction' },
+              ),
+            ]
+          : [message('Settled answer before automatic compaction')],
+        {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body: sseFrames(...compactionPartial(), {
+            type: 'response.failed',
+            response: {
+              error: { code: limit, message: 'Synthetic compaction quota' },
+            },
+          }),
+        },
+        [message('Recovered summary after automatic compaction failure')],
+        [message('Fresh operation completed')],
+      ],
+      {
+        usage: [
+          JSON.stringify({
+            input_tokens: 260_000,
+            output_tokens: 1_000,
+            total_tokens: 261_000,
+          }),
+          () => undefined,
+          () => undefined,
+          () => undefined,
+        ],
+        beforeEnd: async () => {
+          if (server.requests.length === 2) {
+            held.resolve();
+            await release.promise;
+          }
+        },
+      },
+    );
+    const execute = vi.fn(
+      () => 'settled tool output before automatic compaction',
+    );
+    await using provider = plan(token()).provider;
+    const owner = new Agent({
+      instructions: 'Answer briefly.',
+      model: 'gpt-6.1-sol',
+      provider,
+      tools: [tool({ name: 'lookup', parameters: z.object({}), execute })],
+    });
+    await using session = await owner.session();
+    let turn = await session.submit('Original automatic-compaction input');
+    if (phase === 'pre_turn') {
+      expect((await turn.wait()).finalOutput).toBe(
+        'Settled answer before automatic compaction',
+      );
+      turn = await session.submit(
+        'Pending user input after the settled answer',
+      );
+    }
+    const failed = turn.wait().then(
+      () => {
+        throw new Error(
+          'Quota-blocked automatic compaction unexpectedly succeeded',
+        );
+      },
+      (error: unknown) => error,
+    );
+    try {
+      await beforeFixtureDeadline(
+        Promise.race([
+          held.promise,
+          failed.then((error) => {
+            throw error;
+          }),
+        ]),
+      );
+      const attention = await turn.waitForAttention({
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(attention).toMatchObject({
+        type: 'needs_attention',
+        reason: 'quota_blocked',
+      });
+      assert('type' in attention && attention.type === 'needs_attention');
+      expect(attention.error).toMatchObject({
+        code: limit,
+        category: 'usage_limit_exceeded',
+        retryable: false,
+      });
+      expect(await beforeFixtureDeadline(failed)).toBe(attention.error);
+      expect(server.requests).toHaveLength(2);
+      const context = JSON.stringify((await session.modelContext()).items);
+      expect(context).toContain('Original automatic-compaction input');
+      if (phase === 'pre_turn')
+        expect(context).toContain(
+          'Pending user input after the settled answer',
+        );
+      expect(context).not.toContain(unacceptedSummary);
+      expect(execute).toHaveBeenCalledTimes(phase === 'mid_turn' ? 1 : 0);
+      if (phase === 'mid_turn')
+        expect(context).toContain(
+          'settled tool output before automatic compaction',
+        );
+    } finally {
+      release.resolve();
+    }
+    const state = parseSessionState(JSON.stringify(await session.saveState()));
+    await session.close();
+    await using restored = await owner.session({ state });
+    const restoredContext = JSON.stringify(
+      (await restored.modelContext()).items,
+    );
+    expect(restoredContext).toContain(
+      phase === 'pre_turn'
+        ? 'Pending user input after the settled answer'
+        : 'settled tool output before automatic compaction',
+    );
+    expect(restoredContext).not.toContain(unacceptedSummary);
+    expect(
+      (await send(restored, 'Fresh input after automatic compaction failure'))
+        .finalOutput,
+    ).toBe('Fresh operation completed');
+    expect(JSON.stringify(server.requests[3]?.input)).toContain(
+      'Fresh input after automatic compaction failure',
+    );
+    expect(JSON.stringify(server.requests[3]?.input)).toContain(
+      'Recovered summary after automatic compaction failure',
+    );
+    expect(execute).toHaveBeenCalledTimes(phase === 'mid_turn' ? 1 : 0);
+    server.assertExhausted();
+  },
+  20_000,
+);
+
+it.each([200, 429] as const)(
+  'settles a direct registered throttle Turn over HTTP %s without replay or fallback',
+  async (status) => {
+    const bearer = token();
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const requestId = `direct-registered-throttle-${status}`;
+    const { server } = await planEndpoint(
+      [
+        {
+          status,
+          headers: {
+            'content-type':
+              status === 200 ? 'text/event-stream' : 'application/json',
+            'x-request-id': requestId,
+            'retry-after': '3600',
+          },
+          body:
+            status === 200
+              ? sseFrames(
+                  {
+                    type: 'response.created',
+                    response: { id: 'direct-throttle' },
+                  },
+                  {
+                    type: 'response.output_item.done',
+                    output_index: 0,
+                    item: message('Unaccepted direct partial answer'),
+                  },
+                  {
+                    type: 'response.failed',
+                    response: {
+                      error: {
+                        code: 'rate_limit_exceeded',
+                        message: 'Synthetic throttle',
+                        headers: { 'Retry-After': '3600' },
+                      },
+                    },
+                  },
+                )
+              : JSON.stringify({
+                  error: {
+                    code: 'rate_limit_exceeded',
+                    message: 'Synthetic throttle',
+                  },
+                }),
+        },
+      ],
+      {
+        beforeEnd:
+          status === 200
+            ? async () => {
+                held.resolve();
+                await release.promise;
+              }
+            : undefined,
+      },
+    );
+    const paths: string[] = [];
+    server.onRecord = (phase, detail) => {
+      if (phase === 'MODEL_REQUEST') {
+        const { method, path } = detail as { method: string; path: string };
+        paths.push(`${method} ${path}`);
+      }
+    };
+    const route = NativeProviderRoutes.prototype as unknown as {
+      handle(request: IncomingMessage): Promise<boolean>;
+    };
+    const privateHop = vi.spyOn(route, 'handle');
+    const source = plan(bearer);
+    await using provider = source.provider;
+    await using session = await agent(provider).session();
+    const turn = await session.submit('One physical throttle attempt');
+    const failed = turn.wait().then(
+      () => {
+        throw new Error('Throttled Turn unexpectedly succeeded');
+      },
+      (error: unknown) => error,
+    );
+    try {
+      if (status === 200)
+        await beforeFixtureDeadline(
+          Promise.race([
+            held.promise,
+            failed.then((error) => {
+              throw error;
+            }),
+          ]),
+        );
+      const attention = await turn.waitForAttention({
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(attention).toMatchObject({
+        type: 'needs_attention',
+        reason: 'rate_limited',
+      });
+      assert('type' in attention && attention.type === 'needs_attention');
+      expect(attention.error).toBeInstanceOf(NativeError);
+      expect(attention.error).toMatchObject({
+        statusCode: status,
+        code: 'rate_limit_exceeded',
+        category: 'rate_limit_exceeded',
+        retryable: true,
+        requestId,
+      });
+      expect(attention.error.retryAfterMs).toBeGreaterThan(0);
+      expect(attention.error.retryAfterMs).toBeLessThanOrEqual(3_600_000);
+      expect(session.rateLimits()).toEqual(attention.rateLimits);
+      expect(await beforeFixtureDeadline(failed)).toBe(attention.error);
+      expect(paths).toEqual(['POST /v1/responses']);
+      expect(server.requests).toHaveLength(1);
+      expect(server.requests[0]).toMatchObject({ stream: true, store: false });
+      expect(server.requests[0]).not.toHaveProperty('previous_response_id');
+      expect(server.requestHeaders[0]?.authorization).toBe(`Bearer ${bearer}`);
+      expect(server.requestHeaders[0]?.authorization).not.toContain(
+        'synthetic-ambient-api-key',
+      );
+      expect(
+        server.requestHeaders[0]?.['x-openai-internal-codex-responses-lite'],
+      ).toBe('true');
+      expect(source.getCredential).toHaveBeenCalledTimes(1);
+      expect(privateHop).not.toHaveBeenCalled();
+      server.assertExhausted();
+    } finally {
+      release.resolve();
+    }
+  },
+  20_000,
+);
 
 it('keeps named HTTP and SSE failures and never repeats a physical request', async () => {
   const bearer = token();
@@ -732,15 +1566,40 @@ it.each(['portable', 'local', 'application'] as const)(
         'resumed ordinary',
       );
     }
-    const stored = storage
-      ? Buffer.concat(
-          await Promise.all(
-            (await readdir(root, { recursive: true, withFileTypes: true }))
-              .filter((entry) => entry.isFile())
-              .map((entry) => readFile(join(entry.parentPath, entry.name))),
+    let stored: Buffer;
+    if (storage) {
+      const historyDb =
+        kind === 'local' ? join(root, 'thread_history_1.sqlite') : undefined;
+      const files = await readdir(root, {
+        recursive: true,
+        withFileTypes: true,
+      });
+      const buffers = await Promise.all(
+        files
+          .filter((entry) => entry.isFile())
+          .map((entry) => join(entry.parentPath, entry.name))
+          .filter((path) => path !== historyDb)
+          .map((path) =>
+            readFile(path).catch((error: NodeJS.ErrnoException) => {
+              if (
+                historyDb &&
+                error.code === 'ENOENT' &&
+                (path === `${historyDb}-shm` || path === `${historyDb}-wal`)
+              ) {
+                return Buffer.alloc(0);
+              }
+              throw error;
+            }),
           ),
-        )
-      : Buffer.from(JSON.stringify(bound));
+      );
+      if (historyDb) {
+        // SQLite can checkpoint WAL bytes into the database and remove both sidecars.
+        buffers.push(await readFile(historyDb));
+      }
+      stored = Buffer.concat(buffers);
+    } else {
+      stored = Buffer.from(JSON.stringify(bound));
+    }
     for (const value of [
       original,
       renewed,

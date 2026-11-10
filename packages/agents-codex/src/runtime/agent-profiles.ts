@@ -20,6 +20,11 @@ export interface CapturedAgentProfile<Context, Output> {
   readonly agent: Agent<Context, Output>;
   readonly declaration: Agent<Context, Output>;
   readonly handoffs: Readonly<Record<string, string>>;
+  readonly handoffCallbacks?: Readonly<Record<string, number>>;
+  readonly handoffOptions?: Readonly<
+    Record<string, import('./realtime-agent-config').RealtimeHandoff<Context>>
+  >;
+  readonly callbackTools?: readonly import('./tools').FunctionTool<Context>[];
 }
 
 export interface AgentProfileRuntime {
@@ -130,7 +135,12 @@ export function captureProfileRuntimes(
   for (const [index, profile] of profiles.entries()) {
     const declaration = profile.declaration;
     const { tools, mcp } = splitToolDeclarations(declaration.tools);
-    const catalog = index === 0 ? rootCatalog : captureTools(tools);
+    const catalog =
+      index === 0
+        ? profile.callbackTools?.length
+          ? captureTools([...rootCatalog.tools, ...profile.callbackTools])
+          : rootCatalog
+        : captureTools(tools);
     const output = prepareOutput(declaration.outputType);
     const instructions =
       index === 0 ? rootInstructions : declaration.instructions;
@@ -171,6 +181,9 @@ export function captureProfileRuntimes(
       ),
       step_defaults: catalog.tools.map((_, index) => index),
       handoffs: { ...profile.handoffs },
+      ...(Object.keys(profile.handoffCallbacks ?? {}).length
+        ? { handoff_callbacks: { ...profile.handoffCallbacks } }
+        : {}),
       transform_context: declaration.transformContext !== undefined,
       before_compact: declaration.beforeCompact !== undefined,
       before_complete: declaration.beforeComplete !== undefined,

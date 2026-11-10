@@ -9,10 +9,16 @@ import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
 import {
   disposePrivateKernel,
-  type PrivateKernel,
   type PrivateRuntimeBorrow,
+  type PrivateRuntimeSlot,
 } from './private-engine-reuse';
 import { NativeError } from './native-error';
+import {
+  borrowNativeRuntime,
+  validateNativeRuntime,
+  type NativeRuntime,
+  type NativeRuntimeBorrow,
+} from './native-runtime';
 import {
   capturePlanCredential,
   type SignInWithChatGPT,
@@ -20,6 +26,8 @@ import {
 
 export interface NativeProviderOptions {
   modelBackend?: NativeModel | ModelProvider;
+  /** Share HTTP clients and quiescent private plain-run Engines until runtime.close(). */
+  runtime?: NativeRuntime;
   /** Native phase timeouts in integer milliseconds; zero expires immediately. */
   streamIdleTimeoutMs?: number;
   websocketConnectTimeoutMs?: number;
@@ -56,13 +64,6 @@ export interface NativeProviderOptions {
   streamMaxRetries?: number;
 }
 
-interface PrivateRuntimeSlot {
-  active?: LeaseToken;
-  entry?: PrivateKernel;
-  idle?: ReturnType<typeof setImmediate>;
-  closing?: Promise<void>;
-}
-
 interface LeaseToken {
   failed: boolean;
   cleanup?: () => Promise<void>;
@@ -87,13 +88,17 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
  * Native auth/protocol/private-hop headers remain reserved. A new provider
  * refreshes the captured routing values.
  * Ordinary API-key HTTP clients may retain default/custom trust and ambient proxy
- * state until close. Construct a new provider to force fresh physical clients.
+ * state until close. Without runtime, a new Provider forces fresh
+ * physical clients. With it, captured native configuration, credentials, private
+ * homes and referenced carriers can outlive Providers until runtime.close().
+ * A new borrowing Provider does not imply refreshed ambient native configuration.
  */
 export class NativeProvider {
   #options: Readonly<NativeProviderOptions>;
   #leases = new Set<LeaseToken>();
   #closed = false;
   #httpTransports?: _ProviderHttpTransports;
+  #nativeRuntimeBorrow?: NativeRuntimeBorrow;
   #routing: Readonly<{
     query_params?: Readonly<Record<string, string>>;
     http_headers?: Readonly<Record<string, string>>;
@@ -102,6 +107,8 @@ export class NativeProvider {
   #getPlanCredential?: SignInWithChatGPT['getCredential'];
 
   constructor(options: NativeProviderOptions = {}) {
+    const runtime = options.runtime;
+    if (runtime !== undefined) validateNativeRuntime(runtime);
     const signIn = options.signInWithChatGPT;
     if (signIn !== undefined) {
       if (options.codexLogin !== undefined)
@@ -183,8 +190,24 @@ export class NativeProvider {
     const routing = captureProviderRouting(options);
     this.#routing = routing.config;
     const captured = { ...options, ...routing.options };
+    if (
+      runtime !== undefined &&
+      (captured.supportsWebsockets === true ||
+        captured.modelBackend !== undefined ||
+        captured.chatGPT !== undefined ||
+        captured.codexLogin !== undefined ||
+        captured.signInWithChatGPT !== undefined ||
+        codexLogin !== undefined ||
+        this.#getPlanCredential !== undefined)
+    )
+      throw new TypeError(
+        'runtime requires API-key HTTP without a model backend or ChatGPT authentication',
+      );
     this.#options = Object.freeze({
       ...captured,
+      runtime,
+      supportsWebsockets:
+        runtime === undefined ? captured.supportsWebsockets : false,
       chatGPT: captureChatGPTAuth(captured.chatGPT),
       codexLogin,
     });
@@ -255,13 +278,6 @@ export class NativeProvider {
     privateRun = false,
   ): ProviderLease {
     if (this.#closed) throw new Error('NativeProvider is closed');
-    const token: LeaseToken = { failed: false };
-    this.#leases.add(token);
-    const pendingIdle = this.#runtime;
-    if (pendingIdle?.idle) {
-      clearImmediate(pendingIdle.idle);
-      pendingIdle.idle = undefined;
-    }
     const options = this.#options;
     const getPlanCredential = this.#getPlanCredential;
     const nativeChatGPTInference =
@@ -275,6 +291,17 @@ export class NativeProvider {
       options.modelBackend !== undefined
         ? 'native-model-producer'
         : realtimeApiKey;
+    if (options.runtime !== undefined) {
+      if (!apiKey) throw new TypeError('runtime requires an effective API key');
+      this.#nativeRuntimeBorrow ??= borrowNativeRuntime(options.runtime);
+    }
+    const token: LeaseToken = { failed: false };
+    this.#leases.add(token);
+    const pendingIdle = this.#runtime;
+    if (pendingIdle?.idle) {
+      clearImmediate(pendingIdle.idle);
+      pendingIdle.idle = undefined;
+    }
     const privateCandidate =
       privateRun &&
       this.constructor === NativeProvider &&
@@ -283,8 +310,7 @@ export class NativeProvider {
       apiKey.length > 0 &&
       (options.modelBackend !== undefined ||
         options.apiKey === undefined ||
-        apiKey === options.apiKey) &&
-      options.responseMode !== 'buffered';
+        apiKey === options.apiKey);
     const websocketsAllowed =
       !nativeChatGPTInference &&
       options.modelBackend === undefined &&
@@ -292,12 +318,20 @@ export class NativeProvider {
       (options.supportsWebsockets ??
         (options.baseUrl === undefined && !privateCandidate));
     const eligible = privateCandidate && !websocketsAllowed;
-    const slot = eligible ? (this.#runtime ??= {}) : undefined;
+    let slot = eligible
+      ? this.#nativeRuntimeBorrow
+        ? this.#nativeRuntimeBorrow.reserve(token)
+        : (this.#runtime ??= {})
+      : undefined;
     const reserved =
       slot !== undefined &&
-      slot.active === undefined &&
+      (slot.runs
+        ? slot.runs.has(token)
+        : slot.active === undefined || slot.active === token) &&
       slot.closing === undefined;
-    if (reserved) slot.active = token;
+    if (reserved && !slot!.runs) slot!.active = token;
+    const ownsReservation = () =>
+      slot?.runs ? slot.runs.has(token) : slot?.active === token;
     let home: string | undefined;
     let released = false;
     let privateDone = false;
@@ -315,7 +349,10 @@ export class NativeProvider {
       this.#leases.delete(token);
       token.cleanup = undefined;
       privateDone = true;
-      if (reserved && slot!.active === token) slot!.active = undefined;
+      if (reserved) {
+        slot!.runs?.delete(token);
+        if (slot!.active === token) slot!.active = undefined;
+      }
       this.#schedulePrivateCleanup();
     };
     const release = () =>
@@ -325,6 +362,12 @@ export class NativeProvider {
     const borrow: PrivateRuntimeBorrow | undefined = !reserved
       ? undefined
       : {
+          plainOnly: this.#nativeRuntimeBorrow !== undefined,
+          concurrent: slot!.runs !== undefined,
+          invalidate: () => {
+            if (!privateDone && ownsReservation() && slot!.runs && slot!.entry)
+              slot!.retiring = true;
+          },
           get done() {
             return privateDone;
           },
@@ -332,7 +375,8 @@ export class NativeProvider {
           bind: (engine, carrier, transports) => {
             if (
               privateDone ||
-              slot!.active !== token ||
+              !ownsReservation() ||
+              slot!.entry !== undefined ||
               !home ||
               apiKey === undefined
             )
@@ -347,10 +391,21 @@ export class NativeProvider {
             };
           },
           reset: async () => {
-            if (privateDone || slot!.active !== token)
+            if (privateDone || !ownsReservation())
               throw new Error('Private runtime reservation is closed');
             const entry = slot!.entry;
-            if (entry) {
+            if (slot!.runs) {
+              // A mismatch leaves the immutable shared entry and its siblings alone.
+              if (entry && slot!.retiring && slot!.runs.size === 1) {
+                const diagnostic = await disposePrivateKernel(entry);
+                slot!.entry = undefined;
+                slot!.retiring = false;
+                if (diagnostic) throw new NativeError(diagnostic);
+              }
+              slot!.runs.delete(token);
+              slot = { active: token };
+              home = undefined;
+            } else if (entry) {
               const diagnostic = await disposePrivateKernel(entry);
               slot!.entry = undefined;
               home = undefined;
@@ -358,15 +413,17 @@ export class NativeProvider {
             }
             return openHome();
           },
-          finish: (keep) => {
+          finish: (keep, plain = false) => {
             if (privateDone) return Promise.resolve();
             if (privateFinishing) return privateFinishing;
             privateFinishing = (async () => {
-              if (slot!.active !== token)
+              if (!ownsReservation())
                 throw new Error('Private runtime reservation changed');
               const entry = slot!.entry;
               const canKeep =
                 keep &&
+                !slot!.retiring &&
+                (!this.#nativeRuntimeBorrow || plain) &&
                 !token.failed &&
                 !this.#closed &&
                 entry !== undefined &&
@@ -377,8 +434,12 @@ export class NativeProvider {
                 entry.carrier.reuseBinding(entry.engine) !== undefined;
               let diagnostic: string | null = null;
               if (entry && !canKeep) {
-                diagnostic = await disposePrivateKernel(entry);
-                slot!.entry = undefined;
+                if (slot!.runs) slot!.retiring = true;
+                if (!slot!.runs || slot!.runs.size === 1) {
+                  diagnostic = await disposePrivateKernel(entry);
+                  slot!.entry = undefined;
+                  slot!.retiring = false;
+                }
               }
               if (entry) home = undefined;
               await releaseLease();
@@ -402,7 +463,9 @@ export class NativeProvider {
         if (released || this.#closed)
           throw new Error('NativeProvider lease is closed');
         // Synchronous empty allocation: no first-opening signal or pending task.
-        return (this.#httpTransports ??= create(engine));
+        return (this.#httpTransports ??= this.#nativeRuntimeBorrow
+          ? this.#nativeRuntimeBorrow.get(create, engine)
+          : create(engine));
       },
       chatGPT: options.chatGPT,
       capturePlan: getPlanCredential
@@ -507,7 +570,13 @@ export class NativeProvider {
       this.#runtime.entry = undefined;
       if (diagnostic) throw new NativeError(diagnostic);
     }
-    this.#httpTransports?.close();
+    if (this.#nativeRuntimeBorrow) {
+      // Own Engines/carriers have joined above; the shared owner retains clients.
+      this.#nativeRuntimeBorrow.release();
+      this.#nativeRuntimeBorrow = undefined;
+    } else {
+      this.#httpTransports?.close();
+    }
     this.#httpTransports = undefined;
   }
 
@@ -556,6 +625,8 @@ export interface ModelSettings {
    * the current admitted catalog; null clears it to auto. */
   toolChoice?: 'auto' | 'none' | 'required' | ToolRef | null;
   /** Nonnegative safe integer for ordinary sampling; null clears the SDK override. */
+  /** Full input-capability declaration for the selected model; null restores its catalogue. */
+  inputModalities?: readonly ('text' | 'image' | 'audio')[] | null;
   maxOutputTokens?: number | null;
   temperature?: number | null;
   topP?: number | null;
@@ -587,6 +658,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'serviceTier',
     'toolChoice',
     'invocationTimeoutMs',
+    'inputModalities',
     'maxOutputTokens',
     'temperature',
     'topP',
@@ -618,6 +690,17 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           throw new TypeError(
             'invocationTimeoutMs must be an integer in the range 1..4294967295 or null',
           );
+      } else if (key === 'inputModalities') {
+        if (
+          !Array.isArray(value) ||
+          !value.length ||
+          value.some((item) => !['text', 'image', 'audio'].includes(item)) ||
+          new Set(value).size !== value.length
+        )
+          throw new TypeError(
+            'inputModalities must be a nonempty array of distinct text/image/audio values',
+          );
+        value = Object.freeze([...value]);
       } else if (key === 'maxOutputTokens') {
         if (!Number.isSafeInteger(value) || (value as number) < 0)
           throw new TypeError(
@@ -675,6 +758,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
               'input',
               'instructions',
               'tools',
+              'input_modalities',
               'tool_choice',
               'parallel_tool_calls',
               'reasoning',
@@ -739,6 +823,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     } else if (
       ![
         'serviceTier',
+        'inputModalities',
         'toolChoice',
         'invocationTimeoutMs',
         'maxOutputTokens',
@@ -971,6 +1056,7 @@ export function modelOverrides(
   if (selected.serviceTier !== undefined)
     overrides.service_tier = selected.serviceTier;
   const names = {
+    inputModalities: 'input_modalities',
     maxOutputTokens: 'max_output_tokens',
     temperature: 'temperature',
     topP: 'top_p',

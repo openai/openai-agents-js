@@ -65,6 +65,8 @@ export type ScriptedResponse =
 export interface ScriptedResponses {
   readonly provider: NativeProvider;
   readonly requests: readonly Readonly<JsonObject>[];
+  /** Queued responses, excluding an already admitted request. */
+  readonly remainingSteps: number;
   toolOutput(callId: string): string | undefined;
   assertExhausted(): void;
   /** Append responses for subsequent requests, including from dynamic responders. */
@@ -250,6 +252,9 @@ class Peer implements ScriptedResponses {
   }
   get requests(): readonly Readonly<JsonObject>[] {
     return Object.freeze(structuredClone(this.bodies));
+  }
+  get remainingSteps(): number {
+    return this.responses.length - this.next;
   }
   toolOutput(callId: string): string | undefined {
     for (let r = this.bodies.length - 1; r >= 0; r--) {

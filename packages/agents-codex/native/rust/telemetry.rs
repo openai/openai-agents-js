@@ -378,3 +378,15 @@ pub fn scope_ready() -> Result<()> {
     );
     Ok(())
 }
+
+/// Private plain run admission rejects configured tracing and an active native span.
+pub(crate) fn plain_run_trace_off() -> bool {
+    use opentelemetry::trace::TraceContextExt as _;
+    !ACTIVE.load(Ordering::Acquire)
+        && !TRACE_INITIALIZED.load(Ordering::Acquire)
+        && codex_otel::sdk_trace::current_context_token().is_none()
+        && !opentelemetry::Context::current()
+            .span()
+            .span_context()
+            .is_valid()
+}

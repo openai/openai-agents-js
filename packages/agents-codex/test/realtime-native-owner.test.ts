@@ -62,6 +62,7 @@ function fixture(
     _checkVoiceOperation: vi.fn(),
     _checkVoiceAdapterOperation: vi.fn(),
     _runVoiceCallback: vi.fn(async (callback: () => unknown) => callback()),
+    _hasRealtimeAgentConfiguration: vi.fn(() => false),
     _realtimeCurrentProfile: vi.fn(async () => null),
     _realtimeProfileTarget: vi.fn((target: unknown) => target ?? null),
     _realtimeGuardrailSource: vi.fn((_receipt: unknown) => ({
@@ -784,6 +785,7 @@ it('admits one exact response batch for parallel functions and reports only auth
     'response',
     ['one', 'two'],
     expect.any(AbortSignal),
+    expect.any(Function),
   );
   expect(peer.session.submit).not.toHaveBeenCalled();
   expect((await events.next()).value).toMatchObject({
@@ -1101,7 +1103,7 @@ it('inherits native tools atomically by default and preserves an explicit empty 
   await selected.owner._start();
   expect(
     selected.session._realtimeFunctionTools,
-  ).toHaveBeenCalledExactlyOnceWith([]);
+  ).toHaveBeenCalledExactlyOnceWith([], { snapshot: undefined });
   expect(selected.call.mock.calls[0][1].function_tools).toEqual([]);
   await selected.owner.close();
 });
@@ -1372,7 +1374,16 @@ it('keeps the reader moving during a bound ACK and joins its rejection on close'
       },
     }),
   ).toBe(true);
-  peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } });
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([operation]) => operation === 'realtime_conversation_update_sdk',
+      ),
+    ).toBe(true),
+  );
+  expect(
+    peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } }),
+  ).toBe(true);
   let closed = false;
   const closing = peer.owner.close().then(() => {
     closed = true;
@@ -2029,7 +2040,9 @@ it.each([false, true])(
       await refreshing;
       expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
     } else {
-      expect(peer.session._prepareRealtimeMcp).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(peer.session._prepareRealtimeMcp).toHaveBeenCalledOnce(),
+      );
       expect(peer.call).not.toHaveBeenCalled();
       promoted.resolve();
       await refreshing;
@@ -2070,7 +2083,9 @@ it.each([false, true])(
     const peer = fixture({ tools });
     await peer.owner._start();
     expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
-    expect(peer.session._realtimeFunctionTools).toHaveBeenCalledWith(tools);
+    expect(peer.session._realtimeFunctionTools).toHaveBeenCalledWith(tools, {
+      snapshot: undefined,
+    });
     expect(peer.call.mock.calls[0][0]).toBe(
       'realtime_conversation_prepare_sdk',
     );
@@ -3139,4 +3154,45 @@ it('preserves bounded structured hosted errors and releases their queue charge',
     });
   }
   await peer.owner.close();
+});
+
+it('closes a staged replacement after native publication errors without discarding its source', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  const target = { profile_id: 'staged', epoch: 1 };
+  const agent = {
+    name: 'Candidate',
+    handoffs: [],
+    realtime: { instructions: 'Candidate' },
+  };
+  const discard = vi.fn(async () => {});
+  const release = vi.fn(async () => {});
+  const admit = vi.fn(async () => ({
+    profile_receipt: target,
+    function_tools: [],
+    selection_id: 'staged-selection',
+  }));
+  Object.assign(peer.session, {
+    _admitRealtimeGraph: admit,
+    _discardRealtimeGraph: discard,
+    _releaseRealtimeGraph: release,
+    _realtimeConfigurationSource: () => ({
+      agent,
+      declaration: agent,
+      context: undefined,
+    }),
+    _hasRetainedRealtimeProfile: () => true,
+  });
+  const failure = new Error('ambiguous native update');
+  const base = peer.call.getMockImplementation()!;
+  peer.call.mockImplementation(async (operation, params) => {
+    if (operation === 'realtime_conversation_update_sdk') throw failure;
+    return base(operation, params);
+  });
+  await expect(peer.owner.updateAgent(agent as never)).rejects.toBe(failure);
+  await expect(peer.owner.updateAgent(agent as never)).rejects.toBe(failure);
+  await peer.owner.close();
+  expect(admit).toHaveBeenCalledOnce();
+  expect(discard).not.toHaveBeenCalled();
+  expect(release).toHaveBeenCalledWith(peer.generation);
 });

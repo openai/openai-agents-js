@@ -20,12 +20,12 @@ class MobilePeer {
     | ((event: { streams: ReturnType<typeof microphone>['stream'][] }) => void)
     | null = null;
   onconnectionstatechange: (() => void) | null = null;
-  channel = {
+  channel = Object.assign(new EventTarget(), {
     onmessage: null as ((event: { data: string }) => void) | null,
     onerror: null as (() => void) | null,
     onclose: null as (() => void) | null,
     close: vi.fn(),
-  };
+  });
   createDataChannel = vi.fn(() => this.channel);
   addTrack = vi.fn();
   createOffer = vi.fn(async () => ({
@@ -92,7 +92,7 @@ describe('app-owned React Native media', () => {
       } else {
         const call = await opening;
         if (ending === 'media error') {
-          peers[0]!.channel.onerror!();
+          peers[0]!.channel.dispatchEvent(new Event('error'));
           expect(release).toHaveBeenCalledOnce();
         }
         call.close();
@@ -125,7 +125,9 @@ describe('app-owned React Native media', () => {
     const speaker = microphone().stream;
     peer.ontrack!({ streams: [speaker] });
     expect(remote).toHaveBeenCalledWith(speaker);
-    peer.channel.onmessage!({ data: '{"type":"session.updated"}' });
+    peer.channel.dispatchEvent(
+      new MessageEvent('message', { data: '{"type":"session.updated"}' }),
+    );
     expect(events).toHaveBeenCalledWith({ type: 'session.updated' });
     media.setMuted(true);
     expect(media.muted).toBe(true);
