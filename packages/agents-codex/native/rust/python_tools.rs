@@ -3002,7 +3002,9 @@ impl ToolContributor for PythonContributor {
                 && cancellation.is_some()
                 && step
                     .get::<ProfileCatalog>()
-                    .is_some_and(|catalog| catalog.selecting_steps || resolves_mcp_names);
+                    .is_some_and(|catalog| {
+                        catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
+                    });
             if let Some(active) = &active {
                 if active.turn != turn.level_id() || !tools.admits_generation(&active.generation) {
                     return Err("Expired step selection owner or generation".into());
