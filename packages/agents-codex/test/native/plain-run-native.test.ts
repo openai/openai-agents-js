@@ -3,11 +3,16 @@ import { Agent, NativeError, NativeProvider } from '../../src';
 import { binding } from '../../src/runtime/binding';
 import { ModelServer, message } from './fixtures/model-server';
 
-function response(index: number, chunks = ['answer ', String(index)]) {
+function response(
+  index: number,
+  chunks = ['answer ', String(index)],
+  phase?: 'final_answer',
+) {
   const responseId = `plain-response-${index}`;
   const item = {
     ...message(chunks.join('')),
     id: `plain-message-${index}`,
+    ...(phase === undefined ? {} : { phase }),
   };
   const events = [
     { type: 'response.created', response: { id: responseId } },
@@ -131,6 +136,78 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'plain Agent.run',
   () => {
+    it.each([
+      ['ASCII whitespace', ' \t\r\n', '', 'final_answer'],
+      [
+        'Unicode whitespace including NEL',
+        '\u0085\u00a0\u1680\u2003\u2028\u2029\u202f\u205f\u3000',
+        '',
+        'final_answer',
+      ],
+      ['Unicode whitespace unphased', '\u0085\u2003', '', undefined],
+      ['empty final answer', '', '', 'final_answer'],
+      [
+        'nonblank unphased answer',
+        ' \u0085answer\n ',
+        ' \u0085answer\n ',
+        undefined,
+      ],
+      [
+        'nonblank final answer',
+        ' \u0085answer\n ',
+        ' \u0085answer\n ',
+        'final_answer',
+      ],
+      ['BOM final answer', '\ufeff', '\ufeff', 'final_answer'],
+      [
+        'BOM with surrounding whitespace',
+        ' \ufeff\n',
+        ' \ufeff\n',
+        'final_answer',
+      ],
+    ] as const)(
+      'blank-answer parity: %s',
+      async (_name, text, expected, phase) => {
+        const server = new ModelServer([
+          response(1, [text], phase),
+          response(2, [text], phase),
+        ]);
+        await using provider = await providerFor(server);
+        const agent = new Agent({
+          instructions: 'Answer the request.',
+          model: 'gpt-5',
+          modelSettings: { reasoningEffort: 'low' },
+          provider,
+        });
+        const native = await binding();
+        const run = vi.spyOn(native.Engine.prototype, '_plain_run');
+        const open = vi.spyOn(
+          native.Engine.prototype,
+          'start_replaceable_thread',
+        );
+        const direct = await agent.run('same input');
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(open).not.toHaveBeenCalled();
+
+        await using session = await agent.session();
+        const ordinary = await (await session.submit('same input')).wait();
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(open).toHaveBeenCalledTimes(1);
+        expect(ordinary.finalOutput).toBe(expected);
+        expect(direct.finalOutput).toBe(ordinary.finalOutput);
+        const observations = await Array.fromAsync(direct.turn.events());
+        expect(
+          observations
+            .filter((event) => event.type === 'output_text_delta')
+            .map((event) => event.delta)
+            .join(''),
+        ).toBe(text);
+        expect(server.requests).toHaveLength(2);
+        server.assertExhausted();
+      },
+      30_000,
+    );
+
     it('preserves buffered response mode for a plain public run', async () => {
       const server = new ModelServer([
         {
