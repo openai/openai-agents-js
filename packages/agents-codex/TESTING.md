@@ -89,6 +89,85 @@ If a provider has active or opening Sessions, the helper refuses to close the pr
 
 Keep direct or bypassed loopback proxy routing stable for the whole scope, including later Sessions. This helper does not change proxy environment variables or isolate network access. Exhaustion can detect an unused local script after a proxy has already served a response or an external effect has occurred. The helper does not configure process telemetry.
 
+## Native realtime scenarios
+
+`ScriptedRealtimeAdapter` has been supplying incoming Realtime frames and recording outgoing frames while the native runtime has been handling session behavior. `runScenario` has been coordinating an asynchronous fixture with the application exercise.
+
+Example file: `scripted-realtime.mts`, with the same Node.js and installed native-runtime prerequisites as above.
+
+```ts
+import assert from 'node:assert/strict';
+import { Agent, NativeProvider } from '@openai/agents';
+import { ScriptedRealtimeAdapter } from '@openai/agents/testing';
+
+const adapter = new ScriptedRealtimeAdapter();
+await using provider = new NativeProvider({
+  baseUrl: 'http://127.0.0.1:1/v1',
+  apiKey: 'synthetic-key',
+  supportsWebsockets: false,
+});
+await using session = await new Agent({
+  instructions: 'Speak.',
+  provider,
+}).session();
+
+const answer = await adapter.runScenario({
+  scenario: async ({ expectSend, emit }) => {
+    const update = await expectSend('session.update');
+    emit({
+      type: 'session.updated',
+      session: { ...(update.session as object), id: 'fixture' },
+    });
+    await expectSend('conversation.item.create');
+    await expectSend('response.create');
+    emit(
+      { type: 'response.created', response: { id: 'reply' } },
+      {
+        type: 'response.output_audio_transcript.done',
+        response_id: 'reply',
+        item_id: 'answer',
+        transcript: 'Synthetic answer.',
+      },
+      { type: 'response.done', response: { id: 'reply' } },
+    );
+  },
+  exercise: async () => {
+    const voice = await session.realtime({ model: 'fixture', adapter });
+    try {
+      await voice.sendText('Synthetic question');
+      for await (const event of voice.events()) {
+        if (
+          event.type === 'text' &&
+          event.final &&
+          event.role === 'assistant'
+        ) {
+          return event.text;
+        }
+      }
+    } finally {
+      await voice.close();
+    }
+  },
+});
+assert.equal(answer, 'Synthetic answer.');
+adapter.assertClosed();
+```
+
+Command: `npx tsx scripted-realtime.mts`. Expected result: a silent exit after the answer and closure assertions.
+
+| Scenario operation | Contract |
+| --- | --- |
+| `expectSend(expected)` | Ordered matching by frame type, exact JSON object, or synchronous predicate; a promise for a copied frame. Already recorded frames first. |
+| `emit(...frames)` | Incoming canonical provider frames, in argument order. |
+| `failNextSend(error)` | One injected error on the next outgoing send; that frame still available to `expectSend`. |
+| `disconnect(error?)` | Incoming-stream termination after queued frames, with an optional injected error. |
+
+`runScenario` has been rejecting mismatches, unconsumed sends or failure injections, and unsatisfied expectations after exercise completion. Callback errors and an optional `signal`'s cancellation reason have been propagating unchanged. The helper has been returning the exercise's value after both callbacks and the completeness checks.
+
+Each adapter has been allowing one connection and one scenario. Constructor `RealtimeStep[]` entries have been supporting fixed exchanges separately; mixed static steps and `runScenario` have been triggering rejection before either callback. All scenario operations have been rejecting use after scope completion.
+
+The helper has been releasing its own waiters and abort listener. The exercise has been retaining responsibility for session cleanup and caller-created background work, including after cancellation. `assertComplete()` and `assertClosed()` have been providing explicit completeness and terminal-state checks. `sentEvents` has been retaining full synthetic frame snapshots; `connectCalls` has been retaining only model and header-presence metadata.
+
 ## Use classic test doubles separately
 
 Use helpers for the API your application runs:
@@ -96,6 +175,7 @@ Use helpers for the API your application runs:
 | API | Helper contract |
 | --- | --- |
 | Native `@openai/agents/testing` | HTTP Responses items using `call_id`; requires a native Agent and runtime. |
+| Native `ScriptedRealtimeAdapter` | Canonical Realtime frames; native session and protocol execution. |
 | Classic `@openai/agents/classic/testing`, when available | A normalized Model interface using `callId`. |
 
 A classic model double does not replace the native HTTP fixture.
