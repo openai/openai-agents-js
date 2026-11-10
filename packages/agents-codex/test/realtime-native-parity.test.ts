@@ -10,6 +10,7 @@ import {
   Turn,
   tool,
   type MCPResultContext,
+  type ToolContext,
 } from '../src';
 import { ModelServer, call, message } from './native/fixtures/model-server';
 import { NativeSessionVoiceWorkflow } from '../src/voice';
@@ -198,6 +199,108 @@ nativeIt.each(['provider', 'environment', 'override', 'missing'] as const)(
     }
   },
   30000,
+);
+
+nativeIt.each([false, true])(
+  'snapshots admitted speech usage in tool context without changing caller context (managed=%s)',
+  async (managed) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const application = { usage: {} };
+    const contexts: ToolContext[] = [];
+    const policyContexts: ToolContext[] = [];
+    const inspectUsage = tool({
+      name: 'inspect_usage',
+      description: 'Inspect current speech usage.',
+      needsApproval: managed
+        ? (context) => {
+            expect(context.context).toBe(application);
+            policyContexts.push(context);
+            return false;
+          }
+        : false,
+      parameters: z.object({}),
+      execute: (_args, context) => {
+        expect(context.context).toBe(application);
+        contexts.push(context);
+        return 'observed';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Inspect usage.',
+        provider,
+        tools: [inspectUsage],
+      }).session({ context: application });
+      const marker = application.usage;
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [inspectUsage],
+      });
+      try {
+        peer.send({
+          type: 'response.created',
+          response: { id: 'usage-before-tool' },
+        });
+        peer.send({
+          type: 'response.done',
+          response: {
+            id: 'usage-before-tool',
+            usage: {
+              total_tokens: 7,
+              input_token_details: { audio_tokens: 7 },
+            },
+          },
+        });
+        await vi.waitFor(() =>
+          expect(session.realtimeUsage?.total_tokens).toBe(7),
+        );
+        peer.call('inspect_usage', {}, 'usage-tool');
+        await peer.frame((frame) => frame.item?.call_id === 'usage-tool');
+        expect(contexts).toHaveLength(1);
+        if (managed) {
+          expect(policyContexts).toHaveLength(1);
+          expect(policyContexts[0].realtimeUsage).toEqual(
+            session.realtimeUsage,
+          );
+        }
+        const snapshot = contexts[0].realtimeUsage!;
+        expect(snapshot.total_tokens).toBe(7);
+        (
+          snapshot.input_token_details as { audio_tokens: number }
+        ).audio_tokens = 999;
+        expect(session.realtimeUsage?.input_token_details?.audio_tokens).toBe(
+          7,
+        );
+        expect(application.usage).toBe(marker);
+      } finally {
+        await voice.close();
+      }
+      expect(session.realtimeUsage).toBeUndefined();
+      expect(voice.usage?.total_tokens).toBe(7);
+      const next = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [inspectUsage],
+      });
+      try {
+        expect(session.realtimeUsage).toBeUndefined();
+        peer.call('inspect_usage', {}, 'usage-tool-next');
+        await peer.frame((frame) => frame.item?.call_id === 'usage-tool-next');
+        expect(contexts).toHaveLength(2);
+        expect(contexts[1].realtimeUsage).toBeUndefined();
+        expect(policyContexts).toHaveLength(managed ? 2 : 0);
+        if (managed) expect(policyContexts[1].realtimeUsage).toBeUndefined();
+        expect(contexts[0].realtimeUsage?.total_tokens).toBe(7);
+        expect(application.usage).toBe(marker);
+      } finally {
+        await next.close();
+      }
+      expect(model.requests).toHaveLength(0);
+    } finally {
+      await peer.close();
+    }
+  },
 );
 
 nativeIt.each(['static', 'sync', 'async'] as const)(

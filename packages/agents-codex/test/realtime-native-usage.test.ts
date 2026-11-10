@@ -20,7 +20,11 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         },
         output_token_details: { audio_tokens: 5 },
       },
+      { total_tokens: 7 },
+      undefined,
     ];
+    const totals = [undefined, 0, 15, 22, 22];
+    const snapshots: (number | undefined)[] = [];
     const steps: RealtimeStep[] = [
       {
         expect: 'session.update',
@@ -64,6 +68,7 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       instructions: 'Speak.',
       provider,
     }).session();
+    expect(session.realtimeUsage).toBeUndefined();
     const voice = await session.realtime({ model: 'fixture', adapter });
     try {
       expect(voice.usage).toBeUndefined();
@@ -76,15 +81,20 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             event.responseId === `r${index}`
           ) {
             expect(event.usage).toEqual(values[index]);
+            expect(event.cumulativeUsage).toEqual(session.realtimeUsage);
+            snapshots.push(event.cumulativeUsage?.total_tokens);
             break;
           }
         }
-        expect(voice.usage).toEqual(values[index]);
+        expect(voice.usage?.total_tokens).toBe(totals[index]);
+        expect(session.realtimeUsage).toEqual(voice.usage);
       }
     } finally {
       await voice.close();
     }
-    expect(voice.usage?.total_tokens).toBe(15);
+    expect(session.realtimeUsage).toBeUndefined();
+    expect(voice.usage?.total_tokens).toBe(22);
+    expect(snapshots).toEqual(totals);
     adapter.assertComplete();
   },
 );
