@@ -117,6 +117,29 @@ it('preserves callback failures while releasing pending expectations', async () 
   expect(() => adapter.assertComplete()).toThrow(failure);
 });
 
+it.each([false, true])(
+  'preserves scenario errors before exercise completion (async: %s)',
+  async (asynchronous) => {
+    const adapter = new ScriptedRealtimeAdapter();
+    const failure = new Error('scenario assertion failed');
+    let pending: Promise<unknown> | undefined;
+    const scenario = ({ expectSend }: RealtimeScenario) => {
+      pending = expectSend('missing');
+      throw failure;
+    };
+    await expect(
+      adapter.runScenario({
+        scenario: asynchronous
+          ? async (context) => scenario(context)
+          : scenario,
+        exercise: () => undefined,
+      }),
+    ).rejects.toBe(failure);
+    await expect(pending).rejects.toBe(failure);
+    expect(() => adapter.assertComplete()).toThrow(failure);
+  },
+);
+
 it('preserves cancellation reasons without waiting for caller-owned work', async () => {
   const adapter = new ScriptedRealtimeAdapter();
   const controller = new AbortController();

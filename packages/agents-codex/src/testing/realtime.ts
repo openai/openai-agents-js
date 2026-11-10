@@ -196,10 +196,22 @@ export class ScriptedRealtimeAdapter
     };
     const abort = () => fail(options.signal!.reason);
     options.signal?.addEventListener('abort', abort, { once: true });
+    const runCallback = async <Result>(
+      callback: () => Result | Promise<Result>,
+    ) => {
+      try {
+        return await callback();
+      } catch (error) {
+        fail(error);
+        throw error;
+      }
+    };
     const joined = Promise.all([
-      Promise.resolve().then(() => options.scenario(context)),
+      Promise.resolve().then(() =>
+        runCallback(() => options.scenario(context)),
+      ),
       Promise.resolve()
-        .then(options.exercise)
+        .then(() => runCallback(options.exercise))
         .then((result) => {
           exerciseComplete = true;
           consume();
