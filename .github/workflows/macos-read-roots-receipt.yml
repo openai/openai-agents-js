@@ -1,4 +1,4 @@
-name: Compare stock macOS Go system and PEM trust through one SDK listener
+name: Diagnose stock macOS Go system trust in one strict SDK Session
 
 on:
   push:
@@ -79,14 +79,12 @@ jobs:
           printf 'Runner image %s %s, architecture %s\n' "${ImageOS:?}" "${ImageVersion:?}" "$(/usr/bin/uname -m)"
           /usr/bin/sw_vers
           printf 'Node %s, npm %s, pnpm %s\n' "$(node --version)" "$(npm --version)" "$(pnpm --version)"
-      - name: Build the retained probe with cached Go and record stock gh versions
+      - name: Build the retained probe with cached Go
         run: |
           scratch="$RUNNER_TEMP/agents-go-trust"
           go_bin="$RUNNER_TOOL_CACHE/go/$GO_VERSION/arm64/bin/go"
-          gh_bin=$(command -v gh)
           test -x "$go_bin"
-          test -x "$gh_bin"
-          mkdir "$scratch/go-cache" "$scratch/go-home" "$scratch/gh-config"
+          mkdir "$scratch/go-cache" "$scratch/go-home"
 
           stock_go() {
             /usr/bin/env -i HOME="$scratch/go-home" GOCACHE="$scratch/go-cache" \
@@ -95,23 +93,10 @@ jobs:
           }
           go_version=$(stock_go version)
           test "$go_version" = "go version go$GO_VERSION darwin/arm64"
-          gh_version=$(
-            /usr/bin/env -i GH_CONFIG_DIR="$scratch/gh-config" GH_NO_UPDATE_NOTIFIER=1 \
-              GH_NO_EXTENSION_UPDATE_NOTIFIER=1 GH_NO_TELEMETRY=1 DO_NOT_TRACK=1 \
-              "$gh_bin" --version 2>/dev/null |
-              /usr/bin/sed -nE '1s/^gh version ([0-9]+\.[0-9]+\.[0-9]+)([[:space:]].*)?$/\1/p'
-          )
-          gh_go=$(
-            stock_go version "$gh_bin" 2>/dev/null |
-              /usr/bin/awk '$NF ~ /^go[0-9]+\.[0-9]+(\.[0-9]+)?([a-z]+[0-9]+)?$/ { print $NF }'
-          )
-          test -n "$gh_version"
-          test -n "$gh_go"
           stock_go build -trimpath -buildvcs=false -o "$scratch/github-trust" "$scratch/github-trust.go"
           binary_digest=$(/usr/bin/shasum -a 256 < "$scratch/github-trust")
           printf '%s\n' "${binary_digest%% *}" > "$scratch/github-trust.sha256"
-          printf '%s; gh %s (built with %s); probe SHA-256 %s\n' \
-            "$go_version" "$gh_version" "$gh_go" "${binary_digest%% *}"
+          printf '%s; probe SHA-256 %s\n' "$go_version" "${binary_digest%% *}"
       - name: Restore the pinned transfer from Alpha run 42890383494
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,7 +140,7 @@ jobs:
           npm_cli="$(dirname "$node_bin")/../lib/node_modules/npm/bin/npm-cli.js"
           cd "$scratch/agents-starter"
           PATH='' "$node_bin" "$npm_cli" ci --ignore-scripts --no-audit --no-fund
-      - name: Compare Go system and PEM trust in the host and strict Session
+      - name: Run one strict Go system probe and summarize the host unified log
         run: |
           scratch="$RUNNER_TEMP/agents-go-trust"
           node_bin=$(command -v node)

@@ -19,19 +19,16 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
-import { isDeepStrictEqual, promisify } from 'node:util';
+import { promisify } from 'node:util';
 
 const execute = promisify(execFile);
 const json = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const sha256 = /^[a-f0-9]{64}$/;
 const goVersion = 'go1.26.10';
-const modes = ['system', 'pem'];
 const callId = 'stock-go-trust';
 const done = 'Go trust command finished.';
 const outcomes = [
   'invalid-proxy',
-  'pem-read-failed',
-  'pem-parse-failed',
   'transport-error',
   'certificate-verification-failed',
   'missing-verified-chain',
@@ -81,14 +78,6 @@ async function verifyInstalled(starter) {
     for await (const chunk of createReadStream(file)) hash.update(chunk);
     assert.equal(`sha256:${hash.digest('hex')}`, expected);
   }
-  console.log(
-    JSON.stringify({
-      sdk: build.version,
-      sdkCommit: build.sourceCommit,
-      codexRevision: build.codexRevision,
-      installedNativeProductsVerified: Object.keys(native.products).length,
-    }),
-  );
 }
 
 const message = (text) => ({
@@ -146,26 +135,17 @@ async function withModel(responses, run) {
   }
 }
 
-function fingerprints(value) {
-  assert(Array.isArray(value) && value.length > 0);
-  for (const digest of value) assert.match(digest, sha256);
-  return value;
+async function readPrivate(cwd, name) {
+  const file = join(cwd, name);
+  const stat = await lstat(file);
+  assert(stat.isFile() && (stat.mode & 0o077) === 0);
+  return readFile(file, 'utf8');
 }
 
-function observation(leg, expectedMode, data) {
-  const {
-    go,
-    mode,
-    connect,
-    http,
-    outcome,
-    osStatus,
-    pemSha256,
-    peerSha256,
-    verifiedChainsSha256,
-  } = JSON.parse(data);
+function observation(data) {
+  const { go, mode, connect, http, outcome, osStatus } = JSON.parse(data);
   assert.equal(go, goVersion);
-  assert.equal(mode, expectedMode);
+  assert.equal(mode, 'system');
   for (const status of [connect, http]) {
     assert(
       Number.isInteger(status) &&
@@ -174,49 +154,151 @@ function observation(leg, expectedMode, data) {
   }
   assert(outcomes.includes(outcome));
 
-  const result = { leg, go, mode, connect, http, outcome };
+  const result = { connect, http, outcome };
   if (osStatus !== undefined) {
     assert.match(osStatus, /^-?[0-9]{1,10}$/);
     result.osStatus = Number(osStatus);
   }
-  if (pemSha256 !== undefined) {
-    assert.match(pemSha256, sha256);
-    result.pemSha256 = pemSha256;
-  }
-  if (peerSha256 !== undefined) result.peerSha256 = fingerprints(peerSha256);
-  if (verifiedChainsSha256 !== undefined) {
-    assert(Array.isArray(verifiedChainsSha256) && verifiedChainsSha256.length > 0);
-    result.verifiedChainsSha256 = verifiedChainsSha256.map(fingerprints);
-  }
-  if (outcome === 'verified')
-    assert(http && result.peerSha256 && result.verifiedChainsSha256);
-  return result;
+  const reproduced =
+    connect === 200 && http === 0 &&
+    outcome === 'certificate-verification-failed' && result.osStatus === -26276;
+  return { ...result, result: reproduced ? 'reproduced' : 'different-tls-observation' };
 }
 
-function classify(observations) {
-  const [hostSystem, hostPem, strictSystem, strictPem] = observations;
-  const inconclusive = (reason) => ({ result: 'inconclusive', reason });
-  if (observations.some(({ connect }) => connect !== 200))
-    return inconclusive('CONNECT control failed');
-  const controls = [hostSystem, hostPem, strictPem];
-  if (controls.some(({ outcome }) => outcome !== 'verified'))
-    return inconclusive('TLS control failed');
-  if (!hostPem.pemSha256 || hostPem.pemSha256 !== strictPem.pemSha256)
-    return inconclusive('PEM digests differ or are missing');
-  if (observations.some(
-    ({ peerSha256 }) => !isDeepStrictEqual(peerSha256, hostSystem.peerSha256),
-  ))
-    return inconclusive('Presented peer chains differ or are missing');
+const sandboxEmitters = ['/kernel', '/System/Library/Kernels/kernel', '/usr/libexec/sandboxd'];
+const trustEmitters = ['/usr/libexec/trustd', '/usr/libexec/trustd.agent'];
+const sandboxOperation = /^(mach-lookup|mach-register|file-read-(?:data|metadata|xattr)|file-write-(?:data|create|unlink)|sysctl-read|network-outbound)(?=$|\s)\s*/;
+const publicServices = new Set([
+  'com.apple.trustd',
+  'com.apple.trustd.agent',
+  'com.apple.TrustEvaluationAgent',
+  'com.apple.securityd.xpc',
+  'com.apple.securityd.systemkeychain',
+  'com.apple.ocspd',
+  'com.apple.trustdFileHelper',
+]);
+const publicPaths = new Set([
+  '/System/Library/Keychains/SystemRootCertificates.keychain',
+  '/Library/Keychains/System.keychain',
+  '/Library/Security/Trust Settings/Admin.plist',
+  '/etc/ssl/cert.pem',
+  '/private/etc/ssl/cert.pem',
+]);
+const trustOperation = /^(?:sec_)?(trust_evaluate|trust_store_contains|trust_store_copy_all|trust_store_copy_usage_constraints)(?=$|[ \t,:;])[ \t,:;]*/;
+const statusText = String.raw`(?:Error Domain=NSOSStatusErrorDomain Code=|OSStatus(?:[ \t]*[=:][ \t]*|[ \t]+))(-?[0-9]{1,10})`;
+const trustStatus = new RegExp('^' + statusText + '$');
+// Match metadata-only daemon messages. The adjacent "responding" trace
+// formats the complete XPC reply and is excluded at the query boundary.
+const trustMetadata = String.raw`(?:(?:operation:|returning error:)[ \t]*)?(?:[A-Za-z_][A-Za-z_0-9]{0,79}(?:[ \t]+(?:\([0-9]+\)|${statusText}))?|${statusText})`;
+const logNotice = /^(?:Filtering the log data using |Skipping (?:info and debug|info|debug) messages[,.])/;
 
-  if (strictSystem.outcome === 'verified') return { result: 'non-reproduction' };
-  if (strictSystem.outcome === 'certificate-verification-failed') {
-    return {
-      result: strictSystem.osStatus === -26276
-        ? 'reproduced'
-        : 'different-certificate-verification-error',
-    };
+function correlation(pid) {
+  assert(Number.isInteger(pid) && pid > 0 && pid <= 2 ** 31 - 1);
+  const task = String.raw`github-trust\[${pid}\]/[01]#-?[0-9]+ LF=-?[0-9]+`;
+  return [
+    {
+      emitters: sandboxEmitters,
+      prefix: String.raw`(?:Sandbox(?:Violation)?: |\(\[[0-9]+\]\) )?github-trust\(${pid}\)[ \t]+deny(?:\([0-9]+\))?(?=$|[ \t])[ \t]*`,
+    },
+    {
+      emitters: trustEmitters,
+      // trustd.c prints the SecTask description, whose PID comes from the client audit token.
+      prefix: String.raw`(?:XPC \[${task}\][ \t]+operation:[ \t]*|` +
+        String.raw`(?:Authentication is needed )?${task}(?=$|[ \t:])[ \t:]*|` +
+        String.raw`[Cc]lient[ _-]?[Pp][Ii][Dd][ \t]*[=:][ \t]*${pid}(?=$|[ \t,:;])[ \t,:;]*)`,
+    },
+  ];
+}
+
+export function summarizeLog(stdout, pid, start, end) {
+  const [sandbox, trust] = correlation(pid);
+  const sandboxPrefix = new RegExp('^' + sandbox.prefix);
+  const trustPrefix = new RegExp('^' + trust.prefix + '(?=' + trustMetadata + '$)');
+  const lines = stdout.trim().split(/\r?\n/);
+  const trailer = JSON.parse(lines.pop());
+  assert(trailer?.finished === 1 || trailer?.finished === true);
+  let correlated = false;
+  const evidence = [];
+  for (const line of lines) {
+    if (!line.trim() || logNotice.test(line)) continue;
+    const { processImagePath, eventMessage, timestamp } = JSON.parse(line);
+    const time = typeof timestamp === 'string' && /(?:Z|[+-]\d\d:?\d\d)$/.test(timestamp)
+      ? Date.parse(timestamp.replace(' ', 'T'))
+      : NaN;
+    if (!(time >= start && time < end) || typeof eventMessage !== 'string') continue;
+    if (sandbox.emitters.includes(processImagePath)) {
+      const prefix = sandboxPrefix.exec(eventMessage);
+      if (!prefix) continue;
+      correlated = true;
+      const op = sandboxOperation.exec(eventMessage.slice(prefix[0].length));
+      if (!op) continue;
+      const operation = op[1];
+      const target = eventMessage.slice(prefix[0].length + op[0].length);
+      if (operation.startsWith('mach-')) {
+        const service = target.replace(/ \((?:global-name|local-name|per-pid)\)$/, '');
+        evidence.push(publicServices.has(service) ? { operation, service } : { operation });
+      } else if (operation.startsWith('file-') && target) {
+        evidence.push(publicPaths.has(target)
+          ? { operation, path: target }
+          : { operation, pathKind: 'file-path-omitted' });
+      } else {
+        evidence.push({ operation });
+      }
+    } else if (trust.emitters.includes(processImagePath)) {
+      const prefix = trustPrefix.exec(eventMessage);
+      if (!prefix) continue;
+      correlated = true;
+      const detail = eventMessage.slice(prefix[0].length).replace(/^(?:operation:|returning error:)[ \t]*/, '');
+      const op = trustOperation.exec(detail);
+      const status = trustStatus.exec(detail.slice(op?.[0].length ?? 0));
+      const daemonStatus = Number(status?.[1]);
+      const hasStatus = daemonStatus >= -(2 ** 31) && daemonStatus < 2 ** 31;
+      if (op || hasStatus) evidence.push({
+        ...(op && { operation: op[1] }),
+        ...(hasStatus && { daemonStatus }),
+      });
+    }
   }
-  return inconclusive('Strict system request did not establish a TLS verification outcome');
+  const logResult = evidence.length > 0
+    ? 'attributed-operation-or-status'
+    : correlated ? 'correlated-without-operation-or-status' : 'completed-zero-correlated';
+  return { logResult, evidence };
+}
+
+async function queryLog(pid, start, end) {
+  const predicate = correlation(pid).map(({ emitters, prefix }, i) => (
+    '(processImagePath IN {' + emitters.map((path) => JSON.stringify(path)).join(', ') +
+    '} AND eventMessage MATCHES ' +
+    JSON.stringify(prefix + (i === 0 ? '[\\s\\S]*' : trustMetadata)) + ')'
+  )).join(' OR ');
+  const logDate = (time) => new Date(time).toISOString().slice(0, 19).replace('T', ' ') + '+0000';
+  const unavailable = (logFailure) => ({ logResult: 'access-or-query-failure', logFailure });
+  try {
+    // These show options include existing records at those levels.
+    const { stdout, stderr } = await execute('/usr/bin/log', [
+      'show', '--style', 'ndjson', '--no-pager', '--info', '--debug', '--timezone', 'UTC',
+      '--start', logDate(start), '--end', logDate(end), '--predicate', predicate,
+    ], {
+      env: { LC_ALL: 'C' },
+      timeout: 10_000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 256 * 1024,
+    });
+    if (stderr.split(/\r?\n/).some((line) => line.trim() && !logNotice.test(line))) {
+      return unavailable('unexpected-diagnostic');
+    }
+    try {
+      return summarizeLog(stdout, pid, start, end);
+    } catch {
+      return unavailable('incomplete-or-invalid-ndjson');
+    }
+  } catch (error) {
+    if (Number.isInteger(error.code)) {
+      return { ...unavailable('command-exit'), logExitCode: error.code };
+    }
+    if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return unavailable('output-limit');
+    return unavailable(error.killed ? 'query-interrupted' : 'command-unavailable');
+  }
 }
 
 async function main() {
@@ -250,12 +332,18 @@ async function main() {
       'if (printf changed > ../sandbox-canary) 2>/dev/null; then exit 27; fi',
       'test -n "${HTTPS_PROXY:-}"',
       'printf "%s\\n" "$HTTPS_PROXY" > .sdk-loopback-proxy',
-      '/usr/bin/env -i HTTPS_PROXY="$HTTPS_PROXY" ./github-trust system > system.json 2>/dev/null',
-      '/usr/bin/env -i HTTPS_PROXY="$HTTPS_PROXY" ./github-trust pem > pem.json 2>/dev/null',
+      'status=0',
+      "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-start",
+      '/usr/bin/env -i HTTPS_PROXY="$HTTPS_PROXY" ./github-trust system > system.json 2>/dev/null &',
+      'pid=$!',
+      'wait "$pid" || status=$?',
+      "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-end",
+      'printf "%s\\n" "$pid" > .probe-pid',
+      'exit "$status"',
     ].join('\n');
 
     phase = 'strict native command';
-    const observations = await withModel(
+    const receipt = await withModel(
       [
         [
           {
@@ -303,42 +391,28 @@ async function main() {
             assert.equal(await readFile(canary, 'utf8'), 'protected');
 
             phase = 'strict receipts and loopback proxy validation';
-            const strict = [];
-            for (const mode of modes) {
-              const data = await readFile(join(cwd, `${mode}.json`), 'utf8');
-              strict.push(observation('strict', mode, data));
-            }
-            const proxyFile = join(cwd, '.sdk-loopback-proxy');
-            const stat = await lstat(proxyFile);
-            assert(stat.isFile() && (stat.mode & 0o077) === 0);
-            const proxy = await readFile(proxyFile, 'utf8');
+            const proxy = await readPrivate(cwd, '.sdk-loopback-proxy');
             const match = /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})\/?\n$/.exec(proxy);
             assert(match && match[0] === proxy && Number(match[1]) <= 65535);
-            const endpoint = proxy.slice(0, -1);
 
-            phase = 'host controls through the live SDK proxy';
-            const host = [];
-            for (const mode of modes) {
-              const { stdout } = await execute(binary, [mode], {
-                cwd,
-                env: { HTTPS_PROXY: endpoint },
-                timeout: 12_000,
-              });
-              host.push(observation('host', mode, stdout));
-            }
-            const observations = [...host, ...strict];
-            console.log(
-              JSON.stringify({
-                command: {
-                  status: execution.status,
-                  exitCode: execution.exitCode,
-                  outsideWorkspaceWrite: 'denied',
-                },
-                observations,
-              }),
-            );
+            const pidText = await readPrivate(cwd, '.probe-pid');
+            assert.match(pidText, /^[1-9][0-9]{0,9}\n$/);
+            const pid = Number(pidText);
+            assert(pid <= 2 ** 31 - 1);
+            const stamp = async (name) => {
+              const value = await readPrivate(cwd, name);
+              assert.match(value, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d:\d\dZ\n$/);
+              const time = Date.parse(value.trim());
+              assert(Number.isFinite(time));
+              return time;
+            };
+            const start = await stamp('.probe-start');
+            // Include the rest of the exit second with an exclusive upper bound.
+            const end = (await stamp('.probe-end')) + 1000;
+            assert(end > start && end - start <= 15_000);
+            const tls = observation(await readPrivate(cwd, 'system.json'));
             phase = 'Session cleanup and synthetic model verification';
-            return observations;
+            return { pid, start, end, tls, canaryDenied: 1, exitCode: execution.exitCode };
           } finally {
             await session.close();
           }
@@ -348,23 +422,28 @@ async function main() {
       },
     );
 
-    phase = 'TLS comparison';
-    const verdict = classify(observations);
-    const httpNon2xx = observations
-      .filter(
-        ({ outcome, http }) => outcome === 'verified' && (http < 200 || http >= 300),
-      )
-      .map(({ leg, mode, http }) => ({ leg, mode, http }));
-    console.log(JSON.stringify({ ...verdict, httpNon2xx }));
-    if (verdict.result === 'inconclusive') process.exitCode = 1;
+    phase = 'host unified log query';
+    const { pid, start, end, tls, canaryDenied, exitCode } = receipt;
+    const log = await queryLog(pid, start, end);
+    console.log(JSON.stringify({
+      pid,
+      window: { start: new Date(start).toISOString(), endExclusive: new Date(end).toISOString() },
+      canaryDenied,
+      exitCode,
+      tls,
+      ...log,
+    }));
+    if (log.logResult === 'access-or-query-failure') process.exitCode = 1;
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
 }
 
-try {
-  await main();
-} catch {
-  console.log(JSON.stringify({ result: 'infrastructure-failure', phase }));
-  process.exitCode = 1;
+if (import.meta.main) {
+  try {
+    await main();
+  } catch {
+    console.log(JSON.stringify({ result: 'infrastructure-failure', phase }));
+    process.exitCode = 1;
+  }
 }
