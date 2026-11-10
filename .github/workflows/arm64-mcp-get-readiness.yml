@@ -1,4 +1,4 @@
-name: ARM64 MCP GET readiness diagnostic
+name: ARM64 MCP GET readiness candidate
 
 on:
   push:
@@ -63,19 +63,44 @@ jobs:
           node scripts/restore-native-bundle.mjs
           echo 'f1eb49e7c941324cea7def5336295f05a8b43c47f965a8ea9acfd78798c5bb65  packages/agents-codex/native/codex.node' | sha256sum -c -
           echo 'fa9d51b6678eb0b59060dd7fba07e97b1f1002494a8f8ab597bf203a0a201538  packages/agents-codex/native/build-receipt.json' | sha256sum -c -
+      - name: Apply and verify the exact candidate tree
+        run: |
+          patch="$GITHUB_WORKSPACE/diagnostic/.github/diagnostics/mcp-get-readiness-candidate.patch"
+          test "$(sha256sum "$patch" | cut -d' ' -f1)" = 19210453c41eb675db9f7ffe1ca33a38c262e9c9ee3ee7733e7a0ebdb9696d76
+          git apply --index "$patch"
+          test "$(git write-tree)" = 8e7d0d458731331693e5a41ac1f4516c4466f38d
+          test "$(node --input-type=module -e 'import {nativeInputs} from "./scripts/native-bundle-inputs.mjs"; console.log(nativeInputs())')" = "$NATIVE_INPUTS"
+          git diff --cached --check
       - name: Build the exact SDK
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Trace the existing synthetic GET readiness row
+      - name: Verify the exact fixture without diagnostic instrumentation
+        run: |
+          out="$RUNNER_TEMP/mcp-get-readiness/exact"
+          mkdir -p "$out"
+          TMPDIR="$out" pnpm test:native \
+            packages/agents-codex/test/native/native-question-ownership.test.ts \
+            -t 'declines late unassociated delivery while a successor uses the same server$' \
+            --mode full --maxWorkers=1 --reporter=verbose --reporter=json \
+            --outputFile.json="$out/vitest.json"
+          node --input-type=module - "$out/vitest.json" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          assert.equal(report.numPassedTests, 1);
+          assert.equal(report.numFailedTests, 0);
+          NODE
+          (cd "$out" && sha256sum vitest.json > SHA256SUMS)
+      - name: Repeat the existing synthetic row with GET lifetime receipts
         env:
           AGENTS_TEST_MCP_GET_TRACE: '1'
         run: |
-          patch="$GITHUB_WORKSPACE/diagnostic/.github/diagnostics/mcp-get-readiness-trace.patch"
-          test "$(sha256sum "$patch" | cut -d' ' -f1)" = bde0e1deaa3fc7a5280ffa605bd8228c07f84e12f2dc1f7f4a88b120c9b88f69
+          patch="$GITHUB_WORKSPACE/diagnostic/.github/diagnostics/mcp-get-readiness-candidate-trace.patch"
+          test "$(sha256sum "$patch" | cut -d' ' -f1)" = afa703a6522e7d4be865874c4286c0c10b2a33f425d42f294ca494f38d2b9a5d
           git apply --check "$patch"
           git apply "$patch"
-          out="$RUNNER_TEMP/mcp-get-readiness"
+          out="$RUNNER_TEMP/mcp-get-readiness/traces"
           mkdir -p "$out"
           test_file=packages/agents-codex/test/native/native-question-ownership.test.ts
           title='declines late unassociated delivery while a successor uses the same server$'
@@ -88,7 +113,7 @@ jobs:
             echo "$code" > "$out/$attempt/exit"
             test -s "$out/$attempt/mcp-get-trace.jsonl"
           }
-          for group in 1 2 3; do
+          for group in 1 2; do
             pids=()
             for lane in 1 2 3 4; do
               run_case "$group-$lane" &
@@ -100,13 +125,14 @@ jobs:
           for attempt in "$out"/*; do
             printf '\nTrial %s exit %s\n' "${attempt##*/}" "$(cat "$attempt/exit")"
             cat "$attempt/mcp-get-trace.jsonl"
-            rg 'No unsolicited GET stream|Tests ' "$attempt/vitest.log"
+            grep -E 'No unsolicited GET stream|Tests ' "$attempt/vitest.log" || true
           done
           (cd "$out" && sha256sum */exit */*.jsonl */vitest.log > SHA256SUMS)
+          if grep -qvx 0 "$out"/*/exit; then exit 1; fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: arm64-mcp-get-readiness-traces-91eb0398
+          name: arm64-mcp-get-readiness-candidate-8e7d0d45
           path: ${{ runner.temp }}/mcp-get-readiness
           if-no-files-found: warn
           retention-days: 14

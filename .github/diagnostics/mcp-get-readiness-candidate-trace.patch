@@ -1,0 +1,76 @@
+--- a/packages/agents-codex/test/native/native-question-ownership.test.ts
++++ b/packages/agents-codex/test/native/native-question-ownership.test.ts
+@@ -55,6 +55,11 @@
+   const effects: string[] = [];
+   const failures: unknown[] = [];
+   const unsolicitedStreams = new Map<ServerResponse, string>();
++  const traceEnabled = process.env.AGENTS_TEST_MCP_GET_TRACE === '1';
++  const sessions = new Set<string>();
++  const streamIds = new Map<ServerResponse, number>();
++  const trace: unknown[][] = [];
++  let lastStream = 0;
+   const pending = new Map<string, PeerCall>();
+   const event = (response: ServerResponse, value: unknown) => {
+     if (response.destroyed || response.writableEnded)
+@@ -77,6 +82,13 @@
+         response.writeHead(200, { 'content-type': 'text/event-stream' });
+         response.flushHeaders();
+         const session = request.headers['mcp-session-id'];
++        if (traceEnabled) {
++          const id = typeof session === 'string' && sessions.has(session) ? session : '(unnegotiated)';
++          const stream = ++lastStream;
++          streamIds.set(response, stream);
++          trace.push(['get-open', stream, id]);
++          response.once('close', () => trace.push(['get-close', stream, id]));
++        }
+         if (typeof session === 'string' && session) {
+           unsolicitedStreams.set(response, session);
+           response.once('close', () => unsolicitedStreams.delete(response));
+@@ -118,6 +130,8 @@
+           : String(request.headers['mcp-session-id'] ?? '');
+       let result: unknown = {};
+       if (rpc.method === 'initialize') {
++        sessions.add(session);
++        if (traceEnabled) trace.push(['initialize', session]);
+         result = {
+           protocolVersion: rpc.params.protocolVersion,
+           capabilities: { tools: {} },
+@@ -160,7 +174,9 @@
+           },
+         };
+         calls.set(label, selected);
++        if (traceEnabled) trace.push(['call-open', label, session]);
+         response.once('close', () => {
++          if (traceEnabled) trace.push(['call-close', label, session]);
+           if (pending.get(session) === selected) pending.delete(session);
+         });
+         return;
+@@ -184,6 +200,12 @@
+     await new Promise<void>((resolve, reject) =>
+       peer.close((error) => (error ? reject(error) : resolve())),
+     );
++    if (traceEnabled) {
++      await writeFile(
++        join(tmpdir(), 'mcp-get-trace.jsonl'),
++        trace.map((row) => JSON.stringify(row)).join('\n') + '\n',
++      );
++    }
+     expect(failures).toEqual([]);
+   };
+   return {
+@@ -210,6 +232,7 @@
+       event(selected.response, form());
+     },
+     async emitUnsolicited(session: string) {
++      if (traceEnabled) trace.push(['wait', session]);
+       const stream = await vi.waitFor(
+         () => {
+           for (const [response, responseSession] of unsolicitedStreams) {
+@@ -225,6 +248,7 @@
+         },
+         { timeout: 8000, interval: 20 },
+       );
++      if (traceEnabled) trace.push(['send', streamIds.get(stream), session]);
+       event(stream, form());
+     },
+     [Symbol.asyncDispose]: close,
