@@ -1,6 +1,8 @@
 import { expectTypeOf } from 'vitest';
 import type {
   ActionReply,
+  CodexPlanLimit,
+  CodexPlanUsage,
   NativeAgentsOptions,
   NativeRoleOptions,
   SessionUpdate,
@@ -28,6 +30,19 @@ session.respond(either);
 expectTypeOf(session.fork()).toEqualTypeOf<Promise<SessionState>>();
 // @ts-expect-error fork captures only the latest settled root, without selectors.
 session.fork({ turn: 1 });
+
+expectTypeOf(session.planUsage()).toEqualTypeOf<
+  Promise<CodexPlanUsage | null>
+>();
+expectTypeOf(
+  session.planUsage({ signal: new AbortController().signal }),
+).toEqualTypeOf<Promise<CodexPlanUsage | null>>();
+expectTypeOf<CodexPlanUsage>().toEqualTypeOf<
+  import('@openai/agents-codex').CodexPlanUsage
+>();
+expectTypeOf<CodexPlanLimit>().toEqualTypeOf<
+  import('@openai/agents-codex').CodexPlanLimit
+>();
 
 // Named options are available from the owner and the convenience root.
 expectTypeOf<NativeAgentsOptions<{ account: string }>>().toEqualTypeOf<
