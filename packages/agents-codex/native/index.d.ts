@@ -400,6 +400,7 @@ export class _SessionStoreReconciliation {
 export function reconcile_thread_store(
   callback: (request: string) => Promise<string>,
   result_json: string,
+  plan_identity?: string,
 ): _SessionStoreReconciliation;
 export function create_store_engine(
   config_json: string,
@@ -422,6 +423,15 @@ export function create_checkpoint_engine(
   initial_specs_json?: string | null,
   fresh_manual?: boolean | null,
   application_apps_json?: string | null,
+): Promise<Engine>;
+export function _create_plan_engine(
+  config_json: string,
+  runtime_json: string,
+  bearer: string,
+  identity: string,
+  initial_checkpoint?: string | null,
+  initial_specs_json?: string | null,
+  store?: ((request: string) => Promise<string>) | null,
 ): Promise<Engine>;
 export function configure_telemetry(config_json: string): Promise<void>;
 export function shutdown_telemetry(timeout_ms?: number): Promise<void>;
@@ -469,6 +479,7 @@ declare const binding: {
   _validate_application_instructions: typeof _validate_application_instructions;
   create_engine: typeof create_engine;
   create_store_engine: typeof create_store_engine;
+  _create_plan_engine: typeof _create_plan_engine;
   _SessionStoreReconciliation: typeof _SessionStoreReconciliation;
   reconcile_thread_store: typeof reconcile_thread_store;
   create_checkpoint_engine: typeof create_checkpoint_engine;

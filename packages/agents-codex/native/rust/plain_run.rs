@@ -44,6 +44,8 @@ pub(crate) struct Request {
     reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
     observation_retention_all: bool,
+    #[serde(default)]
+    prefer_buffered_response: bool,
 }
 
 #[derive(Clone)]
@@ -543,6 +545,7 @@ async fn prepare_and_collect(
         Default::default(),
         stop.clone(),
         admission,
+        request.prefer_buffered_response,
     );
     let selected_effort = request
         .reasoning_effort
@@ -608,7 +611,7 @@ async fn prepare_and_collect(
                 };
                 let producer_joined = match producer {
                     Some(task) => task.await.is_ok(),
-                    None => false,
+                    None => request.prefer_buffered_response,
                 };
                 if !mapper_joined || !producer_joined {
                     stop.request();

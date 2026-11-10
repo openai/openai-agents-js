@@ -24,6 +24,22 @@ impl ExternalAuth for ApiKey {
     }
 }
 
+fn isolated_manager(config: &Config) -> Arc<AuthManager> {
+    AuthManager::external_bearer_only(ModelProviderAuthInfo {
+        command: String::new(),
+        args: Vec::new(),
+        timeout_ms: NonZeroU64::MIN,
+        refresh_interval_ms: 0,
+        cwd: config.cwd.clone(),
+    })
+}
+
+pub fn plan_manager(config: &Config) -> Arc<AuthManager> {
+    let manager = isolated_manager(config);
+    manager.clear_external_auth();
+    manager
+}
+
 pub async fn manager(config: &Config, api_key: Option<String>) -> Result<Arc<AuthManager>> {
     let api_key = match api_key {
         Some(key) => {
@@ -39,13 +55,7 @@ pub async fn manager(config: &Config, api_key: Option<String>) -> Result<Arc<Aut
 
     // This constructor alone skips all environment and stored-login discovery.
     // Its command provider is replaced before the manager can resolve any auth.
-    let manager = AuthManager::external_bearer_only(ModelProviderAuthInfo {
-        command: String::new(),
-        args: Vec::new(),
-        timeout_ms: NonZeroU64::MIN,
-        refresh_interval_ms: 0,
-        cwd: config.cwd.clone(),
-    });
+    let manager = isolated_manager(config);
     match api_key {
         Some(key) => {
             manager
@@ -99,13 +109,7 @@ pub fn apps_auth(access_token: &str, account_id: &str) -> Result<CodexAuth> {
 }
 
 pub async fn apps_manager(config: &Config, auth: CodexAuth) -> Result<Arc<AuthManager>> {
-    let manager = AuthManager::external_bearer_only(ModelProviderAuthInfo {
-        command: String::new(),
-        args: Vec::new(),
-        timeout_ms: NonZeroU64::MIN,
-        refresh_interval_ms: 0,
-        cwd: config.cwd.clone(),
-    });
+    let manager = isolated_manager(config);
     manager
         .set_external_auth(Arc::new(AppsBearer(auth)))
         .await

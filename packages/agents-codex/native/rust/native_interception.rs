@@ -3000,15 +3000,27 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn uses_chatgpt_plan(&self) -> bool {
+        self.engine
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|engine| engine.plan_authorization.is_some())
+    }
+
     fn customizes_compaction(&self, thread_id: &str) -> bool {
-        self.context_tools(thread_id)
-            .is_some_and(|tools| tools.customizes_compaction())
+        self.uses_chatgpt_plan()
+            || self
+                .context_tools(thread_id)
+                .is_some_and(|tools| tools.customizes_compaction())
     }
     fn before_compact<'a>(
         &'a self,
         input: codex_extension_api::CompactionInput<'a>,
     ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
         Box::pin(async move {
+            if self.uses_chatgpt_plan() {
+                return Err("Sign in with ChatGPT does not support model-backed compaction".into());
+            }
             self.context_tools(input.thread_id)
                 .ok_or("Expired compaction callback owner")?
                 .before_compact(input)

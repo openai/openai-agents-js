@@ -14,7 +14,7 @@ diff --git a/codex-rs/core/src/sdk_plain_run.rs b/codex-rs/core/src/sdk_plain_ru
 new file mode 100644
 --- /dev/null
 +++ b/codex-rs/core/src/sdk_plain_run.rs
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,117 @@
 +//! Narrow SDK-owned helpers for the private plain-run owner.
 +
 +use crate::config::Config;
@@ -38,6 +38,7 @@ new file mode 100644
 +    request_controls: ModelRequestControls,
 +    sampling_stop: Arc<TurnSamplingStop>,
 +    admission: Arc<dyn ModelToolAdmission>,
++    prefer_buffered_response: bool,
 +) -> crate::Prompt {
 +    crate::Prompt {
 +        input,
@@ -46,6 +47,7 @@ new file mode 100644
 +        sampling_stop: Some(sampling_stop),
 +        tool_admission: Some(admission),
 +        parallel_tool_calls: true,
++        prefer_buffered_response,
 +        ..Default::default()
 +    }
 +}
