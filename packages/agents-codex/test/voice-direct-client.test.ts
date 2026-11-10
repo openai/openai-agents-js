@@ -301,6 +301,91 @@ describe.runIf(enabled)('direct client Rust authority', () => {
     await session.close();
   });
 
+  it.each([false, true])(
+    'dispatches only the first handoff call per response (same target=%s)',
+    async (sameTarget) => {
+      const release = Promise.withResolvers<void>();
+      const first = vi.fn(() => release.promise);
+      const ignored = vi.fn();
+      const next = vi.fn();
+      const final = { model: 'test', instructions: 'Final' };
+      const target = {
+        model: 'test',
+        instructions: 'Target',
+        handoffs: [
+          { name: 'next', description: 'Next', agent: final, onHandoff: next },
+        ],
+      };
+      const { session, frames } = fixture({
+        model: 'test',
+        instructions: 'Root',
+        handoffs: [
+          {
+            name: 'first',
+            description: 'First',
+            agent: target,
+            onHandoff: first,
+          },
+          {
+            name: 'ignored',
+            description: 'Ignored',
+            agent: sameTarget ? target : final,
+            onHandoff: ignored,
+          },
+        ],
+      });
+      try {
+        await session.start();
+        response(session, 'handoffs');
+        session.receive({
+          type: 'response.done',
+          response: {
+            id: 'handoffs',
+            status: 'completed',
+            output: ['first', 'ignored'].map((name) => ({
+              type: 'function_call',
+              id: name + '-item',
+              call_id: name,
+              name,
+              arguments: '{}',
+            })),
+          },
+        });
+        await vi.waitFor(() => expect(first).toHaveBeenCalledOnce());
+        expect(ignored).not.toHaveBeenCalled();
+        await vi.waitFor(() =>
+          expect(
+            frames.some(
+              (frame) =>
+                frame.item?.call_id === 'ignored' &&
+                frame.item.output ===
+                  'Multiple handoffs detected, ignoring this one.',
+            ),
+          ).toBe(true),
+        );
+        expect(ignored).not.toHaveBeenCalled();
+        release.resolve();
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((frame) => frame.type === 'session.update'),
+          ).toHaveLength(2),
+        );
+        await vi.waitFor(() =>
+          expect(frames.some((frame) => frame.type === 'response.create')).toBe(
+            true,
+          ),
+        );
+        response(session, 'next-response');
+        completeTool(session, 'next-response', 'next-call', 'next');
+        await vi.waitFor(() => expect(next).toHaveBeenCalledOnce());
+        expect(ignored).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await session.close();
+      }
+    },
+  );
+
   it('runs custom source-owned handoffs and accepts the target catalog before continuation', async () => {
     const hook = vi.fn();
     const target = {
