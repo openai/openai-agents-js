@@ -135,9 +135,15 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(types.indexOf('model_request_dispatching')).toBeLessThan(
         types.indexOf('output_text_delta'),
       );
-      expect(types.lastIndexOf('output_text_delta')).toBeLessThan(
-        types.indexOf('usage_updated'),
+      const completedUsageIndex = events.findLastIndex(
+        (event) => event.type === 'usage_updated' && event.usage !== null,
       );
+      expect(types.lastIndexOf('output_text_delta')).toBeLessThan(
+        completedUsageIndex,
+      );
+      expect(events[completedUsageIndex]).toMatchObject({
+        usage: completed.threadUsage,
+      });
       expect(await Array.fromAsync(completed.turn.events())).toEqual(events);
       server.assertExhausted();
     }, 30_000);
