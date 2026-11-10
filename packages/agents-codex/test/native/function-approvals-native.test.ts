@@ -10,6 +10,7 @@ import {
   parseSessionState,
   manualTool,
   type Session,
+  ToolOutput,
   tool,
   type FunctionApprovalRequest,
 } from '../../src';
@@ -1143,5 +1144,50 @@ it.each([false, true])(
     expect(result.toolCall?.callId).toBe('approved-terminal');
     expect(effects).toEqual(['effect']);
     expect(server.requests).toHaveLength(1);
+  },
+);
+
+it.each([
+  { automatic: false, rich: false },
+  { automatic: true, rich: false },
+  { automatic: false, rich: true },
+  { automatic: true, rich: true },
+])(
+  'preserves non-JSON callback result validators (automatic=$automatic, rich=$rich)',
+  async ({ automatic, rich }) => {
+    const returned = rich
+      ? new ToolOutput([{ type: 'inputText', text: 'validated result' }], true)
+      : 'validated result';
+    const validated: unknown[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: automatic ? () => false : true,
+      result: z
+        .union([z.string(), z.instanceof(ToolOutput)])
+        .refine((value) => {
+          validated.push(value);
+          return true;
+        }),
+      execute: () => returned,
+    });
+    const server = new ModelServer([
+      [call('risky', {}, { callId: 'rich-result' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    }).session();
+    const turn = await session.submit('begin');
+    if (!automatic)
+      await session.respond((await nextApproval(session)).approve());
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(validated).toHaveLength(1);
+    expect(validated[0]).toBe(returned);
+    expect(JSON.stringify(server.requests[1])).toContain('validated result');
   },
 );

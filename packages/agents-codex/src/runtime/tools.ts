@@ -512,7 +512,11 @@ export function tool<
     resultSchema: result
       ? decode(
           jsonValue,
-          JSON.stringify(z.toJSONSchema(result, { io: 'input' })),
+          // Managed results retain their callback validator; this portable
+          // metadata need not represent non-JSON instance validators.
+          JSON.stringify(
+            z.toJSONSchema(result, { io: 'input', unrepresentable: 'any' }),
+          ),
         )
       : {},
     parseInput: (args) => parameters.parse(structuredClone(args)),
