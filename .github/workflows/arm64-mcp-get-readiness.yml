@@ -1,4 +1,4 @@
-name: ARM64 MCP GET readiness candidate
+name: ARM64 MCP GET readiness landed
 
 on:
   push:
@@ -9,9 +9,9 @@ permissions:
   actions: read
 
 jobs:
-  trace:
+  verify:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 18
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: sdk
@@ -21,11 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          path: diagnostic
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 91eb0398584a7000cb4afdeda76e17e72e202da7
+          ref: d6c12e4b615982761b086d3c0399f3c7eee25129
           path: sdk
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
@@ -40,8 +36,10 @@ jobs:
       - name: Verify stock runner and exact source
         run: |
           test "$(uname -m)" = aarch64
-          test "$(git rev-parse HEAD)" = 91eb0398584a7000cb4afdeda76e17e72e202da7
-          test "$(git rev-parse 'HEAD^{tree}')" = e333a0456584646f489dcce07a345c4afdbfca23
+          test "$(git rev-parse HEAD)" = d6c12e4b615982761b086d3c0399f3c7eee25129
+          test "$(git rev-parse 'HEAD^{tree}')" = 9659013e598312892e6608d38119776855973fd9
+          test "$(node --input-type=module -e 'import {nativeInputs} from "./scripts/native-bundle-inputs.mjs"; console.log(nativeInputs())')" = "$NATIVE_INPUTS"
+          git show -s --format='%H %T %P' HEAD
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends apparmor-profiles bubblewrap
           if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
@@ -63,14 +61,6 @@ jobs:
           node scripts/restore-native-bundle.mjs
           echo 'f1eb49e7c941324cea7def5336295f05a8b43c47f965a8ea9acfd78798c5bb65  packages/agents-codex/native/codex.node' | sha256sum -c -
           echo 'fa9d51b6678eb0b59060dd7fba07e97b1f1002494a8f8ab597bf203a0a201538  packages/agents-codex/native/build-receipt.json' | sha256sum -c -
-      - name: Apply and verify the exact candidate tree
-        run: |
-          patch="$GITHUB_WORKSPACE/diagnostic/.github/diagnostics/mcp-get-readiness-candidate.patch"
-          test "$(sha256sum "$patch" | cut -d' ' -f1)" = 19210453c41eb675db9f7ffe1ca33a38c262e9c9ee3ee7733e7a0ebdb9696d76
-          git apply --index "$patch"
-          test "$(git write-tree)" = 8e7d0d458731331693e5a41ac1f4516c4466f38d
-          test "$(node --input-type=module -e 'import {nativeInputs} from "./scripts/native-bundle-inputs.mjs"; console.log(nativeInputs())')" = "$NATIVE_INPUTS"
-          git diff --cached --check
       - name: Build the exact SDK
         run: |
           pnpm install --frozen-lockfile
@@ -91,48 +81,15 @@ jobs:
           assert.equal(report.numPassedTests, 1);
           assert.equal(report.numFailedTests, 0);
           NODE
-          (cd "$out" && sha256sum vitest.json > SHA256SUMS)
-      - name: Repeat the existing synthetic row with GET lifetime receipts
-        env:
-          AGENTS_TEST_MCP_GET_TRACE: '1'
-        run: |
-          patch="$GITHUB_WORKSPACE/diagnostic/.github/diagnostics/mcp-get-readiness-candidate-trace.patch"
-          test "$(sha256sum "$patch" | cut -d' ' -f1)" = afa703a6522e7d4be865874c4286c0c10b2a33f425d42f294ca494f38d2b9a5d
-          git apply --check "$patch"
-          git apply "$patch"
-          out="$RUNNER_TEMP/mcp-get-readiness/traces"
-          mkdir -p "$out"
-          test_file=packages/agents-codex/test/native/native-question-ownership.test.ts
-          title='declines late unassociated delivery while a successor uses the same server$'
-          run_case() {
-            local attempt=$1 code=0
-            mkdir -p "$out/$attempt"
-            TMPDIR="$out/$attempt" pnpm test:native "$test_file" -t "$title" \
-              --mode full --maxWorkers=1 --reporter=verbose \
-              > "$out/$attempt/vitest.log" 2>&1 || code=$?
-            echo "$code" > "$out/$attempt/exit"
-            test -s "$out/$attempt/mcp-get-trace.jsonl"
-          }
-          for group in 1 2; do
-            pids=()
-            for lane in 1 2 3 4; do
-              run_case "$group-$lane" &
-              pids+=("$!")
-            done
-            for pid in "${pids[@]}"; do wait "$pid"; done
-            if grep -qvx 0 "$out"/"$group"-*/exit; then break; fi
-          done
-          for attempt in "$out"/*; do
-            printf '\nTrial %s exit %s\n' "${attempt##*/}" "$(cat "$attempt/exit")"
-            cat "$attempt/mcp-get-trace.jsonl"
-            grep -E 'No unsolicited GET stream|Tests ' "$attempt/vitest.log" || true
-          done
-          (cd "$out" && sha256sum */exit */*.jsonl */vitest.log > SHA256SUMS)
-          if grep -qvx 0 "$out"/*/exit; then exit 1; fi
+          git show -s --format='%H %T %P' HEAD > "$out/source.txt"
+          printf '%s\n' "$NATIVE_INPUTS" > "$out/native-inputs.txt"
+          sha256sum packages/agents-codex/native/codex.node \
+            packages/agents-codex/native/build-receipt.json > "$out/native-products.txt"
+          (cd "$out" && sha256sum vitest.json source.txt native-inputs.txt native-products.txt > SHA256SUMS)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: arm64-mcp-get-readiness-candidate-8e7d0d45
+          name: arm64-mcp-get-readiness-landed-d6c12e4b
           path: ${{ runner.temp }}/mcp-get-readiness
           if-no-files-found: warn
           retention-days: 14
