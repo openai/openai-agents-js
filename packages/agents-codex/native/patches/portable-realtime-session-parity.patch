@@ -1,5 +1,5 @@
 diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
-index f8690a24f8..f5183bb91d 100644
+index f8690a24f8..7ed5c5e9f8 100644
 --- a/codex-rs/realtime-control/src/lib.rs
 +++ b/codex-rs/realtime-control/src/lib.rs
 @@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -95,9 +95,11 @@ index f8690a24f8..f5183bb91d 100644
  }
  /// All mutation is synchronous and serialized by the host's Wasm instance.
  /// No OS, executor, socket, callback, filesystem, or ambient credential access.
-@@ -297,11 +353,13 @@ pub struct Control {
+@@ -296,12 +352,15 @@ pub struct Control {
+     batches: BTreeMap<String, Batch>,
      responses: ResponseCreateState<()>,
      next_send: u64,
++    next_cancel: u64,
      pending_send: BTreeSet<u64>,
 -    incoming: VecDeque<(Value, usize)>,
 +    incoming: VecDeque<Incoming>,
@@ -110,7 +112,14 @@ index f8690a24f8..f5183bb91d 100644
  }
  impl Default for Control {
      fn default() -> Self {
-@@ -319,6 +377,8 @@ impl Default for Control {
+@@ -313,18 +372,25 @@ impl Default for Control {
+             batches: BTreeMap::new(),
+             responses: ResponseCreateState::default(),
+             next_send: 0,
++            next_cancel: 0,
+             pending_send: BTreeSet::new(),
+             incoming: VecDeque::new(),
+             incoming_bytes: 0,
              startup_send: None,
              startup_sent: false,
              startup_accepted: false,
@@ -119,15 +128,27 @@ index f8690a24f8..f5183bb91d 100644
          }
      }
  }
-@@ -349,6 +409,7 @@ impl Control {
+ impl Control {
+-    fn send(&mut self, event: Value, effects: &mut Vec<Effect>) -> u64 {
++    fn send(&mut self, mut event: Value, effects: &mut Vec<Effect>) -> u64 {
+         self.next_send += 1;
++        if event["type"] == "response.cancel" {
++            self.next_cancel += 1;
++            event["event_id"] = json!(format!("cancel_{}", self.next_cancel));
++        }
+         self.pending_send.insert(self.next_send);
+         effects.push(Effect::Send {
+             id: self.next_send,
+@@ -349,6 +415,8 @@ impl Control {
          self.incoming.clear();
          self.incoming_bytes = 0;
          self.responses = ResponseCreateState::default();
 +        self.cancel_on_created = None;
++        self.next_cancel = 0;
      }
      fn transition(&mut self, command: Command) -> Result<Vec<Effect>, String> {
          if self.phase == Phase::Closed {
-@@ -367,6 +428,11 @@ impl Control {
+@@ -367,6 +435,11 @@ impl Control {
                  if config.model.is_empty() || config.tools.len() > MAX_CALLS {
                      return Err("Invalid Realtime configuration".into());
                  }
@@ -139,7 +160,7 @@ index f8690a24f8..f5183bb91d 100644
                  let mut tools = BTreeMap::new();
                  let mut wire_tools = vec![];
                  for tool in config.tools {
-@@ -381,7 +447,15 @@ impl Control {
+@@ -381,7 +454,15 @@ impl Control {
                  }
                  self.tools = tools;
                  self.phase = Phase::Configuring;
@@ -156,7 +177,7 @@ index f8690a24f8..f5183bb91d 100644
                  self.expected_session = session.clone();
                  self.startup_send = Some(self.send(
                      json!({"type":"session.update","session":session}),
-@@ -401,18 +475,41 @@ impl Control {
+@@ -401,18 +482,41 @@ impl Control {
                      }
                  }
                  while self.pending_send.is_empty() {
@@ -201,7 +222,7 @@ index f8690a24f8..f5183bb91d 100644
                  if self.pending_send.is_empty() {
                      self.provider(event, &mut effects)?;
                  } else {
-@@ -421,7 +518,12 @@ impl Control {
+@@ -421,7 +525,12 @@ impl Control {
                      {
                          return Err("Portable voice ingress exceeds capacity".into());
                      }
@@ -215,7 +236,7 @@ index f8690a24f8..f5183bb91d 100644
                      self.incoming_bytes += bytes;
                  }
              }
-@@ -458,17 +560,61 @@ impl Control {
+@@ -458,17 +567,61 @@ impl Control {
                  self.send(json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}), &mut effects);
                  self.request_response(&mut effects);
              }
@@ -278,7 +299,7 @@ index f8690a24f8..f5183bb91d 100644
      fn require_ready(&self) -> Result<(), String> {
          if self.phase != Phase::Ready {
              Err("Realtime configuration is not accepted".into())
-@@ -498,20 +644,21 @@ impl Control {
+@@ -498,35 +651,92 @@ impl Control {
              }
              "response.cancelled" => return Err("Portable voice generation was cancelled".into()),
              "response.done" if event["response"]["status"].as_str() != Some("completed") => {
@@ -310,10 +331,29 @@ index f8690a24f8..f5183bb91d 100644
                  {
 -                    return Err("Portable voice interruption requires a new generation".into());
 +                    return Err("Incomplete Realtime response cannot admit functions".into());
++                }
++            }
++            "error" => {
++                // Every canonical ID in this range was issued for cancellation.
++                // Request failure does not revoke the session or admitted work.
++                let cancellation_error = event["error"]["type"] == "invalid_request_error"
++                    && event["error"]["event_id"].as_str().is_some_and(|event_id| {
++                        event_id
++                            .strip_prefix("cancel_")
++                            .and_then(|id| id.parse::<u64>().ok())
++                            .is_some_and(|id| {
++                                id > 0
++                                    && id <= self.next_cancel
++                                    && event_id == format!("cancel_{id}")
++                            })
++                    });
++                if !cancellation_error {
++                    return Err("Realtime provider rejected the operation".into());
                  }
              }
-             "error" => return Err("Realtime provider rejected the operation".into()),
-@@ -520,13 +667,52 @@ impl Control {
+-            "error" => return Err("Realtime provider rejected the operation".into()),
+             _ => {}
+         }
          Ok(bytes)
      }
      fn request_response(&mut self, effects: &mut Vec<Effect>) {
@@ -367,7 +407,7 @@ index f8690a24f8..f5183bb91d 100644
      fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
          let kind = event
              .get("type")
-@@ -536,11 +722,18 @@ impl Control {
+@@ -536,11 +746,18 @@ impl Control {
              "session.updated" => {
                  if self.phase == Phase::Configuring || self.phase == Phase::Ready {
                      self.startup_accepted = true;
@@ -386,7 +426,7 @@ index f8690a24f8..f5183bb91d 100644
                  if self
                      .responses
                      .sdk_response_id
-@@ -551,6 +744,9 @@ impl Control {
+@@ -551,6 +768,9 @@ impl Control {
                  }
                  self.responses.sdk_response_id = Some(id);
                  self.responses.mark_started();
@@ -396,7 +436,7 @@ index f8690a24f8..f5183bb91d 100644
              }
              "response.output_item.done" => {
                  self.require_ready()?;
-@@ -564,7 +760,11 @@ impl Control {
+@@ -564,7 +784,11 @@ impl Control {
                          call_id: string(item, "call_id")?,
                          item_id: string(item, "id")?,
                          name: string(item, "name")?,
@@ -409,7 +449,7 @@ index f8690a24f8..f5183bb91d 100644
                          response_id: Some(string(&event, "response_id")?),
                      })?;
                  }
-@@ -576,6 +776,25 @@ impl Control {
+@@ -576,6 +800,25 @@ impl Control {
                  if self.responses.sdk_response_id.as_ref() != Some(&id) {
                      return Err("Completed response does not own the active response".into());
                  }
@@ -435,7 +475,7 @@ index f8690a24f8..f5183bb91d 100644
                  let output = response
                      .get("output")
                      .and_then(Value::as_array)
-@@ -591,7 +810,11 @@ impl Control {
+@@ -591,7 +834,11 @@ impl Control {
                              call_id: string(item, "call_id")?,
                              item_id: string(item, "id")?,
                              name: string(item, "name")?,
@@ -448,7 +488,7 @@ index f8690a24f8..f5183bb91d 100644
                              response_id: Some(id.clone()),
                          };
                          if ids.contains(&request.call_id) {
-@@ -609,17 +832,8 @@ impl Control {
+@@ -609,17 +856,8 @@ impl Control {
                  }
                  self.responses.sdk_response_id = None;
                  let deferred_create = self.responses.mark_finished().is_some();
@@ -467,7 +507,7 @@ index f8690a24f8..f5183bb91d 100644
                      for call_id in ids {
                          let call = self.calls.get_mut(&call_id).ok_or("Missing function")?;
                          if !call.claim.claim() {
-@@ -645,6 +859,7 @@ impl Control {
+@@ -645,6 +883,7 @@ impl Control {
                  if deferred_create {
                      self.request_response(effects);
                  }
@@ -475,7 +515,7 @@ index f8690a24f8..f5183bb91d 100644
              }
              _ => {}
          }
-@@ -656,7 +871,6 @@ impl Control {
+@@ -656,7 +895,6 @@ impl Control {
          if !self.tools.contains_key(&request.name) {
              return Err("Function is outside accepted configuration".into());
          }
@@ -483,7 +523,7 @@ index f8690a24f8..f5183bb91d 100644
          if let Some(old) = self.calls.get(&request.call_id) {
              if old.fingerprint != fingerprint || old.request.response_id != request.response_id {
                  return Err("Realtime function identity changed".into());
-@@ -690,8 +904,50 @@ impl Control {
+@@ -690,8 +928,50 @@ impl Control {
          self.calls.get_mut(call_id).ok_or("Unknown function")?.phase = CallPhase::Publishing(id);
          Ok(())
      }
@@ -535,7 +575,7 @@ index f8690a24f8..f5183bb91d 100644
              return;
          }
          let ready: Vec<_> = self
-@@ -714,6 +970,7 @@ impl Control {
+@@ -714,6 +994,7 @@ impl Control {
              }
              self.responses.mark_started();
              self.batches.get_mut(&id).unwrap().continued = true;
@@ -543,7 +583,7 @@ index f8690a24f8..f5183bb91d 100644
              self.send(json!({"type":"response.create"}), effects);
          }
      }
-@@ -808,6 +1065,72 @@ mod tests {
+@@ -808,6 +1089,72 @@ mod tests {
              json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
          )
      }
@@ -616,7 +656,7 @@ index f8690a24f8..f5183bb91d 100644
      #[test]
      fn queued_text_waits_for_batch_approval_and_physical_output() {
          for before_completion in [true, false] {
-@@ -866,7 +1189,6 @@ mod tests {
+@@ -866,7 +1213,6 @@ mod tests {
              json!({"type":"response.done","response":{"id":"response-1","status":"cancelled","output":[]}}),
              json!({"type":"response.done","response":{"id":"response-1","status":"failed","output":[]}}),
              json!({"type":"response.done","response":{"id":"response-1","status":"incomplete","output":[]}}),
@@ -624,7 +664,7 @@ index f8690a24f8..f5183bb91d 100644
              json!({"type":"error"}),
              json!({"type":"session.updated","session":{}}),
          ] {
-@@ -1076,14 +1398,31 @@ mod tests {
+@@ -1076,14 +1422,31 @@ mod tests {
          );
      }
      #[test]
@@ -664,7 +704,7 @@ index f8690a24f8..f5183bb91d 100644
              let mut control = ready();
              request(&mut control);
              let response = command(
-@@ -1142,29 +1481,251 @@ mod tests {
+@@ -1142,29 +1505,251 @@ mod tests {
          }
      }
      #[test]
@@ -882,7 +922,7 @@ index f8690a24f8..f5183bb91d 100644
 -                command(&mut control, speech.clone())["error"],
 -                "Portable voice interruption requires a new generation"
 +                stopped["effects"][0]["event"],
-+                json!({"type":"response.cancel","response_id":id})
++                json!({"type":"response.cancel","response_id":id,"event_id":format!("cancel_{}",index+1)})
              );
 -            assert!(control.calls.is_empty());
 +            assert!(
@@ -928,7 +968,7 @@ index f8690a24f8..f5183bb91d 100644
      #[test]
      fn duplicate_accepted_names_cannot_replace_a_declared_tool() {
          let mut control = Control::default();
-@@ -1188,6 +1749,95 @@ mod tests {
+@@ -1188,6 +1773,95 @@ mod tests {
          );
      }
      #[test]

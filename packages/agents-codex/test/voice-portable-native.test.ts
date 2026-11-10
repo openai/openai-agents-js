@@ -561,6 +561,304 @@ describe.runIf(enabled)('portable Rust control', () => {
     ).toThrow('already retired');
   });
 
+  async function cancellationSession(older = true) {
+    const result = Promise.withResolvers<string>();
+    const frames: {
+      type: string;
+      event_id?: string;
+      response_id?: string;
+      item?: { type?: string };
+    }[] = [];
+    const signals: AbortSignal[] = [];
+    const onError = vi.fn();
+    const close = vi.fn();
+    const observed: string[] = [];
+    const execute = vi.fn(
+      async (_args: Record<string, unknown>, signal: AbortSignal) => {
+        signals.push(signal);
+        return result.promise;
+      },
+    );
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close,
+      },
+      {
+        model: 'test-realtime',
+        instructions: 'Help.',
+        tools: [
+          {
+            name: 'lookup',
+            description: 'Lookup',
+            parameters: { type: 'object' },
+            needsApproval: false,
+            execute,
+          },
+        ],
+        onError,
+        onEvent(event) {
+          observed.push((event as { type: string }).type);
+        },
+      },
+    );
+    await session.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (older) {
+      session.receive({ type: 'response.created', response: { id: 'older' } });
+      session.receive({
+        type: 'response.done',
+        response: { id: 'older', status: 'completed', output: [item] },
+      });
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    }
+    return {
+      session,
+      result,
+      frames,
+      signals,
+      onError,
+      close,
+      observed,
+      execute,
+    };
+  }
+  it.each(
+    ['before-terminal', 'after-terminal', 'later-active'].flatMap((timing) =>
+      [true, false].map((code) => ({ timing, code })),
+    ),
+  )(
+    'preserves admitted work for a correlated cancellation error timing=$timing code=$code',
+    async ({ timing, code }) => {
+      const f = await cancellationSession();
+      try {
+        f.session.receive({
+          type: 'response.created',
+          response: { id: 'cancelled' },
+        });
+        f.session.interrupt();
+        await vi.waitFor(() =>
+          expect(f.frames.some((x) => x.type === 'response.cancel')).toBe(true),
+        );
+        const cancel = f.frames.find((x) => x.type === 'response.cancel')!;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (timing !== 'before-terminal') {
+          f.session.receive({
+            type: 'response.done',
+            response: { id: 'cancelled', status: 'completed', output: [] },
+          });
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        if (timing === 'later-active')
+          f.session.receive({
+            type: 'response.created',
+            response: { id: 'fresh' },
+          });
+        f.session.receive({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            ...(code ? { code: 'response_cancel_not_active' } : {}),
+            event_id: cancel.event_id,
+            message: 'No active response to cancel.',
+          },
+        });
+        expect(f.onError).not.toHaveBeenCalled();
+        expect(f.close).not.toHaveBeenCalled();
+        expect(f.signals[0].aborted).toBe(false);
+        expect(f.observed).toContain('error');
+        expect(cancel.event_id).toMatch(/^cancel_[1-9][0-9]*$/);
+        if (timing === 'before-terminal')
+          f.session.receive({
+            type: 'response.done',
+            response: { id: 'cancelled', status: 'completed', output: [] },
+          });
+        if (timing === 'later-active')
+          f.session.receive({
+            type: 'response.done',
+            response: { id: 'fresh', status: 'completed', output: [] },
+          });
+        f.result.resolve('Still authorized.');
+        await vi.waitFor(() =>
+          expect(
+            f.frames.filter((x) => x.type === 'response.create'),
+          ).toHaveLength(1),
+        );
+        expect(
+          f.frames.filter((x) => x.item?.type === 'function_call_output'),
+        ).toHaveLength(1);
+        expect(f.execute).toHaveBeenCalledOnce();
+        f.session.sendText('Still usable.');
+      } finally {
+        f.result.resolve('Cleanup.');
+        await f.session.close();
+      }
+    },
+  );
+  it.each([
+    'future',
+    'foreign',
+    'leading-zero',
+    'plus',
+    'missing',
+    'server',
+    'unknown-type',
+    'zero',
+  ])(
+    'retains fatal provider-error fences for %s cancellation metadata',
+    async (kind) => {
+      const f = await cancellationSession();
+      try {
+        f.session.receive({
+          type: 'response.created',
+          response: { id: 'cancelled' },
+        });
+        f.session.interrupt();
+        await vi.waitFor(() =>
+          expect(f.frames.some((x) => x.type === 'response.cancel')).toBe(true),
+        );
+        const cancel = f.frames.find((x) => x.type === 'response.cancel')!;
+        const event_id =
+          kind === 'future'
+            ? 'cancel_2'
+            : kind === 'foreign'
+              ? 'foreign_1'
+              : kind === 'leading-zero'
+                ? 'cancel_01'
+                : kind === 'plus'
+                  ? 'cancel_+1'
+                  : kind === 'zero'
+                    ? 'cancel_0'
+                    : kind === 'missing'
+                      ? undefined
+                      : cancel.event_id;
+        f.session.receive({
+          type: 'error',
+          error: {
+            type:
+              kind === 'server'
+                ? 'server_error'
+                : kind === 'unknown-type'
+                  ? 'unknown_error'
+                  : 'invalid_request_error',
+            event_id,
+            code: 'response_cancel_not_active',
+            message: 'Provider error.',
+          },
+        });
+        expect(f.onError).toHaveBeenCalledOnce();
+        expect(f.close).toHaveBeenCalledOnce();
+        expect(f.signals[0].aborted).toBe(true);
+        expect(() => f.session.sendText('Blocked.')).toThrow('closed');
+      } finally {
+        f.result.resolve('Cleanup.');
+        await f.session.close();
+      }
+    },
+  );
+  it.each([false, true])(
+    'correlates cancel-on-created errors after terminal=%s',
+    async (after) => {
+      const f = await cancellationSession(false);
+      try {
+        f.session.requestResponse();
+        f.session.interrupt();
+        f.session.receive({
+          type: 'response.created',
+          response: { id: 'pending' },
+        });
+        await vi.waitFor(() =>
+          expect(f.frames.some((x) => x.type === 'response.cancel')).toBe(true),
+        );
+        const cancel = f.frames.find((x) => x.type === 'response.cancel')!;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (after)
+          f.session.receive({
+            type: 'response.done',
+            response: { id: 'pending', status: 'completed', output: [] },
+          });
+        f.session.receive({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            event_id: cancel.event_id,
+            code: 'response_cancel_not_active',
+          },
+        });
+        expect(f.onError).not.toHaveBeenCalled();
+        expect(f.close).not.toHaveBeenCalled();
+        if (!after)
+          f.session.receive({
+            type: 'response.done',
+            response: { id: 'pending', status: 'completed', output: [] },
+          });
+        f.session.requestResponse();
+        await vi.waitFor(() =>
+          expect(
+            f.frames.filter((x) => x.type === 'response.create'),
+          ).toHaveLength(2),
+        );
+      } finally {
+        f.result.resolve('Cleanup.');
+        await f.session.close();
+      }
+    },
+  );
+  it('retains cancellation-error correlation beyond the terminal response window without a lifetime ceiling', async () => {
+    const f = await cancellationSession(false);
+    let first: string | undefined;
+    try {
+      for (let index = 0; index < 300; index++) {
+        const id = `cancelled-${index}`;
+        f.session.receive({ type: 'response.created', response: { id } });
+        f.session.interrupt();
+        await vi.waitFor(
+          () =>
+            expect(
+              f.frames.filter((x) => x.type === 'response.cancel'),
+            ).toHaveLength(index + 1),
+          { interval: 1 },
+        );
+        first ??= f.frames.find((x) => x.type === 'response.cancel')?.event_id;
+        f.session.receive({
+          type: 'response.done',
+          response: { id, status: 'completed', output: [] },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      f.session.receive({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          event_id: first,
+          code: 'response_cancel_not_active',
+        },
+      });
+      expect(f.onError).not.toHaveBeenCalled();
+      expect(f.close).not.toHaveBeenCalled();
+      f.session.requestResponse();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter((x) => x.type === 'response.create'),
+        ).toHaveLength(1),
+      );
+    } finally {
+      f.result.resolve('Cleanup.');
+      await f.session.close();
+    }
+  });
+
   async function queuedResponseSession(
     automatic = false,
     execute?: () => Promise<string>,
@@ -1866,6 +2164,7 @@ describe.runIf(enabled)('portable Rust control', () => {
         expect(frames).toContainEqual({
           type: 'response.cancel',
           response_id: 'pending',
+          event_id: 'cancel_1',
         }),
       );
       session.receive({
