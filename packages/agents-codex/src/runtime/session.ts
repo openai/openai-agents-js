@@ -1,3 +1,4 @@
+import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
   type NativeModel,
@@ -258,6 +259,7 @@ import {
   toolDeclarationIdentity,
   type ToolSelector,
   invokeFunctionTool,
+  registerToolSessionOwner,
   outputOf,
   type ToolResponse,
   type SessionTool,
@@ -1860,6 +1862,7 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly childCallbacks = new ChildCallbacks(
     () => this.observations.currentSequence,
   );
+  private readonly toolSessionOwner = Object.freeze({});
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -8407,6 +8410,7 @@ export class Session<OutputT = string, Context = unknown> {
     const check = (): boolean => {
       signal.throwIfAborted();
       admission?.check();
+      if (owner.failure !== undefined) throw owner.failure;
       try {
         return native._check_python_tool(encodeReceipt(msg));
       } catch (error) {
@@ -8443,6 +8447,7 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
+      registerToolSessionOwner(context, this.toolSessionOwner);
       const identity: ToolIdentity = {
         callId: context.callId,
         toolName: tool.name,
@@ -12317,6 +12322,18 @@ export class Session<OutputT = string, Context = unknown> {
             } finally {
               this.environmentDisposalFinished = true;
             }
+          }
+          const computerScope = {
+            session: this,
+            active: true,
+            parent: toolInvocation.getStore(),
+          };
+          try {
+            await toolInvocation.run(computerScope, () =>
+              closeComputerResources(this.toolSessionOwner),
+            );
+          } finally {
+            computerScope.active = false;
           }
           await this.options.onClose?.();
         } finally {

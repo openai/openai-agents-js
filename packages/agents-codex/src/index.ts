@@ -371,6 +371,15 @@ export type {
   ModelRequest,
   ModelResponse,
 } from './runtime/models';
+export { computerTool, ComputerSafetyError } from './runtime/computer';
+export type {
+  Computer,
+  ComputerProvider,
+  ComputerAction,
+  ComputerButton,
+  ComputerEnvironment,
+  ComputerToolOptions,
+} from './runtime/computer';
 export type {
   NativeRealtimeUsage,
   NativeRealtimeUsageCounters,

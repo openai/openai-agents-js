@@ -934,7 +934,8 @@ function webAction(raw: JsonObject): WebSearchAction | null {
 function reconciliationOutcome(raw: JsonObject) {
   if (
     raw.type !== 'function_call_output' &&
-    raw.type !== 'custom_tool_call_output'
+    raw.type !== 'custom_tool_call_output' &&
+    raw.type !== 'computer_call_output'
   )
     return undefined;
   const kinds = object(
@@ -948,8 +949,12 @@ function reconciliationOutcome(raw: JsonObject) {
 function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   const output =
     raw.type === 'function_call_output' ||
-    raw.type === 'custom_tool_call_output';
-  const call = raw.type === 'function_call' || raw.type === 'custom_tool_call';
+    raw.type === 'custom_tool_call_output' ||
+    raw.type === 'computer_call_output';
+  const call =
+    raw.type === 'function_call' ||
+    raw.type === 'custom_tool_call' ||
+    raw.type === 'computer_call';
   const id =
     text(raw.id) ??
     ((call || output) && typeof raw.call_id === 'string'
@@ -985,13 +990,25 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       summary: objects(raw.summary) as { type: 'summary_text'; text: string }[],
       status: null,
     };
-  if (call && typeof raw.call_id === 'string' && typeof raw.name === 'string')
+  if (
+    call &&
+    typeof raw.call_id === 'string' &&
+    (raw.type === 'computer_call' || typeof raw.name === 'string')
+  )
     return {
       ...common,
       type: 'function_call',
       callId: raw.call_id,
-      name: raw.namespace ? `${raw.namespace}.${raw.name}` : raw.name,
-      arguments: raw.arguments ?? raw.input ?? null,
+      name:
+        raw.type === 'computer_call'
+          ? 'computer'
+          : raw.namespace
+            ? `${raw.namespace}.${raw.name}`
+            : String(raw.name),
+      arguments:
+        raw.type === 'computer_call'
+          ? raw
+          : (raw.arguments ?? raw.input ?? null),
       status: 'in_progress',
     };
   if (output && typeof raw.call_id === 'string') {
@@ -1001,7 +1018,13 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       type: 'function_call_output',
       callId: raw.call_id,
       status: reconciliation === 'not_applied' ? 'failed' : 'completed',
-      output: raw.output ?? null,
+      output:
+        raw.type === 'computer_call_output'
+          ? {
+              output: raw.output ?? null,
+              acknowledged_safety_checks: raw.acknowledged_safety_checks ?? [],
+            }
+          : (raw.output ?? null),
       error: null,
       ...(reconciliation === undefined ? {} : { reconciliation }),
     };
@@ -1451,9 +1474,11 @@ export function projectHistory(
       if (
         !turn &&
         aborted &&
-        ['function_call_output', 'custom_tool_call_output'].includes(
-          String(payload.type),
-        ) &&
+        [
+          'function_call_output',
+          'custom_tool_call_output',
+          'computer_call_output',
+        ].includes(String(payload.type)) &&
         metadata?.turn_id === aborted &&
         latestCalls.has(JSON.stringify([aborted, payload.call_id]))
       )
@@ -1708,10 +1733,13 @@ export function projectHistory(
       cursorIds.add(item.id);
     }
     if (item.type === 'function_call') {
+      const original = item.data;
+      const computerCall = original.type === 'computer_call';
+      if (computerCall) item.arguments = original;
       const output = occurrence.output?.item;
       if (output?.type === 'function_call_output' && output.reconciliation)
         item.status = output.status;
-      else if (!occurrence.native) {
+      else if (!occurrence.native || computerCall) {
         const terminal = turns.get(item.turnId)?.status;
         item.status =
           output?.type === 'function_call_output'

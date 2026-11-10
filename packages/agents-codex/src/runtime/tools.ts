@@ -101,6 +101,32 @@ export interface ToolCallContext<Context = unknown> {
   readonly callId: string;
   readonly signal: AbortSignal;
 }
+const toolSessionOwners = new WeakMap<object, object>();
+
+/** @internal Bind SDK-issued callback contexts to their opaque Session identity. */
+export function registerToolSessionOwner(
+  context: ToolCallContext,
+  owner: object,
+): void {
+  toolSessionOwners.set(context, owner);
+}
+
+// Private extension hook; retained in declarations for the sibling package.
+export function _nativeToolSessionOwner(context: ToolCallContext): object {
+  const owner = toolSessionOwners.get(context);
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
+  return owner;
+}
+
+function inheritToolSessionOwner<T extends ToolCallContext>(
+  context: T,
+  source: ToolCallContext,
+): T {
+  const owner = toolSessionOwners.get(source);
+  if (owner) toolSessionOwners.set(context, owner);
+  return context;
+}
+
 export interface ToolContext<
   Context = unknown,
 > extends ToolCallContext<Context> {
@@ -141,6 +167,7 @@ export interface ToolDeclaration {
 }
 
 const prepareInvocation = Symbol('function tool binding');
+const computerDeclaration = Symbol('native computer declaration');
 type Invocation<Context> = (
   args: JsonValue,
   context: ToolCallContext<Context>,
@@ -163,6 +190,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly kind?: 'function';
+  readonly [computerDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
@@ -176,6 +204,33 @@ export function toolIdentity(tool: SessionTool): {
   namespace: string;
 } {
   return { name: tool.name, namespace: toolNamespace(tool) ?? 'functions' };
+}
+
+/** @internal Bind a real computer declaration to the current callback owner. */
+export function createComputerTool<Context>(
+  declaration: JsonObject,
+  execute: (
+    args: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+    reportFailure: (error: Error) => void,
+  ) => Promise<ToolResponse>,
+): FunctionTool<Context> {
+  return Object.freeze({
+    name: 'computer',
+    description: "Operate the application's computer",
+    parameters: {},
+    [computerDeclaration]: declaration,
+    async [prepareInvocation](
+      args: JsonValue,
+      context: ToolCallContext<Context>,
+      reportFailure: (error: Error) => void,
+      admit: () => void,
+    ) {
+      admit();
+      return execute(args, context, admit, reportFailure);
+    },
+  });
 }
 
 /** @internal Bind one borrowed MCP tool to the existing managed callback owner. */
@@ -396,7 +451,11 @@ export function tool<
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
       try {
         value = await invokeWithTimeout(
-          (signal) => execute(parsed, { ...callContext, signal }),
+          (signal) =>
+            execute(
+              parsed,
+              inheritToolSessionOwner({ ...callContext, signal }, context),
+            ),
           context.signal,
           callbackTimeout,
           name,
@@ -525,6 +584,19 @@ export function captureTools(
     if (names.has(key))
       throw new TypeError(`Duplicate tool ${identity.namespace}.${tool.name}`);
     names.add(key);
+    if (tool.kind !== 'manual' && tool[computerDeclaration]) {
+      if (
+        tool.name !== 'computer' ||
+        tool.namespace !== undefined ||
+        tool.deferLoading ||
+        tool.finishTurn ||
+        tool.callbackTimeout !== undefined
+      )
+        throw new TypeError(
+          'Computer declarations retain their native identity and policies',
+        );
+      return losslessJsonObjectSchema.parse(tool[computerDeclaration]);
+    }
     const spec = {
       type: 'function',
       name: tool.name,

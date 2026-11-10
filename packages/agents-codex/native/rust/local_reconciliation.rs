@@ -15,6 +15,152 @@ use serde::{Deserialize, Serialize};
 const APPLIED: &str = "sdk_reconciliation.applied";
 const NOT_APPLIED: &str = "sdk_reconciliation.not_applied";
 
+pub(crate) fn output_identity(item: &ResponseItem) -> Option<(&str, Option<&str>)> {
+    let call = match item {
+        ResponseItem::FunctionCallOutput {
+            call_id: Some(call),
+            ..
+        }
+        | ResponseItem::CustomToolCallOutput { call_id: call, .. }
+        | ResponseItem::ComputerCallOutput { call_id: call, .. } => call,
+        _ => return None,
+    };
+    Some((call, item.turn_id()))
+}
+
+pub(crate) fn output_matches_invocation(call: &ResponseItem, result: &ResponseItem) -> bool {
+    match (call, result) {
+        (
+            ResponseItem::FunctionCall {
+                call_id: expected, ..
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: Some(actual),
+                ..
+            },
+        )
+        | (
+            ResponseItem::CustomToolCall {
+                call_id: expected, ..
+            },
+            ResponseItem::CustomToolCallOutput {
+                call_id: actual, ..
+            },
+        )
+        | (
+            ResponseItem::ComputerCall {
+                call_id: expected, ..
+            },
+            ResponseItem::ComputerCallOutput {
+                call_id: actual, ..
+            },
+        ) => expected == actual,
+        _ => false,
+    }
+}
+
+pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> bool {
+    match (left, right) {
+        (
+            ResponseItem::FunctionCallOutput { output: left, .. },
+            ResponseItem::FunctionCallOutput { output: right, .. },
+        )
+        | (
+            ResponseItem::CustomToolCallOutput { output: left, .. },
+            ResponseItem::CustomToolCallOutput { output: right, .. },
+        ) => serde_json::to_value(left)
+            .ok()
+            .zip(serde_json::to_value(right).ok())
+            .is_some_and(|(left, right)| left == right),
+        (
+            ResponseItem::ComputerCallOutput {
+                output: left,
+                acknowledged_safety_checks: left_checks,
+                ..
+            },
+            ResponseItem::ComputerCallOutput {
+                output: right,
+                acknowledged_safety_checks: right_checks,
+                ..
+            },
+        ) => left == right && left_checks == right_checks,
+        _ => false,
+    }
+}
+
+pub(crate) fn computer_receipt(
+    invocation: &ResponseItem,
+    response: codex_protocol::dynamic_tools::DynamicToolResponse,
+    turn: &str,
+) -> Result<ResponseItem> {
+    use codex_tools::ToolOutput as _;
+    let ResponseItem::ComputerCall { call_id, .. } = invocation else {
+        anyhow::bail!("Computer reconciliation requires its original call");
+    };
+    let arguments = serde_json::to_string(invocation)
+        .map_err(|_| anyhow::anyhow!("Invalid original computer call"))?;
+    let output = codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Computer reconciliation requires a valid screenshot and safety acknowledgements"
+            )
+        })?;
+    let mut item: ResponseItem = output
+        .to_response_item(call_id, &codex_tools::ToolPayload::Computer { arguments })
+        .into();
+    let ResponseItem::ComputerCallOutput {
+        internal_chat_message_metadata_passthrough,
+        ..
+    } = &mut item
+    else {
+        unreachable!("validated computer output has the native computer shape");
+    };
+    *internal_chat_message_metadata_passthrough = Some(InternalChatMessageMetadataPassthrough {
+        turn_id: Some(turn.to_owned()),
+        ..Default::default()
+    });
+    Ok(item)
+}
+
+fn computer_reconciliation(
+    invocation: &ResponseItem,
+    result: &str,
+    turn: &str,
+) -> Result<ResponseItem> {
+    computer_receipt(
+        invocation,
+        codex_protocol::dynamic_tools::DynamicToolResponse {
+            content_items: vec![
+                codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                    text: result.to_owned(),
+                },
+            ],
+            success: true,
+        },
+        turn,
+    )
+}
+
+fn computer_result_matches(item: &ResponseItem, result: &str) -> bool {
+    let ResponseItem::ComputerCallOutput {
+        output,
+        acknowledged_safety_checks,
+        ..
+    } = item
+    else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(result) else {
+        return false;
+    };
+    value.get("output") == Some(output)
+        && match value.get("acknowledged_safety_checks") {
+            Some(serde_json::Value::Array(checks)) => checks == acknowledged_safety_checks,
+            None => acknowledged_safety_checks.is_empty(),
+            _ => false,
+        }
+}
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Outcome {
@@ -76,30 +222,36 @@ fn uncertain_call(
     turn_id: &str,
     call_id: &str,
     invocation: &ResponseItem,
-) -> UncertainCall {
+) -> Result<UncertainCall> {
     let (name, namespace, arguments) = match invocation {
         ResponseItem::FunctionCall {
             name,
             namespace,
             arguments,
             ..
-        } => (name, namespace, arguments),
+        } => (name.clone(), namespace.clone(), arguments.clone()),
         ResponseItem::CustomToolCall {
             name,
             namespace,
             input,
             ..
-        } => (name, namespace, input),
+        } => (name.clone(), namespace.clone(), input.clone()),
+        ResponseItem::ComputerCall { .. } => (
+            "computer".to_owned(),
+            None,
+            serde_json::to_string(invocation)
+                .map_err(|_| anyhow::anyhow!("Invalid recorded computer invocation"))?,
+        ),
         _ => unreachable!("the call index only retains supported invocations"),
     };
-    UncertainCall {
+    Ok(UncertainCall {
         thread_id,
         turn_id: turn_id.to_owned(),
         call_id: call_id.to_owned(),
-        name: name.clone(),
-        namespace: namespace.clone(),
-        arguments: arguments.clone(),
-    }
+        name,
+        namespace,
+        arguments,
+    })
 }
 
 struct Call<'a> {
@@ -132,6 +284,10 @@ fn tag(item: &ResponseItem) -> Option<&str> {
         | ResponseItem::CustomToolCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
+        }
+        | ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
         } => internal_chat_message_metadata_passthrough.as_ref()?,
         _ => return None,
     };
@@ -153,7 +309,8 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
         let owner = item.turn_id().map(str::to_owned).or_else(|| turn.clone());
         match item {
             ResponseItem::FunctionCall { call_id, .. }
-            | ResponseItem::CustomToolCall { call_id, .. } => {
+            | ResponseItem::CustomToolCall { call_id, .. }
+            | ResponseItem::ComputerCall { call_id, .. } => {
                 ensure!(
                     calls
                         .insert(
@@ -168,9 +325,13 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
                 );
             }
             _ => {
-                if let Some((call_id, _)) = output(item)
+                if let Some((call_id, _)) = output_identity(item)
                     && let Some(entry) = calls.get_mut(&(owner, call_id.to_owned()))
                 {
+                    ensure!(
+                        output_matches_invocation(entry.invocation, item),
+                        "tool output kind does not match recorded invocation"
+                    );
                     ensure!(
                         entry
                             .output
@@ -198,10 +359,22 @@ fn retained_result(item: &ResponseItem, receipt: &Receipt) -> bool {
     tag(item) == Some(receipt.outcome.tag())
         && output(item).is_some_and(|(_, payload)| {
             matches!(&payload.body, FunctionCallOutputBody::Text(text) if text == &receipt.result)
-        })
+        }) || tag(item) == Some(receipt.outcome.tag()) && computer_result_matches(item, &receipt.result)
 }
 
-fn response(invocation: &ResponseItem, receipt: &Receipt) -> RolloutItem {
+fn response(invocation: &ResponseItem, receipt: &Receipt) -> Result<RolloutItem> {
+    if matches!(invocation, ResponseItem::ComputerCall { .. }) {
+        let mut result = computer_reconciliation(invocation, &receipt.result, &receipt.turn_id)?;
+        if let ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = &mut result
+        {
+            metadata.content_item_kinds =
+                Some(vec![ContentItemKind(receipt.outcome.tag().to_owned())]);
+        }
+        return Ok(RolloutItem::ResponseItem(ResponseItemEnvelope::new(result)));
+    }
     let output = FunctionCallOutputPayload::from_text(receipt.result.clone());
     let metadata = Some(InternalChatMessageMetadataPassthrough {
         turn_id: Some(receipt.turn_id.clone()),
@@ -228,7 +401,7 @@ fn response(invocation: &ResponseItem, receipt: &Receipt) -> RolloutItem {
         },
         _ => unreachable!("the call index only retains supported invocations"),
     };
-    RolloutItem::ResponseItem(ResponseItemEnvelope::new(result))
+    Ok(RolloutItem::ResponseItem(ResponseItemEnvelope::new(result)))
 }
 
 #[derive(Default)]
@@ -268,7 +441,7 @@ pub(crate) fn plan(
                 .map(|((_, call_id), turn, invocation)| {
                     uncertain_call(thread_id, turn, call_id, invocation)
                 })
-                .collect(),
+                .collect::<Result<Vec<_>>>()?,
             history: Vec::new(),
         }
         .into());
@@ -287,6 +460,9 @@ pub(crate) fn plan(
         let call = calls
             .get(&key)
             .context("reconciliation does not identify one retained invocation")?;
+        if matches!(call.invocation, ResponseItem::ComputerCall { .. }) {
+            computer_reconciliation(call.invocation, &receipt.result, &receipt.turn_id)?;
+        }
         if let Some(existing) = call.output {
             ensure!(
                 retained_result(existing, receipt),
@@ -301,7 +477,7 @@ pub(crate) fn plan(
                 .is_some_and(|call| call.invocation == invocation && call.output.is_none()),
             "reconciliation requires the original invocation in retained model context"
         );
-        plan.append.push(response(invocation, receipt));
+        plan.append.push(response(invocation, receipt)?);
         plan.protected_ids.insert(receipt.call_id.clone());
     }
     ensure!(
@@ -375,5 +551,132 @@ mod tests {
         let reopened = plan(thread_id, &history, &history, &receipts).unwrap();
         assert!(reopened.append.is_empty());
         assert_eq!(reopened.protected_ids, HashSet::from(["one".to_owned()]));
+    }
+}
+
+#[cfg(test)]
+mod computer_recovery_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn invocation() -> ResponseItem {
+        serde_json::from_value(json!({
+            "type": "computer_call", "call_id": "computer-1",
+            "actions": [{"type": "click", "x": 1, "y": 2}],
+            "pending_safety_checks": [{"id": "check-1", "code": "confirm", "message": "Confirm the action"}],
+            "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"}
+        })).unwrap()
+    }
+
+    fn screenshot() -> String {
+        json!({
+            "output": {"type": "computer_screenshot", "image_url": "data:image/png;base64,AA=="},
+            "acknowledged_safety_checks": [{"id": "check-1", "code": "confirm", "message": "Confirm the action"}]
+        }).to_string()
+    }
+
+    #[test]
+    fn computer_receipt_preserves_native_kind_and_exact_turn_call_identity() {
+        let call = invocation();
+        let result = computer_reconciliation(&call, &screenshot(), "turn-1").unwrap();
+        assert_eq!(
+            output_identity(&result),
+            Some(("computer-1", Some("turn-1")))
+        );
+        assert!(output_matches_invocation(&call, &result));
+        assert!(
+            matches!(&result, ResponseItem::ComputerCallOutput { acknowledged_safety_checks, .. } if acknowledged_safety_checks.len() == 1)
+        );
+        let function: ResponseItem = serde_json::from_value(json!({
+            "type": "function_call_output", "call_id": "computer-1", "output": screenshot()
+        }))
+        .unwrap();
+        assert!(!output_matches_invocation(&call, &function));
+        assert!(!computer_result_matches(&function, &screenshot()));
+    }
+
+    #[test]
+    fn computer_reconciliation_requires_real_screenshot_and_complete_original_checks() {
+        let call = invocation();
+        for invalid in [
+            "verified absent".to_owned(),
+            json!({"output":{"type":"computer_screenshot","image_url":"data:image/png;base64,AA=="}}).to_string(),
+            json!({"output":{"type":"computer_screenshot","image_url":"data:image/png;base64,AA=="},"acknowledged_safety_checks":[{"id":"check-1"}]}).to_string(),
+        ] {
+            assert!(computer_reconciliation(&call, &invalid, "turn-1").is_err());
+        }
+        assert!(computer_reconciliation(&call, &screenshot(), "turn-1").is_ok());
+    }
+
+    #[test]
+    fn failed_or_invalid_computer_result_cannot_leak_payload_in_receipt_errors() {
+        let call = invocation();
+        let secret = "SYNTHETIC_CALLBACK_SECRET";
+        let response = codex_protocol::dynamic_tools::DynamicToolResponse {
+            content_items: vec![
+                codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                    text: secret.to_owned(),
+                },
+            ],
+            success: false,
+        };
+        let error = computer_receipt(&call, response, "turn-1").unwrap_err();
+        assert!(!format!("{error:?}").contains(secret));
+    }
+    #[test]
+    fn computer_unknown_effects_require_atomic_application_receipts_and_never_function_outputs() {
+        let id = ThreadId::new();
+        let history = vec![RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+            invocation(),
+        ))];
+        assert!(validate_settled(&history).is_err());
+        let missing = plan(id, &history, &history, &[]).err().unwrap();
+        let required = missing.downcast_ref::<RecoveryRequired>().unwrap();
+        assert_eq!(required.calls.len(), 1);
+        assert_eq!(required.calls[0].name, "computer");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&required.calls[0].arguments).unwrap()["pending_safety_checks"]
+                [0]["id"],
+            "check-1"
+        );
+        let make_receipt = |result| Receipt {
+            thread_id: id,
+            turn_id: "turn-1".into(),
+            call_id: "computer-1".into(),
+            outcome: Outcome::NotApplied,
+            result,
+        };
+        let unchanged = serde_json::to_value(&history).unwrap();
+        assert!(
+            plan(
+                id,
+                &history,
+                &history,
+                &[make_receipt("not applied".into())]
+            )
+            .is_err()
+        );
+        assert_eq!(serde_json::to_value(&history).unwrap(), unchanged);
+        let prepared = plan(id, &history, &history, &[make_receipt(screenshot())]).unwrap();
+        assert_eq!(prepared.append.len(), 1);
+        assert!(prepared.protected_ids.contains("computer-1"));
+        let mut settled = history.clone();
+        settled.extend(prepared.append);
+        validate_settled(&settled).unwrap();
+        assert!(
+            plan(id, &settled, &settled, &[make_receipt(screenshot())])
+                .unwrap()
+                .append
+                .is_empty()
+        );
+        let mut counterfeit = history;
+        counterfeit.push(RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+            serde_json::from_value(json!({
+                "type":"function_call_output", "call_id":"computer-1", "output":"forged completion",
+                "internal_chat_message_metadata_passthrough":{"turn_id":"turn-1"}
+            }))
+            .unwrap(),
+        )));
+        assert!(validate_settled(&counterfeit).is_err());
     }
 }

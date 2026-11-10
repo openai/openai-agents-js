@@ -61,10 +61,10 @@ fn backend_error(_: impl std::fmt::Display) -> ThreadStoreError {
 }
 fn identities(
     items: &[RolloutItem],
-) -> (
+) -> ThreadStoreResult<(
     HashMap<(String, String), ResponseItem>,
     HashMap<(String, String), ResponseItem>,
-) {
+)> {
     let mut turn = String::new();
     let mut calls = HashMap::new();
     let mut outputs = HashMap::new();
@@ -73,27 +73,37 @@ fn identities(
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => turn = start.turn_id.clone(),
             RolloutItem::ResponseItem(row) => match &row.item {
                 ResponseItem::FunctionCall { call_id, .. }
-                | ResponseItem::CustomToolCall { call_id, .. } => {
-                    calls.insert((turn.clone(), call_id.clone()), row.item.clone());
+                | ResponseItem::CustomToolCall { call_id, .. }
+                | ResponseItem::ComputerCall { call_id, .. } => {
+                    let identity = (
+                        row.item.turn_id().unwrap_or(&turn).to_owned(),
+                        call_id.clone(),
+                    );
+                    if let Some(previous) = calls.get(&identity)
+                        && (matches!(previous, ResponseItem::ComputerCall { .. })
+                            || matches!(row.item, ResponseItem::ComputerCall { .. }))
+                    {
+                        return Err(error("ambiguous original computer call identity"));
+                    }
+                    calls.insert(identity, row.item.clone());
                 }
-                ResponseItem::FunctionCallOutput {
-                    call_id: Some(call_id),
-                    internal_chat_message_metadata_passthrough,
-                    ..
-                } => {
-                    let owner = internal_chat_message_metadata_passthrough
-                        .as_ref()
-                        .and_then(|meta| meta.turn_id.clone())
-                        .unwrap_or_else(|| turn.clone());
-                    outputs.insert((owner, call_id.clone()), row.item.clone());
+                _ => {
+                    if let Some((call, owner)) =
+                        crate::local_reconciliation::output_identity(&row.item)
+                    {
+                        outputs.insert(
+                            (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
+                            row.item.clone(),
+                        );
+                    }
                 }
-                _ => {}
             },
             _ => {}
         }
     }
-    (calls, outputs)
+    Ok((calls, outputs))
 }
+
 impl CustomThreadStore {
     pub fn new(callback: Callback) -> Self {
         Self {
@@ -340,21 +350,13 @@ impl CustomThreadStore {
                         turn = start.turn_id.clone();
                     }
                     if let RolloutItem::ResponseItem(row) = &item
-                        && let ResponseItem::FunctionCallOutput {
-                            call_id: Some(call),
-                            internal_chat_message_metadata_passthrough,
-                            ..
-                        } = &row.item
+                        && let Some((call, owner)) =
+                            crate::local_reconciliation::output_identity(&row.item)
                     {
-                        let owner = internal_chat_message_metadata_passthrough
-                            .as_ref()
-                            .and_then(|meta| meta.turn_id.clone())
-                            .unwrap_or_else(|| turn.clone());
-                        if writer.managed.contains(&(owner, call.clone())) {
-                            // Core can synthesize cancellation/failure text after its reply
-                            // receiver retires while the admitted SDK writer still settles.
-                            // Only the real-receipt path owns this exact turn/call outcome;
-                            // a Core drain must neither replace it nor poison its writer.
+                        let owner = owner.unwrap_or(&turn).to_owned();
+                        if writer.managed.contains(&(owner, call.to_owned())) {
+                            // Only the explicit SDK receipt owns the effect; synthesized
+                            // Core drain output cannot settle a managed computer call.
                             continue;
                         }
                     }
@@ -448,20 +450,10 @@ impl CustomThreadStore {
         Ok(())
     }
     pub async fn receipt(&self, id: ThreadId, item: ResponseItem) -> ThreadStoreResult<()> {
-        let ResponseItem::FunctionCallOutput {
-            call_id: Some(call),
-            internal_chat_message_metadata_passthrough: Some(meta),
-            ..
-        } = &item
-        else {
+        let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(&item) else {
             return Err(error("canonical receipt identity required"));
         };
-        let identity = (
-            meta.turn_id
-                .clone()
-                .ok_or_else(|| error("canonical receipt turn required"))?,
-            call.clone(),
-        );
+        let identity = (turn.to_owned(), call.to_owned());
         let history = self
             .projection
             .load_history(LoadThreadHistoryParams {
@@ -469,8 +461,11 @@ impl CustomThreadStore {
                 include_archived: true,
             })
             .await?;
-        let (calls, outputs) = identities(&history.items);
-        if !calls.contains_key(&identity) || outputs.contains_key(&identity) {
+        let (calls, outputs) = identities(&history.items)?;
+        if !calls.get(&identity).is_some_and(|original| {
+            crate::local_reconciliation::output_matches_invocation(original, &item)
+        }) || outputs.contains_key(&identity)
+        {
             return Err(error(
                 "canonical receipt requires an unresolved original tool call",
             ));
@@ -534,6 +529,28 @@ impl CustomThreadStore {
         result: DynamicToolResponse,
     ) -> ThreadStoreResult<()> {
         self.open_mode(id, true, true).await?;
+        let history = self
+            .projection
+            .load_history(LoadThreadHistoryParams {
+                thread_id: id,
+                include_archived: true,
+            })
+            .await?;
+        let (calls, outputs) = identities(&history.items)?;
+        let identity = (turn.clone(), call.clone());
+        let original = calls
+            .get(&identity)
+            .ok_or_else(|| error("canonical reconciliation requires an original call"))?;
+        if outputs.contains_key(&identity) {
+            return Err(error(
+                "canonical reconciliation requires an unresolved call",
+            ));
+        }
+        if matches!(original, ResponseItem::ComputerCall { .. }) {
+            let item = crate::local_reconciliation::computer_receipt(original, result, &turn)
+                .map_err(|_| error("Computer reconciliation requires a valid screenshot and safety acknowledgements"))?;
+            return self.receipt(id, item).await;
+        }
         let mut item: ResponseItem = crate::python_tools::PythonOutput(result)
             .to_response_item(
                 &call,

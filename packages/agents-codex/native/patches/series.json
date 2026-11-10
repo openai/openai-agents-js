@@ -415,7 +415,15 @@
     {
       "path": "0104-native-model-response-fidelity.patch",
       "sha256": "a1f354cdd0b303ce91db87626aea68a509823d5cd893a2874094aa3fbd3d9672"
+    },
+    {
+      "path": "0210-native-computer-use.patch",
+      "sha256": "6f2e8711da00c50f64b3fcb48ae3c11ce2df2e7a74c6d55d7521d9e4c71568ce"
+    },
+    {
+      "path": "0211-native-computer-guardian.patch",
+      "sha256": "70a07e4e7e46d5e0ae324fd80d53da0b18a9e944287a7cb59f8bd5e2e05a3887"
     }
   ],
-  "result_tree": "91af570b52e73e547f0aefd0d10a1ed6ef5f4b76"
+  "result_tree": "177bf81251bdd03a5f06e6a9f6f5bb4c205f3ea0"
 }
