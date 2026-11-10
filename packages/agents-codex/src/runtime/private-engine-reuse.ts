@@ -9,6 +9,11 @@ export interface PrivateKernel {
   home: { codex_home: string; cwd: string };
   apiKey: string;
   phase: 'engine' | 'carrier' | 'home' | 'done';
+  plainAdmission?: {
+    readonly configJson: string;
+    readonly runtimeJson: string;
+    readonly model: string | null;
+  };
   diagnostic?: string | null;
   pending?: Promise<string | null>;
 }
