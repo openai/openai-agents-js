@@ -1,4 +1,8 @@
 import {
+  tool as nativeTool,
+  _nativeToolSessionOwner,
+} from '@openai/agents-codex';
+import {
   RunContext,
   Usage,
   UserError,
@@ -1876,4 +1880,163 @@ function isErrorItem(item: ThreadItem): item is ErrorItem {
 
 function isReasoningItem(item: ThreadItem): item is ReasoningItem {
   return item?.type === 'reasoning';
+}
+
+export type NativeCodexToolOptions = Pick<
+  CodexToolOptions,
+  | 'name'
+  | 'description'
+  | 'codex'
+  | 'codexOptions'
+  | 'defaultThreadOptions'
+  | 'defaultTurnOptions'
+  | 'persistSession'
+> & {
+  /** Observes CLI events without changing execution success; observer failures are isolated. */
+  onEvent?: (event: ThreadEvent) => void | Promise<void>;
+};
+
+/**
+ * Delegate through a native function tool to the external Codex CLI.
+ * The application authorizes executable, credentials and workspace in the
+ * options. Native Environment grants do not constrain this application tool.
+ * Cancellation joins the CLI stream. Persistent calls run sequentially and
+ * reuse the most recently completed thread in the same native Session unless
+ * threadId selects another. Different native Sessions keep independent state.
+ * Configured turn signals also cancel calls waiting for persistent-session admission.
+ */
+export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
+  const resolveCodex = createCodexResolver(
+    options.codex,
+    resolveCodexOptions(
+      options.codexOptions ? structuredClone(options.codexOptions) : undefined,
+    ),
+  );
+  const threadOptions = options.defaultThreadOptions
+    ? structuredClone(options.defaultThreadOptions)
+    : undefined;
+  const turnOptions = options.defaultTurnOptions
+    ? {
+        ...options.defaultTurnOptions,
+        ...(options.defaultTurnOptions.outputSchema !== undefined
+          ? {
+              outputSchema: structuredClone(
+                options.defaultTurnOptions.outputSchema,
+              ),
+            }
+          : {}),
+      }
+    : undefined;
+  const persistSession = options.persistSession ?? false;
+  const onEvent = options.onEvent;
+  const sessions = new WeakMap<
+    object,
+    { persisted?: Thread; pending: Promise<void> }
+  >();
+  return nativeTool({
+    name: resolveCodexToolName(options.name ?? DEFAULT_CODEX_TOOL_NAME),
+    description:
+      options.description ??
+      'Run an external Codex CLI task in the configured workspace.',
+    parameters: z.object({
+      prompt: z.string().min(1),
+      threadId: z
+        .string()
+        .min(1)
+        .refine(
+          (value) => !value.trimStart().startsWith('-'),
+          'threadId must be a thread ID, not a CLI option',
+        )
+        .nullable()
+        .default(null),
+    }),
+    execute: async ({ prompt, threadId }, context) => {
+      const signal = turnOptions?.signal
+        ? AbortSignal.any([context.signal, turnOptions.signal])
+        : context.signal;
+      let state: { persisted?: Thread; pending: Promise<void> } | undefined;
+      let previous = Promise.resolve();
+      let release: (() => void) | undefined;
+      if (persistSession) {
+        const sessionOwner = _nativeToolSessionOwner(context);
+        state = sessions.get(sessionOwner);
+        if (!state) {
+          state = { pending: Promise.resolve() };
+          sessions.set(sessionOwner, state);
+        }
+        previous = state.pending;
+        const slot = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        // A cancelled waiter settles promptly but its successors still wait for
+        // every earlier invocation to release ownership.
+        state.pending = previous.then(() => slot);
+      }
+      try {
+        if (state) await waitForNativeCodexSlot(previous, signal);
+        signal.throwIfAborted();
+        const codex = await resolveCodex();
+        const thread =
+          threadId !== null
+            ? codex.resumeThread(threadId, threadOptions)
+            : (state?.persisted ?? codex.startThread(threadOptions));
+        const stream = await thread.runStreamed(prompt, {
+          ...turnOptions,
+          signal,
+        });
+        let response = '';
+        let usage: CodexUsage | null = null;
+        for await (const event of stream.events) {
+          context.signal.throwIfAborted();
+          if (onEvent)
+            await Promise.allSettled([
+              Promise.resolve().then(() => onEvent(event)),
+            ]);
+          context.signal.throwIfAborted();
+          if (
+            event.type === 'item.completed' &&
+            event.item.type === 'agent_message'
+          )
+            response = event.item.text;
+          else if (event.type === 'turn.completed') usage = event.usage;
+          else if (event.type === 'turn.failed')
+            throw new Error(event.error.message);
+          else if (event.type === 'error') throw new Error(event.message);
+        }
+        if (state) state.persisted = thread;
+        return { threadId: thread.id, response, usage };
+      } catch (error) {
+        // Node spawn wraps AbortSignal.reason. Preserve the native cancellation
+        // identity so a joined expected abort is not reported as cleanup failure.
+        if (
+          context.signal.aborted &&
+          error instanceof Error &&
+          error.name === 'AbortError' &&
+          error.cause === context.signal.reason
+        )
+          throw context.signal.reason;
+        throw error;
+      } finally {
+        release?.();
+      }
+    },
+  });
+}
+
+async function waitForNativeCodexSlot(
+  previous: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    await Promise.race([previous, cancelled]);
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
 }

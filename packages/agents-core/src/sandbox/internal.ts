@@ -6,6 +6,7 @@ export {
   mergeManifestEntryDelta,
   mergeManifestDelta,
   rebindPersistedMountCredentials,
+  rebindPersistedPathGrants,
   sanitizeEnvironmentForPersistence,
   serializeEnvironmentForPersistence,
   serializeHostPathGrantRedactionMetadata,

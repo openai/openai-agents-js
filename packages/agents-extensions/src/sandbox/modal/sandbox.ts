@@ -1445,6 +1445,16 @@ export class ModalSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  resolveTrustedEnvironment(
+    manifest: Manifest,
+    options?: ModalSandboxClientOptions,
+  ): Promise<Record<string, string>> {
+    return materializeEnvironment(
+      manifest,
+      resolveOptions(this.options, options).env,
+    );
+  }
+
   async create(
     args?: SandboxClientCreateArgs | Manifest,
     manifestOptions?: SandboxClientOptions,

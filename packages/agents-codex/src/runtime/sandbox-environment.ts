@@ -1,5 +1,8 @@
 import type {
   SandboxClient,
+  SandboxArchiveLimits,
+  SandboxConcurrencyLimits,
+  SnapshotSpec,
   SandboxClientOptions,
   SandboxSessionLike,
   SandboxSessionState,
@@ -8,6 +11,17 @@ import {
   cloneManifest,
   Manifest,
   cleanupSandboxSession,
+  rebindPersistedMountCredentials,
+  rebindPersistedPathGrants,
+  assertHostPathGrantsRebound,
+  assertMountCredentialsRebound,
+  assertLiveMountCredentialAuthorityMatches,
+  assertLiveMountEnvironmentAuthorityMatches,
+  assertSandboxSessionStateUsable,
+  captureLiveMountCredentialAuthorityIfAbsent,
+  materializeEnvironment,
+  withExclusiveSandboxStateInspection,
+  validateMountEnvironmentCredentialBoundaries,
 } from '@openai/agents-core/sandbox/internal';
 import type { Environment } from './environment';
 import {
@@ -30,6 +44,19 @@ export interface SandboxEnvironmentOptions<
   manifest: Manifest;
   /** Trusted provider options: plain data is captured; opaque handles/functions remain caller-owned. */
   options?: Options;
+  /** Workspace snapshot used only for resource creation. */
+  snapshot?: SnapshotSpec;
+  /** Live application-owned session. The adapter only closes its gateway. */
+  session?: SandboxSessionLike<State>;
+  /**
+   * Explicitly authorizes ALL provider identity and snapshot fields for resume.
+   * Never pass untrusted persisted state without application/provider validation.
+   * The current manifest supplies filesystem authority. This source can resume
+   * the resource only once, including when opening fails after acquisition.
+   */
+  authorizedResumeState?: { backendId: string; state: State };
+  concurrencyLimits?: SandboxConcurrencyLimits;
+  archiveLimits?: SandboxArchiveLimits | null;
   /** Connect an authenticated native executor to this exact sandbox. */
   connect(
     sandbox: SandboxSessionLike<State>,
@@ -39,8 +66,8 @@ export interface SandboxEnvironmentOptions<
 
 /**
  * Use existing sandbox materialization with native execution. Each opening owns
- * a provider session through create(), without restoring provider state from
- * native checkpoints. Providers own mount validation, credentials and cleanup.
+ * a provider session through create() or explicitly authorized resume(). Live
+ * sessions remain application-owned. Providers own validation and credentials.
  */
 export function sandboxEnvironment<
   Context = any,
@@ -50,13 +77,70 @@ export function sandboxEnvironment<
   options: SandboxEnvironmentOptions<Context, Options, State>,
 ): EnvironmentSource<Context> {
   const { client, connect } = options;
-  if (!client.create)
+  const create = client.create?.bind(client);
+  const borrowed = options.session;
+  const resume = options.authorizedResumeState;
+  const originalResumeState = resume?.state;
+  if (
+    [borrowed, resume, options.snapshot].filter((value) => value !== undefined)
+      .length > 1
+  )
+    throw new TypeError(
+      'session, authorizedResumeState and snapshot are mutually exclusive',
+    );
+  if (!borrowed && !resume && !create)
     throw new TypeError('sandboxEnvironment requires SandboxClient.create()');
-  const create = client.create.bind(client);
+  if (resume && (resume.backendId !== client.backendId || !client.resume))
+    throw new TypeError(
+      'authorized resume requires a matching backend and client.resume()',
+    );
+  if (
+    borrowed &&
+    (options.concurrencyLimits !== undefined ||
+      options.archiveLimits !== undefined)
+  )
+    throw new TypeError(
+      'configure borrowed session budgets before supplying the session',
+    );
   const deleteResource = client.delete?.bind(client);
   const providerOptions =
     options.options === undefined ? undefined : captureOptions(options.options);
-  const manifest = cloneManifest(requireManifest(options.manifest));
+  const capturedManifest = cloneManifest(requireManifest(options.manifest));
+  const manifest =
+    (borrowed || resume) && client.resolveTrustedManifestForResume
+      ? client.resolveTrustedManifestForResume(
+          capturedManifest,
+          providerOptions,
+        )
+      : capturedManifest;
+  if (resume && options.concurrencyLimits !== undefined)
+    throw new TypeError('concurrencyLimits applies only to resource creation');
+  const concurrencyLimits = captureOptions(options.concurrencyLimits);
+  const archiveLimits = captureOptions(options.archiveLimits);
+  const snapshot = captureOptions(options.snapshot);
+  // Explicit authorization covers provider identity. Current config is the sole
+  // source of mount/path authority, using the provider's existing rebind rules.
+  if (originalResumeState) {
+    assertSandboxSessionStateUsable(originalResumeState);
+    assertLiveMountCredentialAuthorityMatches(
+      originalResumeState.manifest,
+      manifest,
+    );
+  }
+  const resumeState = resume
+    ? rebindPersistedPathGrants(
+        rebindPersistedMountCredentials(
+          captureOptions(originalResumeState!),
+          manifest,
+        ),
+        manifest,
+        { replaceWithTrustedManifest: true },
+      )
+    : undefined;
+  if (resumeState) {
+    assertMountCredentialsRebound(resumeState);
+    assertHostPathGrantsRebound(resumeState);
+  }
   for (const { entry } of manifest.mountTargets()) {
     if (!entry.mountStrategy)
       throw new TypeError(
@@ -64,8 +148,14 @@ export function sandboxEnvironment<
       );
   }
 
+  let resumeConsumed = false;
   return async ({ signal }) => {
     signal.throwIfAborted();
+    if (resumeState) {
+      if (resumeConsumed)
+        throw new TypeError('authorizedResumeState has already been acquired');
+      resumeConsumed = true;
+    }
     let sandbox: SandboxSessionLike<State> | undefined;
     let gateway: EnvironmentAcquisition | undefined;
     let disposal: Promise<void> | undefined;
@@ -76,9 +166,10 @@ export function sandboxEnvironment<
           // The gateway restores its own scope before reinstalling this guard.
           () => gateway?.dispose(guard),
           () =>
+            !borrowed &&
             sandbox &&
             cleanupSandboxSession(sandbox, { preserveOwnedSessions: false }),
-          () => sandbox && deleteResource?.(sandbox.state),
+          () => !borrowed && sandbox && deleteResource?.(sandbox.state),
         ]) {
           try {
             await release();
@@ -94,42 +185,117 @@ export function sandboxEnvironment<
           );
       }));
     try {
-      // Providers prepare and mount through their existing create pipeline.
-      sandbox = await create({
-        manifest: cloneManifest(manifest),
-        options:
+      const open = async () => {
+        signal.throwIfAborted();
+        if (borrowed) {
+          const trustedEnvironment = client.resolveTrustedEnvironment
+            ? await client.resolveTrustedEnvironment(manifest, providerOptions)
+            : await materializeEnvironment(manifest);
+          signal.throwIfAborted();
+          assertSandboxSessionStateUsable(borrowed.state);
+          captureLiveMountCredentialAuthorityIfAbsent(
+            borrowed.state.manifest,
+            borrowed.state.environment,
+          );
+          assertLiveMountCredentialAuthorityMatches(
+            borrowed.state.manifest,
+            manifest,
+          );
+          validateMountEnvironmentCredentialBoundaries(
+            manifest,
+            trustedEnvironment,
+          );
+          assertLiveMountEnvironmentAuthorityMatches(
+            borrowed.state.manifest,
+            manifest,
+            trustedEnvironment,
+          );
+          if (client.assertBorrowedSessionManifestAuthority) {
+            await client.assertBorrowedSessionManifestAuthority(
+              borrowed,
+              cloneManifest(manifest),
+              providerOptions === undefined
+                ? undefined
+                : captureOptions(providerOptions),
+            );
+            signal.throwIfAborted();
+          }
+        }
+        // Providers prepare and mount through their existing create pipeline.
+        const currentOptions =
           providerOptions === undefined
             ? undefined
-            : captureOptions(providerOptions),
-      });
-      if (
-        !sandbox.close &&
-        !sandbox.stop &&
-        !sandbox.shutdown &&
-        !sandbox.delete &&
-        !deleteResource
-      )
-        throw new TypeError(
-          'sandboxEnvironment requires a sandbox cleanup route',
-        );
-      signal.throwIfAborted();
-      if (sandbox.start && !(await sandbox.running?.())) {
+            : captureOptions(providerOptions);
+        if (resumeState) {
+          const state = captureOptions(resumeState);
+          const resumeOptions = {
+            clientOptions: currentOptions,
+            trustedManifest: cloneManifest(manifest),
+            archiveLimits,
+          };
+          client.validateSessionStateForResume?.(
+            { source: 'explicit', state },
+            resumeOptions,
+          );
+          const requiresFreshCreation =
+            client.serializedSessionStateRequiresFreshCreation ||
+            (await client.serializedSessionStateRequiresFreshCreationForOptions?.(
+              state,
+              resumeOptions,
+            ));
+          signal.throwIfAborted();
+          if (requiresFreshCreation)
+            throw new TypeError(
+              'provider requires fresh resource creation for this resume state',
+            );
+          sandbox = await client.resume!(state, resumeOptions);
+        } else {
+          sandbox =
+            borrowed ??
+            (await create!({
+              manifest: cloneManifest(manifest),
+              options: currentOptions,
+              snapshot,
+              concurrencyLimits,
+              archiveLimits,
+            }));
+        }
+        if (
+          !borrowed &&
+          !sandbox.close &&
+          !sandbox.stop &&
+          !sandbox.shutdown &&
+          !sandbox.delete &&
+          !deleteResource
+        )
+          throw new TypeError(
+            'sandboxEnvironment requires a sandbox cleanup route',
+          );
         signal.throwIfAborted();
-        await sandbox.start({ reason: 'native session opening' });
-      }
-      signal.throwIfAborted();
-      const created = sandbox;
-      gateway = await acquireEnvironment(
-        ({ signal }) => connect(created, { signal }),
-        signal,
-      );
-      gateway.opened();
-      signal.throwIfAborted();
-      return createEnvironmentLease(
-        gateway.environment! as Environment<Context>,
-        dispose,
-        gateway.signal,
-      );
+        if (!borrowed && archiveLimits !== undefined)
+          sandbox.setArchiveLimits?.(archiveLimits);
+        if (!borrowed && sandbox.start && !(await sandbox.running?.())) {
+          signal.throwIfAborted();
+          await sandbox.start({ reason: 'native session opening' });
+        }
+        signal.throwIfAborted();
+        const created = sandbox;
+        gateway = await acquireEnvironment(
+          ({ signal }) => connect(created, { signal }),
+          signal,
+        );
+        gateway.opened();
+        signal.throwIfAborted();
+        return createEnvironmentLease(
+          gateway.environment! as Environment<Context>,
+          dispose,
+          gateway.signal,
+        );
+      };
+      const inspectedState = borrowed?.state ?? originalResumeState;
+      return inspectedState
+        ? await withExclusiveSandboxStateInspection(inspectedState, open)
+        : await open();
     } catch (error) {
       try {
         await dispose();

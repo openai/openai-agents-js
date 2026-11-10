@@ -1,3 +1,4 @@
+import { sandboxEnvironment, Environment } from '@openai/agents-codex';
 import { makeTarArchive } from './tarFixture';
 import { execFile, spawnSync } from 'node:child_process';
 import {
@@ -99,6 +100,61 @@ vi.mock('@daytonaio/sdk', () => ({
 }));
 
 describe('DaytonaSandboxClient', () => {
+  test.each(['constructor', 'per-call'] as const)(
+    'native borrowed environment includes %s provider values',
+    async (source) => {
+      const environment = {
+        AWS_ACCESS_KEY_ID: 'synthetic-access',
+        AWS_SECRET_ACCESS_KEY: 'synthetic-secret',
+      };
+      const manifest = new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'synthetic',
+            mountStrategy: new DaytonaCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountBroadCredentialExposureAcknowledged('data');
+      const client = new DaytonaSandboxClient(
+        source === 'constructor' ? { env: environment } : {},
+      );
+      const options = source === 'per-call' ? { env: environment } : undefined;
+      const session = await client.create({ manifest, options });
+      const connect = vi.fn(async () =>
+        Environment.lease(
+          new Environment({
+            url: 'wss://fixture.invalid',
+            cwd: session.state.manifest.root,
+          }),
+          async () => {},
+        ),
+      );
+      const open = (source: ReturnType<typeof sandboxEnvironment>) =>
+        source({ signal: new AbortController().signal });
+      const owner = await open(
+        sandboxEnvironment({ client, session, manifest, options, connect }),
+      );
+      await owner.close();
+      expect(connect).toHaveBeenCalledOnce();
+      connect.mockClear();
+      await expect(
+        open(
+          sandboxEnvironment({
+            client,
+            session,
+            manifest,
+            options: {
+              env: { ...environment, AWS_SECRET_ACCESS_KEY: 'rotated' },
+            },
+            connect,
+          }),
+        ),
+      ).rejects.toThrow();
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+
   afterEach(() => vi.unstubAllGlobals());
   test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
     const client = new DaytonaSandboxClient();

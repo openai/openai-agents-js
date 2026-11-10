@@ -1672,6 +1672,16 @@ export class VercelSandboxClient implements SandboxClient<
     );
   }
 
+  resolveTrustedEnvironment(
+    manifest: Manifest,
+    options?: VercelSandboxClientOptions,
+  ): Promise<Record<string, string>> {
+    return materializeEnvironment(
+      manifest,
+      resolveVercelOptions(this.options, options).env,
+    );
+  }
+
   async create(
     args?: SandboxClientCreateArgs<VercelSandboxClientOptions> | Manifest,
     manifestOptions?: VercelSandboxClientOptions,

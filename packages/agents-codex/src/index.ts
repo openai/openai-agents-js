@@ -1,3 +1,4 @@
+export { applyDiff } from '@openai/agents-core';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
 export { Agent, Runner } from './runtime/public-agent';
@@ -382,6 +383,8 @@ export type {
   ComputerEnvironment,
   ComputerToolOptions,
 } from './runtime/computer';
+// Private extension hook for Session-scoped state, not execution authority.
+export { _nativeToolSessionOwner } from './runtime/tools';
 export type {
   NativeRealtimeUsage,
   NativeRealtimeUsageCounters,
