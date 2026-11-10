@@ -85,7 +85,12 @@ export type NativeRealtimeToolChoice =
   | 'auto'
   | 'none'
   | 'required'
-  | { readonly type: 'function'; readonly name: string };
+  | { readonly type: 'function'; readonly name: string }
+  | {
+      readonly type: 'mcp';
+      readonly serverLabel: string;
+      readonly name?: string;
+    };
 
 /** Sparse settings; omission retains state and null explicitly disables a setting. */
 export type NativeRealtimeSettings = {
@@ -229,14 +234,26 @@ function settingsObject(
     if (choice === 'auto' || choice === 'none' || choice === 'required')
       result.tool_choice = choice;
     else {
-      const named = fields(choice, ['type', 'name']);
-      if (
-        named.type !== 'function' ||
-        typeof named.name !== 'string' ||
-        Object.keys(choice).length !== 2
-      )
+      const named = fields(choice, [
+        'type',
+        'name',
+        ['serverLabel', 'server_label'],
+      ]);
+      const keys = Object.keys(choice);
+      const functionChoice =
+        named.type === 'function' &&
+        typeof named.name === 'string' &&
+        keys.length === 2;
+      const mcpChoice =
+        named.type === 'mcp' &&
+        typeof named.server_label === 'string' &&
+        (named.name === undefined || typeof named.name === 'string') &&
+        keys.every(
+          (key) => key === 'type' || key === 'serverLabel' || key === 'name',
+        );
+      if (!functionChoice && !mcpChoice)
         throw new TypeError(
-          'toolChoice must be auto, none, required, or a named function',
+          'toolChoice must be auto, none, required, a function, or an MCP tool',
         );
       result.tool_choice = named;
     }

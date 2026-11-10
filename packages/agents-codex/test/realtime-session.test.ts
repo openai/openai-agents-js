@@ -563,7 +563,8 @@ it.each(['inherited', 'explicit'] as const)(
     expect(params).not.toHaveProperty('hosted_mcp_auto_response');
     expect(params.function_tools).toEqual(selection === 'explicit' ? [] : null);
     if (selection === 'explicit') {
-      expect(selectTools).toHaveBeenCalledWith([]);
+      expect(selectTools).toHaveBeenCalledOnce();
+      expect(selectTools.mock.calls[0][0]).toEqual([]);
       expect(prepareMcp).not.toHaveBeenCalled();
     } else {
       expect(prepareMcp).toHaveBeenCalledOnce();

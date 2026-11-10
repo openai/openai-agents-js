@@ -35,8 +35,7 @@ export function addRealtimeUsage(
   total: UsageCounterTree,
   current: UsageCounterTree,
 ): UsageCounterTree {
-  const result: Record<string, number | UsageCounterTree> =
-    structuredClone(total);
+  const result: Record<string, number | UsageCounterTree> = { ...total };
   for (const [key, value] of Object.entries(current)) {
     const previous = result[key];
     if (typeof value === 'object') {

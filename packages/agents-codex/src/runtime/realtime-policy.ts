@@ -25,6 +25,9 @@ export async function resolveRealtimePolicy(
   signal: AbortSignal | undefined,
   check: () => void,
   realtimeUsage?: NativeRealtimeUsage,
+  snapshot?: Awaited<
+    ReturnType<import('./session').Session['_realtimeSourceSnapshot']>
+  >,
 ) {
   const instructions = options.instructions;
   const enabled = options.isToolEnabled;
@@ -34,7 +37,7 @@ export async function resolveRealtimePolicy(
       disabledToolNames: undefined,
       selectionId: undefined,
     };
-  const source = await session._realtimePolicySource();
+  const source = await session._realtimePolicySource(snapshot);
   signal?.throwIfAborted();
   check();
   const context = Object.freeze({

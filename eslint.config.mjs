@@ -29,6 +29,7 @@ export default tseslint.config(
     'integration-tests//**',
     'packages/agents-codex/native/.upstream/**',
     'packages/agents-codex/native/target/**',
+    'packages/*/native/codex-realtime-control.{cjs,mjs}',
     'tsc-multi.json',
   ]),
   eslint.configs.recommended,

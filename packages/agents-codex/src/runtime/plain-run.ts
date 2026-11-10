@@ -355,6 +355,7 @@ export async function tryOpenPlainRun(
       !idle.engine._private_reuse_ready ||
       !idle.carrier.reuseBinding(idle.engine)
     ) {
+      idle.plainAdmission = undefined;
       lease.retainOpeningCleanup(previousOpeningCleanup ?? lease.release);
       return undefined;
     }
@@ -362,35 +363,43 @@ export async function tryOpenPlainRun(
     carrier = new NativeProviderRoutes();
     await carrier.start(config, runtime, setup.apiKey);
     options.environmentOwner?.signal.throwIfAborted();
+  }
+  const configJson = encode(config);
+  const runtimeJson = encode(runtime);
+  const model = setup.model ?? null;
+  if (!idle) {
     engine = await native.create_engine(
-      encode(config),
-      encode(runtime),
+      configJson,
+      runtimeJson,
       setup.apiKey ?? null,
       null,
     );
     options.environmentOwner?.signal.throwIfAborted();
   }
   // Offline capability/input admission precedes every possible model request.
-  if (
-    !(await engine!._plain_run_supported(
-      encode(config),
-      encode(runtime),
-      setup.model ?? null,
-    ))
-  ) {
-    if (!pooled) {
-      const report = await engine!._close_report();
-      engine = undefined;
-      phase = 'carrier';
-      await carrier!.close();
-      carrier = undefined;
-      if (report) {
-        diagnostic = new NativeError(report);
-        throw diagnostic;
+  const cached = idle?.plainAdmission;
+  const admitted =
+    idle?.phase === 'engine' &&
+    cached?.configJson === configJson &&
+    cached.runtimeJson === runtimeJson &&
+    cached.model === model;
+  if (!admitted) {
+    if (idle) idle.plainAdmission = undefined;
+    if (!(await engine!._plain_run_supported(configJson, runtimeJson, model))) {
+      if (!pooled) {
+        const report = await engine!._close_report();
+        engine = undefined;
+        phase = 'carrier';
+        await carrier!.close();
+        carrier = undefined;
+        if (report) {
+          diagnostic = new NativeError(report);
+          throw diagnostic;
+        }
       }
+      lease.retainOpeningCleanup(previousOpeningCleanup ?? lease.release);
+      return undefined;
     }
-    lease.retainOpeningCleanup(previousOpeningCleanup ?? lease.release);
-    return undefined;
   }
   if (!idle) {
     const transports = lease.httpTransports(
@@ -402,6 +411,15 @@ export async function tryOpenPlainRun(
       borrow.bind(engine!, carrier!, transports);
       pooled = true;
     }
+  }
+  const entry = borrow?.peek();
+  if (
+    entry &&
+    entry.engine === engine &&
+    entry.phase === 'engine' &&
+    (!idle || entry === idle)
+  ) {
+    entry.plainAdmission = { configJson, runtimeJson, model };
   }
   options.environmentOwner?.signal.throwIfAborted();
   const payload = encode({

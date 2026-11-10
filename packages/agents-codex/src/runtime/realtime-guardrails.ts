@@ -1,15 +1,15 @@
-import { createHash } from 'node:crypto';
 import type { Agent } from './public-agent';
 
 /** An immutable snapshot of one native response's output. */
-export interface NativeRealtimeGuardrailInput {
+export interface NativeRealtimeGuardrailInput<Source = Agent<any, any>> {
   readonly text: string;
   readonly responseId: string;
   readonly itemId: string;
   readonly contentIndex?: number;
   readonly outputIndex?: number;
   readonly outputKind: 'text' | 'audio_transcript';
-  readonly agent: Agent<any, any>;
+  readonly outOfBand?: true;
+  readonly agent: Source;
   readonly context: unknown;
   readonly final: boolean;
   /** Aborted when this response or the voice owner is retired. */
@@ -22,19 +22,19 @@ export interface NativeRealtimeGuardrailResult {
   readonly outputInfo?: unknown;
 }
 
-export interface NativeRealtimeOutputGuardrail {
+export interface NativeRealtimeOutputGuardrail<Source = Agent<any, any>> {
   readonly name: string;
   readonly callback: (
-    input: NativeRealtimeGuardrailInput,
+    input: NativeRealtimeGuardrailInput<Source>,
   ) => NativeRealtimeGuardrailResult | Promise<NativeRealtimeGuardrailResult>;
   /** Explicit developer-authored feedback; diagnostics stay local. */
   readonly feedback?: string;
 }
 
-export interface NativeRealtimeGuardrailEvent {
+export interface NativeRealtimeGuardrailEvent<Source = Agent<any, any>> {
   readonly type: 'guardrail';
   readonly name: string;
-  readonly input: NativeRealtimeGuardrailInput;
+  readonly input: NativeRealtimeGuardrailInput<Source>;
   readonly result?: NativeRealtimeGuardrailResult;
   readonly error?: unknown;
 }
@@ -48,20 +48,25 @@ interface Worker extends NativeRealtimeGuardrailWork {
   retired: boolean;
 }
 
-interface Item {
-  input: NativeRealtimeGuardrailInput;
+interface Item<Source> {
+  input: NativeRealtimeGuardrailInput<Source>;
+  readonly guardrails: readonly NativeRealtimeOutputGuardrail<Source>[];
   transcriptWork: number;
   thresholdCount: number;
-  pending?: NativeRealtimeGuardrailInput;
+  pending?: NativeRealtimeGuardrailInput<Source>;
   worker?: Worker;
   readonly controller: AbortController;
 }
 
-interface Options {
-  readonly guardrails: readonly NativeRealtimeOutputGuardrail[];
+interface Options<Source> {
+  readonly fingerprint?: (value: string) => string;
+  readonly guardrails: readonly NativeRealtimeOutputGuardrail<Source>[];
+  readonly guardrailsFor?: (
+    receipt: unknown,
+  ) => readonly NativeRealtimeOutputGuardrail<Source>[] | undefined;
   readonly threshold?: number | null;
   readonly source: (receipt: unknown) => {
-    agent: Agent<any, any>;
+    agent: Source;
     context: unknown;
   };
   readonly invoke: (
@@ -69,11 +74,11 @@ interface Options {
       NativeRealtimeGuardrailResult | Promise<NativeRealtimeGuardrailResult>,
   ) => Promise<NativeRealtimeGuardrailResult>;
   readonly trip: (
-    input: NativeRealtimeGuardrailInput,
+    input: NativeRealtimeGuardrailInput<Source>,
     feedback: string | undefined,
     excludeWorker: NativeRealtimeGuardrailWork,
   ) => Promise<void>;
-  readonly emit: (event: NativeRealtimeGuardrailEvent) => void;
+  readonly emit: (event: NativeRealtimeGuardrailEvent<Source>) => void;
   readonly fail: (error: unknown) => void;
 }
 
@@ -83,25 +88,43 @@ const MAX_TEXT = 1_048_576;
 const MAX_TRANSCRIPT_WORK = 64 * 1024 * 1024;
 const MAX_IDENTITY_BYTES = 8 * 1024 * 1024;
 
-function fingerprint(value: string): string {
-  // Preserve exact JavaScript string units, including isolated surrogates.
-  return createHash('sha256').update(value, 'utf16le').digest('hex');
+export function captureRealtimeGuardrails<Source>(
+  guardrails: readonly NativeRealtimeOutputGuardrail<Source>[],
+): readonly NativeRealtimeOutputGuardrail<Source>[] {
+  return Object.freeze(
+    guardrails.map((guardrail) => {
+      if (
+        !guardrail ||
+        typeof guardrail.name !== 'string' ||
+        !guardrail.name.trim() ||
+        typeof guardrail.callback !== 'function' ||
+        (guardrail.feedback !== undefined &&
+          (typeof guardrail.feedback !== 'string' ||
+            !guardrail.feedback.trim()))
+      )
+        throw new TypeError(
+          'A Realtime guardrail requires a name, callback and optional nonempty feedback',
+        );
+      return Object.freeze({ ...guardrail });
+    }),
+  );
 }
 
 /** One worker per output item, with only its latest pending snapshot retained. */
-export class NativeRealtimeGuardrails {
-  private readonly items = new Map<string, Item>();
+export class NativeRealtimeGuardrails<Source = Agent<any, any>> {
+  private readonly items = new Map<string, Item<Source>>();
   private readonly retiredResponses = new Set<string>();
   private readonly completed = new Map<string, string | null>();
-  private readonly guardrails: readonly NativeRealtimeOutputGuardrail[];
+  private readonly guardrails: readonly NativeRealtimeOutputGuardrail<Source>[];
   private readonly threshold: number | null;
   private activeWorkers = 0;
   private identityBytes = 0;
+  private completedBytes = 0;
   private textSize = 0;
   private transcriptWork = 0;
   private stopped = false;
 
-  constructor(private readonly options: Options) {
+  constructor(private readonly options: Options<Source>) {
     this.threshold = options.threshold === undefined ? 100 : options.threshold;
     if (
       this.threshold !== null &&
@@ -111,24 +134,11 @@ export class NativeRealtimeGuardrails {
         'guardrailTextThreshold must be a positive integer or null',
       );
     }
-    this.guardrails = Object.freeze(
-      options.guardrails.map((guardrail) => {
-        if (
-          !guardrail ||
-          typeof guardrail.name !== 'string' ||
-          !guardrail.name.trim() ||
-          typeof guardrail.callback !== 'function' ||
-          (guardrail.feedback !== undefined &&
-            (typeof guardrail.feedback !== 'string' ||
-              !guardrail.feedback.trim()))
-        ) {
-          throw new TypeError(
-            'A Realtime guardrail requires a name, callback and optional nonempty feedback',
-          );
-        }
-        return Object.freeze({ ...guardrail });
-      }),
-    );
+    this.guardrails = captureRealtimeGuardrails(options.guardrails);
+  }
+
+  private fingerprint(value: string): string {
+    return this.options.fingerprint?.(value) ?? value;
   }
 
   private reserveIdentity(...values: string[]): void {
@@ -138,8 +148,15 @@ export class NativeRealtimeGuardrails {
     this.identityBytes += size;
   }
 
-  observe(value: Readonly<Record<string, unknown>>, final: boolean): void {
-    if (this.stopped || this.guardrails.length === 0) return;
+  observe(
+    value: Readonly<Record<string, unknown>>,
+    final: boolean,
+    outOfBand = false,
+  ): void {
+    if (this.stopped) return;
+    const guardrails =
+      this.options.guardrailsFor?.(value.profile_receipt) ?? this.guardrails;
+    if (guardrails.length === 0) return;
     const responseId = value.response_id;
     const itemId = value.item_id;
     const outputKind = value.output_kind;
@@ -169,13 +186,13 @@ export class NativeRealtimeGuardrails {
       value.content_index ?? null,
       outputKind,
     ]);
-    const completed = this.completed.get(fingerprint(key));
+    const completed = this.completed.get(this.fingerprint(key));
     if (completed === null) return;
     if (completed !== undefined) {
       if (
         final &&
         typeof value.text === 'string' &&
-        fingerprint(value.text) === completed
+        this.fingerprint(value.text) === completed
       )
         return;
       throw new Error('Realtime output changed after its final transcript');
@@ -188,6 +205,7 @@ export class NativeRealtimeGuardrails {
       this.reserveIdentity(key, responseId, itemId);
       const controller = new AbortController();
       item = {
+        guardrails,
         thresholdCount: 0,
         transcriptWork: 0,
         controller,
@@ -204,6 +222,7 @@ export class NativeRealtimeGuardrails {
               ? undefined
               : (value.output_index as number),
           outputKind,
+          ...(outOfBand ? { outOfBand: true } : {}),
           ...this.options.source(value.profile_receipt),
           final: false,
           signal: controller.signal,
@@ -257,12 +276,16 @@ export class NativeRealtimeGuardrails {
     }
   }
 
-  private async run(key: string, item: Item, worker: Worker): Promise<void> {
+  private async run(
+    key: string,
+    item: Item<Source>,
+    worker: Worker,
+  ): Promise<void> {
     try {
       while (!this.stopped && !worker.retired && item.pending) {
         const input = item.pending;
         item.pending = undefined;
-        for (const guardrail of this.guardrails) {
+        for (const guardrail of item.guardrails) {
           if (
             this.stopped ||
             worker.retired ||
@@ -296,7 +319,7 @@ export class NativeRealtimeGuardrails {
             type: 'guardrail',
             name: guardrail.name,
             input,
-            result,
+            result: { ...result },
           });
           if (result.tripwireTriggered) {
             this.retire(new Set([input.responseId]));
@@ -323,7 +346,7 @@ export class NativeRealtimeGuardrails {
     }
   }
 
-  private releaseItem(key: string, item: Item): void {
+  private releaseItem(key: string, item: Item<Source>): void {
     if (this.items.get(key) !== item) return;
     this.items.delete(key);
     this.textSize -= item.input.text.length;
@@ -331,21 +354,40 @@ export class NativeRealtimeGuardrails {
     this.identityBytes -=
       (key.length + item.input.responseId.length + item.input.itemId.length) *
       2;
-    if (this.completed.size >= MAX_ITEMS)
-      this.completed.delete(this.completed.keys().next().value!);
-    this.completed.set(
-      fingerprint(key),
-      item.controller.signal.aborted ? null : fingerprint(item.input.text),
-    );
+    if (this.stopped) return;
+    const text = item.controller.signal.aborted
+      ? null
+      : this.fingerprint(item.input.text);
+    const completedKey = this.fingerprint(key);
+    const bytes = (completedKey.length + (text?.length ?? 0)) * 2;
+    while (
+      this.completed.size &&
+      (this.completed.size >= MAX_ITEMS ||
+        this.completedBytes + bytes > MAX_IDENTITY_BYTES)
+    ) {
+      const oldest = this.completed.keys().next().value!;
+      this.completedBytes -=
+        (oldest.length + (this.completed.get(oldest)?.length ?? 0)) * 2;
+      this.completed.delete(oldest);
+    }
+    if (bytes <= MAX_IDENTITY_BYTES) {
+      this.completed.set(completedKey, text);
+      this.completedBytes += bytes;
+    }
   }
 
   /** Snapshot and retire current matching work synchronously; never future work. */
   retire(
     responseIds?: ReadonlySet<string>,
+    { linkedOnly = false }: { linkedOnly?: boolean } = {},
   ): readonly NativeRealtimeGuardrailWork[] {
     const ids =
       responseIds ??
-      new Set([...this.items.values()].map((item) => item.input.responseId));
+      new Set(
+        [...this.items.values()]
+          .filter(({ input }) => !linkedOnly || !input.outOfBand)
+          .map(({ input }) => input.responseId),
+      );
     for (const id of ids) {
       if (!this.stopped && !this.retiredResponses.has(id)) {
         while (
@@ -376,6 +418,8 @@ export class NativeRealtimeGuardrails {
 
   stop(): readonly NativeRealtimeGuardrailWork[] {
     this.stopped = true;
+    this.completed.clear();
+    this.completedBytes = 0;
     return this.retire();
   }
 
