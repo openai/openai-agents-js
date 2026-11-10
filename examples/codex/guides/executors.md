@@ -73,6 +73,35 @@ On idle restore, supply the destination's current Environment or a fresh source 
 
 Historical messages may mention old skills, but they do not authorize fresh reads of source directories. Direct executor filesystem RPCs remain the executor owner's responsibility. A selected directory is not a general filesystem sandbox.
 
+## Command environment
+
+Source builds: explicit command variables through `Environment.env`, for both local and remote execution.
+
+```typescript
+import { Environment } from '@openai/agents';
+
+const environment = Environment.local({
+  cwd: '/jobs/worker/work',
+  tools: ['exec_command'],
+  env: { APP_MODE: 'batch', PATH: '/opt/worker/bin:/usr/bin:/bin' },
+});
+```
+
+Remote equivalent: `new Environment({ url, cwd, tools, env })`.
+
+Session usage: `agent.session({ environment })`. One-shot usage: `agent.run(input, { environment })`.
+
+| Setting | Behavior |
+| --- | --- |
+| Explicit values | An immutable copy at construction, overriding the selected executor policy's values for new commands. Empty string values: supported. |
+| `undefined` or `{}` | Existing execution defaults: a fresh local environment with a system `PATH`, or the remote executor's existing environment policy. |
+| A replacement or restored Session | Current destination values. No saved copy of the earlier map. |
+| Private declaration data | The map excluded from the Environment's default JSON, saved configuration, and passive observations. Values printed by commands: ordinary tool output. |
+
+Variable names: nonempty strings without `=` or NUL. Values: strings without NUL. Both names and values: valid UTF-8 text. Reserved SDK helper names: `CODEX_SDK_BWRAP_SEARCH_PATH` and `CARGO_BIN_EXE_bwrap`.
+
+Shell startup scripts: possible subsequent changes to the initial command values.
+
 ## Configured shell
 
 For a command task, select `exec_command` in the [remote Environment](#remote-executor-tools) and pass the command directly in its `cmd` argument. For example, `printf proof` is command text for a POSIX shell. Use syntax supported by the executor's shell. Calling this tool does not require a shell wrapper.

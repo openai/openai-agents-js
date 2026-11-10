@@ -101,6 +101,19 @@ export class TraceSpan {
   /** @internal */ retain(): string {
     return this.native.retain_trace_context(this.#contextToken);
   }
+  /** A detached snapshot of the inherited native root metadata, including after end. */
+  get traceMetadata(): Readonly<
+    Record<string, import('./binding').JsonValue>
+  > | null {
+    const { root_metadata: metadata } = JSON.parse(
+      this.native.trace_span_context(this.#contextToken),
+    ) as {
+      root_metadata?: Record<string, import('./binding').JsonValue> | null;
+    };
+    if (metadata === undefined)
+      throw new Error('Native trace metadata unavailable');
+    return metadata;
+  }
   /** @internal Release only a caller-owned lease, not this object's alias. */
   releaseContext(token: string): void {
     this.native.release_trace_context(token);

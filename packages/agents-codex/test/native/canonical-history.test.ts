@@ -180,9 +180,9 @@ it('atomically replaces canonical history and restores it into the next native r
       session.transactHistory({
         expectedRevision: revision,
         keep: 0,
-        items: [{ type: 'unsupported-item' }],
+        items: [{ type: 'function_call' }],
       }),
-    ).rejects.toThrow('unsupported canonical');
+    ).rejects.toThrow('Invalid canonical history item');
     expect((await session.historySnapshot()).revision).toBe(revision);
     state = await session.saveState();
   } finally {

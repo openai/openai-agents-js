@@ -477,9 +477,17 @@
       "sha256": "0ab7da8b87a0bcfe84d3e60b6d2850953c781880efbb82b196f8c8a123559f18"
     },
     {
-      "path": "sdk-chatgpt-plan-responses-and-storage.patch",
-      "sha256": "e994ea870e8243269cc6cddaa1b523921cfe0aa898143b0ee533da3caac6833d"
+      "path": "sdk-bwrap-search-path.patch",
+      "sha256": "1b1f87bda8fca4a75ca687ae5662bf28ad6eb7538af8b882576daea23c8b01fa"
+    },
+    {
+      "path": "sdk-root-metadata-readback.patch",
+      "sha256": "2208c2c4eda68a1f4e4de000bb3796ac38b883aa54413f05b96e9175f49aa155"
+    },
+    {
+      "path": "0171-original-history-catalog.patch",
+      "sha256": "c90c5f0c2608888dc472cfd07a786cb656bc503303cb9f1fe941bbbd52bf8cd8"
     }
   ],
-  "result_tree": "591bf2121e00f3f18a20945136733e71a77db490"
+  "result_tree": "a271b5a3a6ba907d53bc847a2fe6b8ff064ec0d2"
 }

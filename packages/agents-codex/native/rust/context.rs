@@ -61,6 +61,7 @@ pub struct Change {
     pub checkpoint: Value,
     settings: codex_protocol::protocol::ThreadSettingsSnapshot,
     instructions: Option<String>,
+    sdk_originals: codex_history::sdk_originals::SdkOriginalHistory,
 }
 
 pub async fn begin(state: std::sync::Arc<ThreadState>) -> anyhow::Result<Change> {
@@ -165,6 +166,7 @@ pub async fn begin(state: std::sync::Arc<ThreadState>) -> anyhow::Result<Change>
     }
     checkpoint["agent_options"] = json!({});
     let snapshot = state.thread.conversation_history_snapshot().await;
+    let sdk_originals = state.thread.sdk_original_history().await;
     let settings = state.thread.thread_settings_snapshot().await;
     let instructions = state.instructions.text()?;
     let history: Vec<codex_history::RolloutItem> =
@@ -183,6 +185,7 @@ pub async fn begin(state: std::sync::Arc<ThreadState>) -> anyhow::Result<Change>
         checkpoint,
         settings,
         instructions,
+        sdk_originals,
     })
 }
 
@@ -379,6 +382,7 @@ impl Change {
         let compacted = CompactedItem {
             message: summary.to_owned(),
             replacement_history: Some(replacement),
+            sdk_originals: Some(self.sdk_originals.clone()),
             guardian_history,
             retained_context: self.snapshot.retained_context().cloned(),
             // Full canonical history is preserved. Native restore replays its

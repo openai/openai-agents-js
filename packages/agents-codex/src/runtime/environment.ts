@@ -138,6 +138,28 @@ function captureStorageMounts(
   }
 }
 
+const environmentValues = z
+  .custom<Record<string, string>>(
+    (value) =>
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.entries(value).every(
+        ([name, entry]) =>
+          name.length > 0 &&
+          name !== 'CODEX_SDK_BWRAP_SEARCH_PATH' &&
+          name !== 'CARGO_BIN_EXE_bwrap' &&
+          !name.includes('\0') &&
+          !name.includes('=') &&
+          typeof entry === 'string' &&
+          !entry.includes('\0') &&
+          Buffer.from(name, 'utf8').toString('utf8') === name &&
+          Buffer.from(entry, 'utf8').toString('utf8') === entry,
+      ),
+    'Invalid executor environment variables',
+  )
+  .transform((value) => Object.fromEntries(Object.entries(value)));
+
 const remoteEnvironmentSchema = z
   .object({
     url: z.string().url(),
@@ -146,6 +168,7 @@ const remoteEnvironmentSchema = z
     writable_roots: z.array(capabilityDirectory).optional(),
     read_only: z.boolean().optional(),
     headers: z.record(z.string(), z.string()).optional(),
+    env: environmentValues.optional(),
     connect_timeout: z.number().nonnegative().finite().nullable().optional(),
     network: networkPolicyWireSchema.optional(),
   })
@@ -204,6 +227,8 @@ export interface EnvironmentOptions<Context = unknown> {
   /** Explicit managed proxy policy. Requires exec_command and a supported executor. */
   network?: NetworkPolicy;
   headers?: Readonly<Record<string, string>>;
+  /** Captured command-variable overrides; current declarations only, excluded from saved state. */
+  env?: Readonly<Record<string, string>>;
   connectTimeout?: number;
   approval?: (
     context: ExecutorContext<Context>,
@@ -283,6 +308,7 @@ export class Environment<Context = any> {
   readonly tools: readonly ExecutorToolName[];
   readonly network?: CapturedNetworkPolicy;
   readonly headers: Readonly<Record<string, string>>;
+  readonly env?: Readonly<Record<string, string>>;
   readonly connectTimeout?: number;
   readonly approval?: EnvironmentOptions<Context>['approval'];
   readonly transformArguments?: EnvironmentOptions<Context>['transformArguments'];
@@ -449,6 +475,10 @@ export class Environment<Context = any> {
         ? undefined
         : captureNetworkPolicy(options.network);
     this.headers = Object.freeze(headers);
+    this.env =
+      options.env === undefined
+        ? undefined
+        : Object.freeze(environmentValues.parse(options.env));
     this.connectTimeout = transport?.connectTimeout;
     this.approval = options.approval;
     this.transformArguments = options.transformArguments;
@@ -456,6 +486,7 @@ export class Environment<Context = any> {
     environmentConfig(this);
     for (const name of [
       'headers',
+      'env',
       'approval',
       'transformArguments',
       'transformResult',
@@ -472,6 +503,7 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
       ? { local: true }
       : { url: environment.url, headers: environment.headers }),
     cwd: environment.cwd,
+    ...(environment.env === undefined ? {} : { env: environment.env }),
     ...(environment.readOnly ? { read_only: true } : {}),
     ...(environment.mounts === undefined
       ? {}

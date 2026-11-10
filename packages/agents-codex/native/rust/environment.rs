@@ -86,7 +86,7 @@ async fn local_environment_manager(
 const LOCAL_COMMAND_PATH: &str = "/usr/bin:/bin";
 
 fn local_command_env() -> HashMap<String, String> {
-    // The Linux sandbox helper resolves bubblewrap from PATH before isolation.
+    // Provide a predictable default for commands without importing host values.
     HashMap::from([("PATH".to_owned(), LOCAL_COMMAND_PATH.to_owned())])
 }
 
@@ -99,6 +99,8 @@ pub struct EnvironmentOptions {
     cwd: PathUri,
     #[serde(default)]
     headers: HashMap<String, String>,
+    #[serde(default, deserialize_with = "deserialize_env")]
+    env: HashMap<String, String>,
     connect_timeout: Option<f64>,
     capability_directories: Option<Vec<PathUri>>,
     writable_roots: Option<Vec<PathUri>>,
@@ -122,6 +124,23 @@ struct LocalStorageMount {
 
 fn mount_read_only() -> bool {
     true
+}
+
+fn deserialize_env<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HashMap<String, String>, D::Error> {
+    let values = HashMap::<String, String>::deserialize(deserializer)
+        .map_err(|_| serde::de::Error::custom("invalid environment variables"))?;
+    if values.iter().any(|(name, value)| {
+        name.is_empty()
+            || name == "CODEX_SDK_BWRAP_SEARCH_PATH"
+            || name == "CARGO_BIN_EXE_bwrap"
+            || name.contains(['\0', '='])
+            || value.contains('\0')
+    }) {
+        return Err(serde::de::Error::custom("invalid environment variables"));
+    }
+    Ok(values)
 }
 
 fn deserialize_mounts<'de, D: Deserializer<'de>>(
@@ -663,7 +682,7 @@ impl EnvironmentOptions {
         };
         let selected_capability_roots = self.capability_roots().unwrap_or_default();
         let workspace_roots = vec![self.cwd.clone()];
-        let shell_environment_policy = if self.local {
+        let mut shell_environment_policy = if self.local {
             ShellEnvironmentPolicy {
                 inherit: ShellEnvironmentPolicyInherit::None,
                 r#set: local_command_env(),
@@ -672,6 +691,7 @@ impl EnvironmentOptions {
         } else {
             permissions.shell_environment_policy.clone()
         };
+        shell_environment_policy.r#set.extend(self.env.clone());
         let selection = TurnEnvironmentSelection {
             environment_id: self.id().to_owned(),
             workspace_roots: workspace_roots.clone(),
@@ -2076,6 +2096,37 @@ mod tests {
     use codex_core_api::AbsolutePathBuf;
     use codex_exec_server::{ByteChunk, ProcessOutputChunk};
     use serde_json::json;
+
+    #[test]
+    fn explicit_environment_values_validate_before_native_selection() {
+        let valid: super::EnvironmentOptions = serde_json::from_value(json!({
+            "cwd": "file:///workspace",
+            "env": {"VALUE": "private-environment-value", "EMPTY": "", "__proto__": "literal"}
+        }))
+        .unwrap();
+        assert_eq!(valid.env["EMPTY"], "");
+        assert_eq!(valid.env["__proto__"], "literal");
+        for values in [
+            json!({"": "private-environment-value"}),
+            json!({"BAD=NAME": "private-environment-value"}),
+            json!({"BAD\0NAME": "private-environment-value"}),
+            json!({"CODEX_SDK_BWRAP_SEARCH_PATH": "private-environment-value"}),
+            json!({"CARGO_BIN_EXE_bwrap": "private-environment-value"}),
+            json!({"NAME": "private-environment-value\0"}),
+            json!({"NAME": 3}),
+            json!(["private-environment-value"]),
+        ] {
+            let result = serde_json::from_value::<super::EnvironmentOptions>(json!({
+                "cwd": "file:///workspace", "env": values
+            }));
+            let error = match result {
+                Ok(_) => panic!("invalid environment values were accepted"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("environment"));
+            assert!(!error.contains("private-environment-value"));
+        }
+    }
 
     fn readiness_output(seq: u64, stream: ExecOutputStream, bytes: &[u8]) -> ExecProcessEvent {
         ExecProcessEvent::Output(ProcessOutputChunk {
