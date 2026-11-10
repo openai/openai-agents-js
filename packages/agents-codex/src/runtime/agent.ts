@@ -450,6 +450,7 @@ async function closePrivateOwnedRuntime(
 }
 
 interface OwnedRunOptions {
+  guardrailInput?: import('./input').UserInput;
   returnState?: boolean;
   signal?: AbortSignal;
   maxModelSteps?: number;
@@ -512,7 +513,13 @@ async function completeOwnedSession<Output>(
     input == null
       ? session.wait()
       : session
-          ._run(input, options.signal, options.maxModelSteps, options.budget)
+          ._run(
+            input,
+            options.signal,
+            options.maxModelSteps,
+            options.budget,
+            options.guardrailInput,
+          )
           .then(() => session.wait())
   ).catch(async (error) => {
     const primary = originalFailure(error);

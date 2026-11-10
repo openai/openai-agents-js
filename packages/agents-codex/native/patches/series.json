@@ -583,6 +583,10 @@
     {
       "path": "0212-native-mcp-routing.patch",
       "sha256": "659493afa37831cd18d5ef88e826a81e434c7cd6a4132f08c615884bbde7fe0e"
+    },
+    {
+      "path": "sdk-terminal-candidate-admission.patch",
+      "sha256": "79cd4458385ebefac423d02bccaa124b845d092582cfa679aa764d1a06648b12"
     }
   ],
   "result_tree": "58e2cbc40d78b66b98cb612207a822e73e62883a"

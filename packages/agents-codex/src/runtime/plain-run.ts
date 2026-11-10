@@ -198,6 +198,7 @@ async function completedPlainRun(
     finalOutput,
     threadUsage: tokenUsageInfo(dto.usage),
     repairAttempts: Object.freeze([]),
+    guardrailResults: Object.freeze([]),
   });
   // Ordinary Agent.run has already waited on its Turn before publishing Completed.
   // Prime the same settlement so an already-aborted later waiter sees that outcome first.
@@ -221,6 +222,10 @@ export async function tryOpenPlainRun(
     !lease.apiKey ||
     options.modelBackend ||
     options.beforeComplete ||
+    options.inputGuardrails?.length ||
+    options.outputGuardrails?.length ||
+    options.agentInputGuardrails?.length ||
+    options.agentOutputGuardrails?.length ||
     options.beforeCompact ||
     options.transformContext ||
     options.tracingCapture ||

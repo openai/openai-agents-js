@@ -3157,6 +3157,11 @@ impl ToolContributor for PythonContributor {
             if let Some(callback) = &callback {
                 request["msg"]["_sdk_callback"] = callback.receipt.clone();
             }
+            if let Some(initial) = turn.get::<codex_extension_api::InitialTurnInput>() {
+                if let Some(records) = &initial.0 {
+                    request["msg"]["initial_input"] = json!(records);
+                }
+            }
             if let Some(profile) = profile {
                 request["msg"]["profile_id"] = json!(profile.profile_id);
                 request["msg"]["profile_epoch"] = json!(profile.epoch);
@@ -3471,6 +3476,10 @@ impl ToolLifecycleContributor for PythonContributor {
 }
 
 impl TurnLifecycleContributor for PythonContributor {
+    fn hold_tool_completion(&self, input: codex_extension_api::ToolCompletionInput<'_>) -> bool {
+        terminal_completion::hold(input)
+    }
+
     fn before_turn_complete<'a>(
         &'a self,
         input: codex_extension_api::TurnCompletionInput<'a>,
@@ -3502,6 +3511,12 @@ impl TurnLifecycleContributor for PythonContributor {
             }
 
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
+                if tools.instance.is_some() && tools.child_before_step {
+                    input
+                        .turn_store
+                        .get_or_init(codex_extension_api::InitialTurnInput::default);
+                }
+
                 let deferred = tools
                     .snapshot()
                     .entries

@@ -5,6 +5,11 @@ import {
   type RealtimeAgentConfig,
   type RealtimeHandoff,
 } from './realtime-agent-config';
+import {
+  captureGuardrails,
+  type InputGuardrail,
+  type OutputGuardrail,
+} from './guardrails';
 import type {
   BeforeCompact,
   BeforeComplete,
@@ -129,6 +134,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Cancellation and close join entered callbacks. Do not mutate this Session.
    */
   beforeComplete?: BeforeComplete<Context>;
+  inputGuardrails?: readonly InputGuardrail<Context>[];
+  outputGuardrails?: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
   /** Replace detached model input for turns, children, compaction and output repair.
    * Transport retries reuse its result; canonical history and tool authority stay intact.
@@ -180,6 +187,8 @@ export interface SessionBaseOptions<Context = undefined> {
    */
   parentTrace?: TraceContext | TraceContextHeaders | null;
   context?: Context;
+  inputGuardrails?: readonly InputGuardrail<Context>[];
+  outputGuardrails?: readonly OutputGuardrail<Context>[];
   /** Borrow this provider instead of the Agent provider. */
   provider?: NativeProvider;
   /** Override the Agent model for a new conversation; omit when restoring state. */
@@ -265,6 +274,10 @@ interface CapturedOpening {
   readonly observationRetention?: 'bounded' | 'all';
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
+  readonly agentInputGuardrails: readonly InputGuardrail<any>[];
+  readonly agentOutputGuardrails: readonly OutputGuardrail<any>[];
+  readonly inputGuardrails: readonly InputGuardrail<any>[];
+  readonly outputGuardrails: readonly OutputGuardrail<any>[];
   readonly beforeCompact?: BeforeCompact<any>;
   readonly transformContext?: ContextTransform<any>;
 }
@@ -377,6 +390,8 @@ export class Agent<Context = undefined, Output = string> {
     })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
+  inputGuardrails: readonly InputGuardrail<Context>[];
+  outputGuardrails: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
   transformContext?: ContextTransform<Context>;
   provider: NativeProvider;
@@ -409,6 +424,8 @@ export class Agent<Context = undefined, Output = string> {
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
     this.beforeComplete = options.beforeComplete;
+    this.inputGuardrails = captureGuardrails(options.inputGuardrails);
+    this.outputGuardrails = captureGuardrails(options.outputGuardrails);
     this.beforeCompact = options.beforeCompact;
     this.transformContext = options.transformContext;
     this.provider = options.provider ?? new NativeProvider();
@@ -663,6 +680,7 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
+    const guardrailInput = input === null ? undefined : structuredClone(input);
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
@@ -680,6 +698,8 @@ export class Agent<Context = undefined, Output = string> {
       instructionFiles: options.instructionFiles,
       discoverAgentsMd: options.discoverAgentsMd,
       projectGuidance: options.projectGuidance,
+      inputGuardrails: options.inputGuardrails,
+      outputGuardrails: options.outputGuardrails,
       signal: options.signal,
       provider: options.provider,
       model: options.model,
@@ -727,6 +747,7 @@ export class Agent<Context = undefined, Output = string> {
       ])) as CoreSession<Output>;
     }
     return runOwnedSession(session, preparedInput, {
+      guardrailInput,
       maxModelSteps,
       budget,
       returnState: options.returnState,
@@ -762,6 +783,15 @@ export class Agent<Context = undefined, Output = string> {
       : owned
         ? owned.beforeComplete
         : this.beforeComplete;
+    const inputGuardrails =
+      opening?.inputGuardrails ?? captureGuardrails(options.inputGuardrails);
+    const outputGuardrails =
+      opening?.outputGuardrails ?? captureGuardrails(options.outputGuardrails);
+    const agentInputGuardrails =
+      opening?.agentInputGuardrails ?? captureGuardrails(this.inputGuardrails);
+    const agentOutputGuardrails =
+      opening?.agentOutputGuardrails ??
+      captureGuardrails(this.outputGuardrails);
     const beforeCompact = opening ? opening.beforeCompact : this.beforeCompact;
     const transformContext = opening
       ? opening.transformContext
@@ -940,6 +970,8 @@ export class Agent<Context = undefined, Output = string> {
               realtime: this.realtime,
               decisions,
               beforeComplete,
+              inputGuardrails: agentInputGuardrails,
+              outputGuardrails: agentOutputGuardrails,
               programmaticToolCalling,
               beforeCompact,
               transformContext,
@@ -1073,7 +1105,13 @@ export class Agent<Context = undefined, Output = string> {
     )
       throw new TypeError('programmaticToolCalling reserves exec and wait');
     const graph = profiles
-      ? captureProfileRuntimes(profiles, catalog, instructions)
+      ? captureProfileRuntimes(
+          profiles,
+          catalog,
+          instructions,
+          outputGuardrails.length > 0,
+          inputGuardrails.length + agentInputGuardrails.length > 0,
+        )
       : undefined;
     const graphNative = graph ? await binding() : undefined;
     const restoredSource =
@@ -1430,6 +1468,10 @@ export class Agent<Context = undefined, Output = string> {
                 false),
             before_complete:
               beforeComplete !== undefined ||
+              agentOutputGuardrails.length > 0 ||
+              outputGuardrails.length > 0 ||
+              agentInputGuardrails.length > 0 ||
+              inputGuardrails.length > 0 ||
               (completedGraph?.roster.some(
                 (profile) => profile.before_complete === true,
               ) ??
@@ -1458,7 +1500,14 @@ export class Agent<Context = undefined, Output = string> {
                 ),
                 _native_agent_max_depth: nativeAgents.maxDepth,
                 _native_agent_before_step:
-                  nativeAgents.beforeStep !== undefined,
+                  nativeAgents.beforeStep !== undefined ||
+                  [
+                    ...inputGuardrails,
+                    ...agentInputGuardrails,
+                    ...(profiles?.flatMap(
+                      (profile) => profile.declaration.inputGuardrails,
+                    ) ?? []),
+                  ].some((guard) => guard.childCallback !== undefined),
               }
             : {}),
           tool_policy: {
@@ -1507,6 +1556,10 @@ export class Agent<Context = undefined, Output = string> {
             } as AgentOptions<Context, Output>),
           ) as Agent<any, any>),
         beforeComplete,
+        inputGuardrails,
+        outputGuardrails,
+        agentInputGuardrails,
+        agentOutputGuardrails,
         beforeCompact,
         transformContext,
         contextTransformPurpose,
@@ -1572,6 +1625,10 @@ export class Agent<Context = undefined, Output = string> {
             profiles,
             decisions,
             beforeComplete,
+            inputGuardrails,
+            outputGuardrails,
+            agentInputGuardrails,
+            agentOutputGuardrails,
             factory,
             instructions,
             instructionFiles: files,
@@ -1731,6 +1788,8 @@ export function captureAgentProfiles<Context, Output>(
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
+      inputGuardrails: source.inputGuardrails,
+      outputGuardrails: source.outputGuardrails,
       beforeCompact: source.beforeCompact,
       transformContext: source.transformContext,
     } as AgentOptions<Context, Output>);

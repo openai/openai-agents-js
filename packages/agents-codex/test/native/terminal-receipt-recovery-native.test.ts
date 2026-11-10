@@ -98,7 +98,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const first = worker({ directory, effects, url, holdReceipt: true });
       const opened = await first.wait('opened');
       await first.wait('durable-receipt');
-      expect(first.messages.some((m) => m.type === 'validated')).toBe(false);
+      // Admission validates before publication; durable data still grants no fresh terminal receipt.
+      expect(first.messages.filter((m) => m.type === 'validated')).toEqual([
+        { type: 'validated', value: 'accepted once' },
+      ]);
       first.child.kill('SIGKILL');
       expect((await first.exited).signal).toBe('SIGKILL');
       // The sole prior writer has exited. This is the same explicit stale-lease cleanup used by custom-storage-durability-native.test.ts.

@@ -54,7 +54,13 @@ export let issueSubagent: (
 /** A child can observe and await its exact native work; controls belong to Subagent. */
 export interface ChildTurn extends Pick<
   Turn<string>,
-  'sessionId' | 'turnId' | 'submissionId' | 'childId' | 'instanceId' | 'events'
+  | 'guardrailResults'
+  | 'sessionId'
+  | 'turnId'
+  | 'submissionId'
+  | 'childId'
+  | 'instanceId'
+  | 'events'
 > {
   wait(): Promise<ChildCompleted>;
   wait(
@@ -185,6 +191,7 @@ export function issueChildTurn(
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
       repairAttempts: Object.freeze([]),
+      guardrailResults: turn.guardrailResults,
     });
   };
   const turn: Turn<string> = issueTurn(
