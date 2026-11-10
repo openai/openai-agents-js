@@ -16,7 +16,7 @@ use codex_core_api::{
     NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec, SqliteConfig,
 };
 use codex_exec_server::{
-    Environment, EnvironmentInfo, ExecParams, ExecProcessEvent, ExecServerError,
+    Environment, EnvironmentInfo, ExecOutputStream, ExecParams, ExecProcessEvent, ExecServerError,
     ExecServerRuntimeOptions, FileSystemSandboxContext, GetMetadataOptions, LOCAL_ENVIRONMENT_ID,
     LocalWriteRoots, ProcessId, REMOTE_ENVIRONMENT_ID, RemoteEnvironmentOptions,
 };
@@ -41,6 +41,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio_rustls::rustls;
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, error::TlsError};
+
+#[cfg(target_os = "linux")]
+#[path = "linux_apparmor_probe.rs"]
+mod linux_apparmor_probe;
 
 pub async fn for_unattached_threads(config: &Config) -> Result<EnvironmentManager> {
     local_environment_manager(config, /*restricted*/ false).await
@@ -1869,23 +1873,124 @@ async fn probe_local_sandbox(
     } else {
         SandboxType::LinuxSeccomp
     };
+    let sandbox_matches = process.sandbox_type == Some(expected_sandbox);
     let mut events = process.process.subscribe_events();
-    let verified = tokio::time::timeout(Duration::from_secs(5), async {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let outcome = tokio::time::timeout_at(deadline, async {
+        let mut readiness =
+            LocalSandboxReadiness::new(cfg!(target_os = "linux") && sandbox_matches);
         while let Ok(event) = events.recv().await {
-            match event {
-                ExecProcessEvent::Output(_) => {}
-                ExecProcessEvent::Exited { exit_code, .. } => return exit_code == 0,
-                _ => return false,
+            if let Some(outcome) = readiness.observe(event) {
+                return outcome;
             }
         }
-        false
+        LocalSandboxOutcome::Failed
     })
     .await;
-    if process.sandbox_type != Some(expected_sandbox) || !matches!(verified, Ok(true)) {
-        let _ = process.process.terminate().await;
-        anyhow::bail!("local executor could not establish the platform sandbox");
+    if sandbox_matches && matches!(outcome, Ok(LocalSandboxOutcome::Ready)) {
+        return Ok(());
     }
-    Ok(())
+    let _ = process.process.terminate().await;
+    #[cfg(target_os = "linux")]
+    if matches!(outcome, Ok(LocalSandboxOutcome::PossibleAppArmorDenial))
+        && confirm_linux_apparmor_denial(environment, deadline).await
+    {
+        anyhow::bail!(concat!(
+            "local executor could not establish the platform sandbox: ",
+            "AppArmor has restricted unprivileged user namespace capabilities for the installed ",
+            "codex-linux-sandbox helper. Ask an administrator to check the kernel audit log for ",
+            "the failed Bubblewrap launch and load the helper profile if the log confirms the denial. See ",
+            "https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/local-execution.md",
+            "#allow-the-linux-sandbox-helper-to-use-user-namespaces-on-ubuntu-2404",
+        ));
+    }
+    anyhow::bail!("local executor could not establish the platform sandbox");
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LocalSandboxOutcome {
+    Ready,
+    Failed,
+    PossibleAppArmorDenial,
+}
+
+const BWRAP_APPARMOR_STDERR: &[u8] =
+    b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n";
+
+struct LocalSandboxReadiness {
+    // Match the complete stock Ubuntu Bubblewrap message across chunks without
+    // retaining or surfacing any process output.
+    remaining_stderr: Option<&'static [u8]>,
+    exited_nonzero: bool,
+}
+
+impl LocalSandboxReadiness {
+    fn new(check_apparmor: bool) -> Self {
+        Self {
+            remaining_stderr: check_apparmor.then_some(BWRAP_APPARMOR_STDERR),
+            exited_nonzero: false,
+        }
+    }
+
+    fn observe(&mut self, event: ExecProcessEvent) -> Option<LocalSandboxOutcome> {
+        match event {
+            ExecProcessEvent::Output(chunk) if chunk.stream == ExecOutputStream::Stderr => {
+                self.remaining_stderr = self
+                    .remaining_stderr
+                    .and_then(|remaining| remaining.strip_prefix(chunk.chunk.0.as_slice()));
+                if self.exited_nonzero && self.remaining_stderr.is_none() {
+                    return Some(LocalSandboxOutcome::Failed);
+                }
+            }
+            ExecProcessEvent::Output(_) => {}
+            ExecProcessEvent::Exited { exit_code: 0, .. } => {
+                return Some(LocalSandboxOutcome::Ready);
+            }
+            ExecProcessEvent::Exited { .. } if self.remaining_stderr.is_some() => {
+                self.exited_nonzero = true;
+            }
+            // Exit can arrive before the final output chunk. Closed marks the
+            // end of the stream and rules out a match against a partial prefix.
+            ExecProcessEvent::Closed { .. }
+                if self.exited_nonzero && self.remaining_stderr == Some(&[]) =>
+            {
+                return Some(LocalSandboxOutcome::PossibleAppArmorDenial);
+            }
+            _ => return Some(LocalSandboxOutcome::Failed),
+        }
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn confirm_linux_apparmor_denial(
+    environment: &Environment,
+    deadline: tokio::time::Instant,
+) -> bool {
+    use std::process::Stdio;
+
+    let Some(helper) = environment
+        .local_runtime_paths()
+        .and_then(|paths| paths.codex_linux_sandbox_exe.as_deref())
+    else {
+        return false;
+    };
+    if tokio::time::Instant::now() >= deadline {
+        return false;
+    }
+    let mut command = tokio::process::Command::new(helper);
+    command
+        .arg(linux_apparmor_probe::ARG)
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    matches!(
+        tokio::time::timeout_at(deadline, command.status()).await,
+        Ok(Ok(status)) if status.code() == Some(linux_apparmor_probe::CONFIRMED_EXIT_CODE)
+    )
 }
 
 fn startup_cause(mut error: &ExecServerError) -> String {
@@ -1969,7 +2074,85 @@ mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
     use codex_core_api::AbsolutePathBuf;
+    use codex_exec_server::{ByteChunk, ProcessOutputChunk};
     use serde_json::json;
+
+    fn readiness_output(seq: u64, stream: ExecOutputStream, bytes: &[u8]) -> ExecProcessEvent {
+        ExecProcessEvent::Output(ProcessOutputChunk {
+            seq,
+            stream,
+            chunk: ByteChunk::from(bytes.to_vec()),
+        })
+    }
+
+    fn readiness_outcome(
+        events: impl IntoIterator<Item = ExecProcessEvent>,
+    ) -> LocalSandboxOutcome {
+        let mut readiness = LocalSandboxReadiness::new(true);
+        events
+            .into_iter()
+            .find_map(|event| readiness.observe(event))
+            .unwrap_or(LocalSandboxOutcome::Failed)
+    }
+
+    #[test]
+    fn sandbox_readiness_matches_stderr_that_completes_after_exit() {
+        let events = [
+            readiness_output(0, ExecOutputStream::Stderr, b"bwrap: loopback: Failed "),
+            ExecProcessEvent::Exited {
+                seq: 1,
+                exit_code: 1,
+                sandbox_denied: None,
+            },
+            readiness_output(
+                2,
+                ExecOutputStream::Stderr,
+                b"RTM_NEWADDR: Operation not permitted\n",
+            ),
+            ExecProcessEvent::Closed { seq: 3 },
+        ];
+        assert_eq!(
+            readiness_outcome(events),
+            LocalSandboxOutcome::PossibleAppArmorDenial
+        );
+    }
+
+    #[test]
+    fn sandbox_readiness_requires_complete_stderr_and_a_failed_exit() {
+        let failure = ExecProcessEvent::Exited {
+            seq: 1,
+            exit_code: 1,
+            sandbox_denied: None,
+        };
+        let closed = ExecProcessEvent::Closed { seq: 2 };
+        let matching = readiness_output(0, ExecOutputStream::Stderr, BWRAP_APPARMOR_STDERR);
+        for events in [
+            vec![matching.clone(), failure.clone()],
+            vec![
+                readiness_output(0, ExecOutputStream::Stdout, BWRAP_APPARMOR_STDERR),
+                failure.clone(),
+                closed.clone(),
+            ],
+            vec![
+                matching.clone(),
+                failure,
+                readiness_output(2, ExecOutputStream::Stderr, b"additional error\n"),
+                ExecProcessEvent::Closed { seq: 3 },
+            ],
+        ] {
+            assert_eq!(readiness_outcome(events), LocalSandboxOutcome::Failed);
+        }
+
+        let events = [
+            matching,
+            ExecProcessEvent::Exited {
+                seq: 1,
+                exit_code: 0,
+                sandbox_denied: None,
+            },
+        ];
+        assert_eq!(readiness_outcome(events), LocalSandboxOutcome::Ready);
+    }
 
     #[test]
     fn mount_wire_rejects_unknown_authority_without_reflecting_secrets() {
