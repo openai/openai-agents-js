@@ -54,10 +54,16 @@ function fixture(
     ),
     _voiceFunctionTools: vi.fn((tools: readonly unknown[]) => tools),
     _prepareRealtimeMcp: vi.fn(async () => {}),
-    _realtimeFunctionTools: vi.fn(async (_tools: readonly unknown[]) => ({
-      tools: [],
-      selectionId: null,
-    })),
+    _realtimeFunctionTools: vi.fn(
+      async (
+        _tools: readonly unknown[],
+      ): Promise<
+        Awaited<ReturnType<Session<unknown>['_realtimeFunctionTools']>>
+      > => ({
+        tools: [],
+        selectionId: null,
+      }),
+    ),
     close: vi.fn(),
     _checkVoiceOperation: vi.fn(),
     _checkVoiceAdapterOperation: vi.fn(),
@@ -3153,5 +3159,51 @@ it('preserves bounded structured hosted errors and releases their queue charge',
       error,
     });
   }
+  await peer.owner.close();
+});
+
+it('keeps the first explicit tool capture when profile policy reads a newer source', async () => {
+  const peer = fixture({ tools: [{} as never], isToolEnabled: () => true });
+  const tools = [{ name: 'lookup', parameters: { type: 'object' } }];
+  let currentSource = 'source-A';
+  Object.assign(peer.session, {
+    _realtimeSourceSnapshot: vi.fn(async () => ({
+      selection_id: currentSource,
+    })),
+    _realtimePolicySource: vi.fn(async () => ({
+      selectionId: currentSource,
+      agent: { name: 'captured Agent' },
+      context: undefined,
+      tools: [{ type: 'function', name: 'lookup' }],
+    })),
+  });
+  peer.session._realtimeFunctionTools.mockImplementation(async () => ({
+    tools,
+    selectionId: currentSource,
+  }));
+  await peer.owner._start();
+  const captured = deferred<void>();
+  const resume = deferred<void>();
+  peer.session._realtimeFunctionTools.mockImplementationOnce(async () => {
+    const selectionId = currentSource;
+    captured.resolve();
+    await resume.promise;
+    return { tools, selectionId };
+  });
+  peer.call.mockClear();
+  const refreshing = peer.owner._syncProfile(true);
+  await captured.promise;
+  // Accepted equal-schema catalog replacement during the awaited gap.
+  // First receipt for native stale-source rejection.
+  currentSource = 'source-B';
+  resume.resolve();
+  await refreshing;
+  const update = peer.call.mock.calls.find(
+    ([operation]) => operation === 'realtime_conversation_update_sdk',
+  )![1];
+  expect(update.profile).toMatchObject({
+    function_tools: tools,
+    expected_selection_id: 'source-A',
+  });
   await peer.owner.close();
 });
