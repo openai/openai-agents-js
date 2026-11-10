@@ -245,21 +245,26 @@ nativeIt.each(['model', 'instructions', 'tools'] as const)(
         type: 'response.created',
         response: { id: 'retained-voice' },
       });
+      const retainedCall = {
+        type: 'function_call',
+        id: 'retained-voice-item',
+        call_id: 'retained-voice-call',
+        name: 'voice_lookup',
+        arguments: '{}',
+        status: 'completed',
+      };
+      peer.send({
+        type: 'response.output_item.done',
+        response_id: 'retained-voice',
+        output_index: 0,
+        item: retainedCall,
+      });
       peer.send({
         type: 'response.done',
         response: {
           id: 'retained-voice',
           status: 'completed',
-          output: [
-            {
-              type: 'function_call',
-              id: 'retained-voice-item',
-              call_id: 'retained-voice-call',
-              name: 'voice_lookup',
-              arguments: '{}',
-              status: 'completed',
-            },
-          ],
+          output: [retainedCall],
         },
       });
       await vi.waitFor(() => expect(voiceExecute).toHaveBeenCalledOnce(), {
