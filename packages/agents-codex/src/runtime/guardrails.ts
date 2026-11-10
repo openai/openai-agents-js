@@ -65,25 +65,32 @@ export function captureGuardrails<
 >(checks: readonly T[] | undefined): readonly T[] {
   return Object.freeze(
     (checks ?? []).map((check) => {
-      if (typeof check.name !== 'string' || !check.name.trim())
+      const name = check.name;
+      if (typeof name !== 'string' || !name.trim())
         throw new TypeError('Guardrail name must be a nonempty string');
-      if (typeof check.callback !== 'function')
+      const callback = check.callback;
+      if (typeof callback !== 'function')
         throw new TypeError('Guardrail callback must be a function');
-      if (
-        'runInParallel' in check &&
-        check.runInParallel !== undefined &&
-        typeof check.runInParallel !== 'boolean'
-      )
+      const runInParallel =
+        'runInParallel' in check ? check.runInParallel : undefined;
+      if (runInParallel !== undefined && typeof runInParallel !== 'boolean')
         throw new TypeError('runInParallel must be a boolean');
-      if (
-        'childCallback' in check &&
-        check.childCallback !== undefined &&
-        typeof check.childCallback !== 'function'
-      )
+      const childCallback =
+        'childCallback' in check ? check.childCallback : undefined;
+      if (childCallback !== undefined && typeof childCallback !== 'function')
         throw new TypeError('childCallback must be a function');
-      const captured = { ...check };
+      const captured = {
+        name,
+        callback: Function.prototype.bind.call(callback, check),
+        ...(runInParallel === undefined ? {} : { runInParallel }),
+        ...(childCallback === undefined
+          ? {}
+          : {
+              childCallback: Function.prototype.bind.call(childCallback, check),
+            }),
+      };
       Object.freeze(captured);
-      return captured;
+      return captured as T;
     }),
   );
 }
