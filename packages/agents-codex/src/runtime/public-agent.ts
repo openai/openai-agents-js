@@ -300,6 +300,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'rateLimits'
   | 'buildRealtimeSipConfig'
   | 'realtime'
+  | 'realtimeUsage'
   | 'getActiveAgent'
   | 'goal'
   | 'setPausedGoal'

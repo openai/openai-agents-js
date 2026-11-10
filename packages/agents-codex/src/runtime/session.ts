@@ -1115,6 +1115,15 @@ export class Session<OutputT = string, Context = unknown> {
 
   private realtimeOwner?: ReturnType<typeof createNativeRealtimeOwner>;
 
+  /** Detached speech usage for the current connection, separate from thread usage.
+   * Undefined means no reported usage or no current connection. A new connection
+   * starts new totals; retain its RealtimeSession to read those totals after close.
+   */
+  get realtimeUsage():
+    import('./realtime-usage').NativeRealtimeUsage | undefined {
+    return this.realtimeOwner?.usage;
+  }
+
   /**
    * Build the call-accept request body for an inbound SIP call using the captured
    * Agent instructions, tools, and handoffs. Send it to the Realtime calls accept
@@ -7958,6 +7967,7 @@ export class Session<OutputT = string, Context = unknown> {
           const context = {
             decide: scope.decide,
             [decisionBinding]: scope[decisionBinding],
+            realtimeUsage: this.realtimeUsage,
             context: this.options.context,
             submission,
             call: managedCallInfo(
@@ -8875,6 +8885,7 @@ export class Session<OutputT = string, Context = unknown> {
         traceContext: nativeTraceContext(
           msg._sdk_trace_context as TraceContextHeaders | null | undefined,
         ),
+        realtimeUsage: this.realtimeUsage,
         context: this.options.context,
         submission,
         call: managedCallInfo(
