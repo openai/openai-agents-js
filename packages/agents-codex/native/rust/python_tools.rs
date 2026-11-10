@@ -1513,8 +1513,29 @@ impl PythonTools {
         id: u64,
         specs: Vec<DynamicToolSpec>,
         defaults: Option<Vec<usize>>,
-        terminal: Option<TerminalSlots>,
+        mut terminal: Option<TerminalSlots>,
+        allocate_generation: bool,
     ) -> Result<u64> {
+        // SDK callers hold the native mutation transaction across allocation and
+        // publication. Voice admissions may have consumed intervening IDs.
+        let id = if allocate_generation {
+            if let Some(config) = terminal.as_ref() {
+                ensure!(
+                    config.generation == id.to_string(),
+                    "Expired terminal replacement generation"
+                );
+            }
+            let next = self
+                .generation_high_water()
+                .checked_add(1)
+                .context("Python tool generation counter exhausted")?;
+            if let Some(config) = terminal.as_mut() {
+                config.generation = next.to_string();
+            }
+            next
+        } else {
+            id
+        };
         let terminal_slots = if let Some(config) = terminal {
             ensure!(
                 config.generation == id.to_string(),

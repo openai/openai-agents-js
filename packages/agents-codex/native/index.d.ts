@@ -281,6 +281,7 @@ export class NativeThread {
     specs_json: string,
     default_slots_json?: string,
     terminal_slots_json?: string,
+    allocate_generation?: boolean,
   ): Promise<NativeId>;
   _replace_mcp_servers(
     servers_json: string,
@@ -292,6 +293,7 @@ export class NativeThread {
     cancel_on_resource_close?: boolean,
     terminal_slots_json?: string,
     default_slots_json?: string,
+    allocate_generation?: boolean,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(response_json: string): Promise<boolean>;
