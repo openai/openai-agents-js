@@ -8807,6 +8807,7 @@ describe('executeShellActions', () => {
     });
 
     it('applies tool timeouts to schema failure fallbacks', async () => {
+      const fallback = Promise.withResolvers<void>();
       let redactToolData = false;
       const flagSpy = vi
         .spyOn(logger, 'dontLogToolData', 'get')
@@ -8825,7 +8826,7 @@ describe('executeShellActions', () => {
           },
         ],
         errorFunction: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 30));
+          await fallback.promise;
           return 'late fallback';
         },
         timeoutMs: 5,
@@ -8853,6 +8854,7 @@ describe('executeShellActions', () => {
         expect(error).toBeInstanceOf(ToolTimeoutError);
         expect((error as ToolTimeoutError).state).toBeUndefined();
       } finally {
+        fallback.resolve();
         flagSpy.mockRestore();
       }
     });

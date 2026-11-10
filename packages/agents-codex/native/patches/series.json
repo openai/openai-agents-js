@@ -397,9 +397,13 @@
       "sha256": "cd078f600aafb1078014ec3005198de0637d2f66c7a45c2a3ca35f1d054dd4af"
     },
     {
+      "path": "0170-canonical-history-transactions.patch",
+      "sha256": "e88a2db32ae35587399c2eeae49284f96ef83383399b26f60961f9748d74e779"
+    },
+    {
       "path": "0152-native-realtime-response-options.patch",
       "sha256": "fa77798ebf5d7146262143836f490bf11d24eecaeb8991e47baa08be044e0935"
     }
   ],
-  "result_tree": "f8cec5023dd320bbb36698e2d3ca0a0b1fded636"
+  "result_tree": "198681890a822c2cce8740886fd69c0c4e4e8656"
 }

@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as nativeBinding from '../src/runtime/binding';
 import * as turnReceipt from '../src/runtime/turn-receipt';
-import { Agent, NativeProvider, tool, HttpMCP, checklist } from '../src';
+import {
+  Agent,
+  NativeProvider,
+  tool,
+  HttpMCP,
+  checklist,
+  webSearch,
+  fileSearch,
+} from '../src';
 import { z } from 'zod';
 import {
   capturePreparedRequest,
@@ -107,6 +115,8 @@ it.each([
   'deferred-function',
   'deferred-mcp',
   'checklist',
+  'hosted-web-search',
+  'hosted-file-search',
 ] as const)(
   'rejects unsupported %s before provider acquisition or editor invocation',
   async (profile) => {
@@ -114,6 +124,9 @@ it.each([
       profile === 'websocket' ? {} : { supportsWebsockets: false },
     );
     const acquire = vi.spyOn(provider, '_acquire');
+    const loader = vi
+      .spyOn(nativeBinding, 'binding')
+      .mockRejectedValue(new Error('unexpected native loading'));
     const editor = vi.fn(() => undefined);
     const tools =
       profile === 'deferred-function'
@@ -136,7 +149,11 @@ it.each([
             ]
           : profile === 'checklist'
             ? [checklist()]
-            : [];
+            : profile === 'hosted-web-search'
+              ? [webSearch({ route: 'hosted' })]
+              : profile === 'hosted-file-search'
+                ? [fileSearch('vs_fixture')]
+                : [];
     await expect(
       new Agent({ instructions: 'Answer.', provider, tools }).run('go', {
         prepareRequest: editor,
@@ -145,6 +162,7 @@ it.each([
       profile === 'websocket' ? 'supportsWebsockets: false' : 'eager function',
     );
     expect(acquire).not.toHaveBeenCalled();
+    expect(loader).not.toHaveBeenCalled();
     expect(editor).not.toHaveBeenCalled();
     await provider.close();
   },
