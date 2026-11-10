@@ -467,7 +467,11 @@
     {
       "path": "sdk-realtime-provider-controls-and-tool-history.patch",
       "sha256": "c322e9722ee12080ed6f0209222c816600127e1b2dbb37b1e3aac371228c3421"
+    },
+    {
+      "path": "0098-private-plain-modelclient-bridge.patch",
+      "sha256": "94111877b4a837ca0425f6d935de253fd603a895ff50a4a11cb913a9e4b1246a"
     }
   ],
-  "result_tree": "d39b9c3ad7958a3a2a8000df9e84b4ca5d452267"
+  "result_tree": "57cad14614cd49cb9666e01c1514b8500b043924"
 }

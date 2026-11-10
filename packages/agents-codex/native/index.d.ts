@@ -8,7 +8,19 @@ export class _ProviderHttpTransports {
 export function _create_provider_http_transports(
   engine: Engine,
 ): _ProviderHttpTransports;
+export class _PlainRun {
+  private constructor();
+  cancel(): void;
+  wait(): Promise<string>;
+  close(): Promise<void>;
+}
 export class Engine {
+  _plain_run_supported(
+    config: string,
+    runtime: string,
+    model?: string | null,
+  ): Promise<boolean>;
+  _plain_run(request: string): Promise<_PlainRun>;
   private constructor();
   readonly startup_warnings: string[];
   _sentinel_bind(

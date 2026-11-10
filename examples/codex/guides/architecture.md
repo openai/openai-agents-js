@@ -22,7 +22,7 @@ The design puts the loop and native tools in Codex and keeps application integra
 | `Session` | One live conversation, including its history, callbacks, and runtime resources. |
 | `Turn` | A handle for submitted work, which can involve several model requests and tool calls. |
 
-For one answer, `agent.run()` opens and closes a Session for you. For a conversation, open an explicit Session, submit input, and await `turn.wait()` for the result. Reusing an Agent creates no shared conversation by itself. The [greeting](../basic.ts) and [conversation](../conversation.ts) examples show both patterns.
+For one answer, `agent.run()` has been owning the request and its cleanup. For a conversation, open an explicit Session, submit input, and await `turn.wait()` for the result. Reusing an Agent creates no shared conversation by itself. The [greeting](../basic.ts) and [conversation](../conversation.ts) examples show both patterns.
 
 ## Where the code runs
 

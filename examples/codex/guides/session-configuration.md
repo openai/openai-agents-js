@@ -26,7 +26,7 @@ With the current [source build](building.md), provider options accept `headers`,
 
 ### Provider lifetime
 
-Your application owns the provider, including the default provider created by `new Agent(...)` when you omit `provider`. That default is available as `agent.provider`. Closing a Session or completing `agent.run()` releases that Session's resources. The provider remains available for later Sessions, including its reusable HTTP connections.
+Your application owns the provider, including the default provider created by `new Agent(...)` when you omit `provider`. That default is available as `agent.provider`. Closing a Session or completing `agent.run()` has been releasing that operation's resources. The provider remains available for later Sessions, including its reusable HTTP connections.
 
 With the current [source build](building.md), a shared `NativeProvider` can reuse an idle engine for an eligible `agent.run()` call. Reuse requires an API key and streaming HTTP. Set `supportsWebsockets: false` to use HTTP with the default endpoint.
 

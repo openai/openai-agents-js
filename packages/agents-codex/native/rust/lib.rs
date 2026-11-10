@@ -34,6 +34,7 @@ mod native_interception;
 mod node_runtime;
 mod ops;
 mod options;
+mod plain_run;
 mod project_search;
 mod provider_error;
 mod provider_transports;
@@ -395,8 +396,58 @@ impl Engine {
     }
 }
 
+#[napi(js_name = "_PlainRun")]
+pub struct PlainRun {
+    inner: RuntimeOwned<plain_run::Run>,
+}
+
+#[napi]
+impl PlainRun {
+    #[napi]
+    pub fn cancel(&self) {
+        self.inner.stop();
+    }
+
+    #[napi]
+    pub async fn wait(&self) -> napi::Result<String> {
+        self.inner.wait().await.map_err(native_error)
+    }
+
+    #[napi]
+    pub async fn close(&self) -> napi::Result<()> {
+        self.inner.close().await.map_err(native_error)
+    }
+}
+
 #[napi]
 impl Engine {
+    #[napi(js_name = "_plain_run_supported")]
+    pub async fn plain_run_supported(
+        &self,
+        config: String,
+        runtime: String,
+        model: Option<String>,
+    ) -> napi::Result<bool> {
+        let engine = self.current()?;
+        let _operation = engine.operation(false).map_err(native_error)?;
+        if !engine
+            .matches_private_configuration(&config, &runtime)
+            .map_err(native_error)?
+        {
+            return Ok(false);
+        }
+        Ok(plain_run::supported(&engine, model).await)
+    }
+
+    #[napi(js_name = "_plain_run")]
+    pub async fn plain_run(&self, request: String) -> napi::Result<PlainRun> {
+        let engine = self.current()?;
+        let run = plain_run::Run::start(Arc::clone(&engine), &request).map_err(native_error)?;
+        Ok(PlainRun {
+            inner: RuntimeOwned::new(run),
+        })
+    }
+
     #[napi(js_name = "_sentinel_bind")]
     pub fn _sentinel_bind(
         &self,
