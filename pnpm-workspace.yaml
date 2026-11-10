@@ -9,6 +9,8 @@ allowBuilds:
   '@tailwindcss/oxide': true
   cbor-extract: true
   esbuild: true
+  # Use Koffi's packaged platform binary; never invoke its compiler fallback.
+  koffi: false
   protobufjs: true
   sharp: true
 
