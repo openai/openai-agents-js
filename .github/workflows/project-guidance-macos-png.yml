@@ -1,0 +1,107 @@
+name: macOS project guidance PNG diagnostic
+
+on:
+  push:
+    branches: [ci/project-guidance-macos-png-20982c34]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  guidance:
+    if: github.repository == 'openai/openai-agents-js'
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      BASE: 20982c34e1c3b9437ff101e424c403f7e1c575a2
+      FIXTURE: packages/agents-codex/test/native/local-project-guidance.test.ts
+      NATIVE_INPUTS: e463ad8ac0efce15f28cbd46080f8b0ef0bd813d15ac5d8756a87aaf4b8ea78d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24.14.0'
+          package-manager-cache: false
+      - name: Verify branch scope and runner
+        run: |
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          test "$(git rev-parse "$BASE^{tree}")" = 44a4b68e1a53a3efe8181eb877c0422364e2e6a2
+          diff -u <(printf '%s\n' .github/workflows/project-guidance-macos-png.yml "$FIXTURE") \
+            <(git diff --name-only "$BASE" HEAD)
+          printf '%s  %s\n' 8f86828e07bdbc098621be183d4168802a3c3905cbfe665db141793b8acd0d91 "$FIXTURE" | shasum -a 256 -c -
+          test "$(id -u)" -ne 0
+          test -x /usr/bin/sandbox-exec
+          sw_vers
+          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "darwin-arm64")'
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Install locked JS dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Restore the exact Darwin transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_ARTIFACT: '{"artifact-id":"13800913483","artifact-digest":"ff2287ac507eb3bb92c733de2c33282936e7631b9d255d547aa15ee592c38c80"}'
+        run: node scripts/restore-native-bundle.mjs
+      - name: Verify native receipt and executor fixture
+        run: |
+          shasum -a 256 -c <<'SHA256'
+          b44fa21d65c2bee1394a6b28826b829d03793e094afb276c951ad635a007a2bc  packages/agents-codex/native/build-receipt.json
+          d02bc4b53f1ec004a28df95efbf8b1a2282db4db6d94056933337fa719ebe711  packages/agents-codex/native/test-bin/exec-server-fixture
+          SHA256
+          test -x packages/agents-codex/native/test-bin/exec-server-fixture
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import { verifyNativeReceipt } from './scripts/alpha-package.mjs';
+          import { nativeComparisonPaths, nativeInputs } from './scripts/native-bundle-inputs.mjs';
+
+          const index = execFileSync('git', ['ls-files', '--stage', '-z', '--', ...nativeComparisonPaths()]);
+          assert.equal(index.toString().split('\0').length - 1, 329);
+          assert.equal(nativeInputs(), process.env.NATIVE_INPUTS);
+          const receipt = JSON.parse(readFileSync('packages/agents-codex/native/build-receipt.json', 'utf8'));
+          assert.equal(receipt.sources.codex.result_tree, '4d1659c4b8027be6280c62186b8b54dda6da6502');
+          assert.equal(Object.keys(receipt.inputs).length, 318);
+          await verifyNativeReceipt(process.cwd(), 'darwin-arm64');
+          console.log('Verified 329 tracked native entries, 318 receipt inputs, four products and the executor fixture.');
+          JS
+      - name: Build the JS wrappers
+        run: |
+          pnpm -r -F '@openai/*' prebuild
+          node scripts/build-packages.mjs
+          git diff --exit-code HEAD
+      - name: Run the public Session guidance fixture under required Seatbelt
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          export CODEX_HOME="$RUNNER_TEMP/project-guidance-codex-home"
+          mkdir -m 0700 "$CODEX_HOME"
+          result="$RUNNER_TEMP/project-guidance.json"
+          env -u OPENAI_API_KEY -u OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX pnpm test:native "$FIXTURE" \
+            --maxWorkers=1 --reporter=verbose --reporter=json --outputFile.json="$result"
+          node --input-type=module - "$result" <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+
+          const report = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          assert.equal(report.testResults.length, 1);
+          assert.ok(report.testResults[0].name.endsWith(process.env.FIXTURE));
+          const rows = report.testResults[0].assertionResults;
+          assert.equal(rows.length, 13);
+          assert.ok(rows.every(({ status }) => status === 'passed'));
+          for (const title of [
+            'view_image reads src/pixel.png via physical absolute (cwd: physical)',
+            'view_image reads src/outside.png via outside symlink (cwd: alias)',
+          ]) {
+            assert.equal(rows.filter((row) => row.title === title).length, 1);
+          }
+          console.log('13 public Session rows passed with zero skips, including both PNG selectors.');
+          JS

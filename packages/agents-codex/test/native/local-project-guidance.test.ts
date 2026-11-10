@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi, type TestContext } from 'vitest';
 import {
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -96,8 +97,10 @@ it.skipIf(!supported).for([
   ['view_image', 'src/pixel.png', 'physical absolute', 'alias'],
   ['view_image', 'src/pixel.png', 'alias absolute', 'alias'],
   ['read_text_file', 'src/source.txt', 'physical absolute', 'physical'],
+  ['view_image', 'src/pixel.png', 'physical absolute', 'physical'],
   ['read_text_file', 'src/outside.txt', 'outside symlink', 'alias'],
   ['read_text_file', 'src/outside.txt', 'outside symlink', 'physical'],
+  ['view_image', 'src/outside.png', 'outside symlink', 'alias'],
 ] as const)(
   '%s reads %s via %s (cwd: %s)',
   { timeout: 150_000 },
@@ -116,8 +119,15 @@ it.skipIf(!supported).for([
       const outsideSymlink = pathKind === 'outside symlink';
       const denied = outsideSymlink || pathKind === 'alias absolute';
       if (outsideSymlink) {
-        const outside = join(scratch, 'outside.txt');
-        await writeFile(outside, outsideText);
+        const outside = join(
+          scratch,
+          operation === 'view_image' ? 'outside.png' : 'outside.txt',
+        );
+        if (operation === 'view_image') {
+          await copyFile(join(root, 'src/pixel.png'), outside);
+        } else {
+          await writeFile(outside, outsideText);
+        }
         await symlink(outside, join(root, file));
       }
       const path = {
@@ -174,6 +184,11 @@ it.skipIf(!supported).for([
           ),
         });
         expect(modelInput(after!)).not.toContain(outsideText);
+        if (operation === 'view_image') {
+          expect(modelInput(after!)).not.toMatch(
+            /"type":"input_image"|data:image\/png;base64,/,
+          );
+        }
         expect(modelInput(after!)).not.toContain(`${marker}_SCOPED`);
       } else if (operation === 'view_image') {
         const png = await readFile(join(root, file));
