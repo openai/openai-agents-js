@@ -48,6 +48,8 @@ For an application-owned trace destination, use the source-built [native trace p
 
 In `0.22.0-alpha.2`, construct `TraceContext` from selected `traceparent` and optional `tracestate` headers, then pass it as `parentTrace` when opening a Session or starting a new operation. The [native trace context example](../native-trace-context.ts) exports `runWithTrace(headers)` for an application that supplies its own ingress instrumentation and model credentials. Configure native telemetry before calling it if you want native spans exported.
 
+The matching source build's [OpenAI trace exporter](trace-processors.md#export-to-openai-or-inspect-locally) has been requiring a known local root descriptor; ingress `parentTrace` alone has not been supplying one. OTLP or an application processor accepting externally parented spans has been providing the export route for these workflows.
+
 `TraceContext` validates and freezes an explicit header carrier. Constructing it does not create a span, configure an exporter, or read an arbitrary JavaScript OpenTelemetry provider's ambient state. A tool callback receives `context.traceContext` for its issuing native tool span; pass that carrier to a nested run or call `toHeaders()` when injecting an outbound request.
 
 An operation's explicit `parentTrace` overrides the Session fallback. Omission or `null` inherits the Session parent. A queued operation captures its selected parent when queued. A restored Session needs a new parent from the application; checkpoints do not establish current tracing context.

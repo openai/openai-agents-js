@@ -9,6 +9,7 @@ for (const mode of [
   'completion-decisions-disabled',
   'completion-decisions-unknown',
   'completion-decisions-refusal',
+  'processor-handlers',
   'lifecycle',
   'preclaim',
   'late',

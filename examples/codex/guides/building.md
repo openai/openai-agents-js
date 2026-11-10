@@ -71,7 +71,7 @@ The current source build places the Codex runtime in `@openai/agents-codex`. Its
 
 ### Build a local bundle for an application
 
-The existing bundle producer supports Linux x64, macOS Apple silicon, and Windows x64. Build on the platform that will run the application. Use a POSIX shell, such as Git Bash on Windows, with the host build tools available on `PATH`.
+The existing bundle producer supports Linux x64 and ARM64, macOS Apple silicon, and Windows x64. Build on the platform that will run the application. Use a POSIX shell, such as Git Bash on Windows, with the host build tools available on `PATH`.
 
 Start from a clean, committed source checkout. The producer records its commit and rejects uncommitted source changes. Complete the source prerequisites above, then run these commands from the repository root. The native `package` command prepares the pinned source and creates the release build required by the producer; the ordinary debug `native:build` is insufficient for packaging.
 

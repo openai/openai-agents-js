@@ -515,6 +515,15 @@ impl EngineState {
         drop(original);
         drop(prepared);
         let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
+        let user_instructions: Arc<dyn UserInstructionsProvider> =
+            if config::discover_agents_md(&runtime_json)? {
+                Arc::new(CodexHomeUserInstructionsProvider::new(
+                    find_codex_home()
+                        .context("Unable to locate the Codex home for AGENTS.md discovery")?,
+                ))
+            } else {
+                Arc::new(options::EmptyUserInstructions)
+            };
         ensure!(
             custom_store.is_none() || !config.update_plan_enabled,
             "custom canonical storage does not support Checklist"
@@ -625,7 +634,6 @@ impl EngineState {
             Self::validate_hosted_search(&config, &info)?;
         }
         let installation_id = ThreadId::new().to_string();
-        let user_instructions = Arc::new(options::EmptyUserInstructions);
         let extension_events = Arc::new(extensions::Events::new());
         let code_mode = config::code_mode_provider(&runtime_json, &config)?.or_else(|| {
             // Mirror ThreadManager's pinned default if no package helper was

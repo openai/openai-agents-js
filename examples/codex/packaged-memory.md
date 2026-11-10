@@ -28,7 +28,7 @@ The example removes its temporary database on exit. Keep an application-owned pr
 
 Open `new SQLiteMemory(path, { scope: trustedScope })` and pass `memory.tools()` to `new Agent({ tools: ... })`. The tools are `memory_get`, `memory_set`, and `memory_delete`. Finish all native work that uses these tools before closing the store. The example uses `using` to close it at the end of each iteration. You can also call `close()` explicitly; repeated calls are safe.
 
-Your application can call `get(key)`, `set(key, value)`, and `delete(key)` directly. A missing key returns `null`; an empty string remains a saved value. Deleting an absent key succeeds. Each synchronous write commits before returning. Scope and key must each contain 1 to 256 UTF-16 code units and cannot be blank. Values can contain up to 65,536 UTF-16 code units. Operations on a closed store fail.
+Your application can call `get(key)`, `set(key, value)`, and `delete(key)` directly. A missing key returns `null`; an empty string remains a saved value. Deleting an absent key succeeds. Each synchronous write commits before returning. Scope and key must each contain 1 to 256 Unicode code points and cannot be blank. Values can contain up to 65,536 Unicode code points. These limits match Python and the tools' JSON Schema `maxLength`: an emoji such as `😀` counts as one code point, even though it uses two UTF-16 code units. Operations on a closed store fail.
 
 Scope, key, and value must contain well-formed Unicode. The store rejects unpaired UTF-16 surrogates before opening a database or executing a statement. Characters such as emoji and the literal replacement character (`U+FFFD`) remain unchanged.
 

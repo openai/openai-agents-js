@@ -127,17 +127,24 @@ The [remote execution example](../remote-executor.ts) accepts an application-sel
 
 Rules accept ASCII hosts, host patterns, and IP addresses. They cover all ports. Rules cannot contain URLs, ports or IPv6 zone identifiers. The SDK captures an immutable canonical copy, removes duplicates and gives denials precedence. Equivalent case, trailing-dot and IPv4-mapped IPv6 forms share checkpoint identity. DNS can resolve before a request is denied.
 
+Both `allowedDomains` and `deniedDomains` reject a lone `*`. Use `NetworkPolicy.allowAll()` or `allowedDomains: ['**']` to allow public hosts. Use exact hosts or scoped host patterns such as `*.example.com` in `deniedDomains`.
+
 ### Allow outbound public hosts
 
-In the current source build, `NetworkPolicy.allowAll()` has been selecting the existing `allowedDomains: ['**']` public-host wildcard. Explicit denials have been retaining precedence. The helper has been leaving Unix-socket access and local binding disabled unless supplied separately.
+`NetworkPolicy.allowAll()` selects the `**` wildcard for outbound requests to public hosts through the managed proxy. Explicit denials take precedence. Unix-socket access and local binding require separate opt-ins.
 
-This Linux declaration has been enabling the required Unix-socket grant on a job-private executor:
+The `0.22.0-alpha.1` and `0.22.0-alpha.2` bundles predate `NetworkPolicy.allowAll()`. To try the example before a published bundle includes the helper, [build a local bundle from the current source](building.md#build-a-local-bundle-for-an-application).
 
-```ts
+After [installing the matching bundle](building.md#install-the-local-bundle), save this Linux declaration as `network-policy.mjs` in your application directory. Choose an existing job-private workspace and keep the SDK and sandbox helpers outside it. From the application directory, run `node network-policy.mjs /absolute/path/to/workspace` with that workspace path. The script validates the declaration and exits. It needs no credentials.
+
+```js
 import { Environment, NetworkPolicy } from '@openai/agents';
 
+const workspace = process.argv[2];
+if (!workspace) throw new Error('Pass the absolute workspace path.');
+
 const environment = Environment.local({
-  cwd: '/workspace',
+  cwd: workspace,
   tools: ['exec_command'],
   network: NetworkPolicy.allowAll({
     deniedDomains: ['blocked.example.com'],
@@ -146,7 +153,7 @@ const environment = Environment.local({
 });
 ```
 
-The wildcard has been permitting uploads and downloads to public hosts through the managed proxy. Linux has been requiring `allowAllUnixSockets: true` for every explicit network policy, including this factory. That grant has been permitting every reachable Unix socket, so the application has been retaining responsibility for executor isolation. On macOS, `NetworkPolicy.allowAll()` has been allowing public hosts without the socket grant. Local binding has been requiring the separate `allowLocalBinding: true` choice.
+On macOS, omit `allowAllUnixSockets` to keep Unix-socket access disabled. See [platform requirements](#check-platform-requirements) for the scope of the Linux grant and the separate `allowLocalBinding` option.
 
 ### Check platform requirements
 

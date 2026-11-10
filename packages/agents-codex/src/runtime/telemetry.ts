@@ -51,7 +51,7 @@ let configuredHere = false;
 
 export interface TelemetryOptions {
   /** Nonempty initial routes opt in to native tracing without a built-in exporter. */
-  readonly traceProcessors?: readonly TraceProcessor[];
+  readonly traceProcessors?: readonly TraceProcessorRegistration[];
   readonly traces?: Exporter | null;
   readonly logs?: Exporter | null;
   readonly metrics?: Exporter | null;
@@ -133,15 +133,10 @@ export async function configure(options: TelemetryOptions = {}): Promise<void> {
   if (
     !Array.isArray(initial) ||
     initial.length > 64 ||
-    initial.some(
-      (processor) =>
-        processor === null ||
-        typeof processor !== 'object' ||
-        typeof processor.onEvent !== 'function',
-    )
+    !initial.every(isTraceProcessor)
   )
     invalid('traceProcessors');
-  const initialProcessors: readonly TraceProcessor[] = [...initial];
+  const initialProcessors: readonly TraceProcessorRegistration[] = [...initial];
   for (const field of ['logUserPrompt', 'logAgentResponses'] as const) {
     if (input[field] !== undefined && typeof input[field] !== 'boolean')
       invalid(field);
@@ -265,6 +260,23 @@ export interface TraceProcessor {
   onEvents?(events: readonly TraceEvent[]): void | Promise<void>;
 }
 
+/** A per-event processor or a batch-only sink. Native batches prefer onEvents. */
+export type TraceProcessorRegistration =
+  | TraceProcessor
+  | {
+      onEvent?: undefined;
+      onEvents(events: readonly TraceEvent[]): void | Promise<void>;
+    };
+
+function isTraceProcessor(value: unknown): value is TraceProcessorRegistration {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    (typeof (value as TraceProcessor).onEvent === 'function' ||
+      typeof (value as TraceProcessor).onEvents === 'function')
+  );
+}
+
 /** Private credential storage; headers never enter span records or saved state. */
 export class TraceExportCredentials {
   #reference?: string;
@@ -299,14 +311,14 @@ function freezeSnapshot<T>(value: T): T {
   }
   return value;
 }
-const processors = new Map<string, TraceProcessor>();
+const processors = new Map<string, TraceProcessorRegistration>();
 const activeProcessorIds = new Set<string>();
 const retiredProcessorIds = new Map<string, number>();
 let acknowledgedSequence = 0;
 let droppedRecords = 0;
 let lossWatermark = 0;
 let recoveryEpoch = 0;
-const processorEpochs = new WeakMap<TraceProcessor, number>();
+const processorEpochs = new WeakMap<TraceProcessorRegistration, number>();
 function retireProcessors(): void {
   for (const [id, cutoff] of retiredProcessorIds) {
     if (cutoff <= acknowledgedSequence) {
@@ -319,7 +331,7 @@ let nextProcessor = 0;
 let pump: Promise<void> | undefined;
 let wakePump: (() => void) | undefined;
 async function route(
-  values: readonly TraceProcessor[],
+  values: readonly TraceProcessorRegistration[],
   replace: boolean,
 ): Promise<void> {
   if (!configuredHere)
@@ -327,6 +339,7 @@ async function route(
       'Register trace processors through the SDK instance that configured telemetry',
     );
   const snapshot = [...values];
+  if (!snapshot.every(isTraceProcessor)) invalid('traceProcessors');
   const native = await binding();
   // Removed routes remain owned until their last queued snapshot is acknowledged.
   if (processors.size + snapshot.length > 64)
@@ -412,7 +425,7 @@ async function route(
                   (processorEpochs.get(processor) ?? 0) < recoveryEpoch
                 ) {
                   const recover = (
-                    processor as TraceProcessor & {
+                    processor as TraceProcessorRegistration & {
                       _onNativeTraceLoss?: () => void | Promise<void>;
                     }
                   )._onNativeTraceLoss;
@@ -438,7 +451,7 @@ async function route(
                   }
                 } else {
                   try {
-                    await suppressTracing(() => processor?.onEvent(event));
+                    await suppressTracing(() => processor?.onEvent?.(event));
                   } catch {
                     failures++;
                   }
@@ -474,13 +487,13 @@ async function route(
 }
 /** Add a native lifecycle route while preserving the configured default exporter. */
 export async function addTraceProcessor(
-  processor: TraceProcessor,
+  processor: TraceProcessorRegistration,
 ): Promise<void> {
   await route([processor], false);
 }
 /** Replace all future trace routes, including the native default exporter. */
 export async function setTraceProcessors(
-  values: readonly TraceProcessor[],
+  values: readonly TraceProcessorRegistration[],
 ): Promise<void> {
   await route(values, true);
 }

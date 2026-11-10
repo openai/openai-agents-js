@@ -97,6 +97,8 @@ export type ToolTimeoutErrorFunction<Context = unknown> = (
 ) => string | Promise<string>;
 
 export interface ToolCallContext<Context = unknown> {
+  /** Detached speech usage at callback creation; excludes backend thread usage. */
+  readonly realtimeUsage?: import('./realtime-usage').NativeRealtimeUsage;
   readonly decide?: BoundDecide;
   /** @internal */
   readonly [decisionBinding]?: (signal: AbortSignal) => BoundDecide;
@@ -470,10 +472,9 @@ export function tool<
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed = parameters.parse(
-        effectiveArgs === undefined ? args : effectiveArgs,
-      );
-      if (approved) parsed = approved.value as typeof parsed;
+      let parsed = approved
+        ? (approved.value as z.output<T>)
+        : parameters.parse(effectiveArgs === undefined ? args : effectiveArgs);
       let callContext: ToolContext<Context> = {
         ...context,
         decide:

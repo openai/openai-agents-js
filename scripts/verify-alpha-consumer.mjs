@@ -5,14 +5,26 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
-import { access, readFile, realpath } from 'node:fs/promises';
+import {
+  access,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import process from 'node:process';
 import console from 'node:console';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { Agent, NativeProvider, tool } from '@openai/agents';
+import { Agent, Environment, NativeProvider, tool } from '@openai/agents';
 import { z } from 'zod';
 
 const execute = promisify(execFile);
@@ -99,13 +111,66 @@ for (const esm of [false, true]) {
       );
   }
 }
+const facadeRoot = installed['@openai/agents'];
 const agentRoot = installed['@openai/agents-codex'];
 for (const path of ['native', 'bin', 'licenses']) {
   await access(join(agentRoot, path));
-  await assert.rejects(access(join(installed['@openai/agents'], path)), {
+}
+for (const path of ['bin', 'licenses']) {
+  await assert.rejects(lstat(join(facadeRoot, path)), {
     code: 'ENOENT',
   });
 }
+
+const portableWasm = 'codex-realtime-control.wasm';
+const portableReceiptFile = 'portable-build-receipt.json';
+const facadeNative = join(facadeRoot, 'native');
+assert(
+  (await lstat(facadeNative)).isDirectory(),
+  'Invalid facade native directory',
+);
+assert.deepEqual(
+  (await readdir(facadeNative)).sort(),
+  [portableWasm, portableReceiptFile],
+  'Unexpected facade native inventory',
+);
+const portableReceipts = [];
+for (const name of ['@openai/agents', '@openai/agents-codex']) {
+  const wasm = join(installed[name], 'native', portableWasm);
+  const receiptFile = join(installed[name], 'native', portableReceiptFile);
+  for (const file of [wasm, receiptFile]) {
+    assert((await lstat(file)).isFile(), `Expected a regular file: ${file}`);
+  }
+  const specifier = `${name}/voice/control.wasm`;
+  assert.equal(require.resolve(specifier), wasm, `CJS export: ${specifier}`);
+  assert.equal(
+    import.meta.resolve(specifier),
+    pathToFileURL(wasm).href,
+    `ESM export: ${specifier}`,
+  );
+  const portableReceipt = JSON.parse(await readFile(receiptFile, 'utf8'));
+  assert.equal(portableReceipt.format, 'reviewed-portable-realtime-v1');
+  assert.equal(
+    portableReceipt.sourceIdentity?.codex?.revision,
+    receipt.codexRevision,
+  );
+  assert.equal(portableReceipt.target, 'wasm32-unknown-unknown');
+  assert.equal(portableReceipt.artifact?.path, portableWasm);
+  assert.equal(
+    createHash('sha256')
+      .update(await readFile(wasm))
+      .digest('hex'),
+    portableReceipt.artifact.sha256,
+    `Changed portable Wasm: ${name}`,
+  );
+  portableReceipts.push(portableReceipt);
+}
+assert.deepEqual(
+  portableReceipts[0],
+  portableReceipts[1],
+  'Portable Realtime receipts disagree',
+);
+
 const native = require(join(agentRoot, 'native/index.js'));
 assert.equal(native.CODEX_REVISION, receipt.codexRevision);
 assert.equal(
@@ -318,6 +383,93 @@ await withModel(
   },
 );
 
+if (receipt.platform === 'linux-arm64') {
+  assert.equal(`${process.platform}-${process.arch}`, receipt.platform);
+  const proof = process.argv[2];
+  assert(proof, 'Missing local sandbox proof path');
+  const temporary = await mkdtemp(join(tmpdir(), 'agents-alpha-sandbox-'));
+  try {
+    const root = await realpath(temporary);
+    const cwd = join(root, 'workspace');
+    const writable = join(root, 'writable');
+    const sentinel = join(root, 'sentinel');
+    await mkdir(cwd);
+    await mkdir(writable);
+    await writeFile(sentinel, 'protected');
+    const callId = 'sandbox-write';
+    await withModel(
+      [
+        [
+          {
+            type: 'function_call',
+            call_id: callId,
+            name: 'exec_command',
+            arguments: JSON.stringify({
+              cmd: 'if (printf overwritten > ../sentinel) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt',
+              workdir: cwd,
+            }),
+          },
+        ],
+        [message('Sandbox command finished.')],
+      ],
+      async (baseUrl) => {
+        const provider = new NativeProvider({
+          baseUrl,
+          apiKey: 'synthetic-alpha-key',
+          supportsWebsockets: false,
+        });
+        try {
+          const agent = new Agent({
+            instructions:
+              'Use the local command tool to verify the write grant.',
+            model: 'gpt-5',
+            provider,
+          });
+          const session = await agent.session({
+            environment: Environment.local({
+              cwd,
+              tools: ['exec_command'],
+              writableRoots: [writable],
+            }),
+          });
+          try {
+            const turn = await session.submit('Check the local write grant.');
+            assert.equal(
+              (await turn.wait()).finalOutput,
+              'Sandbox command finished.',
+            );
+            const command = (await Array.fromAsync(session.items())).find(
+              (item) =>
+                item.type === 'command_execution' && item.callId === callId,
+            );
+            assert.equal(
+              command?.status,
+              'completed',
+              'Missing completed sandbox command',
+            );
+            assert.equal(command.exitCode, 0, 'Sandbox command failed');
+            assert.deepEqual(
+              await readFile(join(writable, 'proof.txt')),
+              Buffer.from('granted'),
+            );
+            assert.deepEqual(
+              await readFile(sentinel),
+              Buffer.from('protected'),
+            );
+          } finally {
+            await session.close();
+          }
+        } finally {
+          await provider.close();
+        }
+      },
+    );
+    await writeFile(proof, '', { flag: 'wx' });
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
 for (const esm of [false, true]) {
   const classic = esm
     ? await import('@openai/agents/classic')
@@ -349,5 +501,5 @@ for (const esm of [false, true]) {
   assert.equal(model.calls.length, 2);
 }
 console.log(
-  'Verified local SDK locks, CJS/ESM imports, native products/helpers, forwarded facade exports, runtime payload ownership, bundled hello, native tool/sessions, and classic sessions.',
+  'Verified local SDK locks, CJS/ESM imports, native products/helpers, forwarded facade exports, runtime payload ownership, portable Realtime exports and receipts, bundled hello, native tool/sessions, and classic sessions.',
 );

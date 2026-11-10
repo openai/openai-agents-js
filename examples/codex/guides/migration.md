@@ -44,7 +44,7 @@ Port declarations and execution together:
 | `z.object(...)` tool parameters and output | `z.strictObject(...)` schemas in this example |
 | Agent `outputType: answerSchema` | `outputType: { mode: 'native', schema: answerSchema }` |
 | `Runner.run(agent, input, { context })` | `agent.run(input, { context })` |
-| Classic Model configuration | `NativeProvider` configured for a Responses endpoint |
+| Classic Model configuration | `NativeProvider` with its default Responses transport or an application `modelBackend` in the matching source build |
 
 Native and classic Agent objects are separate types. Changing the root import alone changes the runtime without porting the declarations. The experimental `SDKRunner` bridge and `/migration` entry points have been removed.
 
@@ -66,7 +66,7 @@ Classic is available and is not deprecated now. The lifecycle plan is to depreca
 
 Record current behavior before editing. Validate the contracts your workflow uses:
 
-- Port custom Models to Responses providers, or keep the workflow on its current runtime. Check model settings and limits instead of assuming classic parity.
+- The matching source build has been supporting [application model backends and injected Chat Completions clients](session-configuration.md#supply-an-application-model) through `NativeProvider`. The default HTTP transport has been requiring Responses. Model settings, supported content, and tool families have been needing application compatibility checks.
 - Resolve dynamic instructions in the application. Port [tools](tools.md), callback context, errors, approvals, and guardrails at the required application boundaries.
 - Choose who owns specialist work, next-turn routing, and history. Native children are not drop-in classic handoffs; see the [specialist example](../input-retrieval-specialist/README.md#run-the-standalone-specialist).
 - Check [structured output](output.md), streaming completion, cancellation, deadlines, cleanup, and [telemetry](telemetry.md) against representative inputs.

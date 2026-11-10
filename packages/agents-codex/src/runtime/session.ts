@@ -313,6 +313,8 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   modelBackend?: NativeModel | ModelProvider;
+  /** @internal Captured provider credential, independent of text producer admission. */
+  realtimeApiKey?: string;
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
@@ -1115,6 +1117,15 @@ export class Session<OutputT = string, Context = unknown> {
 
   private realtimeOwner?: ReturnType<typeof createNativeRealtimeOwner>;
 
+  /** Detached speech usage for the current connection, separate from thread usage.
+   * Undefined means no reported usage or no current connection. A new connection
+   * starts new totals; retain its RealtimeSession to read those totals after close.
+   */
+  get realtimeUsage():
+    import('./realtime-usage').NativeRealtimeUsage | undefined {
+    return this.realtimeOwner?.usage;
+  }
+
   /**
    * Build the call-accept request body for an inbound SIP call using the captured
    * Agent instructions, tools, and handoffs. Send it to the Realtime calls accept
@@ -1251,6 +1262,18 @@ export class Session<OutputT = string, Context = unknown> {
         typeof value !== 'string'
       )
         throw new TypeError(`Realtime ${name} must be a string`);
+    }
+    if (
+      this.options.modelBackend !== undefined &&
+      options.adapter === undefined &&
+      options.apiKey === undefined
+    ) {
+      const apiKey = this.options.realtimeApiKey;
+      if (!apiKey?.trim())
+        throw new TypeError(
+          'Built-in Realtime requires a provider or voice API key',
+        );
+      options = { ...options, apiKey };
     }
     const native = this.#native;
     const mediaCleanup = native._realtime_cleanup();
@@ -7958,6 +7981,7 @@ export class Session<OutputT = string, Context = unknown> {
           const context = {
             decide: scope.decide,
             [decisionBinding]: scope[decisionBinding],
+            realtimeUsage: this.realtimeUsage,
             context: this.options.context,
             submission,
             call: managedCallInfo(
@@ -8875,6 +8899,7 @@ export class Session<OutputT = string, Context = unknown> {
         traceContext: nativeTraceContext(
           msg._sdk_trace_context as TraceContextHeaders | null | undefined,
         ),
+        realtimeUsage: this.realtimeUsage,
         context: this.options.context,
         submission,
         call: managedCallInfo(

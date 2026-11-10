@@ -10,6 +10,42 @@ pnpm exec tsx examples/codex/trace-processors.ts
 
 It uses three scripted answers and a bounded loopback OTLP receiver, with no model credential or external collector. The command checks initial delivery, adds a processor while retaining built-in export, then replaces the routes and verifies that only the replacement processor receives the third workflow. It prints the three trace IDs and callback event counts, closes the Sessions and scripted provider, shuts down telemetry, and closes the receiver.
 
+## Export to OpenAI or inspect locally
+
+The matching [source build](building.md) has been exposing `telemetry.OpenAITraceExporter` and `telemetry.ConsoleTraceProcessor`. The exporter has been requiring explicit export credentials separately from model credentials. This fragment has been assuming an application-owned `agent` and configuring telemetry before any engine or Session:
+
+```ts
+import { telemetry } from '@openai/agents';
+
+const apiKey = process.env.OPENAI_TRACE_API_KEY;
+if (!apiKey) throw new Error('OPENAI_TRACE_API_KEY is required');
+await telemetry.configure({
+  traceProcessors: [
+    new telemetry.OpenAITraceExporter({ apiKey }),
+    new telemetry.ConsoleTraceProcessor(),
+  ],
+});
+try {
+  await telemetry.withTrace({ name: 'Support answer' }, async () => {
+    await agent.run('Summarize the support request.');
+  });
+  const receipt = await telemetry.forceFlush({ timeoutMs: 5000 });
+  if (
+    receipt.status !== 'success' ||
+    receipt.failedDeliveries !== 0 ||
+    receipt.droppedRecords !== 0
+  ) {
+    throw new Error('Trace delivery did not complete');
+  }
+} finally {
+  await telemetry.shutdown();
+}
+```
+
+`withTrace` has been supplying a local workflow root for OpenAI export. `ConsoleTraceProcessor` has been writing lifecycle snapshots as JSON lines under the native capture policy; the application has been owning log access and retention. The exporter's default endpoint has been targeting OpenAI trace ingestion, and its options have been accepting explicit organization and project values.
+
+OpenAI export has been requiring a known native root descriptor. An externally supplied ingress `parentTrace` has been propagating span context without supplying that root descriptor. Such workflows have been completing while OpenAI delivery has been failing in the flush receipt. OTLP or an application processor accepting externally parented spans has been providing the route for those workflows; the [external-parent guidance](telemetry.md#carry-a-w3c-parent-across-services) has been describing context propagation. A successful agent result has not been establishing successful export.
+
 ## Choose initial and later routes
 
 Call `telemetry.configure({ traceProcessors: [...] })` before constructing an engine or opening a Session. A nonempty initial list enables a custom-only trace pipeline even when `traces` is omitted. To use both callbacks and built-in OTLP export, also configure `traces` as shown in the example.

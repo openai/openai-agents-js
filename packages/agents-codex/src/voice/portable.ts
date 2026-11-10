@@ -130,6 +130,7 @@ export class PortableVoiceSession {
   }
 
   async start(): Promise<void> {
+    if (this.#closed) throw new Error('Portable voice session is closed.');
     if (this.#started)
       throw new Error('Portable voice session already started.');
     this.#started = true;

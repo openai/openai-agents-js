@@ -66,6 +66,9 @@ import {
   voiceWorkflowGraphClosed,
 } from '../voice/workflow';
 
+/** Provider declarations can omit a string index signature; runtime validates JSON. */
+type RealtimeProviderObject = JsonObject | { readonly type: string };
+
 export interface NativeRealtimeOptions {
   model?: string;
   voice?: string;
@@ -229,6 +232,8 @@ export type NativeRealtimeEvent =
       status: 'created' | 'done' | 'cancelled';
       responseId?: string;
       usage?: NativeRealtimeUsage;
+      /** Detached connection total at this event, including this accepted response. */
+      cumulativeUsage?: NativeRealtimeUsage;
     }
   | {
       type: 'delegation';
@@ -247,6 +252,14 @@ export type NativeRealtimeEvent =
     }
   | { readonly type: 'conversation_item_deleted'; readonly itemId: string }
   | { type: 'history'; item: NativeRealtimeHistoryItem; completed: boolean }
+  | {
+      type: 'detached_function_call';
+      responseId: string;
+      itemId: string;
+      callId: string;
+      name: string;
+      arguments: string;
+    }
   | {
       type: 'function_call';
       callId: string;
@@ -1100,14 +1113,15 @@ class NativeRealtimeOwner {
     }, bytes);
   }
   /**
-   * Send a supported provider event through native validation and response ordering.
+   * Send a provider event through the native connection.
    * Returns the provider item for conversation.item.retrieve, otherwise null.
-   * Supports response controls, message creation/retrieval/deletion, sparse session
-   * settings, input audio buffers, known audio truncation and provider playback clear.
+   * Core validates managed controls and forwards other event types as JSON.
+   * Linked responses can select advertised functions for one response.
+   * Detached responses can declare functions that the caller handles.
    * Cancellation allows later input after dispatch and resolves after retirement.
    * Tool and approval authority remains with the native Session.
    */
-  async sendEvent(event: JsonObject): Promise<JsonObject | null> {
+  async sendEvent(event: RealtimeProviderObject): Promise<JsonObject | null> {
     this.checkLive();
     this.session._checkVoiceAdapterOperation(
       this,
@@ -1163,29 +1177,78 @@ class NativeRealtimeOwner {
    * Reconcile provider items observed during this connection with the supplied items.
    * Unobserved items, including SIP items from before attachment, remain outside
    * this replacement. Core validates the replacement before sending changes and
-   * waits for provider acknowledgements. Only system/user/assistant messages are
-   * editable. Surviving tool, MCP, and approval rows retain exact content and
-   * relative order; settled rows can be removed. Supported messages can move
+   * waits for provider acknowledgements. Edit supported messages and import
+   * completed historical function call and output pairs as context. Surviving
+   * tool, MCP, and approval rows retain exact content and relative order.
+   * Settled rows can be removed. Supported messages can move
    * across surviving rows. A provider failure after some
    * acknowledgements can leave partial edits; retrieve observed history before
    * retrying. Canonical audit history, background work, and retained context for
-   * subsequent Session turns remain intact.
+   * subsequent Session turns remain intact. A synchronous updater receives a fresh
+   * provider snapshot after preceding input. If provider history changes before
+   * replacement, the operation rejects without retrying the updater.
    */
-  async updateHistory(items: readonly JsonObject[]): Promise<void> {
+  async updateHistory(
+    items:
+      | readonly RealtimeProviderObject[]
+      | ((history: JsonObject[]) => readonly RealtimeProviderObject[]),
+  ): Promise<void> {
     this.checkLive();
     this.session._checkVoiceAdapterOperation(
       this,
       'update its own conversation history',
     );
-    if (
-      !Array.isArray(items) ||
-      items.some(
-        (item) => !item || typeof item !== 'object' || Array.isArray(item),
+    const checkItems = (value: unknown): void => {
+      if (
+        !Array.isArray(value) ||
+        value.some(
+          (item) => !item || typeof item !== 'object' || Array.isArray(item),
+        )
       )
-    )
-      throw new TypeError(
-        'Realtime history must be an array of provider items',
-      );
+        throw new TypeError(
+          'Realtime history must be an array of provider items',
+        );
+    };
+    if (typeof items === 'function') {
+      this.pendingCommittedAudio++;
+      try {
+        await this.enqueueInput(async () => {
+          let retainedBytes = 0;
+          const charge = (value: readonly object[]): void => {
+            const bytes = jsonAllocationBytes(
+              value,
+              INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,
+              'Realtime history exceeds the 8 MiB input queue allocation budget',
+              true,
+            );
+            this.inputBytes += bytes;
+            retainedBytes += bytes;
+          };
+          try {
+            const expected = await this.retrieveConversationHistory();
+            this.checkLive();
+            charge(expected);
+            // Retain the comparison snapshot separately from mutable callback input.
+            charge(expected);
+            const updated = items(copyJsonValue(expected) as JsonObject[]);
+            checkItems(updated);
+            charge(updated);
+            const snapshot = copyJsonValue(updated) as JsonObject[];
+            this.checkLive();
+            await this.call('update_history', {
+              items: snapshot,
+              expected_items: expected,
+            });
+          } finally {
+            this.inputBytes -= retainedBytes;
+          }
+        });
+      } finally {
+        this.pendingCommittedAudio--;
+      }
+      return;
+    }
+    checkItems(items);
     const bytes = jsonAllocationBytes(
       items,
       INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,
@@ -1374,8 +1437,15 @@ class NativeRealtimeOwner {
       );
     if (event.type === 'hosted_mcp_call_completed' && event.error !== undefined)
       bytes += jsonAllocationBytes(event.error, AUDIO_LIMIT - bytes);
-    if (event.type === 'response' && event.usage !== undefined)
-      bytes += jsonAllocationBytes(event.usage, AUDIO_LIMIT - bytes);
+    if (event.type === 'response') {
+      if (event.usage !== undefined)
+        bytes += jsonAllocationBytes(event.usage, AUDIO_LIMIT - bytes);
+      if (event.cumulativeUsage !== undefined)
+        bytes += jsonAllocationBytes(
+          event.cumulativeUsage,
+          AUDIO_LIMIT - bytes,
+        );
+    }
     for (const value of Object.values(fields))
       if (typeof value === 'string') bytes += value.length * 4;
     return bytes;
@@ -1641,6 +1711,27 @@ class NativeRealtimeOwner {
         owned.task = this.#context(() => this.delegate(id, nativeInput, owned));
         void owned.task.catch((error) => this.finish(error));
       }
+    } else if (name === 'DetachedFunctionCall') {
+      for (const key of [
+        'response_id',
+        'item_id',
+        'call_id',
+        'name',
+        'arguments',
+      ])
+        if (
+          typeof value[key] !== 'string' ||
+          (key !== 'arguments' && !value[key])
+        )
+          throw new TypeError('Invalid native detached function call');
+      this.emit({
+        type: 'detached_function_call',
+        responseId: value.response_id,
+        itemId: value.item_id,
+        callId: value.call_id,
+        name: value.name,
+        arguments: value.arguments,
+      });
     } else if (name === 'FunctionCallRequested') {
       const id = value.call_id;
       if (
@@ -1738,6 +1829,7 @@ class NativeRealtimeOwner {
       this.emit({
         type: 'response',
         usage: reportedUsage,
+        cumulativeUsage: this.usage,
         status:
           name === 'ResponseCreated'
             ? 'created'
