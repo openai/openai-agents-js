@@ -28,6 +28,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
             'workerd',
             'portable',
             'react-native',
+            'abortable',
             'portable-session',
             'portable-webrtc',
             'portable-binding',
