@@ -666,10 +666,19 @@ index d8941ea55b1e89a7ca6fd350ed3dc282b868282a..298f20f0188d91375ee2c5dd21afcfac
          let item = self
              .items
 diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
-index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e858b7e5b 100644
+index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16db5d0e8bd 100644
 --- a/codex-rs/core/src/realtime_conversation/provider_history.rs
 +++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
-@@ -14,6 +14,11 @@ const MAX_IMAGE_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+@@ -4,6 +4,8 @@ use super::*;
+ use base64::Engine as _;
+ use image::ImageDecoder as _;
+ use serde_json::Value;
++use sha2::Digest;
++use sha2::Sha256;
+ use std::collections::BTreeMap;
+ use std::collections::VecDeque;
+ const LIMIT: usize = 4096;
+@@ -14,6 +16,11 @@ const MAX_IMAGE_DECODE_BYTES: u64 = 64 * 1024 * 1024;
  type Reply<T> = tokio::sync::oneshot::Sender<CodexResult<T>>;
  #[derive(Debug)]
  pub(crate) enum Request {
@@ -681,7 +690,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
      Item {
          id: String,
          event_id: Option<String>,
-@@ -63,6 +68,12 @@ struct ReplayedCall {
+@@ -63,6 +70,13 @@ struct ReplayedCall {
      item_id: String,
      output_id: Option<String>,
      confirmed: bool,
@@ -691,10 +700,11 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
 +struct CallerCall {
 +    response_id: String,
 +    fingerprint: [u8; 32],
++    output_confirmed: bool,
  }
  
  #[derive(Debug)]
-@@ -101,7 +112,7 @@ pub(super) fn validate_request_ids(
+@@ -101,7 +115,7 @@ pub(super) fn validate_request_ids(
      deletion: &item_deletion::State,
  ) -> CodexResult<()> {
      let deleted = match request {
@@ -703,7 +713,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
          Request::Create { item, .. } => deletion.is_deleted(item_id(item)?),
          Request::Update { items, .. } => items.iter().any(|item| {
              item["id"].as_str().is_some_and(|id| {
-@@ -575,9 +586,12 @@ impl State {
+@@ -575,9 +589,12 @@ impl State {
          self.pending.is_some()
      }
      pub(super) fn editing(&self) -> bool {
@@ -719,7 +729,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
      }
      pub(super) fn deadline(&self) -> Option<tokio::time::Instant> {
          self.pending.as_ref().and_then(|pending| {
-@@ -751,6 +765,7 @@ impl State {
+@@ -751,6 +768,7 @@ impl State {
                          item_id: id.to_owned(),
                          output_id: None,
                          confirmed: false,
@@ -727,7 +737,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
                      },
                  );
              } else {
-@@ -772,10 +787,93 @@ impl State {
+@@ -772,10 +790,94 @@ impl State {
          })
      }
  
@@ -776,6 +786,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
 +                caller: Some(CallerCall {
 +                    response_id: response_id.to_owned(),
 +                    fingerprint,
++                    output_confirmed: false,
 +                }),
 +            },
 +        );
@@ -822,7 +833,24 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
      }
  
      pub(super) fn replayed_call_for_item<'a>(&self, item: &'a Value) -> Option<&'a str> {
-@@ -809,7 +907,7 @@ impl State {
+@@ -783,8 +885,14 @@ impl State {
+         let id = item["id"].as_str()?;
+         let call = self.replayed_calls.get(call_id)?;
+         let replayed = match item["type"].as_str() {
+-            Some("function_call") => call.item_id == id,
+-            Some("function_call_output") => call.output_id.as_deref() == Some(id),
++            Some("function_call") => call.caller.is_none() && call.item_id == id,
++            Some("function_call_output") => {
++                call.output_id.as_deref() == Some(id)
++                    && call
++                        .caller
++                        .as_ref()
++                        .is_none_or(|caller| caller.output_confirmed)
++            }
+             _ => false,
+         };
+         replayed.then_some(call_id)
+@@ -809,7 +917,7 @@ impl State {
          }
          let mut actions = VecDeque::new();
          let ids = match &request {
@@ -831,7 +859,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
                  if !valid_id(id) {
                      finish_request(request, Err(invalid("Invalid provider item ID")));
                      return Ok(None);
-@@ -885,6 +983,30 @@ impl State {
+@@ -885,6 +993,30 @@ impl State {
          });
          self.advance()
      }
@@ -862,7 +890,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
      pub(super) fn retrieved(&mut self, item: Value) -> CodexResult<Option<Action>> {
          if !self
              .pending
-@@ -922,6 +1044,8 @@ impl State {
+@@ -922,6 +1054,8 @@ impl State {
                  ));
                  return Ok(None);
              }
@@ -871,7 +899,29 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
          } else if pending.request.is_some() {
              codex_api::charge_realtime_json_storage(&item, &mut pending.retained_bytes).map_err(
                  |_| invalid("Provider history exceeds its 8 MiB estimated storage limit"),
-@@ -1005,7 +1129,9 @@ impl State {
+@@ -987,11 +1121,18 @@ impl State {
+             };
+             self.order.insert(index, id);
+         }
+-        if expected["type"] == "function_call"
+-            && let Some(call_id) = expected["call_id"].as_str()
++        if let Some(call_id) = expected["call_id"].as_str()
+             && let Some(call) = self.replayed_calls.get_mut(call_id)
+         {
+-            call.confirmed = true;
++            match expected["type"].as_str() {
++                Some("function_call") => call.confirmed = true,
++                Some("function_call_output") => {
++                    if let Some(caller) = call.caller.as_mut() {
++                        caller.output_confirmed = true;
++                    }
++                }
++                _ => {}
++            }
+         }
+         pending.waiting = None;
+         self.advance()
+@@ -1005,7 +1146,9 @@ impl State {
              .pending
              .as_ref()
              .is_some_and(|pending| match &pending.request {
@@ -882,7 +932,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
                  Some(Request::Create { item, previous, .. }) => {
                      item["id"].as_str() == Some(id) || previous.as_deref() == Some(id)
                  }
-@@ -1089,6 +1215,7 @@ impl State {
+@@ -1089,6 +1232,7 @@ impl State {
          }
          let pending = self.pending.take().unwrap();
          match pending.request.unwrap() {
@@ -890,7 +940,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
              Request::Item { reply, .. } => {
                  let _ = reply.send(
                      pending
-@@ -1136,6 +1263,7 @@ impl State {
+@@ -1136,6 +1280,7 @@ impl State {
  fn finish_request(request: Request, result: CodexResult<()>) {
      let error = result.err().unwrap_or(CodexErr::TurnAborted);
      match request {
@@ -898,7 +948,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
          Request::Item { reply, .. } => {
              let _ = reply.send(Err(error));
          }
-@@ -1186,6 +1314,120 @@ mod tests {
+@@ -1186,6 +1331,120 @@ mod tests {
      fn message(id: &str, text: &str) -> Value {
          json!({"id":id,"type":"message","role":"user","content":[{"type":"input_text","text":text}]})
      }
@@ -1019,7 +1069,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
      fn replay_pair(id: &str) -> (Value, Value) {
          let call_id = format!("call-{id}");
          (
-@@ -1770,6 +2012,68 @@ mod tests {
+@@ -1770,6 +2029,71 @@ mod tests {
          assert!(!state.busy());
      }
  
@@ -1040,6 +1090,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
 +        state.observe_caller_call(&request).unwrap();
 +        state.observe_caller_call(&request).unwrap();
 +        assert!(!state.is_replayed_call("caller-call", "caller-item"));
++        assert!(state.replayed_call_for_item(&call).is_none());
 +        assert!(state.is_caller_call("caller-call", Some("response")));
 +        assert!(!state.is_caller_call("caller-call", Some("other-response")));
 +        let mut changed = request.clone();
@@ -1064,6 +1115,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
 +            matches!(action, Some(Action::Create { event_id: Some(id), .. }) if id == "raw-output")
 +        );
 +        assert!(!state.is_live_caller_output(&output));
++        assert!(state.replayed_call_for_item(&output).is_none());
 +        assert!(matches!(
 +            receipt.try_recv(),
 +            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
@@ -1074,6 +1126,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e
 +        state.created(&output, true).unwrap();
 +        receipt.await.unwrap().unwrap();
 +        assert!(!state.is_live_caller_output(&output));
++        assert_eq!(state.replayed_call_for_item(&output), Some("caller-call"));
 +
 +        let mut state = State::default();
 +        state.observe_added(&call, Some(None)).unwrap();
