@@ -80,6 +80,7 @@ export class Engine {
     specsJson: string,
   ): Promise<NativeThread | null>;
   _close_report(): Promise<string | null>;
+  _close_report_defer_saved_login(): Promise<string | null>;
   close(): Promise<void>;
 }
 

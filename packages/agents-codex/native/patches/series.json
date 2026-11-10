@@ -481,9 +481,13 @@
       "sha256": "e994ea870e8243269cc6cddaa1b523921cfe0aa898143b0ee533da3caac6833d"
     },
     {
+      "path": "sdk-saved-codex-login.patch",
+      "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
+    },
+    {
       "path": "0098-private-plain-modelclient-bridge.patch",
       "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
     }
   ],
-  "result_tree": "88c3aa10a7d60b651bde261c90a6ba05def01a2a"
+  "result_tree": "b39ae2d83f79a0922bbef4283ccaba69dcacdf26"
 }
