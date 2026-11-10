@@ -160,7 +160,7 @@
   },
   "dependencies": {
     "@openai/agents-core": "workspace:*",
-    "openai": "^7.2.0",
+    "openai": "^7.30.0",
     "ws": "^8.22.0",
     "zod": "^4.3.5",
     "email-addresses": "5.0.0",

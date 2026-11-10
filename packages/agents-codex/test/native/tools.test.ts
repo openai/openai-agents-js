@@ -31,7 +31,11 @@ import {
   ToolTimeoutError,
 } from '../../src/runtime/tools';
 
+const unusedDecision: ToolContext['decide'] = () => {
+  throw new Error('Unexpected decision call in synthetic tool context');
+};
 const context = {
+  decide: unusedDecision,
   context: undefined,
   submission: {
     sessionId: 'root',

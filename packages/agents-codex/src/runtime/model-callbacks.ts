@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from './binding';
+import type { BoundDecide } from './decisions';
 import type { ToolCallInfo } from './call-metadata';
 
 /** Accept by returning undefined, continue with feedback, or stop this turn. */
@@ -8,6 +9,8 @@ export type CompletionDecision =
 
 /** Proposed completion before acceptance. Already streamed text stays visible. */
 export interface CompletionContext<Context = unknown> {
+  /** Available only until this hook invocation settles. */
+  readonly decide: BoundDecide;
   readonly context: Context;
   readonly text: string | null;
   readonly sessionId: string;

@@ -8,6 +8,7 @@ import {
   NativeProvider,
   tool,
   toolRef,
+  type DecisionProvider,
 } from '@openai/agents';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -28,18 +29,29 @@ async function providerFor(server: ModelServer) {
 }
 
 nativeIt(
-  'stops a root before its first request and keeps the Session usable',
+  'uses a decision to stop a root before its first request and keeps the Session usable',
   async () => {
     const server = new ModelServer([[message('healthy later run')]]);
     await using provider = await providerFor(server);
-    const agent = new Agent({ instructions: 'Answer.', provider });
+    const decisions: DecisionProvider = {
+      getDecision: vi.fn(async () => ({ value: false })),
+    };
+    const agent = new Agent({ instructions: 'Answer.', provider, decisions });
     await using session = await agent.session();
 
     const turn = await session.submit('Stop before sampling.', {
-      beforeStep: () => ({ action: 'stop' }),
+      budget: { maxRequests: 1 },
+      async beforeStep(context) {
+        return (await context.decide('May this request proceed?', {
+          input: 'Explicit policy input.',
+        }))
+          ? undefined
+          : { action: 'stop' };
+      },
     });
     await expect(turn.wait()).rejects.toBeInstanceOf(NativeError);
     expect(server.requests).toHaveLength(0);
+    expect(decisions.getDecision).toHaveBeenCalledTimes(1);
     expect(
       (await (await session.submit('Continue independently.')).wait())
         .finalOutput,
@@ -134,11 +146,16 @@ nativeIt(
 );
 
 nativeIt(
-  'stops only the selected child before sampling and lets its sibling finish',
+  'uses child decisions to stop only the selected child while its sibling finishes',
   async () => {
     const release = Promise.withResolvers<void>();
     const entered = new Set<string>();
     let stoppedId: string | undefined;
+    const childDecisions: DecisionProvider = {
+      getDecision: vi.fn(async (request) => ({
+        value: request.input !== stoppedId,
+      })),
+    };
     let rootId: string | undefined;
     let rootRequests = 0;
     const requestThreads: string[] = [];
@@ -168,16 +185,21 @@ nativeIt(
       await using provider = await providerFor(server);
       await using session = await new Agent({
         instructions: 'Delegate two independent tasks.',
+        decisions: childDecisions,
         model: nativeDescendantModel,
         provider,
         tools: [
           new NativeAgents({
             maxChildren: 2,
-            async beforeStep({ child }) {
+            async beforeStep({ child, decide }) {
               stoppedId ??= child.childId;
               entered.add(child.childId);
               await release.promise;
-              return child.childId === stoppedId ? { action: 'stop' } : [];
+              return (await decide('May this child sample?', {
+                input: child.childId,
+              }))
+                ? []
+                : { action: 'stop' };
             },
           }),
         ],
@@ -213,6 +235,13 @@ nativeIt(
           'sibling completed',
         );
         expect(requestThreads).toEqual([rootId, rootId, sibling.id]);
+        expect(
+          new Set(
+            vi
+              .mocked(childDecisions.getDecision)
+              .mock.calls.map(([request]) => request.input),
+          ),
+        ).toEqual(new Set([stopped.id, sibling.id]));
         expect((await root.wait()).finalOutput).toBe('root completed');
         expect(
           (await (await session.submit('Another root.', { tools: [] })).wait())

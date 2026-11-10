@@ -67,7 +67,10 @@ async function nextAction(session: Session<unknown>): Promise<ActionRequested> {
 async function fixture(
   options: {
     observationRetention?: 'all';
+    decisions?: Agent['decisions'];
+    beforeComplete?: Agent['beforeComplete'];
     pending?: boolean;
+    twoStarts?: boolean;
     promptedOverride?: boolean;
     laterPlain?: boolean;
     envKey?: boolean;
@@ -108,6 +111,9 @@ async function fixture(
   ];
   const responses = [
     [call('job', { id: 'one' }, { callId: 'job-call' })],
+    ...(options.twoStarts
+      ? [[call('job', { id: 'two' }, { callId: 'job-call-two' })]]
+      : []),
     ...(options.observationRetention
       ? [
           {
@@ -238,6 +244,8 @@ async function fixture(
     : undefined;
   await defaultProvider?.close();
   const agent = new FactoryAgent({
+    decisions: options.decisions,
+    beforeComplete: options.beforeComplete,
     instructions: 'Use the original job declaration, then answer.',
     model: options.perOpening === 'undefined' ? undefined : 'gpt-5',
     modelSettings:
@@ -357,8 +365,19 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private deferred start ownership',
   () => {
-    it('retains complete observations in a deferred borrowed opening', async () => {
-      await using f = await fixture({ observationRetention: 'all' });
+    it('preserves complete observations and captured Decisions in a deferred borrowed opening', async () => {
+      const getDecision = vi.fn(async () => ({ value: true }));
+      const replacement = vi.fn(async () => ({ value: false }));
+      await using f = await fixture({
+        observationRetention: 'all',
+        decisions: { getDecision },
+        beforeComplete: async (context) => {
+          expect(
+            await context.decide('Continue?', { input: 'Explicit.' }),
+          ).toBe(true);
+        },
+      });
+      f.agent.decisions = { getDecision: replacement };
       await f.jobs.start(f.session, f.request, {}, async ({ outcome }) => {
         if (outcome.status !== 'continued')
           throw new Error('Expected continuation');
@@ -373,6 +392,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         ).toBe('x'.repeat(350));
       });
       expect(await f.completion).toBeInstanceOf(InteractionRequired);
+      expect(getDecision).toHaveBeenCalledTimes(1);
+      expect(replacement).not.toHaveBeenCalled();
     });
 
     it('prepares and reopens with the original durable binding and a fresh request, then closes the borrowed Session', async () => {
