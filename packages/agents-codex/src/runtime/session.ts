@@ -3877,7 +3877,8 @@ export class Session<OutputT = string, Context = unknown> {
         (mode) => this.cancelTurn(run, mode),
         undefined,
         {
-          guardrailResults: () => run.guardrailResults,
+          guardrailResults: () =>
+            [...this.rootSteps(run)].flatMap((step) => step.guardrailResults),
           rootResultReady: () => scope.phase() === 'ended',
           runUsage: () => this.runUsage(run),
           notify: () => this.observations.notify(),
@@ -3917,7 +3918,9 @@ export class Session<OutputT = string, Context = unknown> {
         ? { toolCall: this.terminalCalls.get(run)! }
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
-      guardrailResults: Object.freeze([...run.guardrailResults]),
+      guardrailResults: Object.freeze(
+        [...this.rootSteps(root)].flatMap((step) => step.guardrailResults),
+      ),
       runUsage: this.runUsage(root),
       repairAttempts: Object.freeze(
         this.repairTurns
