@@ -407,16 +407,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     entry.sendInput = async (chars) => {
       await handle.sendInput!(chars);
     };
-    entry.terminate = async () => {
-      if (handle.kill) {
-        await handle.kill();
-      } else {
-        await this.sandbox.process.killPtySession?.(
-          handle.sessionId ?? providerSessionId,
-        );
-      }
-      await handle.disconnect?.();
-    };
+    entry.terminate = () => this.terminatePtyHandle(handle, providerSessionId);
     const { sessionId, pruned } = this.ptyProcesses.register(entry);
     if (pruned) {
       await pruned.terminate?.().catch(() => {});

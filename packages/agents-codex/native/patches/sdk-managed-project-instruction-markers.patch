@@ -1,0 +1,308 @@
+diff --git a/codex-rs/config/src/loader/mod.rs b/codex-rs/config/src/loader/mod.rs
+--- a/codex-rs/config/src/loader/mod.rs
++++ b/codex-rs/config/src/loader/mod.rs
+@@ -49,6 +49,7 @@
+ use crate::thread_config::ThreadConfigContext;
+ use crate::thread_config::ThreadConfigLoader;
+ use codex_file_system::ExecutorFileSystem;
++use codex_file_system::project_marker_exists;
+ use codex_git_utils::resolve_root_git_project_for_trust;
+ use codex_network_proxy::is_credential_broker_provider_env_key;
+ use codex_protocol::config_types::ApprovalsReviewer;
+@@ -1515,26 +1516,19 @@
+         for marker in project_root_markers {
+             let marker_path = ancestor.join(marker);
+             let marker_path_uri = PathUri::from_abs_path(&marker_path);
+-            let Ok(metadata) = fs
+-                .get_metadata(&marker_path_uri, Default::default(), /*sandbox*/ None)
+-                .await
+-            else {
+-                continue;
+-            };
+-            if marker == ".git"
+-                && metadata.is_directory
+-                && fs
+-                    .get_metadata(
+-                        &PathUri::from_abs_path(&marker_path.join("HEAD")),
+-                        Default::default(),
+-                        /*sandbox*/ None,
+-                    )
+-                    .await
+-                    .is_err()
++            let git_head =
++                (marker == ".git").then(|| PathUri::from_abs_path(&marker_path.join("HEAD")));
++            if project_marker_exists(
++                fs,
++                &marker_path_uri,
++                git_head.as_ref(),
++                /*sandbox*/ None,
++            )
++            .await
++            .unwrap_or(false)
+             {
+-                continue;
+-            }
+-            return Ok(Some(ancestor));
++                return Ok(Some(ancestor));
++            }
+         }
+     }
+     Ok(None)
+diff --git a/codex-rs/core/src/agents_md.rs b/codex-rs/core/src/agents_md.rs
+--- a/codex-rs/core/src/agents_md.rs
++++ b/codex-rs/core/src/agents_md.rs
+@@ -31,6 +31,7 @@
+ use codex_file_system::FileSystemSandboxContext;
+ use codex_file_system::FindUpErrorPolicy;
+ use codex_file_system::find_nearest_ancestor_with_markers;
++use codex_file_system::find_nearest_ancestor_with_project_markers;
+ use codex_utils_absolute_path::AbsolutePathBuf;
+ use codex_utils_path_uri::PathConvention;
+ use codex_utils_path_uri::PathUri;
+@@ -52,6 +53,20 @@
+ // This covers typical project hierarchies in one remote round trip without monopolizing that
+ // transport when independent startup discovery runs concurrently.
+ const MAX_CONCURRENT_ANCESTOR_PROBES: usize = 256;
++
++#[derive(Clone, Copy)]
++enum ProjectSandbox<'a> {
++    Local(&'a FileSystemSandboxContext),
++    Remote(&'a FileSystemSandboxContext),
++}
++
++impl<'a> ProjectSandbox<'a> {
++    fn context(self) -> &'a FileSystemSandboxContext {
++        match self {
++            Self::Local(context) | Self::Remote(context) => context,
++        }
++    }
++}
+ 
+ /// Loads project AGENTS.md content and combines it with host-provided user
+ /// instructions.
+@@ -83,7 +98,13 @@
+             &turn_environment.selection.environment_id,
+             turn_environment.cwd(),
+             remaining,
+-            sandbox.as_ref(),
++            sandbox.as_ref().map(|context| {
++                if turn_environment.environment.is_remote() {
++                    ProjectSandbox::Remote(context)
++                } else {
++                    ProjectSandbox::Local(context)
++                }
++            }),
+         )
+         .await
+         {
+@@ -128,7 +149,7 @@
+     environment_id: &str,
+     cwd: &PathUri,
+     max_total: usize,
+-    sandbox: Option<&FileSystemSandboxContext>,
++    sandbox: Option<ProjectSandbox<'_>>,
+ ) -> io::Result<Option<LoadedAgentsMd>> {
+     if max_total == 0 {
+         return Ok(None);
+@@ -139,6 +160,7 @@
+         return Ok(None);
+     }
+ 
++    let sandbox = sandbox.map(ProjectSandbox::context);
+     let mut remaining: u64 = max_total as u64;
+     let mut loaded = LoadedAgentsMd::default();
+ 
+@@ -193,7 +215,7 @@
+     config: &Config,
+     cwd: &PathUri,
+     fs: &dyn ExecutorFileSystem,
+-    sandbox: Option<&FileSystemSandboxContext>,
++    sandbox: Option<ProjectSandbox<'_>>,
+ ) -> io::Result<Vec<PathUri>> {
+     let dir = cwd.clone();
+ 
+@@ -212,14 +234,22 @@
+             default_project_root_markers()
+         }
+     };
+-    let project_root = find_nearest_ancestor_with_markers(
+-        fs,
+-        &dir,
+-        project_root_markers,
+-        FindUpErrorPolicy::Ignore,
+-        sandbox,
+-    )
+-    .await?;
++    let project_root = match sandbox {
++        Some(ProjectSandbox::Local(context)) => {
++            find_nearest_ancestor_with_project_markers(fs, &dir, project_root_markers, context)
++                .await?
++        }
++        _ => {
++            find_nearest_ancestor_with_markers(
++                fs,
++                &dir,
++                project_root_markers,
++                FindUpErrorPolicy::Ignore,
++                sandbox.map(ProjectSandbox::context),
++            )
++            .await?
++        }
++    };
+     let search_dirs = if let Some(root) = project_root {
+         let mut dirs = Vec::new();
+         let mut cursor = dir.clone();
+@@ -239,6 +269,7 @@
+         vec![dir]
+     };
+ 
++    let sandbox = sandbox.map(ProjectSandbox::context);
+     let candidate_filenames = candidate_filenames(config, cwd);
+     let candidate_filenames = &candidate_filenames;
+     let mut results = futures::stream::iter(search_dirs)
+diff --git a/codex-rs/file-system/src/find_up.rs b/codex-rs/file-system/src/find_up.rs
+--- a/codex-rs/file-system/src/find_up.rs
++++ b/codex-rs/file-system/src/find_up.rs
+@@ -31,15 +31,53 @@
+     error_policy: FindUpErrorPolicy,
+     sandbox: Option<&FileSystemSandboxContext>,
+ ) -> FileSystemResult<Option<PathUri>> {
++    find_nearest_uri_ancestor(file_system, start, markers, error_policy, sandbox, false).await
++}
++
++/// Finds the nearest project marker visible in the sandbox. A `.git` directory
++/// needs a visible `HEAD` to distinguish it from a protected empty mount.
++pub async fn find_nearest_ancestor_with_project_markers(
++    file_system: &dyn ExecutorFileSystem,
++    start: &PathUri,
++    markers: Vec<String>,
++    sandbox: &FileSystemSandboxContext,
++) -> FileSystemResult<Option<PathUri>> {
++    find_nearest_uri_ancestor(
++        file_system,
++        start,
++        markers,
++        FindUpErrorPolicy::Ignore,
++        Some(sandbox),
++        true,
++    )
++    .await
++}
++
++async fn find_nearest_uri_ancestor(
++    file_system: &dyn ExecutorFileSystem,
++    start: &PathUri,
++    markers: Vec<String>,
++    error_policy: FindUpErrorPolicy,
++    sandbox: Option<&FileSystemSandboxContext>,
++    verify_git_directory: bool,
++) -> FileSystemResult<Option<PathUri>> {
+     find_nearest_ancestor(
+         file_system,
+         start.clone(),
+         markers,
+         PathUri::parent,
+         |ancestor, marker| {
+-            ancestor
+-                .join(marker)
+-                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
++            let join = |name| {
++                ancestor
++                    .join(name)
++                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
++            };
++            Ok(MarkerProbe {
++                path: join(marker)?,
++                git_head: (verify_git_directory && marker == ".git")
++                    .then(|| join(".git/HEAD"))
++                    .transpose()?,
++            })
+         },
+         error_policy,
+         sandbox,
+@@ -63,11 +101,43 @@
+         start.clone(),
+         markers,
+         AbsolutePathBuf::parent,
+-        |ancestor, marker| Ok(PathUri::from_abs_path(&ancestor.join(marker))),
++        |ancestor, marker| {
++            Ok(MarkerProbe {
++                path: PathUri::from_abs_path(&ancestor.join(marker)),
++                git_head: None,
++            })
++        },
+         error_policy,
+         sandbox,
+     )
+     .await
++}
++
++struct MarkerProbe {
++    path: PathUri,
++    git_head: Option<PathUri>,
++}
++
++/// Checks a project marker and, for a directory with a supplied Git HEAD path,
++/// requires that the same filesystem and sandbox can see its HEAD metadata.
++pub async fn project_marker_exists(
++    file_system: &dyn ExecutorFileSystem,
++    path: &PathUri,
++    git_head: Option<&PathUri>,
++    sandbox: Option<&FileSystemSandboxContext>,
++) -> FileSystemResult<bool> {
++    let metadata = file_system
++        .get_metadata(path, crate::GetMetadataOptions::default(), sandbox)
++        .await?;
++    if metadata.is_directory
++        && let Some(git_head) = git_head
++    {
++        return Ok(file_system
++            .get_metadata(git_head, crate::GetMetadataOptions::default(), sandbox)
++            .await
++            .is_ok());
++    }
++    Ok(true)
+ }
+ 
+ async fn find_nearest_ancestor<P, Parent, MarkerPath>(
+@@ -82,7 +152,7 @@
+ where
+     P: Clone + Send,
+     Parent: FnMut(&P) -> Option<P> + Send,
+-    MarkerPath: FnMut(&P, &str) -> FileSystemResult<PathUri> + Send,
++    MarkerPath: FnMut(&P, &str) -> FileSystemResult<MarkerProbe> + Send,
+ {
+     let mut ancestors = std::iter::successors(Some(start), parent);
+     let mut ancestor = ancestors.next();
+@@ -101,13 +171,11 @@
+         Some((current_ancestor, marker_path))
+     });
+     let mut results = futures::stream::iter(probes)
+-        .map(|(ancestor, marker_path)| async move {
+-            let marker_path = marker_path?;
+-            match file_system
+-                .get_metadata(&marker_path, crate::GetMetadataOptions::default(), sandbox)
+-                .await
+-            {
+-                Ok(_) => Ok(Some(ancestor)),
++        .map(|(ancestor, marker_probe)| async move {
++            let MarkerProbe { path, git_head } = marker_probe?;
++            match project_marker_exists(file_system, &path, git_head.as_ref(), sandbox).await {
++                Ok(true) => Ok(Some(ancestor)),
++                Ok(false) => Ok(None),
+                 Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+                 Err(err) => match error_policy {
+                     FindUpErrorPolicy::Propagate => Err(err),
+diff --git a/codex-rs/file-system/src/lib.rs b/codex-rs/file-system/src/lib.rs
+--- a/codex-rs/file-system/src/lib.rs
++++ b/codex-rs/file-system/src/lib.rs
+@@ -25,7 +25,9 @@
+ pub use environment_accessor::FileSystemEnvironmentAccessor;
+ pub use find_up::FindUpErrorPolicy;
+ pub use find_up::find_nearest_ancestor_with_markers;
++pub use find_up::find_nearest_ancestor_with_project_markers;
+ pub use find_up::find_nearest_native_ancestor_with_markers;
++pub use find_up::project_marker_exists;
+ use futures::Stream;
+ use serde::Deserialize;
+ use serde::Serialize;

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::{Future, poll_fn};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{
     Arc, OnceLock, RwLock, Weak,
@@ -29,9 +30,28 @@ use codex_thread_store::{
 };
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
+use crate::environment::LocalPrivatePaths;
 use crate::{NativeThread, config, extensions, goals, options};
 
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+pub(crate) struct EngineCloseReport {
+    pub(crate) diagnostic: Option<String>,
+    pub(crate) saved_login_refresh: Option<&'static str>,
+}
+
+impl EngineCloseReport {
+    pub(crate) fn message(&self, defer_saved_login_refresh: bool) -> Option<String> {
+        match (self.diagnostic.as_deref(), self.saved_login_refresh) {
+            (Some(diagnostic), Some(refresh)) if !defer_saved_login_refresh => {
+                Some(format!("{diagnostic}; {refresh}"))
+            }
+            (None, Some(refresh)) if !defer_saved_login_refresh => Some(refresh.to_owned()),
+            _ => self.diagnostic.clone(),
+        }
+    }
+}
 
 #[cfg(test)]
 struct ProcessCleanupHold {
@@ -41,6 +61,7 @@ struct ProcessCleanupHold {
 
 pub struct EngineState {
     pub manager: Arc<ThreadManager>,
+    pub(crate) saved_login_file: Option<PathBuf>,
     pub store: Arc<dyn ThreadStore>,
     pub(crate) custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     pub(crate) local_checklist_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
@@ -74,6 +95,7 @@ pub struct EngineState {
     cloud_config: codex_config::CloudConfigBundleLoader,
     pub(crate) service_config: Config,
     pub(crate) application_apps: Option<codex_mcp::ApplicationApps>,
+    pub(crate) plan_authorization: Option<http::HeaderValue>,
     pub(crate) sentinel: Arc<RwLock<Option<(String, String, Option<String>)>>>,
     pub(crate) transport_binding_sealed: AtomicBool,
     pub(crate) provider_http_transports:
@@ -95,6 +117,13 @@ impl EngineState {
     pub(crate) fn local_storage_home(&self) -> Option<&std::path::Path> {
         (self.local_checklist_store.is_some() || self.goals.is_some())
             .then(|| self.service_config.sqlite_config().home())
+    }
+
+    pub(crate) fn local_private_paths(&self) -> LocalPrivatePaths<'_> {
+        LocalPrivatePaths {
+            storage: self.local_storage_home(),
+            saved_login_file: self.saved_login_file.as_deref(),
+        }
     }
 
     pub(crate) fn validate_hosted_search(config: &Config, info: &ModelInfo) -> anyhow::Result<()> {
@@ -162,8 +191,9 @@ impl EngineState {
     }
 
     pub(crate) async fn validate_hosted_search_model(&self, model: &str) -> anyhow::Result<()> {
-        if crate::config::web_search_tool(&self.service_config)
-            .is_some_and(|name| name.is_default_namespace())
+        if self.plan_authorization.is_some()
+            || crate::config::web_search_tool(&self.service_config)
+                .is_some_and(|name| name.is_default_namespace())
         {
             // Exercise the real awaiting ingress even when bundled metadata is cached.
             #[cfg(test)]
@@ -173,7 +203,43 @@ impl EngineState {
                 .get_models_manager()
                 .get_model_info(model, &self.service_config.to_models_manager_config())
                 .await;
+            ensure!(
+                self.plan_authorization.is_none() || info.use_responses_lite,
+                "Sign in with ChatGPT requires a Responses Lite model"
+            );
             Self::validate_hosted_search(&self.service_config, &info)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn validate_startup_model(&self, config: &Config) -> anyhow::Result<()> {
+        if self.plan_authorization.is_some() {
+            let models = self.manager.get_models_manager();
+            let model = models
+                .get_default_model(
+                    &config.model,
+                    false,
+                    codex_models_manager::manager::RefreshStrategy::Offline,
+                    config.http_client_factory(),
+                )
+                .await;
+            let info = models
+                .get_model_info(&model, &config.to_models_manager_config())
+                .await;
+            ensure!(
+                info.use_responses_lite,
+                "Sign in with ChatGPT requires a Responses Lite model"
+            );
+            config
+                .sdk_request_controls
+                .validate_profile(&info)
+                .map_err(anyhow::Error::msg)?;
+            ensure!(
+                config.sdk_request_controls.store.flatten() != Some(true),
+                "Sign in with ChatGPT requires store=false"
+            );
+        } else if let Some(model) = &config.model {
+            self.validate_hosted_search_model(model).await?;
         }
         Ok(())
     }
@@ -467,6 +533,8 @@ impl EngineState {
             prospective,
             initial_models,
             None,
+            None,
+            None,
         )
         .await
     }
@@ -479,7 +547,14 @@ impl EngineState {
         prospective: Option<&std::sync::Mutex<Option<crate::RuntimeOwned<EnvironmentManager>>>>,
         initial_models: crate::checkpoint::InitialModels,
         custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
+        plan: Option<(http::HeaderValue, String)>,
+        inherited_saved_login: Option<(Arc<AuthManager>, PathBuf)>,
     ) -> anyhow::Result<Self> {
+        let (plan_authorization, plan_provider) = match plan {
+            Some((authorization, provider)) => (Some(authorization), Some(provider)),
+            None => (None, None),
+        };
+        let chatgpt_plan = plan_authorization.is_some();
         ensure!(
             custom_store.is_none()
                 || (!checkpoint
@@ -514,7 +589,37 @@ impl EngineState {
         .flatten();
         drop(original);
         drop(prepared);
+        let saved_login = config::saved_codex_login(&runtime_json)?;
+        ensure!(
+            !chatgpt_plan || (saved_login.is_none() && inherited_saved_login.is_none()),
+            "Cannot combine saved Codex login and Sign in with ChatGPT"
+        );
         let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
+        if let Some(plan_provider) = plan_provider {
+            let provider = &config.model_provider;
+            ensure!(
+                api_key.is_none()
+                    && !config.features.enabled(Feature::RemoteCompactionV2)
+                    && !config.features.enabled(Feature::UnboundedConnectionRetries)
+                    && provider.base_url.as_deref() == Some("https://api.openai.com/v1")
+                    && !provider.supports_websockets
+                    && !provider.requires_openai_auth
+                    && provider.auth.is_none()
+                    && provider.env_key.is_none()
+                    && provider.experimental_bearer_token.is_none()
+                    && provider.gateway_oauth.is_none()
+                    && !provider.has_request_routing_overrides()
+                    && provider.request_max_retries() == 0
+                    && provider.stream_max_retries() == 0,
+                "Invalid Sign in with ChatGPT model route"
+            );
+            bind_plan_provider(&mut config, &plan_provider)?;
+        }
+        let instructions_home = config::discover_agents_md(&runtime_json)?
+            .then(|| {
+                find_codex_home().context("Unable to locate the Codex home for AGENTS.md discovery")
+            })
+            .transpose()?;
         ensure!(
             custom_store.is_none() || !config.update_plan_enabled,
             "custom canonical storage does not support Checklist"
@@ -557,16 +662,50 @@ impl EngineState {
             );
         }
         let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
+        let services = &config;
+        let saved_login = match saved_login {
+            Some(login) => {
+                ensure!(api_key.is_none(), "Saved Codex login cannot use an API key");
+                crate::auth::SavedCodexLogin::check_provider(services)?;
+                Some(match inherited_saved_login {
+                    Some(binding) => binding,
+                    None => login.open(services).await?,
+                })
+            }
+            None => None,
+        };
+        let user_instructions: Arc<dyn UserInstructionsProvider> =
+            if let Some(home) = instructions_home {
+                let provider = CodexHomeUserInstructionsProvider::new(home);
+                Arc::new(match &saved_login {
+                    Some((_, file)) => provider.with_protected_file(file.clone()),
+                    None => provider,
+                })
+            } else {
+                Arc::new(options::EmptyUserInstructions)
+            };
+        let private_paths = LocalPrivatePaths {
+            storage: (goals_enabled || local_home.is_some()).then(|| config.sqlite.home()),
+            saved_login_file: saved_login.as_ref().map(|(_, file)| file.as_path()),
+        };
         // Check before opening SQLite or launching the executor.
         if let Some(environment) = &environment_options {
-            let storage =
-                (goals_enabled || local_home.is_some()).then(|| config.sqlite_config().home());
-            environment.check_local_session_paths(&config, storage)?;
+            environment.check_local_session_paths(&config, private_paths)?;
         }
         let responses = Arc::new(crate::response_control::ResponseContributor::default());
-        let services = &config;
-        let auth = crate::auth::manager(services, api_key).await?;
-        let bundled_catalog = bundled_model_catalog(services, &auth);
+        let auth = match &saved_login {
+            Some((auth, _)) => auth.clone(),
+            None if chatgpt_plan => crate::auth::plan_manager(services),
+            None => crate::auth::manager(services, api_key).await?,
+        };
+        let bundled_catalog = if chatgpt_plan {
+            Some(
+                load_bundled_model_catalog()
+                    .context("Unable to load Responses Lite model metadata")?,
+            )
+        } else {
+            bundled_model_catalog(services, &auth)
+        };
         let injected_bundle = bundled_catalog.is_some();
         let models = codex_model_provider::create_model_provider(
             services.model_provider.clone(),
@@ -625,7 +764,6 @@ impl EngineState {
             Self::validate_hosted_search(&config, &info)?;
         }
         let installation_id = ThreadId::new().to_string();
-        let user_instructions = Arc::new(options::EmptyUserInstructions);
         let extension_events = Arc::new(extensions::Events::new());
         let code_mode = config::code_mode_provider(&runtime_json, &config)?.or_else(|| {
             // Mirror ThreadManager's pinned default if no package helper was
@@ -699,6 +837,9 @@ impl EngineState {
                     })
                     .await?;
                 if let Some(local) = &local_checklist_store {
+                    local
+                        .validate_resume_binding(&saved, &config.model_provider_id)
+                        .await?;
                     local.expect_resume_model(id, saved.model.clone());
                 }
                 if config.model.is_none() {
@@ -749,7 +890,9 @@ impl EngineState {
                 Some(crate::RuntimeOwned::new(environment.clone()));
         }
         if let Some(options) = &environment_options {
-            options.check_ready(&config, &environment).await?;
+            options
+                .check_ready(&config, &environment, private_paths)
+                .await?;
         }
         let project_search = config::project_search(&runtime_json)?;
         let manager = Arc::new_cyclic(|weak| {
@@ -795,6 +938,7 @@ impl EngineState {
         });
         Ok(Self {
             manager,
+            saved_login_file: saved_login.map(|(_, file)| file),
             store,
             local_checklist_store,
             custom_store,
@@ -821,6 +965,7 @@ impl EngineState {
             cloud_config,
             service_config: config,
             application_apps: None,
+            plan_authorization,
             sentinel,
             transport_binding_sealed: AtomicBool::new(false),
             provider_http_transports: OnceLock::new(),
@@ -904,6 +1049,11 @@ impl EngineState {
                 store.open_for_resume(id).await?;
             }
             let saved = self.read_stored_thread(id).await?;
+            if let Some(store) = &self.local_checklist_store {
+                store
+                    .validate_resume_binding(&saved, &startup.config.model_provider_id)
+                    .await?;
+            }
             if startup.config.model.is_none() {
                 startup.config.model = saved.model.clone();
             }
@@ -923,8 +1073,7 @@ impl EngineState {
                     crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
                 if let Some(path) = history.rollout_path.as_deref() {
                     let home = self.local_storage_home().expect("checked local store");
-                    crate::environment::check_local_resume_rollout_path(&startup, &home.join(path))
-                        .await?;
+                    executor_policy.check_rollout_path(&home.join(path)).await?;
                 }
                 let admission = self
                     .local_checklist_store
@@ -1027,9 +1176,7 @@ impl EngineState {
                 .thread_extension_init
                 .insert(crate::custom_storage::ReceiptStore(store.clone()));
         }
-        if let Some(model) = &startup.config.model {
-            self.validate_hosted_search_model(model).await?;
-        }
+        self.validate_startup_model(&startup.config).await?;
         let local_goals =
             self.local_checklist_store.is_some() && startup.config.features.enabled(Feature::Goals);
         ensure!(
@@ -1583,19 +1730,29 @@ impl EngineState {
     }
 
     pub async fn close(&self) -> anyhow::Result<()> {
-        if let Some(diagnostic) = self.close_report().await? {
+        if let Some(diagnostic) = self.close_report().await?.message(false) {
             anyhow::bail!(diagnostic);
         }
         Ok(())
     }
 
-    pub(crate) async fn close_report(&self) -> anyhow::Result<Option<String>> {
+    pub(crate) async fn close_report(&self) -> anyhow::Result<EngineCloseReport> {
         let _guard = self.lifecycle.lock().await;
         let _observations = self.manual_observations.write().await;
         self.close_locked().await
     }
 
-    async fn close_locked(&self) -> anyhow::Result<Option<String>> {
+    async fn saved_login_refresh_report(&self) -> anyhow::Result<Option<&'static str>> {
+        let auth_manager = self.manager.auth_manager();
+        if !auth_manager.is_saved_chatgpt() {
+            return Ok(None);
+        }
+        tokio::time::timeout(CLOSE_TIMEOUT, auth_manager.wait_for_saved_chatgpt_refresh())
+            .await
+            .context("Saved Codex login refresh cleanup timed out")
+    }
+
+    async fn close_locked(&self) -> anyhow::Result<EngineCloseReport> {
         if self.closed.load(Ordering::Acquire) {
             let mut diagnostics = Vec::new();
             let retained = self
@@ -1627,7 +1784,10 @@ impl EngineState {
                 }
             };
             diagnostics.extend(canonical);
-            return Ok((!diagnostics.is_empty()).then(|| diagnostics.join("; ")));
+            return Ok(EngineCloseReport {
+                diagnostic: (!diagnostics.is_empty()).then(|| diagnostics.join("; ")),
+                saved_login_refresh: self.saved_login_refresh_report().await?,
+            });
         }
         // Fork cleanup and manager shutdown remove completed threads. Preserve
         // their exact cleanup health before either path changes the registry.
@@ -1709,6 +1869,7 @@ impl EngineState {
         {
             fork_diagnostics.push(diagnostic);
         }
+        let saved_login_refresh = self.saved_login_refresh_report().await?;
         if let Some(store) = &self.custom_store {
             if let Some(diagnostic) = store.close_all().await? {
                 fork_diagnostics.push(diagnostic);
@@ -1731,7 +1892,10 @@ impl EngineState {
             fork_diagnostics.push(diagnostic);
         }
         self.closed.store(true, Ordering::Release);
-        Ok((!fork_diagnostics.is_empty()).then(|| fork_diagnostics.join("; ")))
+        Ok(EngineCloseReport {
+            diagnostic: (!fork_diagnostics.is_empty()).then(|| fork_diagnostics.join("; ")),
+            saved_login_refresh,
+        })
     }
 
     pub(crate) fn register_native_thread(
@@ -2017,9 +2181,16 @@ impl EngineState {
         mut startup: StartThreadOptions,
         instructions: Arc<options::ThreadInstructions>,
     ) -> anyhow::Result<(StartThreadOptions, Arc<options::ThreadInstructions>)> {
+        if self.plan_authorization.is_some() {
+            bind_plan_provider(&mut startup.config, &self.service_config.model_provider_id)?;
+        }
         if let Some(settings) = &self.telemetry {
             settings.apply(&mut startup.config);
         }
+        ensure!(
+            self.saved_login_file.is_none() || startup.environments.is_none(),
+            "Saved Codex login requires configured executor selection"
+        );
         // Thread options reload the original config. Keep the proxy ceiling on
         // the final configuration as well as the engine's initial admission.
         if let Some(environment) = config::environment(&self.runtime_json)? {
@@ -2030,7 +2201,7 @@ impl EngineState {
                     .selection(
                         &startup.config,
                         &self.manager.environment_manager(),
-                        self.local_storage_home(),
+                        self.local_private_paths(),
                     )
                     .await?;
                 environment.configure_local_proxy(&mut startup.config, &selection)?;
@@ -2075,6 +2246,9 @@ impl EngineState {
             config::code_mode_host_enabled(config) == config::code_mode_host_enabled(original),
             "Code Mode host selection belongs to the Codex client; create a separate client to change it"
         );
+        if self.manager.auth_manager().is_saved_chatgpt() {
+            crate::auth::SavedCodexLogin::check_provider(config)?;
+        }
         // Only the SDK-owned API-key Responses profile receives reference forwarding.
         // Actual model metadata still decides Lite/modality admission. Apps cookies are separate.
         if config.model_provider_id == "native_agent"
@@ -2097,6 +2271,11 @@ impl EngineState {
                 grant,
                 excluded.as_deref(),
             )?;
+        } else {
+            ensure!(
+                self.plan_authorization.is_none(),
+                "Sign in with ChatGPT requires native model dispatch"
+            );
         }
         Ok((startup, instructions))
     }
@@ -2193,12 +2372,16 @@ impl EngineState {
             .map_err(crate::native_error)?;
         let mut builder = codex_http_client::HttpClientBuilder::new().without_request_logging();
         // Resolve redirect policy before narrowing original header declarations.
-        let no_redirects = info.has_request_routing_overrides()
+        let no_redirects = self.plan_authorization.is_some()
+            || info.has_request_routing_overrides()
             || original
                 .headers
                 .contains_key(codex_model_provider::ACCOUNT_ROUTING_HEADER);
         if no_redirects {
             builder = builder.without_redirects();
+        }
+        if self.plan_authorization.is_some() {
+            builder = builder.without_retries();
         }
         let mut info = info.clone();
         info.base_url = Some(original.base_url);
@@ -2260,6 +2443,22 @@ impl EngineState {
     }
 }
 
+fn bind_plan_provider(config: &mut Config, plan_provider: &str) -> anyhow::Result<()> {
+    ensure!(
+        config.model_provider_id == "native_agent",
+        "Invalid Sign in with ChatGPT model route"
+    );
+    let provider = config
+        .model_providers
+        .remove("native_agent")
+        .context("Missing native model route")?;
+    config
+        .model_providers
+        .insert(plan_provider.to_owned(), provider);
+    config.model_provider_id = plan_provider.to_owned();
+    Ok(())
+}
+
 // Only an immutable API-key catalog can replace the dynamic manager's bundled seed.
 fn bundled_model_catalog(config: &Config, auth: &AuthManager) -> Option<ModelsResponse> {
     let provider = &config.model_provider;
@@ -2274,6 +2473,10 @@ fn bundled_model_catalog(config: &Config, auth: &AuthManager) -> Option<ModelsRe
     {
         return None;
     }
+    load_bundled_model_catalog()
+}
+
+fn load_bundled_model_catalog() -> Option<ModelsResponse> {
     static CATALOG: OnceLock<ModelsResponse> = OnceLock::new();
     if let Some(catalog) = CATALOG.get() {
         return Some(catalog.clone());

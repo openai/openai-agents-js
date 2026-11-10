@@ -181,6 +181,13 @@ export interface ToolDeclaration {
 
 const prepareInvocation = Symbol('function tool binding');
 const computerDeclaration = Symbol('native computer declaration');
+
+/** @internal The plan route admits only direct local function declarations. */
+export function isDirectFunctionTool(tool: SessionTool): boolean {
+  return (
+    tool.kind !== 'manual' && !tool.deferLoading && !tool[computerDeclaration]
+  );
+}
 type Invocation<Context> = (
   args: JsonValue,
   context: ToolCallContext<Context>,
@@ -472,10 +479,9 @@ export function tool<
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed = parameters.parse(
-        effectiveArgs === undefined ? args : effectiveArgs,
-      );
-      if (approved) parsed = approved.value as typeof parsed;
+      let parsed = approved
+        ? (approved.value as z.output<T>)
+        : parameters.parse(effectiveArgs === undefined ? args : effectiveArgs);
       let callContext: ToolContext<Context> = {
         ...context,
         decide:

@@ -7,8 +7,10 @@ import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
 import {
   access,
+  lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -20,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import process from 'node:process';
 import console from 'node:console';
+import { URL } from 'node:url';
 import { promisify } from 'node:util';
 import { Agent, Environment, NativeProvider, tool } from '@openai/agents';
 import { z } from 'zod';
@@ -108,13 +111,66 @@ for (const esm of [false, true]) {
       );
   }
 }
+const facadeRoot = installed['@openai/agents'];
 const agentRoot = installed['@openai/agents-codex'];
 for (const path of ['native', 'bin', 'licenses']) {
   await access(join(agentRoot, path));
-  await assert.rejects(access(join(installed['@openai/agents'], path)), {
+}
+for (const path of ['bin', 'licenses']) {
+  await assert.rejects(lstat(join(facadeRoot, path)), {
     code: 'ENOENT',
   });
 }
+
+const portableWasm = 'codex-realtime-control.wasm';
+const portableReceiptFile = 'portable-build-receipt.json';
+const facadeNative = join(facadeRoot, 'native');
+assert(
+  (await lstat(facadeNative)).isDirectory(),
+  'Invalid facade native directory',
+);
+assert.deepEqual(
+  (await readdir(facadeNative)).sort(),
+  [portableWasm, portableReceiptFile],
+  'Unexpected facade native inventory',
+);
+const portableReceipts = [];
+for (const name of ['@openai/agents', '@openai/agents-codex']) {
+  const wasm = join(installed[name], 'native', portableWasm);
+  const receiptFile = join(installed[name], 'native', portableReceiptFile);
+  for (const file of [wasm, receiptFile]) {
+    assert((await lstat(file)).isFile(), `Expected a regular file: ${file}`);
+  }
+  const specifier = `${name}/voice/control.wasm`;
+  assert.equal(require.resolve(specifier), wasm, `CJS export: ${specifier}`);
+  assert.equal(
+    await realpath(new URL(import.meta.resolve(specifier))),
+    wasm,
+    `ESM export: ${specifier}`,
+  );
+  const portableReceipt = JSON.parse(await readFile(receiptFile, 'utf8'));
+  assert.equal(portableReceipt.format, 'reviewed-portable-realtime-v1');
+  assert.equal(
+    portableReceipt.sourceIdentity?.codex?.revision,
+    receipt.codexRevision,
+  );
+  assert.equal(portableReceipt.target, 'wasm32-unknown-unknown');
+  assert.equal(portableReceipt.artifact?.path, portableWasm);
+  assert.equal(
+    createHash('sha256')
+      .update(await readFile(wasm))
+      .digest('hex'),
+    portableReceipt.artifact.sha256,
+    `Changed portable Wasm: ${name}`,
+  );
+  portableReceipts.push(portableReceipt);
+}
+assert.deepEqual(
+  portableReceipts[0],
+  portableReceipts[1],
+  'Portable Realtime receipts disagree',
+);
+
 const native = require(join(agentRoot, 'native/index.js'));
 assert.equal(native.CODEX_REVISION, receipt.codexRevision);
 assert.equal(
@@ -349,7 +405,7 @@ if (receipt.platform === 'linux-arm64') {
             call_id: callId,
             name: 'exec_command',
             arguments: JSON.stringify({
-              cmd: 'if (printf overwritten > ../sentinel) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt',
+              cmd: 'command -v dd >/dev/null || exit 1; if (printf overwritten | dd of=../sentinel conv=nocreat status=none) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt',
               workdir: cwd,
             }),
           },
@@ -445,5 +501,5 @@ for (const esm of [false, true]) {
   assert.equal(model.calls.length, 2);
 }
 console.log(
-  'Verified local SDK locks, CJS/ESM imports, native products/helpers, forwarded facade exports, runtime payload ownership, bundled hello, native tool/sessions, and classic sessions.',
+  'Verified local SDK locks, CJS/ESM imports, native products/helpers, forwarded facade exports, runtime payload ownership, portable Realtime exports and receipts, bundled hello, native tool/sessions, and classic sessions.',
 );

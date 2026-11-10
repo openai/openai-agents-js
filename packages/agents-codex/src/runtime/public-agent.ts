@@ -41,7 +41,12 @@ import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
 import { isDeepStrictEqual } from 'node:util';
 import { binding, type JsonObject } from './binding';
-import { prepareOutput, type OutputSpec, type PreparedOutput } from './output';
+import {
+  assertOutputRepairSupported,
+  prepareOutput,
+  type OutputSpec,
+  type PreparedOutput,
+} from './output';
 import { webSearchName } from './web-search';
 import { hostedToolSpecs } from './hosted-tools';
 import { NativeError } from './native-error';
@@ -88,6 +93,7 @@ import { captureThreadStore, type SessionStore } from './custom-thread-store';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
+  isDirectFunctionTool,
   toolIdentity,
   type Tool,
   type SessionTool,
@@ -173,6 +179,17 @@ export interface SessionBaseOptions<Context = undefined> {
    * Use files and parent directories that untrusted actors cannot modify.
    */
   instructionFiles?: readonly string[];
+  /**
+   * Use Codex AGENTS.md instructions as model context. Discovery reads the
+   * host Codex home (`CODEX_HOME` or `~/.codex`) and the readable project
+   * hierarchy of a selected Environment, using that executor's filesystem.
+   * Codex prefers `AGENTS.override.md` at each location and applies user
+   * guidance followed by project guidance from the root to the working
+   * directory. Explicit `instructionFiles` provide developer instructions.
+   * Enable only for trusted executors, directories, grants, and symlink
+   * targets. Defaults to false on each public opening, including restore.
+   */
+  discoverAgentsMd?: boolean;
   /** Cancel opening and join cleanup. Agent.run retains this signal until completion. */
   signal?: AbortSignal;
   /**
@@ -217,6 +234,7 @@ interface CapturedOpening {
   readonly factory: Agent<any, any>['session'];
   readonly instructions: string;
   readonly instructionFiles: readonly InstructionFileReceipt[];
+  readonly discoverAgentsMd?: boolean;
   readonly name?: string;
   readonly model?: string;
   readonly settings?: ModelSettings;
@@ -298,6 +316,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'items'
   | 'turns'
   | 'rateLimits'
+  | 'planUsage'
   | 'buildRealtimeSipConfig'
   | 'realtime'
   | 'realtimeUsage'
@@ -606,6 +625,7 @@ export class Agent<Context = undefined, Output = string> {
       state: options.state,
       environment: options.environment,
       instructionFiles: options.instructionFiles,
+      discoverAgentsMd: options.discoverAgentsMd,
       projectGuidance: options.projectGuidance,
       signal: options.signal,
       provider: options.provider,
@@ -664,6 +684,10 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const discoverAgentsMd =
+      opening?.discoverAgentsMd ?? options.discoverAgentsMd;
+    if (discoverAgentsMd !== undefined && typeof discoverAgentsMd !== 'boolean')
+      throw new TypeError('discoverAgentsMd must be a boolean');
     const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
@@ -811,6 +835,29 @@ export class Agent<Context = undefined, Output = string> {
         ? Object.freeze({ ...declaredOutput })
         : declaredOutput;
     const output = opening ? opening.output : prepareOutput(outputType);
+    if (provider._usesChatGPTPlan && settings?.store === true)
+      throw new TypeError('Sign in with ChatGPT requires store=false');
+    if (
+      provider._usesChatGPTPlan &&
+      (owned?.prepareRequest !== undefined ||
+        selection !== undefined ||
+        isManualSessionState(stateResult?.data) ||
+        this.handoffs.length !== 0 ||
+        programmaticToolCalling ||
+        projectGuidance ||
+        environmentInput !== undefined ||
+        declarations.nativeAgents ||
+        declarations.nativeGoals ||
+        declarations.checklist ||
+        search ||
+        declarations.hostedTools.length !== 0 ||
+        declarations.mcp.length !== 0 ||
+        declarations.tools.some((tool) => !isDirectFunctionTool(tool)) ||
+        output.repair)
+    )
+      throw new TypeError(
+        'Sign in with ChatGPT supports a single Agent with direct local function tools and settled state',
+      );
     const profiles = opening
       ? opening.profiles
       : this.handoffs.length
@@ -1171,6 +1218,7 @@ export class Agent<Context = undefined, Output = string> {
       state == null &&
       !environment &&
       !projectGuidance &&
+      !discoverAgentsMd &&
       files.length === 0 &&
       !programmaticToolCalling &&
       selected.length === 0 &&
@@ -1195,6 +1243,15 @@ export class Agent<Context = undefined, Output = string> {
     const apiKey = lease.apiKey;
 
     try {
+      if (lease.codexLogin)
+        assertOutputRepairSupported(
+          output,
+          activeOutput,
+          ...Array.from(
+            graph?.profiles.values() ?? [],
+            (profile) => profile.output,
+          ),
+        );
       correction?.retainOpening(lease);
       const registration = declarations.mcp.find(isHostedRegistration);
       const personalApps = registration instanceof ChatGPTAppsMCP;
@@ -1221,6 +1278,7 @@ export class Agent<Context = undefined, Output = string> {
               : {}),
           })
         : undefined;
+      const plan = await lease.capturePlan?.(environmentOwner.signal);
       const home = await lease.open();
       environmentOwner.signal.throwIfAborted();
       if (nativeAgents)
@@ -1236,9 +1294,16 @@ export class Agent<Context = undefined, Output = string> {
         tools: declarations.tools,
         apiKey: lease.apiKey,
         applicationAppsJson,
+        plan,
         config: {
           ...config,
           ...lease.config,
+          ...(plan
+            ? {
+                'features.remote_compaction_v2': false,
+                'features.unbounded_connection_retries': false,
+              }
+            : {}),
           'model_providers.native_agent': {
             ...(lease.config['model_providers.native_agent'] as JsonObject),
             supports_standalone_web_search: search?.route === 'standalone',
@@ -1246,6 +1311,10 @@ export class Agent<Context = undefined, Output = string> {
         },
         runtime: {
           ...home,
+          ...(discoverAgentsMd ? { _sdk_discover_agents_md: true } : {}),
+          ...(lease.codexLogin === undefined
+            ? {}
+            : { _sdk_codex_login: lease.codexLogin }),
           ...(!persistent
             ? {}
             : {
@@ -1339,6 +1408,7 @@ export class Agent<Context = undefined, Output = string> {
       };
       const session: CoreSessionOptions = {
         modelBackend: provider.modelBackend,
+        chatGPTPlan: plan !== undefined,
         realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
         initialMessages: options.initialMessages,
@@ -1370,43 +1440,47 @@ export class Agent<Context = undefined, Output = string> {
         websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
         environmentOwner,
-        openCorrection: async (
-          model,
-          modelSettings,
-          retainOpening,
-          parentTrace,
-          repairTransformContext,
-        ) => {
-          // Native fallback may read a later environment key; repair needs this snapshot.
-          if (apiKey === undefined)
-            throw new NativeError('Output repair requires a captured API key');
-          const correction = new Agent({
-            instructions:
-              'Correct the supplied JSON to match its schema. Return only JSON.',
-            provider,
-            model,
-            modelSettings,
-            tools: [],
-            transformContext:
-              repairTransformContext === undefined
-                ? undefined
-                : (request) =>
-                    repairTransformContext({
-                      ...request,
-                      context: context as Context,
-                    }),
-          });
-          const correctionOptions: OwnedSessionOptions<undefined> = {
-            parentTrace,
-            [correctionOpening]: {
-              apiKey: lease.realtimeApiKey,
+        openCorrection: lease.codexLogin
+          ? undefined
+          : async (
+              model,
+              modelSettings,
               retainOpening,
+              parentTrace,
+              repairTransformContext,
+            ) => {
+              // Native fallback may read a later environment key; repair needs this snapshot.
+              if (apiKey === undefined)
+                throw new NativeError(
+                  'Output repair requires a captured API key',
+                );
+              const correction = new Agent({
+                instructions:
+                  'Correct the supplied JSON to match its schema. Return only JSON.',
+                provider,
+                model,
+                modelSettings,
+                tools: [],
+                transformContext:
+                  repairTransformContext === undefined
+                    ? undefined
+                    : (request) =>
+                        repairTransformContext({
+                          ...request,
+                          context: context as Context,
+                        }),
+              });
+              const correctionOptions: OwnedSessionOptions<undefined> = {
+                parentTrace,
+                [correctionOpening]: {
+                  apiKey: lease.realtimeApiKey,
+                  retainOpening,
+                },
+              };
+              return (await correction.session(
+                correctionOptions,
+              )) as CoreSession<string>;
             },
-          };
-          return (await correction.session(
-            correctionOptions,
-          )) as CoreSession<string>;
-        },
       };
       const captured: CapturedOpening = opening
         ? Object.freeze({ ...opening, decisions })
@@ -1418,6 +1492,7 @@ export class Agent<Context = undefined, Output = string> {
             factory,
             instructions,
             instructionFiles: files,
+            discoverAgentsMd,
             name,
             model,
             settings,

@@ -1,12 +1,13 @@
 use super::*;
 use anyhow::{Context, ensure};
 use codex_protocol::protocol::{TurnAbortReason, TurnAbortedEvent};
+use std::{fs::File, io};
 
 pub(super) struct RecoverySource {
     pub(super) id: ThreadId,
     parent: Option<usize>,
     edge: Option<ThreadSpawnEdgeStatus>,
-    path: PathBuf,
+    pub(super) path: PathBuf,
     pub(super) items: Vec<RolloutItem>,
     own_start: usize,
 }
@@ -168,6 +169,12 @@ pub(super) struct SourceWrite {
     acknowledged: bool,
 }
 
+impl SourceWrite {
+    pub(super) fn needs_publication(&self) -> bool {
+        !self.rows.is_empty() || self.acknowledged
+    }
+}
+
 pub(super) async fn plan_recovery_tree(
     inner: &LocalThreadStore,
     sources: &[RecoverySource],
@@ -205,10 +212,7 @@ pub(super) async fn plan_recovery_tree(
             &[]
         } else {
             model = inner
-                .load_latest_model_context(LoadThreadHistoryParams {
-                    thread_id: source.id,
-                    include_archived: true,
-                })
+                .load_model_context_for_rollout(source.id, &source.path)
                 .await?;
             &model.items
         };
@@ -350,39 +354,73 @@ pub(super) async fn publish_recovery(
     write: &SourceWrite,
     #[cfg(test)] fail: Option<RecoveryWritePoint>,
 ) -> anyhow::Result<()> {
+    if !write.needs_publication() {
+        return Ok(());
+    }
     let directory = source
         .path
         .parent()
         .context("rollout has no containing directory")?;
-    let path = if write.rows.is_empty() {
-        if !write.acknowledged {
-            return Ok(());
-        }
+    if write.rows.is_empty() {
         tokio::fs::OpenOptions::new()
             .write(true)
             .open(&source.path)
             .await?
             .sync_all()
             .await?;
-        source.path.clone()
     } else {
-        let path = codex_rollout::materialize_rollout_for_reference(&source.path).await?;
-        let stage = tempfile::Builder::new()
+        let mut stage = tempfile::Builder::new()
             .suffix(".jsonl")
             .tempfile_in(directory)?;
-        tokio::fs::copy(&path, stage.path()).await?;
+        let compressed = source
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".jsonl.zst"));
+        let stage = if compressed {
+            let path = source.path.clone();
+            tokio::task::spawn_blocking(move || -> io::Result<_> {
+                let mut decoder = zstd::stream::read::Decoder::new(File::open(path)?)?;
+                io::copy(&mut decoder, stage.as_file_mut())?;
+                Ok(stage)
+            })
+            .await??
+        } else {
+            tokio::fs::copy(&source.path, stage.path()).await?;
+            stage
+        };
         for row in &write.rows {
             codex_rollout::append_rollout_item_to_path(stage.path(), row).await?;
         }
-        stage.as_file().sync_all()?;
+        let replacement = if compressed {
+            let mut output = tempfile::NamedTempFile::new_in(directory)?;
+            let permissions = tokio::fs::metadata(&source.path).await?.permissions();
+            tokio::task::spawn_blocking(move || -> io::Result<_> {
+                let mut input = File::open(stage.path())?;
+                let mut encoder = zstd::stream::write::Encoder::new(
+                    output.as_file_mut(),
+                    zstd::DEFAULT_COMPRESSION_LEVEL,
+                )?;
+                encoder.set_pledged_src_size(Some(input.metadata()?.len()))?;
+                io::copy(&mut input, &mut encoder)?;
+                encoder.finish()?;
+                output.as_file().set_permissions(permissions)?;
+                Ok(output)
+            })
+            .await??
+        } else {
+            stage
+        };
+        replacement.as_file().sync_all()?;
         #[cfg(test)]
         ensure!(
             fail != Some(RecoveryWritePoint::BeforeReplace),
             "injected failure before recovery replacement"
         );
-        stage.persist(&path).map_err(|error| error.error)?;
-        path
-    };
+        replacement
+            .persist(&source.path)
+            .map_err(|error| error.error)?;
+    }
     #[cfg(test)]
     ensure!(
         fail != Some(RecoveryWritePoint::BeforeDirectorySync),
@@ -392,7 +430,7 @@ pub(super) async fn publish_recovery(
     if write.rows.is_empty() {
         return Ok(());
     }
-    let persisted = read_complete(source.id, &path).await?;
+    let persisted = read_complete(source.id, &source.path).await?;
     let tail = persisted
         .get(source.items.len()..)
         .context("recovery rollout lost its original records")?;
@@ -452,8 +490,7 @@ impl LocalChecklistStore {
 
     pub(super) async fn read_recovery_sources(
         &self,
-        root: ThreadId,
-        root_path: PathBuf,
+        root: RecoverySource,
         edges: &[(ThreadId, SpawnEdge)],
     ) -> anyhow::Result<Vec<RecoverySource>> {
         let mut children = HashMap::<_, Vec<_>>::new();
@@ -463,7 +500,7 @@ impl LocalChecklistStore {
                 .or_default()
                 .push((*child, edge.status));
         }
-        let mut sources = vec![RecoverySource::read(root, root_path, None).await?];
+        let mut sources = vec![root];
         let mut parent = 0;
         while let Some(source) = sources.get(parent) {
             for (child, status) in children.remove(&source.id).unwrap_or_default() {
@@ -491,20 +528,8 @@ impl LocalChecklistStore {
     }
 
     pub(super) async fn recovery_path(&self, path: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-        let home = self
-            .checklist_directory
-            .parent()
-            .expect("local profile directory");
-        let path = home.join(path.context("missing recorded rollout path")?);
-        let path = codex_rollout::existing_rollout_path(&path)
-            .await
-            .context("missing recorded rollout")?;
-        let path = tokio::fs::canonicalize(path).await?;
-        ensure!(
-            path.starts_with(tokio::fs::canonicalize(home).await?),
-            "recorded rollout is outside the local profile"
-        );
-        Ok(path)
+        let path = path.context("missing recorded rollout path")?;
+        Ok(self.inner.resolve_cold_rollout_path(&path).await?)
     }
 }
 

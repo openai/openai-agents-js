@@ -23,6 +23,7 @@ import {
   SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  type SandboxSession,
 } from '@openai/agents-core/sandbox';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
@@ -1701,6 +1702,59 @@ describe('DaytonaSandboxClient', () => {
     expect(killMock).toHaveBeenCalledOnce();
     expect(disconnectMock).toHaveBeenCalledOnce();
   });
+
+  test.each([
+    [false, false],
+    [true, false],
+    [true, true],
+  ])(
+    'native source disconnects PTYs after cleanup failures (kill=%s, disconnect=%s)',
+    async (killFails, disconnectFails) => {
+      const exited = deferred<{ exitCode: number }>();
+      const kill = vi.fn(async () => {
+        if (killFails) throw new Error('kill failed');
+      });
+      const disconnect = vi.fn(async () => {
+        exited.resolve({ exitCode: 0 });
+        if (disconnectFails) throw new Error('disconnect failed');
+      });
+      createPtyMock.mockResolvedValueOnce({
+        waitForConnection: async () => {},
+        sendInput: async () => {},
+        wait: () => exited.promise,
+        kill,
+        disconnect,
+      });
+      const owner = await sandboxEnvironment({
+        client: new DaytonaSandboxClient(),
+        manifest: new Manifest(),
+        connect: async (resource) => {
+          const session = resource as SandboxSession;
+          if (!session.execCommand) {
+            throw new Error('The fixture requires execCommand');
+          }
+          await session.execCommand({
+            cmd: 'sleep 60',
+            tty: true,
+            yieldTimeMs: 1,
+          });
+          return Environment.lease(
+            new Environment({
+              url: 'wss://fixture.invalid',
+              cwd: resource.state.manifest.root,
+            }),
+            async () => {},
+          );
+        },
+      })({ signal: new AbortController().signal });
+
+      await owner.close();
+      await owner.close();
+      expect(kill).toHaveBeenCalledOnce();
+      expect(disconnect).toHaveBeenCalledOnce();
+      await expect(exited.promise).resolves.toEqual({ exitCode: 0 });
+    },
+  );
 
   test('serializes runtime env overrides for session resume', async () => {
     const client = new DaytonaSandboxClient({

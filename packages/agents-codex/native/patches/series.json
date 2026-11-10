@@ -241,6 +241,10 @@
       "sha256": "cda109edea1cb5a669e8be466c49b44259f7e1b0e6c79f0598005a1e4c176ca8"
     },
     {
+      "path": "sdk-local-recovery-rollout-context.patch",
+      "sha256": "3988b69144d3426502a660be2bfe31b6171a98d55cdc7a507702db3f7e558c4c"
+    },
+    {
       "path": "0055-native-history-write-reconciliation.patch",
       "sha256": "b37fa326977162283daf992214bc54bf13c19d6bd00221e77ea4c4c0933528ab"
     },
@@ -467,7 +471,23 @@
     {
       "path": "sdk-realtime-provider-controls-and-tool-history.patch",
       "sha256": "c322e9722ee12080ed6f0209222c816600127e1b2dbb37b1e3aac371228c3421"
+    },
+    {
+      "path": "sdk-managed-project-instruction-markers.patch",
+      "sha256": "8d243ea5efea735d6d1ac9241df7a04d05d654e4c5ce78070541d58b57ae41ba"
+    },
+    {
+      "path": "sdk-realtime-raw-settings-and-item-deletion.patch",
+      "sha256": "d29d1837c691d4f4fc4942c7f6f721fe61ddfa5febacfded10ccf1e43461f69e"
+    },
+    {
+      "path": "sdk-chatgpt-plan-responses-and-storage.patch",
+      "sha256": "e994ea870e8243269cc6cddaa1b523921cfe0aa898143b0ee533da3caac6833d"
+    },
+    {
+      "path": "sdk-saved-codex-login.patch",
+      "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
     }
   ],
-  "result_tree": "d39b9c3ad7958a3a2a8000df9e84b4ca5d452267"
+  "result_tree": "fc2c13fd9b0fdaee49ed57539db4418ba3ff68a5"
 }

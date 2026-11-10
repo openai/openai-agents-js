@@ -253,6 +253,14 @@ export type NativeRealtimeEvent =
   | { readonly type: 'conversation_item_deleted'; readonly itemId: string }
   | { type: 'history'; item: NativeRealtimeHistoryItem; completed: boolean }
   | {
+      type: 'detached_function_call';
+      responseId: string;
+      itemId: string;
+      callId: string;
+      name: string;
+      arguments: string;
+    }
+  | {
       type: 'function_call';
       callId: string;
       name: string;
@@ -1703,6 +1711,27 @@ class NativeRealtimeOwner {
         owned.task = this.#context(() => this.delegate(id, nativeInput, owned));
         void owned.task.catch((error) => this.finish(error));
       }
+    } else if (name === 'DetachedFunctionCall') {
+      for (const key of [
+        'response_id',
+        'item_id',
+        'call_id',
+        'name',
+        'arguments',
+      ])
+        if (
+          typeof value[key] !== 'string' ||
+          (key !== 'arguments' && !value[key])
+        )
+          throw new TypeError('Invalid native detached function call');
+      this.emit({
+        type: 'detached_function_call',
+        responseId: value.response_id,
+        itemId: value.item_id,
+        callId: value.call_id,
+        name: value.name,
+        arguments: value.arguments,
+      });
     } else if (name === 'FunctionCallRequested') {
       const id = value.call_id;
       if (

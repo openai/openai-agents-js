@@ -332,6 +332,7 @@ impl ThreadOptions {
         let base: Map<String, Value> = serde_json::from_str(base_runtime)?;
         for key in [
             "_native_interception_http",
+            "_sdk_codex_login",
             "environment",
             "codex_home",
             "native_thread_store",

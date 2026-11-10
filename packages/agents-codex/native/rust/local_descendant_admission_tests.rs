@@ -42,8 +42,12 @@ async fn append(store: &LocalChecklistStore, id: ThreadId, items: Vec<RolloutIte
 
 // Use real native creation and materialized headers, not inserted database rows.
 async fn family(home: &Path) -> (LocalChecklistStore, [ThreadId; 3]) {
+    recovery_family(home).await
+}
+
+async fn recovery_family<const N: usize>(home: &Path) -> (LocalChecklistStore, [ThreadId; N]) {
     let store = tests::store(home).await;
-    let ids = [ThreadId::new(), ThreadId::new(), ThreadId::new()];
+    let ids = std::array::from_fn(|_| ThreadId::new());
     for (depth, id) in ids.iter().copied().enumerate() {
         let mut params = tests::create_params(id, home);
         if depth != 0 {
@@ -295,10 +299,8 @@ async fn stored_unknown_grandchild_below_closed_ancestor_fails_complete_tree_adm
         );
         let path = store.inner.live_rollout_path(ids[0]).await.unwrap();
         let edges = store.recovery_edges(ids[0]).await.unwrap();
-        let sources = store
-            .read_recovery_sources(ids[0], path, &edges)
-            .await
-            .unwrap();
+        let root = RecoverySource::read(ids[0], path, None).await.unwrap();
+        let sources = store.read_recovery_sources(root, &edges).await.unwrap();
         let history = store.load_owned_history(ids[0]).await.unwrap();
         let error = plan_recovery_tree(&store.inner, &sources, &history, Vec::new())
             .await
@@ -737,17 +739,20 @@ async fn copied_legacy_calls_keep_their_owner_across_partial_replacement_and_ret
     #[cfg(unix)]
     {
         let outside = tempfile::tempdir().unwrap();
+        let original_leaf = paths[2].with_extension("saved");
         let foreign = outside.path().join("leaf.jsonl");
-        tokio::fs::rename(&paths[2], &foreign).await.unwrap();
+        tokio::fs::rename(&paths[2], &original_leaf).await.unwrap();
+        tokio::fs::copy(&paths[0], &foreign).await.unwrap();
         tokio::fs::symlink(&foreign, &paths[2]).await.unwrap();
         let error = prepare_recovery(&store, home.path(), root, receipts())
             .await
             .err()
             .unwrap();
-        assert!(error.to_string().contains("outside the local profile"));
-        assert_eq!(bytes(&paths).await, original);
+        assert!(error.to_string().contains("belongs to thread"), "{error}");
+        assert_eq!(tokio::fs::read(&foreign).await.unwrap(), original[0]);
         tokio::fs::remove_file(&paths[2]).await.unwrap();
-        tokio::fs::rename(foreign, &paths[2]).await.unwrap();
+        tokio::fs::rename(original_leaf, &paths[2]).await.unwrap();
+        assert_eq!(bytes(&paths).await, original);
     }
     let mut partial = receipts();
     partial.pop();
@@ -825,6 +830,265 @@ async fn copied_legacy_calls_keep_their_owner_across_partial_replacement_and_ret
     store.resume_thread(params).await.unwrap();
     drop(admitted);
     store.shutdown_thread(root).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn staged_compressed_root_alias_is_readable_before_writer_sync() {
+    staged_root_alias_is_readable_before_writer_sync(false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn staged_root_uses_the_already_materialized_rollout() {
+    staged_root_alias_is_readable_before_writer_sync(true).await;
+}
+
+#[cfg(unix)]
+async fn staged_root_alias_is_readable_before_writer_sync(already_materialized: bool) {
+    let home = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let (store, [root, child]) = recovery_family(home.path()).await;
+    let paths = rollout_paths(&store, &[root, child]).await;
+    append(
+        &store,
+        root,
+        [
+            vec![
+                started("root"),
+                legacy_context(home.path(), "root"),
+                call("effect"),
+            ],
+            spawn("spawn-child", child),
+        ]
+        .concat(),
+    )
+    .await;
+    append(&store, child, vec![started("child"), call("effect")]).await;
+    let original = snapshots(&store, &[root, child]).await;
+    for id in [child, root] {
+        store.shutdown_thread(id).await.unwrap();
+    }
+
+    let plain = &paths[0];
+    let alias = plain.with_extension("jsonl.zst");
+    let target = outside.path().join(alias.file_name().unwrap());
+    let audit = tokio::fs::read(plain).await.unwrap();
+    let compressed =
+        zstd::stream::encode_all(audit.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL).unwrap();
+    tokio::fs::write(&target, &compressed).await.unwrap();
+    tokio::fs::remove_file(plain).await.unwrap();
+    tokio::fs::symlink(&target, &alias).await.unwrap();
+    let materialized = codex_rollout::plain_rollout_path(&target);
+    let child_shadow = if already_materialized {
+        // Core publishes the plain sibling before it removes the compressed source.
+        tokio::fs::write(&materialized, &audit).await.unwrap();
+
+        let child_path = &paths[1];
+        let child_audit = tokio::fs::read_to_string(child_path).await.unwrap();
+        let (header, body) = child_audit.split_once('\n').unwrap();
+        let mut header: serde_json::Value = serde_json::from_str(header).unwrap();
+        // Older persisted headers select Legacy through the missing field default.
+        assert_eq!(
+            header["payload"]
+                .as_object_mut()
+                .unwrap()
+                .remove("history_mode"),
+            Some(json!("legacy"))
+        );
+        let child_audit = format!("{header}\n{body}");
+        let child_alias = child_path.with_extension("jsonl.zst");
+        let child_target = outside.path().join(child_alias.file_name().unwrap());
+        let child_compressed =
+            zstd::stream::encode_all(child_audit.as_bytes(), zstd::DEFAULT_COMPRESSION_LEVEL)
+                .unwrap();
+        tokio::fs::write(&child_target, &child_compressed)
+            .await
+            .unwrap();
+        tokio::fs::write(
+            codex_rollout::plain_rollout_path(&child_target),
+            child_audit,
+        )
+        .await
+        .unwrap();
+        tokio::fs::remove_file(child_path).await.unwrap();
+        tokio::fs::symlink(&child_target, &child_alias)
+            .await
+            .unwrap();
+        Some((child_alias, child_target, child_compressed))
+    } else {
+        None
+    };
+
+    let store = Arc::new(store);
+    let probe = StartupCloseProbe::new(Some(root), StartupClosePoint::PreparedNativeWriter);
+    *store.startup_close_probe.lock().unwrap() = Some(probe.clone());
+    let mut opening = tokio::spawn({
+        let store = store.clone();
+        let home = home.path().to_path_buf();
+        async move {
+            let _admission = prepare_recovery(
+                &store,
+                &home,
+                root,
+                vec![
+                    recovery_receipt(root, "root"),
+                    recovery_receipt(child, "child"),
+                ],
+            )
+            .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+    });
+    tokio::select! {
+        entered = probe.entered.acquire() => entered.unwrap().forget(),
+        result = &mut opening => panic!("admission ended before writer handoff: {result:?}"),
+    }
+
+    if already_materialized {
+        assert_eq!(tokio::fs::read_link(&alias).await.unwrap(), target);
+        assert_eq!(tokio::fs::read(&target).await.unwrap(), compressed);
+    } else {
+        assert!(!alias.exists());
+    }
+    let staged = tokio::fs::read_to_string(materialized).await.unwrap();
+    assert!(staged.contains("sdk_reconciliation.not_applied"));
+
+    let cold = tests::store(home.path()).await;
+    for (id, turn) in [(root, "root"), (child, "child")] {
+        let recovered = cold
+            .load_history(LoadThreadHistoryParams {
+                thread_id: id,
+                include_archived: true,
+            })
+            .await
+            .expect("a fresh store can read the staged audit before writer sync");
+        assert_eq!(recovered.thread_id, id);
+        assert!(recovered.revision.is_some());
+        let mut expected = original[&id].clone();
+        expected.push(RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+            serde_json::from_value(json!({
+                "type": "function_call_output", "call_id": "effect",
+                "name": "managed", "output": "confirmed absent",
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": turn, "content_item_kinds": ["sdk_reconciliation.not_applied"]
+                }
+            }))
+            .unwrap(),
+        )));
+        expected.push(RolloutItem::EventMsg(
+            serde_json::from_value(json!({
+                "type": "turn_aborted", "turn_id": turn, "reason": "interrupted"
+            }))
+            .unwrap(),
+        ));
+        assert_eq!(
+            serde_json::to_value(recovered.items).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+    if let Some((alias, target, compressed)) = child_shadow {
+        assert_eq!(tokio::fs::read_link(&alias).await.unwrap(), target);
+        assert_eq!(tokio::fs::read(&alias).await.unwrap(), compressed);
+    }
+    probe.release.add_permits(1);
+    opening.await.unwrap().unwrap();
+    store.close_database().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compressed_descendant_alias_survives_failure_before_replacement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let [root, parent, child] = ids;
+    let paths = rollout_paths(&store, &ids).await;
+    append(
+        &store,
+        root,
+        [
+            vec![started("root"), legacy_context(home.path(), "root")],
+            spawn("spawn-parent", parent),
+            vec![completed("root")],
+        ]
+        .concat(),
+    )
+    .await;
+    append(
+        &store,
+        parent,
+        [
+            vec![started("parent")],
+            spawn("spawn-child", child),
+            vec![completed("parent")],
+        ]
+        .concat(),
+    )
+    .await;
+    append(&store, child, vec![started("child"), call("effect")]).await;
+    for id in ids.into_iter().rev() {
+        store.shutdown_thread(id).await.unwrap();
+    }
+    let store = Arc::new(store);
+    let plain = &paths[2];
+    let audit = tokio::fs::read(plain).await.unwrap();
+    let original =
+        zstd::stream::encode_all(audit.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL).unwrap();
+    let alias = plain.with_extension("jsonl.zst");
+    let target = outside.path().join(alias.file_name().unwrap());
+    tokio::fs::write(&target, &original).await.unwrap();
+    let mode = 0o640;
+    tokio::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))
+        .await
+        .unwrap();
+    tokio::fs::remove_file(plain).await.unwrap();
+    tokio::fs::symlink(&target, &alias).await.unwrap();
+
+    let receipts = || vec![recovery_receipt(child, "child")];
+    *store.fail_recovery_write.lock().unwrap() = Some((child, RecoveryWritePoint::BeforeReplace));
+    let error = prepare_recovery(&store, home.path(), root, receipts())
+        .await
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("injected failure"), "{error}");
+    assert_eq!(tokio::fs::read_link(&alias).await.unwrap(), target);
+    assert_eq!(tokio::fs::read(&alias).await.unwrap(), original);
+
+    let admitted = prepare_recovery(&store, home.path(), root, receipts())
+        .await
+        .unwrap();
+    assert_eq!(tokio::fs::read_link(&alias).await.unwrap(), target);
+    assert_eq!(
+        tokio::fs::metadata(&alias)
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        mode
+    );
+    let encoded = tokio::fs::read(&alias).await.unwrap();
+    let decoded = zstd::stream::decode_all(encoded.as_slice()).unwrap();
+    assert_eq!(
+        zstd::zstd_safe::get_frame_content_size(&encoded).unwrap(),
+        Some(decoded.len() as u64)
+    );
+    assert!(decoded.starts_with(&audit));
+    let (_, owner, errors) = codex_rollout::RolloutRecorder::load_rollout_items(&alias)
+        .await
+        .unwrap();
+    assert_eq!((owner, errors), (Some(child), 0));
+    assert_eq!(
+        String::from_utf8_lossy(&decoded)
+            .matches("sdk_reconciliation.not_applied")
+            .count(),
+        1
+    );
+    drop(admitted);
+    store.close_database().await.unwrap();
 }
 
 const CHILD_OWNER_PROFILE: &str = "AGENTS_SDK_RECOVERY_CHILD_OWNER_PROFILE";

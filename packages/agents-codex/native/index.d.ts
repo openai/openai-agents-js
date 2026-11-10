@@ -68,6 +68,7 @@ export class Engine {
     specsJson: string,
   ): Promise<NativeThread | null>;
   _close_report(): Promise<string | null>;
+  _close_report_defer_saved_login(): Promise<string | null>;
   close(): Promise<void>;
 }
 
@@ -129,6 +130,7 @@ export class NativeThread {
   /** Negative retirement only. Positive replies require a captured question. */
   _respond_native_question(response_json: string): Promise<void>;
   _read_model_context(): Promise<string>;
+  _read_plan_usage(request: _ModelHttpRequest): Promise<string | null>;
   _canonical_history(limit?: number | null): Promise<string>;
   _transact_history(
     expectedRevision: string,
@@ -388,6 +390,7 @@ export class _SessionStoreReconciliation {
 export function reconcile_thread_store(
   callback: (request: string) => Promise<string>,
   result_json: string,
+  plan_identity?: string,
 ): _SessionStoreReconciliation;
 export function create_store_engine(
   config_json: string,
@@ -410,6 +413,15 @@ export function create_checkpoint_engine(
   initial_specs_json?: string | null,
   fresh_manual?: boolean | null,
   application_apps_json?: string | null,
+): Promise<Engine>;
+export function _create_plan_engine(
+  config_json: string,
+  runtime_json: string,
+  bearer: string,
+  identity: string,
+  initial_checkpoint?: string | null,
+  initial_specs_json?: string | null,
+  store?: ((request: string) => Promise<string>) | null,
 ): Promise<Engine>;
 export function configure_telemetry(config_json: string): Promise<void>;
 export function shutdown_telemetry(timeout_ms?: number): Promise<void>;
@@ -457,6 +469,7 @@ declare const binding: {
   _validate_application_instructions: typeof _validate_application_instructions;
   create_engine: typeof create_engine;
   create_store_engine: typeof create_store_engine;
+  _create_plan_engine: typeof _create_plan_engine;
   _SessionStoreReconciliation: typeof _SessionStoreReconciliation;
   reconcile_thread_store: typeof reconcile_thread_store;
   create_checkpoint_engine: typeof create_checkpoint_engine;

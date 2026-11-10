@@ -181,6 +181,30 @@ pub(crate) struct InitialModels {
 }
 
 impl Checkpoint {
+    pub(crate) fn validate_plan_binding(&self, expected: Option<&str>) -> anyhow::Result<()> {
+        let provider = self.root_metadata.model_provider.as_str();
+        let bound = codex_thread_store::is_chatgpt_plan_provider(provider);
+        let Some(RolloutItem::SessionMeta(header)) = self.history.first() else {
+            anyhow::bail!("checkpoint thread has no session metadata");
+        };
+        ensure!(
+            bound == (self.format_version == 5)
+                && codex_thread_store::chatgpt_plan_binding_matches(expected, Some(provider))
+                && codex_thread_store::chatgpt_plan_binding_matches(
+                    Some(provider),
+                    header.meta.model_provider.as_deref()
+                ),
+            "Checkpoint requires matching Sign in with ChatGPT registration and account"
+        );
+        if bound {
+            ensure!(
+                self.descendants.is_empty() && self.interrupted_thread_ids.is_empty(),
+                "Invalid settled Sign in with ChatGPT checkpoint"
+            );
+        }
+        Ok(())
+    }
+
     /// Validate imported data without opening an engine, executor or writer.
     fn validate(
         &self,
@@ -188,7 +212,7 @@ impl Checkpoint {
         fresh_manual: bool,
     ) -> anyhow::Result<HashSet<ThreadId>> {
         ensure!(
-            matches!(self.format_version, 2 | 4),
+            matches!(self.format_version, 2 | 4 | 5),
             "unsupported checkpoint format"
         );
         ensure!(
@@ -687,8 +711,15 @@ async fn export_inner(
         Some(fork) => fork.executor_policy_digest.clone(),
         None => crate::environment::checkpoint_policy(&state.thread).await?,
     };
+    let plan = codex_thread_store::is_chatgpt_plan_provider(&root_metadata.model_provider);
     let mut exported = serde_json::to_value(Checkpoint {
-        format_version: if code_states.is_empty() { 2 } else { 4 },
+        format_version: if plan {
+            5
+        } else if code_states.is_empty() {
+            2
+        } else {
+            4
+        },
         codex_revision: include_str!("../CODEX_REVISION").trim().to_owned(),
         source_session_id: state.id,
         history,
@@ -1364,6 +1395,7 @@ pub async fn restore(
     fresh_manual: bool,
 ) -> anyhow::Result<NativeThread> {
     let _lifecycle = engine.lifecycle.lock().await;
+    checkpoint.validate_plan_binding(Some(&engine.service_config.model_provider_id))?;
     ensure!(
         engine.local_checklist_store.is_none(),
         "local storage cannot import portable checkpoints"
@@ -1517,9 +1549,7 @@ pub async fn restore(
             startup.config.sdk_request_controls = settings.request_controls.clone();
         }
     }
-    if let Some(model) = &startup.config.model {
-        engine.validate_hosted_search_model(model).await?;
-    }
+    engine.validate_startup_model(&startup.config).await?;
     let initial_receipt = if let Some(accepted) = accepted {
         let initial = if has_agent_profiles {
             None

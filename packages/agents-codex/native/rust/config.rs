@@ -1,5 +1,6 @@
 //! Native configuration loading; defaults and precedence stay owned by Codex.
 use anyhow::{Context, Result, bail};
+use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::{CloudConfigBundleLoader, LoaderOverrides};
 use codex_core::config::{ConfigBuilder, ConfigOverrides};
 use codex_core_api::{AbsolutePathBuf, Config, SqliteConfig};
@@ -43,6 +44,10 @@ struct RuntimeOptions {
     // The facade owns this signal on its live runtime; checkpoint runtime is ignored.
     #[serde(rename = "_sdk_native_config")]
     sdk_native_config: bool,
+    #[serde(rename = "_sdk_discover_agents_md")]
+    discover_agents_md: bool,
+    #[serde(rename = "_sdk_codex_login")]
+    saved_codex_login: Option<crate::auth::SavedCodexLogin>,
     #[serde(rename = "_sdk_project_search")]
     project_search: Option<crate::project_search::Options>,
     environment: Option<crate::environment::EnvironmentOptions>,
@@ -156,6 +161,17 @@ pub fn native_agents(runtime_json: &str) -> Result<bool> {
 pub fn sdk_native_config(runtime_json: &str) -> Result<bool> {
     let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
     Ok(options.sdk_native_config)
+}
+
+pub fn discover_agents_md(runtime_json: &str) -> Result<bool> {
+    let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
+    Ok(options.discover_agents_md)
+}
+
+pub(crate) fn saved_codex_login(
+    runtime_json: &str,
+) -> Result<Option<crate::auth::SavedCodexLogin>> {
+    Ok(decode::<RuntimeOptions>(serde_json::from_str(runtime_json)?)?.saved_codex_login)
 }
 
 pub fn native_thread_store(runtime_json: &str) -> Result<Option<AbsolutePathBuf>> {
@@ -287,12 +303,21 @@ pub async fn load(
 ) -> Result<(Config, CloudConfigBundleLoader)> {
     let values: serde_json::Map<String, Value> = serde_json::from_str(config_json)
         .context("config must be an object of native TOML options")?;
+    let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
+    let project_doc_max_bytes = if options.discover_agents_md && options.environment.is_some() {
+        DEFAULT_PROJECT_DOC_MAX_BYTES as i64
+    } else {
+        0
+    };
     let mut overrides = vec![
         (
             "openai_base_url".to_owned(),
             toml::Value::String("https://api.openai.com/v1".into()),
         ),
-        ("project_doc_max_bytes".to_owned(), toml::Value::Integer(0)),
+        (
+            "project_doc_max_bytes".to_owned(),
+            toml::Value::Integer(project_doc_max_bytes),
+        ),
         (
             "features.skip_host_skill_discovery".to_owned(),
             toml::Value::Boolean(true),
@@ -311,7 +336,6 @@ pub async fn load(
         ),
         ("analytics.enabled".to_owned(), toml::Value::Boolean(false)),
     ];
-    let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
     anyhow::ensure!(
         options.linux_sandbox_pid_namespace.is_none()
             && options.proxy_private_ips_via_upstream.is_none(),
@@ -470,6 +494,20 @@ pub async fn load(
             .enabled(codex_core_api::Feature::UnboundedConnectionRetries),
         "Native SDK configuration requires finite connection retries"
     );
+    if options.saved_codex_login.is_some() {
+        // Saved inference auth does not authorize the CLI's ambient Apps or
+        // remote plugin discovery. Explicit application Apps bind separately.
+        for feature in [
+            codex_core_api::Feature::Apps,
+            codex_core_api::Feature::RemotePlugin,
+        ] {
+            config.features.disable(feature)?;
+            anyhow::ensure!(
+                !config.features.enabled(feature),
+                "Saved Codex login requires disabled ambient Apps and remote plugins"
+            );
+        }
+    }
     // Only current application runtime configuration authorizes native storage.
     // Config and checkpoint sqlite_home values cannot choose its location.
     if let (Some(goals), Some(threads)) = (&options.native_goal_store, &options.native_thread_store)
