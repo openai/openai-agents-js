@@ -41,7 +41,12 @@ import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
 import { isDeepStrictEqual } from 'node:util';
 import { binding, type JsonObject } from './binding';
-import { prepareOutput, type OutputSpec, type PreparedOutput } from './output';
+import {
+  assertOutputRepairSupported,
+  prepareOutput,
+  type OutputSpec,
+  type PreparedOutput,
+} from './output';
 import { webSearchName } from './web-search';
 import { hostedToolSpecs } from './hosted-tools';
 import { NativeError } from './native-error';
@@ -1237,6 +1242,15 @@ export class Agent<Context = undefined, Output = string> {
     const apiKey = lease.apiKey;
 
     try {
+      if (lease.codexLogin)
+        assertOutputRepairSupported(
+          output,
+          activeOutput,
+          ...Array.from(
+            graph?.profiles.values() ?? [],
+            (profile) => profile.output,
+          ),
+        );
       correction?.retainOpening(lease);
       const registration = declarations.mcp.find(isHostedRegistration);
       const personalApps = registration instanceof ChatGPTAppsMCP;
@@ -1297,6 +1311,9 @@ export class Agent<Context = undefined, Output = string> {
         runtime: {
           ...home,
           ...(discoverAgentsMd ? { _sdk_discover_agents_md: true } : {}),
+          ...(lease.codexLogin === undefined
+            ? {}
+            : { _sdk_codex_login: lease.codexLogin }),
           ...(!persistent
             ? {}
             : {
@@ -1422,43 +1439,47 @@ export class Agent<Context = undefined, Output = string> {
         websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
         environmentOwner,
-        openCorrection: async (
-          model,
-          modelSettings,
-          retainOpening,
-          parentTrace,
-          repairTransformContext,
-        ) => {
-          // Native fallback may read a later environment key; repair needs this snapshot.
-          if (apiKey === undefined)
-            throw new NativeError('Output repair requires a captured API key');
-          const correction = new Agent({
-            instructions:
-              'Correct the supplied JSON to match its schema. Return only JSON.',
-            provider,
-            model,
-            modelSettings,
-            tools: [],
-            transformContext:
-              repairTransformContext === undefined
-                ? undefined
-                : (request) =>
-                    repairTransformContext({
-                      ...request,
-                      context: context as Context,
-                    }),
-          });
-          const correctionOptions: OwnedSessionOptions<undefined> = {
-            parentTrace,
-            [correctionOpening]: {
-              apiKey: lease.realtimeApiKey,
+        openCorrection: lease.codexLogin
+          ? undefined
+          : async (
+              model,
+              modelSettings,
               retainOpening,
+              parentTrace,
+              repairTransformContext,
+            ) => {
+              // Native fallback may read a later environment key; repair needs this snapshot.
+              if (apiKey === undefined)
+                throw new NativeError(
+                  'Output repair requires a captured API key',
+                );
+              const correction = new Agent({
+                instructions:
+                  'Correct the supplied JSON to match its schema. Return only JSON.',
+                provider,
+                model,
+                modelSettings,
+                tools: [],
+                transformContext:
+                  repairTransformContext === undefined
+                    ? undefined
+                    : (request) =>
+                        repairTransformContext({
+                          ...request,
+                          context: context as Context,
+                        }),
+              });
+              const correctionOptions: OwnedSessionOptions<undefined> = {
+                parentTrace,
+                [correctionOpening]: {
+                  apiKey: lease.realtimeApiKey,
+                  retainOpening,
+                },
+              };
+              return (await correction.session(
+                correctionOptions,
+              )) as CoreSession<string>;
             },
-          };
-          return (await correction.session(
-            correctionOptions,
-          )) as CoreSession<string>;
-        },
       };
       const captured: CapturedOpening = opening
         ? Object.freeze({ ...opening, decisions })

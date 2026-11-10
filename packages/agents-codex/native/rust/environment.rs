@@ -183,6 +183,12 @@ pub(crate) struct StrictExecutorWrites {
     read_only: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LocalPrivatePaths<'a> {
+    pub(crate) storage: Option<&'a Path>,
+    pub(crate) saved_login_file: Option<&'a Path>,
+}
+
 impl StrictExecutorWrites {
     pub(crate) fn check_pins(&self, previous: &Self) -> Result<()> {
         ensure!(
@@ -360,7 +366,7 @@ impl EnvironmentOptions {
                 "read-only local execution requires Linux or macOS"
             );
         }
-        self.validate_storage_mounts(config, None)?;
+        self.validate_storage_mounts(config, LocalPrivatePaths::default())?;
         if self.strict_writes() {
             check_writable_config(config, /*local_session_proxy*/ false)?;
         }
@@ -409,7 +415,7 @@ impl EnvironmentOptions {
     fn validate_storage_mounts(
         &self,
         config: &Config,
-        storage: Option<&Path>,
+        private_paths: LocalPrivatePaths<'_>,
     ) -> Result<Vec<PathUri>> {
         let Some(declarations) = &self.mounts else {
             return Ok(Vec::new());
@@ -457,7 +463,8 @@ impl EnvironmentOptions {
                     "{error}"
                 );
             }
-            check_local_session_write_roots(config, &authority, storage)
+            check_local_session_write_roots(config, &authority, private_paths)
+                .map(drop)
                 .context("Storage mounts must not expose private SDK state")?;
             #[cfg(target_os = "linux")]
             linked_mount_files.extend(linked_local_protected_files(
@@ -485,9 +492,9 @@ impl EnvironmentOptions {
     pub(crate) fn check_local_session_paths(
         &self,
         config: &Config,
-        storage: Option<&Path>,
+        private_paths: LocalPrivatePaths<'_>,
     ) -> Result<()> {
-        self.validate_storage_mounts(config, storage)?;
+        self.validate_storage_mounts(config, private_paths)?;
         if !self.local {
             return Ok(());
         }
@@ -500,7 +507,7 @@ impl EnvironmentOptions {
             })
             .collect::<Result<Vec<_>>>()?;
         let roots = LocalWriteRoots::new(&roots).context("could not verify local write roots")?;
-        check_local_session_write_roots(config, &roots, storage)
+        check_local_session_write_roots(config, &roots, private_paths).map(drop)
     }
 
     pub(crate) async fn prepare(&self, config: &Config) -> Result<EnvironmentManager> {
@@ -539,6 +546,7 @@ impl EnvironmentOptions {
         &self,
         config: &Config,
         manager: &EnvironmentManager,
+        private_paths: LocalPrivatePaths<'_>,
     ) -> Result<()> {
         let environment = manager
             .get_environment(self.id())
@@ -552,10 +560,17 @@ impl EnvironmentOptions {
         })?;
         if self.strict_writes() || self.network.is_some() {
             let info = executor_info(&environment).await?;
-            let (_, profile) = self.profile(config, &environment, &info, None).await?;
-            self.check_network_target(&info, &profile)?;
+            let (_, profile) = self
+                .profile(config, &environment, &info, private_paths)
+                .await?;
+            self.check_network_target(&info, profile.permission_profile())?;
             if self.local {
-                probe_local_sandbox(&environment, &self.cwd, profile).await?;
+                probe_local_sandbox(
+                    &environment,
+                    &self.cwd,
+                    profile.permission_profile().clone(),
+                )
+                .await?;
             }
         }
         Ok(())
@@ -596,10 +611,10 @@ impl EnvironmentOptions {
         config: &Config,
         environment: &Environment,
         info: &EnvironmentInfo,
-        local_storage: Option<&Path>,
-    ) -> Result<(Option<StrictExecutorWrites>, PermissionProfile)> {
+        private_paths: LocalPrivatePaths<'_>,
+    ) -> Result<(Option<StrictExecutorWrites>, PermissionProfileSnapshot)> {
         if self.strict_writes() {
-            let mounts = self.validate_storage_mounts(config, local_storage)?;
+            let mounts = self.validate_storage_mounts(config, private_paths)?;
             let (strict, profile) = strict_write_profile(
                 config,
                 environment,
@@ -607,13 +622,18 @@ impl EnvironmentOptions {
                 &self.cwd,
                 self.writable_roots.as_deref().unwrap_or_default(),
                 &mounts,
-                local_storage,
+                private_paths,
                 self.read_only,
             )
             .await?;
             Ok((Some(strict), profile))
         } else {
-            Ok((None, workspace_profile(std::slice::from_ref(&self.cwd))))
+            Ok((
+                None,
+                PermissionProfileSnapshot::legacy(workspace_profile(std::slice::from_ref(
+                    &self.cwd,
+                ))),
+            ))
         }
     }
 
@@ -621,7 +641,7 @@ impl EnvironmentOptions {
         &self,
         config: &Config,
         manager: &EnvironmentManager,
-        local_storage: Option<&Path>,
+        private_paths: LocalPrivatePaths<'_>,
     ) -> Result<(TurnEnvironmentSelection, Option<StrictExecutorWrites>)> {
         self.check_config(config)?;
         let environment = manager
@@ -633,9 +653,9 @@ impl EnvironmentOptions {
         let (strict, profile, windows_executor) = if needs_info {
             let info = executor_info(&environment).await?;
             let (strict, profile) = self
-                .profile(config, &environment, &info, local_storage)
+                .profile(config, &environment, &info, private_paths)
                 .await?;
-            self.check_network_target(&info, &profile)?;
+            self.check_network_target(&info, profile.permission_profile())?;
             (
                 strict,
                 profile,
@@ -644,7 +664,9 @@ impl EnvironmentOptions {
         } else {
             (
                 None,
-                workspace_profile(std::slice::from_ref(&self.cwd)),
+                PermissionProfileSnapshot::legacy(workspace_profile(std::slice::from_ref(
+                    &self.cwd,
+                ))),
                 false,
             )
         };
@@ -680,7 +702,7 @@ impl EnvironmentOptions {
             config: EnvironmentConfigState::Ready(EnvironmentConfig {
                 allow_login_shell: !self.local && permissions.allow_login_shell,
                 workspace_roots,
-                permission_profile: PermissionProfileSnapshot::legacy(profile),
+                permission_profile: profile,
                 shell_environment_policy,
                 windows_sandbox_level,
                 windows_sandbox_type,
@@ -848,9 +870,9 @@ async fn strict_write_profile(
     cwd: &PathUri,
     additional: &[PathUri],
     mounts: &[PathUri],
-    local_storage: Option<&Path>,
+    private_paths: LocalPrivatePaths<'_>,
     read_only: bool,
-) -> Result<(StrictExecutorWrites, PermissionProfile)> {
+) -> Result<(StrictExecutorWrites, PermissionProfileSnapshot)> {
     ensure!(
         matches!(
             Platform::from_platform_os(info.platform_os.as_deref()),
@@ -902,6 +924,7 @@ async fn strict_write_profile(
     // The cwd remains first; equivalent declarations keep the same digest.
     roots[1..].sort_by_key(ToString::to_string);
     let mut filesystem_policy = workspace_profile(&roots).file_system_sandbox_policy();
+    let mut saved_login_deny = None;
     if !environment.is_remote() {
         let local_roots = roots
             .iter()
@@ -910,7 +933,13 @@ async fn strict_write_profile(
         let local_roots =
             LocalWriteRoots::new(&local_roots).context("could not verify local write roots")?;
         check_local_helper_write_roots(config, &local_roots)?;
-        check_local_session_write_roots(config, &local_roots, local_storage)?;
+        if let Some(file) = check_local_session_write_roots(config, &local_roots, private_paths)? {
+            // The platform defaults can also grant reads under system paths.
+            saved_login_deny = Some(
+                PathUri::from_host_native_path(&file)
+                    .context("could not protect the saved Codex login file")?,
+            );
+        }
         for entry in &mut filesystem_policy.entries {
             if entry.access == FileSystemAccessMode::Read
                 && matches!(
@@ -940,7 +969,7 @@ async fn strict_write_profile(
             access: FileSystemAccessMode::Read,
             missing_path_behavior: None,
         }));
-    // Intersect only after strict roots, Minimal and protected exclusions exist.
+    // Intersect after the strict roots and Minimal have been applied.
     let profile = PermissionProfile::from_runtime_permissions(
         &filesystem_policy,
         NetworkSandboxPolicy::Restricted,
@@ -952,6 +981,8 @@ async fn strict_write_profile(
     } else {
         profile
     };
+    let profile =
+        PermissionProfileSnapshot::legacy_with_sdk_private_deny(profile, saved_login_deny);
     Ok((
         StrictExecutorWrites {
             canonical_cwd: roots[0].clone(),
@@ -1026,10 +1057,10 @@ fn check_local_helper_paths<'a>(
 fn check_local_session_write_roots(
     config: &Config,
     roots: &LocalWriteRoots<'_>,
-    storage: Option<&Path>,
-) -> Result<()> {
+    private_paths: LocalPrivatePaths<'_>,
+) -> Result<Option<PathBuf>> {
     let sqlite = config.sqlite_config();
-    if let Some(storage) = storage {
+    if let Some(storage) = private_paths.storage {
         check_local_protected_path(
             roots,
             storage,
@@ -1046,7 +1077,23 @@ fn check_local_session_write_roots(
         "could not resolve the native runtime home",
         "Keep the native runtime home outside the executor cwd and writable roots",
         /*private_runtime_home*/ true,
-    )
+    )?;
+    let Some(file) = private_paths.saved_login_file else {
+        return Ok(None);
+    };
+    let resolve_error = "could not inspect the saved Codex login file";
+    let overlap_error = "Keep the saved Codex login outside local executor grants";
+    let resolved = resolve_local_protected_path(roots, file, resolve_error, overlap_error)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(linked) = linked_local_regular_file(resolved.clone()).context(resolve_error)? {
+        ensure!(
+            !roots.contains_hard_link_to_any(&[linked]).context(
+                "could not check local executor grants for saved Codex login hard links"
+            )?,
+            "{overlap_error}; remove hard links to the saved Codex login file"
+        );
+    }
+    Ok(Some(resolved))
 }
 
 fn check_local_protected_path(
@@ -1378,7 +1425,7 @@ pub(crate) async fn replace_writable_roots(
     manager: &EnvironmentManager,
     previous: &StrictExecutorWrites,
     writable_roots: Vec<PathUri>,
-    local_storage: Option<&Path>,
+    private_paths: LocalPrivatePaths<'_>,
 ) -> Result<(TurnEnvironmentSelection, StrictExecutorWrites)> {
     ensure!(
         !previous.has_storage_mounts,
@@ -1407,7 +1454,7 @@ pub(crate) async fn replace_writable_roots(
         &selection.cwd,
         &writable_roots,
         &[],
-        local_storage,
+        private_paths,
         previous.read_only,
     )
     .await?;
@@ -1431,17 +1478,16 @@ pub(crate) async fn replace_writable_roots(
             info.capabilities.network_proxy_launch,
             "network policy requires an executor with managed proxy launch"
         );
-        validate_environment_network_policy(network, &profile, platform)?;
+        validate_environment_network_policy(network, profile.permission_profile(), platform)?;
     }
-    let next_profile = PermissionProfileSnapshot::legacy(profile);
     if platform == Platform::Macos && !local {
         // WSS macOS executors keep their opening Seatbelt grants for the Session.
         ensure!(
-            settings.permission_profile == next_profile,
+            settings.permission_profile == profile,
             "Cannot change writable roots on a macOS executor after opening the Session"
         );
     } else {
-        settings.permission_profile = next_profile;
+        settings.permission_profile = profile;
     }
     Ok((selection, strict))
 }
@@ -2198,14 +2244,20 @@ mod tests {
         .unwrap();
         assert_eq!(
             options
-                .validate_storage_mounts(&config, None)
+                .validate_storage_mounts(&config, LocalPrivatePaths::default())
                 .unwrap()
                 .len(),
             1
         );
         assert!(
             options
-                .validate_storage_mounts(&config, Some(&source.join("profile")))
+                .validate_storage_mounts(
+                    &config,
+                    LocalPrivatePaths {
+                        storage: Some(&source.join("profile")),
+                        ..Default::default()
+                    },
+                )
                 .is_err()
         );
         for key in ["read_only", "strategy", "destination", "source"] {
@@ -2223,7 +2275,7 @@ mod tests {
                 }
             }
             let error = bad
-                .validate_storage_mounts(&config, None)
+                .validate_storage_mounts(&config, LocalPrivatePaths::default())
                 .unwrap_err()
                 .to_string();
             assert!(!error.contains("synthetic-secret"));
@@ -2234,11 +2286,19 @@ mod tests {
         aliased.mounts.as_mut().unwrap()[0].source = alias.to_string_lossy().into_owned();
         aliased.mounts.as_mut().unwrap()[0].destination =
             aliased.mounts.as_ref().unwrap()[0].source.clone();
-        assert!(aliased.validate_storage_mounts(&config, None).is_err());
+        assert!(
+            aliased
+                .validate_storage_mounts(&config, LocalPrivatePaths::default())
+                .is_err()
+        );
         let private = home.join("credentials.json");
         std::fs::write(&private, "synthetic-private-state").unwrap();
         std::fs::hard_link(&private, source.join("private-alias")).unwrap();
-        assert!(options.validate_storage_mounts(&config, None).is_err());
+        assert!(
+            options
+                .validate_storage_mounts(&config, LocalPrivatePaths::default())
+                .is_err()
+        );
         assert_eq!(
             std::fs::read_to_string(private).unwrap(),
             "synthetic-private-state"
@@ -2282,17 +2342,23 @@ mod tests {
         fs::write(&marker, "caller-owned").unwrap();
         let mode = fs::metadata(&marker).unwrap().mode();
         // No multiply-linked files: the writable-tree scan is unnecessary.
-        options.validate_storage_mounts(&config, None).unwrap();
+        options
+            .validate_storage_mounts(&config, LocalPrivatePaths::default())
+            .unwrap();
         fs::hard_link(&marker, source.join("readonly-alias")).unwrap();
         fs::hard_link(&marker, outside.join("outside-alias")).unwrap();
         symlink(&marker, cwd.join("symlink-alias")).unwrap();
         // Read-only aliases and links outside the grants are harmless. A symlink
         // inside a grant must not cause the identity scan to follow its target.
-        options.validate_storage_mounts(&config, None).unwrap();
+        options
+            .validate_storage_mounts(&config, LocalPrivatePaths::default())
+            .unwrap();
         for writable in [&cwd, &extra] {
             let alias = writable.join("writable-alias");
             fs::hard_link(&marker, &alias).unwrap();
-            let error = options.validate_storage_mounts(&config, None).unwrap_err();
+            let error = options
+                .validate_storage_mounts(&config, LocalPrivatePaths::default())
+                .unwrap_err();
             assert!(
                 error
                     .to_string()
@@ -2301,7 +2367,9 @@ mod tests {
             assert_eq!(fs::read_to_string(&marker).unwrap(), "caller-owned");
             assert_eq!(fs::metadata(&marker).unwrap().mode(), mode);
             fs::remove_file(alias).unwrap();
-            options.validate_storage_mounts(&config, None).unwrap();
+            options
+                .validate_storage_mounts(&config, LocalPrivatePaths::default())
+                .unwrap();
         }
     }
 

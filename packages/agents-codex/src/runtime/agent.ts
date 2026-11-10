@@ -328,7 +328,8 @@ export async function openSession(
     threadOptions = { ...threadOptions, runtime };
   }
   if (!engine) {
-    await carrier.start(config, runtime, apiKey);
+    if (lease.codexLogin === undefined)
+      await carrier.start(config, runtime, apiKey);
     options.environmentOwner?.signal.throwIfAborted();
     engine = setup.plan
       ? await native._create_plan_engine(
@@ -369,7 +370,8 @@ export async function openSession(
       native._create_provider_http_transports,
       engine,
     );
-    await carrier.bindEngine(engine, transports);
+    if (lease.codexLogin === undefined)
+      await carrier.bindEngine(engine, transports);
     if (borrow && transports && engine._private_reuse_ready)
       borrow.bind(engine, carrier, transports);
   }
@@ -420,7 +422,7 @@ export async function openSession(
     options,
     threadOptions,
     saved,
-    carrier,
+    lease.codexLogin === undefined ? carrier : undefined,
     environment ?? null,
     oneShot,
     apiKey,

@@ -461,7 +461,7 @@ async fn integrated_queued_close_then_fork_refuses_without_copy_or_model_effects
     let mut fork = Box::pin(state.engine.fork_settled(&state));
     assert!(futures_util::poll!(&mut fork).is_pending());
     drop(lifecycle);
-    assert_eq!(close.await.unwrap(), None);
+    assert!(close.await.unwrap().message(false).is_none());
     // Close may append legitimate records. Isolate only the resumed fork's effects.
     let after_close = serde_json::to_value(
         state
@@ -876,7 +876,7 @@ async fn cancelled_engine_close_retains_cleanup_after_manager_removal() {
         .forget();
     assert!(state.manager.list_thread_ids().await.is_empty());
     first.abort();
-    assert!(first.await.unwrap_err().is_cancelled());
+    assert!(matches!(first.await, Err(error) if error.is_cancelled()));
 
     let closing = state.clone();
     let mut retry = tokio::spawn(async move { closing.close_report().await });
@@ -898,6 +898,7 @@ async fn cancelled_engine_close_retains_cleanup_after_manager_removal() {
             .unwrap()
             .unwrap()
             .unwrap()
+            .message(false)
             .is_none()
     );
     engine.close().await.unwrap();

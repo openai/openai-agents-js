@@ -1,0 +1,1855 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 208e364c4a6db9643886aa979b88906954cb3647..8afb18cd0980559b17ef00655eec0b14d8cb19c5 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -3675,6 +3675,7 @@ dependencies = [
+  "codex-extension-api",
+  "codex-utils-absolute-path",
+  "pretty_assertions",
++ "same-file",
+  "tempfile",
+  "tokio",
+  "tracing",
+diff --git a/codex-rs/codex-home/Cargo.toml b/codex-rs/codex-home/Cargo.toml
+index 068ec55b4e274c002dc37e3584e96a2c9ab1f7c7..a0035fa7428234a88bb29cc5b74b6f7556e0d185 100644
+--- a/codex-rs/codex-home/Cargo.toml
++++ b/codex-rs/codex-home/Cargo.toml
+@@ -13,7 +13,8 @@ workspace = true
+ [dependencies]
+ codex-extension-api = { workspace = true }
+ codex-utils-absolute-path = { workspace = true }
+-tokio = { workspace = true, features = ["fs"] }
++same-file = "1.0.6"
++tokio = { workspace = true, features = ["rt"] }
+ tracing = { workspace = true }
+ 
+ [dev-dependencies]
+diff --git a/codex-rs/codex-home/src/instructions/mod.rs b/codex-rs/codex-home/src/instructions/mod.rs
+index a16ad668af3c19f3d8bc148109b055da3594e8a6..966a24b5f1f4d968441135ffe5caac5acbdfc45e 100644
+--- a/codex-rs/codex-home/src/instructions/mod.rs
++++ b/codex-rs/codex-home/src/instructions/mod.rs
+@@ -1,5 +1,9 @@
+ use std::collections::HashSet;
++use std::fs;
+ use std::io;
++use std::io::Read;
++use std::path::Path;
++use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+ 
+@@ -8,14 +12,20 @@ use codex_extension_api::LoadInstructionsFuture;
+ use codex_extension_api::LoadedUserInstructions;
+ use codex_extension_api::UserInstructionsProvider;
+ use codex_utils_absolute_path::AbsolutePathBuf;
++use same_file::Handle;
+ 
+ const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
+ const LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
++const PROTECTED_FILE_WARNING: &str =
++    "Unable to verify the saved login file during global AGENTS.md discovery";
++const PROTECTED_ALIAS_WARNING: &str =
++    "Skipped a global AGENTS.md source that refers to the saved login file";
+ 
+ /// Loads user instructions from a Codex home directory.
+ #[derive(Clone, Debug)]
+ pub struct CodexHomeUserInstructionsProvider {
+     codex_home: AbsolutePathBuf,
++    protected_file: Option<PathBuf>,
+     // Cached instructions and warning history are shared across provider clones.
+     state: Arc<Mutex<InstructionsState>>,
+ }
+@@ -33,35 +43,76 @@ impl CodexHomeUserInstructionsProvider {
+     pub fn new(codex_home: AbsolutePathBuf) -> Self {
+         Self {
+             codex_home,
++            protected_file: None,
+             state: Arc::new(Mutex::new(InstructionsState::default())),
+         }
+     }
+ 
++    /// Excludes the canonical saved login file bound by the host.
++    #[doc(hidden)]
++    pub fn with_protected_file(mut self, protected_file: PathBuf) -> Self {
++        self.protected_file = Some(protected_file);
++        self
++    }
++
+     #[tracing::instrument(name = "instructions.load", skip_all, fields(provider = "global"))]
+     async fn load_from_codex_home(&self) -> LoadedUserInstructions {
++        let provider = self.clone();
++        tokio::task::spawn_blocking(move || {
++            let Some(path) = provider.protected_file.as_deref() else {
++                return provider.load_candidates(None);
++            };
++            let Some(identity) = protected_file_identity(path) else {
++                return protected_file_failure();
++            };
++            provider.load_candidates(Some((path, &identity)))
++        })
++        .await
++        .unwrap_or_else(|_| LoadedUserInstructions {
++            warnings: vec!["Failed to load global AGENTS.md instructions".to_string()],
++            ..Default::default()
++        })
++    }
++
++    fn load_candidates(&self, protected_file: Option<(&Path, &Handle)>) -> LoadedUserInstructions {
+         let mut warnings = Vec::new();
+         for candidate in [LOCAL_AGENTS_MD_FILENAME, DEFAULT_AGENTS_MD_FILENAME] {
+             let path = self.codex_home.join(candidate);
+-            match tokio::fs::metadata(path.as_path()).await {
++            match fs::metadata(path.as_path()) {
+                 Ok(metadata) if !metadata.is_file() => continue,
+                 Ok(_) => {}
+-                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                 Err(err) => {
+-                    warnings.push(format!(
+-                        "Failed to read global AGENTS.md instructions from `{}`: {err}",
+-                        path.display()
+-                    ));
++                    warn_on_read_error(path.as_path(), err, &mut warnings);
+                     continue;
+                 }
+             }
+-            let data = match tokio::fs::read(path.as_path()).await {
++            let data = if let Some((protected_path, identity)) = protected_file {
++                let mut candidate = match open_file_handle(path.as_path()) {
++                    Ok(Some(candidate)) => candidate,
++                    Ok(None) => continue,
++                    Err(err) => {
++                        warn_on_read_error(path.as_path(), err, &mut warnings);
++                        continue;
++                    }
++                };
++                // Keep the original identity open across fallback and check for replacement
++                // after opening the candidate, before reading from that same handle.
++                if protected_file_identity(protected_path).as_ref() != Some(identity) {
++                    return protected_file_failure();
++                }
++                if &candidate == identity {
++                    warnings.push(PROTECTED_ALIAS_WARNING.to_string());
++                    continue;
++                }
++                let mut data = Vec::new();
++                candidate.as_file_mut().read_to_end(&mut data).map(|_| data)
++            } else {
++                fs::read(path.as_path())
++            };
++            let data = match data {
+                 Ok(data) => data,
+-                Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+                 Err(err) => {
+-                    warnings.push(format!(
+-                        "Failed to read global AGENTS.md instructions from `{}`: {err}",
+-                        path.display()
+-                    ));
++                    warn_on_read_error(path.as_path(), err, &mut warnings);
+                     continue;
+                 }
+             };
+@@ -84,6 +135,37 @@ impl CodexHomeUserInstructionsProvider {
+     }
+ }
+ 
++fn open_file_handle(path: &Path) -> io::Result<Option<Handle>> {
++    let file = fs::File::open(path)?;
++    if !file.metadata()?.is_file() {
++        return Ok(None);
++    }
++    Handle::from_file(file).map(Some)
++}
++
++fn protected_file_identity(path: &Path) -> Option<Handle> {
++    if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
++        return None;
++    }
++    open_file_handle(path).ok().flatten()
++}
++
++fn protected_file_failure() -> LoadedUserInstructions {
++    LoadedUserInstructions {
++        warnings: vec![PROTECTED_FILE_WARNING.to_string()],
++        ..Default::default()
++    }
++}
++
++fn warn_on_read_error(path: &Path, err: io::Error, warnings: &mut Vec<String>) {
++    if err.kind() != io::ErrorKind::NotFound {
++        warnings.push(format!(
++            "Failed to read global AGENTS.md instructions from `{}`: {err}",
++            path.display()
++        ));
++    }
++}
++
+ impl UserInstructionsProvider for CodexHomeUserInstructionsProvider {
+     fn load_user_instructions(&self) -> LoadInstructionsFuture<'_> {
+         Box::pin(async move {
+diff --git a/codex-rs/codex-home/src/instructions/tests.rs b/codex-rs/codex-home/src/instructions/tests.rs
+index bb3e9e50f51474bc794a5468711bc16d82bfa012..adacf27b0da9410b3276d6372d189011676a2059 100644
+--- a/codex-rs/codex-home/src/instructions/tests.rs
++++ b/codex-rs/codex-home/src/instructions/tests.rs
+@@ -11,6 +11,9 @@ use tempfile::TempDir;
+ use super::CodexHomeUserInstructionsProvider;
+ use super::DEFAULT_AGENTS_MD_FILENAME;
+ use super::LOCAL_AGENTS_MD_FILENAME;
++use super::PROTECTED_ALIAS_WARNING;
++use super::PROTECTED_FILE_WARNING;
++use super::protected_file_identity;
+ 
+ fn provider(home: &TempDir) -> CodexHomeUserInstructionsProvider {
+     CodexHomeUserInstructionsProvider::new(
+@@ -109,6 +112,112 @@ async fn directory_override_falls_back_to_default() {
+     );
+ }
+ 
++#[tokio::test]
++async fn protected_hard_link_falls_back_to_default() {
++    let home = TempDir::new().expect("temp dir");
++    let cache = home.path().join("auth.json");
++    fs::write(&cache, "synthetic credential marker").expect("write synthetic login");
++    fs::hard_link(&cache, home.path().join(LOCAL_AGENTS_MD_FILENAME))
++        .expect("link synthetic login");
++    fs::write(home.path().join(DEFAULT_AGENTS_MD_FILENAME), "default").expect("write default");
++    let provider = provider(&home).with_protected_file(cache);
++
++    assert_eq!(
++        provider.load_user_instructions().await,
++        expected(
++            &home,
++            DEFAULT_AGENTS_MD_FILENAME,
++            "default",
++            vec![PROTECTED_ALIAS_WARNING.to_string()],
++        )
++    );
++    assert_eq!(
++        provider.load_user_instructions().await,
++        expected(&home, DEFAULT_AGENTS_MD_FILENAME, "default", Vec::new())
++    );
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn protected_symlink_falls_back_to_ordinary_symlink() {
++    let home = TempDir::new().expect("temp dir");
++    let cache = home.path().join("auth.json");
++    let guidance = home.path().join("guidance.md");
++    fs::write(&cache, "synthetic credential marker").expect("write synthetic login");
++    fs::write(&guidance, "ordinary guidance").expect("write guidance");
++    std::os::unix::fs::symlink(&cache, home.path().join(LOCAL_AGENTS_MD_FILENAME))
++        .expect("link synthetic login");
++    std::os::unix::fs::symlink(&guidance, home.path().join(DEFAULT_AGENTS_MD_FILENAME))
++        .expect("link guidance");
++
++    assert_eq!(
++        provider(&home)
++            .with_protected_file(cache)
++            .load_user_instructions()
++            .await,
++        expected(
++            &home,
++            DEFAULT_AGENTS_MD_FILENAME,
++            "ordinary guidance",
++            vec![PROTECTED_ALIAS_WARNING.to_string()],
++        )
++    );
++}
++
++#[test]
++fn protected_file_replacement_aborts_discovery() {
++    let home = TempDir::new().expect("temp dir");
++    let cache = home.path().join("auth.json");
++    fs::write(&cache, "synthetic credential marker").expect("write synthetic login");
++    fs::hard_link(&cache, home.path().join(LOCAL_AGENTS_MD_FILENAME))
++        .expect("link synthetic login");
++    fs::write(home.path().join(DEFAULT_AGENTS_MD_FILENAME), "default").expect("write default");
++
++    let identity = protected_file_identity(&cache).expect("open original identity");
++    fs::remove_file(&cache).expect("unlink original cache path");
++    fs::write(&cache, "replacement").expect("replace cache");
++
++    assert_eq!(
++        provider(&home).load_candidates(Some((&cache, &identity))),
++        LoadedUserInstructions {
++            warnings: vec![PROTECTED_FILE_WARNING.to_string()],
++            ..Default::default()
++        }
++    );
++}
++
++#[tokio::test]
++async fn unavailable_protected_file_retains_last_good_instructions() {
++    let home = TempDir::new().expect("temp dir");
++    let cache = home.path().join("auth.json");
++    let guidance = home.path().join(DEFAULT_AGENTS_MD_FILENAME);
++    fs::write(&cache, "synthetic credential marker").expect("write synthetic login");
++    fs::write(&guidance, "initial").expect("write initial guidance");
++    let provider = provider(&home).with_protected_file(cache.clone());
++    assert_eq!(
++        provider.load_user_instructions().await,
++        expected(&home, DEFAULT_AGENTS_MD_FILENAME, "initial", Vec::new())
++    );
++
++    fs::remove_file(&cache).expect("remove synthetic login");
++    fs::write(&guidance, "updated").expect("write updated guidance");
++    assert_eq!(
++        provider.load_user_instructions().await,
++        expected(
++            &home,
++            DEFAULT_AGENTS_MD_FILENAME,
++            "initial",
++            vec![PROTECTED_FILE_WARNING.to_string()],
++        )
++    );
++
++    fs::write(&cache, "synthetic credential marker").expect("restore synthetic login");
++    assert_eq!(
++        provider.load_user_instructions().await,
++        expected(&home, DEFAULT_AGENTS_MD_FILENAME, "updated", Vec::new())
++    );
++}
++
+ #[tokio::test]
+ async fn recoverable_override_read_error_warns_and_falls_back_to_default() {
+     let home = TempDir::new().expect("temp dir");
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 87316e6b935a918eb091255f9ce8964ca6cd26f3..7c349090c2a3bbe1a8e4b385b18ed0065a414760 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1352,11 +1352,11 @@ impl ModelClient {
+         // Capture before resolving credentials so an account switch during setup cannot label
+         // an old connection with the new owner's revision.
+         let auth_owner_generation = self.auth_owner_generation();
+-        let auth_changes = self
+-            .state
+-            .provider
+-            .auth_manager()
+-            .map(|manager| manager.auth_change_receiver());
++        let auth_manager = self.auth_manager();
++        let saved_login = auth_manager
++            .as_ref()
++            .is_some_and(|manager| manager.is_saved_chatgpt());
++        let auth_changes = auth_manager.map(|manager| manager.auth_change_receiver());
+         loop {
+             let revision = auth_changes.as_ref().map(|changes| *changes.borrow());
+             let auth = self.state.provider.auth().await;
+@@ -1405,7 +1405,11 @@ impl ModelClient {
+                 auth_owner_generation,
+                 auth_revision: revision,
+                 api_provider,
+-                redirect_policy,
++                redirect_policy: if saved_login {
++                    ClientRedirectPolicy::Reject
++                } else {
++                    redirect_policy
++                },
+                 api_auth: resolved_auth.auth,
+                 agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
+             });
+@@ -1845,6 +1849,7 @@ impl ModelClientSession {
+                 {
+                     match handle_unauthorized(
+                         unauthorized_transport,
++                        client_setup.auth.as_ref(),
+                         &mut auth_recovery,
+                         &mut provider_auth_recovery_attempted,
+                         session_telemetry,
+@@ -2258,6 +2263,7 @@ impl ModelClientSession {
+                     auth_recovery.pending_retry = PendingUnauthorizedRetry::from_recovery(
+                         handle_unauthorized(
+                             unauthorized_transport,
++                            client_setup.auth.as_ref(),
+                             &mut auth_recovery.manager,
+                             &mut auth_recovery.provider_attempted,
+                             session_telemetry,
+@@ -2394,6 +2400,7 @@ impl ModelClientSession {
+                 {
+                     match handle_unauthorized(
+                         unauthorized_transport,
++                        client_setup.auth.as_ref(),
+                         &mut auth_recovery.manager,
+                         &mut auth_recovery.provider_attempted,
+                         session_telemetry,
+@@ -3251,8 +3258,10 @@ fn emit_auth_recovery_event(
+     }
+ }
+ 
++#[allow(clippy::too_many_arguments)]
+ async fn handle_unauthorized(
+     transport: TransportError,
++    request_auth: Option<&CodexAuth>,
+     auth_recovery: &mut Option<UnauthorizedRecovery>,
+     provider_auth_recovery_attempted: &mut bool,
+     session_telemetry: &SessionTelemetry,
+@@ -3311,7 +3320,7 @@ async fn handle_unauthorized(
+     {
+         let mode = recovery.mode_name();
+         let phase = recovery.step_name();
+-        return match recovery.next().await {
++        return match recovery.next_with_request_auth(request_auth).await {
+             Ok(step_result) => {
+                 session_telemetry.record_auth_recovery(
+                     mode,
+diff --git a/codex-rs/core/src/context/world_state/environment.rs b/codex-rs/core/src/context/world_state/environment.rs
+index c40ee11c15d8b17972305b813d5ec9e693448dd4..1447257784372bc597ade477306d7fc12063916d 100644
+--- a/codex-rs/core/src/context/world_state/environment.rs
++++ b/codex-rs/core/src/context/world_state/environment.rs
+@@ -65,7 +65,10 @@ impl EnvironmentsState {
+             network: network_from_turn_context(turn_context),
+             filesystem: environments.primary().map(|environment| {
+                 FileSystemContext::from_permission_profile(
+-                    environment.permission_profile(),
++                    &environment
++                        .config()
++                        .permission_profile
++                        .sdk_portable_permission_profile(),
+                     environment.workspace_roots(),
+                 )
+             }),
+diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
+index 949b2f28f161480f8fa3bb385934008e5c568f75..b57d4e35061d2c6cbebdad7a38b5226627586bdd 100644
+--- a/codex-rs/core/src/realtime_conversation.rs
++++ b/codex-rs/core/src/realtime_conversation.rs
+@@ -3477,7 +3477,13 @@ async fn prepare_realtime_start_with_source(
+         .model_client
+         .auth_manager()
+         .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
+-    let provider = if frozen_provider {
++    let saved_login = auth_manager.is_saved_chatgpt();
++    if api_key.is_none() && saved_login {
++        return Err(CodexErr::InvalidRequest(
++            "Realtime requires an explicit API key with a saved Codex login".into(),
++        ));
++    }
++    let mut provider = if frozen_provider {
+         current_provider.clone()
+     } else if let Some(projection) = sess
+         .services
+@@ -3492,6 +3498,11 @@ async fn prepare_realtime_start_with_source(
+     } else {
+         current_provider.clone()
+     };
++    // The saved login's provider URL belongs to Responses. An explicit Realtime
++    // API key starts from the API-key defaults and can use Realtime-only overrides.
++    if saved_login {
++        provider.base_url = None;
++    }
+     let provider_projected = frozen_provider || provider != current_provider;
+     let explicit_authorization = api_key.as_ref().map(|key| {
+         let mut value = HeaderValue::from_str(&format!("Bearer {key}"))
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index cce8cc0431f17f37798e91a98f5c725c8ffee5aa..7424bc159468478ef84f1d8156c9e96e56a8132d 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -11503,6 +11503,109 @@ async fn record_context_updates_and_set_reference_context_item_persists_split_fi
+     );
+ }
+ 
++#[tokio::test]
++async fn saved_login_world_state_omits_private_deny_from_context_and_rollout() {
++    let root = tempfile::tempdir().expect("synthetic policy paths");
++    let path = |name: &str| {
++        PathUri::from_host_native_path(root.path().join(name)).expect("absolute fixture path")
++    };
++    let app_deny = path("application-deny");
++    let private_paths = [
++        path("original-login/auth.json"),
++        path("relocated-login/auth.json"),
++    ];
++    let profile = PermissionProfile::workspace_write();
++    let mut file_system = profile.file_system_sandbox_policy();
++    file_system.entries.push(FileSystemSandboxEntry::new(
++        FileSystemPath::Path {
++            path: app_deny.clone(),
++        },
++        FileSystemAccessMode::Deny,
++    ));
++    let profile =
++        PermissionProfile::from_runtime_permissions(&file_system, profile.network_sandbox_policy());
++    let mut baseline_permissions = None;
++
++    for private_path in std::iter::once(None).chain(private_paths.iter().map(Some)) {
++        let (mut session, mut turn_context) = make_session_and_context().await;
++        let config = Arc::make_mut(&mut turn_context.config);
++        config.include_permissions_instructions = true;
++        config.include_environment_context = true;
++        let TurnEnvironmentState::Ready(environment) =
++            &mut turn_context.initial_environments.environments[0]
++        else {
++            panic!("turn environment should be ready");
++        };
++        environment.config_mut().permission_profile =
++            PermissionProfileSnapshot::legacy_with_sdk_private_deny(
++                profile.clone(),
++                private_path.cloned(),
++            );
++        let sandbox = environment.sandbox_context(/*additional_permissions*/ None);
++        let live_policy = sandbox.permissions.file_system_sandbox_policy();
++        let policy_context = sandbox.policy_context();
++        assert!(!live_policy.can_read_path(&app_deny, &policy_context));
++        for path in &private_paths {
++            assert_eq!(
++                live_policy.can_read_path(path, &policy_context),
++                Some(path) != private_path
++            );
++        }
++
++        let rollout_path = attach_thread_persistence(&mut session).await;
++        let step_context = StepContext::for_test(Arc::new(turn_context));
++        session
++            .record_context_updates_and_set_reference_context_item(&step_context)
++            .await
++            .expect("record world state");
++        session.flush_rollout().await.expect("flush world state");
++        let (items, _, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path)
++            .await
++            .expect("read rollout");
++        assert_eq!(parse_errors, 0);
++
++        let messages = items
++            .iter()
++            .filter_map(|item| match item {
++                RolloutItem::ResponseItem(envelope) => Some(envelope.item.clone()),
++                _ => None,
++            })
++            .collect::<Vec<_>>();
++        let permissions_text = developer_input_texts(&messages)
++            .into_iter()
++            .find(|text| text.starts_with("<permissions instructions>"))
++            .expect("emitted permissions instructions");
++        let environment_text = user_input_texts(&messages)
++            .into_iter()
++            .find(|text| text.starts_with("<environment_context>"))
++            .expect("emitted environment context");
++        let snapshot = items
++            .iter()
++            .find_map(|item| match item {
++                RolloutItem::WorldState(snapshot) if snapshot.full => Some(&snapshot.state),
++                _ => None,
++            })
++            .expect("persisted full world-state snapshot");
++        let filesystem = snapshot["environments"]["filesystem"]
++            .as_str()
++            .expect("persisted filesystem context");
++        for text in [permissions_text, environment_text, filesystem] {
++            assert!(text.contains("application-deny"));
++        }
++        let snapshot_json = serde_json::to_string(snapshot).expect("serialize persisted snapshot");
++        for text in [permissions_text, environment_text, snapshot_json.as_str()] {
++            assert!(!text.contains("original-login"));
++            assert!(!text.contains("relocated-login"));
++        }
++        let permissions = snapshot.get("permissions").expect("persisted permissions");
++        if let Some(baseline) = &baseline_permissions {
++            assert_eq!(permissions, baseline);
++        } else {
++            baseline_permissions = Some(permissions.clone());
++        }
++    }
++}
++
+ #[tokio::test]
+ async fn build_initial_context_uses_retained_step_after_model_change() {
+     let (mut session, mut turn_context, _rx_event) =
+diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
+index 2f7c872bfe473445c342ab08ed8d7c8a33eabdc1..72c97f203f7d10d5624d9c69afcb430dac53920b 100644
+--- a/codex-rs/core/src/session/turn_context.rs
++++ b/codex-rs/core/src/session/turn_context.rs
+@@ -704,6 +704,7 @@ impl TurnContext {
+         })
+     }
+ 
++    #[cfg(test)]
+     pub(crate) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
+         self.permission_profile().file_system_sandbox_policy()
+     }
+@@ -885,18 +886,22 @@ impl TurnContext {
+         }
+     }
+ 
+-    fn non_legacy_file_system_sandbox_policy(&self) -> Option<RawFileSystemSandboxPolicy> {
++    fn non_legacy_file_system_sandbox_policy(
++        &self,
++        profile: &PermissionProfile,
++        sandbox_policy: &SandboxPolicy,
++    ) -> Option<RawFileSystemSandboxPolicy> {
+         // Omit the derived split filesystem policy when it is equivalent to
+         // the legacy sandbox policy. This keeps turn-context payloads stable
+         // while both fields exist; once callers consume only the split policy,
+         // this comparison and the legacy projection should go away.
+         let legacy_file_system_sandbox_policy =
+             FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
+-                &self.sandbox_policy(),
++                sandbox_policy,
+                 #[allow(deprecated)]
+                 &self.cwd,
+             );
+-        let file_system_sandbox_policy = self.file_system_sandbox_policy();
++        let file_system_sandbox_policy = profile.file_system_sandbox_policy();
+         // `permission_profile` below is authoritative and serializes the same
+         // runtime entries, so this compatibility field may omit an unrenderable policy.
+         (file_system_sandbox_policy != legacy_file_system_sandbox_policy)
+@@ -932,6 +937,22 @@ impl TurnContext {
+         };
+         #[allow(deprecated)]
+         let cwd = self.cwd.clone();
++        let permission_profile = self.initial_environments.primary().map_or_else(
++            || self.config.permissions.effective_permission_profile(),
++            |environment| {
++                environment
++                    .config()
++                    .permission_profile
++                    .sdk_portable_permission_profile()
++                    .materialize_project_roots_with_path_uris(environment.workspace_roots())
++            },
++        );
++        let sandbox_policy = codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
++            &permission_profile,
++            &cwd,
++        );
++        let file_system_sandbox_policy =
++            self.non_legacy_file_system_sandbox_policy(&permission_profile, &sandbox_policy);
+         TurnContextItem {
+             sdk_receipt: None,
+             turn_id: Some(self.sub_id.clone()),
+@@ -943,14 +964,14 @@ impl TurnContext {
+             timezone: self.timezone.clone(),
+             approval_policy: self.approval_policy(),
+             approvals_reviewer: Some(self.config.approvals_reviewer),
+-            sandbox_policy: self.sandbox_policy(),
+-            permission_profile: Some(self.permission_profile()),
++            sandbox_policy,
++            permission_profile: Some(permission_profile),
+             active_permission_profile: self.initial_environments.primary().map_or_else(
+                 || self.config.permissions.active_permission_profile(),
+                 TurnEnvironment::active_permission_profile,
+             ),
+             network: self.turn_context_network_item(),
+-            file_system_sandbox_policy: self.non_legacy_file_system_sandbox_policy(),
++            file_system_sandbox_policy,
+             model: self.model_info().slug.clone(),
+             comp_hash: self.model_info().comp_hash.clone(),
+             personality: self.personality(),
+diff --git a/codex-rs/core/src/session/world_state.rs b/codex-rs/core/src/session/world_state.rs
+index 109fe1cee86aa37b9a08dcd6494b3574b8e43a0e..277acb29c661151ec894e9f97d642d4c00bb26c7 100644
+--- a/codex-rs/core/src/session/world_state.rs
++++ b/codex-rs/core/src/session/world_state.rs
+@@ -184,8 +184,16 @@ impl Session {
+             let paths = sandbox
+                 .as_ref()
+                 .map(FileSystemSandboxContext::policy_context);
+-            let permission_profile =
+-                turn_context.permission_profile_for_environments(&step_context.environments);
++            let permission_profile = environment.map_or_else(
++                || turn_context.permission_profile_for_environments(&step_context.environments),
++                |environment| {
++                    environment
++                        .config()
++                        .permission_profile
++                        .sdk_portable_permission_profile()
++                        .materialize_project_roots_with_path_uris(environment.workspace_roots())
++                },
++            );
+             #[allow(deprecated)]
+             let cwd = environment
+                 .and_then(|environment| environment.cwd().to_abs_path().ok())
+diff --git a/codex-rs/login/src/auth/auth_tests.rs b/codex-rs/login/src/auth/auth_tests.rs
+index ab15a338718561251a4673c1e53e77b5e68485a8..1c01ba060666be83f6a04ce1a771834725c7e37a 100644
+--- a/codex-rs/login/src/auth/auth_tests.rs
++++ b/codex-rs/login/src/auth/auth_tests.rs
+@@ -81,6 +81,7 @@ async fn refresh_without_id_token() {
+         /*id_token*/ None,
+         Some("new-access-token".to_string()),
+         Some("new-refresh-token".to_string()),
++        /*saved_login*/ None,
+     )
+     .expect("update_tokens should succeed");
+ 
+@@ -90,6 +91,276 @@ async fn refresh_without_id_token() {
+     assert_eq!(tokens.refresh_token, "new-refresh-token");
+ }
+ 
++#[test]
++fn saved_chatgpt_refresh_persists_only_for_the_current_owner() -> anyhow::Result<()> {
++    let home = tempdir()?;
++    write_auth_file(
++        AuthFileParams {
++            openai_api_key: None,
++            chatgpt_plan_type: Some("pro".to_string()),
++            chatgpt_account_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
++        },
++        home.path(),
++    )?;
++    let storage = create_auth_storage(
++        home.path().to_path_buf(),
++        AuthCredentialsStoreMode::File,
++        AuthKeyringBackendKind::default(),
++    );
++    let mut saved = storage.load()?.expect("saved login");
++    saved.tokens.as_mut().expect("login tokens").account_id =
++        Some(WORKSPACE_ID_ALLOWED.to_string());
++    storage.save(&saved)?;
++
++    let other_workspace = fake_jwt_for_auth_file_params(&AuthFileParams {
++        openai_api_key: None,
++        chatgpt_plan_type: Some("pro".to_string()),
++        chatgpt_account_id: Some(WORKSPACE_ID_DISALLOWED.to_string()),
++    })?;
++    assert!(persist_tokens(&storage, Some(other_workspace), None, None, Some(&saved)).is_err());
++    assert_eq!(storage.load()?.as_ref(), Some(&saved));
++
++    let renewed = persist_tokens(
++        &storage,
++        None,
++        Some("renewed-access-token".to_string()),
++        Some("renewed-refresh-token".to_string()),
++        Some(&saved),
++    )?;
++    assert!(persist_tokens(&storage, None, None, None, Some(&saved)).is_err());
++    assert_eq!(storage.load()?.as_ref(), Some(&renewed));
++    Ok(())
++}
++
++#[tokio::test]
++async fn saved_chatgpt_refresh_adopts_a_concurrent_same_owner_update() -> anyhow::Result<()> {
++    for (other_workspace, authority_rejected) in [(false, true), (false, false), (true, true)] {
++        let home = tempdir()?;
++        write_auth_file(
++            AuthFileParams {
++                openai_api_key: None,
++                chatgpt_plan_type: Some("pro".to_string()),
++                chatgpt_account_id: None,
++            },
++            home.path(),
++        )?;
++        let manager = AuthManager::shared_saved_chatgpt(
++            home.path().to_path_buf(),
++            crate::test_support::transport_default_auth_route_config(),
++        )
++        .await?;
++        let Some(CodexAuth::Chatgpt(auth)) = manager.auth_cached() else {
++            anyhow::bail!("expected saved ChatGPT auth");
++        };
++        let attempted = auth.current_auth_json().expect("saved login");
++        let mut replacement = attempted.clone();
++        let tokens = replacement.tokens.as_mut().expect("login tokens");
++        tokens.access_token = "other-process-access-token".to_string();
++        tokens.refresh_token = "other-process-refresh-token".to_string();
++        if other_workspace {
++            let workspace = Some(WORKSPACE_ID_DISALLOWED.to_string());
++            let jwt = fake_jwt_for_auth_file_params(&AuthFileParams {
++                openai_api_key: None,
++                chatgpt_plan_type: Some("pro".to_string()),
++                chatgpt_account_id: workspace.clone(),
++            })?;
++            tokens.id_token = parse_chatgpt_jwt_claims(&jwt)?;
++            tokens.account_id = workspace;
++        }
++        auth.storage().save(&replacement)?;
++
++        let response = if authority_rejected {
++            Err(RefreshTokenFailedError::new(
++                RefreshTokenFailedReason::Exhausted,
++                "Refresh token already used.".to_string(),
++            )
++            .into())
++        } else {
++            Ok(RefreshResponse {
++                id_token: None,
++                access_token: Some("stale-response-access-token".to_string()),
++                refresh_token: Some("stale-response-refresh-token".to_string()),
++            })
++        };
++        let _saved_login_permit = SAVED_CHATGPT_LOGIN_PERMIT.acquire().await?;
++        let result = manager
++            .finish_chatgpt_refresh(&auth, Some(&attempted), response)
++            .await;
++        let expected_token = if other_workspace {
++            assert!(matches!(result, Err(RefreshTokenError::Permanent(_))));
++            "test-access-token"
++        } else {
++            result?;
++            "other-process-access-token"
++        };
++        assert_eq!(
++            manager.auth_cached().expect("cached login").get_token()?,
++            expected_token
++        );
++        assert_eq!(auth.storage().load()?.as_ref(), Some(&replacement));
++    }
++    Ok(())
++}
++
++#[tokio::test]
++async fn saved_chatgpt_refresh_reloads_personal_login_on_unauthorized() -> anyhow::Result<()> {
++    let home = tempdir()?;
++    write_auth_file(
++        AuthFileParams {
++            openai_api_key: None,
++            chatgpt_plan_type: Some("pro".to_string()),
++            chatgpt_account_id: None,
++        },
++        home.path(),
++    )?;
++    let manager = AuthManager::shared_saved_chatgpt(
++        home.path().to_path_buf(),
++        crate::test_support::transport_default_auth_route_config(),
++    )
++    .await?;
++    let mut recovery = manager.unauthorized_recovery();
++    assert_eq!(recovery.next().await?.auth_state_changed(), Some(false));
++    assert_eq!(recovery.step_name(), "refresh_token");
++
++    let Some(CodexAuth::Chatgpt(auth)) = manager.auth_cached() else {
++        anyhow::bail!("expected saved ChatGPT auth");
++    };
++    let mut replacement = auth.current_auth_json().expect("saved login");
++    let tokens = replacement.tokens.as_mut().expect("login tokens");
++    tokens.access_token = "rotated-personal-access-token".to_string();
++    tokens.refresh_token = "rotated-personal-refresh-token".to_string();
++    auth.storage().save(&replacement)?;
++    let mut recovery = manager.unauthorized_recovery();
++    assert_eq!(recovery.next().await?.auth_state_changed(), Some(true));
++    assert_eq!(
++        manager.auth_cached().expect("cached login").get_token()?,
++        "rotated-personal-access-token"
++    );
++
++    std::fs::remove_file(get_auth_file(home.path()))?;
++    let mut recovery = manager.unauthorized_recovery();
++    assert!(matches!(
++        recovery.next().await,
++        Err(RefreshTokenError::Permanent(_))
++    ));
++    Ok(())
++}
++
++#[tokio::test]
++async fn saved_chatgpt_recovery_reuses_rotation_for_two_rejected_requests() -> anyhow::Result<()> {
++    let home = tempdir()?;
++    write_auth_file(
++        AuthFileParams {
++            openai_api_key: None,
++            chatgpt_plan_type: Some("pro".to_string()),
++            chatgpt_account_id: None,
++        },
++        home.path(),
++    )?;
++    let manager = AuthManager::shared_saved_chatgpt(
++        home.path().to_path_buf(),
++        crate::test_support::transport_default_auth_route_config(),
++    )
++    .await?;
++    let stale = manager.auth_cached().expect("saved login");
++    let CodexAuth::Chatgpt(auth) = &stale else {
++        anyhow::bail!("expected saved ChatGPT auth");
++    };
++    let mut first = manager.unauthorized_recovery();
++    let mut second = manager.unauthorized_recovery();
++    first.next_with_request_auth(Some(&stale)).await?;
++    second.next_with_request_auth(Some(&stale)).await?;
++
++    let permit = SAVED_CHATGPT_LOGIN_PERMIT.acquire().await?;
++    let recover = async {
++        tokio::join!(
++            first.next_with_request_auth(Some(&stale)),
++            second.next_with_request_auth(Some(&stale)),
++        )
++    };
++    tokio::pin!(recover);
++    tokio::select! {
++        biased;
++        _ = &mut recover => panic!("recovered before the rotation was published"),
++        _ = std::future::ready(()) => {}
++    }
++    let attempted = auth.current_auth_json().expect("saved login");
++    manager
++        .finish_chatgpt_refresh(
++            auth,
++            Some(&attempted),
++            Ok(RefreshResponse {
++                id_token: None,
++                access_token: Some("rotated-access-token".into()),
++                refresh_token: Some("rotated-refresh-token".into()),
++            }),
++        )
++        .await?;
++    let current = manager.auth_cached().expect("rotated login");
++    // Catch an attempted grant for the new revision without a network request.
++    manager.record_permanent_refresh_failure_if_unchanged(
++        &current,
++        &RefreshTokenFailedError::new(RefreshTokenFailedReason::Other, "unexpected grant"),
++    );
++    drop(permit);
++
++    let (first, second) = recover.await;
++    first?;
++    second?;
++    assert_eq!(
++        manager.auth_cached().expect("rotated login").get_token()?,
++        "rotated-access-token"
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn saved_chatgpt_reads_wait_for_refresh_write() -> anyhow::Result<()> {
++    let home = tempdir()?;
++    write_auth_file(
++        AuthFileParams {
++            openai_api_key: None,
++            chatgpt_plan_type: Some("pro".to_string()),
++            chatgpt_account_id: None,
++        },
++        home.path(),
++    )?;
++    let open = || {
++        AuthManager::shared_saved_chatgpt(
++            home.path().to_path_buf(),
++            crate::test_support::transport_default_auth_route_config(),
++        )
++    };
++    let reloading = open().await?;
++    let recovering = open().await?;
++    let mut recovery = recovering.unauthorized_recovery();
++    let auth_file = get_auth_file(home.path());
++    let saved = std::fs::read(&auth_file)?;
++
++    let permit = SAVED_CHATGPT_LOGIN_PERMIT.acquire().await?;
++    std::fs::write(&auth_file, b"")?;
++    let opening = open();
++    let reload = reloading.reload();
++    let next = recovery.next();
++    tokio::pin!(opening, reload, next);
++    tokio::select! {
++        biased;
++        _ = &mut opening => panic!("opened a saved login during a refresh write"),
++        _ = &mut reload => panic!("reloaded a saved login during a refresh write"),
++        _ = &mut next => panic!("recovered a saved login during a refresh write"),
++        _ = std::future::ready(()) => {}
++    }
++    std::fs::write(&auth_file, saved)?;
++    drop(permit);
++
++    let (opened, changed, recovered) = tokio::join!(opening, reload, next);
++    assert!(opened?.is_saved_chatgpt());
++    assert!(!changed);
++    assert!(reloading.auth_cached().is_some());
++    assert_eq!(recovered?.auth_state_changed(), Some(false));
++    Ok(())
++}
++
+ #[test]
+ fn login_with_api_key_overwrites_existing_auth_json() {
+     let dir = tempdir().unwrap();
+diff --git a/codex-rs/login/src/auth/manager.rs b/codex-rs/login/src/auth/manager.rs
+index cdc9c8d3560359aca41ebf28b1b313e1a1793304..9c3aedd47902b0f12fcc84097c89bb706d540f6e 100644
+--- a/codex-rs/login/src/auth/manager.rs
++++ b/codex-rs/login/src/auth/manager.rs
+@@ -16,11 +16,13 @@ use std::sync::Mutex;
+ use std::sync::OnceLock;
+ use std::sync::RwLock;
+ use std::sync::Weak;
++use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::AtomicU64;
+ use std::sync::atomic::Ordering;
+ use std::time::Duration;
+ use std::time::Instant;
+ use tokio::sync::Semaphore;
++use tokio::sync::SemaphorePermit;
+ use tokio::sync::watch;
+ use tracing::instrument;
+ 
+@@ -57,7 +59,9 @@ pub use crate::auth::storage::AuthDotJson;
+ pub use crate::auth::storage::AuthKeyringBackendKind;
+ use crate::auth::storage::AuthStorageBackend;
+ use crate::auth::storage::create_auth_storage;
++use crate::default_client::ClientRedirectPolicy;
+ use crate::default_client::create_client;
++use crate::default_client::create_client_for_route;
+ use crate::default_client::create_default_auth_client;
+ use crate::oauth::ErrorBodyLimit;
+ use crate::oauth::OAuthClient;
+@@ -73,6 +77,7 @@ use crate::token_data::parse_chatgpt_jwt_claims;
+ use crate::token_data::parse_jwt_expiration;
+ use codex_config::ManagedAuthPolicy;
+ use codex_config::types::AuthCredentialsStoreMode;
++use codex_http_client::ClientRouteClass;
+ use codex_http_client::HttpClient;
+ use codex_http_client::HttpClientFactory;
+ use codex_http_client::OutboundProxyPolicy;
+@@ -1596,16 +1601,82 @@ async fn load_auth(
+     Ok(Some(auth))
+ }
+ 
++// The SDK opts into the exact file-backed Codex OAuth login. Unlike the
++// regular loader, this path never looks at environment or in-memory auth.
++type SavedChatgptOwner = (Option<String>, String);
++
++// Serialize saved login reads with refresh writes across SDK engines in this process.
++static SAVED_CHATGPT_LOGIN_PERMIT: Semaphore = Semaphore::const_new(1);
++
++fn saved_chatgpt_owner(auth: &AuthDotJson) -> Option<SavedChatgptOwner> {
++    let tokens = auth.tokens.as_ref()?;
++    let account_id = tokens.account_id.as_ref();
++    let user_id = tokens.id_token.chatgpt_user_id.as_ref()?;
++    if auth.resolved_mode() != AuthMode::Chatgpt
++        || auth.last_refresh.is_none()
++        || account_id.is_some_and(|account| account.trim().is_empty())
++        || tokens.id_token.chatgpt_account_id.as_ref() != account_id
++        || tokens.id_token.is_fedramp_account()
++        || user_id.trim().is_empty()
++        || tokens.access_token.trim().is_empty()
++        || tokens.refresh_token.trim().is_empty()
++    {
++        return None;
++    }
++    Some((account_id.cloned(), user_id.clone()))
++}
++
++fn load_saved_chatgpt(
++    codex_home: &Path,
++    auth_route_config: &AuthRouteConfig,
++    expected_owner: Option<&SavedChatgptOwner>,
++) -> std::io::Result<Option<(CodexAuth, SavedChatgptOwner)>> {
++    let storage = create_auth_storage(
++        codex_home.to_path_buf(),
++        AuthCredentialsStoreMode::File,
++        AuthKeyringBackendKind::default(),
++    );
++    let Some(auth) = storage.load()? else {
++        return Ok(None);
++    };
++    let Some(owner) = saved_chatgpt_owner(&auth) else {
++        return Ok(None);
++    };
++    if expected_owner.is_some_and(|expected| *expected != owner) {
++        return Ok(None);
++    }
++    let state = ChatgptAuthState {
++        auth_dot_json: Arc::new(Mutex::new(Some(auth))),
++        client: create_client_for_route(
++            &auth_route_config.authentication_factory(REFRESH_TOKEN_URL),
++            REFRESH_TOKEN_URL,
++            ClientRouteClass::Auth,
++            ClientRedirectPolicy::Reject,
++        )?
++        .without_request_logging(),
++    };
++    Ok(Some((
++        CodexAuth::Chatgpt(ChatgptAuth { state, storage }),
++        owner,
++    )))
++}
++
+ // Persist refreshed tokens into auth storage and update last_refresh.
+ fn persist_tokens(
+     storage: &Arc<dyn AuthStorageBackend>,
+     id_token: Option<String>,
+     access_token: Option<String>,
+     refresh_token: Option<String>,
++    saved_login: Option<&AuthDotJson>,
+ ) -> std::io::Result<AuthDotJson> {
+     let mut auth_dot_json = storage
+         .load()?
+         .ok_or(std::io::Error::other("Token data is not available."))?;
++    if saved_login.is_some_and(|saved| *saved != auth_dot_json) {
++        return Err(std::io::Error::other(
++            "Saved Codex login changed during refresh.",
++        ));
++    }
+ 
+     let tokens = auth_dot_json.tokens.get_or_insert_with(TokenData::default);
+     if let Some(id_token) = id_token {
+@@ -1618,6 +1689,13 @@ fn persist_tokens(
+         tokens.refresh_token = refresh_token;
+     }
+     auth_dot_json.last_refresh = Some(Utc::now());
++    if let Some(saved) = saved_login
++        && saved_chatgpt_owner(saved) != saved_chatgpt_owner(&auth_dot_json)
++    {
++        return Err(std::io::Error::other(
++            "Refreshed Codex login changed its owner.",
++        ));
++    }
+     storage.save(&auth_dot_json)?;
+     Ok(auth_dot_json)
+ }
+@@ -1627,16 +1705,20 @@ fn persist_tokens(
+ async fn request_chatgpt_token_refresh(
+     refresh_token: String,
+     client: &HttpClient,
++    saved_login_only: bool,
+ ) -> Result<RefreshResponse, RefreshTokenError> {
+-    let client_id = oauth_client_id();
+-    let endpoint = refresh_token_endpoint();
++    let (client_id, endpoint) = if saved_login_only {
++        (CLIENT_ID.to_string(), REFRESH_TOKEN_URL.to_string())
++    } else {
++        (oauth_client_id(), refresh_token_endpoint())
++    };
+     let oauth = OAuthClient::new(
+         client,
+         TokenEndpoint {
+             url: &endpoint,
+             client_id: &client_id,
+             encoding: TokenEncoding::Json,
+-            timeout: None,
++            timeout: saved_login_only.then_some(Duration::from_secs(15)),
+             error_body_limit: ErrorBodyLimit::Unlimited,
+         },
+     );
+@@ -1654,20 +1736,31 @@ async fn request_chatgpt_token_refresh(
+             }
+             let status = rejection.status;
+             let detail = &rejection.detail;
+-            tracing::error!(%status, ?detail, "Failed to refresh token");
++            let diagnostic_detail = (!saved_login_only).then_some(detail);
++            if let Some(detail) = diagnostic_detail {
++                tracing::error!(%status, ?detail, "Failed to refresh token");
++            } else {
++                tracing::error!(%status, "Failed to refresh saved Codex login");
++            }
+             let code = detail.error_code();
+             let is_invalid_grant_bad_request = status == StatusCode::BAD_REQUEST
+                 && code.is_some_and(|code| code.eq_ignore_ascii_case("invalid_grant"));
+-            let failed = classify_refresh_token_failure(code, detail, is_invalid_grant_bad_request);
++            let failed = classify_refresh_token_failure(
++                code,
++                diagnostic_detail,
++                is_invalid_grant_bad_request,
++            );
+             if status == StatusCode::UNAUTHORIZED
+                 || failed.reason != RefreshTokenFailedReason::Other
+                 || is_invalid_grant_bad_request
+             {
+                 Err(RefreshTokenError::Permanent(failed))
+             } else {
+-                Err(RefreshTokenError::Transient(std::io::Error::other(
+-                    format!("Failed to refresh token: {status}: {detail}"),
+-                )))
++                let message = match diagnostic_detail {
++                    Some(detail) => format!("Failed to refresh token: {status}: {detail}"),
++                    None => format!("Failed to refresh saved Codex login: {status}"),
++                };
++                Err(RefreshTokenError::Transient(std::io::Error::other(message)))
+             }
+         }
+         Err(OAuthError::Transport(error)) => Err(error.into()),
+@@ -1679,7 +1772,7 @@ async fn request_chatgpt_token_refresh(
+ 
+ fn classify_refresh_token_failure(
+     code: Option<&str>,
+-    detail: &TokenErrorDetail,
++    detail: Option<&TokenErrorDetail>,
+     is_invalid_grant_bad_request: bool,
+ ) -> RefreshTokenFailedError {
+     let normalized_code = code.map(str::to_ascii_lowercase);
+@@ -1690,7 +1783,10 @@ fn classify_refresh_token_failure(
+         _ => RefreshTokenFailedReason::Other,
+     };
+ 
+-    if reason == RefreshTokenFailedReason::Other && !is_invalid_grant_bad_request {
++    if reason == RefreshTokenFailedReason::Other
++        && !is_invalid_grant_bad_request
++        && let Some(detail) = detail
++    {
+         tracing::warn!(
+             backend_detail = ?detail,
+             "Encountered unknown response while refreshing token"
+@@ -1975,6 +2071,14 @@ impl UnauthorizedRecovery {
+     }
+ 
+     pub async fn next(&mut self) -> Result<UnauthorizedRecoveryStepResult, RefreshTokenError> {
++        self.next_with_request_auth(None).await
++    }
++
++    /// Recover using the credentials captured for the rejected request.
++    pub async fn next_with_request_auth(
++        &mut self,
++        request_auth: Option<&CodexAuth>,
++    ) -> Result<UnauthorizedRecoveryStepResult, RefreshTokenError> {
+         if !self.has_next() {
+             return Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                 RefreshTokenFailedReason::Other,
+@@ -1984,6 +2088,7 @@ impl UnauthorizedRecovery {
+ 
+         match self.step {
+             UnauthorizedRecoveryStep::Reload => {
++                let _saved_login_permit = self.manager.lock_saved_chatgpt().await;
+                 match self
+                     .manager
+                     .reload_if_account_id_matches(self.expected_account_id.as_deref())
+@@ -2011,7 +2116,12 @@ impl UnauthorizedRecovery {
+                 }
+             }
+             UnauthorizedRecoveryStep::RefreshToken => {
+-                self.manager.refresh_token_from_authority().await?;
++                if self.manager.is_saved_chatgpt() {
++                    let stale = request_auth.cloned().or_else(|| self.manager.auth_cached());
++                    self.manager.refresh_saved_chatgpt(stale).await?;
++                } else {
++                    self.manager.refresh_token_from_authority().await?;
++                }
+                 self.step = UnauthorizedRecoveryStep::Done;
+                 return Ok(UnauthorizedRecoveryStepResult {
+                     auth_state_changed: Some(true),
+@@ -2054,14 +2164,22 @@ pub struct AuthManager {
+     managed_auth_policy: ManagedAuthPolicy,
+     chatgpt_base_url: Option<String>,
+     agent_identity_authapi_base_url: Option<String>,
+-    refresh_lock: Semaphore,
++    refresh_lock: Arc<Semaphore>,
+     agent_identity_lock: Semaphore,
+     agent_identity_bootstrap_cooldown: Mutex<AgentIdentityBootstrapCooldown>,
+     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
+     workload_identity_selected: bool,
++    saved_chatgpt_login: Option<SavedChatgptLogin>,
+     auth_route_config: AuthRouteConfig,
+ }
+ 
++#[derive(Debug)]
++struct SavedChatgptLogin {
++    owner: SavedChatgptOwner,
++    manager: Weak<AuthManager>,
++    refresh_failed: AtomicBool,
++}
++
+ /// Configuration view required to construct a shared [`AuthManager`].
+ ///
+ /// Implementations should return the auth-related config values for the
+@@ -2181,6 +2299,14 @@ impl AuthManager {
+             .await
+             .ok()
+             .flatten();
++        Self::from_initial_auth(auth_config, enable_codex_api_key_env, managed_auth)
++    }
++
++    fn from_initial_auth(
++        auth_config: AuthConfig,
++        enable_codex_api_key_env: bool,
++        managed_auth: Option<CodexAuth>,
++    ) -> Self {
+         let AuthConfig {
+             codex_home,
+             auth_credentials_store_mode,
+@@ -2211,15 +2337,57 @@ impl AuthManager {
+             managed_auth_policy,
+             chatgpt_base_url,
+             agent_identity_authapi_base_url,
+-            refresh_lock: Semaphore::new(/*permits*/ 1),
++            refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+             agent_identity_lock: Semaphore::new(/*permits*/ 1),
+             agent_identity_bootstrap_cooldown: Mutex::default(),
+             external_auth: RwLock::new(None),
+             workload_identity_selected: false,
++            saved_chatgpt_login: None,
+             auth_route_config,
+         }
+     }
+ 
++    /// Load an existing file-backed Codex OAuth login and constrain reloads to its owner.
++    pub async fn shared_saved_chatgpt(
++        codex_home: PathBuf,
++        auth_route_config: AuthRouteConfig,
++    ) -> std::io::Result<Arc<Self>> {
++        let _saved_login_permit = SAVED_CHATGPT_LOGIN_PERMIT
++            .acquire()
++            .await
++            .map_err(std::io::Error::other)?;
++        let (auth, owner) = load_saved_chatgpt(&codex_home, &auth_route_config, None)?
++            .ok_or_else(|| std::io::Error::other("No saved Codex OAuth login."))?;
++        let mut manager = Self::from_initial_auth(
++            AuthConfig {
++                codex_home,
++                auth_credentials_store_mode: AuthCredentialsStoreMode::File,
++                keyring_backend_kind: AuthKeyringBackendKind::default(),
++                forced_login_method: Some(ForcedLoginMethod::Chatgpt),
++                chatgpt_base_url: None,
++                forced_chatgpt_workspace_id: None,
++                managed_auth_policy: ManagedAuthPolicy::default(),
++                auth_route_config,
++            },
++            /*enable_codex_api_key_env*/ false,
++            Some(auth),
++        );
++        manager.agent_identity_authapi_base_url = None;
++        Ok(Arc::new_cyclic(|weak| {
++            manager.saved_chatgpt_login = Some(SavedChatgptLogin {
++                owner,
++                manager: weak.clone(),
++                refresh_failed: AtomicBool::new(false),
++            });
++            manager
++        }))
++    }
++
++    /// Whether this manager owns a saved Codex OAuth login.
++    pub fn is_saved_chatgpt(&self) -> bool {
++        self.saved_chatgpt_login.is_some()
++    }
++
+     /// Create an AuthManager with a specific CodexAuth, for testing only.
+     pub fn from_auth_for_testing(auth: CodexAuth) -> Arc<Self> {
+         Self::from_optional_auth_for_testing(Some(auth))
+@@ -2247,11 +2415,12 @@ impl AuthManager {
+             managed_auth_policy: ManagedAuthPolicy::default(),
+             chatgpt_base_url: None,
+             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
+-            refresh_lock: Semaphore::new(/*permits*/ 1),
++            refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+             agent_identity_lock: Semaphore::new(/*permits*/ 1),
+             agent_identity_bootstrap_cooldown: Mutex::default(),
+             external_auth: RwLock::new(None),
+             workload_identity_selected: false,
++            saved_chatgpt_login: None,
+             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+         })
+     }
+@@ -2277,11 +2446,12 @@ impl AuthManager {
+             managed_auth_policy: ManagedAuthPolicy::default(),
+             chatgpt_base_url: None,
+             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
+-            refresh_lock: Semaphore::new(/*permits*/ 1),
++            refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+             agent_identity_lock: Semaphore::new(/*permits*/ 1),
+             agent_identity_bootstrap_cooldown: Mutex::default(),
+             external_auth: RwLock::new(None),
+             workload_identity_selected: false,
++            saved_chatgpt_login: None,
+             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+         })
+     }
+@@ -2315,11 +2485,12 @@ impl AuthManager {
+                     .trim_end_matches('/')
+                     .to_string(),
+             ),
+-            refresh_lock: Semaphore::new(/*permits*/ 1),
++            refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+             agent_identity_lock: Semaphore::new(/*permits*/ 1),
+             agent_identity_bootstrap_cooldown: Mutex::default(),
+             external_auth: RwLock::new(None),
+             workload_identity_selected: false,
++            saved_chatgpt_login: None,
+             auth_route_config: crate::test_support::transport_default_auth_route_config(),
+         })
+     }
+@@ -2343,11 +2514,12 @@ impl AuthManager {
+             managed_auth_policy: ManagedAuthPolicy::default(),
+             chatgpt_base_url: None,
+             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
+-            refresh_lock: Semaphore::new(/*permits*/ 1),
++            refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+             agent_identity_lock: Semaphore::new(/*permits*/ 1),
+             agent_identity_bootstrap_cooldown: Mutex::default(),
+             external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::new(config)))),
+             workload_identity_selected: false,
++            saved_chatgpt_login: None,
+             // External bearer auth refreshes by running the provider's command and never makes
+             // auth-owned HTTP requests, so this route is intentionally inert.
+             auth_route_config: AuthRouteConfig::from_http_client_factory(HttpClientFactory::new(
+@@ -2395,11 +2567,16 @@ impl AuthManager {
+         }
+ 
+         let auth = self.auth_cached()?;
+-        if Self::should_refresh_proactively(&auth)
+-            && let Err(err) = self.refresh_token().await
+-        {
+-            tracing::error!("Failed to refresh token: {}", err);
+-            return Some(auth);
++        if Self::should_refresh_proactively(&auth) {
++            let refreshed = if self.is_saved_chatgpt() {
++                self.refresh_saved_chatgpt(Some(auth.clone())).await
++            } else {
++                self.refresh_token().await
++            };
++            if let Err(err) = refreshed {
++                tracing::error!("Failed to refresh token: {}", err);
++                return Some(auth);
++            }
+         }
+         self.auth_cached()
+     }
+@@ -2417,6 +2594,9 @@ impl AuthManager {
+         policy: AgentIdentityAuthPolicy,
+         session_source: SessionSource,
+     ) -> std::io::Result<Option<AgentIdentityAuth>> {
++        if self.is_saved_chatgpt() {
++            return Ok(None);
++        }
+         let Some(auth) = self.auth().await else {
+             return Ok(None);
+         };
+@@ -2477,6 +2657,24 @@ impl AuthManager {
+ 
+     /// Reloads auth from the active source. Returns whether the auth value changed.
+     pub async fn reload(&self) -> bool {
++        let _saved_login_permit = self.lock_saved_chatgpt().await;
++        self.reload_unlocked().await
++    }
++
++    async fn lock_saved_chatgpt(&self) -> Option<SemaphorePermit<'static>> {
++        if self.is_saved_chatgpt() {
++            Some(
++                SAVED_CHATGPT_LOGIN_PERMIT
++                    .acquire()
++                    .await
++                    .expect("the saved login semaphore is never closed"),
++            )
++        } else {
++            None
++        }
++    }
++
++    async fn reload_unlocked(&self) -> bool {
+         tracing::info!("Reloading auth");
+         let new_auth = self.load_auth().await;
+         self.set_cached_auth(new_auth)
+@@ -2486,26 +2684,26 @@ impl AuthManager {
+         &self,
+         expected_account_id: Option<&str>,
+     ) -> ReloadOutcome {
+-        let expected_account_id = match expected_account_id {
+-            Some(account_id) => account_id,
+-            None => {
+-                tracing::info!("Skipping auth reload because no account id is available.");
+-                return ReloadOutcome::Skipped;
+-            }
+-        };
++        // Personal saved logins can have no workspace ID. The saved loader
++        // still verifies the original owner before returning auth.
++        if expected_account_id.is_none() && !self.is_saved_chatgpt() {
++            tracing::info!("Skipping auth reload because no account id is available.");
++            return ReloadOutcome::Skipped;
++        }
+ 
+         let new_auth = self.load_auth().await;
+         let new_account_id = new_auth.as_ref().and_then(CodexAuth::get_account_id);
++        let expected_label = expected_account_id.unwrap_or("personal");
+ 
+-        if new_account_id.as_deref() != Some(expected_account_id) {
++        if new_auth.is_none() || new_account_id.as_deref() != expected_account_id {
+             let found_account_id = new_account_id.as_deref().unwrap_or("unknown");
+             tracing::info!(
+-                "Skipping auth reload due to account id mismatch (expected: {expected_account_id}, found: {found_account_id})"
++                "Skipping auth reload due to account id mismatch (expected: {expected_label}, found: {found_account_id})"
+             );
+             return ReloadOutcome::Skipped;
+         }
+ 
+-        tracing::info!("Reloading auth for account {expected_account_id}");
++        tracing::info!("Reloading auth for account {expected_label}");
+         let cached_before_reload = self.auth_cached();
+         let auth_changed =
+             !Self::auths_equal_for_refresh(cached_before_reload.as_ref(), new_auth.as_ref());
+@@ -2571,7 +2769,18 @@ impl AuthManager {
+         }
+     }
+ 
++    // Saved login callers hold the process-wide permit through any cache update.
+     async fn load_auth(&self) -> Option<CodexAuth> {
++        if let Some(login) = &self.saved_chatgpt_login {
++            return load_saved_chatgpt(
++                &self.codex_home,
++                &self.auth_route_config,
++                Some(&login.owner),
++            )
++            .ok()
++            .flatten()
++            .map(|(auth, _)| auth);
++        }
+         if let Some(external_auth) = self.external_auth_provider() {
+             let cached_auth = self.auth_cached();
+             if cached_auth
+@@ -2661,6 +2870,11 @@ impl AuthManager {
+         &self,
+         external_auth: Arc<dyn ExternalAuth>,
+     ) -> Result<(), RefreshTokenError> {
++        if self.is_saved_chatgpt() {
++            return Err(permanent_external_auth_error(
++                "the saved Codex login cannot be replaced at runtime",
++            ));
++        }
+         if self.workload_identity_selected {
+             return Err(permanent_external_auth_error(
+                 "workload identity auth cannot be replaced at runtime",
+@@ -2843,6 +3057,9 @@ impl AuthManager {
+     /// we can assume that the source already refreshed it. Otherwise, ask the
+     /// token authority to refresh.
+     pub async fn refresh_token(&self) -> Result<(), RefreshTokenError> {
++        if self.is_saved_chatgpt() {
++            return self.refresh_saved_chatgpt(self.auth_cached()).await;
++        }
+         let _refresh_guard = self.refresh_lock.acquire().await.map_err(|_| {
+             RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                 RefreshTokenFailedReason::Other,
+@@ -2878,10 +3095,80 @@ impl AuthManager {
+         }
+     }
+ 
++    /// Join this manager's admitted refresh and report only a sanitized failure.
++    pub async fn wait_for_saved_chatgpt_refresh(&self) -> Option<&'static str> {
++        let login = self.saved_chatgpt_login.as_ref()?;
++        let _permit = self
++            .refresh_lock
++            .acquire()
++            .await
++            .expect("refresh lock is open");
++        login
++            .refresh_failed
++            .load(Ordering::Relaxed)
++            .then_some("Saved Codex login refresh failed.")
++    }
++
++    async fn refresh_saved_chatgpt(
++        &self,
++        stale: Option<CodexAuth>,
++    ) -> Result<(), RefreshTokenError> {
++        let permit = self.lock_saved_chatgpt().await;
++        let expected_account_id = stale.as_ref().and_then(CodexAuth::get_account_id);
++        if matches!(
++            self.reload_if_account_id_matches(expected_account_id.as_deref())
++                .await,
++            ReloadOutcome::Skipped,
++        ) {
++            return Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
++                RefreshTokenFailedReason::Other,
++                REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE.to_string(),
++            )));
++        }
++        if !Self::auths_equal_for_refresh(stale.as_ref(), self.auth_cached().as_ref()) {
++            return Ok(());
++        }
++
++        // An admitted grant may rotate credentials even after its caller stops
++        // waiting. Keep both permits through publication so owner close can join it.
++        let refresh_guard = Arc::clone(&self.refresh_lock)
++            .acquire_owned()
++            .await
++            .map_err(std::io::Error::other)?;
++        let login = self
++            .saved_chatgpt_login
++            .as_ref()
++            .expect("saved login refresh requires saved auth");
++        let manager = login
++            .manager
++            .upgrade()
++            .expect("saved login owns its auth manager");
++        // Until the admitted worker succeeds, close must report a failure even
++        // if the worker exits without returning its result to a waiter.
++        login.refresh_failed.store(true, Ordering::Relaxed);
++        tokio::spawn(async move {
++            let _permit = permit;
++            let _refresh_guard = refresh_guard;
++            let result = manager.refresh_token_from_authority_impl().await;
++            manager
++                .saved_chatgpt_login
++                .as_ref()
++                .expect("saved login owns its auth manager")
++                .refresh_failed
++                .store(result.is_err(), Ordering::Relaxed);
++            result
++        })
++        .await
++        .map_err(std::io::Error::other)?
++    }
++
+     /// Attempt to refresh the current auth token from the authority that issued
+     /// it and update the shared cache. If the token refresh fails, returns the
+     /// error to the caller.
+     pub async fn refresh_token_from_authority(&self) -> Result<(), RefreshTokenError> {
++        if self.is_saved_chatgpt() {
++            return self.refresh_token().await;
++        }
+         let _refresh_guard = self.refresh_lock.acquire().await.map_err(|_| {
+             RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                 RefreshTokenFailedReason::Other,
+@@ -2974,6 +3261,12 @@ impl AuthManager {
+     }
+ 
+     fn ensure_logout_allowed(&self) -> std::io::Result<()> {
++        if self.is_saved_chatgpt() {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::PermissionDenied,
++                "Manage the saved Codex login with the Codex CLI",
++            ));
++        }
+         if self.workload_identity_selected {
+             return Err(std::io::Error::new(
+                 std::io::ErrorKind::PermissionDenied,
+@@ -3091,17 +3384,52 @@ impl AuthManager {
+         auth: &ChatgptAuth,
+         refresh_token: String,
+     ) -> Result<(), RefreshTokenError> {
+-        let refresh_response = request_chatgpt_token_refresh(refresh_token, auth.client()).await?;
+-
+-        persist_tokens(
+-            auth.storage(),
+-            refresh_response.id_token,
+-            refresh_response.access_token,
+-            refresh_response.refresh_token,
+-        )
+-        .map_err(RefreshTokenError::from)?;
+-        self.reload().await;
++        let saved_login = if self.is_saved_chatgpt() {
++            Some(
++                auth.current_auth_json()
++                    .ok_or_else(|| std::io::Error::other("Saved Codex login is unavailable."))?,
++            )
++        } else {
++            None
++        };
++        let response =
++            request_chatgpt_token_refresh(refresh_token, auth.client(), saved_login.is_some())
++                .await;
++        self.finish_chatgpt_refresh(auth, saved_login.as_ref(), response)
++            .await
++    }
+ 
++    async fn finish_chatgpt_refresh(
++        &self,
++        auth: &ChatgptAuth,
++        saved_login: Option<&AuthDotJson>,
++        response: Result<RefreshResponse, RefreshTokenError>,
++    ) -> Result<(), RefreshTokenError> {
++        let result = response.and_then(|response| {
++            persist_tokens(
++                auth.storage(),
++                response.id_token,
++                response.access_token,
++                response.refresh_token,
++                saved_login,
++            )
++            .map_err(RefreshTokenError::from)
++        });
++        if let Err(error) = result {
++            // A separate Codex process may have saved a replacement during the
++            // request. The saved loader checks the owner before we adopt it.
++            if let Some(attempted) = saved_login.and_then(|saved| saved.tokens.as_ref())
++                && !matches!(&error, RefreshTokenError::Policy(_))
++                && let Some(replacement) = self.load_auth().await
++                && let Ok(token) = replacement.get_token()
++                && token != attempted.access_token
++            {
++                self.set_cached_auth(Some(replacement));
++                return Ok(());
++            }
++            return Err(error);
++        }
++        self.reload_unlocked().await;
+         Ok(())
+     }
+ }
+diff --git a/codex-rs/model-provider/src/models_endpoint.rs b/codex-rs/model-provider/src/models_endpoint.rs
+index 6986451a8c215107a192cde8b9992adfecc6715f..8f39ace361e5288bc277294f4fcc3d5296000022 100644
+--- a/codex-rs/model-provider/src/models_endpoint.rs
++++ b/codex-rs/model-provider/src/models_endpoint.rs
+@@ -61,7 +61,11 @@ impl OpenAiModelsEndpoint {
+         auth_manager: Option<Arc<AuthManager>>,
+         gateway_auth_manager: Option<Result<Arc<GatewayAuthManager>, String>>,
+     ) -> Self {
+-        let redirect_policy = if provider_info.model_catalog_url.is_some() {
++        let redirect_policy = if provider_info.model_catalog_url.is_some()
++            || auth_manager
++                .as_ref()
++                .is_some_and(|manager| manager.is_saved_chatgpt())
++        {
+             ClientRedirectPolicy::Reject
+         } else {
+             ClientRedirectPolicy::Default
+diff --git a/codex-rs/protocol/src/environment.rs b/codex-rs/protocol/src/environment.rs
+index 37687bfed91cdf6a6ea27b2df68a57dabf09d95a..3b5f5ddea795c146ae8c686e265f810bebc22f7f 100644
+--- a/codex-rs/protocol/src/environment.rs
++++ b/codex-rs/protocol/src/environment.rs
+@@ -102,7 +102,7 @@ impl std::fmt::Debug for EnvironmentConfig {
+     }
+ }
+ 
+-/// Policy for the executor selected for an SDK sampling request.
++/// Durable policy for the executor selected for an SDK sampling request.
+ pub fn sdk_executor_policy_receipt(
+     selection: &TurnEnvironmentSelection,
+     remote: bool,
+@@ -111,7 +111,7 @@ pub fn sdk_executor_policy_receipt(
+     let EnvironmentConfigState::Ready(config) = &selection.config else {
+         return None;
+     };
+-    let profile = config.permission_profile.permission_profile();
++    let profile = config.permission_profile.sdk_portable_permission_profile();
+     let fs = profile.file_system_sandbox_policy();
+     let writable_roots = fs
+         .entries
+@@ -134,7 +134,7 @@ pub fn sdk_executor_policy_receipt(
+             "allow_local_binding": policy.allow_local_binding,
+         })
+     });
+-    let permission_profile = serde_json::to_value(profile).ok()?;
++    let permission_profile = serde_json::to_value(&profile).ok()?;
+     Some(serde_json::json!({
+         "environment_id": selection.environment_id,
+         "transport": if remote { "remote" } else { "local" },
+@@ -145,3 +145,81 @@ pub fn sdk_executor_policy_receipt(
+         "network_policy": network_policy,
+     }))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::permissions::FileSystemAccessMode;
++    use crate::permissions::FileSystemSandboxEntry;
++    use crate::permissions::RawFileSystemSandboxPolicy;
++
++    #[test]
++    fn sdk_executor_receipt_is_stable_when_the_saved_login_moves() {
++        let root = std::env::temp_dir();
++        let path =
++            |name: &str| PathUri::from_host_native_path(root.join(name)).expect("fixture path");
++        let retained_deny = FileSystemSandboxEntry::new(
++            FileSystemPath::Path {
++                path: path("application-deny"),
++            },
++            FileSystemAccessMode::Deny,
++        );
++        let cwd = path("workspace");
++        let baseline = PermissionProfile::workspace_write();
++        let mut fs = baseline.file_system_sandbox_policy();
++        fs.entries.push(retained_deny.clone());
++        let baseline =
++            PermissionProfile::from_runtime_permissions(&fs, baseline.network_sandbox_policy());
++        let snapshot = PermissionProfileSnapshot::legacy(baseline.clone());
++        let selection = |permission_profile| TurnEnvironmentSelection {
++            environment_id: "local".into(),
++            cwd: cwd.clone(),
++            workspace_roots: vec![cwd.clone()],
++            config: EnvironmentConfigState::Ready(EnvironmentConfig {
++                allow_login_shell: false,
++                workspace_roots: vec![cwd.clone()],
++                permission_profile,
++                shell_environment_policy: Default::default(),
++                windows_sandbox_level: WindowsSandboxLevel::Disabled,
++                windows_sandbox_type: SandboxType::None,
++                use_legacy_landlock: false,
++                exec_policy: None,
++                mcp_policy: None,
++                network_policy: None,
++                selected_capability_roots: vec![],
++            }),
++        };
++        let ordinary = selection(snapshot.clone());
++        let expected = sdk_executor_policy_receipt(&ordinary, false, None);
++        let expected_bytes = serde_json::to_vec(&expected).unwrap();
++        for name in ["first-cache", "relocated-cache"] {
++            let deny = path(name);
++            let saved = PermissionProfileSnapshot::legacy_with_sdk_private_deny(
++                snapshot.permission_profile().clone(),
++                Some(deny.clone()),
++            );
++            let live = saved.permission_profile().file_system_sandbox_policy();
++            assert!(live.entries.contains(&retained_deny));
++            assert!(live.entries.contains(&FileSystemSandboxEntry::new(
++                FileSystemPath::Path { path: deny },
++                FileSystemAccessMode::Deny,
++            )));
++            let portable = saved.sdk_portable_permission_profile();
++            assert_eq!(portable, baseline);
++            let mirror: RawFileSystemSandboxPolicy =
++                portable.file_system_sandbox_policy().try_into().unwrap();
++            let expected_mirror: RawFileSystemSandboxPolicy = fs.clone().try_into().unwrap();
++            assert_eq!(mirror, expected_mirror);
++            let saved = selection(saved);
++            let receipt = sdk_executor_policy_receipt(&saved, false, None);
++            assert_eq!(receipt, expected);
++            assert_eq!(serde_json::to_vec(&receipt).unwrap(), expected_bytes);
++        }
++        // A denial already present at the same path belongs to the caller.
++        let same_path = PermissionProfileSnapshot::legacy_with_sdk_private_deny(
++            snapshot.permission_profile().clone(),
++            Some(path("application-deny")),
++        );
++        assert_eq!(same_path.sdk_portable_permission_profile(), baseline);
++    }
++}
+diff --git a/codex-rs/protocol/src/permission_profile_snapshot.rs b/codex-rs/protocol/src/permission_profile_snapshot.rs
+index 34fe6fdb116e81225558fd6f2860d563879ddfc4..33c136dcbcea6ef651a0ca4b0c7b1211edae5c63 100644
+--- a/codex-rs/protocol/src/permission_profile_snapshot.rs
++++ b/codex-rs/protocol/src/permission_profile_snapshot.rs
+@@ -5,6 +5,9 @@ use codex_utils_path_uri::PathUri;
+ 
+ use crate::models::ActivePermissionProfile;
+ use crate::models::PermissionProfile;
++use crate::permissions::FileSystemAccessMode;
++use crate::permissions::FileSystemPath;
++use crate::permissions::FileSystemSandboxEntry;
+ 
+ /// A profile-declared root, separate from turn-scoped runtime workspace roots.
+ ///
+@@ -50,6 +53,7 @@ pub struct PermissionProfileSnapshot {
+     permission_profile: PermissionProfile,
+     active_permission_profile: Option<ActivePermissionProfile>,
+     profile_workspace_roots: Vec<ProfileWorkspaceRoot>,
++    sdk_private_deny: Option<FileSystemSandboxEntry>,
+ }
+ 
+ impl PermissionProfileSnapshot {
+@@ -62,6 +66,7 @@ impl PermissionProfileSnapshot {
+             permission_profile,
+             active_permission_profile: None,
+             profile_workspace_roots: Vec::new(),
++            sdk_private_deny: None,
+         }
+     }
+ 
+@@ -91,6 +96,7 @@ impl PermissionProfileSnapshot {
+             permission_profile,
+             active_permission_profile: Some(active_permission_profile),
+             profile_workspace_roots,
++            sdk_private_deny: None,
+         }
+     }
+ 
+@@ -107,6 +113,43 @@ impl PermissionProfileSnapshot {
+         }
+     }
+ 
++    /// Add an SDK-owned host file exclusion to the live sandbox.
++    pub fn legacy_with_sdk_private_deny(profile: PermissionProfile, path: Option<PathUri>) -> Self {
++        let mut snapshot = Self::legacy(profile);
++        let Some(path) = path else {
++            return snapshot;
++        };
++        let entry =
++            FileSystemSandboxEntry::new(FileSystemPath::Path { path }, FileSystemAccessMode::Deny);
++        let mut fs = snapshot.permission_profile.file_system_sandbox_policy();
++        if !fs.entries.contains(&entry) {
++            fs.entries.push(entry.clone());
++            snapshot.permission_profile =
++                PermissionProfile::from_runtime_permissions_with_enforcement(
++                    snapshot.permission_profile.enforcement(),
++                    &fs,
++                    snapshot.permission_profile.network_sandbox_policy(),
++                );
++            snapshot.sdk_private_deny = Some(entry);
++        }
++        snapshot
++    }
++
++    /// Project the executor policy without the SDK-owned host file exclusion.
++    pub fn sdk_portable_permission_profile(&self) -> PermissionProfile {
++        let profile = &self.permission_profile;
++        let Some(entry) = &self.sdk_private_deny else {
++            return profile.clone();
++        };
++        let mut fs = profile.file_system_sandbox_policy();
++        fs.entries.retain(|candidate| candidate != entry);
++        PermissionProfile::from_runtime_permissions_with_enforcement(
++            profile.enforcement(),
++            &fs,
++            profile.network_sandbox_policy(),
++        )
++    }
++
+     /// Borrow the concrete permissions captured in this snapshot.
+     pub fn permission_profile(&self) -> &PermissionProfile {
+         &self.permission_profile

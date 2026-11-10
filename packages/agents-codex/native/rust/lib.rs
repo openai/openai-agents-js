@@ -325,7 +325,7 @@ struct EngineOwner {
     remote_drain:
         Option<tokio::sync::watch::Receiver<codex_exec_server::EnvironmentConnectionState>>,
     // Completion diagnostics survive a cancelled or timed-out remote drain.
-    close_diagnostic: Option<String>,
+    close_report: engine::EngineCloseReport,
 }
 
 impl Engine {
@@ -344,7 +344,7 @@ impl Engine {
             inner: Arc::new(std::sync::Mutex::new(EngineOwner {
                 live: Some(RuntimeOwned::new(state)),
                 remote_drain: None,
-                close_diagnostic: None,
+                close_report: engine::EngineCloseReport::default(),
             })),
             startup_warnings,
         }
@@ -408,6 +408,9 @@ impl Engine {
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let _permit = inner.operation(false).map_err(native_error)?;
+        if inner.manager.auth_manager().is_saved_chatgpt() {
+            return Err(native_error("Saved Codex login uses native HTTP transport"));
+        }
         let mut binding = inner.sentinel.write().expect("sentinel poisoned");
         if binding.is_some() || grant.is_empty() {
             return Err(native_error("Sentinel already bound or empty"));
@@ -679,27 +682,33 @@ impl Engine {
     pub async fn _close_report(&self) -> napi::Result<Option<String>> {
         self.close_owned().await
     }
+
+    #[napi(js_name = "_close_report_defer_saved_login")]
+    pub async fn _close_report_defer_saved_login(&self) -> napi::Result<Option<String>> {
+        Self::close_owner(Arc::clone(&self.inner), true).await
+    }
 }
 
 impl Engine {
     async fn close_owned(&self) -> napi::Result<Option<String>> {
-        Self::close_owner(Arc::clone(&self.inner)).await
+        Self::close_owner(Arc::clone(&self.inner), false).await
     }
 
     async fn close_owner(
         owner: Arc<std::sync::Mutex<EngineOwner>>,
+        defer_saved_login_refresh: bool,
     ) -> napi::Result<Option<String>> {
         (async move {
             let deadline = tokio::time::Instant::now() + engine::CLOSE_TIMEOUT;
             let current = owner.lock().map_err(native_error)?.live.as_ref().cloned();
             if let Some(inner) = current {
                 let _context_operation = inner.operation(true).map_err(native_error)?;
-                let diagnostic = inner.close_report().await.map_err(native_error)?;
+                let report = inner.close_report().await.map_err(native_error)?;
                 // Shutdown has completed; release retained native thread slots before draining.
                 inner.release_native_threads();
                 let mut state = owner.lock().map_err(native_error)?;
                 if state.live.is_some() {
-                    state.close_diagnostic = diagnostic;
+                    state.close_report = report;
                     state.remote_drain = inner
                         .manager
                         .environment_manager()
@@ -719,7 +728,11 @@ impl Engine {
                 .map_err(|_| native_error("Codex environment shutdown timed out"))?;
                 owner.lock().map_err(native_error)?.remote_drain.take();
             }
-            Ok(owner.lock().map_err(native_error)?.close_diagnostic.clone())
+            Ok(owner
+                .lock()
+                .map_err(native_error)?
+                .close_report
+                .message(defer_saved_login_refresh))
         })
         .await
     }
@@ -1080,6 +1093,10 @@ impl ContextChange {
                 source.service_config.model_provider_id.clone(),
             )
         });
+        let inherited_saved_login = source
+            .saved_login_file
+            .clone()
+            .map(|file| (source.manager.auth_manager(), file));
         let mut state = engine::EngineState::new_owned_with_store(
             serde_json::to_string(&config).map_err(native_error)?,
             runtime,
@@ -1089,6 +1106,7 @@ impl ContextChange {
             initial_models,
             None,
             plan,
+            inherited_saved_login,
         )
         .await
         .map_err(native_error)?;
@@ -1258,7 +1276,8 @@ impl ContextChange {
         let _change = self.change.lock().await;
         let candidate = self.candidate.lock().map_err(native_error)?.clone();
         let diagnostic = if let Some(candidate) = candidate {
-            let diagnostic = Engine::close_owner(candidate).await?;
+            // The source retains the shared saved login and its refresh outcome.
+            let diagnostic = Engine::close_owner(candidate, true).await?;
             self.candidate.lock().map_err(native_error)?.take();
             diagnostic
         } else {
@@ -4386,6 +4405,7 @@ pub async fn create_store_engine(
         Default::default(),
         Some(store),
         None,
+        None,
     )
     .await
     .map_err(native_error)?;
@@ -4532,6 +4552,7 @@ pub async fn _create_plan_engine(
             )
         }),
         Some((authorization, plan_provider)),
+        None,
     )
     .await
     .map_err(native_error)?;
