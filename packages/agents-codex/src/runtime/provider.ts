@@ -283,8 +283,7 @@ export class NativeProvider {
       apiKey.length > 0 &&
       (options.modelBackend !== undefined ||
         options.apiKey === undefined ||
-        apiKey === options.apiKey) &&
-      options.responseMode !== 'buffered';
+        apiKey === options.apiKey);
     const websocketsAllowed =
       !nativeChatGPTInference &&
       options.modelBackend === undefined &&
