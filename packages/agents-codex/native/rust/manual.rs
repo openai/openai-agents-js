@@ -1783,20 +1783,19 @@ impl PythonTools {
             if history.outputs.contains_key(&call.call_id) {
                 continue;
             }
-            ensure!(
-                !call.custom,
-                "native custom calls cannot acquire manual grants"
-            );
             let name =
                 ToolName::new(call.namespace.clone(), call.name.clone()).with_default_namespace();
             let slot = generation
                 .entries
                 .iter()
-                .position(|entry| entry.name.clone().with_default_namespace() == name)
-                .context("manual tool absent from captured source catalog")?;
-            if generation.terminal_slots.contains(&slot)
+                .position(|entry| entry.name.clone().with_default_namespace() == name);
+            if slot.is_some_and(|slot| generation.terminal_slots.contains(&slot))
                 && frame.accepted_replies.contains_key(&call.call_id)
             {
+                ensure!(
+                    !call.custom,
+                    "native custom calls cannot acquire manual grants"
+                );
                 ensure!(
                     frame
                         .tool_outcomes
@@ -1805,9 +1804,17 @@ impl PythonTools {
                     "Held terminal reply has no current response facts"
                 );
                 held_ids.insert(call.call_id.clone());
-            } else {
+            } else if slot.is_some_and(|slot| {
+                generation.manual_slots.as_ref().map_or_else(
+                    || manual.slots.contains(&name),
+                    |slots| slots.contains(&slot),
+                )
+            }) {
                 self.slot_for_catalog(&manual, call, generation)?;
             }
+            // Captured nonterminal automatic siblings may be absent from the
+            // strict history prefix. Their accepted receipts are validated below;
+            // they neither acquire manual grants nor become held terminal results.
         }
         ensure!(
             held_ids.is_empty() || frame.tool_outcomes.is_some(),
