@@ -113,7 +113,6 @@ it('compares stock Darwin PEM verification through the same CONNECT listener', a
               'exec_command',
               {
                 cmd: command,
-                login: false,
                 yield_time_ms: 20_000,
                 max_output_tokens: 12_000,
               },
