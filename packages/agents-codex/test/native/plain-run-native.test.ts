@@ -131,6 +131,46 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'plain Agent.run',
   () => {
+    it('preserves buffered response mode for a plain public run', async () => {
+      const server = new ModelServer([
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: 'plain-buffered-response',
+            object: 'response',
+            status: 'completed',
+            model: 'gpt-5',
+            output: [message('buffered answer')],
+            usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 },
+          }),
+        },
+      ]);
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-plain-buffered-run',
+        supportsWebsockets: false,
+        responseMode: 'buffered',
+        requestMaxRetries: 0,
+        streamMaxRetries: 0,
+      });
+      const agent = new Agent({
+        instructions: 'Answer the request.',
+        model: 'gpt-5',
+        modelSettings: { reasoningEffort: 'low' },
+        provider,
+      });
+
+      expect((await agent.run('buffered input')).finalOutput).toBe(
+        'buffered answer',
+      );
+      expect(server.requests).toHaveLength(1);
+      expect(server.requests[0]).toHaveProperty('stream', false);
+      expect(server.requests[0]).not.toHaveProperty('stream_options');
+    });
+
     it('preserves the public result and ordered observations without opening a native thread', async () => {
       const server = new ModelServer([response(1), response(2)]);
       await using provider = await providerFor(server);

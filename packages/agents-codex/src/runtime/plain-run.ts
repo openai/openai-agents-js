@@ -216,6 +216,7 @@ export async function tryOpenPlainRun(
 ): Promise<PreparedPlainRun | undefined> {
   const settings = options.initialModelSettings;
   if (
+    setup.threadOptions._buffered_responses === true ||
     lease.chatGPT ||
     lease.websocketsAllowed ||
     !lease.apiKey ||
