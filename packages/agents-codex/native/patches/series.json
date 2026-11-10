@@ -501,6 +501,14 @@
       "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
     },
     {
+      "path": "sdk-linux-protected-metadata-mount-race.patch",
+      "sha256": "22137e6318edf060270e1fd558005d6fadb4c04297bdad1ba46dad141ddc2b7b"
+    },
+    {
+      "path": "sdk-linux-protected-metadata-bootstrap.patch",
+      "sha256": "76ced00372b6b83f300b3ddc798517b632c92eee5d4e78445d76bb7206bf1130"
+    },
+    {
       "path": "0171-original-history-catalog.patch",
       "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
     },
@@ -549,17 +557,33 @@
       "sha256": "3ad6dcf410800d6314a9930ffac558a57eba21c8cfbb6ea6294706df4196c5db"
     },
     {
+      "path": "0175-portable-realtime-agent-control.patch",
+      "sha256": "65b82aacfe62c2c33d9123ce5db61994efd2e3fe5b239a884095d295637cc9fe"
+    },
+    {
+      "path": "sdk-realtime-provider-events-and-scopes.patch",
+      "sha256": "75499f3213bb235e1724d95d8adbe53b19e192b0bd01b42afa19023dd6a8630b"
+    },
+    {
+      "path": "sdk-realtime-tool-context-history.patch",
+      "sha256": "93617a4dd22929b78760ccbdac152b6af3ffd143acb1cfb755c1bb3606bfe7ca"
+    },
+    {
+      "path": "0176-portable-realtime-response-scopes.patch",
+      "sha256": "edb99414fa1228281a69a3125e8c1e2ce67c1a8c42d235e05c3739fba4e519d0"
+    },
+    {
+      "path": "sdk-realtime-application-update-rejections.patch",
+      "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
+    },
+    {
       "path": "native-model-input-modalities.patch",
       "sha256": "5bece16f3599d550006f178f1e903f6b9bfaab18395daad81235ea0fd5587946"
     },
     {
       "path": "native-box-model-deadline-futures.patch",
       "sha256": "68f27e496efe84385243d8067e9b45aae4948222d810af32cb2399716f15a717"
-    },
-    {
-      "path": "portable-realtime-session-parity.patch",
-      "sha256": "0ca59e0e8f4a8176cf1f62e987fc901ee68526f9c54b2b8d897a68774e2e253f"
     }
   ],
-  "result_tree": "d8863476a6fac054f97f33cc69d519427fe52856"
+  "result_tree": "6f4e041d0b26ff3737339208649d709013db5d4e"
 }

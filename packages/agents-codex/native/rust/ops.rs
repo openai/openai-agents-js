@@ -1298,7 +1298,9 @@ params!(RealtimeSdkStart {
     #[serde(default)]
     disabled_tool_names: Option<Vec<String>>,
     #[serde(default = "realtime_auto_response_default")]
-    hosted_mcp_auto_response: bool
+    hosted_mcp_auto_response: bool,
+    #[serde(default)]
+    include_raw_provider_events: bool
 });
 params!(RealtimeSdkConfig {
     params: RealtimeStart,
@@ -1331,6 +1333,11 @@ pub(crate) async fn prepare_realtime(
                 expected_selection_id: p.expected_selection_id,
                 disabled_tool_names: p.disabled_tool_names,
                 hosted_mcp_auto_response: p.hosted_mcp_auto_response,
+                provider_event_observation: if p.include_raw_provider_events {
+                    codex_protocol::protocol::RealtimeProviderEventObservation::All
+                } else {
+                    codex_protocol::protocol::RealtimeProviderEventObservation::History
+                },
                 reply,
             },
             init,
@@ -1624,6 +1631,11 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
                 expected_selection_id: p.expected_selection_id,
                 disabled_tool_names: p.disabled_tool_names,
                 hosted_mcp_auto_response: p.hosted_mcp_auto_response,
+                provider_event_observation: if p.include_raw_provider_events {
+                    codex_protocol::protocol::RealtimeProviderEventObservation::All
+                } else {
+                    codex_protocol::protocol::RealtimeProviderEventObservation::History
+                },
                 reply,
             })
             .await?;
@@ -1755,7 +1767,25 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
         }
         _ => bail!("Unknown private Realtime operation"),
     };
+    let response_scoped = matches!(
+        &operation,
+        Op::RealtimeConversationUpdateSdk { profile: Some(profile), .. }
+            if profile.response_id.is_some()
+    );
     thread.submit(operation).await?;
-    result.await??;
+    let outcome = result.await?;
+    if response_scoped
+        && matches!(
+            &outcome,
+            Err(error)
+                if matches!(
+                    error.details(),
+                    codex_protocol::error::CodexErrorDetails::TurnAborted
+                )
+        )
+    {
+        return Ok(serde_json::json!({"applied": false}));
+    }
+    outcome?;
     Ok(Value::Null)
 }

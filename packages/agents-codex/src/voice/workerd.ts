@@ -1,8 +1,13 @@
+export type { PortableVoiceApiKey } from './portable-credentials';
 import {
-  NativeVoiceControl,
+  resolvePortableVoiceApiKey,
+  type PortableVoiceApiKey,
+} from './portable-credentials';
+import {
+  type PortableVoiceControl,
   PortableVoiceSession,
   type PortableVoiceOptions,
-} from './portable';
+} from './portable-session';
 
 export interface VoiceWebSocketOptions {
   /** Application-hosted native voice relay, using ws or wss. */
@@ -67,20 +72,25 @@ export async function openVoiceWebSocket({
 
 /** Provider-connected Worker control. The Rust module executes inside the Worker. */
 export async function connectPortableVoiceWorker(options: {
-  control: NativeVoiceControl;
-  apiKey: string;
+  control: PortableVoiceControl;
+  apiKey: PortableVoiceApiKey;
   agent: PortableVoiceOptions;
   url?: string;
   signal?: AbortSignal;
 }): Promise<PortableVoiceSession> {
-  options.signal?.throwIfAborted();
+  const apiKey = await resolvePortableVoiceApiKey(
+    options.apiKey,
+    options.signal,
+  );
+  if (options.signal?.aborted)
+    throw options.signal.reason ?? new Error('Voice connection aborted.');
   const endpoint = new URL(options.url ?? 'https://api.openai.com/v1/realtime');
   if (endpoint.protocol !== 'https:')
     throw new TypeError('Provider WebSocket URL must use https.');
   endpoint.searchParams.set('model', options.agent.model);
   const response = await fetch(endpoint, {
     headers: {
-      Authorization: `Bearer ${options.apiKey}`,
+      Authorization: `Bearer ${apiKey}`,
       Upgrade: 'websocket',
     },
     signal: options.signal,

@@ -258,6 +258,16 @@
         "types": "./dist/mcp-apps/index.d.ts",
         "default": "./dist/mcp-apps/index.js"
       }
+    },
+    "./voice/control.hermes": {
+      "import": {
+        "types": "./dist/voice/control.hermes.d.mts",
+        "default": "./native/codex-realtime-control.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/control.hermes.d.ts",
+        "default": "./native/codex-realtime-control.cjs"
+      }
     }
   },
   "scripts": {
@@ -290,7 +300,9 @@
     "dist",
     "CLASSIC.md",
     "native/codex-realtime-control.wasm",
-    "native/portable-build-receipt.json"
+    "native/portable-build-receipt.json",
+    "native/codex-realtime-control.mjs",
+    "native/codex-realtime-control.cjs"
   ],
   "typesVersions": {
     "*": {
@@ -371,6 +383,9 @@
       ],
       "mcp-apps": [
         "dist/mcp-apps/index.d.ts"
+      ],
+      "voice/control.hermes": [
+        "dist/voice/control.hermes.d.ts"
       ]
     }
   }

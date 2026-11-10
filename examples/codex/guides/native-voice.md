@@ -31,6 +31,7 @@ If opening voice fails and its cleanup also fails, the next `session.realtime(..
 | SIP | Pass `transport: {type: 'sip', callId}` for an already accepted provider call. Closing this owner detaches its sideband; your application still owns hanging up the existing call. |
 | Twilio Media Streams | Use the [Twilio bridge](realtime-twilio.md). The application authenticates the incoming socket; the bridge owns media delivery and playback marks. |
 | Application transport or model | Set `adapter` to a `NativeRealtimeAdapter`. Do not combine it with a built-in call transport. |
+| Direct browser, React Native, or Worker | Use a [portable Realtime session](../../../packages/agents-codex/PORTABLE_CONTROL.md) to run the controller and tool callbacks on the client or Worker. |
 
 ### Send and commit audio
 
@@ -124,15 +125,27 @@ A raw `session.update` accepts sparse provider settings. Truncation requires a k
 
 Use `session.update.session.tools` to replace the provider tool list, including hosted MCP declarations. Send `[]` to clear the list or omit `tools` to keep it. Reuse the exact advertised declarations for native functions. Hosted MCP calls follow the same approval flow as typed configuration.
 
+Set `response.tools` and `response.tool_choice` to scope tools to one response. Select a hosted server with `{type: 'mcp', server_label: 'docs'}`, adding `name` for a single tool. Create multiple detached responses using `conversation: 'none'`. Their lifecycle events have `outOfBand: true`. Cancel a detached response with `{type: 'response.cancel', response_id: id}`. Use `interrupt()` for the linked response and its playback.
+
 For a linked application function declared in the raw tool list, wait for a `conversation_item` event with `kind: 'function_call'` and `status: 'done'`. Use `retrieveConversationItem(event.itemId)` to read its name, arguments, and `call_id`. After handling a function you own, send a `conversation.item.create` event with a `function_call_output` item, a fresh `id`, the same `call_id`, and the string `output`. Send `response.create` when the response's tool outputs have settled.
 
 For message creation, use the supported role-specific content below. Set `previous_item_id` to a known provider item or `'root'` to position the item, or omit it to append. You can also import a completed historical `function_call` followed by one `function_call_output` with its `call_id`. These rows serve as context. To answer a pending hosted MCP approval, send an `mcp_approval_response` with the provider's issued `approval_request_id` and a Boolean `approve` value.
 
 These sends are controls, not a replacement for consuming `voice.events()`. A raw event does not add a second event reader. Do not await `sendEvent()` from this owner's adapter callbacks: retrieval and item edits can wait on that same transport. After an uncertain provider failure, inspect the observed provider history before retrying a write.
 
+### Observe provider events and local history
+
+Pass `includeRawProviderEvents: true` when opening `session.realtime()`. The `raw_provider_event` event contains decoded provider JSON before its typed projection, including events that have no typed projection. A recoverable request rejection emits `provider_request_error` with the provider code and exact `eventId`. Keep consuming events to observe later responses.
+
+Use `voice.on('event', listener)` or subscribe to a specific event type. Call the returned function to remove the listener. Use `voice.events()` to consume the media stream and any startup events queued before the listener was registered.
+
+Read `voice.providerHistory()` for a local snapshot of observed provider items, including after close. Set `historyStoreAudio: true` when connecting to retain received audio in the bounded snapshot. Use `retrieveConversationHistory()` while connected to read full provider items.
+
+In a native Realtime tool callback, `ToolCallContext.history` contains the conversation as of that exact call. `ToolCallContext.context` holds the original application context.
+
 ### Delete a provider conversation item
 
-`conversation_item` events report provider item IDs and their `added`/`done` status. Pass one of those IDs to `await voice.deleteConversationItem(providerItemId)`. For an application-known ID from before attachment, Core first retrieves the item and requires a completed user, assistant, or system message. Core checks dependencies and waits for the exact provider acknowledgement and durable audit append before the call completes. A `conversation_item_deleted` event reports that receipt.
+`conversation_item` events report provider item IDs and their `added`/`done` status. Pass one of those IDs to `await voice.deleteConversationItem(providerItemId)`. For an application-known ID from before attachment, Core retrieves the item and checks its identity against current responses, calls, and approvals. This supports completed external messages, tool items, and approval records. Core waits for the exact provider acknowledgement and durable audit append before the call completes. A `conversation_item_deleted` event reports that receipt.
 
 Deletion removes the item from the provider conversation; canonical history retains prior entries and adds a `provider_item_deleted` marker with its target in `providerItemId`. Canonical history IDs are separate from provider item IDs.
 
@@ -168,7 +181,7 @@ Validation failures and interruptions caused by concurrent input or responses le
 
 ### Connect browser and SIP calls
 
-Native execution runs on the server. Browser code can import `NativeVoiceWebRTC` from `@openai/agents/voice/browser`. Its `connect({exchangeSdp})` callback sends the offer to your authenticated server and returns the server's answer. The helper owns browser media only; its data-channel observations cannot execute native tools or approve work. Keep server credentials out of the browser. Close the server owner when the application call ends; closing browser media alone does not replace server cleanup.
+For a Node-hosted Session, import `NativeVoiceWebRTC` from `@openai/agents/voice/browser`. Its `connect({exchangeSdp})` callback sends the offer to your authenticated server and returns the server's answer. The helper handles browser media. Tool execution and approvals belong to the server Session. Keep server credentials out of the browser and close the server owner when the call ends. For direct execution in the browser, use the [portable Realtime session](../../../packages/agents-codex/PORTABLE_CONTROL.md).
 
 The [React Native helper](../react-native-voice.ts) has been using the application's `react-native-webrtc` module and releasing its acquired microphone stream on close or failure. Applications have been owning microphone permission, speaker routing, audio-session activation, and server cleanup; the SDK media class has been leaving supplied streams application-owned.
 
@@ -252,7 +265,7 @@ For an already accepted SIP call, use the same server lifetime and event consume
 The matching [source build](building.md) has been offering two routes from `@openai/agents/voice/workerd`:
 
 - `openVoiceWebSocket()` has been opening a relay socket to an application server, with that server retaining native voice control.
-- `connectPortableVoiceWorker()` has been opening the provider WebSocket directly, with a Rust Wasm controller running inside the Worker. The [portable control guide](../../../packages/agents-codex/PORTABLE_CONTROL.md) has been supplying its separate build, credentials, setup, and cleanup requirements. Its `PortableVoiceSession` interface has been remaining separate from native Agent and Session configuration.
+- `connectPortableVoiceWorker()` has been opening the provider WebSocket directly. The Rust controller and application tool callbacks have been running inside the Worker. The [portable control guide](../../../packages/agents-codex/PORTABLE_CONTROL.md) has been covering the platform entry points, agent configuration, credentials, and cleanup.
 
 The retained `@openai/agents/realtime` entrypoint has been continuing to expose the Classic runtime.
 
@@ -303,6 +316,14 @@ Switching to another Agent without the original function identity makes delegati
 Declare reachable `Agent.handoffs` before opening the Session. The graph keeps original Agent identities. `await session.getActiveAgent()` reads the native active Agent, and idle `Session.update({agent})` activates a captured Agent. Activation applies that Agent's declaration defaults.
 
 An idle tool update changes the active defaults; an explicit per-operation tool selection remains a ceiling across later handoffs. Compatible output formats and shared Session runtime grants are required across the graph. Restore binds fresh caller-supplied Agent and tool objects, not saved callback implementations.
+
+Configure an Agent's voice defaults with `realtime`. Its `instructions` and `toolEnabled` callbacks receive the application context. Set `prompt` and `outputGuardrails` on the same configuration. Use `realtimeHandoff(target, { name, description, parameters, onHandoff, isEnabled })` in `Agent.handoffs` for a named Realtime handoff. A structured Zod schema validates the arguments before the callback.
+
+Call `await voice.updateAgent(nextAgent)` on an open connection to apply the replacement Agent's instructions and tools. The call resolves after the provider acknowledges the settings. Issued callbacks retain their source Agent and the attached Session retains its own active Agent.
+
+### Match Classic session defaults
+
+Pass `model: 'gpt-realtime-2.1'` with `settings: { turnDetection: { type: 'semantic_vad' }, noiseReduction: null }` to select Classic's default Realtime model, VAD, and noise reduction. Set `timeoutBehavior: 'error_as_result'` on a tool to return a timeout as tool output. Native tool batches use the completed response to bind execution to the source Agent.
 
 ### Approve hosted MCP calls
 

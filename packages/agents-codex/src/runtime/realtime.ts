@@ -10,12 +10,21 @@ import {
   type NativeRealtimeUsage,
 } from './realtime-usage';
 import {
+  captureRealtimeGuardrails,
   NativeRealtimeGuardrails,
   type NativeRealtimeOutputGuardrail,
   type NativeRealtimeGuardrailEvent,
   type NativeRealtimeGuardrailWork,
 } from './realtime-guardrails';
 import type { FunctionTool } from './tools';
+import {
+  VoiceConversationHistory,
+  type VoiceHistoryItem,
+} from '../voice/conversation-history';
+import {
+  VoiceEventObservers,
+  detachVoiceObservation,
+} from '../voice/event-observers';
 import {
   NativeRealtimeAdapterDriver,
   type NativeRealtimeAdapter,
@@ -62,8 +71,9 @@ import {
   type NativeRealtimeSessionUpdate,
 } from './realtime-settings';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomUUID } from 'node:crypto';
-import type { Session as PublicSession } from './public-agent';
+import { createHash, randomUUID } from 'node:crypto';
+import type { Agent, Session as PublicSession } from './public-agent';
+import { resolveRealtimeAgentConfiguration } from './realtime-agent-config';
 import { TurnAborted, type Turn, type Session } from './session';
 import type { NativeEvent } from './events';
 import { copyJsonValue, type JsonObject, type JsonValue } from './binding';
@@ -74,6 +84,12 @@ import {
 
 /** Provider declarations can omit a string index signature; runtime validates JSON. */
 type RealtimeProviderObject = JsonObject | { readonly type: string };
+
+function realtimeProfileKey(value: unknown): string {
+  if (value == null || typeof value !== 'object') return '';
+  const receipt = value as Record<string, unknown>;
+  return JSON.stringify([receipt.profile_id, String(receipt.epoch)]);
+}
 
 export interface NativeRealtimeOptions {
   model?: string;
@@ -107,6 +123,10 @@ export interface NativeRealtimeOptions {
   guardrailTextThreshold?: number | null;
   /** Hosted MCP tool results request a follow-up response by default. */
   automaticallyTriggerResponseForMcpToolCalls?: boolean;
+  /** Observe provider JSON frames before their native projections. */
+  includeRawProviderEvents?: boolean;
+  /** Retain up to the first 8 MiB of output audio in local provider history. */
+  historyStoreAudio?: boolean;
 }
 /** Session configuration for accepting an inbound SIP call before attaching sideband media. */
 export type NativeRealtimeSipConfigOptions = Pick<
@@ -141,6 +161,9 @@ export function realtimePrepareParams(
     function_tools: functionTools,
     hosted_mcp_auto_response:
       options.automaticallyTriggerResponseForMcpToolCalls ?? true,
+    ...(options.includeRawProviderEvents
+      ? { include_raw_provider_events: true }
+      : {}),
     expected_selection_id: expectedSelectionId,
     settings,
     params: {
@@ -199,6 +222,12 @@ export interface NativeRealtimeHostedMcpToolDefinition {
 export type NativeRealtimeEvent =
   | NativeRealtimeGuardrailEvent
   | NativeRealtimeHostedMcpApprovalRequest
+  | { readonly type: 'raw_provider_event'; readonly event: JsonObject }
+  | {
+      readonly type: 'provider_request_error';
+      readonly code?: string;
+      readonly eventId?: string;
+    }
   | {
       readonly type: 'hosted_mcp_tools_listed';
       readonly itemId: string;
@@ -226,6 +255,7 @@ export type NativeRealtimeEvent =
       format?: NativeRealtimeAudioFormat;
       contentIndex?: number;
       outputIndex?: number;
+      outOfBand?: true;
     }
   | {
       type: 'playback_interrupted';
@@ -244,6 +274,7 @@ export type NativeRealtimeEvent =
       contentIndex?: number;
       outputIndex?: number;
       outputKind?: 'text' | 'audio_transcript';
+      outOfBand?: true;
     }
   | {
       type: 'lifecycle';
@@ -256,8 +287,9 @@ export type NativeRealtimeEvent =
       type: 'response';
       status: 'created' | 'done' | 'cancelled';
       responseId?: string;
+      outOfBand?: true;
       usage?: NativeRealtimeUsage;
-      /** Detached connection total at this event, including this accepted response. */
+      /** Connection total at this event, including this accepted response. */
       cumulativeUsage?: NativeRealtimeUsage;
     }
   | {
@@ -349,6 +381,8 @@ const INPUT_QUEUE_COUNT_LIMIT = 128;
 const INPUT_QUEUE_BYTES_LIMIT = 8 * 1024 * 1024;
 const AUDIO_LIMIT = 2 * 1024 * 1024;
 const HISTORY_LIMIT = 8 * 1024 * 1024;
+// One full snapshot can contain provider rows and base64-encoded retained audio.
+const CALL_HISTORY_LIMIT = 3 * HISTORY_LIMIT;
 const HISTORY_TRANSCRIPT_WORK_LIMIT = 256 * 1024 * 1024;
 
 function historyAllocationBytes(item: NativeRealtimeHistoryItem): number {
@@ -501,12 +535,21 @@ class NativeRealtimeOwner {
   private readonly seen = new Set<string>();
   private readonly delegations = new Map<string, Delegation>();
   private readonly canonical = new Map<string, NativeRealtimeHistoryItem>();
+  private readonly conversation: VoiceConversationHistory;
+  private readonly observers = new VoiceEventObservers<NativeRealtimeEvent>(
+    (event) =>
+      event.type === 'hosted_mcp_approval_requested'
+        ? event
+        : detachVoiceObservation(event),
+  );
   private historyBytes = 0;
   private historyTranscriptWork = 0;
   private readonly functions = new Map<
     string,
     {
       name: string;
+      itemId?: string;
+      history: Buffer;
       sourceProfile?: unknown;
       error?: Error;
       responseId?: string;
@@ -519,6 +562,7 @@ class NativeRealtimeOwner {
   private readonly toolsRootMonitors = new Set<ToolsRoot>();
   private readonly toolsGraphClosed = Promise.withResolvers<void>();
   private functionBytes = 0;
+  private functionHistoryBytes = 0;
   private readonly hostedApprovals = new WeakMap<
     NativeRealtimeHostedMcpApprovalRequest,
     string
@@ -529,6 +573,14 @@ class NativeRealtimeOwner {
     { responseId?: string; inFlight: boolean; retired: boolean }
   >();
   private readonly profileUpdates = new Set<Promise<void>>();
+  private profileSource?: JsonObject | null;
+  private voiceGraphAdmitted = false;
+  private retargetTail: Promise<void> = Promise.resolve();
+  private settingsTail: Promise<void> = Promise.resolve();
+  private readonly profileGuardrails = new Map<
+    string,
+    readonly NativeRealtimeOutputGuardrail[]
+  >();
   private readonly retiredResponses = new Set<string>();
   private changed = Promise.withResolvers<void>();
   private preparation?: Promise<unknown>;
@@ -545,6 +597,7 @@ class NativeRealtimeOwner {
   private startupFailed = false;
   private sessionClosing = false;
   private consuming = false;
+  private pullAcquired = false;
   private queuedBytes = 0;
   private inputTail: Promise<void> = Promise.resolve();
   private inputCount = 0;
@@ -565,6 +618,7 @@ class NativeRealtimeOwner {
     return this.admittedAnswerSdp;
   }
   private readonly initialSettings: JsonObject | null;
+  private readonly profileOverrides: JsonObject = {};
   private closeNative = () => this.call('close');
 
   /** @internal Session installs the route before starting admission. */
@@ -577,6 +631,14 @@ class NativeRealtimeOwner {
     private readonly adapterBridge?: NativeRealtimeAdapterBridge,
   ) {
     this.options = { ...options };
+    if (
+      options.historyStoreAudio !== undefined &&
+      typeof options.historyStoreAudio !== 'boolean'
+    )
+      throw new TypeError('historyStoreAudio must be a boolean');
+    this.conversation = new VoiceConversationHistory({
+      storeAudio: options.historyStoreAudio,
+    });
     this.credentialSource = options.apiKey;
     this.adapterSource = options.adapter;
     if (options.adapter !== undefined) {
@@ -605,6 +667,11 @@ class NativeRealtimeOwner {
       typeof options.automaticallyTriggerResponseForMcpToolCalls !== 'boolean'
     )
       throw new TypeError('Hosted MCP automatic response must be a boolean');
+    if (
+      options.includeRawProviderEvents !== undefined &&
+      typeof options.includeRawProviderEvents !== 'boolean'
+    )
+      throw new TypeError('includeRawProviderEvents must be a boolean');
     this.selectedTools =
       options.tools === undefined
         ? undefined
@@ -642,9 +709,16 @@ class NativeRealtimeOwner {
     this.initialSettings = options.settings
       ? serializeRealtimeSettings(options.settings)
       : null;
+    const hasConnectionGuardrails = options.outputGuardrails !== undefined;
     this.guardrails = new NativeRealtimeGuardrails({
       guardrails: options.outputGuardrails ?? [],
+      guardrailsFor: (receipt) =>
+        !hasConnectionGuardrails
+          ? this.profileGuardrails.get(realtimeProfileKey(receipt))
+          : undefined,
       threshold: options.guardrailTextThreshold,
+      fingerprint: (value) =>
+        createHash('sha256').update(value, 'utf16le').digest('hex'),
       source: (receipt) => this.session._realtimeGuardrailSource(receipt),
       invoke: (callback) =>
         this.#context(() => this.session._runVoiceCallback(callback)),
@@ -652,9 +726,9 @@ class NativeRealtimeOwner {
         this.interruptOwned(
           input.responseId,
           {
-            feedback,
+            feedback: input.outOfBand ? undefined : feedback,
             playback:
-              input.contentIndex === undefined
+              input.outOfBand || input.contentIndex === undefined
                 ? undefined
                 : this.playback.position(
                     input.responseId,
@@ -770,6 +844,56 @@ class NativeRealtimeOwner {
       [...this.canonical.values()].map((item) => Object.freeze({ ...item })),
     );
   }
+  /** Detached local provider view; retained observations remain readable after close. */
+  providerHistory(): readonly VoiceHistoryItem[] {
+    return this.conversation.snapshot();
+  }
+  /** @internal Record native-selected linked provider observations without writes. */
+  _observeProviderFrame(value: unknown): void {
+    this.conversation.observe(value);
+  }
+  /** @internal The source history captured when this exact native call was issued. */
+  _realtimeToolContext<Context>(
+    source: unknown,
+    context: Context,
+  ): {
+    context: Context;
+    history?: readonly VoiceHistoryItem[];
+  } {
+    if (!source || typeof source !== 'object') return { context };
+    const identity = source as Record<string, unknown>;
+    if (
+      identity.generation !== this.#generation ||
+      typeof identity.provider_call_id !== 'string'
+    )
+      return { context };
+    const call = this.functions.get(identity.provider_call_id);
+    if (
+      !call ||
+      call.retired ||
+      call.itemId !== (identity.provider_item_id ?? undefined) ||
+      call.responseId !== (identity.provider_response_id ?? undefined)
+    )
+      return { context };
+    const history = JSON.parse(
+      call.history.toString('utf8'),
+    ) as readonly VoiceHistoryItem[];
+    return { context, history };
+  }
+  /** Passive subscriptions do not consume the media iterator or grant execution authority. */
+  on<Type extends NativeRealtimeEvent['type'] | 'event'>(
+    type: Type,
+    listener: (
+      event: Type extends 'event'
+        ? NativeRealtimeEvent
+        : Extract<NativeRealtimeEvent, { type: Type }>,
+    ) => unknown,
+  ): () => void {
+    return this.observers.on(
+      type,
+      listener as (event: NativeRealtimeEvent) => unknown,
+    );
+  }
   private call(operation: Command, params: JsonObject = {}): Promise<unknown> {
     return this.nativeCall(`realtime_conversation_${operation}_sdk`, {
       generation: this.#generation,
@@ -788,30 +912,8 @@ class NativeRealtimeOwner {
     };
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      const start = async (
-        functionTools: JsonObject[] | null,
-        expectedSelectionId: string | null = null,
-      ) => {
+      const start = async (prepareParams: JsonObject) => {
         this.checkLive();
-        const policyPreparation = resolveRealtimePolicy(
-          this.session,
-          this.options,
-          this.startupAbort.signal,
-          () => this.checkLive(),
-          this.usage,
-        );
-        this.preparation = policyPreparation;
-        const policy = await policyPreparation;
-        this.checkLive();
-        const prepareParams = realtimePrepareParams(
-          { ...this.options, instructions: policy.instructions },
-          this.transport,
-          this.initialSettings,
-          functionTools,
-          policy.selectionId ?? expectedSelectionId,
-        );
-        if (policy.disabledToolNames !== undefined)
-          prepareParams.disabled_tool_names = policy.disabledToolNames;
         let nativePreparation: Promise<unknown>;
         if (this.adapterSource) {
           if (!this.adapterBridge)
@@ -867,18 +969,79 @@ class NativeRealtimeOwner {
         this.selectedTools === undefined
           ? this.session._prepareRealtimeMcp()
           : Promise.resolve();
-      const preparation = mcpPreparation.then(() => {
+      const preparation = mcpPreparation.then(async () => {
         signal?.throwIfAborted();
         this.checkLive();
-        return this.selectedTools === undefined
-          ? start(null)
-          : this.session
-              ._realtimeFunctionTools(this.selectedTools)
-              .then((tools) => {
-                signal?.throwIfAborted();
-                this.checkLive();
-                return start(tools.tools, tools.selectionId);
+        const hasConfig = this.session._hasRealtimeAgentConfiguration?.();
+        const raw =
+          hasConfig ||
+          (this.selectedTools !== undefined &&
+            (typeof this.options.instructions === 'function' ||
+              this.options.isToolEnabled !== undefined))
+            ? await this.session._realtimeSourceSnapshot()
+            : undefined;
+        const policyPreparation = this.#context(() =>
+          resolveRealtimePolicy(
+            this.session,
+            this.options,
+            this.startupAbort.signal,
+            () => this.checkLive(),
+            this.usage,
+            raw,
+          ),
+        );
+        this.preparation = policyPreparation;
+        const policy = await policyPreparation;
+        this.checkLive();
+        const selection =
+          this.selectedTools === undefined
+            ? undefined
+            : await this.session._realtimeFunctionTools(this.selectedTools, {
+                snapshot: raw,
               });
+        let config:
+          | Awaited<ReturnType<typeof resolveRealtimeAgentConfiguration>>
+          | undefined;
+        if (hasConfig && raw) {
+          const exact = this.session._realtimeConfigurationSource(
+            raw.profile_receipt,
+          );
+          config = await this.#context(() =>
+            this.session._runVoiceCallback(() =>
+              resolveRealtimeAgentConfiguration({
+                ...exact,
+                selection: raw,
+                selectedTools: selection?.tools,
+                instructions: policy.instructions,
+                settings: this.initialSettings ?? {},
+                signal: this.startupAbort.signal,
+              }),
+            ),
+          );
+          this.checkLive();
+          this.profileSource =
+            raw.profile_receipt == null
+              ? null
+              : this.session._realtimeProfileTarget(raw.profile_receipt);
+          this.setProfileGuardrails(this.profileSource, config.guardrails);
+        }
+        signal?.throwIfAborted();
+        const prepareParams = realtimePrepareParams(
+          {
+            ...this.options,
+            instructions: config ? config.instructions : policy.instructions,
+          },
+          this.transport,
+          config?.settings ?? this.initialSettings,
+          config?.tools ?? selection?.tools ?? null,
+          config?.selectionId ??
+            policy.selectionId ??
+            selection?.selectionId ??
+            null,
+        );
+        if (policy.disabledToolNames !== undefined)
+          prepareParams.disabled_tool_names = policy.disabledToolNames;
+        return start(prepareParams);
       });
       await Promise.race([preparation, aborted.promise, this.terminal.promise]);
       await Promise.race([
@@ -924,8 +1087,196 @@ class NativeRealtimeOwner {
       this,
       'update its own Realtime session',
     );
-    await this.call('update', {
-      update: serializeRealtimeSessionUpdate(update),
+    const snapshot = serializeRealtimeSessionUpdate(update);
+    await this.publishSettings(async () => {
+      this.checkLive();
+      await this.call('update', { update: snapshot });
+      this.retainProfileOverrides(snapshot);
+    });
+  }
+
+  private retainProfileOverrides(update: JsonObject): void {
+    if (typeof update.instructions === 'string')
+      this.profileOverrides.instructions = update.instructions;
+    if (Object.hasOwn(update, 'prompt'))
+      this.profileOverrides.prompt = copyJsonValue(update.prompt);
+  }
+
+  private publishSettings<T>(publish: () => Promise<T>): Promise<T> {
+    const task = this.settingsTail.then(publish);
+    this.settingsTail = task.then(
+      () => {},
+      () => {},
+    );
+    return task;
+  }
+
+  /** Switch the voice agent on this connection after the provider accepts its configuration. */
+  async updateAgent(agent: Agent<any, any>): Promise<void> {
+    this.checkLive();
+    this.session._checkVoiceOperation('change the Realtime agent in');
+    return this.queueProfileUpdate(async () => {
+      this.checkLive();
+      const expected =
+        this.profileSource === undefined
+          ? await this.session._realtimeCurrentProfile()
+          : this.profileSource;
+      this.voiceGraphAdmitted = true;
+      const selection = await this.session._admitRealtimeGraph(
+        this.#generation,
+        agent,
+        expected,
+      );
+      const target = this.session._realtimeProfileTarget(
+        selection.profile_receipt,
+      );
+      await this.applyProfile(target, selection, undefined, true);
+    });
+  }
+
+  private queueProfileUpdate(update: () => Promise<void>): Promise<void> {
+    const task = this.retargetTail.then(update);
+    this.retargetTail = task.catch(() => {});
+    return task;
+  }
+
+  /** Return the Agent whose configuration the provider has accepted for this voice. */
+  async getActiveAgent(): Promise<Agent<any, any>> {
+    this.checkLive();
+    const source =
+      this.profileSource === undefined
+        ? await this.session._realtimeCurrentProfile()
+        : this.profileSource;
+    this.checkLive();
+    return this.session._realtimeConfigurationSource(source).agent;
+  }
+
+  private setProfileGuardrails(
+    target: unknown,
+    guardrails: readonly NativeRealtimeOutputGuardrail[],
+  ): void {
+    this.profileGuardrails.set(
+      realtimeProfileKey(target),
+      captureRealtimeGuardrails(guardrails),
+    );
+  }
+
+  private async applyProfile(
+    target: JsonObject | null,
+    snapshot:
+      Awaited<ReturnType<Session['_realtimeSourceSnapshot']>> | undefined,
+    bound?:
+      | { responseId: string; target: unknown; delegationId?: never }
+      | { delegationId: string; responseId?: never; target?: never },
+    resetPrompt = false,
+  ): Promise<void> {
+    await this.settingsTail;
+    this.checkLive();
+    const source =
+      snapshot || this.session._hasRealtimeAgentConfiguration(target)
+        ? this.session._realtimeConfigurationSource(target)
+        : undefined;
+    const raw =
+      snapshot ??
+      (source
+        ? await this.session._realtimeSourceSnapshot(this.#generation, target)
+        : undefined);
+    const selection =
+      this.selectedTools === undefined ||
+      (this.voiceGraphAdmitted &&
+        this.session._hasRetainedRealtimeProfile(target))
+        ? undefined
+        : await this.session._realtimeFunctionTools(this.selectedTools, {
+            allowMissing: true,
+            snapshot: raw,
+          });
+    const settings: JsonObject = Object.hasOwn(this.profileOverrides, 'prompt')
+      ? { prompt: this.profileOverrides.prompt }
+      : this.initialSettings?.prompt === undefined
+        ? {}
+        : { prompt: this.initialSettings.prompt };
+    const policy = await this.#context(() =>
+      resolveRealtimePolicy(
+        this.session,
+        {
+          instructions:
+            typeof this.profileOverrides.instructions === 'string'
+              ? this.profileOverrides.instructions
+              : typeof this.options.instructions === 'function'
+                ? this.options.instructions
+                : undefined,
+          isToolEnabled: this.options.isToolEnabled,
+        },
+        this.startupAbort.signal,
+        () => this.checkLive(),
+        this.usage,
+        raw,
+      ),
+    );
+    const config =
+      raw && source
+        ? await this.#context(() =>
+            this.session._runVoiceCallback(() =>
+              resolveRealtimeAgentConfiguration({
+                ...source,
+                selection: raw,
+                selectedTools: selection?.tools,
+                instructions:
+                  policy.instructions ??
+                  (typeof this.options.instructions === 'string'
+                    ? this.options.instructions
+                    : undefined),
+                settings,
+                signal: this.startupAbort.signal,
+              }),
+            ),
+          )
+        : undefined;
+    this.checkLive();
+    if (
+      bound?.responseId !== undefined &&
+      this.retiredResponses.has(bound.responseId)
+    )
+      return;
+    const update: JsonObject = { ...config?.settings };
+    const instructions = config ? config.instructions : policy.instructions;
+    if (instructions !== undefined) update.instructions = instructions;
+    if (resetPrompt && update.prompt === undefined) update.prompt = null;
+    await this.publishSettings(async () => {
+      this.checkLive();
+      if (
+        bound?.responseId !== undefined &&
+        this.retiredResponses.has(bound.responseId)
+      )
+        return;
+      Object.assign(update, this.profileOverrides);
+      if (config) this.setProfileGuardrails(target, config.guardrails);
+      const receipt = await this.call('update', {
+        update,
+        profile: {
+          response_id: bound?.responseId ?? null,
+          ...(bound?.delegationId === undefined
+            ? {}
+            : { delegation_id: bound.delegationId }),
+          target,
+          function_tools: config?.tools ?? selection?.tools ?? null,
+          expected_selection_id:
+            config?.selectionId ??
+            policy.selectionId ??
+            selection?.selectionId ??
+            null,
+          disabled_tool_names: policy.disabledToolNames ?? null,
+        },
+      });
+      if (
+        bound?.responseId !== undefined &&
+        receipt &&
+        typeof receipt === 'object' &&
+        'applied' in receipt &&
+        receipt.applied === false
+      )
+        return;
+      this.profileSource = target;
     });
   }
   /**
@@ -997,59 +1348,40 @@ class NativeRealtimeOwner {
   ): Promise<void> {
     this.checkLive();
     try {
-      if (includeMono && this.selectedTools === undefined) {
-        await this.session._prepareRealtimeMcp();
+      await this.queueProfileUpdate(async () => {
         this.checkLive();
-      }
-      const target =
-        bound?.responseId !== undefined
-          ? this.session._realtimeProfileTarget(bound.target)
-          : await this.session._realtimeCurrentProfile();
-      if (target === null && !includeMono && bound?.delegationId === undefined)
-        return;
-      const selection =
-        this.selectedTools === undefined
-          ? undefined
-          : await this.session._realtimeFunctionTools(this.selectedTools, {
-              allowMissing: true,
-            });
-      const policy = await resolveRealtimePolicy(
-        this.session,
-        {
-          instructions:
-            typeof this.options.instructions === 'function'
-              ? this.options.instructions
-              : undefined,
-          isToolEnabled: this.options.isToolEnabled,
-        },
-        this.startupAbort.signal,
-        () => this.checkLive(),
-        this.usage,
-      );
-      this.checkLive();
-      if (
-        bound &&
-        'responseId' in bound &&
-        bound.responseId !== undefined &&
-        this.retiredResponses.has(bound.responseId)
-      )
-        return;
-      await this.call('update', {
-        update:
-          policy.instructions === undefined
-            ? {}
-            : { instructions: policy.instructions },
-        profile: {
-          response_id: bound?.responseId ?? null,
-          ...(bound?.delegationId === undefined
-            ? {}
-            : { delegation_id: bound.delegationId }),
+        const retained =
+          this.voiceGraphAdmitted &&
+          this.session._hasRetainedRealtimeProfile(this.profileSource);
+        if (retained && !bound) return;
+        if (includeMono && this.selectedTools === undefined) {
+          await this.session._prepareRealtimeMcp();
+          this.checkLive();
+        }
+        const target =
+          bound?.responseId !== undefined
+            ? this.session._realtimeProfileTarget(bound.target)
+            : retained
+              ? (this.profileSource ?? null)
+              : await this.session._realtimeCurrentProfile();
+        if (
+          target === null &&
+          !includeMono &&
+          bound?.delegationId === undefined
+        )
+          return;
+        const targetRetained =
+          this.voiceGraphAdmitted &&
+          this.session._hasRetainedRealtimeProfile(target);
+        const snapshot = targetRetained
+          ? await this.session._realtimeSourceSnapshot(this.#generation, target)
+          : undefined;
+        await this.applyProfile(
           target,
-          function_tools: selection?.tools ?? null,
-          expected_selection_id:
-            policy.selectionId ?? selection?.selectionId ?? null,
-          disabled_tool_names: policy.disabledToolNames ?? null,
-        },
+          snapshot,
+          bound,
+          retained || targetRetained,
+        );
       });
     } catch (error) {
       if (this.live) this.finish(error);
@@ -1303,7 +1635,22 @@ class NativeRealtimeOwner {
             void completion.catch(() => {});
             return { completion };
           }
-          const raw = await this.call('send_event', { event: snapshot });
+          const send = () => this.call('send_event', { event: snapshot });
+          const raw =
+            snapshot.type === 'session.update'
+              ? await this.publishSettings(async () => {
+                  this.checkLive();
+                  const accepted = await send();
+                  const update = snapshot.session;
+                  if (
+                    update &&
+                    typeof update === 'object' &&
+                    !Array.isArray(update)
+                  )
+                    this.retainProfileOverrides(update);
+                  return accepted;
+                })
+              : await send();
           const value: unknown =
             typeof raw === 'string' ? JSON.parse(raw) : raw;
           if (
@@ -1544,11 +1891,12 @@ class NativeRealtimeOwner {
     this.checkLive();
     this.playback.report(position);
   }
-  /** One observer; overflow terminates media instead of silently dropping it. */
+  /** One pull consumer; once acquired, overflow terminates media without dropping. */
   async *events(): AsyncGenerator<NativeRealtimeEvent> {
     if (this.consuming)
       throw new Error('Native Realtime already has an event consumer');
     this.consuming = true;
+    this.pullAcquired = true;
     try {
       for (;;) {
         const event = this.queue.shift();
@@ -1577,6 +1925,8 @@ class NativeRealtimeOwner {
           ? event.input
           : event;
     let bytes = 128 + (event.type === 'audio' ? event.data.byteLength : 0);
+    if (event.type === 'raw_provider_event')
+      return bytes + jsonAllocationBytes(event.event, AUDIO_LIMIT - bytes);
     if (event.type === 'hosted_mcp_tools_listed')
       return hostedMcpCatalogBytes(
         event.tools,
@@ -1600,9 +1950,21 @@ class NativeRealtimeOwner {
       if (typeof value === 'string') bytes += value.length * 4;
     return bytes;
   }
+  private rollingObservation(): boolean {
+    return !this.pullAcquired && this.observers.size > 0;
+  }
   private emit(event: NativeRealtimeEvent): void {
     if (this.ended) return;
     const bytes = this.eventBytes(event);
+    if (this.rollingObservation() && bytes <= AUDIO_LIMIT) {
+      while (
+        this.queue.length &&
+        (this.queue.length >= EVENT_LIMIT ||
+          this.queuedBytes + bytes > AUDIO_LIMIT)
+      ) {
+        this.queuedBytes -= this.eventBytes(this.queue.shift()!);
+      }
+    }
     if (
       this.queue.length >= EVENT_LIMIT ||
       this.queuedBytes + bytes > AUDIO_LIMIT
@@ -1617,6 +1979,7 @@ class NativeRealtimeOwner {
     this.queuedBytes += bytes;
     this.queue.push(event);
     this.wake();
+    this.observers.emit(event);
   }
   private finish(...errors: [] | [unknown]): void {
     const wasEnded = this.ended;
@@ -1630,6 +1993,8 @@ class NativeRealtimeOwner {
     for (const batch of this.toolBatches) batch.retired = true;
     if (!this.ended) {
       this.ended = true;
+      this.observers.emit({ type: 'lifecycle', status: 'closed' });
+      this.observers.close();
       this.failure = failure;
       this.queue.length = 0;
       this.queuedBytes = 0;
@@ -1654,7 +2019,7 @@ class NativeRealtimeOwner {
         );
       return true;
     }
-    // Preserve Core's final canonical history tail while ordinary media close joins.
+    // Preserve Core's final history observations while media close joins.
     if (
       this.ended &&
       !(
@@ -1662,7 +2027,15 @@ class NativeRealtimeOwner {
         msg.payload &&
         typeof msg.payload === 'object' &&
         !Array.isArray(msg.payload) &&
-        Object.keys(msg.payload).some((key) => key.startsWith('History'))
+        Object.entries(msg.payload).some(
+          ([key, value]) =>
+            key.startsWith('History') ||
+            (key === 'RawProviderEvent' &&
+              value &&
+              typeof value === 'object' &&
+              'history_observation' in value &&
+              value.history_observation === true),
+        )
       )
     )
       return true;
@@ -1696,8 +2069,23 @@ class NativeRealtimeOwner {
     const entries = Object.entries(raw);
     if (entries.length !== 1)
       throw new TypeError('Invalid native Realtime payload');
-    const [name, value] = entries[0] as [string, any];
-    if (name === 'HostedMcpApprovalRequested') {
+    const outOfBand = entries[0][0] === 'DetachedResponse';
+    const [name, value] = (
+      outOfBand
+        ? Object.entries(entries[0][1] as Record<string, unknown>)[0]
+        : entries[0]
+    ) as [string, any];
+    if (name === 'RawProviderEvent') {
+      if (value.history_observation) this._observeProviderFrame(value.event);
+      if (this.options.includeRawProviderEvents)
+        this.emit({ type: 'raw_provider_event', event: value.event });
+    } else if (name === 'ProviderRequestError') {
+      this.emit({
+        type: 'provider_request_error',
+        code: value.code ?? undefined,
+        eventId: value.event_id ?? undefined,
+      });
+    } else if (name === 'HostedMcpApprovalRequested') {
       for (const key of [
         'approval_id',
         'request_id',
@@ -1745,7 +2133,7 @@ class NativeRealtimeOwner {
     } else if (name === 'HostedMcpToolsListed') {
       if (!Array.isArray(value.tools))
         throw new TypeError('Invalid native hosted MCP tool list');
-      if (this.queue.length >= EVENT_LIMIT)
+      if (this.queue.length >= EVENT_LIMIT && !this.rollingObservation())
         throw new Error(
           'Native Realtime event buffer overflow; consume events promptly',
         );
@@ -1754,7 +2142,9 @@ class NativeRealtimeOwner {
         value.item_id,
         value.server_label,
         value.response_id,
-        AUDIO_LIMIT - this.queuedBytes,
+        this.rollingObservation()
+          ? AUDIO_LIMIT
+          : AUDIO_LIMIT - this.queuedBytes,
       );
       this.emit(
         Object.freeze({
@@ -1790,8 +2180,9 @@ class NativeRealtimeOwner {
         error: value.error,
       };
       if (
-        this.queue.length >= EVENT_LIMIT ||
-        this.eventBytes(completed) > AUDIO_LIMIT - this.queuedBytes
+        !this.rollingObservation() &&
+        (this.queue.length >= EVENT_LIMIT ||
+          this.eventBytes(completed) > AUDIO_LIMIT - this.queuedBytes)
       )
         throw new Error(
           'Native Realtime event buffer overflow; consume events promptly',
@@ -1904,10 +2295,21 @@ class NativeRealtimeOwner {
         this.functionBytes + bytes > AUDIO_LIMIT
       )
         throw new Error('Native Realtime function capacity exceeded');
+      const history = Buffer.from(
+        this.conversation.serializeSnapshot(),
+        'utf8',
+      );
+      if (this.functionHistoryBytes + history.byteLength > CALL_HISTORY_LIMIT)
+        throw new RangeError(
+          'Native Realtime call-history snapshot capacity exceeded',
+        );
       this.seen.add(id);
       this.functionBytes += bytes;
+      this.functionHistoryBytes += history.byteLength;
       this.functions.set(id, {
         name: value.name,
+        itemId: typeof value.item_id === 'string' ? value.item_id : undefined,
+        history,
         sourceProfile: value.source_profile,
         retired:
           typeof value.response_id === 'string' &&
@@ -1940,6 +2342,7 @@ class NativeRealtimeOwner {
       });
       this.functionBytes -=
         Buffer.byteLength(value.call_id) + Buffer.byteLength(record.name);
+      this.functionHistoryBytes -= record.history.byteLength;
       this.functions.delete(value.call_id);
     } else if (name === 'Error')
       throw new Error('Native Realtime transport failed', { cause: value });
@@ -1964,7 +2367,20 @@ class NativeRealtimeOwner {
         format: value.format ?? undefined,
         contentIndex: value.content_index ?? undefined,
         outputIndex: value.output_index ?? undefined,
+        ...(outOfBand ? { outOfBand: true } : {}),
       };
+      if (!outOfBand && audio.itemId && audio.contentIndex !== undefined)
+        this.conversation.observeAudio(
+          audio.itemId,
+          audio.contentIndex,
+          audio.data,
+          (audio.sampleRate *
+            audio.channels *
+            (audio.format === 'g711_ulaw' || audio.format === 'g711_alaw'
+              ? 1
+              : 2)) /
+            1000,
+        );
       this.playback.observe(audio);
       this.emit(audio);
     } else if (
@@ -1974,10 +2390,12 @@ class NativeRealtimeOwner {
         typeof value.response_id === 'string' ? value.response_id : undefined;
       if (responseId && name !== 'ResponseCreated')
         this.playback.complete(responseId);
-      if (name === 'ResponseDone') this.startFunctionBatch(value);
-      if (name === 'ResponseCreated') this.responseId = responseId;
-      else if (!responseId || responseId === this.responseId)
-        this.responseId = undefined;
+      if (!outOfBand) {
+        if (name === 'ResponseDone') this.startFunctionBatch(value);
+        if (name === 'ResponseCreated') this.responseId = responseId;
+        else if (!responseId || responseId === this.responseId)
+          this.responseId = undefined;
+      }
       let reportedUsage: NativeRealtimeUsage | undefined;
       if (
         name === 'ResponseDone' &&
@@ -1999,6 +2417,7 @@ class NativeRealtimeOwner {
               ? 'done'
               : 'cancelled',
         responseId,
+        ...(outOfBand ? { outOfBand: true } : {}),
       });
     } else if (
       [
@@ -2014,7 +2433,7 @@ class NativeRealtimeOwner {
       )
         return;
       if (name.startsWith('Output'))
-        this.guardrails.observe(value, name.endsWith('Done'));
+        this.guardrails.observe(value, name.endsWith('Done'), outOfBand);
       this.emit({
         type: 'text',
         role: name.startsWith('Input') ? 'user' : 'assistant',
@@ -2025,6 +2444,7 @@ class NativeRealtimeOwner {
         contentIndex: value.content_index ?? undefined,
         outputIndex: value.output_index ?? undefined,
         outputKind: value.output_kind ?? undefined,
+        ...(outOfBand ? { outOfBand: true } : {}),
       });
     } else if (name === 'SessionUpdated')
       this.emit({
@@ -2438,6 +2858,8 @@ class NativeRealtimeOwner {
     for (let i = this.queue.length - 1; i >= 0; i--)
       if (
         this.queue[i].type === 'audio' &&
+        (responseId !== undefined ||
+          !(this.queue[i] as { outOfBand?: true }).outOfBand) &&
         matchesInitial((this.queue[i] as { responseId?: string }).responseId)
       ) {
         this.queuedBytes -= this.eventBytes(this.queue[i]);
@@ -2453,6 +2875,7 @@ class NativeRealtimeOwner {
         : responseId === undefined
           ? undefined
           : new Set([responseId]),
+      { linkedOnly: responseId === undefined },
     );
     const joining = Promise.allSettled([
       this.guardrails.join(guardWork, excludeWorker),
@@ -2574,6 +2997,7 @@ class NativeRealtimeOwner {
       ) {
         this.functionBytes -=
           Buffer.byteLength(id) + Buffer.byteLength(record.name);
+        this.functionHistoryBytes -= record.history.byteLength;
         this.functions.delete(id);
       }
     }
@@ -2605,6 +3029,8 @@ class NativeRealtimeOwner {
     for (const batch of this.toolBatches) batch.retired = true;
     if (!this.ended) {
       this.ended = true;
+      this.observers.emit({ type: 'lifecycle', status: 'closed' });
+      this.observers.close();
       this.queue.length = 0;
       this.queuedBytes = 0;
       this.terminal.resolve();
@@ -2639,6 +3065,8 @@ class NativeRealtimeOwner {
       if (mediaFailure) throw mediaFailure.error;
       const results = await joining;
       const tasks = await Promise.allSettled([
+        this.retargetTail,
+        this.settingsTail,
         ...this.profileUpdates,
         ...owned.flatMap((item) => (item.task ? [item.task] : [])),
         ...batches.flatMap((batch) => (batch.task ? [batch.task] : [])),
@@ -2646,11 +3074,17 @@ class NativeRealtimeOwner {
       await Promise.all(
         [...this.toolsRootMonitors].map((root) => root.monitor),
       );
+      if (this.voiceGraphAdmitted)
+        await this.session._releaseRealtimeGraph(this.#generation);
+      this.profileGuardrails.clear();
       const failure = [...results, ...tasks].find(
         (result) => result.status === 'rejected',
       );
       if (failure?.status === 'rejected') throw failure.reason;
       this.retireHostedApprovals();
+      this.functions.clear();
+      this.functionBytes = 0;
+      this.functionHistoryBytes = 0;
       this.release();
     })().catch((error) => {
       this.closing = undefined;
@@ -2666,6 +3100,8 @@ class NativeRealtimeOwner {
 export type NativeRealtimeSession = Pick<
   NativeRealtimeOwner,
   | 'history'
+  | 'providerHistory'
+  | 'on'
   | 'usage'
   | 'callId'
   | 'answerSdp'
@@ -2680,6 +3116,8 @@ export type NativeRealtimeSession = Pick<
   | 'retrieveConversationItem'
   | 'retrieveConversationHistory'
   | 'update'
+  | 'updateAgent'
+  | 'getActiveAgent'
   | 'approveHostedMcp'
   | 'sendAudio'
   | 'events'
