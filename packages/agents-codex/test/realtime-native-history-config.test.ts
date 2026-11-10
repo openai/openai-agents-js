@@ -468,12 +468,15 @@ nativeIt(
         instructions: 'Use the accepted Session instructions by default.',
       }).session();
       await using voice = await session.realtime({ model: 'fixture-realtime' });
-      const invalid: JsonObject[] = [
-        { prompt: { id: ' ' } },
-        { audio: { output: { voice: ' ' } } },
-        { audio: { output: { voice: { id: '' } } } },
+      const invalid: [JsonObject, RegExp][] = [
+        [{ prompt: { id: ' ' } }, /raw Realtime response prompt/],
+        [{ audio: { output: { voice: ' ' } } }, /raw Realtime response audio/],
+        [
+          { audio: { output: { voice: { id: '' } } } },
+          /raw Realtime response audio/,
+        ],
       ];
-      for (const [index, response] of invalid.entries()) {
+      for (const [index, [response, error]] of invalid.entries()) {
         const eventId = `invalid-response-settings-${index}`;
         await expect(
           voice.sendEvent({
@@ -481,7 +484,7 @@ nativeIt(
             event_id: eventId,
             response,
           }),
-        ).rejects.toThrow(/raw Realtime session settings/);
+        ).rejects.toThrow(error);
         expect(peer.frames.some((frame) => frame.event_id === eventId)).toBe(
           false,
         );
@@ -648,9 +651,9 @@ nativeIt.each(['pcm16', 'g711_ulaw', 'g711_alaw'] as const)(
   30000,
 );
 
-nativeIt(
-  'retrieves an unobserved application item before deleting it with the caller event ID',
-  async () => {
+nativeIt.each(['user', 'assistant', 'system'] as const)(
+  'retrieves an unobserved %s application item before deleting it with the caller event ID',
+  async (role) => {
     const model = new ModelServer([]);
     const peer = new HistoryPeer(model);
     try {
@@ -667,6 +670,13 @@ nativeIt(
       try {
         const item: JsonObject = {
           ...userItem('application-item-before-attachment', 'Earlier input.'),
+          role,
+          content: [
+            {
+              type: role === 'assistant' ? 'output_text' : 'input_text',
+              text: 'Earlier input.',
+            },
+          ],
           status: 'completed',
         };
         peer.retrievals.set(item.id as string, item);

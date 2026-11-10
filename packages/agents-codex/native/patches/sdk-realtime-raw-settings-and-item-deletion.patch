@@ -447,7 +447,7 @@ index 0906f3aa6997d270cc075627c933e67c1a8abd9d..63be224e7b356e2301fbe3f74a0cbe8d
              "tools".into(),
              tools_json(
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index da236689d1f0a07975ca0e0042142441e210a58f..6dbc6d1c2af80ec799201a92c5a08589516cae79 100644
+index da236689d1f0a07975ca0e0042142441e210a58f..949b2f28f161480f8fa3bb385934008e5c568f75 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -375,6 +375,21 @@ enum RealtimeSessionKind {
@@ -615,15 +615,20 @@ index da236689d1f0a07975ca0e0042142441e210a58f..6dbc6d1c2af80ec799201a92c5a08589
          (Some(sdk), RealtimeEvent::FunctionCallRequested(call))
              if sdk
                  .history
-@@ -5922,10 +6001,19 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5922,10 +6001,24 @@ async fn handle_realtime_server_event_with_configuration(
          }
          _ => event,
      };
 +    if let (Some(sdk), RealtimeEvent::ResponseDone(response)) = (&handoff_state.sdk, &mut event) {
-+        let history = sdk.history.lock().unwrap();
++        let mut history = sdk.history.lock().unwrap();
 +        response
 +            .function_call_ids
 +            .retain(|id| !history.is_caller_call(id, response.response_id.as_deref()));
++        if let Some(id) = response.response_id.as_deref()
++            && Some(id) == response_create_queue.sdk_response_id.as_deref()
++        {
++            history.finish_caller_response(id, /*cancelled*/ false);
++        }
 +    }
      if let Some(sdk) = &handoff_state.sdk {
          let action = match &event {
@@ -636,20 +641,20 @@ index da236689d1f0a07975ca0e0042142441e210a58f..6dbc6d1c2af80ec799201a92c5a08589
              }
              RealtimeEvent::ConversationItemAdded {
                  item,
-@@ -6111,6 +6199,12 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6111,6 +6204,12 @@ async fn handle_realtime_server_event_with_configuration(
              {
                  return Ok(());
              }
-+            if let Some(sdk) = &handoff_state.sdk {
++            if let (Some(sdk), Some(id)) = (&handoff_state.sdk, response.response_id.as_deref()) {
 +                sdk.history
 +                    .lock()
 +                    .unwrap()
-+                    .retire_caller_calls(response.response_id.as_deref());
++                    .finish_caller_response(id, /*cancelled*/ true);
 +            }
              defer_sdk_create_until_handoff(handoff_state, response_create_queue).await;
              if response.response_id == response_create_queue.sdk_response_id {
                  response_create_queue.sdk_response_id = None;
-@@ -6246,24 +6340,95 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6246,24 +6345,95 @@ async fn handle_realtime_server_event_with_configuration(
              }
              false
          }
@@ -816,18 +821,21 @@ index d8941ea55b1e89a7ca6fd350ed3dc282b868282a..298f20f0188d91375ee2c5dd21afcfac
          let item = self
              .items
 diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
-index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b29499c3dd451 100644
+index 9590e663d66e51fee5cd93d36faaefe03625e80a..f9aa623c7e0d1a0fafb9e5d54ae46b0f56821052 100644
 --- a/codex-rs/core/src/realtime_conversation/provider_history.rs
 +++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
-@@ -4,6 +4,8 @@ use super::*;
+@@ -3,8 +3,10 @@
+ use super::*;
  use base64::Engine as _;
  use image::ImageDecoder as _;
++use indexmap::IndexMap;
  use serde_json::Value;
+-use std::collections::BTreeMap;
 +use sha2::Digest;
 +use sha2::Sha256;
- use std::collections::BTreeMap;
  use std::collections::VecDeque;
  const LIMIT: usize = 4096;
+ const ID_BYTES: usize = 512;
 @@ -14,6 +16,11 @@ const MAX_IMAGE_DECODE_BYTES: u64 = 64 * 1024 * 1024;
  type Reply<T> = tokio::sync::oneshot::Sender<CodexResult<T>>;
  #[derive(Debug)]
@@ -840,22 +848,54 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
      Item {
          id: String,
          event_id: Option<String>,
-@@ -63,6 +70,14 @@ struct ReplayedCall {
+@@ -63,6 +70,28 @@ struct ReplayedCall {
      item_id: String,
      output_id: Option<String>,
      confirmed: bool,
 +    caller: Option<CallerCall>,
++}
++impl ReplayedCall {
++    fn can_reclaim(&self, ordered_items: &HashSet<&str>) -> bool {
++        self.caller.as_ref().is_some_and(|caller| {
++            (!self.confirmed && self.output_id.is_none())
++                || (caller.response_finished
++                    && caller.output_confirmed
++                    && self
++                        .output_id
++                        .as_deref()
++                        .is_some_and(|id| !ordered_items.contains(id)))
++        })
++    }
 +}
 +#[derive(Debug)]
 +struct CallerCall {
 +    response_id: String,
 +    fingerprint: [u8; 32],
 +    output_confirmed: bool,
++    response_finished: bool,
 +    detached: bool,
  }
  
  #[derive(Debug)]
-@@ -101,7 +116,7 @@ pub(super) fn validate_request_ids(
+@@ -70,7 +99,7 @@ pub(super) struct State {
+     order: Vec<String>,
+     boundary: Option<String>,
+     incomplete: bool,
+-    replayed_calls: BTreeMap<String, ReplayedCall>,
++    replayed_calls: IndexMap<String, ReplayedCall>,
+     pending: Option<Pending>,
+ }
+ impl Default for State {
+@@ -79,7 +108,7 @@ impl Default for State {
+             order: Vec::new(),
+             boundary: Some("root".into()),
+             incomplete: false,
+-            replayed_calls: BTreeMap::new(),
++            replayed_calls: IndexMap::new(),
+             pending: None,
+         }
+     }
+@@ -101,7 +130,7 @@ pub(super) fn validate_request_ids(
      deletion: &item_deletion::State,
  ) -> CodexResult<()> {
      let deleted = match request {
@@ -864,7 +904,44 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
          Request::Create { item, .. } => deletion.is_deleted(item_id(item)?),
          Request::Update { items, .. } => items.iter().any(|item| {
              item["id"].as_str().is_some_and(|id| {
-@@ -575,9 +590,12 @@ impl State {
+@@ -349,13 +378,17 @@ fn creation_receipt_conflicts(expected: &Value, actual: &Value) -> bool {
+ fn validate_imported_pairs(
+     current: &[Value],
+     desired: &[Value],
+-    replayed_calls: &BTreeMap<String, ReplayedCall>,
++    replayed_calls: &IndexMap<String, ReplayedCall>,
+ ) -> CodexResult<()> {
+     let current_ids: HashSet<_> = current.iter().map(item_id).collect::<CodexResult<_>>()?;
+     let current_calls: HashSet<_> = current
+         .iter()
+         .filter_map(|item| item["call_id"].as_str())
+         .collect();
++    let reserved_calls = replayed_calls
++        .values()
++        .filter(|call| !call.can_reclaim(&current_ids))
++        .count();
+     let mut pairs = HashMap::new();
+     let mut required = HashSet::new();
+     let mut new_calls = 0;
+@@ -384,7 +417,7 @@ fn validate_imported_pairs(
+             if current_calls.contains(call_id)
+                 || replayed_calls.contains_key(call_id)
+                 || pairs.contains_key(call_id)
+-                || replayed_calls.len() + new_calls == LIMIT
++                || reserved_calls + new_calls == LIMIT
+             {
+                 return Err(invalid(
+                     "Historical tool call ID is already in use or history is full",
+@@ -414,7 +447,7 @@ fn edits(
+     current: &[Value],
+     desired: &[Value],
+     boundary: Option<&str>,
+-    replayed_calls: &BTreeMap<String, ReplayedCall>,
++    replayed_calls: &IndexMap<String, ReplayedCall>,
+ ) -> CodexResult<VecDeque<Action>> {
+     let mut remaining_image_work = MAX_IMAGE_DECODE_BYTES;
+     let mut ids = HashSet::new();
+@@ -575,9 +608,12 @@ impl State {
          self.pending.is_some()
      }
      pub(super) fn editing(&self) -> bool {
@@ -880,7 +957,16 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
      }
      pub(super) fn deadline(&self) -> Option<tokio::time::Instant> {
          self.pending.as_ref().and_then(|pending| {
-@@ -751,11 +769,17 @@ impl State {
+@@ -740,7 +776,7 @@ impl State {
+             let item = replay_item(item)?;
+             let call_id = item["call_id"].as_str().unwrap();
+             if item["type"] == "function_call" {
+-                if self.replayed_calls.len() == LIMIT || self.replayed_calls.contains_key(call_id) {
++                if self.replayed_calls.contains_key(call_id) || !self.reserve_call_identity() {
+                     return Err(invalid(
+                         "Historical tool call ID is already in use or history is full",
+                     ));
+@@ -751,11 +787,17 @@ impl State {
                          item_id: id.to_owned(),
                          output_id: None,
                          confirmed: false,
@@ -893,13 +979,13 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
 +                    .filter(|call| {
 +                        call.confirmed
 +                            && call.output_id.is_none()
-+                            && call.caller.as_ref().is_none_or(|caller| !caller.detached)
 +                            && self.order.contains(&call.item_id)
++                            && call.caller.as_ref().is_none_or(|caller| !caller.detached)
 +                    })
                      .ok_or_else(|| invalid("Historical function output requires an imported call without an output"))?;
                  call.output_id = Some(id.to_owned());
              }
-@@ -772,10 +796,104 @@ impl State {
+@@ -772,10 +814,134 @@ impl State {
          })
      }
  
@@ -937,7 +1023,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
 +                "Caller-managed function ID changed ownership or payload",
 +            ));
 +        }
-+        if self.replayed_calls.len() == LIMIT {
++        if !self.reserve_call_identity() {
 +            return Err(invalid(
 +                "Caller-managed function identity capacity exceeded",
 +            ));
@@ -952,6 +1038,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
 +                    response_id: response_id.to_owned(),
 +                    fingerprint,
 +                    output_confirmed: false,
++                    response_finished: false,
 +                    detached,
 +                }),
 +            },
@@ -965,6 +1052,20 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
 +                response_id.is_none_or(|response| caller.response_id == response)
 +            })
 +        })
++    }
++
++    fn reserve_call_identity(&mut self) -> bool {
++        if self.replayed_calls.len() < LIMIT {
++            return true;
++        }
++        // Keep recent terminal records for duplicate frames until a new
++        // identity needs their slot. Active calls and ordered receipts stay.
++        let ordered_items = self.order.iter().map(String::as_str).collect();
++        let reclaim = self
++            .replayed_calls
++            .values()
++            .position(|call| call.can_reclaim(&ordered_items));
++        reclaim.is_some_and(|index| self.replayed_calls.shift_remove_index(index).is_some())
 +    }
 +
 +    pub(super) fn is_detached_caller_call(&self, call_id: &str, item_id: &str) -> bool {
@@ -997,6 +1098,21 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
 +        }
 +    }
 +
++    pub(super) fn finish_caller_response(&mut self, response_id: &str, cancelled: bool) {
++        for call in self.replayed_calls.values_mut() {
++            if let Some(caller) = call
++                .caller
++                .as_mut()
++                .filter(|caller| caller.response_id == response_id)
++            {
++                caller.response_finished = true;
++                if cancelled || caller.detached {
++                    call.confirmed = false;
++                }
++            }
++        }
++    }
++
      pub(super) fn is_replayed_call(&self, call_id: &str, item_id: &str) -> bool {
          self.replayed_calls
              .get(call_id)
@@ -1005,7 +1121,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
      }
  
      pub(super) fn replayed_call_for_item<'a>(&self, item: &'a Value) -> Option<&'a str> {
-@@ -783,8 +901,14 @@ impl State {
+@@ -783,8 +949,14 @@ impl State {
          let id = item["id"].as_str()?;
          let call = self.replayed_calls.get(call_id)?;
          let replayed = match item["type"].as_str() {
@@ -1022,7 +1138,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
              _ => false,
          };
          replayed.then_some(call_id)
-@@ -809,7 +933,7 @@ impl State {
+@@ -809,7 +981,7 @@ impl State {
          }
          let mut actions = VecDeque::new();
          let ids = match &request {
@@ -1031,7 +1147,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
                  if !valid_id(id) {
                      finish_request(request, Err(invalid("Invalid provider item ID")));
                      return Ok(None);
-@@ -885,6 +1009,30 @@ impl State {
+@@ -885,6 +1057,30 @@ impl State {
          });
          self.advance()
      }
@@ -1062,7 +1178,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
      pub(super) fn retrieved(&mut self, item: Value) -> CodexResult<Option<Action>> {
          if !self
              .pending
-@@ -922,6 +1070,8 @@ impl State {
+@@ -922,6 +1118,8 @@ impl State {
                  ));
                  return Ok(None);
              }
@@ -1071,7 +1187,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
          } else if pending.request.is_some() {
              codex_api::charge_realtime_json_storage(&item, &mut pending.retained_bytes).map_err(
                  |_| invalid("Provider history exceeds its 8 MiB estimated storage limit"),
-@@ -987,11 +1137,18 @@ impl State {
+@@ -987,11 +1185,18 @@ impl State {
              };
              self.order.insert(index, id);
          }
@@ -1093,7 +1209,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
          }
          pending.waiting = None;
          self.advance()
-@@ -1005,7 +1162,9 @@ impl State {
+@@ -1005,7 +1210,9 @@ impl State {
              .pending
              .as_ref()
              .is_some_and(|pending| match &pending.request {
@@ -1104,7 +1220,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
                  Some(Request::Create { item, previous, .. }) => {
                      item["id"].as_str() == Some(id) || previous.as_deref() == Some(id)
                  }
-@@ -1089,6 +1248,7 @@ impl State {
+@@ -1089,6 +1296,7 @@ impl State {
          }
          let pending = self.pending.take().unwrap();
          match pending.request.unwrap() {
@@ -1112,7 +1228,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
              Request::Item { reply, .. } => {
                  let _ = reply.send(
                      pending
-@@ -1136,6 +1296,7 @@ impl State {
+@@ -1136,6 +1344,7 @@ impl State {
  fn finish_request(request: Request, result: CodexResult<()>) {
      let error = result.err().unwrap_or(CodexErr::TurnAborted);
      match request {
@@ -1120,7 +1236,16 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
          Request::Item { reply, .. } => {
              let _ = reply.send(Err(error));
          }
-@@ -1186,6 +1347,120 @@ mod tests {
+@@ -1159,7 +1368,7 @@ mod tests {
+         desired: &[Value],
+         boundary: Option<&str>,
+     ) -> CodexResult<VecDeque<Action>> {
+-        super::edits(current, desired, boundary, &BTreeMap::new())
++        super::edits(current, desired, boundary, &IndexMap::new())
+     }
+     fn creation_item(item: &Value) -> CodexResult<Value> {
+         let mut remaining = MAX_IMAGE_DECODE_BYTES;
+@@ -1186,6 +1395,120 @@ mod tests {
      fn message(id: &str, text: &str) -> Value {
          json!({"id":id,"type":"message","role":"user","content":[{"type":"input_text","text":text}]})
      }
@@ -1241,7 +1366,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
      fn replay_pair(id: &str) -> (Value, Value) {
          let call_id = format!("call-{id}");
          (
-@@ -1770,6 +2045,71 @@ mod tests {
+@@ -1770,6 +2093,107 @@ mod tests {
          assert!(!state.busy());
      }
  
@@ -1308,6 +1433,42 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b2949
 +        state.retire_caller_calls(Some("response"));
 +        state.observe_caller_call(&request, false).unwrap();
 +        assert!(!state.is_live_caller_output(&output));
++    }
++
++    #[test]
++    fn terminal_caller_calls_leave_capacity_for_new_responses() {
++        let mut state = State::default();
++        let request = |index| codex_protocol::protocol::RealtimeFunctionCallRequested {
++            namespace: None,
++            call_id: format!("call-{index}"),
++            item_id: format!("item-{index}"),
++            name: "external".into(),
++            arguments: "{}".into(),
++            response_id: Some(format!("response-{index}")),
++        };
++        let live = request(0);
++        state.observe_id(&live.item_id).unwrap();
++        assert!(state.observe_caller_call(&live, false).unwrap());
++        for index in 1..=LIMIT {
++            let done = request(index);
++            assert!(state.observe_caller_call(&done, true).unwrap());
++            state.finish_caller_response(done.response_id.as_deref().unwrap(), false);
++            assert!(!state.observe_caller_call(&done, true).unwrap());
++        }
++        assert!(state.is_live_caller_output(&json!({
++            "id": "live-output", "type": "function_call_output",
++            "call_id": live.call_id, "output": "42"
++        })));
++        let oldest = request(1);
++        assert!(!state.is_detached_caller_call(&oldest.call_id, &oldest.item_id));
++        let newest = request(LIMIT);
++        assert!(state.is_detached_caller_call(&newest.call_id, &newest.item_id));
++
++        let imported = [
++            json!({"type":"function_call","id":"imported-call","call_id":"imported","name":"external","arguments":"{}"}),
++            json!({"type":"function_call_output","id":"imported-output","call_id":"imported","output":"42"}),
++        ];
++        assert!(super::edits(&[], &imported, Some("root"), &state.replayed_calls).is_ok());
 +    }
 +
      #[tokio::test]
