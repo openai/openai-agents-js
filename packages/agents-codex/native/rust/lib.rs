@@ -35,6 +35,7 @@ mod node_runtime;
 mod ops;
 mod options;
 mod plain_run;
+mod plan_usage;
 mod project_search;
 mod provider_error;
 mod provider_transports;
@@ -813,7 +814,21 @@ struct NativeThreadOwner {
     live: Option<RuntimeOwned<engine::ThreadState>>,
     interception_reader: tokio_util::sync::CancellationToken,
     mcp_result_reader: tokio_util::sync::CancellationToken,
-    resource_requests_stop: tokio_util::sync::CancellationToken,
+    resources: ResourceRequests,
+    plan_usage_reader: Option<plan_usage::PlanUsageReader>,
+}
+
+#[derive(Clone, Default)]
+struct ResourceRequests {
+    stop: tokio_util::sync::CancellationToken,
+    plan_usage: tokio_util::task::TaskTracker,
+}
+
+impl ResourceRequests {
+    fn cancel(&self) {
+        self.stop.cancel();
+        self.plan_usage.close();
+    }
 }
 
 /// A private single-use bridge receipt. Keep the reservation through native
@@ -900,7 +915,8 @@ impl NativeThreadOwner {
     fn release(&mut self) {
         self.interception_reader.cancel();
         self.mcp_result_reader.cancel();
-        self.resource_requests_stop.cancel();
+        self.resources.cancel();
+        self.plan_usage_reader = None;
         // Engine shutdown need not join the JS event reader. Settle this
         // owner's receipts while the slot still identifies the right state;
         // the reader's later finally may find the slot already empty.
@@ -924,7 +940,8 @@ impl NativeThread {
             live: Some(RuntimeOwned::new(Arc::clone(&state))),
             interception_reader: tokio_util::sync::CancellationToken::new(),
             mcp_result_reader: tokio_util::sync::CancellationToken::new(),
-            resource_requests_stop: tokio_util::sync::CancellationToken::new(),
+            resources: ResourceRequests::default(),
+            plan_usage_reader: None,
         }));
         state.engine.register_native_thread(&inner);
         Self {
@@ -996,11 +1013,12 @@ impl NativeThread {
         selected_environment: bool,
         retire_private: bool,
     ) -> napi::Result<Option<String>> {
-        self.inner
-            .lock()
-            .map_err(native_error)?
-            .resource_requests_stop
-            .cancel();
+        let resources = {
+            let owner = self.inner.lock().map_err(native_error)?;
+            owner.resources.cancel();
+            owner.resources.clone()
+        };
+        resources.plan_usage.wait().await;
         let Some(inner) = self.live()? else {
             return Ok(None);
         };
@@ -1032,6 +1050,7 @@ impl NativeThread {
 #[napi(js_name = "_ContextChange")]
 pub struct ContextChange {
     change: tokio::sync::Mutex<Option<RuntimeOwned<context::Change>>>,
+    source_resources: ResourceRequests,
     candidate: std::sync::Mutex<Option<Arc<std::sync::Mutex<EngineOwner>>>>,
     prospective: std::sync::Mutex<Option<RuntimeOwned<codex_core_api::EnvironmentManager>>>,
     remote_drain: std::sync::Mutex<
@@ -1193,20 +1212,21 @@ impl ContextChange {
 
     #[napi]
     pub async fn retire(&self) -> napi::Result<Option<String>> {
-        self.change
-            .lock()
-            .await
+        let change = self.change.lock().await;
+        let change = change
             .as_ref()
-            .ok_or_else(|| native_error("context change is released"))?
-            .retire()
-            .await
-            .map_err(native_error)
+            .ok_or_else(|| native_error("context change is released"))?;
+        self.source_resources.cancel();
+        self.source_resources.plan_usage.wait().await;
+        change.retire().await.map_err(native_error)
     }
 
     #[napi]
     pub async fn fence(&self) {
         if let Some(change) = self.change.lock().await.as_ref() {
             change.fence();
+            self.source_resources.cancel();
+            self.source_resources.plan_usage.wait().await;
         }
     }
 
@@ -1420,6 +1440,42 @@ impl NativeThread {
         serde_json::to_string(&snapshot).map_err(native_error)
     }
 
+    #[napi(js_name = "_read_plan_usage")]
+    pub async fn _read_plan_usage(
+        &self,
+        request: &ModelHttpRequest,
+    ) -> napi::Result<Option<String>> {
+        let state = self.current()?;
+        let manager = state.engine.manager.auth_manager();
+        let (reader, stopped, _tracked) = {
+            // Fence admission against retirement without holding the gate during I/O.
+            let _admission = state.engine.operation(false).map_err(native_error)?;
+            if !manager.is_saved_chatgpt() {
+                return Ok(None);
+            }
+            let mut owner = self.inner.lock().map_err(native_error)?;
+            if owner.resources.stop.is_cancelled() || request.cancelled.is_cancelled() {
+                return Err(native_error("Codex plan usage read cancelled"));
+            }
+            let reader = owner
+                .plan_usage_reader
+                .get_or_insert_with(|| plan_usage::PlanUsageReader::new(&manager))
+                .clone();
+            (
+                reader,
+                owner.resources.stop.clone(),
+                owner.resources.plan_usage.token(),
+            )
+        };
+        drop(state);
+        tokio::select! {
+            biased;
+            _ = request.cancelled.cancelled() => Err(native_error("Codex plan usage read cancelled")),
+            _ = stopped.cancelled() => Err(native_error("Session closed during plan usage read")),
+            value = reader.read(&manager) => value.map(Some).map_err(native_error),
+        }
+    }
+
     #[napi(js_name = "_begin_context_change")]
     pub async fn _begin_context_change(&self) -> napi::Result<ContextChange> {
         let state = self.current()?;
@@ -1428,6 +1484,7 @@ impl NativeThread {
             .map_err(native_error)?;
         Ok(ContextChange {
             change: tokio::sync::Mutex::new(Some(RuntimeOwned::new(Arc::new(change)))),
+            source_resources: self.inner.lock().map_err(native_error)?.resources.clone(),
             candidate: std::sync::Mutex::new(None),
             prospective: std::sync::Mutex::new(None),
             remote_drain: std::sync::Mutex::new(None),
@@ -2189,7 +2246,8 @@ impl NativeThread {
                     .inner
                     .lock()
                     .map_err(native_error)?
-                    .resource_requests_stop
+                    .resources
+                    .stop
                     .clone();
                 let request = async {
                     match operation.as_str() {
@@ -3207,7 +3265,8 @@ impl NativeThread {
                 .inner
                 .lock()
                 .map_err(native_error)?
-                .resource_requests_stop
+                .resources
+                .stop
                 .clone();
             tokio::select! {
                 biased;
@@ -4253,12 +4312,8 @@ impl NativeThread {
 
     #[napi(js_name = "_stop_sampling_for_close")]
     pub fn _stop_sampling_for_close(&self) -> napi::Result<()> {
-        // Wake idle resource requests before JS joins the owned mutation.
-        self.inner
-            .lock()
-            .map_err(native_error)?
-            .resource_requests_stop
-            .cancel();
+        // Wake passive resource requests before JS joins the owned mutation.
+        self.inner.lock().map_err(native_error)?.resources.cancel();
         if let Some(inner) = self.live()?
             && let Some(root) = inner
                 .thread

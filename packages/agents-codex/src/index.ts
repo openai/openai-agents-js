@@ -186,6 +186,7 @@ export type {
   ApiRateLimits,
   ApiRateLimitWindow,
 } from './runtime/api-rate-limits';
+export type { CodexPlanLimit, CodexPlanUsage } from './runtime/plan-usage';
 export type { Subagent, ChildTurn, ChildCompleted } from './runtime/subagents';
 export type {
   SessionItem,
