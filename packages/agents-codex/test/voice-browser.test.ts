@@ -30,12 +30,12 @@ class Peer {
   connectionState = 'new';
   ontrack: ((event: { streams: MediaStream[] }) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
-  channel = {
+  channel = Object.assign(new EventTarget(), {
     onmessage: null as ((event: { data: string }) => void) | null,
     onclose: null as (() => void) | null,
     onerror: null as (() => void) | null,
     close: vi.fn(),
-  };
+  });
   createDataChannel = vi.fn(() => this.channel);
   addTrack = vi.fn();
   createOffer = vi.fn(async () => ({ type: 'offer', sdp: 'offer' }));
@@ -80,9 +80,11 @@ describe('native-backed browser voice media', () => {
       sdp: 'answer',
     });
     expect(Peer.latest.createDataChannel).toHaveBeenCalledWith('oai-events');
-    Peer.latest.channel.onmessage!({
-      data: '{"type":"session.updated","unknown":7}',
-    });
+    Peer.latest.channel.dispatchEvent(
+      new MessageEvent('message', {
+        data: '{"type":"session.updated","unknown":7}',
+      }),
+    );
     expect(events).toHaveBeenCalledWith({
       type: 'session.updated',
       unknown: 7,
@@ -331,4 +333,118 @@ it('creates default audio playback and clears its stream after close', async () 
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it.each(['throw', 'reject'])(
+  'closes media when custom browser playback fails by %s',
+  async (failure) => {
+    const mic = microphone();
+    const peer = new Peer();
+    const errors = vi.fn();
+    const media = new NativeVoiceWebRTC({
+      mediaStream: mic.stream,
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: () => {
+        const error = new Error('application playback failed');
+        if (failure === 'throw') throw error;
+        return Promise.reject(error);
+      },
+      onError: errors,
+    });
+    await media.connect({ exchangeSdp: async () => 'answer' });
+    peer.ontrack!({ streams: [mic.stream] });
+    await vi.waitFor(() => expect(media.status).toBe('closed'));
+    expect(errors).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ message: 'Voice audio playback failed.' }),
+    );
+    expect(peer.close).toHaveBeenCalledOnce();
+    expect(mic.track.stop).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['throw', 'reject'])(
+  'isolates passive media observers that %s and preserves application channel handlers',
+  async (failure) => {
+    const mic = microphone();
+    const peer = new Peer();
+    const observe = vi.fn(() => {
+      const error = new Error('application observation failed');
+      if (failure === 'throw') throw error;
+      return Promise.reject(error);
+    });
+    const onMessage = vi.fn();
+    const onError = vi.fn();
+    const onClose = vi.fn();
+    const media = new NativeVoiceWebRTC({
+      mediaStream: mic.stream,
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      onDataChannel: (channel) => {
+        channel.onmessage = onMessage;
+        channel.onerror = onError;
+        channel.onclose = onClose;
+      },
+      onTransportEvent: observe,
+      onError: observe,
+    });
+    await media.connect({ exchangeSdp: async () => 'answer' });
+    peer.channel.dispatchEvent(
+      new MessageEvent('message', { data: '{"type":"session.updated"}' }),
+    );
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(media.status).not.toBe('closed');
+    peer.channel.dispatchEvent(new Event('error'));
+    expect(media.status).toBe('closed');
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(peer.channel.onmessage).toBe(onMessage);
+    expect(peer.channel.onerror).toBe(onError);
+    expect(peer.channel.onclose).toBe(onClose);
+    // Removed SDK listeners cannot report a second failure after retirement.
+    peer.channel.dispatchEvent(new Event('error'));
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(peer.close).toHaveBeenCalledOnce();
+    expect(mic.track.stop).not.toHaveBeenCalled();
+    await Promise.resolve();
+  },
+);
+
+it('preserves synchronous channel setup failures and cleans acquired media', async () => {
+  const mic = microphone();
+  const peer = new Peer();
+  const failure = new Error('application channel setup failed');
+  const media = new NativeVoiceWebRTC({
+    getUserMedia: async () => mic.stream,
+    createPeerConnection: () => peer as unknown as RTCPeerConnection,
+    onDataChannel: () => {
+      throw failure;
+    },
+  });
+  await expect(
+    media.connect({ exchangeSdp: async () => 'answer' }),
+  ).rejects.toBe(failure);
+  expect(peer.close).toHaveBeenCalledOnce();
+  expect(mic.track.stop).toHaveBeenCalledOnce();
+});
+
+it('does not attach audio after pending custom playback outlives close', async () => {
+  const mic = microphone();
+  const peer = new Peer();
+  const playback = deferred<void>();
+  const audio = {
+    srcObject: null as MediaStream | null,
+    play: vi.fn(async () => {}),
+  };
+  const media = new NativeVoiceWebRTC({
+    mediaStream: mic.stream,
+    createPeerConnection: () => peer as unknown as RTCPeerConnection,
+    onRemoteStream: () => playback.promise,
+    audioElement: audio,
+  });
+  await media.connect({ exchangeSdp: async () => 'answer' });
+  peer.ontrack!({ streams: [mic.stream] });
+  media.close();
+  playback.resolve();
+  await playback.promise;
+  await Promise.resolve();
+  expect(audio.srcObject).toBeNull();
+  expect(audio.play).not.toHaveBeenCalled();
 });

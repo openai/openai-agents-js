@@ -47,7 +47,10 @@ export class NativeVoiceWebRTC extends NativeVoiceMedia<MediaStream> {
       onDataChannel: (channel) =>
         captured.onDataChannel?.(channel as RTCDataChannel),
       play: async (stream) => {
-        captured.onRemoteStream?.(stream);
+        if (captured.onRemoteStream) {
+          await captured.onRemoteStream(stream);
+          if (this.status === 'closed') return;
+        }
         if (!audio && !captured.onRemoteStream)
           audio = document.createElement('audio');
         if (audio) {

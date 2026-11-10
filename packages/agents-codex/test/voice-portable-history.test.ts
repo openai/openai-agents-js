@@ -124,6 +124,43 @@ it('moves messages across unchanged tool anchors and captures caller input befor
   ).toEqual(['a', 'b']);
 });
 
+it('evaluates queued history updaters after preceding edits have been acknowledged', async () => {
+  const f = fixture([message('a')]);
+  const seen: unknown[][] = [];
+  const first = f.editor.update((history) => {
+    seen.push(history.map((item) => item.id));
+    return [...history, message('b')];
+  });
+  const second = f.editor.update((history) => {
+    seen.push(history.map((item) => item.id));
+    return [...history, message('c')];
+  });
+  await Promise.all([first, second]);
+  expect(seen).toEqual([['a'], ['a', 'b']]);
+  expect(f.view.providerSnapshot()).toEqual([
+    message('a'),
+    message('b'),
+    message('c'),
+  ]);
+  expect(f.commands.filter((command) => command.type === 'delete')).toEqual([]);
+});
+
+it('charges deferred updater results against queued arrays before editing', async () => {
+  const f = fixture();
+  const text = 'x'.repeat(1_100_000);
+  const editing = f.editor.update(() => [message('callback', text)]);
+  const queued = f.editor.update([message('array', text)]);
+  await expect(editing).rejects.toThrow('queue exceeds capacity');
+  await queued;
+  expect(f.view.providerSnapshot()).toEqual([message('array', text)]);
+  expect(
+    f.commands
+      .filter((command) => command.type === 'input')
+      .map((command) => command.item.id),
+  ).toEqual(['array']);
+  await f.editor.update((history) => history);
+});
+
 it('rejects invalid later rows and tool rewrites before any native preflight or provider edit', async () => {
   const tool = { id: 'tool', type: 'mcp_call', name: 'lookup' };
   const f = fixture([message('a'), tool]);
