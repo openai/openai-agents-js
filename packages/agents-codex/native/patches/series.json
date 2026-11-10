@@ -478,8 +478,8 @@
     },
     {
       "path": "0098-private-plain-modelclient-bridge.patch",
-      "sha256": "94111877b4a837ca0425f6d935de253fd603a895ff50a4a11cb913a9e4b1246a"
+      "sha256": "730c80d7198865783eff5a1ce5260f0336b3085b8ba30f7f84b6a8f7d0d18b25"
     }
   ],
-  "result_tree": "fc1d15b2fd98c3077da660c981bb1583762a607d"
+  "result_tree": "f1a29c70db4dd5cf266fae5e24436940170ef611"
 }

@@ -544,12 +544,17 @@ async fn prepare_and_collect(
         stop.clone(),
         admission,
     );
+    let selected_effort = request
+        .reasoning_effort
+        .clone()
+        .or(config.model_reasoning_effort.clone());
     let metadata = sdk_plain_run::metadata(
+        config,
+        &model,
+        selected_effort.clone(),
         engine.installation_id.clone(),
         state.session_id.to_string(),
-        state.session_id.to_string(),
         state.turn_id.clone(),
-        state.submission_id.clone(),
     );
     let telemetry = SessionTelemetry::new(
         state.session_id,
@@ -572,10 +577,7 @@ async fn prepare_and_collect(
                 &prompt,
                 &model,
                 &telemetry,
-                request
-                    .reasoning_effort
-                    .clone()
-                    .or(config.model_reasoning_effort.clone()),
+                selected_effort.clone(),
                 config
                     .model_reasoning_summary
                     .unwrap_or(ReasoningSummary::Auto),

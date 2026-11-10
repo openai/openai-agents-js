@@ -62,6 +62,67 @@ async function providerFor(server: ModelServer, streamMaxRetries = 0) {
   });
 }
 
+function plainMetadata(
+  request: ModelServer['requests'][number],
+  startedAt: number,
+  finishedAt: number,
+) {
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  expect(request).toMatchObject({
+    model: 'gpt-5',
+    reasoning: { effort: 'low' },
+  });
+  const metadata = request.client_metadata as Record<string, string>;
+  expect(metadata).toMatchObject({
+    'x-codex-installation-id': expect.stringMatching(uuid),
+    session_id: expect.stringMatching(uuid),
+    turn_id: expect.stringMatching(uuid),
+  });
+  expect(metadata.thread_id).toBe(metadata.session_id);
+  expect(metadata.root_turn_id).toBe(metadata.turn_id);
+  expect(request.prompt_cache_key).toBe(metadata.session_id);
+  expect(metadata['x-codex-window-id']).toBe(`${metadata.thread_id}:0`);
+  const turnMetadata = JSON.parse(metadata['x-codex-turn-metadata']!) as Record<
+    string,
+    unknown
+  >;
+  expect(turnMetadata).toMatchObject({
+    installation_id: metadata['x-codex-installation-id'],
+    session_id: metadata.session_id,
+    thread_id: metadata.thread_id,
+    turn_id: metadata.turn_id,
+    root_turn_id: metadata.root_turn_id,
+    window_id: metadata['x-codex-window-id'],
+    window_number: 0,
+    context_window_id: expect.stringMatching(uuid),
+    request_kind: 'turn',
+    agent_name: '/root',
+    sandbox: expect.any(String),
+    sandbox_mode: 'read-only',
+    auto_review_enabled: false,
+    node_repl_auto_review_required: false,
+    node_repl_disabled: false,
+    model: 'gpt-5',
+    reasoning_effort: 'low',
+  });
+  if (process.platform === 'linux') {
+    expect(turnMetadata.sandbox).toBe('seccomp');
+  }
+  expect(turnMetadata.context_window_id).not.toBe(metadata.thread_id);
+  expect(turnMetadata.context_window_id).not.toBe(metadata.turn_id);
+  expect(Number.isSafeInteger(turnMetadata.turn_started_at_unix_ms)).toBe(true);
+  expect(turnMetadata.turn_started_at_unix_ms).toBeGreaterThanOrEqual(
+    startedAt,
+  );
+  expect(turnMetadata.turn_started_at_unix_ms).toBeLessThanOrEqual(finishedAt);
+  expect(turnMetadata).not.toHaveProperty('analytics_enabled');
+  expect(turnMetadata).not.toHaveProperty('workspaces');
+  expect(turnMetadata).not.toHaveProperty('tool_namespaces_info');
+  expect(metadata).not.toHaveProperty('mcp_attribution');
+  return turnMetadata;
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await ModelServer.closeAll();
@@ -85,9 +146,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         native.Engine.prototype,
         'start_replaceable_thread',
       );
+      const firstStartedAt = Date.now();
       const first = await agent.run('first input');
+      const firstFinishedAt = Date.now();
       agent.instructions = 'Updated application instructions.';
+      const secondStartedAt = Date.now();
       const second = await agent.run('second input');
+      const secondFinishedAt = Date.now();
 
       expect([first.finalOutput, second.finalOutput]).toEqual([
         'answer 1',
@@ -98,6 +163,27 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(first.turn.sessionId).not.toBe(second.turn.sessionId);
       expect(first.turn.turnId).not.toBe(second.turn.turnId);
       expect(first.turn.submissionId).not.toBe(second.turn.submissionId);
+      const firstMetadata = plainMetadata(
+        server.requests[0]!,
+        firstStartedAt,
+        firstFinishedAt,
+      );
+      const secondMetadata = plainMetadata(
+        server.requests[1]!,
+        secondStartedAt,
+        secondFinishedAt,
+      );
+      expect(firstMetadata).toMatchObject({
+        session_id: first.turn.sessionId,
+        turn_id: first.turn.turnId,
+      });
+      expect(secondMetadata).toMatchObject({
+        session_id: second.turn.sessionId,
+        turn_id: second.turn.turnId,
+      });
+      expect(secondMetadata.context_window_id).not.toBe(
+        firstMetadata.context_window_id,
+      );
       expect(await first.turn.wait()).toBe(first);
       const aborted = AbortSignal.abort(new Error('only this late waiter'));
       expect(
@@ -310,13 +396,34 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         terminal,
       ]);
       await using provider = await providerFor(server, 1);
+      const startedAt = Date.now();
       const completed = await new Agent({
         instructions: 'Answer.',
         model: 'gpt-5',
+        modelSettings: { reasoningEffort: 'low' },
         provider,
       }).run('start');
+      const finishedAt = Date.now();
       expect(completed.finalOutput).toBe('answer 2');
       expect(server.requests).toHaveLength(2);
+      const firstMetadata = plainMetadata(
+        server.requests[0]!,
+        startedAt,
+        finishedAt,
+      );
+      const retriedMetadata = plainMetadata(
+        server.requests[1]!,
+        startedAt,
+        finishedAt,
+      );
+      expect(retriedMetadata).toEqual(firstMetadata);
+      expect(server.requests[1]!.client_metadata).toEqual(
+        server.requests[0]!.client_metadata,
+      );
+      expect(firstMetadata).toMatchObject({
+        session_id: completed.turn.sessionId,
+        turn_id: completed.turn.turnId,
+      });
       const originalInput = server.requests[0]!.input as unknown[];
       const recoveredInput = server.requests[1]!.input as unknown[];
       expect(recoveredInput.slice(0, originalInput.length)).toEqual(
