@@ -78,6 +78,8 @@ export function submitInputs(
 }
 ```
 
+Message/text input bounds: 8 MiB of native UTF-8 command JSON and the existing 8 MiB host queue/256-frame budget, including escaping, image extension fields and pending frames. Optional response creation: conservative frame reservation, even when Rust later coalesces it. Input capture has been evaluating getters/`toJSON()` once; capacity rejection has been raising synchronous `RangeError` before encoding or native mutation, with the session still usable for smaller inputs or retry after pending sends settle. Unsupported lone-surrogate Unicode: nonfatal `TypeError` before native dispatch.
+
 Audio input has been following the format in the accepted provider configuration. `commitAudio()` and `clearAudio()` have been controlling buffered input independently; committing audio has not been starting a response automatically.
 
 `sendAudio()` idle-queue segment limits: 3,145,692 raw bytes, or 3,145,665 with `commit: true`. Pending frames: smaller available capacity within the existing 8 MiB host queue and 256-frame limit. Capacity checks before encoding against both the native command limit and all resulting append/commit frames; synchronous `RangeError` on rejection, with the session still usable. Larger inputs: application-owned smaller segments, followed by `commitAudio()`, or retry after earlier sends settle.

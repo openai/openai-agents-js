@@ -9,6 +9,107 @@ const MAX_COMMAND_BYTES = 8 * 1024 * 1024;
 const MAX_QUEUED_SEND_BYTES = 8 * 1024 * 1024;
 const MAX_QUEUED_SENDS = 256;
 
+/** Bounded JSON capture before quoting/encoding fragments; invalid Unicode is rejected. */
+function boundedJSON(value: unknown, maxChars = MAX_COMMAND_BYTES): string {
+  let chars = 0;
+  let bytes = 0;
+  let root = true;
+  const counts = new WeakMap<object, number>();
+  const add = (units: number, utf8 = units) => {
+    chars += units;
+    bytes += utf8;
+    if (chars > maxChars || bytes > MAX_COMMAND_BYTES)
+      throw new RangeError('Portable voice input exceeds capacity.');
+  };
+  const string = (text: string) => {
+    if (
+      text.length > maxChars - chars - 2 ||
+      text.length > MAX_COMMAND_BYTES - bytes - 2
+    )
+      throw new RangeError('Portable voice input exceeds capacity.');
+    add(2);
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      if (code === 34 || code === 92) add(2);
+      else if (code < 32) add([8, 9, 10, 12, 13].includes(code) ? 2 : 6);
+      else if (code >= 0xd800 && code <= 0xdbff) {
+        const low = text.charCodeAt(++index);
+        if (!(low >= 0xdc00 && low <= 0xdfff))
+          throw new TypeError('Portable voice input contains invalid Unicode.');
+        add(2, 4);
+      } else if (code >= 0xdc00 && code <= 0xdfff)
+        throw new TypeError('Portable voice input contains invalid Unicode.');
+      else add(1, code < 128 ? 1 : code < 2048 ? 2 : 3);
+    }
+  };
+  const json = JSON.stringify(
+    value,
+    function (this: unknown, key: string, raw: unknown) {
+      let item = raw;
+      // JSON unboxes these primitives after the replacer. Capture conversion once.
+      if (item !== null && typeof item === 'object') {
+        let boxed: unknown;
+        try {
+          boxed = String.prototype.valueOf.call(item);
+        } catch {
+          /* Other JSON values. */
+        }
+        if (typeof boxed === 'string') item = String(item);
+        else {
+          try {
+            boxed = Number.prototype.valueOf.call(item);
+          } catch {
+            /* Other JSON values. */
+          }
+          if (typeof boxed === 'number') item = +(item as unknown as number);
+          else {
+            try {
+              boxed = Boolean.prototype.valueOf.call(item);
+            } catch {
+              /* Other JSON values. */
+            }
+            if (typeof boxed === 'boolean') item = boxed;
+          }
+        }
+      }
+      const omitted =
+        item === undefined ||
+        typeof item === 'function' ||
+        typeof item === 'symbol';
+      if (root) {
+        root = false;
+        if (omitted) return undefined;
+      } else {
+        const array = Array.isArray(this);
+        if (omitted && !array) return undefined;
+        if (omitted) item = null;
+        const parent = this as object;
+        const count = counts.get(parent) ?? 0;
+        if (count) add(1);
+        counts.set(parent, count + 1);
+        if (!array) {
+          string(key);
+          add(1);
+        }
+      }
+      if (item === null) add(4);
+      else if (typeof item === 'string') string(item);
+      else if (typeof item === 'number') add(JSON.stringify(item).length);
+      else if (typeof item === 'boolean') add(item ? 4 : 5);
+      else if (typeof item === 'bigint')
+        throw new TypeError('Portable voice input must be JSON.');
+      else if (typeof item === 'object') {
+        add(2);
+        counts.set(item, 0);
+      }
+      return item;
+    },
+  );
+  if (json === undefined)
+    throw new TypeError('Portable voice input must be JSON.');
+  return json;
+}
+
 /** Host effects for the target-neutral Rust Realtime control crate. */
 export interface PortableVoiceTransport {
   send(frame: string): void | Promise<void>;
@@ -91,7 +192,7 @@ export class NativeVoiceControl {
   }
 
   apply(command: unknown): Effect[] {
-    const input = this.#encode.encode(JSON.stringify(command));
+    const input = this.#encode.encode(boundedJSON(command));
     const pointer = this.#exports.input_buffer(input.length);
     if (!pointer) throw new Error('Native voice command exceeds capacity.');
     new Uint8Array(this.#exports.memory.buffer, pointer, input.length).set(
@@ -198,18 +299,74 @@ export class PortableVoiceSession {
   }
 
   sendText(text: string): void {
-    this.#sendInput({ type: 'text', text });
+    if (typeof text !== 'string')
+      throw new TypeError('Portable voice text must be a string.');
+    this.#sendMessageInput({ type: 'text', text }, true);
   }
 
   sendMessage(
     content: readonly PortableVoiceMessageContent[],
     { triggerResponse = true }: { triggerResponse?: boolean } = {},
   ): void {
-    this.#sendInput({
-      type: 'message',
-      content,
-      trigger_response: triggerResponse,
-    });
+    this.#sendMessageInput(
+      { type: 'message', content, trigger_response: triggerResponse },
+      triggerResponse,
+    );
+  }
+
+  #sendMessageInput(
+    command:
+      | { type: 'text'; text: string }
+      | {
+          type: 'message';
+          content: readonly PortableVoiceMessageContent[];
+          trigger_response: boolean;
+        },
+    respond: boolean,
+  ): void {
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    if (typeof respond !== 'boolean')
+      throw new TypeError('Portable voice triggerResponse must be a boolean.');
+    const content =
+      command.type === 'text' ? [{ type: 'input_text', text: '' }] : [];
+    const emptyCommand =
+      command.type === 'text'
+        ? { type: 'text', text: '' }
+        : { type: 'message', content: [], trigger_response: respond };
+    const frame = {
+      type: 'conversation.item.create',
+      item: { type: 'message', role: 'user', content },
+    };
+    const overhead =
+      JSON.stringify(frame).length - JSON.stringify(emptyCommand).length;
+    const responseChars = respond
+      ? JSON.stringify({ type: 'response.create' }).length
+      : 0;
+    if (this.#queuedSends + (respond ? 2 : 1) > MAX_QUEUED_SENDS)
+      throw new RangeError('Portable voice input exceeds capacity.');
+    const available =
+      (MAX_QUEUED_SEND_BYTES - this.#queuedSendBytes) / 2 -
+      overhead -
+      responseChars;
+    // Capture getters/toJSON once; apply() receives detached JSON data.
+    const captured = JSON.parse(boundedJSON(command, available));
+    if (command.type === 'message') {
+      if (!Array.isArray(captured.content) || captured.content.length === 0)
+        throw new TypeError('A Realtime message needs content.');
+      for (const part of captured.content) {
+        if (
+          !part ||
+          typeof part !== 'object' ||
+          Array.isArray(part) ||
+          !(
+            (part.type === 'input_text' && typeof part.text === 'string') ||
+            (part.type === 'input_image' && typeof part.image_url === 'string')
+          )
+        )
+          throw new TypeError('Invalid portable voice message content.');
+      }
+    }
+    this.#sendInput(captured);
   }
 
   /** Append bytes in the format selected by the accepted session configuration. */

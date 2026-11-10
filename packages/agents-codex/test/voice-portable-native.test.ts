@@ -561,6 +561,325 @@ describe.runIf(enabled)('portable Rust control', () => {
     ).toThrow('already retired');
   });
 
+  async function inputSession(hold = false) {
+    const gate = Promise.withResolvers<void>();
+    const frames: {
+      type: string;
+      item?: { content: Record<string, unknown>[] };
+    }[] = [];
+    const onError = vi.fn();
+    const close = vi.fn();
+    let items = 0;
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+          if (
+            event.type === 'conversation.item.create' &&
+            ++items === 1 &&
+            hold
+          )
+            return gate.promise;
+        },
+        close,
+      },
+      { model: 'test-realtime', instructions: 'Help.', onError },
+    );
+    await session.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { session, frames, onError, close, gate };
+  }
+
+  it.each(['text', 'image', 'sendText'])(
+    'rejects oversized %s before UTF8 encoding without retiring the owner',
+    async (kind) => {
+      const f = await inputSession();
+      const huge = 'x'.repeat(32 * 1024 * 1024);
+      const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+      try {
+        expect(() => {
+          if (kind === 'sendText') f.session.sendText(huge);
+          else
+            f.session.sendMessage(
+              [
+                kind === 'text'
+                  ? { type: 'input_text', text: huge }
+                  : { type: 'input_image', image_url: huge },
+              ],
+              { triggerResponse: false },
+            );
+        }).toThrow('Portable voice input exceeds capacity');
+        expect(encode).not.toHaveBeenCalled();
+        expect(f.onError).not.toHaveBeenCalled();
+        expect(f.close).not.toHaveBeenCalled();
+        f.session.sendMessage([{ type: 'input_text', text: 'usable' }], {
+          triggerResponse: false,
+        });
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.type).toBe('conversation.item.create'),
+        );
+      } finally {
+        encode.mockRestore();
+        await f.session.close();
+      }
+    },
+  );
+
+  it.each(['sendText', 'message-response'])(
+    'accepts the exact default-response boundary for %s',
+    async (kind) => {
+      const f = await inputSession();
+      const frame = JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '' }],
+        },
+      });
+      const length =
+        4 * 1024 * 1024 -
+        frame.length -
+        JSON.stringify({ type: 'response.create' }).length;
+      const text = 'x'.repeat(length);
+      try {
+        if (kind === 'sendText') f.session.sendText(text);
+        else f.session.sendMessage([{ type: 'input_text', text }]);
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.type).toBe('response.create'),
+        );
+        expect(
+          f.frames.find((frame) => frame.type === 'conversation.item.create')
+            ?.item?.content[0]?.text,
+        ).toBe(text);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(() => {
+          if (kind === 'sendText') f.session.sendText(text + 'x');
+          else
+            f.session.sendMessage([{ type: 'input_text', text: text + 'x' }]);
+        }).toThrow('Portable voice input exceeds capacity');
+        expect(f.onError).not.toHaveBeenCalled();
+        expect(f.close).not.toHaveBeenCalled();
+      } finally {
+        await f.session.close();
+      }
+    },
+  );
+  it('rejects an oversized escaped image key before encoding without retirement', async () => {
+    const f = await inputSession();
+    const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+    try {
+      expect(() =>
+        f.session.sendMessage(
+          [
+            {
+              type: 'input_image',
+              image_url: 'image',
+              ['\n'.repeat(8 * 1024 * 1024)]: 1,
+            },
+          ],
+          { triggerResponse: false },
+        ),
+      ).toThrow('Portable voice input exceeds capacity');
+      expect(encode).not.toHaveBeenCalled();
+      expect(f.onError).not.toHaveBeenCalled();
+      expect(f.close).not.toHaveBeenCalled();
+      f.session.sendText('usable');
+      await vi.waitFor(() =>
+        expect(f.frames.at(-1)?.type).toBe('response.create'),
+      );
+    } finally {
+      encode.mockRestore();
+      await f.session.close();
+    }
+  });
+
+  it.each(['x', '"', '\\', '\n', '€', '🙂'])(
+    'preserves the exact message byte/character boundary for %s',
+    async (unit) => {
+      const f = await inputSession();
+      const empty = [{ type: 'input_text', text: '' }];
+      const command = JSON.stringify({
+        type: 'message',
+        content: empty,
+        trigger_response: false,
+      });
+      const frame = JSON.stringify({
+        type: 'conversation.item.create',
+        item: { type: 'message', role: 'user', content: empty },
+      });
+      const fragment = JSON.stringify(unit).slice(1, -1);
+      const length = Math.min(
+        Math.floor((4 * 1024 * 1024 - frame.length) / fragment.length),
+        Math.floor(
+          (8 * 1024 * 1024 - new TextEncoder().encode(command).length) /
+            new TextEncoder().encode(fragment).length,
+        ),
+      );
+      const text = unit.repeat(length);
+      try {
+        f.session.sendMessage([{ type: 'input_text', text }], {
+          triggerResponse: false,
+        });
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.item?.content[0]?.text).toBe(text),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(() =>
+          f.session.sendMessage([{ type: 'input_text', text: text + unit }], {
+            triggerResponse: false,
+          }),
+        ).toThrow('Portable voice input exceeds capacity');
+        expect(f.onError).not.toHaveBeenCalled();
+        expect(f.close).not.toHaveBeenCalled();
+        f.session.sendText('still usable');
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.type).toBe('response.create'),
+        );
+      } finally {
+        await f.session.close();
+      }
+    },
+  );
+
+  it('captures image fields and getters/toJSON once with escaped keys and nested arrays', async () => {
+    const f = await inputSession();
+    let reads = 0;
+    let jsonCalls = 0;
+    const image = {
+      type: 'input_image' as const,
+      get image_url() {
+        reads++;
+        return 'data:image/png;base64,AA==';
+      },
+      detail: 'high',
+      'escaped"\\\n€': {
+        a: [null, true, 1e21, 1e-6, Number.MIN_VALUE, undefined, '🙂'],
+      },
+      custom: {
+        toJSON() {
+          jsonCalls++;
+          return { label: 'kept', nested: [['x']] };
+        },
+      },
+    };
+    try {
+      f.session.sendMessage([image], { triggerResponse: false });
+      await vi.waitFor(() =>
+        expect(f.frames.at(-1)?.item?.content).toHaveLength(1),
+      );
+      expect(reads).toBe(1);
+      expect(jsonCalls).toBe(1);
+      expect(f.frames.at(-1)?.item?.content[0]).toEqual({
+        type: 'input_image',
+        image_url: 'data:image/png;base64,AA==',
+        detail: 'high',
+        'escaped"\\\n€': {
+          a: [null, true, 1e21, 1e-6, Number.MIN_VALUE, null, '🙂'],
+        },
+        custom: { label: 'kept', nested: [['x']] },
+      });
+      expect(f.onError).not.toHaveBeenCalled();
+    } finally {
+      await f.session.close();
+    }
+  });
+
+  it.each(['bytes', 'frames'])(
+    'rejects messages against pending %s then retries after drain',
+    async (kind) => {
+      const f = await inputSession(true);
+      try {
+        f.session.sendMessage([{ type: 'input_text', text: 'held' }], {
+          triggerResponse: false,
+        });
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.type).toBe('conversation.item.create'),
+        );
+        if (kind === 'frames')
+          for (let index = 1; index < 256; index++)
+            f.session.sendMessage([{ type: 'input_text', text: '' }], {
+              triggerResponse: false,
+            });
+        const empty = JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: '' }],
+          },
+        });
+        const text =
+          kind === 'bytes'
+            ? 'x'.repeat(4 * 1024 * 1024 - empty.length)
+            : 'small';
+        expect(() =>
+          f.session.sendMessage([{ type: 'input_text', text }], {
+            triggerResponse: false,
+          }),
+        ).toThrow('Portable voice input exceeds capacity');
+        expect(f.onError).not.toHaveBeenCalled();
+        expect(f.close).not.toHaveBeenCalled();
+        f.gate.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        f.session.sendMessage([{ type: 'input_text', text }], {
+          triggerResponse: false,
+        });
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.item?.content[0]?.text).toBe(text),
+        );
+        expect(f.onError).not.toHaveBeenCalled();
+      } finally {
+        f.gate.resolve();
+        await f.session.close();
+      }
+    },
+  );
+
+  it.each(['invalid-unicode', 'cycle', 'deep-array', 'sparse-array'])(
+    'rejects unsupported/bounded %s without mutating the owner',
+    async (kind) => {
+      const f = await inputSession();
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      let nested: unknown = 'x';
+      for (let index = 0; index < 10000; index++) nested = [nested];
+      const value =
+        kind === 'cycle'
+          ? circular
+          : kind === 'deep-array'
+            ? nested
+            : kind === 'sparse-array'
+              ? new Array(5_000_000)
+              : '\ud800';
+      try {
+        expect(() =>
+          f.session.sendMessage(
+            [{ type: 'input_image', image_url: 'image', extra: value }],
+            { triggerResponse: false },
+          ),
+        ).toThrow();
+        expect(f.onError).not.toHaveBeenCalled();
+        expect(f.close).not.toHaveBeenCalled();
+        f.session.sendText('usable');
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.type).toBe('response.create'),
+        );
+      } finally {
+        await f.session.close();
+      }
+    },
+  );
+
   it.each(['idle', 'pending', 'queued-created', 'queued-terminal'])(
     'binds automatic speech interruption to arrival ownership: %s',
     async (owner) => {
