@@ -12,7 +12,7 @@ use codex_core::{
     config::validate_environment_network_policy, windows_sandbox::WindowsSandboxLevelExt,
 };
 use codex_core_api::{
-    Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
+    AbsolutePathBuf, Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
     NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec, SqliteConfig,
 };
 use codex_exec_server::{
@@ -104,6 +104,8 @@ pub struct EnvironmentOptions {
     connect_timeout: Option<f64>,
     capability_directories: Option<Vec<PathUri>>,
     writable_roots: Option<Vec<PathUri>>,
+    #[serde(default)]
+    read_only_roots: Vec<PathUri>,
     #[serde(default)]
     read_only: bool,
     #[serde(default, deserialize_with = "deserialize_mounts")]
@@ -256,6 +258,7 @@ fn deserialize_network<'de, D: Deserializer<'de>>(
 pub(crate) struct StrictExecutorWrites {
     canonical_cwd: PathUri,
     root_pins: HashMap<Vec<u8>, PathUri>,
+    read_only_roots: Vec<PathUri>,
     has_storage_mounts: bool,
     read_only: bool,
 }
@@ -263,7 +266,7 @@ pub(crate) struct StrictExecutorWrites {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LocalPrivatePaths<'a> {
     pub(crate) storage: Option<&'a Path>,
-    pub(crate) saved_login_file: Option<&'a Path>,
+    pub(crate) saved_login_file: Option<&'a crate::auth::SavedLoginFile>,
 }
 
 impl StrictExecutorWrites {
@@ -287,6 +290,7 @@ impl StrictExecutorWrites {
         let roots = self
             .root_pins
             .values()
+            .chain(&self.read_only_roots)
             .map(PathUri::to_abs_path)
             .collect::<Result<Vec<_>, _>>()?;
         let roots = LocalWriteRoots::new(&roots).context("could not verify local write roots")?;
@@ -412,6 +416,10 @@ impl EnvironmentOptions {
     }
 
     pub(crate) fn check_config(&self, config: &Config) -> Result<()> {
+        ensure!(
+            self.read_only_roots.is_empty() || (self.local && cfg!(target_os = "macos")),
+            "read_only_roots requires a local macOS Environment"
+        );
         if self.read_only {
             ensure!(
                 self.strict_writes(),
@@ -530,7 +538,7 @@ impl EnvironmentOptions {
             linked_mount_files.extend(linked_local_protected_files(
                 &canonical,
                 false,
-                /*storage_mount*/ true,
+                Some(STORAGE_MOUNT_ENTRY_ERROR),
                 "Could not inspect storage mount files for hard links",
             )?);
             mounts.push(path);
@@ -566,6 +574,7 @@ impl EnvironmentOptions {
                     .context("could not resolve an executor write root")
             })
             .collect::<Result<Vec<_>>>()?;
+        validate_local_read_only_roots(config, &self.read_only_roots, &roots, private_paths)?;
         let roots = LocalWriteRoots::new(&roots).context("could not verify local write roots")?;
         check_local_session_write_roots(config, &roots, private_paths).map(drop)
     }
@@ -682,6 +691,7 @@ impl EnvironmentOptions {
                 &self.cwd,
                 self.writable_roots.as_deref().unwrap_or_default(),
                 &mounts,
+                &self.read_only_roots,
                 private_paths,
                 self.read_only,
             )
@@ -933,15 +943,19 @@ async fn strict_write_profile(
     cwd: &PathUri,
     additional: &[PathUri],
     mounts: &[PathUri],
+    read_only_roots: &[PathUri],
     private_paths: LocalPrivatePaths<'_>,
     read_only: bool,
 ) -> Result<(StrictExecutorWrites, PermissionProfileSnapshot)> {
+    let platform = Platform::from_platform_os(info.platform_os.as_deref());
     ensure!(
-        matches!(
-            Platform::from_platform_os(info.platform_os.as_deref()),
-            Platform::Linux | Platform::Macos
-        ) && info.capabilities.sandboxed_file_streaming,
+        matches!(platform, Platform::Linux | Platform::Macos)
+            && info.capabilities.sandboxed_file_streaming,
         "strict executor write policy requires a Linux or macOS executor with sandboxed file access"
+    );
+    ensure!(
+        read_only_roots.is_empty() || (!environment.is_remote() && platform == Platform::Macos),
+        "read_only_roots requires a local macOS Environment"
     );
     // Resolve on the executor, so controller path aliases cannot change the grant.
     let filesystem = environment.get_filesystem();
@@ -988,11 +1002,14 @@ async fn strict_write_profile(
     roots[1..].sort_by_key(ToString::to_string);
     let mut filesystem_policy = workspace_profile(&roots).file_system_sandbox_policy();
     let mut saved_login_deny = None;
+    let mut read_grants = Vec::new();
     if !environment.is_remote() {
         let local_roots = roots
             .iter()
             .map(PathUri::to_abs_path)
             .collect::<Result<Vec<_>, _>>()?;
+        read_grants =
+            validate_local_read_only_roots(config, read_only_roots, &local_roots, private_paths)?;
         let local_roots =
             LocalWriteRoots::new(&local_roots).context("could not verify local write roots")?;
         check_local_helper_write_roots(config, &local_roots)?;
@@ -1027,11 +1044,16 @@ async fn strict_write_profile(
     });
     filesystem_policy
         .entries
-        .extend(mounts.iter().map(|path| FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path: path.clone() },
-            access: FileSystemAccessMode::Read,
-            missing_path_behavior: None,
-        }));
+        .extend(
+            mounts
+                .iter()
+                .chain(&read_grants)
+                .map(|path| FileSystemSandboxEntry {
+                    path: FileSystemPath::Path { path: path.clone() },
+                    access: FileSystemAccessMode::Read,
+                    missing_path_behavior: None,
+                }),
+        );
     // Intersect after the strict roots and Minimal have been applied.
     let profile = PermissionProfile::from_runtime_permissions(
         &filesystem_policy,
@@ -1050,11 +1072,73 @@ async fn strict_write_profile(
         StrictExecutorWrites {
             canonical_cwd: roots[0].clone(),
             root_pins,
+            read_only_roots: read_grants,
             has_storage_mounts: !mounts.is_empty(),
             read_only,
         },
         profile,
     ))
+}
+
+fn validate_local_read_only_roots(
+    config: &Config,
+    declarations: &[PathUri],
+    write_paths: &[AbsolutePathBuf],
+    private_paths: LocalPrivatePaths<'_>,
+) -> Result<Vec<PathUri>> {
+    let invalid = "read_only_roots requires disjoint canonical existing directories below the filesystem root";
+    let mut roots = Vec::with_capacity(declarations.len());
+    for declaration in declarations {
+        let path = declaration.to_abs_path().context(invalid)?;
+        let canonical = path.canonicalize().context(invalid)?;
+        ensure!(
+            canonical.as_os_str() == path.as_os_str()
+                && canonical.parent().is_some()
+                && canonical.is_dir(),
+            "{invalid}"
+        );
+        let root = LocalWriteRoots::new(std::slice::from_ref(&canonical)).context(invalid)?;
+        for other in write_paths.iter().chain(&roots) {
+            ensure!(
+                !root.contains_entry(other.as_path()).context(invalid)?
+                    && !root
+                        .has_root_at_or_below(other.as_path())
+                        .context(invalid)?,
+                "{invalid}"
+            );
+        }
+        let private = "read_only_roots must not expose private SDK state";
+        check_local_session_write_roots(config, &root, private_paths).context(private)?;
+        if let Some(login) = private_paths.saved_login_file {
+            resolve_local_protected_path(&root, &login.declared, private, private)?;
+            if let Some(parent) = login.canonical.parent() {
+                // Saved login refresh stages a replacement alongside the current file.
+                resolve_local_protected_path(&root, parent, private, private)?;
+            }
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let linked = linked_local_protected_files(
+                canonical.as_path(),
+                false,
+                Some(
+                    "read_only_roots supports only regular files, directories, and symlink entries",
+                ),
+                "could not inspect a read_only_roots directory",
+            )?;
+            ensure!(
+                linked.is_empty(),
+                "read_only_roots must not contain hard-linked files"
+            );
+        }
+        roots.push(canonical);
+    }
+    let mut grants = roots
+        .iter()
+        .map(|root| PathUri::from_host_native_path(root.as_path()).context(invalid))
+        .collect::<Result<Vec<_>>>()?;
+    grants.sort_by_key(ToString::to_string);
+    Ok(grants)
 }
 
 fn check_local_helper_write_roots(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<()> {
@@ -1146,7 +1230,8 @@ fn check_local_session_write_roots(
     };
     let resolve_error = "could not inspect the saved Codex login file";
     let overlap_error = "Keep the saved Codex login outside local executor grants";
-    let resolved = resolve_local_protected_path(roots, file, resolve_error, overlap_error)?;
+    let resolved =
+        resolve_local_protected_path(roots, &file.canonical, resolve_error, overlap_error)?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(linked) = linked_local_regular_file(resolved.clone()).context(resolve_error)? {
         ensure!(
@@ -1171,7 +1256,7 @@ fn check_local_protected_path(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let mut linked_files =
-            linked_local_protected_files(&resolved, private_runtime_home, false, resolve_error)?;
+            linked_local_protected_files(&resolved, private_runtime_home, None, resolve_error)?;
         if path == sqlite.home() {
             linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
             linked_files.extend(linked_relocated_rollout_files(roots, &resolved)?);
@@ -1191,6 +1276,10 @@ fn check_local_protected_path(
 
 const LOCAL_STORAGE_OVERLAP: &str =
     "Keep local session storage outside the executor cwd and writable roots";
+
+#[cfg(target_os = "linux")]
+const STORAGE_MOUNT_ENTRY_ERROR: &str =
+    "Storage mounts support only regular files, directories, and symlink entries";
 
 fn resolve_local_rollout_path(roots: &LocalWriteRoots<'_>, path: &Path) -> Result<PathBuf> {
     resolve_local_protected_path(
@@ -1368,7 +1457,7 @@ fn linked_relocated_sqlite_files(
 fn linked_local_protected_files(
     root: &Path,
     private_runtime_home: bool,
-    storage_mount: bool,
+    strict_tree_error: Option<&'static str>,
     resolve_error: &'static str,
 ) -> Result<Vec<PathBuf>> {
     use std::fs;
@@ -1379,17 +1468,23 @@ fn linked_local_protected_files(
     while let Some(directory) = directories.pop() {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
-            Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
+            Err(error) if strict_tree_error.is_none() && error.kind() == ErrorKind::NotFound => {
+                continue;
+            }
             Err(error) => return Err(error).context(resolve_error),
         };
         for entry in entries {
             let entry = entry.context(resolve_error)?;
             // DirEntry::metadata does not follow symlinks. Native state can
-            // also disappear during a normal rename or cleanup; mounted sources
-            // must remain enumerable, so their scans cannot ignore missing entries.
+            // also disappear during a normal rename or cleanup. Caller-selected
+            // directories must remain enumerable, so their scans reject missing entries.
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
-                Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
+                Err(error)
+                    if strict_tree_error.is_none() && error.kind() == ErrorKind::NotFound =>
+                {
+                    continue;
+                }
                 Err(error) => return Err(error).context(resolve_error),
             };
             // The SDK creates and owns this temporary directory. Public
@@ -1398,13 +1493,12 @@ fn linked_local_protected_files(
                 !private_runtime_home || !metadata.file_type().is_symlink(),
                 "symbolic links inside the private native runtime home are unsupported"
             );
-            ensure!(
-                !storage_mount
-                    || metadata.is_dir()
-                    || metadata.is_file()
-                    || metadata.file_type().is_symlink(),
-                "Storage mounts support only regular files, directories, and symlink entries"
-            );
+            if let Some(error) = strict_tree_error {
+                ensure!(
+                    metadata.is_dir() || metadata.is_file() || metadata.file_type().is_symlink(),
+                    "{error}"
+                );
+            }
             if metadata.is_dir() {
                 directories.push(entry.path());
             } else if metadata.is_file() && metadata.nlink() > 1 {
@@ -1517,6 +1611,7 @@ pub(crate) async fn replace_writable_roots(
         &selection.cwd,
         &writable_roots,
         &[],
+        &previous.read_only_roots,
         private_paths,
         previous.read_only,
     )
@@ -1599,18 +1694,21 @@ pub(crate) fn check_checkpoint_policy(
     recorded: Option<&str>,
     startup: &codex_core_api::StartThreadOptions,
 ) -> Result<()> {
+    let strict = startup.thread_extension_init.get::<StrictExecutorWrites>();
     if let Some(expected) = recorded {
         ensure!(
-            startup
-                .thread_extension_init
-                .get::<StrictExecutorWrites>()
-                .is_some()
+            strict.is_some()
                 && expected
                     == digest(&executor_policy_values(
                         startup.environments.as_deref().unwrap_or_default(),
                         &startup.config,
                     )?)?,
             "Restore requires the recorded executor write and network policy"
+        );
+    } else {
+        ensure!(
+            strict.is_none_or(|policy| policy.read_only_roots.is_empty()),
+            "Restore requires the recorded executor policy for read-only roots"
         );
     }
     Ok(())
@@ -2365,6 +2463,126 @@ mod tests {
         assert_eq!(readiness_outcome(events), LocalSandboxOutcome::Ready);
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn read_only_roots_admit_stable_directories_and_protect_private_paths() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::os::unix::net::UnixListener;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let base = temporary.path().canonicalize().unwrap();
+        let cwd = base.join("work");
+        let source = base.join("skills");
+        let child = source.join("child");
+        let second = base.join("resources");
+        let home = base.join("home");
+        let login_home = base.join("login");
+        for path in [&cwd, &source, &child, &second, &home, &login_home] {
+            fs::create_dir(path).unwrap();
+        }
+        let (config, _) = crate::config::load(
+            "{}",
+            &json!({
+                "codex_home": home, "cwd": cwd,
+                "loader":{"ignore_user_config":true,"ignore_project_config":true}
+            })
+            .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+        let uri = |path: &Path| PathUri::from_host_native_path(path).unwrap();
+        let write = [uri(&cwd).to_abs_path().unwrap()];
+        let validate = |paths: &[&Path], private| {
+            let declarations: Vec<_> = paths.iter().map(|path| uri(path)).collect();
+            validate_local_read_only_roots(&config, &declarations, &write, private)
+        };
+        let private = LocalPrivatePaths::default();
+        assert_eq!(
+            validate(&[&source, &second], private).unwrap(),
+            vec![uri(&second), uri(&source)]
+        );
+        let alias = base.join("alias");
+        symlink(&source, &alias).unwrap();
+        let regular = source.join("marker");
+        fs::write(&regular, b"fixture").unwrap();
+        let work_child = cwd.join("child");
+        fs::create_dir(&work_child).unwrap();
+        for path in [
+            &base,
+            &cwd,
+            &work_child,
+            &alias,
+            &regular,
+            &base.join("missing"),
+        ] {
+            assert!(validate(&[path], private).is_err(), "{path:?}");
+        }
+        for paths in [[source.as_path(), child.as_path()], [&child, &source]] {
+            assert!(validate(&paths, private).is_err());
+        }
+        assert!(validate(&[&home], private).is_err());
+
+        let hard_link = source.join("linked");
+        fs::hard_link(&regular, &hard_link).unwrap();
+        assert!(
+            validate(&[&source], private)
+                .unwrap_err()
+                .to_string()
+                .contains("hard-linked")
+        );
+        fs::remove_file(hard_link).unwrap();
+        let _socket = UnixListener::bind(source.join("socket")).unwrap();
+        assert!(
+            validate(&[&source], private)
+                .unwrap_err()
+                .to_string()
+                .contains("only regular files")
+        );
+
+        // The durable profile alias resolves into the proposed read grant.
+        let storage = base.join("profile");
+        symlink(&second, &storage).unwrap();
+        assert!(
+            validate(
+                &[&second],
+                LocalPrivatePaths {
+                    storage: Some(&storage),
+                    ..private
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("private SDK state")
+        );
+
+        // The declared alias and the actual atomic refresh directory are
+        // separate filesystem entries. Neither belongs to a read grant.
+        let login_alias = second.join("login");
+        symlink(&login_home, &login_alias).unwrap();
+        let auth = login_home.join("auth.json");
+        fs::write(&auth, b"synthetic").unwrap();
+        let login = crate::auth::SavedLoginFile {
+            declared: login_alias.join("auth.json"),
+            canonical: auth,
+        };
+        let private = LocalPrivatePaths {
+            saved_login_file: Some(&login),
+            ..private
+        };
+        let refresh_directory_child = login_home.join("resources");
+        fs::create_dir(&refresh_directory_child).unwrap();
+        for path in [&second, &refresh_directory_child] {
+            assert!(
+                validate(&[path], private)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("private SDK state")
+            );
+        }
+    }
+
     #[test]
     fn mount_wire_rejects_unknown_authority_without_reflecting_secrets() {
         let error = serde_json::from_value::<EnvironmentOptions>(json!({
@@ -2544,21 +2762,22 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let missing = temporary.path().join("disappeared-directory");
         let error = "Could not inspect storage mount files for hard links";
+        let mount_tree = Some(STORAGE_MOUNT_ENTRY_ERROR);
         assert_eq!(
-            linked_local_protected_files(&missing, false, true, error)
+            linked_local_protected_files(&missing, false, mount_tree, error)
                 .unwrap_err()
                 .to_string(),
             error
         );
         // Private SDK state retains its existing allowance for absent files.
         assert!(
-            linked_local_protected_files(&missing, false, false, error)
+            linked_local_protected_files(&missing, false, None, error)
                 .unwrap()
                 .is_empty()
         );
         let file = temporary.path().join("not-a-directory");
         std::fs::write(&file, "caller-owned").unwrap();
-        assert!(linked_local_protected_files(&file, false, true, error).is_err());
+        assert!(linked_local_protected_files(&file, false, mount_tree, error).is_err());
         assert_eq!(std::fs::read_to_string(file).unwrap(), "caller-owned");
     }
 
@@ -2580,16 +2799,17 @@ mod tests {
         let _outside_listener = UnixListener::bind(&outside).unwrap();
         symlink(&outside, nested.join("unfollowed-socket-link")).unwrap();
         let error = "Could not inspect storage mount files";
+        let mount_tree = Some(STORAGE_MOUNT_ENTRY_ERROR);
         // The symlink entry is allowed; its special-file target is not inspected.
         assert!(
-            linked_local_protected_files(&source, false, true, error)
+            linked_local_protected_files(&source, false, mount_tree, error)
                 .unwrap()
                 .is_empty()
         );
         let endpoint = source.join("socket");
         let _listener = UnixListener::bind(&endpoint).unwrap();
         let original = fs::symlink_metadata(&endpoint).unwrap();
-        let rejected = linked_local_protected_files(&source, false, true, error).unwrap_err();
+        let rejected = linked_local_protected_files(&source, false, mount_tree, error).unwrap_err();
         assert!(
             rejected
                 .to_string()
@@ -2598,7 +2818,7 @@ mod tests {
         // The shared collector must not add a special-file restriction to
         // private-state scans, which use their existing symlink rules.
         assert!(
-            linked_local_protected_files(&source, false, false, error)
+            linked_local_protected_files(&source, false, None, error)
                 .unwrap()
                 .is_empty()
         );
@@ -2638,6 +2858,7 @@ mod tests {
         let strict = StrictExecutorWrites {
             canonical_cwd: cwd.clone(),
             root_pins: HashMap::from([(write_root_key(&cwd), cwd)]),
+            read_only_roots: Vec::new(),
             has_storage_mounts: false,
             read_only: false,
         };
