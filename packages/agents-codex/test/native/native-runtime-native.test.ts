@@ -4,7 +4,7 @@ import type { Engine, _PlainRun } from '../../native/index.js';
 import type { Socket } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeError, NativeProvider, NativeRuntime } from '../../src';
-import { binding } from '../../src/runtime/binding';
+import { binding, type JsonObject } from '../../src/runtime/binding';
 import { NativeProviderRoutes } from '../../src/runtime/http-model';
 import { ModelServer, message } from './fixtures/model-server';
 
@@ -500,7 +500,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       30_000,
     );
 
-    it('keeps a busy kernel exclusive and does not replace it with concurrent fallback', async () => {
+    it('shares an admitted Engine with an overlapping matching call', async () => {
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const model = new ModelServer([
@@ -509,7 +509,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           await release.promise;
           return [message('first')];
         },
-        [message('busy fallback')],
+        [message('matching overlap')],
         [message('reused')],
       ]);
       const url = await baseUrl(model);
@@ -530,10 +530,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             throw new Error('first run settled before request');
           }),
         ]);
-        expect((await agentFor(second).run('busy marker')).finalOutput).toBe(
-          'busy fallback',
-        );
-        expect(calls[1].engine).not.toBe(calls[0].engine);
+        expect(
+          (await agentFor(second).run('overlapping marker')).finalOutput,
+        ).toBe('matching overlap');
+        expect(calls[1].engine).toBe(calls[0].engine);
         await second.close();
         await expect(owner.close()).rejects.toThrow('borrowing Providers');
       } finally {
@@ -684,5 +684,283 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(calls[1].engine).not.toBe(calls[0].engine);
       model.assertExhausted();
     }, 30_000);
+  },
+);
+
+describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
+  'NativeRuntime concurrent plain leases',
+  () => {
+    it('keeps four matching runs on one Engine while mismatches and full Sessions stay independent', async () => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let arrivals = 0;
+      const held = async (request: JsonObject) => {
+        if (++arrivals === 4) entered.resolve();
+        await release.promise;
+        const marker = JSON.stringify(request.input).match(
+          /concurrency-lane-[0-3]/,
+        )?.[0];
+        if (!marker) throw new Error('Missing unique lane marker');
+        return [message(marker)];
+      };
+      const model = new ModelServer([
+        [message('prime')],
+        held,
+        held,
+        held,
+        held,
+        [message('different key')],
+        [message('different config')],
+        [message('ordinary session')],
+        [message('still shared')],
+      ]);
+      await using owner = new NativeRuntime();
+      const options = {
+        runtime: owner,
+        baseUrl: await baseUrl(model),
+        apiKey: 'concurrent-key',
+      };
+      const calls = await runtimeStarts();
+      await using prime = new NativeProvider(options);
+      await agentFor(prime).run('prime');
+      await prime.close();
+      const providers = Array.from(
+        { length: 4 },
+        () => new NativeProvider(options),
+      );
+      const controllers = providers.map(() => new AbortController());
+      const runs = providers.map((p, i) =>
+        agentFor(p).run(`concurrency-lane-${i}`, {
+          signal: controllers[i].signal,
+        }),
+      );
+      const settled = Promise.allSettled(runs);
+      const timeout = Promise.withResolvers<never>();
+      const timeoutError = new Error('concurrent witness exceeded 10 seconds');
+      let expired = false;
+      let checked = false;
+      const timer = setTimeout(() => {
+        expired = true;
+        release.resolve();
+        for (const controller of controllers) controller.abort(timeoutError);
+        timeout.reject(timeoutError);
+      }, 10_000);
+      let closed: PromiseSettledResult<void>[] = [];
+      try {
+        await Promise.race([
+          entered.promise,
+          timeout.promise,
+          ...runs.map((run) =>
+            run.then(() => {
+              throw new Error('run settled before all requests');
+            }),
+          ),
+        ]);
+        expect(calls).toHaveLength(5);
+        expect(
+          calls.every(
+            (c) => c.kind === 'plain' && c.engine === calls[0].engine,
+          ),
+        ).toBe(true);
+        await using changedKey = new NativeProvider({
+          ...options,
+          apiKey: 'different-key',
+        });
+        expect(
+          (await agentFor(changedKey).run('key mismatch')).finalOutput,
+        ).toBe('different key');
+        expect(model.requestHeaders[5].authorization).toBe(
+          'Bearer different-key',
+        );
+        await changedKey.close();
+        await using changedConfig = new NativeProvider({
+          ...options,
+          headers: { 'X-Concurrency': 'different' },
+        });
+        expect(
+          (await agentFor(changedConfig).run('config mismatch')).finalOutput,
+        ).toBe('different config');
+        expect(model.requestHeaders[6]['x-concurrency']).toBe('different');
+        await changedConfig.close();
+        await using ordinary = new NativeProvider(options);
+        await using session = await agentFor(ordinary).session();
+        expect(
+          (await (await session.submit('ordinary marker')).wait()).finalOutput,
+        ).toBe('ordinary session');
+        await session.close();
+        await ordinary.close();
+        expect(calls.slice(5).every((c) => c.engine !== calls[0].engine)).toBe(
+          true,
+        );
+        await expect(owner.close()).rejects.toThrow('borrowing');
+        checked = true;
+      } finally {
+        try {
+          release.resolve();
+          if (!checked)
+            for (const controller of controllers)
+              controller.abort(new Error('witness failed'));
+          await settled;
+          closed = await Promise.allSettled(providers.map((p) => p.close()));
+          if (!checked || expired) await owner.close();
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      for (const result of closed)
+        if (result.status === 'rejected') throw result.reason;
+      if (expired) throw timeoutError;
+      const results = await Promise.all(runs);
+      expect(results.map((r) => r.finalOutput)).toEqual(
+        [0, 1, 2, 3].map((i) => `concurrency-lane-${i}`),
+      );
+      expect(new Set(results.map((r) => r.turn.sessionId)).size).toBe(4);
+      expect(new Set(results.map((r) => r.turn.turnId)).size).toBe(4);
+      await using last = new NativeProvider(options);
+      expect((await agentFor(last).run('after mismatches')).finalOutput).toBe(
+        'still shared',
+      );
+      expect(calls.at(-1)!.engine).toBe(calls[0].engine);
+      await last.close();
+      await owner.close();
+      model.assertExhausted();
+    }, 30_000);
+
+    it.each(['fresh', 'retained'] as const)(
+      'isolates cancellation and defers retirement with %s Providers',
+      async (lifetime) => {
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        let arrivals = 0;
+        const held = async (request: JsonObject) => {
+          if (++arrivals === 4) entered.resolve();
+          await release.promise;
+          const marker = JSON.stringify(request.input).match(
+            /survivor-lane-[0-3]/,
+          )?.[0];
+          if (!marker) throw new Error('Missing unique survivor marker');
+          return [message(marker)];
+        };
+        const model = new ModelServer([
+          [message('prime')],
+          held,
+          held,
+          held,
+          held,
+          [message('replacement')],
+        ]);
+        await using owner = new NativeRuntime();
+        const options = {
+          runtime: owner,
+          baseUrl: await baseUrl(model),
+          apiKey: 'concurrent-key',
+        };
+        const calls = await runtimeStarts();
+        const carriers: {
+          carrier: NativeProviderRoutes;
+          home: string | undefined;
+        }[] = [];
+        const start = NativeProviderRoutes.prototype.start;
+        vi.spyOn(NativeProviderRoutes.prototype, 'start').mockImplementation(
+          function (this: NativeProviderRoutes, ...args) {
+            carriers.push({
+              carrier: this,
+              home: args[1].codex_home ?? undefined,
+            });
+            return Reflect.apply(start, this, args);
+          },
+        );
+        const warm = new NativeProvider(options);
+        await agentFor(warm).run('prime');
+        if (lifetime === 'fresh') await warm.close();
+        const providers =
+          lifetime === 'fresh'
+            ? Array.from({ length: 4 }, () => new NativeProvider(options))
+            : [warm, warm, warm, warm];
+        const first = providers[0];
+        const controllers = providers.map(() => new AbortController());
+        const reason = new Error('cancel one lane');
+        const runs = providers.map((p, i) =>
+          agentFor(p).run(`survivor-lane-${i}`, {
+            signal: controllers[i].signal,
+          }),
+        );
+        const settled = Promise.allSettled(runs);
+        const timeout = Promise.withResolvers<never>();
+        const timeoutError = new Error(
+          'concurrent witness exceeded 10 seconds',
+        );
+        let expired = false;
+        let checked = false;
+        const timer = setTimeout(() => {
+          expired = true;
+          release.resolve();
+          for (const controller of controllers) controller.abort(timeoutError);
+          timeout.reject(timeoutError);
+        }, 10_000);
+        const original = carriers[0];
+        const server = (original.carrier as unknown as { server: Server })
+          .server;
+        let closed: PromiseSettledResult<void>[] = [];
+        try {
+          await Promise.race([
+            entered.promise,
+            timeout.promise,
+            ...runs.map((run) =>
+              run.then(() => {
+                throw new Error('run settled before all requests');
+              }),
+            ),
+          ]);
+          expect(calls).toHaveLength(5);
+          expect(calls.every((c) => c.engine === calls[0].engine)).toBe(true);
+          controllers[0].abort(reason);
+          await expect(runs[0]).rejects.toBe(reason);
+          if (lifetime === 'fresh') await first.close();
+          else await expect(first.close()).rejects.toThrow('open or opening');
+          expect(server.listening).toBe(true);
+          expect((await stat(original.home!)).isDirectory()).toBe(true);
+          await using replacement = new NativeProvider(options);
+          expect(
+            (await agentFor(replacement).run('replacement marker')).finalOutput,
+          ).toBe('replacement');
+          expect(calls.at(-1)!.engine).not.toBe(calls[0].engine);
+          await replacement.close();
+          await expect(owner.close()).rejects.toThrow('borrowing');
+          if (lifetime === 'fresh') await first.close();
+          checked = true;
+        } finally {
+          try {
+            release.resolve();
+            if (!checked)
+              for (const controller of controllers)
+                controller.abort(new Error('witness failed'));
+            await settled;
+            closed = await Promise.allSettled(
+              [...new Set(providers)].map((p) => p.close()),
+            );
+            if (!checked || expired) await owner.close();
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+        for (const result of closed)
+          if (result.status === 'rejected') throw result.reason;
+        if (expired) throw timeoutError;
+        const survivors = await Promise.all(runs.slice(1));
+        expect(survivors.map((r) => r.finalOutput)).toEqual(
+          [1, 2, 3].map((i) => `survivor-lane-${i}`),
+        );
+        expect(new Set(survivors.map((r) => r.turn.sessionId)).size).toBe(3);
+        await owner.close();
+        expect(server.listening).toBe(false);
+        await expect(stat(original.home!)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect(original.carrier.reuseBinding(calls[0].engine)).toBeUndefined();
+        model.assertExhausted();
+      },
+      30_000,
+    );
   },
 );

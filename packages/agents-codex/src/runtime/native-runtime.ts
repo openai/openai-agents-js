@@ -21,7 +21,8 @@ const owners = new WeakMap<NativeRuntime, State>();
  * including credentials, configuration, a private home and a referenced server.
  * Close all borrowing Providers, then await close() to release those resources.
  * A new Provider does not refresh captured ambient native configuration.
- * Ordinary Sessions retain independent Engines. Busy slots use fresh resources.
+ * Ordinary/mismatching Sessions: independent Engines. Matching admitted plain
+ * runs: independent per-run lifetimes over one Engine.
  * This owner has no TTL, finalizer or implicit unref/abandonment cleanup.
  *
  * @example
@@ -52,7 +53,11 @@ export class NativeRuntime {
   declare private readonly nativeRuntimeBrand: void;
 
   constructor() {
-    owners.set(this, { phase: 'open', borrowers: new Set(), slot: {} });
+    owners.set(this, {
+      phase: 'open',
+      borrowers: new Set(),
+      slot: { runs: new Set() },
+    });
   }
 
   close(): Promise<void> {
@@ -117,8 +122,13 @@ export function borrowNativeRuntime(owner: NativeRuntime): NativeRuntimeBorrow {
     },
     reserve(lease) {
       check();
-      if (state.slot.active || state.slot.closing) return undefined;
-      state.slot.active = lease;
+      if (
+        state.slot.retiring ||
+        state.slot.closing ||
+        (state.slot.runs!.size > 0 && !state.slot.entry?.plainAdmission)
+      )
+        return undefined;
+      state.slot.runs!.add(lease);
       return state.slot;
     },
     release() {
