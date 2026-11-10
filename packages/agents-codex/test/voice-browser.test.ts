@@ -518,3 +518,80 @@ it.each([false, true])(
     expect(audio.play).toHaveBeenCalledOnce();
   },
 );
+
+it.each(['remote callback', 'audio element'])(
+  'keeps newer playback alive when a stale %s rejects',
+  async (failureSource) => {
+    const mic = microphone();
+    const peer = new Peer();
+    const firstStream = microphone().stream;
+    const secondStream = microphone().stream;
+    const first = deferred<void>();
+    const errors = vi.fn();
+    const audio = {
+      srcObject: null as MediaStream | null,
+      play: vi.fn((): Promise<void> =>
+        failureSource === 'audio element' && audio.srcObject === firstStream
+          ? first.promise
+          : Promise.resolve(),
+      ),
+    };
+    const media = new NativeVoiceWebRTC({
+      mediaStream: mic.stream,
+      createPeerConnection: () => peer as unknown as RTCPeerConnection,
+      onRemoteStream: (stream) =>
+        failureSource === 'remote callback' && stream === firstStream
+          ? first.promise
+          : undefined,
+      audioElement: audio,
+      onError: errors,
+    });
+    await media.connect({ exchangeSdp: async () => 'answer' });
+    try {
+      peer.ontrack!({ streams: [firstStream] });
+      await Promise.resolve();
+      peer.ontrack!({ streams: [secondStream] });
+      await Promise.resolve();
+      expect(audio.srcObject).toBe(secondStream);
+      first.reject(new Error('stale playback failed'));
+      // Join the rejection and allow any scheduled media retirement to finish.
+      await first.promise.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(media.status).not.toBe('closed');
+      expect(audio.srcObject).toBe(secondStream);
+      expect(errors).not.toHaveBeenCalled();
+      expect(peer.close).not.toHaveBeenCalled();
+    } finally {
+      media.close();
+    }
+    expect(audio.srcObject).toBeNull();
+    expect(mic.track.stop).not.toHaveBeenCalled();
+  },
+);
+
+it('closes media when the current audio element playback rejects', async () => {
+  const mic = microphone();
+  const peer = new Peer();
+  const errors = vi.fn();
+  const audio = {
+    srcObject: null as MediaStream | null,
+    play: vi.fn(async () => {
+      throw new Error('current playback failed');
+    }),
+  };
+  const media = new NativeVoiceWebRTC({
+    mediaStream: mic.stream,
+    createPeerConnection: () => peer as unknown as RTCPeerConnection,
+    audioElement: audio,
+    onError: errors,
+  });
+  await media.connect({ exchangeSdp: async () => 'answer' });
+  peer.ontrack!({ streams: [microphone().stream] });
+  await vi.waitFor(() => expect(media.status).toBe('closed'));
+  expect(errors).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ message: 'Voice audio playback failed.' }),
+  );
+  expect(peer.close).toHaveBeenCalledOnce();
+  expect(audio.srcObject).toBeNull();
+  expect(mic.track.stop).not.toHaveBeenCalled();
+});
