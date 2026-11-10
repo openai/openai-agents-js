@@ -254,7 +254,7 @@ it.each([false, true])(
     if (remove) {
       await expect(
         agent.session({ storage, resume: identity }),
-      ).rejects.toThrow(/not found|not exist/i);
+      ).rejects.toThrow(/not found|not exist|no rollout found/i);
     } else {
       await using restored = await agent.session({ storage, resume: identity });
       const remaining = await restored.storedTurns();
