@@ -151,7 +151,15 @@ jobs:
             runner: windows-2025
             cargo_jobs: 16
             artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
+    runs-on: >-
+      ${{ fromJSON(
+      github.repository == 'openai/openai-agents-js' && github.event_name == 'push' &&
+      github.ref == 'refs/heads/feat/codex-harness' && matrix.platform == 'linux-x64' &&
+      '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' ||
+      github.repository == 'openai/openai-agents-js' && github.event_name == 'push' &&
+      github.ref == 'refs/heads/feat/codex-harness' && matrix.platform == 'win32-x64' &&
+      '{"group":"codex-runners","labels":"codex-windows-x64"}' ||
+      toJSON(matrix.runner)) }}
     timeout-minutes: 180
     defaults:
       run:
@@ -160,7 +168,9 @@ jobs:
       ALPHA_VERSION: 0.22.0-alpha.2
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}
+      CARGO_BUILD_JOBS: >-
+        ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness') ||
+        matrix.platform == 'darwin-arm64') && matrix.cargo_jobs || 4 }}
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
