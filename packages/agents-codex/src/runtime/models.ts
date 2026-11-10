@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { APIUserAbortError } from 'openai';
 import { copyJsonValue, type JsonObject } from './binding';
 
 /** Detached native provider input; Core retains canonical history and tool execution. */
@@ -342,5 +343,401 @@ export class ChatCompletionsModel implements NativeModel {
               value.usage.completion_tokens_details?.reasoning_tokens ?? 0,
           };
     return { responseId: value.id, output, usage };
+  }
+}
+
+/** Borrow a Responses client; Core retains the turn, tool and history owners. */
+export class ResponsesModel implements NativeModel {
+  constructor(
+    readonly client: any,
+    readonly model?: string,
+  ) {}
+
+  async complete(request: ModelRequest): Promise<ModelResponse> {
+    let response: any;
+    try {
+      response = await this.client.responses.create(
+        {
+          ...request.body,
+          model: this.model ?? request.body.model,
+          stream: false,
+        },
+        { signal: request.signal },
+      );
+    } catch (error) {
+      if (error instanceof APIUserAbortError && request.signal.aborted)
+        request.signal.throwIfAborted();
+      throw error;
+    }
+    return projectResponsesResponse(response);
+  }
+}
+
+function hasResponsesRefusal(output: readonly JsonObject[]): boolean {
+  return output.some(
+    (item) =>
+      item?.type === 'message' &&
+      Array.isArray(item.content) &&
+      item.content.some(
+        (part: JsonObject) =>
+          part?.type === 'refusal' && typeof part.refusal === 'string',
+      ),
+  );
+}
+
+function projectResponsesResponse(response: any): ModelResponse {
+  const output = (response.output ?? []) as JsonObject[];
+  const refusal = hasResponsesRefusal(output);
+  if (response.status !== 'completed' && !refusal)
+    throw new TypeError('Responses adapter requires a completed response');
+  const usage = response.usage;
+  return {
+    output,
+    ...(response.id ? { responseId: response.id } : {}),
+    ...(usage
+      ? {
+          usage: {
+            input_tokens: usage.input_tokens ?? 0,
+            output_tokens: usage.output_tokens ?? 0,
+            total_tokens: usage.total_tokens ?? 0,
+            cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
+            reasoning_output_tokens:
+              usage.output_tokens_details?.reasoning_tokens ?? 0,
+          },
+        }
+      : {}),
+  };
+}
+
+/** AI SDK language models are borrowed; optional provider packages remain application-owned. */
+export interface AiSdkLanguageModel {
+  readonly specificationVersion: 'v2' | 'v3' | 'v4';
+  readonly modelId: string;
+  readonly provider: string;
+  doGenerate(options: any): PromiseLike<any> | any;
+}
+
+/** Completed AI SDK generation within the native Core turn and tool loop. */
+export class AiSdkModel implements NativeModel {
+  readonly #providerOptions: JsonObject;
+
+  constructor(
+    readonly model: AiSdkLanguageModel,
+    providerOptions: JsonObject = {},
+  ) {
+    if (!['v2', 'v3', 'v4'].includes(model.specificationVersion))
+      throw new TypeError('AiSdkModel supports AI SDK v2, v3 and v4 models');
+    this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
+  }
+
+  async complete(request: ModelRequest): Promise<ModelResponse> {
+    const body = request.body;
+    const admitted = new Set([
+      'model',
+      'input',
+      'tools',
+      'stream',
+      'stream_options',
+      'client_metadata',
+      'access_programs',
+      'store',
+      'text',
+      'include',
+      'tool_choice',
+      'parallel_tool_calls',
+      'temperature',
+      'top_p',
+      'max_output_tokens',
+      'frequency_penalty',
+      'presence_penalty',
+      'reasoning',
+      'prompt_cache_key',
+    ]);
+    if (
+      Object.keys(body).some((key) => !admitted.has(key)) ||
+      body.store === true
+    )
+      throw new TypeError('AiSdkModel received unsupported request controls');
+    const reasoning = (body.reasoning ?? {}) as JsonObject;
+    const providerOptions = copyJsonValue(this.#providerOptions) as JsonObject;
+    if (this.model.provider.startsWith('openai.')) {
+      providerOptions.openai = {
+        ...((providerOptions.openai ?? {}) as JsonObject),
+        store: false,
+        ...(body.prompt_cache_key != null
+          ? { promptCacheKey: body.prompt_cache_key }
+          : {}),
+        ...(body.parallel_tool_calls != null
+          ? { parallelToolCalls: body.parallel_tool_calls }
+          : {}),
+        ...(reasoning.effort != null
+          ? { reasoningEffort: reasoning.effort }
+          : {}),
+      };
+    } else if (reasoning.effort != null) {
+      throw new TypeError(
+        'AiSdkModel requires provider options for provider-specific reasoning',
+      );
+    }
+    if (reasoning.summary != null && reasoning.summary !== 'auto')
+      throw new TypeError('AiSdkModel received unsupported reasoning controls');
+    const text = (body.text ?? {}) as JsonObject;
+    if (
+      text.verbosity != null ||
+      ((body.include ?? []) as string[]).some(
+        (key) => key !== 'reasoning.encrypted_content',
+      )
+    )
+      throw new TypeError('AiSdkModel received unsupported request controls');
+    const prompt: any[] = [];
+    const declarations = [...((body.tools ?? []) as JsonObject[])];
+    const names = new Map<string, string>();
+    for (const item of body.input as JsonObject[]) {
+      if (item.type === 'additional_tools') {
+        declarations.push(...(item.tools as JsonObject[]));
+        continue;
+      }
+      if (item.type === 'configuration_update') continue;
+      if (item.type === 'message') {
+        const content = ((item.content ?? []) as JsonObject[]).map((part) => {
+          if (part.type === 'input_text' || part.type === 'output_text')
+            return { type: 'text', text: part.text };
+          if (part.type === 'input_image' && part.image_url) {
+            const image = new URL(part.image_url as string);
+            return this.model.specificationVersion === 'v4'
+              ? {
+                  type: 'file',
+                  mediaType: 'image/*',
+                  data: { type: 'url', url: image },
+                }
+              : { type: 'image', image };
+          }
+          throw new TypeError(
+            'AiSdkModel received unsupported message content',
+          );
+        });
+        if (item.role === 'system' || item.role === 'developer') {
+          if (content.some((part) => part.type !== 'text'))
+            throw new TypeError('AiSdkModel requires text instructions');
+          prompt.push({
+            role: 'system',
+            content: content.map((part) => part.text).join(''),
+          });
+        } else prompt.push({ role: item.role, content });
+      } else if (item.type === 'function_call') {
+        if (item.namespace != null && item.namespace !== 'functions')
+          throw new TypeError(
+            'AiSdkModel supports the default function namespace',
+          );
+        names.set(item.call_id as string, item.name as string);
+        const previous = prompt.at(-1);
+        const content = previous?.role === 'assistant' ? previous.content : [];
+        content.push({
+          type: 'tool-call',
+          toolCallId: item.call_id,
+          toolName: item.name,
+          input: JSON.parse(item.arguments as string),
+        });
+        if (previous?.role !== 'assistant')
+          prompt.push({ role: 'assistant', content });
+      } else if (item.type === 'function_call_output') {
+        let value = item.output;
+        if (typeof value !== 'string') {
+          if (
+            !Array.isArray(value) ||
+            value.some(
+              (part: any) =>
+                part.type !== 'input_text' || typeof part.text !== 'string',
+            )
+          )
+            throw new TypeError('AiSdkModel supports only text tool outputs');
+          value = value.map((part: any) => part.text).join('');
+        }
+        prompt.push({
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId: item.call_id,
+              toolName: names.get(item.call_id as string),
+              output: { type: 'text', value },
+            },
+          ],
+        });
+      } else
+        throw new TypeError('AiSdkModel received unsupported native input');
+    }
+    const tools: any[] = [];
+    const addTool = (item: JsonObject): void => {
+      if (item.type === 'namespace') {
+        if (item.name !== 'functions')
+          throw new TypeError(
+            'AiSdkModel supports the default function namespace',
+          );
+        for (const tool of item.tools as JsonObject[]) addTool(tool);
+      } else if (item.type === 'function')
+        tools.push({
+          type: 'function',
+          name: item.name,
+          description: item.description,
+          inputSchema: item.parameters,
+        });
+      else throw new TypeError('AiSdkModel supports function tools');
+    };
+    for (const declaration of declarations) addTool(declaration);
+    const choice = body.tool_choice;
+    let toolChoice: any;
+    if (typeof choice === 'string') toolChoice = { type: choice };
+    else if (choice != null) {
+      const selected = choice as JsonObject;
+      if (selected.type !== 'function')
+        throw new TypeError('AiSdkModel received unsupported tool choice');
+      toolChoice = { type: 'tool', toolName: selected.name };
+    }
+    const format = (text.format ?? {}) as JsonObject;
+    if (
+      this.model.provider.startsWith('openai.') &&
+      format.type === 'json_schema' &&
+      format.strict != null
+    )
+      (providerOptions.openai as JsonObject).strictJsonSchema = format.strict;
+    if (
+      !this.model.provider.startsWith('openai.') &&
+      body.parallel_tool_calls === false
+    )
+      throw new TypeError(
+        'AiSdkModel received unsupported parallel tool controls',
+      );
+    const responseFormat =
+      format.type === 'json_schema'
+        ? {
+            type: 'json',
+            schema: format.schema,
+            name: format.name,
+            description: format.description,
+          }
+        : { type: 'text' };
+    const options: any = {
+      prompt,
+      ...(tools.length ? { tools, toolChoice } : {}),
+      responseFormat,
+      temperature: body.temperature,
+      topP: body.top_p,
+      maxOutputTokens: body.max_output_tokens,
+      frequencyPenalty: body.frequency_penalty,
+      presencePenalty: body.presence_penalty,
+      providerOptions,
+      abortSignal: request.signal,
+    };
+    let result: any;
+    try {
+      result = await this.model.doGenerate(options);
+    } catch (error) {
+      // AI SDK Responses schema compatibility for valid refusal parts.
+      // Core whole-response refusal admission for successful HTTP responses.
+      const failure = error as {
+        name?: string;
+        message?: string;
+        statusCode?: number;
+        responseBody?: string;
+      } | null;
+      if (
+        this.model.provider === 'openai.responses' &&
+        failure?.name === 'AI_APICallError' &&
+        failure.message === 'Invalid JSON response' &&
+        failure.statusCode === 200 &&
+        typeof failure.responseBody === 'string'
+      ) {
+        let response: any;
+        try {
+          response = JSON.parse(failure.responseBody);
+        } catch {
+          /* Original parse error retention. */
+        }
+        if (
+          Array.isArray(response?.output) &&
+          hasResponsesRefusal(response.output)
+        )
+          return projectResponsesResponse(response);
+      }
+      throw error;
+    }
+    const finishReason =
+      typeof result.finishReason === 'string'
+        ? result.finishReason
+        : result.finishReason?.unified;
+    const raw = result.response?.body;
+    const refusal =
+      this.model.provider === 'openai.chat'
+        ? raw?.choices?.[0]?.message?.refusal
+        : this.model.provider === 'openai.responses'
+          ? raw?.output
+              ?.flatMap((item: any) =>
+                item.type === 'message' ? item.content : [],
+              )
+              ?.find((part: any) => part.type === 'refusal')?.refusal
+          : undefined;
+    if (
+      finishReason !== 'stop' &&
+      finishReason !== 'tool-calls' &&
+      refusal == null
+    )
+      throw new TypeError('AiSdkModel requires a completed response');
+    if (this.model.provider === 'openai.responses' && raw?.status != null)
+      return projectResponsesResponse(raw);
+    const output: JsonObject[] = [];
+    for (const part of result.content ?? []) {
+      if (part.type === 'text')
+        output.push({
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: part.text }],
+        });
+      else if (part.type === 'tool-call' && !part.providerExecuted)
+        output.push({
+          type: 'function_call',
+          call_id: part.toolCallId,
+          name: part.toolName,
+          arguments:
+            typeof part.input === 'string'
+              ? part.input
+              : JSON.stringify(part.input),
+        });
+      else
+        throw new TypeError('AiSdkModel received unsupported output content');
+    }
+    if (refusal != null)
+      output.push({
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'refusal', refusal }],
+      });
+    const usage = result.usage;
+    const input =
+      typeof usage?.inputTokens === 'number'
+        ? usage.inputTokens
+        : (usage?.inputTokens?.total ?? 0);
+    const out =
+      typeof usage?.outputTokens === 'number'
+        ? usage.outputTokens
+        : (usage?.outputTokens?.total ?? 0);
+    return {
+      output,
+      ...(result.response?.id ? { responseId: result.response.id } : {}),
+      ...(usage
+        ? {
+            usage: {
+              input_tokens: input,
+              output_tokens: out,
+              total_tokens: input + out,
+              cached_input_tokens:
+                usage.inputTokens?.cacheRead ?? usage.cachedInputTokens ?? 0,
+              cache_write_input_tokens: usage.inputTokens?.cacheWrite ?? 0,
+              reasoning_output_tokens:
+                usage.outputTokens?.reasoning ?? usage.reasoningTokens ?? 0,
+            },
+          }
+        : {}),
+    };
   }
 }

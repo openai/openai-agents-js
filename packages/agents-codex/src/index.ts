@@ -381,9 +381,14 @@ export type {
   ContextTransform,
 } from './runtime/model-callbacks';
 
-export { ChatCompletionsModel } from './runtime/models';
+export {
+  ChatCompletionsModel,
+  ResponsesModel,
+  AiSdkModel,
+} from './runtime/models';
 export type {
   NativeModel,
+  AiSdkLanguageModel,
   ModelProvider,
   ModelRequest,
   ModelResponse,
