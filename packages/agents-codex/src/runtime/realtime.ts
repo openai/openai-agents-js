@@ -1062,6 +1062,9 @@ class NativeRealtimeOwner {
     let bytes = 0;
     if (response !== undefined) {
       if (
+        typeof response !== 'object' ||
+        response === null ||
+        Array.isArray(response) ||
         Object.keys(response).some(
           (key) =>
             !['instructions', 'outputModality', 'maxOutputTokens'].includes(

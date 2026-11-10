@@ -177,6 +177,14 @@ it('captures per-response options before enqueue and preserves the no-argument D
 
 it.each([
   {
+    name: 'numeric options',
+    response: 17 as unknown as NativeRealtimeResponseOptions,
+  },
+  {
+    name: 'array options',
+    response: [] as unknown as NativeRealtimeResponseOptions,
+  },
+  {
     name: 'unsupported fields',
     response: { instructions: 'Reply briefly.', tools: [] },
   },
