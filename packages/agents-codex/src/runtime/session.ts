@@ -9361,13 +9361,6 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (options.tools !== undefined) {
       const next = splitToolDeclarations(options.tools);
-      if (
-        this.options.customStore &&
-        next.tools.some((tool) => tool.kind === 'manual')
-      )
-        throw new TypeError(
-          'Custom canonical storage does not support manual tools',
-        );
       const registration = this.options.mcpTools?.find(isHostedRegistration);
       if (
         next.mcp.some(
@@ -9432,6 +9425,13 @@ export class Session<OutputT = string, Context = unknown> {
             'Updated MCP tools must have been declared when the Session opened',
           );
       const replacements = captureTools(next.tools);
+      if (
+        this.options.customStore &&
+        replacements.tools.some((tool) => tool.kind === 'manual')
+      )
+        throw new TypeError(
+          'Custom canonical storage does not support manual tools',
+        );
       const byName = new Map(
         replacements.tools.map((tool) => [
           JSON.stringify(toolIdentity(tool)),

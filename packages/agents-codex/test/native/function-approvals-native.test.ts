@@ -1147,6 +1147,69 @@ it.each([false, true])(
   },
 );
 
+it.each([false, true])(
+  'retains a completed search sibling for approved terminal completion (restored=%s)',
+  async (restored) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: true,
+      finishTurn: true,
+      execute: () => {
+        effects.push('effect');
+        return 'terminal result';
+      },
+    });
+    const spare = tool({
+      name: 'spare',
+      parameters: z.object({}),
+      deferLoading: true,
+      execute: () => 'unused',
+    });
+    const server = new ModelServer([
+      [
+        {
+          type: 'tool_search_call',
+          call_id: 'search-sibling',
+          execution: 'client',
+          arguments: { query: 'spare', limit: 5 },
+        },
+        call('risky', {}, { callId: 'approved-terminal' }),
+      ],
+      [message('unexpected model continuation')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use both.',
+      model: 'gpt-5.5',
+      programmaticToolCalling: false,
+      provider,
+      tools: [risky, spare],
+    });
+    let state;
+    if (restored) {
+      await using source = await agent.session();
+      await source.submit('begin');
+      await nextApproval(source);
+      state = await source.suspend();
+      expect(JSON.stringify(state)).toContain('tool_search_output');
+    }
+    await using session = await agent.session({ state });
+    const turn = restored
+      ? session.restoredTurn!
+      : await session.submit('begin');
+    const approval = await nextApproval(session);
+    const completion = turn.wait();
+    await session.respond(approval.approve());
+    const result = await completion;
+    expect(result.finalOutput).toBe('terminal result');
+    expect(result.toolCall?.callId).toBe('approved-terminal');
+    expect(effects).toEqual(['effect']);
+    expect(server.requests).toHaveLength(1);
+  },
+);
+
 it.each([
   { automatic: false, rich: false },
   { automatic: true, rich: false },

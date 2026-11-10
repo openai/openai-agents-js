@@ -170,6 +170,62 @@ describe('public native custom storage durability', () => {
     },
   );
 
+  it('rejects approval replacements without changing a custom storage session', async () => {
+    const storage = fileSessionStore(await directory());
+    const server = new ModelServer([
+      [call('guarded', {}, { callId: 'original-effect' })],
+      [message('original callback retained')],
+    ]);
+    const provider = await providerFor(server);
+    const effects: string[] = [];
+    const original = tool({
+      name: 'guarded',
+      description: 'Record the original effect.',
+      parameters: z.object({}),
+      execute: () => {
+        effects.push('original');
+        return 'original';
+      },
+    });
+    const session = await new Agent({
+      instructions: 'Call guarded.',
+      model: 'gpt-5',
+      provider,
+      tools: [original],
+    }).session({ storage });
+    try {
+      const before = await session.historySnapshot();
+      await expect(
+        session.update({
+          tools: [
+            tool({
+              name: 'guarded',
+              description: 'Record a replacement effect.',
+              parameters: z.object({}),
+              needsApproval: true,
+              execute: () => {
+                effects.push('replacement');
+                return 'replacement';
+              },
+            }),
+          ],
+        }),
+      ).rejects.toThrow(
+        /Custom canonical storage does not support manual tools/,
+      );
+      expect(await session.historySnapshot()).toEqual(before);
+      expect(server.requests).toHaveLength(0);
+      expect((await (await session.submit('Record.')).wait()).finalOutput).toBe(
+        'original callback retained',
+      );
+      expect(effects).toEqual(['original']);
+      server.assertExhausted();
+    } finally {
+      await session.close();
+      await provider.close();
+    }
+  });
+
   it('rejects local reconciliation receipts for custom storage before acquiring or dispatching work', async () => {
     const durable = fileSessionStore(await directory());
     const server = new ModelServer([]);
