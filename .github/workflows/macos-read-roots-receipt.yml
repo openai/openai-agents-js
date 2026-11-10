@@ -1,0 +1,90 @@
+name: Strict macOS read-only roots with the release native bundle
+
+on:
+  push:
+    branches: [mark/nov9-js-macos-read-roots-receipt]
+    paths: ['.github/workflows/macos-read-roots-receipt.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    if: github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/mark/nov9-js-macos-read-roots-receipt'
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      SDK_COMMIT: fc4d4f41f40bc7e0b2ed03e7742c152c303fe658
+      SDK_TREE: 02d3f290377a9ee1db5963d6dbea78407f2789e7
+      NATIVE_INPUTS: 3cd063bf2c6e2415346f960d9cc1a8e3f8113eb2baafea0b4856bea08bcefc4f
+      STRICT_CASE: applies a per-turn write policy with macOS read-only roots and restores a named linked skill
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SDK_COMMIT }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify the exact checkout and runner
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { nativeInputs } from './scripts/native-bundle-inputs.mjs';
+
+          const { SDK_COMMIT, SDK_TREE, NATIVE_INPUTS } = process.env;
+          const git = (...args) => execFileSync('git', args, {encoding: 'utf8'}).trim();
+          assert.equal(git('rev-parse', 'HEAD'), SDK_COMMIT);
+          assert.equal(git('rev-parse', 'HEAD^{tree}'), SDK_TREE);
+          assert.equal(nativeInputs(), NATIVE_INPUTS);
+          assert.equal(process.platform + '-' + process.arch, 'darwin-arm64');
+          assert.ok(process.getuid() > 0);
+          console.log('Verified checkout, tree and native inputs', SDK_COMMIT, SDK_TREE, NATIVE_INPUTS);
+          JS
+      - name: Restore the pinned transfer from Alpha run 42869411259
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_ARTIFACT: '{"artifact-id":"13791900830","artifact-digest":"c9d06323ed474091df81e893cba23d77453198ee732abcedd7b710212df992cc"}'
+        run: node scripts/restore-native-bundle.mjs
+      - name: Verify the release receipt and build the exact JavaScript SDK
+        run: |
+          pnpm install --frozen-lockfile
+          node --input-type=module <<'JS'
+          import { verifyNativeReceipt } from './scripts/alpha-package.mjs';
+          await verifyNativeReceipt(process.cwd(), 'darwin-arm64');
+          console.log('Release receipt inputs and products match.');
+          JS
+          test -x packages/agents-codex/native/test-bin/exec-server-fixture
+          node scripts/build-packages.mjs
+      - name: Run the workspace read-only roots case under strict Seatbelt
+        env:
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          result="$RUNNER_TEMP/strict-read-only-roots.json"
+          env -u OPENAI_API_KEY -u CODEX_API_KEY pnpm test:native \
+            packages/agents-codex/test/native/local-executor-policy-native.test.ts \
+            -t "$STRICT_CASE$" --maxWorkers=1 --reporter=verbose --reporter=json \
+            --outputFile.json="$result"
+          node --input-type=module - "$result" <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+
+          const result = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          const tests = result.testResults.flatMap((file) => file.assertionResults);
+          const selected = tests.filter((test) => test.title === process.env.STRICT_CASE);
+          assert.equal(selected.length, 1, 'Expected exactly one named read-root case');
+          assert.equal(selected[0].status, 'passed', 'Strict read-root case must run and pass');
+          assert.equal(result.numPassedTests, 1);
+          assert.equal(result.numFailedTests, 0);
+          console.log('Strict read-root case passed with zero selected skips.');
+          JS
