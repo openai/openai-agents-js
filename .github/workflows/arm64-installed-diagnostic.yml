@@ -19,13 +19,13 @@ jobs:
         shell: bash
     env:
       ALPHA_VERSION: 0.22.0-alpha.2
-      NATIVE_INPUTS: '9c7d96b56028e00c9ca6a235943e69a809af0b5891f1696e9fd63cb90f673aca'
-      NATIVE_TRANSFER_ID: '13769388615'
-      NATIVE_TRANSFER_SHA256: '0f46b8edaf06ad7901208af0fde9c04c457945a87be8af3f8bd0a44917874e91'
+      NATIVE_INPUTS: '2babfa949833e5fc9dc66a4b0d5191c82ccbcaed492e2143c3ec51b902395607'
+      NATIVE_TRANSFER_ID: '13770499829'
+      NATIVE_TRANSFER_SHA256: 'e8c9f0d62c4ffb490cff56a51c10e7f19e9ff4a1358059280a3acc75425d3178'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: '4842c823766ab7871d77e6de3fb7635181e93b04'
+          ref: '79e2d75ae3e7dcf4460cabb2447fdd1720303985'
           fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -34,25 +34,25 @@ jobs:
           package-manager-cache: false
       - name: Verify exact source and architecture
         run: |
-          test "$(git rev-parse HEAD)" = '4842c823766ab7871d77e6de3fb7635181e93b04'
-          test "$(git rev-parse 'HEAD^{tree}')" = '64d6d5e1baa897cd2570ba5cf1ca7b080a6a47b5'
+          test "$(git rev-parse HEAD)" = '79e2d75ae3e7dcf4460cabb2447fdd1720303985'
+          test "$(git rev-parse 'HEAD^{tree}')" = 'baa6e9760e7692b68d26a47af8fc099f9ef2ca81'
           test "$(node --input-type=module -e 'import {nativeInputs} from "./scripts/native-bundle-inputs.mjs"; console.log(nativeInputs())')" = "$NATIVE_INPUTS"
           node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "linux-arm64")'
           git show -s --format='%H %T %P' HEAD
       - name: Restore and verify matching native products
         env:
           GH_TOKEN: ${{ github.token }}
-          NATIVE_ARTIFACT: '{"artifact-id":"13769388615","artifact-digest":"0f46b8edaf06ad7901208af0fde9c04c457945a87be8af3f8bd0a44917874e91"}'
+          NATIVE_ARTIFACT: '{"artifact-id":"13770499829","artifact-digest":"e8c9f0d62c4ffb490cff56a51c10e7f19e9ff4a1358059280a3acc75425d3178"}'
         run: |
           node scripts/restore-native-bundle.mjs
           (cd packages/agents-codex && sha256sum -c - <<'SUMS'
-          495a7d29014a01a7313021f4f96378ee3009efa63a52edc50379664831bd380f  native/build-receipt.json
-          606085f77720c018a34bf8c2b2b8803e3104f6b8829ae25e1b72cb8c47ee56cf  bin/codex-code-mode-host
-          efd1d95e51decce2274486a9ef2bbc1beca68248d047f37388d7e4e5cef44c5b  bin/codex-execve-wrapper
-          efd1d95e51decce2274486a9ef2bbc1beca68248d047f37388d7e4e5cef44c5b  bin/codex-linux-sandbox
-          efd1d95e51decce2274486a9ef2bbc1beca68248d047f37388d7e4e5cef44c5b  bin/codex-sdk-runtime
-          25095c4c77b717332d61e6af6a1c95161a23034da3828ec8e4f367bc43ac02cd  native/codex.node
-          469d7867ce7b375f04890694fca77b56d21a40d83a02122c05a730054c59870a  native/test-bin/exec-server-fixture
+          c968588bfbd95f864e006d2751c4f0b4438bcd6f99da5a0c73f3bc986f24f72e  native/build-receipt.json
+          d4afed1e06e0ca9ec16ca2d518eca6f70c4e1b1aecf1d7ab42ea675714eee8f8  bin/codex-code-mode-host
+          67a30fa8c74d73d715459f9bdbc2d6a5270561a7d021fb9f5a9c74d306701d09  bin/codex-execve-wrapper
+          67a30fa8c74d73d715459f9bdbc2d6a5270561a7d021fb9f5a9c74d306701d09  bin/codex-linux-sandbox
+          67a30fa8c74d73d715459f9bdbc2d6a5270561a7d021fb9f5a9c74d306701d09  bin/codex-sdk-runtime
+          626bbfa0aa533df6adf0d8b2fe981f5aec92447fccab08634d1c4b42c1127e99  native/codex.node
+          b245b95930106707fb74a56a8bcedbf9f6a1d858c36f9304cb406181888135e4  native/test-bin/exec-server-fixture
           SUMS
           )
       - name: Install stock Linux worker prerequisites
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: arm64-focused-installed-4842c823
+          name: arm64-focused-installed-79e2d75a
           path: |
             ${{ runner.temp }}/agents-alpha/*.tgz
             ${{ runner.temp }}/agents-alpha/*.tar.gz
