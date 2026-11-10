@@ -237,6 +237,12 @@ export function enrichNativeError(error: NativeError, value: unknown): void {
   const requestId = provider?.request_id;
   let retryable = localDeadline ? false : provider?.retryable;
   switch (code) {
+    case 'rate_limit_exceeded':
+      // Registered SSE retains its actual HTTP 200 in provider diagnostics.
+      if (status === 200 && failureCategory === 'connection_failed') {
+        failureCategory = 'rate_limit_exceeded';
+      }
+      break;
     case 'subscription_sharing_usage_limit_exceeded':
       failureCategory = 'usage_limit_exceeded';
       retryable = false;
