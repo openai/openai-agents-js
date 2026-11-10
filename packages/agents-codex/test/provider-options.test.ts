@@ -61,7 +61,7 @@ describe('NativeProvider option capture', () => {
       { responseMode: 'buffered' as const },
       true,
       false,
-      false,
+      true,
     ],
   ] as const)(
     'selects effective transport for %s',
