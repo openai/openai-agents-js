@@ -1,5 +1,5 @@
 diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
-index d65ee1b7..17ed9932 100644
+index d65ee1b7..ee67fe00 100644
 --- a/codex-rs/realtime-control/src/lib.rs
 +++ b/codex-rs/realtime-control/src/lib.rs
 @@ -269,6 +269,12 @@ pub enum Command {
@@ -281,10 +281,14 @@ index d65ee1b7..17ed9932 100644
          let mut retired = BTreeSet::new();
          if let Some(id) = &self.responses.sdk_response_id {
              retired.insert(id.clone());
-@@ -1218,15 +1360,47 @@ impl Control {
+@@ -1218,15 +1360,51 @@ impl Control {
                  retired.insert(request.response_id.clone());
              }
          }
++        let received_default = self.has_received_default_response();
++        let unidentified = self.responses.active_default_response
++            && self.responses.sdk_response_id.is_none()
++            && !received_default;
 +        if fence_received {
 +            retired.extend(self.incoming.iter().filter_map(|(event, _)| {
 +                if event["type"] == "response.created" && !self.is_detached_event(event) {
@@ -297,9 +301,6 @@ index d65ee1b7..17ed9932 100644
 +        for id in retired.iter().cloned().collect::<Vec<_>>() {
 +            self.remember_retired_response(id);
 +        }
-+        let unidentified = self.responses.active_default_response
-+            && self.responses.sdk_response_id.is_none()
-+            && !self.has_received_default_response();
 +        let pending_arrived = self.pending_default.as_ref().and_then(|scope| {
 +            self.incoming.iter().find_map(|(event, _)| {
 +                (event["type"] == "response.created"
@@ -314,6 +315,9 @@ index d65ee1b7..17ed9932 100644
 +            self.remember_retired_response(id);
 +            self.pending_default = None;
 +            self.pending_default_event = None;
++        }
++        if fence_received && received_default && self.pending_default.is_none() {
++            self.cancel_before_created = false;
 +        }
          self.guardrail_output = None;
 -        if let Some(id) = self.responses.sdk_response_id.take() {
@@ -335,7 +339,7 @@ index d65ee1b7..17ed9932 100644
              self.cancel_before_created = true;
          }
          for (id, request) in &mut self.approvals {
-@@ -1322,28 +1496,31 @@ impl Control {
+@@ -1322,28 +1500,31 @@ impl Control {
              {
                  return Err("Portable voice generation was cancelled".into());
              }
@@ -377,7 +381,7 @@ index d65ee1b7..17ed9932 100644
          let needs_identity = response
              .as_object()
              .unwrap()
-@@ -1352,46 +1529,67 @@ impl Control {
+@@ -1352,46 +1533,67 @@ impl Control {
              || response["metadata"]
                  .as_object()
                  .is_some_and(|metadata| !metadata.is_empty());
@@ -474,7 +478,7 @@ index d65ee1b7..17ed9932 100644
              self.responses.pending_create = true;
          } else if self.responses.request_create() {
              let response = self.pending_response.take();
-@@ -1521,7 +1719,12 @@ impl Control {
+@@ -1521,7 +1723,12 @@ impl Control {
                  }
              }
              "input_audio_buffer.speech_started" => {
@@ -488,7 +492,7 @@ index d65ee1b7..17ed9932 100644
              }
              "response.cancelled" => {
                  return Err("Portable voice generation was cancelled".into());
-@@ -1554,7 +1757,7 @@ impl Control {
+@@ -1554,7 +1761,7 @@ impl Control {
                      self.cancel_before_created = false;
                      self.pending_default = None;
                      self.pending_default_event = None;
@@ -497,7 +501,7 @@ index d65ee1b7..17ed9932 100644
                      self.cancel_waiting = Some(id.clone());
                      self.send(json!({"type":"response.cancel","response_id":id}), effects);
                      effects.push(Effect::Retire {
-@@ -1563,9 +1766,6 @@ impl Control {
+@@ -1563,9 +1770,6 @@ impl Control {
                      effects.push(Effect::Event { event });
                      return Ok(());
                  }
@@ -507,7 +511,7 @@ index d65ee1b7..17ed9932 100644
                  if matched {
                      let scope = self.pending_default.take().unwrap();
                      self.pending_default_event = None;
-@@ -1671,10 +1871,7 @@ impl Control {
+@@ -1671,10 +1875,7 @@ impl Control {
                      owner.output = output.clone();
                      false
                  } else {
@@ -519,7 +523,7 @@ index d65ee1b7..17ed9932 100644
                      self.last_completed = Some(id.clone());
                      self.responses.sdk_response_id = None;
                      if self.pending_default.is_some() {
-@@ -1764,7 +1961,7 @@ impl Control {
+@@ -1764,7 +1965,7 @@ impl Control {
              .get(&request.name)
              .ok_or("Function is outside accepted configuration")?
              .needs_approval;
@@ -528,7 +532,7 @@ index d65ee1b7..17ed9932 100644
          if let Some(old) = self.calls.get(&request.call_id) {
              if old.fingerprint != fingerprint || old.request.response_id != request.response_id {
                  return Err("Realtime function identity changed".into());
-@@ -1860,6 +2057,7 @@ impl Control {
+@@ -1860,6 +2061,7 @@ impl Control {
              } else if !self.responses.active_default_response
                  && self.cancel_waiting.is_none()
                  && !self.cancel_before_created
@@ -536,7 +540,7 @@ index d65ee1b7..17ed9932 100644
              {
                  self.batches.get_mut(&id).unwrap().continued = true;
                  self.request_response(effects);
-@@ -1875,7 +2073,12 @@ impl Control {
+@@ -1875,7 +2077,12 @@ impl Control {
              serde_json::from_str::<Command>(input)
                  .map_err(|_| "Invalid control command".into())
                  .and_then(|command| {
@@ -550,7 +554,7 @@ index d65ee1b7..17ed9932 100644
                      self.apply(command)
                  })
          };
-@@ -2464,7 +2667,7 @@ mod tests {
+@@ -2464,7 +2671,7 @@ mod tests {
              );
              assert_eq!(
                  guarded["effects"][0]["event"],
@@ -559,7 +563,7 @@ index d65ee1b7..17ed9932 100644
              );
              assert!(
                  guarded["effects"]
-@@ -2522,7 +2725,7 @@ mod tests {
+@@ -2522,7 +2729,7 @@ mod tests {
          );
          assert_eq!(
              created["effects"][0]["event"],
@@ -568,7 +572,7 @@ index d65ee1b7..17ed9932 100644
          );
          assert!(control.retired_responses.contains("cancel-me"));
          assert!(!control.responses.active_default_response);
-@@ -2619,7 +2822,7 @@ mod tests {
+@@ -2619,7 +2826,7 @@ mod tests {
                  .unwrap()
                  .iter()
                  .any(|effect| effect["event"]
@@ -577,7 +581,7 @@ index d65ee1b7..17ed9932 100644
          );
          let done = command(
              &mut control,
-@@ -3194,7 +3397,7 @@ mod tests {
+@@ -3194,7 +3401,7 @@ mod tests {
                  );
                  assert_eq!(
                      cancelled["effects"][0]["event"],
@@ -586,7 +590,7 @@ index d65ee1b7..17ed9932 100644
                  );
                  assert!(control.pending_default.is_none());
              } else {
-@@ -3264,4 +3467,724 @@ mod tests {
+@@ -3264,4 +3471,743 @@ mod tests {
          claim.release();
          assert!(claim.claim());
      }
@@ -1264,50 +1268,69 @@ index d65ee1b7..17ed9932 100644
 +    }
 +    #[test]
 +    fn cancel_fences_received_successful_terminal_before_tool_admission_without_a_wire_cancel() {
-+        let mut control = ready();
-+        let audio = command(&mut control, json!({"type":"audio","audio":"AAAA"}));
-+        for event in [
-+            json!({"type":"response.created","response":{"id":"finished"}}),
-+            json!({"type":"response.output_item.done","response_id":"finished","item":item()}),
-+            json!({"type":"response.done","response":{"id":"finished","status":"completed","output":[item()]}}),
-+        ] {
-+            assert!(
-+                command(&mut control, json!({"type":"provider","event":event}))
-+                    .get("error")
-+                    .is_none()
-+            );
++        for mode in ["audio", "bare", "scoped"] {
++            for early_cancel in [false, true] {
++                let mut control = ready();
++                let audio = match mode {
++                    "audio" => command(&mut control, json!({"type":"audio","audio":"AAAA"})),
++                    "bare" => command(&mut control, json!({"type":"create_response"})),
++                    _ => command(
++                        &mut control,
++                        json!({"type":"create_response","response":{"instructions":"Scoped"}}),
++                    ),
++                };
++                if early_cancel {
++                    command(&mut control, json!({"type":"cancel"}));
++                }
++                let mut response = json!({"id":"finished"});
++                if mode == "scoped" {
++                    response["metadata"] =
++                        audio["effects"][0]["event"]["response"]["metadata"].clone();
++                }
++                for event in [
++                    json!({"type":"response.created","response":response}),
++                    json!({"type":"response.output_item.done","response_id":"finished","item":item()}),
++                    json!({"type":"response.done","response":{"id":"finished","status":"completed","output":[item()]}}),
++                ] {
++                    assert!(
++                        command(&mut control, json!({"type":"provider","event":event}))
++                            .get("error")
++                            .is_none()
++                    );
++                }
++                assert_eq!(
++                    command(&mut control, json!({"type":"validate_cancel"}))["effects"],
++                    json!([])
++                );
++                let cancelled = command(&mut control, json!({"type":"cancel"}));
++                assert!(
++                    cancelled["effects"]
++                        .as_array()
++                        .unwrap()
++                        .iter()
++                        .all(|effect| effect["type"] != "send")
++                );
++                let drained = command(
++                    &mut control,
++                    json!({"type":"sent","id":audio["effects"][0]["id"]}),
++                );
++                assert!(drained.get("error").is_none());
++                assert!(
++                    drained["effects"]
++                        .as_array()
++                        .unwrap()
++                        .iter()
++                        .all(|effect| effect["type"] != "execute" && effect["type"] != "approve")
++                );
++                let next = command(&mut control, json!({"type":"create_response"}));
++                assert!(
++                    next["effects"]
++                        .as_array()
++                        .unwrap()
++                        .iter()
++                        .any(|effect| effect["event"]["type"] == "response.create")
++                );
++            }
 +        }
-+        assert_eq!(
-+            command(&mut control, json!({"type":"validate_cancel"}))["effects"],
-+            json!([])
-+        );
-+        let cancelled = command(&mut control, json!({"type":"cancel"}));
-+        assert!(
-+            cancelled["effects"]
-+                .as_array()
-+                .unwrap()
-+                .iter()
-+                .all(|effect| effect["type"] != "send")
-+        );
-+        let drained = command(
-+            &mut control,
-+            json!({"type":"sent","id":audio["effects"][0]["id"]}),
-+        );
-+        assert!(drained.get("error").is_none());
-+        assert!(
-+            drained["effects"]
-+                .as_array()
-+                .unwrap()
-+                .iter()
-+                .all(|effect| effect["type"] != "execute" && effect["type"] != "approve")
-+        );
-+        let next = command(&mut control, json!({"type":"create_response"}));
-+        assert!(
-+            next["effects"]
-+                .as_array()
-+                .unwrap()
-+                .iter()
-+                .any(|effect| effect["event"]["type"] == "response.create")
-+        );
 +    }
  }

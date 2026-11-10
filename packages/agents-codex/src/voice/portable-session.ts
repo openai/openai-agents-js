@@ -466,12 +466,16 @@ export class PortableVoiceSession {
     });
   }
   sendMessage(item: Readonly<Record<string, unknown>>): void {
-    this.#dispatch(
-      this.#captureInput(
-        { type: 'input', item },
-        'conversation.item.create'.length - 'input'.length,
-      ).command,
+    const input = this.#captureInput(
+      { type: 'input', item },
+      'conversation.item.create'.length - 'input'.length,
     );
+    this.#preflightResponse(
+      undefined,
+      256 - this.#queuedSends - 1,
+      8 * 1024 * 1024 - this.#queuedSendBytes - input.bytes,
+    );
+    this.#dispatch(input.command);
   }
   deleteItem(itemId: string): void {
     this.#dispatch({ type: 'delete', item_id: itemId });
@@ -516,6 +520,12 @@ export class PortableVoiceSession {
       event,
       Math.floor((8 * 1024 * 1024 - this.#queuedSendBytes) / 2),
     );
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    if (
+      this.#queuedSends >= 256 ||
+      this.#queuedSendBytes + 2 * wire.length > 8 * 1024 * 1024
+    )
+      throw new RangeError('Portable voice input exceeds capacity.');
     return { command: snapshot, bytes: 2 * wire.length };
   }
 

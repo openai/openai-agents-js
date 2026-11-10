@@ -99,14 +99,18 @@ async function fixture(active?: 'default' | 'detached') {
   }
   return { session, frames, observed, errors, release, closed: () => closed };
 }
-function fill(session: PortableVoiceSession, boundary: 'count' | 'bytes') {
+function fill(
+  session: PortableVoiceSession,
+  boundary: 'count' | 'bytes',
+  leave = 0,
+) {
   if (boundary === 'count') {
     for (let i = 0; i < 256; i++) session.sendAudio('AAAA');
     return 256;
   }
   const overhead =
     JSON.stringify({ type: 'input_audio_buffer.append', audio: '' }).length * 2;
-  let remaining = 8 * 1024 * 1024;
+  let remaining = 8 * 1024 * 1024 - leave;
   let count = 0;
   while (remaining >= 256 * 1024 * 2 + overhead) {
     session.sendAudio('A'.repeat(256 * 1024));
@@ -243,6 +247,91 @@ describe.runIf(enabled)('actual native portable egress admission', () => {
           true,
         ),
       );
+    },
+  );
+  it('rechecks transport pressure after caller JSON capture without retiring the owner', async () => {
+    const f = await fixture();
+    const capture = vi.fn(() => {
+      fill(f.session, 'count');
+      return {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'outer' }],
+      };
+    });
+    expect(() => f.session.sendMessage({ toJSON: capture })).toThrow(
+      RangeError,
+    );
+    expect(capture).toHaveBeenCalledOnce();
+    expect(f.errors).toEqual([]);
+    expect(f.closed()).toBe(0);
+    f.release();
+    await vi.waitFor(() =>
+      expect(
+        f.frames.filter((event) => event.type === 'input_audio_buffer.append'),
+      ).toHaveLength(256),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    f.session.sendMessage({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'retry' }],
+    });
+    f.session.createResponse();
+    await vi.waitFor(() =>
+      expect(f.observed.some((event) => event.type === 'response.done')).toBe(
+        true,
+      ),
+    );
+    expect(f.errors).toEqual([]);
+  });
+
+  it.each(['count', 'bytes'] as const)(
+    'reserves both sendMessage frames at %s pressure and permits retry',
+    async (boundary) => {
+      const f = await fixture();
+      const item = {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'pressure' }],
+      };
+      let count: number;
+      if (boundary === 'count') {
+        count = 255;
+        for (let i = 0; i < count; i++) f.session.sendAudio('AAAA');
+      } else {
+        const bytes =
+          2 *
+            JSON.stringify({ type: 'conversation.item.create', item }).length +
+          2 * JSON.stringify({ type: 'response.create' }).length;
+        count = fill(f.session, 'bytes', bytes - 8);
+      }
+      expect(() => f.session.sendMessage(item)).toThrow(RangeError);
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+      f.release();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter(
+            (event) => event.type === 'input_audio_buffer.append',
+          ),
+        ).toHaveLength(count),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      f.session.sendMessage(item);
+      await vi.waitFor(() =>
+        expect(f.observed.some((event) => event.type === 'response.done')).toBe(
+          true,
+        ),
+      );
+      expect(
+        f.frames.filter((event) => event.type === 'conversation.item.create'),
+      ).toHaveLength(1);
+      expect(
+        f.frames.filter((event) => event.type === 'response.create'),
+      ).toHaveLength(1);
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
     },
   );
 });

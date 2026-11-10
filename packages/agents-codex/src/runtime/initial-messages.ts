@@ -1,3 +1,4 @@
+import { MAX_AUDIO_INPUT_BYTES } from './media';
 import { nativeInput, responseContent, type UserMessage } from './input';
 
 /** Settled assistant text, without caller identity, reasoning or tool work. */
@@ -38,13 +39,14 @@ export function captureInitialMessages(
     );
   if (!Array.isArray(messages))
     throw new TypeError('initialMessages must be an array of settled messages');
+  const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   return messages.map<InitialMessage>((message) => {
     if (!message || typeof message !== 'object' || Array.isArray(message))
       throw new TypeError(
         'initialMessages entries must be user or assistant messages',
       );
     if (message.role === 'user') {
-      const content = responseContent(nativeInput(message));
+      const content = responseContent(nativeInput(message, audioBudget));
       for (const part of content) {
         if (part && typeof part === 'object')
           for (const value of Object.values(part))

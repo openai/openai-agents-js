@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   AiSdkModel,
   ChatCompletionsModel,
@@ -266,3 +266,87 @@ it.each(
     );
   },
 );
+
+const audioCapacity = 64 * 1024 * 1024;
+it('rejects a raw oversized remote audio input before receipt serialization', () => {
+  const serialise = vi.spyOn(JSON, 'stringify');
+  try {
+    expect(() =>
+      nativeInput({
+        role: 'user',
+        content: [
+          {
+            type: 'input_audio',
+            audio_url: 'https://audio.test/' + 'a'.repeat(audioCapacity),
+          },
+        ],
+      }),
+    ).toThrow(RangeError);
+    expect(serialise).not.toHaveBeenCalled();
+  } finally {
+    serialise.mockRestore();
+  }
+});
+it('bounds encoded Unicode audio and the aggregate audio input without large quoting', () => {
+  const real = JSON.stringify;
+  let largest = 0;
+  const serialise = vi.spyOn(JSON, 'stringify').mockImplementation(((
+    value: unknown,
+  ) => {
+    if (typeof value === 'string') largest = Math.max(largest, value.length);
+    return real(value);
+  }) as typeof JSON.stringify);
+  try {
+    expect(() =>
+      nativeInput({
+        role: 'user',
+        content: [
+          {
+            type: 'input_audio',
+            audio_url: 'https://audio.test/' + '😀'.repeat(audioCapacity / 4),
+          },
+        ],
+      }),
+    ).toThrow(RangeError);
+    expect(() =>
+      nativeInput({
+        role: 'user',
+        content: [
+          { type: 'input_audio', audio_url: 'a'.repeat(audioCapacity / 2) },
+          { type: 'input_audio', audio_url: 'a'.repeat(audioCapacity / 2) },
+        ],
+      }),
+    ).toThrow(RangeError);
+    expect(largest).toBeLessThanOrEqual(32_768);
+  } finally {
+    serialise.mockRestore();
+  }
+});
+it('accepts the bounded audio reference edge and rejects one additional byte', () => {
+  const overhead = JSON.stringify([{ type: 'audio', audio_url: '' }]).length;
+  const atLimit = 'a'.repeat(audioCapacity - overhead);
+  expect(
+    nativeInput({
+      role: 'user',
+      content: [{ type: 'input_audio', audio_url: atLimit }],
+    }),
+  ).toEqual([{ type: 'audio', audio_url: atLimit }]);
+  expect(() =>
+    nativeInput({
+      role: 'user',
+      content: [{ type: 'input_audio', audio_url: atLimit + 'a' }],
+    }),
+  ).toThrow(RangeError);
+});
+
+it('shares the audio budget across manually constructed initial messages', async () => {
+  const { captureInitialMessages } =
+    await import('../src/runtime/initial-messages');
+  const audio = 'a'.repeat(audioCapacity / 2);
+  expect(() =>
+    captureInitialMessages([
+      { role: 'user', content: [{ type: 'input_audio', audio_url: audio }] },
+      { role: 'user', content: [{ type: 'input_audio', audio_url: audio }] },
+    ]),
+  ).toThrow(RangeError);
+});

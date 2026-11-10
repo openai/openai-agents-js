@@ -59,7 +59,7 @@ it('preserves admitted mixed audio content through one native tool continuation'
       },
     },
   });
-  const result = await new Agent({
+  const agent = new Agent({
     model: 'custom-model',
     instructions: 'Use lookup once.',
     tools: [lookup],
@@ -68,7 +68,21 @@ it('preserves admitted mixed audio content through one native tool continuation'
       toolChoice: toolRef('lookup'),
       inputModalities: ['text', 'audio'],
     },
-  }).run(message);
+  });
+  await expect(
+    agent.run({
+      role: 'user',
+      content: [
+        {
+          type: 'input_audio',
+          audio_url: 'https://audio.test/' + 'a'.repeat(64 * 1024 * 1024),
+        },
+      ],
+    }),
+  ).rejects.toThrow(RangeError);
+  expect(seen).toHaveLength(0);
+  expect(effects).toEqual([]);
+  const result = await agent.run(message);
   expect(result.finalOutput).toBe('ok');
   expect(effects).toEqual(['lookup']);
   expect(seen).toHaveLength(2);
