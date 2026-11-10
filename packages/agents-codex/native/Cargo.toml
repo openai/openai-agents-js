@@ -54,6 +54,7 @@ codex-exec-server = { path = ".upstream/reviewed-codex/codex-rs/exec-server" }
 codex-core = { path = ".upstream/reviewed-codex/codex-rs/core" }
 codex-protocol = { path = ".upstream/reviewed-codex/codex-rs/protocol" }
 codex-config = { path = ".upstream/reviewed-codex/codex-rs/config" }
+codex-git-utils = { path = ".upstream/reviewed-codex/codex-rs/git-utils" }
 codex-file-system = { path = ".upstream/reviewed-codex/codex-rs/file-system" }
 codex-extension-api = { path = ".upstream/reviewed-codex/codex-rs/ext/extension-api" }
 codex-rollout = { path = ".upstream/reviewed-codex/codex-rs/rollout" }

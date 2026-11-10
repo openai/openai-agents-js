@@ -1932,10 +1932,19 @@ export type NativeCodexToolOptions = Pick<
 > & {
   /** Observes CLI events without changing execution success; observer failures are isolated. */
   onEvent?: (event: ThreadEvent) => void | Promise<void>;
+  /** Resolve a model image reference to an authorized CLI-readable asset; null denies it. */
+  resolveImage?: (reference: string) => string | null | Promise<string | null>;
 };
 
 /**
  * Delegate through a native function tool to the external Codex CLI.
+ * Prompts: a string or ordered text/local_image inputs, for example
+ * [{type:'text',text:'Inspect this image'},
+ *  {type:'local_image',path:'/workspace/diagram.png'}].
+ * Local images require resolveImage. The returned path authorizes a CLI read;
+ * null denies the image. The application owns safe asset resolution or staging,
+ * including filesystem race protection. Working/additional directories grant no
+ * image-read authority. Structured text retains its original whitespace.
  * The application authorizes executable, credentials and workspace in the
  * options. Native Environment grants do not constrain this application tool.
  * Cancellation has been joining the CLI stream.
@@ -1983,6 +1992,9 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
     : undefined;
   const persistSession = options.persistSession ?? false;
   const onEvent = options.onEvent;
+  const resolveImage = options.resolveImage;
+  if (resolveImage !== undefined && typeof resolveImage !== 'function')
+    throw new TypeError('resolveImage must be a function');
   const threadIdSchema = z
     .string()
     .min(1)
@@ -2004,7 +2016,37 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
       options.description ??
       'Run an external Codex CLI task in the configured workspace.',
     parameters: z.object({
-      prompt: z.string().min(1),
+      prompt: z.union([
+        z.string().min(1),
+        z
+          .array(
+            z.union([
+              z
+                .object({
+                  type: z.literal('text'),
+                  text: z
+                    .string()
+                    .refine(
+                      (value) => value.trim().length > 0,
+                      'Text inputs must not be empty',
+                    ),
+                })
+                .strict(),
+              z
+                .object({
+                  type: z.literal('local_image'),
+                  path: z
+                    .string()
+                    .refine(
+                      (value) => value.trim().length > 0,
+                      'Local image references must not be empty',
+                    ),
+                })
+                .strict(),
+            ]),
+          )
+          .min(1),
+      ]),
       threadId: threadIdSchema
         .nullable()
         .default(null)
@@ -2045,7 +2087,44 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
             'Codex thread ID is not authorized for this Session',
           );
         }
+        let authorizedPrompt = prompt;
+        if (Array.isArray(prompt)) {
+          const inputs: UserInput[] = [];
+          for (const item of prompt) {
+            if (item.type === 'text') {
+              inputs.push({ type: 'text', text: item.text });
+              continue;
+            }
+            if (!resolveImage)
+              throw new UserError(
+                'Local images require an application resolveImage callback',
+              );
+            signal.throwIfAborted();
+            let resolved: string | null;
+            try {
+              resolved = await resolveImage(item.path);
+            } finally {
+              signal.throwIfAborted();
+            }
+            if (resolved === null)
+              throw new UserError(
+                'Local image was not authorized by the application',
+              );
+            if (
+              typeof resolved !== 'string' ||
+              !resolved.trim() ||
+              resolved.includes('\0')
+            )
+              throw new UserError(
+                'resolveImage must return a nonempty path string or null',
+              );
+            inputs.push({ type: 'local_image', path: resolved });
+          }
+          authorizedPrompt = inputs;
+        }
+        signal.throwIfAborted();
         const codex = await resolveCodex();
+        signal.throwIfAborted();
         const persisted = persistSession ? state.persisted : undefined;
         const selectedThreadId =
           threadId ?? (persisted ? undefined : initialThreadId);
@@ -2053,7 +2132,7 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
           selectedThreadId !== undefined
             ? codex.resumeThread(selectedThreadId, threadOptions)
             : (persisted ?? codex.startThread(threadOptions));
-        const stream = await thread.runStreamed(prompt, {
+        const stream = await thread.runStreamed(authorizedPrompt, {
           ...turnOptions,
           signal,
         });

@@ -23,6 +23,14 @@ fn main() -> anyhow::Result<()> {
                 1
             });
         }
+        if executable.file_name() == Some("codex-linux-sandbox".as_ref()) {
+            // Keep pre-isolation helper lookup separate from the command's PATH.
+            // SAFETY: this entry point runs before any helper thread starts.
+            unsafe {
+                std::env::set_var("CODEX_SDK_BWRAP_SEARCH_PATH", "/usr/bin:/bin");
+                std::env::remove_var("CARGO_BIN_EXE_bwrap");
+            }
+        }
         // Only the SDK's explicit installed-runtime entrypoint owns this mode.
         if executable.file_name() == Some("codex-sdk-runtime".as_ref())
             && args.next().as_deref() == Some("--sdk-unix-local".as_ref())

@@ -10766,9 +10766,11 @@ export class Session<OutputT = string, Context = unknown> {
     return this.#readHistory();
   }
 
-  /** Read canonical input from an idle Session. A limit returns its latest items.
-   * Zero returns only the content revision and full count. Raw audit records
-   * and projected items() are separate views. Core truncation is not reversed. */
+  /** Core has been retaining original JSON object records independently of model
+   * context truncation. A limit has been selecting the latest original records;
+   * zero has been returning only the content revision and full count. Hot reads
+   * have been copying only selected records; durable restore has been loading
+   * the full stored history. Projected items() has been remaining a separate view. */
   async historySnapshot(
     options: { limit?: number } = {},
   ): Promise<CanonicalHistorySnapshot> {
@@ -10780,18 +10782,27 @@ export class Session<OutputT = string, Context = unknown> {
       (!Number.isSafeInteger(limit) || limit < 0 || limit > 0xffffffff)
     )
       throw new RangeError('limit must be a nonnegative 32-bit integer');
-    return this.mutate(async () =>
-      JSON.parse(await this.#native._canonical_history(limit ?? null)),
-    );
+    return this.mutate(async () => {
+      const snapshot: { revision: string; total: number; items: string[] } =
+        JSON.parse(await this.#native._canonical_history(limit ?? null));
+      return {
+        ...snapshot,
+        items: snapshot.items.map(
+          (item) => JSON.parse(item) as Record<string, unknown>,
+        ),
+      };
+    });
   }
 
-  /** Atomically retain a prefix and replace its suffix with native response items.
-   * Use the entire snapshot revision, keep=total to append, or keep=0 to replace.
-   * Core rejects conflicts and invalid batches before committing. Acknowledged
-   * changes survive canonical restore; old raw audit records remain stored.
-   * An uncertain persistence outcome retires this Session; close and restore
-   * from storage before continuing. Pending work, child graphs and goals require
-   * their dedicated APIs. */
+  /** Core has been atomically replacing a suffix of original JSON object records.
+   * Positive keep=total has been preserving current model context while appending;
+   * keep=0 has been explicitly replacing that context. Known executable items
+   * have been requiring valid native shapes and complete client-tool pairs.
+   * Core has been retaining unknown records for audit without model admission
+   * and rejecting ambiguous prefix shortening after compaction before commit.
+   * An uncertain persistence outcome has been retiring this Session, requiring
+   * close and restore before further work. Pending work, child graphs and goals
+   * have been continuing through their dedicated APIs. */
   async transactHistory(options: {
     expectedRevision: string;
     keep: number;
@@ -10804,7 +10815,10 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('expectedRevision must be nonempty text');
     if (!Number.isSafeInteger(keep) || keep < 0 || keep > 0xffffffff)
       throw new RangeError('keep must be a nonnegative 32-bit integer');
-    const captured = JSON.stringify(options.items ?? []);
+    // Original JSON has been crossing generic native Value conversions only as strings.
+    const captured = JSON.stringify(
+      (options.items ?? []).map((item) => JSON.stringify(item)),
+    );
     return this.mutate(async () => {
       const value = JSON.parse(
         await this.#native._transact_history(expectedRevision, keep, captured),

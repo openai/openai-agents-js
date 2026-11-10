@@ -46,6 +46,36 @@ try {
 
 OpenAI export has been requiring a known native root descriptor. An externally supplied ingress `parentTrace` has been propagating span context without supplying that root descriptor. Such workflows have been completing while OpenAI delivery has been failing in the flush receipt. OTLP or an application processor accepting externally parented spans has been providing the route for those workflows; the [external-parent guidance](telemetry.md#carry-a-w3c-parent-across-services) has been describing context propagation. A successful agent result has not been establishing successful export.
 
+## Read inherited root metadata
+
+The matching source build has been exposing `TraceSpan.traceMetadata`: the original root metadata as a detached JSON snapshot, including on child spans and retained spans after end. Fresh snapshots per read, with local copy edits separate from native root state:
+
+```ts
+import { telemetry } from '@openai/agents';
+
+await telemetry.configure({
+  traceProcessors: [new telemetry.ConsoleTraceProcessor()],
+});
+try {
+  const root = await telemetry.withTrace(
+    { name: 'Checkout', metadata: { tenant: 'example' } },
+    async (root) => {
+      await telemetry.withSpan({ name: 'Charge' }, async (child) => {
+        console.log(child.traceMetadata); // { tenant: 'example' }
+      });
+      return root;
+    },
+  );
+  const snapshot = { ...root.traceMetadata };
+  snapshot.tenant = 'local copy';
+  console.log(root.traceMetadata); // { tenant: 'example' }, after end
+} finally {
+  await telemetry.shutdown();
+}
+```
+
+Native root ownership and original JSON types; no credential readback or saved live context. Detached spans: their own root metadata. Restored work under a new workflow: that workflow's metadata. Python equivalents: `SpanContext.trace_metadata` and `TraceScope.trace_metadata`, with a runnable [Python example](https://github.com/openai/openai-agents-python/blob/feat/codex-harness/examples/codex/observability/trace_context.py).
+
 ## Choose initial and later routes
 
 Call `telemetry.configure({ traceProcessors: [...] })` before constructing an engine or opening a Session. A nonempty initial list enables a custom-only trace pipeline even when `traces` is omitted. To use both callbacks and built-in OTLP export, also configure `traces` as shown in the example.

@@ -1385,6 +1385,7 @@ export class Agent<Context = undefined, Output = string> {
             : {}),
           strict_config: true,
           loader: { ignore_user_config: true, ignore_project_config: true },
+          ...(projectGuidance ? { _sdk_project_guidance_config: true } : {}),
           base_instructions:
             "You are an AI agent. Follow the application instructions and use the tools provided to complete the user's request accurately.",
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
