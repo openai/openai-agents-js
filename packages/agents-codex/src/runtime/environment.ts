@@ -138,25 +138,42 @@ function captureStorageMounts(
   }
 }
 
+// Core's NON_INHERITABLE_ENV_VARS and the SDK's executor bootstrap controls.
+const reservedEnvironmentNames = new Set([
+  'CODEX_SDK_BWRAP_SEARCH_PATH',
+  'CARGO_BIN_EXE_BWRAP',
+  'CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE',
+  'CODEX_SANDBOX_COMMAND_ENV_JSON',
+  'CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN',
+  'NODE_REPL_AUTH_TOKEN',
+  'CODEX_GUARDIAN_DECISIONS_API_KEY',
+  'OPENAI_FEDERATION_RULE_ID',
+  'OPENAI_IDENTITY_TOKEN_FILE',
+  'OPENAI_WORKLOAD_IDENTITY_CONTEXT',
+]);
+
 const environmentValues = z
   .custom<Record<string, string>>(
     (value) =>
       value !== null &&
       typeof value === 'object' &&
       !Array.isArray(value) &&
-      Object.entries(value).every(
-        ([name, entry]) =>
+      Object.entries(value).every(([name, entry]) => {
+        const normalizedName = name.replace(/[a-z]/g, (letter) =>
+          letter.toUpperCase(),
+        );
+        return (
           name.length > 0 &&
-          name !== 'CODEX_SDK_BWRAP_SEARCH_PATH' &&
-          name !== 'CARGO_BIN_EXE_bwrap' &&
-          name !== 'CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE' &&
+          !reservedEnvironmentNames.has(normalizedName) &&
+          !normalizedName.startsWith('CODEX_SANDBOX_COMMAND_ENV_JSON_') &&
           !name.includes('\0') &&
           !name.includes('=') &&
           typeof entry === 'string' &&
           !entry.includes('\0') &&
           Buffer.from(name, 'utf8').toString('utf8') === name &&
-          Buffer.from(entry, 'utf8').toString('utf8') === entry,
-      ),
+          Buffer.from(entry, 'utf8').toString('utf8') === entry
+        );
+      }),
     'Invalid executor environment variables',
   )
   .transform((value) => Object.fromEntries(Object.entries(value)));

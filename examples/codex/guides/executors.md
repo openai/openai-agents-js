@@ -100,7 +100,12 @@ Session usage: `agent.session({ environment })`. One-shot usage: `agent.run(inpu
 | A replacement or restored Session | Current destination values. No saved copy of the earlier map. |
 | Private declaration data | The map excluded from the Environment's default JSON, saved configuration, and passive observations. Values printed by commands: ordinary tool output. |
 
-Variable names: nonempty strings without `=` or NUL. Values: strings without NUL. Both names and values: valid UTF-8 text. Reserved SDK helper names: `CODEX_SDK_BWRAP_SEARCH_PATH` and `CARGO_BIN_EXE_bwrap`.
+Variable names: nonempty strings without `=` or NUL. Values: strings without NUL. Both names and values: valid UTF-8 text.
+
+Reserved names, with case-insensitive matching:
+
+- SDK helper controls: `CODEX_SDK_BWRAP_SEARCH_PATH`, `CARGO_BIN_EXE_bwrap`, `CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE`, `CODEX_SANDBOX_COMMAND_ENV_JSON`, and names beginning with `CODEX_SANDBOX_COMMAND_ENV_JSON_`.
+- Execution identity: `CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN`, `NODE_REPL_AUTH_TOKEN`, `CODEX_GUARDIAN_DECISIONS_API_KEY`, `OPENAI_FEDERATION_RULE_ID`, `OPENAI_IDENTITY_TOKEN_FILE`, and `OPENAI_WORKLOAD_IDENTITY_CONTEXT`.
 
 Shell startup scripts: possible subsequent changes to the initial command values.
 
