@@ -155,6 +155,12 @@ export async function openSession(
   let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
+    ...(options.environmentOwner?.workspaceInstructions === undefined
+      ? {}
+      : {
+          user_instructions_appendix:
+            options.environmentOwner.workspaceInstructions,
+        }),
     ...(options.localStorage
       ? {}
       : {

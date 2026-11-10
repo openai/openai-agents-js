@@ -67,6 +67,9 @@ export interface SandboxEnvironmentOptions<
  * Use existing sandbox materialization with native execution. Each opening owns
  * a provider session through create() or explicitly authorized resume(). Live
  * sessions remain application-owned. Providers own validation and credentials.
+ * Each prepared acquisition has been supplying filesystem and mount guidance to
+ * the native Session. Entry descriptions have been appearing in model context,
+ * requiring text without secrets.
  */
 export function sandboxEnvironment<
   Context = any,
@@ -462,6 +465,11 @@ function createSandboxEnvironment<
           dispose,
           gateway.signal,
           managed,
+          renderWorkspaceInstructions(
+            sandbox.state.manifest,
+            gateway.environment! as Environment<Context>,
+            runtime,
+          ),
         );
       };
       const inspectedState = borrowed?.state ?? originalResumeState;
@@ -511,6 +519,33 @@ export function renderStorageLayoutWithManifest(
     };
   });
   return JSON.stringify({ workspace: manifest.root, storage }, null, 2);
+}
+
+function renderWorkspaceInstructions(
+  manifest: Manifest,
+  environment: Environment,
+  runtime: typeof sandboxRuntime,
+): string {
+  const {
+    cloneManifest,
+    renderManifestDescription,
+    renderRemoteMountPolicyInstructions,
+  } = runtime;
+  const captured = cloneManifest(manifest);
+  const sections = [
+    '# Current SDK workspace snapshot',
+    'This snapshot replaces all earlier SDK workspace descriptions. ' +
+      'Mount modes describe storage; current tool and executor grants control access.',
+    'Working directory: ' + JSON.stringify(environment.cwd),
+    'Executor read-only: ' + JSON.stringify(environment.readOnly),
+    'Filesystem layout:\n' +
+      renderManifestDescription(captured, { depth: 3 }).text,
+    'Declared storage access:\n' +
+      renderStorageLayoutWithManifest(captured, runtime.Manifest),
+  ];
+  const policy = renderRemoteMountPolicyInstructions(captured);
+  if (policy !== undefined) sections.push(policy);
+  return sections.join('\n\n');
 }
 
 function requireManifest(

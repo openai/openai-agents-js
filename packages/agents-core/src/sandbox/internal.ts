@@ -64,6 +64,7 @@ export {
 } from './shared/boundedFileRead';
 export {
   Manifest,
+  renderManifestDescription,
   cloneManifest,
   copyManifestMountCredentialExposurePolicy,
   replaceManifestMountCredentialExposurePolicy,
@@ -144,3 +145,5 @@ export {
 } from './shared/localSourceReader';
 
 export { retainManagedWorkspaceSnapshot } from './sandboxes/shared/localSnapshots';
+
+export { renderRemoteMountPolicyInstructions } from './runtime/prompts';
