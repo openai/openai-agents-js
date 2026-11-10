@@ -7,6 +7,23 @@ import type { JsonObject } from '../src/runtime/binding';
 import { ModelServer } from './native/fixtures/model-server';
 
 type Frame = Record<string, any>;
+
+function mergeSession(current: Frame, update: Frame) {
+  for (const [key, value] of Object.entries(update)) {
+    if (
+      key !== 'turn_detection' &&
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      current[key] &&
+      typeof current[key] === 'object' &&
+      !Array.isArray(current[key])
+    )
+      mergeSession(current[key], value);
+    else current[key] = structuredClone(value);
+  }
+}
+
 const PNG_IMAGE =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==';
 
@@ -66,7 +83,7 @@ class HistoryPeer {
             item: this.retrievals.get(frame.item_id)!,
           });
         if (frame.type === 'session.update') {
-          Object.assign(session, frame.session);
+          mergeSession(session, frame.session);
           this.send({
             type: 'session.updated',
             session: { ...session, id: 'history-fixture' },
@@ -246,6 +263,109 @@ nativeIt.each([
     }
   },
   15000,
+);
+
+nativeIt.each(['server_vad', 'semantic_vad'] as const)(
+  'preserves %s model versions for SIP, text startup, and live updates',
+  async (type) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Reply with text.',
+      }).session();
+      const options = {
+        model: 'fixture-realtime',
+        outputModality: 'text' as const,
+        settings: { turnDetection: { type, modelVersion: 'fixture-vad-v1' } },
+      };
+      const config = await session.buildRealtimeSipConfig(options);
+      expect(config).toMatchObject({
+        output_modalities: ['text'],
+        audio: {
+          input: {
+            turn_detection: { type, model_version: 'fixture-vad-v1' },
+          },
+        },
+      });
+      expect(peer.frames).toEqual([]);
+      expect(peer.models).toEqual([]);
+      await using voice = await session.realtime(options);
+      const initial = await peer.frame('session.update');
+      const expected = { model: peer.models[0], ...initial.session };
+      delete expected.id;
+      expect(config).toEqual(expected);
+      const after = peer.frames.length;
+      await voice.update({
+        turnDetection: { type, modelVersion: 'fixture-vad-v2' },
+      });
+      const update = await peer.frame('session.update', after);
+      expect(update.session).toMatchObject({
+        audio: {
+          input: {
+            turn_detection: { type, model_version: 'fixture-vad-v2' },
+          },
+        },
+      });
+      expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'sends one-response overrides without changing the next default response',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Use the accepted Session instructions.',
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+      });
+      await voice.requestResponse({
+        instructions: 'Answer this response briefly.',
+        outputModality: 'text',
+        maxOutputTokens: 32,
+      });
+      const first = await peer.frame('response.create');
+      expect(first).toEqual({
+        type: 'response.create',
+        response: {
+          instructions: 'Answer this response briefly.',
+          output_modalities: ['text'],
+          max_output_tokens: 32,
+        },
+      });
+      peer.send({
+        type: 'response.created',
+        response: { id: 'override-response' },
+      });
+      peer.send({
+        type: 'response.done',
+        response: { id: 'override-response' },
+      });
+      const after = peer.frames.length;
+      await voice.requestResponse();
+      expect(await peer.frame('response.create', after)).toEqual({
+        type: 'response.create',
+      });
+      expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
 );
 
 nativeIt(

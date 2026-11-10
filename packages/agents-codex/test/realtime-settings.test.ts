@@ -6,6 +6,23 @@ import {
 } from '../src/runtime/realtime-settings';
 
 describe('native Realtime settings serialization', () => {
+  it.each(['server_vad', 'semantic_vad'] as const)(
+    'preserves %s model versions for startup and sparse updates',
+    (type) => {
+      const turnDetection = { type, modelVersion: 'fixture-vad-v2' };
+      const expected = {
+        turn_detection: { type, model_version: 'fixture-vad-v2' },
+      };
+      expect(serializeRealtimeSettings({ turnDetection })).toEqual(expected);
+      expect(serializeRealtimeSessionUpdate({ turnDetection })).toEqual(
+        expected,
+      );
+      expect(serializeRealtimeSettings({ turnDetection: { type } })).toEqual({
+        turn_detection: { type },
+      });
+    },
+  );
+
   it('preserves omitted versus disabled settings and sends sparse updates', () => {
     expect(serializeRealtimeSettings({})).toEqual({});
     expect(serializeRealtimeSessionUpdate({ outputSpeed: 1.25 })).toEqual({

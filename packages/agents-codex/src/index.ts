@@ -326,6 +326,7 @@ export type {
   NativeRealtimeSession,
   NativeRealtimeOptions,
   NativeRealtimeSipConfigOptions,
+  NativeRealtimeResponseOptions,
   NativeRealtimeEvent,
   NativeRealtimeHistoryItem,
   NativeRealtimeHostedMcpApprovalRequest,
