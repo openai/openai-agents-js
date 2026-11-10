@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { Session } from '../src/runtime/session';
-import { HttpMCP, StdioMCP } from '../src/runtime/mcp';
+import { HttpMCP, StdioMCP, mcpToolNames } from '../src/runtime/mcp';
 import { captureTools } from '../src/runtime/tools';
 import type { Engine, NativeThread } from '../src/runtime/binding';
 
@@ -188,4 +188,39 @@ it('explicit SIP tools skip inherited MCP preparation just as connection does', 
   const { session, publish } = fixture();
   await session.buildRealtimeSipConfig({ tools: [] });
   expect(publish).not.toHaveBeenCalled();
+});
+
+it('promotes one collision-aware operation MCP leaf with linear roster reads', async () => {
+  const raw = [
+    'a.b',
+    'a_b',
+    ...Array.from({ length: 254 }, (_, i) => `leaf_${i}`),
+  ];
+  const { session, publish, descriptor } = fixture('operation', raw);
+  const server = descriptor(raw);
+  const projected = mcpToolNames([server]);
+  expect(projected[0]).not.toEqual(projected[1]);
+  let reads = 0;
+  const tools = new Proxy(server.tools, {
+    get(target, property, receiver) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) reads++;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  // Instrument the captured roster without changing its raw identities.
+  const captured = Object.create(HttpMCP.prototype, {
+    ...Object.getOwnPropertyDescriptors(server),
+    tools: { value: tools },
+  });
+  const owner = session as any;
+  owner.mcpBindings = [captured];
+  owner.owns = () => true;
+  await owner.promoteMcp({
+    selection: { names: [projected[0]] },
+    controller: new AbortController(),
+  });
+  expect(JSON.parse(publish.mock.calls[0][0]).records.enabled_tools).toEqual([
+    'a.b',
+  ]);
+  expect(reads).toBeLessThan(raw.length * 24);
 });

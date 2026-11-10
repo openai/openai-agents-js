@@ -495,6 +495,7 @@ export async function runOwnedSession<Output>(
   try {
     return await completeOwnedSession(session, input, options, cancellation);
   } finally {
+    delete options.guardrailInput;
     options.signal?.removeEventListener('abort', retire);
   }
 }
@@ -527,7 +528,7 @@ async function completeOwnedSession<Output>(
     }
     throw options.signal.reason;
   }
-  const result = await (
+  const pending =
     input == null
       ? session.wait()
       : session
@@ -538,8 +539,9 @@ async function completeOwnedSession<Output>(
             options.budget,
             options.guardrailInput,
           )
-          .then(() => session.wait())
-  ).catch(async (error) => {
+          .then(() => session.wait());
+  delete options.guardrailInput;
+  const result = await pending.catch(async (error) => {
     const primary = originalFailure(error);
     try {
       await closeOwned();

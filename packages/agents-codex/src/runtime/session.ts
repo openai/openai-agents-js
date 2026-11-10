@@ -4057,6 +4057,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private finishObservation(run: NativeTurn): void {
+    run.guardrailInput = undefined;
     submissions.get(run)!.observation = 'ended';
     this.observations.notify();
   }
@@ -4162,6 +4163,16 @@ export class Session<OutputT = string, Context = unknown> {
 
     return this.#waitResult();
   }
+  private get hasInputGuardrails(): boolean {
+    return !!(
+      this.options.inputGuardrails?.length ||
+      this.options.agentInputGuardrails?.length ||
+      [...this.profileRuntimes.values()].some(
+        (profile) => profile.profile.declaration.inputGuardrails.length > 0,
+      )
+    );
+  }
+
   /** Register FIFO new work and issue its exact handle before native admission. */
   enqueue(
     input: UserInput,
@@ -4210,7 +4221,9 @@ export class Session<OutputT = string, Context = unknown> {
         : this.captureExecutorRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
     run.parentTrace = parentTrace;
-    run.guardrailInput = structuredClone(input);
+    run.guardrailInput = this.hasInputGuardrails
+      ? structuredClone(input)
+      : undefined;
     run.selection = selection;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
@@ -4310,7 +4323,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.tracing,
       options?.writableRoots,
       parentTrace,
-      structuredClone(input),
+      this.hasInputGuardrails ? structuredClone(input) : undefined,
     );
     await afterSubmissionRetirement(run, run.accepted.promise);
     return this.#turnFor(run);
@@ -5104,6 +5117,10 @@ export class Session<OutputT = string, Context = unknown> {
     };
     assertOwner();
     const names = run?.selection?.names;
+    const selectedNames =
+      names === undefined
+        ? undefined
+        : new Set(names.map((name) => encode([name.namespace, name.name])));
     const next = this.mcpBindings.flatMap((server) => {
       if (!(server instanceof HttpMCP) || server.activation !== 'operation')
         return this.defaultMcpTools.filter(
@@ -5120,20 +5137,16 @@ export class Session<OutputT = string, Context = unknown> {
               (selected) => selected.name === server.name,
             ),
         );
+      const projected =
+        selectedNames === undefined ? [] : mcpToolNames([server]);
       const tools =
-        names === undefined
+        selectedNames === undefined
           ? (this.defaultMcpTools.find(
               (selected) => selected.name === server.name,
             )?.tools ?? [])
-          : server.tools.filter((raw) => {
-              const projected = mcpToolNames([server])[
-                server.tools.indexOf(raw)
-              ];
-              return names.some(
-                (name) =>
-                  name.namespace === projected.namespace &&
-                  name.name === projected.name,
-              );
+          : server.tools.filter((_raw, index) => {
+              const name = projected[index];
+              return selectedNames.has(encode([name.namespace, name.name]));
             });
       return tools.length ? [selectHttpLeaves(server, tools)] : [];
     });
@@ -5211,7 +5224,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : this.captureExecutorRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
-    run.guardrailInput = guardrailInput;
+    run.guardrailInput = this.hasInputGuardrails ? guardrailInput : undefined;
     run.parentTrace = parentTrace;
     run.writableRoots = roots;
     submissions.get(run)!.callerSignal = callerSignal;
@@ -8395,20 +8408,26 @@ export class Session<OutputT = string, Context = unknown> {
                 ? agent.inputGuardrails
                 : (this.options.agentInputGuardrails ?? [])),
             ];
-            await this.checkInputGuardrails(
-              run,
-              msg,
-              agent,
-              guards.filter((guard) => guard.runInParallel === false),
-            );
-            const parallel = guards.filter(
-              (guard) => guard.runInParallel !== false,
-            );
-            if (parallel.length) {
-              run.inputGuardrailsTask = this.invokeCallback(run, () =>
-                this.checkInputGuardrails(run, msg, agent, parallel),
+            try {
+              await this.checkInputGuardrails(
+                run,
+                msg,
+                agent,
+                guards.filter((guard) => guard.runInParallel === false),
               );
-              this.track(run, run.inputGuardrailsTask);
+              const parallel = guards.filter(
+                (guard) => guard.runInParallel !== false,
+              );
+              if (parallel.length) {
+                run.inputGuardrailsTask = this.invokeCallback(run, () =>
+                  this.checkInputGuardrails(run, msg, agent, parallel),
+                ).finally(() => {
+                  run.guardrailInput = undefined;
+                });
+                this.track(run, run.inputGuardrailsTask);
+              }
+            } finally {
+              if (!run.inputGuardrailsTask) run.guardrailInput = undefined;
             }
           }
           const scope = this.decisionScope(event.msg, signal);
@@ -8644,26 +8663,38 @@ export class Session<OutputT = string, Context = unknown> {
             );
           owner.guardrailInput = structuredClone(initial) as JsonObject[];
           owner.inputGuardrailsStarted = true;
-          await this.checkInputGuardrails(
-            owner,
-            event.msg,
-            agent,
-            guards.filter((guard) => guard.runInParallel === false),
-            context,
-          );
-          const parallel = guards.filter(
-            (guard) => guard.runInParallel !== false,
-          );
-          if (parallel.length)
-            owner.inputGuardrailsTask = this.trackOwnedCallback(owner, () =>
-              this.checkInputGuardrails(
-                owner,
-                event.msg,
-                agent,
-                parallel,
-                context,
-              ),
+          try {
+            await this.checkInputGuardrails(
+              owner,
+              event.msg,
+              agent,
+              guards.filter((guard) => guard.runInParallel === false),
+              context,
             );
+            const parallel = guards.filter(
+              (guard) => guard.runInParallel !== false,
+            );
+            if (parallel.length) {
+              owner.inputGuardrailsTask = this.trackOwnedCallback(
+                owner,
+                async () => {
+                  try {
+                    await this.checkInputGuardrails(
+                      owner,
+                      event.msg,
+                      agent,
+                      parallel,
+                      context,
+                    );
+                  } finally {
+                    owner.guardrailInput = undefined;
+                  }
+                },
+              );
+            }
+          } finally {
+            if (!owner.inputGuardrailsTask) owner.guardrailInput = undefined;
+          }
         }
       }
       capturedSelection.stepIndex++;

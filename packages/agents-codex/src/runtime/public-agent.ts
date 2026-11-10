@@ -684,7 +684,6 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
-    const guardrailInput = input === null ? undefined : structuredClone(input);
     const preparedInput =
       input === null ? null : nativeInput(input, audioBudget);
     if (audioBudget.remaining !== MAX_AUDIO_INPUT_BYTES)
@@ -693,6 +692,17 @@ export class Agent<Context = undefined, Output = string> {
         MAX_AUDIO_INPUT_BYTES,
       );
     const factory = this.session;
+    const factoryApply = factory.apply;
+    const guardrailInput =
+      input !== null &&
+      (this.inputGuardrails.length > 0 ||
+        (options.inputGuardrails?.length ?? 0) > 0 ||
+        (options.state !== undefined && this.handoffs.length > 0) ||
+        factory !== Agent.#canonicalSession ||
+        factoryApply !== Agent.#canonicalApply ||
+        this.prepare !== Agent.#canonicalPrepare)
+        ? structuredClone(input)
+        : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
       ...(initialMessages === undefined ? {} : { initialMessages }),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
@@ -725,7 +735,6 @@ export class Agent<Context = undefined, Output = string> {
         beforeStep,
       },
     };
-    const factoryApply = factory.apply;
     if (
       factoryApply === Agent.#canonicalApply &&
       factory === Agent.#canonicalSession &&
