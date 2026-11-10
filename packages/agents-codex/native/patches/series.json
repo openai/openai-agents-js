@@ -594,8 +594,8 @@
     },
     {
       "path": "sdk-realtime-portable-history-deletion.patch",
-      "sha256": "1375ce6c2c28fbc2c58ffd062ae1ce301c86694dcf152485cc3e4a357c7a3305"
+      "sha256": "31486f942f4e9138d6f7b012cd3c330566fa3dff0061357165551cd03a404c2c"
     }
   ],
-  "result_tree": "e5a4be1766b22daa229c4a0f397f9e4ddfed5cee"
+  "result_tree": "c620e262b34654330a072d91976282691ad3bd03"
 }

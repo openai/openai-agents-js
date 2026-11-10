@@ -1,5 +1,5 @@
 diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
-index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bdd5723fb6 100644
+index d65ee1b..b611f56 100644
 --- a/codex-rs/realtime-control/src/lib.rs
 +++ b/codex-rs/realtime-control/src/lib.rs
 @@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -89,7 +89,7 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
              }
              Command::Truncate {
                  item_id,
-@@ -846,20 +874,199 @@ impl Control {
+@@ -846,20 +874,205 @@ impl Control {
          }
          Ok(())
      }
@@ -267,6 +267,12 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
 +        };
 +        self.remember_deletion_proof(id, proof);
 +        if let Some(evidence) = self.deletion_proofs.get_mut(id) {
++            if ["call_id", "approval_request_id"]
++                .iter()
++                .any(|key| item[*key].as_str().is_some_and(|id| id.len() > 512))
++            {
++                evidence.proof = DeletionProof::Nonterminal;
++            }
 +            evidence.call_id = item["call_id"]
 +                .as_str()
 +                .filter(|id| !id.is_empty() && id.len() <= 512)
@@ -293,7 +299,7 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
      fn configure(
          &mut self,
          config: Config,
-@@ -1322,7 +1529,9 @@ impl Control {
+@@ -1322,7 +1535,9 @@ impl Control {
              {
                  return Err("Portable voice generation was cancelled".into());
              }
@@ -304,7 +310,7 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
                  return Err("Realtime provider rejected the operation".into());
              }
              _ => {}
-@@ -1403,6 +1612,31 @@ impl Control {
+@@ -1403,6 +1618,31 @@ impl Control {
              .get("type")
              .and_then(Value::as_str)
              .ok_or("Provider event has no type")?;
@@ -336,7 +342,7 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
          let mut managed_detached = false;
          if self.is_detached_event(&event) {
              let response = &event["response"];
-@@ -1502,6 +1736,39 @@ impl Control {
+@@ -1502,6 +1742,39 @@ impl Control {
              effects.push(Effect::Event { event });
              return Ok(());
          }
@@ -376,7 +382,7 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
          match kind {
              "error" if self.is_response_race(&event) => {
                  let cancelled = self.cancel_before_created;
-@@ -2433,16 +2700,249 @@ mod tests {
+@@ -2433,16 +2706,290 @@ mod tests {
          assert_eq!(executed["effects"][0]["type"], "execute");
      }
      #[test]
@@ -607,6 +613,47 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
 +        }
 +    }
 +    #[test]
++    fn oversized_external_alias_cannot_bypass_live_native_ownership() {
++        let mut control = ready();
++        let call_id = "c".repeat(513);
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"response-1"}}}),
++        );
++        let mut owned = item();
++        owned["call_id"] = json!(call_id);
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"response-1","item":owned}}),
++        );
++        assert!(control.calls.contains_key(&call_id));
++        let lookup = command(&mut control, json!({"type":"delete","item_id":"alias"}));
++        command(
++            &mut control,
++            json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++        );
++        let result = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":{"id":"alias","type":"function_call_output","call_id":call_id,"output":"done"}}}),
++        );
++        assert_eq!(result["effects"][0]["type"], "history_rejected");
++        assert!(
++            result["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .all(|effect| effect["type"] != "send")
++        );
++        assert!(control.phase == Phase::Ready);
++        assert!(
++            command(
++                &mut control,
++                json!({"type":"validate_history","delete_ids":["alias"],"items":[]})
++            )["error"]
++                .is_string()
++        );
++    }
++    #[test]
      fn message_and_history_commands_emit_provider_mutations() {
          let mut control = ready();
          let item = json!({"type":"message","id":"message-1","role":"user","content":[{"type":"input_text","text":"hello"}]});
@@ -627,7 +674,7 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
          );
          let truncated = command(
              &mut control,
-@@ -3057,6 +3557,10 @@ mod tests {
+@@ -3057,6 +3604,10 @@ mod tests {
      #[test]
      fn inert_history_input_and_preflight_preserve_live_claims_and_recheck_deletes() {
          let mut control = ready();
@@ -638,7 +685,7 @@ index d65ee1b7833aa85755cb88eb7f556d9d327c5259..4175331da3769e5a2fec2a2e91be05bd
          request(&mut control);
          batch(&mut control);
          let before = control.next_send;
-@@ -3103,8 +3607,8 @@ mod tests {
+@@ -3103,8 +3654,8 @@ mod tests {
              "execute"
          );
          assert_eq!(
