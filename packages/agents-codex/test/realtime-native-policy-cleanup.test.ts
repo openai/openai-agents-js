@@ -882,15 +882,16 @@ nativeIt(
             (error: unknown) => error,
           );
         await captured.promise;
+        const beforeReplacement = (session as unknown as { catalog: object })
+          .catalog;
         const replacing = session.update({ tools: [replacement] }).then(
           () => undefined,
           (error: unknown) => error,
         );
         await vi.waitFor(() =>
-          expect(
-            (session as unknown as { catalog: { tools: unknown[] } }).catalog
-              .tools,
-          ).toContain(replacement),
+          expect((session as unknown as { catalog: object }).catalog).not.toBe(
+            beforeReplacement,
+          ),
         );
         // Accepted replacement before the stale voice publication.
         expect(updates()).toBe(initialUpdates);

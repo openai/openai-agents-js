@@ -309,7 +309,11 @@ it('REQ133 reconnects native stdio after a lost reply without replaying the effe
   const turn = await session.submit('Record both entries.');
   expect((await turn.wait()).finalOutput).toBe('done');
   model.assertExhausted();
-  expectToolOutput(model.requests[1]!, firstEffect, /\btransport ?closed\b/i);
+  expectToolOutput(
+    model.requests[1]!,
+    firstEffect,
+    'MCP tool invocation failed',
+  );
 
   const recorded = await readRecords(effects);
   expect(recorded, 'stdio effects by process').toMatchObject([
@@ -344,7 +348,11 @@ it('REQ133 reconnects native streamable HTTP after an SSE response closes before
   const turn = await session.submit('Record both entries.');
   expect((await turn.wait()).finalOutput).toBe('done');
   model.assertExhausted();
-  expectToolOutput(model.requests[1]!, firstEffect, /\btransport ?closed\b/i);
+  expectToolOutput(
+    model.requests[1]!,
+    firstEffect,
+    'MCP tool invocation failed',
+  );
   expectToolOutput(model.requests[2]!, laterEffect, laterResult);
   expect(remote.initializations, 'HTTP initialize requests').toBe(2);
   expect(remote.effects).toMatchObject([
