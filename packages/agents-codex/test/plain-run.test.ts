@@ -81,6 +81,37 @@ function prepared() {
 }
 
 describe('plain owned-run cleanup', () => {
+  it('successful wait: synchronous stop after joined completion', async () => {
+    const p = prepared();
+    const entered = Promise.withResolvers<void>();
+    const joined = Promise.withResolvers<void>();
+    const result = p.request.wait.getMockImplementation()!;
+    p.request.wait.mockImplementation(async () => {
+      entered.resolve();
+      await joined.promise;
+      return result();
+    });
+    const owner = await tryOpenPlainRun(p.setup, {}, p.lease, 'input');
+    p.lease.openingSucceeded();
+    const run = owner!.run();
+    await entered.promise;
+    expect(p.request.cancel).not.toHaveBeenCalled();
+    expect(p.request.close).not.toHaveBeenCalled();
+    expect(p.release).not.toHaveBeenCalled();
+    joined.resolve();
+    const completed = await run;
+    expect(completed.finalOutput).toBe('answer');
+    expect(p.request.wait).toHaveBeenCalledTimes(1);
+    expect(p.request.cancel).toHaveBeenCalledTimes(1);
+    expect(p.request.close).not.toHaveBeenCalled();
+    expect(p.engine._close_report).toHaveBeenCalledTimes(1);
+    expect(p.closeCarrier).toHaveBeenCalledTimes(1);
+    expect(p.release).toHaveBeenCalledTimes(1);
+    expect(await owner!.run()).toBe(completed);
+    expect(p.engine._plain_run).toHaveBeenCalledTimes(1);
+    expect(p.request.cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('reports completed Engine retirement once after successful output', async () => {
     const p = prepared();
     p.engine._close_report.mockResolvedValue('native retirement diagnostic');
@@ -149,7 +180,8 @@ describe('plain owned-run cleanup', () => {
     await expect(failure.cleanup.close()).rejects.toBe(disposal);
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(p.release).toHaveBeenCalledTimes(1);
-    expect(p.request.close).toHaveBeenCalledTimes(1);
+    expect(p.request.cancel).toHaveBeenCalledTimes(1);
+    expect(p.request.close).not.toHaveBeenCalled();
     expect(p.engine._plain_run).toHaveBeenCalledTimes(1);
   });
 
@@ -182,11 +214,14 @@ describe('plain owned-run cleanup', () => {
     expect(p.engine._plain_run).toHaveBeenCalledTimes(1);
   });
 
-  it('retries only retirement when successful output meets repeated cleanup failure', async () => {
+  it('successful wait: stop failure with asynchronous close retry', async () => {
     const p = prepared();
-    const first = new Error('first close');
-    const second = new Error('second close');
-    p.request.close.mockRejectedValueOnce(first).mockRejectedValueOnce(second);
+    const first = new Error('success stop');
+    const second = new Error('cleanup close');
+    p.request.cancel.mockImplementationOnce(() => {
+      throw first;
+    });
+    p.request.close.mockRejectedValueOnce(second);
     const owner = await tryOpenPlainRun(p.setup, {}, p.lease, 'input');
     p.lease.openingSucceeded();
     const failure = (await owner!
@@ -197,7 +232,7 @@ describe('plain owned-run cleanup', () => {
     expect(failure.errors).toEqual([first, second]);
     expect(p.release).not.toHaveBeenCalled();
     await failure.cleanup.close();
-    expect(p.request.close).toHaveBeenCalledTimes(3);
+    expect(p.request.close).toHaveBeenCalledTimes(2);
     expect(p.request.wait).toHaveBeenCalledTimes(1);
     expect(p.engine._plain_run).toHaveBeenCalledTimes(1);
     expect(p.release).toHaveBeenCalledTimes(1);
@@ -228,7 +263,8 @@ describe('plain owned-run cleanup', () => {
     joined.resolve(null);
     expect(await observed).toBe(reason);
     expect(p.engine._plain_run).toHaveBeenCalledTimes(1);
-    expect(p.request.close).toHaveBeenCalledTimes(1);
+    expect(p.request.cancel).toHaveBeenCalledTimes(1);
+    expect(p.request.close).not.toHaveBeenCalled();
     expect(p.closeCarrier).toHaveBeenCalledTimes(1);
     expect(p.release).toHaveBeenCalledTimes(1);
   });

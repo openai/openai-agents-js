@@ -29,6 +29,46 @@ await using reopened = await agent.session({ storage, resume: id });
 
 The first Session closes before reopening the profile. At the end of the scope, the reopened Session closes before the provider. See [provider lifetime](session-configuration.md#provider-lifetime) and the [local-storage example](../local-storage.ts).
 
+### Discover AGENTS.md when opening and reopening
+
+With a [current source build](building.md), set `discoverAgentsMd: true` on each Session opening. Discovery is off by default. The SDK reads user guidance from the host Codex home first. In a Git workspace, it then reads project guidance from the nearest Git root to the working directory, within the Environment's read policy. At each location, `AGENTS.override.md` takes precedence over `AGENTS.md`. Enable discovery for directories and file targets you trust. The `projectGuidance` option controls [scoped rules](../project-guidance.ts) separately.
+
+Pass an Agent with a configured native provider, an existing absolute workspace path, and a separate absolute profile path. The [local executor requirements](local-execution.md#prepare-the-host-and-workspace) apply. Put an `AGENTS.md` with the project's test command in the workspace. The example submits a Turn before and after reopening the same conversation.
+
+```ts
+import { Environment, localStorage, type Agent } from '@openai/agents';
+
+export async function continueProjectReview(
+  agent: Agent,
+  workspace: string,
+  profile: string,
+) {
+  const environment = Environment.local({ cwd: workspace });
+  const storage = localStorage(profile);
+  const session = await agent.session({
+    environment,
+    storage,
+    discoverAgentsMd: true,
+  });
+  const id = session.id;
+  try {
+    const turn = await session.submit('Which command runs the project tests?');
+    await turn.wait();
+  } finally {
+    await session.close();
+  }
+
+  await using reopened = await agent.session({
+    environment,
+    storage,
+    resume: id,
+    discoverAgentsMd: true,
+  });
+  const turn = await reopened.submit('Remind me which command runs the tests.');
+  return (await turn.wait()).finalOutput;
+}
+```
+
 ### Profile ownership
 
 The SDK rejects a local working directory or writable root that overlaps the storage profile. For example, put the worker in `worker/workspace` and keep its session history in `worker/profile`.

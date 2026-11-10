@@ -280,13 +280,18 @@ export async function tryOpenPlainRun(
   const cleanup = async (keep: boolean): Promise<void> => {
     if (phase === 'request') {
       if (owned) {
+        const request = owned;
         if (!keep) cancel();
+        let joined = false;
         try {
-          await (waiting ??= owned.wait());
+          await (waiting ??= request.wait());
+          joined = true;
         } catch {
           /* Preserve the model/caller failure. */
         }
-        await owned.close();
+        // Joined terminal cleanup; synchronous stop on the success path.
+        if (keep && joined) request.cancel();
+        else await request.close();
         owned = undefined;
         waiting = undefined;
       }
