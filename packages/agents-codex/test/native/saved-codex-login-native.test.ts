@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { once } from 'node:events';
 import {
   chmod,
   copyFile,
@@ -14,22 +12,26 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { createServer, type Server, type ServerResponse } from 'node:http';
-import { createServer as createTlsServer } from 'node:https';
-import { connect, type Socket } from 'node:net';
+import type {
+  IncomingMessage,
+  RequestListener,
+  ServerResponse,
+} from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Duplex } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { call, message } from './fixtures/model-server';
+import {
+  apiHost,
+  authHost,
+  modelHost,
+  openSavedLoginLoopback,
+} from './fixtures/saved-codex-login-loopback';
 
-const execute = promisify(execFile);
-const modelHost = 'chatgpt.com';
-const authHost = 'auth.openai.com';
-const apiHost = 'api.openai.com';
 const realtimeKey = 'synthetic-realtime-key';
 const accountId = 'synthetic-workspace';
 const userId = 'synthetic-user';
@@ -55,76 +57,6 @@ type Mode =
   | 'hosted-media'
   | 'code'
   | 'local';
-
-async function certificates(directory: string) {
-  const openssl = (...args: string[]) =>
-    execute('openssl', args, { cwd: directory, timeout: 5_000 });
-  await openssl(
-    'req',
-    '-x509',
-    '-newkey',
-    'rsa:2048',
-    '-nodes',
-    '-keyout',
-    'ca.key',
-    '-out',
-    'ca.pem',
-    '-days',
-    '1',
-    '-subj',
-    '/CN=Saved Codex login test CA',
-  );
-  await openssl(
-    'req',
-    '-newkey',
-    'rsa:2048',
-    '-nodes',
-    '-keyout',
-    'server.key',
-    '-out',
-    'server.csr',
-    '-subj',
-    `/CN=${modelHost}`,
-  );
-  await writeFile(
-    join(directory, 'server.ext'),
-    `subjectAltName=DNS:${modelHost},DNS:${authHost},DNS:${apiHost}\nextendedKeyUsage=serverAuth\n`,
-  );
-  await openssl(
-    'x509',
-    '-req',
-    '-in',
-    'server.csr',
-    '-CA',
-    'ca.pem',
-    '-CAkey',
-    'ca.key',
-    '-CAcreateserial',
-    '-out',
-    'server.pem',
-    '-days',
-    '1',
-    '-extfile',
-    'server.ext',
-  );
-  return {
-    key: await readFile(join(directory, 'server.key')),
-    cert: await readFile(join(directory, 'server.pem')),
-  };
-}
-
-async function listen(server: Server, sockets: Set<Socket>) {
-  server.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  });
-  const ready = once(server, 'listening');
-  server.listen(0, '127.0.0.1');
-  await ready;
-  const address = server.address();
-  assert(address && typeof address === 'object');
-  return address.port;
-}
 
 function json(response: ServerResponse, status: number, body: object) {
   response.writeHead(status, { 'content-type': 'application/json' });
@@ -169,6 +101,7 @@ it
   { timeout: 110_000 },
   async (testScenario, { skip }) => {
     const { closeFailure } = testScenario;
+    const usage = 'usage' in testScenario;
     if (
       closeFailure?.startsWith('refresh-cache-save') &&
       process.getuid?.() === 0
@@ -178,10 +111,7 @@ it
     const directory = await realpath(
       await mkdtemp(join(tmpdir(), 'agents-saved-codex-login-')),
     );
-    const sockets = new Set<Socket>();
-    const servers: Server[] = [];
     const failures: string[] = [];
-    const tunnels: string[] = [];
     const expired = new Map<string, number>();
     let rounds = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
     const rotated: string[] = [];
@@ -275,9 +205,12 @@ it
         await copyFile(source, cache);
       }
 
-      const tls = createTlsServer(await certificates(directory));
       const voice = new WebSocketServer({ noServer: true });
-      tls.on('upgrade', (request, socket, head) => {
+      const onUpgrade = (
+        request: IncomingMessage,
+        socket: Duplex,
+        head: Buffer,
+      ) => {
         const url = new URL(
           request.url ?? '/',
           `https://${request.headers.host}`,
@@ -312,9 +245,8 @@ it
             }
           });
         });
-      });
-      servers.push(tls);
-      tls.on('request', async (request, response) => {
+      };
+      const onRequest: RequestListener = async (request, response) => {
         const fail = (reason: string) => {
           request.resume();
           failures.push(reason);
@@ -327,7 +259,7 @@ it
           return fail('Realtime key used on a non-Realtime HTTP route');
         }
         if (
-          !('usage' in testScenario) &&
+          !usage &&
           host === authHost &&
           request.method === 'POST' &&
           path === '/oauth/token'
@@ -445,7 +377,7 @@ it
           request.resume();
           return json(response, 200, { models: [] });
         }
-        if ('usage' in testScenario) {
+        if (usage) {
           if (
             request.method !== 'GET' ||
             request.url !== '/backend-api/wham/usage' ||
@@ -612,40 +544,16 @@ it
           response.write(`data: ${JSON.stringify(event)}\n\n`);
         }
         response.end();
+      };
+      await using loopback = await openSavedLoginLoopback({
+        directory,
+        home,
+        failures,
+        onRequest,
+        allowAuth: !usage,
+        onUpgrade: usage ? undefined : onUpgrade,
       });
-      const tlsPort = await listen(tls, sockets);
-
-      const allowed = new Set([`${modelHost}:443`]);
-      if (!('usage' in testScenario)) {
-        allowed.add(`${authHost}:443`);
-        allowed.add(`${apiHost}:443`);
-      }
-      const proxy = createServer((request, response) => {
-        request.resume();
-        failures.push('Unexpected non-CONNECT proxy request');
-        response.writeHead(403).end();
-      });
-      servers.push(proxy);
-      proxy.on('connect', (request, socket, head) => {
-        const authority = request.url ?? '';
-        socket.on('error', () => socket.destroy());
-        if (!allowed.has(authority)) {
-          failures.push('Unexpected CONNECT authority');
-          socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-          return;
-        }
-        tunnels.push(authority);
-        const target = connect(tlsPort, '127.0.0.1', () => {
-          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-          target.write(head);
-          socket.pipe(target).pipe(socket);
-        });
-        target.on('error', () => socket.destroy());
-        target.once('close', () => socket.destroy());
-        socket.once('close', () => target.destroy());
-      });
-      const proxyUrl = `http://127.0.0.1:${await listen(proxy, sockets)}`;
-      const ca = join(directory, 'ca.pem');
+      const { tunnels } = loopback;
       const child = fileURLToPath(
         new URL('./fixtures/saved-codex-login-child.mjs', import.meta.url),
       );
@@ -662,10 +570,9 @@ it
               : mode === 'overlap' || mode === 'local'
                 ? loginAlias
                 : codexHome;
-          ({ stdout } = await execute(
-            process.execPath,
+          ({ stdout } = await loopback.runChild(
+            child,
             [
-              child,
               loginHome,
               accountId,
               mode,
@@ -673,26 +580,7 @@ it
                 ? ['optional-sandbox']
                 : []),
             ],
-            {
-              cwd: home,
-              // Start without inherited model auth, proxy bypasses, or Node preload hooks.
-              env: {
-                PATH: process.env.PATH,
-                HOME: home,
-                TMPDIR: directory,
-                HTTP_PROXY: proxyUrl,
-                HTTPS_PROXY: proxyUrl,
-                ALL_PROXY: proxyUrl,
-                CODEX_CA_CERTIFICATE: ca,
-                SSL_CERT_FILE: ca,
-                SSL_CERT_DIR: home,
-              },
-              timeout:
-                mode === 'local' || mode === 'stalled-refresh'
-                  ? 25_000
-                  : 15_000,
-              killSignal: 'SIGKILL',
-            },
+            mode === 'local' || mode === 'stalled-refresh' ? 25_000 : 15_000,
           ));
         } catch (error) {
           const { stdout: stage, killed } = error as {
@@ -734,7 +622,7 @@ it
         return;
       }
 
-      if ('usage' in testScenario) {
+      if (usage) {
         await run('usage');
         expect(usageReads).toBe(2);
         expect(await readFile(cache, 'utf8')).toBe(sourceBytes);
@@ -865,15 +753,6 @@ it
     } finally {
       for (const round of rounds) round.resolve();
       grantConsumed.resolve();
-      for (const socket of sockets) socket.destroy();
-      await Promise.all(
-        servers
-          .filter((server) => server.listening)
-          .map(
-            (server) =>
-              new Promise<void>((resolve) => server.close(() => resolve())),
-          ),
-      );
       await rm(directory, { recursive: true, force: true });
     }
   },

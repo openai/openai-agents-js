@@ -485,9 +485,13 @@
       "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
     },
     {
+      "path": "0153-sdk-codex-login-terminal-rate-limits.patch",
+      "sha256": "27ffb695fffd05cea70165710d3d0fd93039f22d76fde67fa96c827188fe5339"
+    },
+    {
       "path": "0098-private-plain-modelclient-bridge.patch",
       "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
     }
   ],
-  "result_tree": "fda281df12acc9d77a3772fc7dfd38b43e3b69c8"
+  "result_tree": "ccd070f893c25a1394a4bc9fcade6b3dec0f83d8"
 }
