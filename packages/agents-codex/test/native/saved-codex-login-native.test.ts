@@ -65,41 +65,43 @@ function json(response: ServerResponse, status: number, body: object) {
 
 // On Linux native proxy resolution uses the child environment. System proxy
 // settings can take precedence on macOS and Windows.
-it
-  .runIf(
-    process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
-      process.platform === 'linux',
-  )
-  .for([
-    {
-      title:
-        'finishes saved login rotation after Turn cancellation, isolates Realtime auth, and restores configured execution',
-      closeFailure: undefined,
-    },
-    {
-      title: 'reports a saved login refresh cache read failure on owner close',
-      closeFailure: 'refresh-cache-read',
-    },
-    {
-      title:
-        'reports both saved login cache save and SessionStore release failures on owner close',
-      closeFailure: 'refresh-cache-save',
-    },
-    {
-      title:
-        'reports a retained SessionStore flush failure and a separate saved login refresh failure',
-      closeFailure: 'refresh-cache-save-flush',
-    },
-    {
-      title:
-        'reads saved Codex plan usage and cancels a pending read on Session close',
-      closeFailure: undefined,
-      usage: true,
-    },
-  ] as const)(
-  '$title',
-  { timeout: 110_000 },
-  async (testScenario, { skip }) => {
+const savedLoginTest = it.runIf(
+  process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
+    process.platform === 'linux',
+);
+for (const testScenario of [
+  {
+    title:
+      'finishes saved login rotation after Turn cancellation, isolates Realtime auth, and restores configured execution',
+    closeFailure: undefined,
+    // Ten 15s children, two 25s children, and three 5s TLS commands,
+    // plus 5s for setup and cleanup.
+    timeout: 220_000,
+  },
+  {
+    title: 'reports a saved login refresh cache read failure on owner close',
+    closeFailure: 'refresh-cache-read',
+  },
+  {
+    title:
+      'reports both saved login cache save and SessionStore release failures on owner close',
+    closeFailure: 'refresh-cache-save',
+  },
+  {
+    title:
+      'reports a retained SessionStore flush failure and a separate saved login refresh failure',
+    closeFailure: 'refresh-cache-save-flush',
+  },
+  {
+    title:
+      'reads saved Codex plan usage and cancels a pending read on Session close',
+    closeFailure: undefined,
+    usage: true,
+  },
+] as const) {
+  const { title } = testScenario;
+  const timeout = 'timeout' in testScenario ? testScenario.timeout : 110_000;
+  savedLoginTest(title, { timeout }, async ({ skip }) => {
     const { closeFailure } = testScenario;
     const usage = 'usage' in testScenario;
     if (
@@ -755,5 +757,5 @@ it
       grantConsumed.resolve();
       await rm(directory, { recursive: true, force: true });
     }
-  },
-);
+  });
+}

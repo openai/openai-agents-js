@@ -88,7 +88,9 @@ With the current [source build](building.md), a shared `NativeProvider` has been
 
 Reuse is unavailable for runs with tools, structured output, initial messages, restored state, or a custom environment. Each eligible run starts a fresh conversation with its own instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
 
-Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. This also releases any retained native engine and HTTP connections. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
+Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. Without an explicit `NativeRuntime`, provider close has been releasing any retained native engine and HTTP connections. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions. Create a new provider for later work.
+
+With the current [source build](building.md), providers configured with the same application-owned `NativeRuntime` have been sharing HTTP clients and retaining one eligible idle plain-run engine across provider closes. A shared runtime supports API-key HTTP only. Close all Sessions first, then their borrowing providers, then call `await runtime.close()` to release the shared resources. Runtime close has been rejecting active provider borrows. The [`NativeRuntime` example](../../../packages/agents-codex/src/runtime/native-runtime.ts) shows this order.
 
 ### Supply an application model
 

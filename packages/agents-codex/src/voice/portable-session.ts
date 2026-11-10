@@ -120,6 +120,7 @@ interface Profile {
   id: number;
   options: PortableVoiceOptions;
   tools: Map<string, PortableVoiceTool<any>>;
+  handoffs: Set<string>;
   guardrails: NativeRealtimeGuardrails<PortableVoiceOptions>;
 }
 export type PortableVoiceEffect =
@@ -184,6 +185,7 @@ export class PortableVoiceSession {
       history: readonly Readonly<Record<string, unknown>>[];
     }
   >();
+  readonly #firstHandoffs = new Map<string, string>();
   readonly #abortedCalls = new Set<string>();
   readonly #abortedMcp = new Set<string>();
   readonly #calls = new Map<
@@ -192,6 +194,7 @@ export class PortableVoiceSession {
       profile: Profile;
       abort: AbortController;
       history: readonly Readonly<Record<string, unknown>>[];
+      handoffIgnored: boolean;
       arguments?: Promise<Record<string, unknown>>;
     }
   >();
@@ -332,6 +335,7 @@ export class PortableVoiceSession {
           ...guardrailWork.map((work) => work.completion),
         ]);
         this.#calls.clear();
+        this.#firstHandoffs.clear();
         this.#abortedCalls.clear();
         this.#abortedMcp.clear();
         this.#mcpRequests.clear();
@@ -631,6 +635,9 @@ export class PortableVoiceSession {
       id: this.#nextProfile++,
       options: { ...options },
       tools,
+      handoffs: new Set(
+        (options.handoffs ?? []).map((handoff) => handoff.name),
+      ),
       guardrails,
     };
     this.#profileById.set(profile.id, profile);
@@ -779,8 +786,16 @@ export class PortableVoiceSession {
       ) {
         if (this.#calls.size >= 256)
           throw new Error('Portable voice call capacity exceeded.');
+        if (
+          profile.handoffs.has(item.name) &&
+          !this.#firstHandoffs.has(responseId)
+        )
+          this.#firstHandoffs.set(responseId, item.call_id);
         this.#calls.set(item.call_id, {
           profile,
+          handoffIgnored:
+            profile.handoffs.has(item.name) &&
+            this.#firstHandoffs.get(responseId) !== item.call_id,
           abort: new AbortController(),
           history: [
             ...sourceHistory,
@@ -959,6 +974,7 @@ export class PortableVoiceSession {
         if (target.size >= 1024) {
           const oldest = target.keys().next().value!;
           target.delete(oldest);
+          this.#firstHandoffs.delete(oldest);
           this.#responseHistories.delete(oldest);
           this.#reportedResponses.delete(oldest);
           this.#responseAudioBytesPerMillisecond.delete(oldest);
@@ -1145,6 +1161,16 @@ export class PortableVoiceSession {
               const tool = call.profile.tools.get(effect.name);
               if (!tool)
                 throw new Error('Native control selected an unknown tool.');
+              // Match Core's first-requested handoff gate before parsing or
+              // invoking either destination resolution or application callbacks.
+              if (call.handoffIgnored) {
+                this.#dispatch({
+                  type: 'tool_result',
+                  call_id: effect.call_id,
+                  output: 'Multiple handoffs detected, ignoring this one.',
+                });
+                return;
+              }
               const arguments_ = await this.#arguments(effect);
               if (this.#closed || call.abort.signal.aborted) return;
               const output = await tool.execute(

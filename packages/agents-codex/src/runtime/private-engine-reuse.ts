@@ -20,6 +20,8 @@ export interface PrivateKernel {
 
 export interface PrivateRuntimeSlot {
   active?: object;
+  runs?: Set<object>;
+  retiring?: boolean;
   entry?: PrivateKernel;
   idle?: ReturnType<typeof setImmediate>;
   closing?: Promise<void>;
@@ -27,6 +29,8 @@ export interface PrivateRuntimeSlot {
 
 export interface PrivateRuntimeBorrow {
   readonly plainOnly?: boolean;
+  readonly concurrent?: boolean;
+  invalidate?(): void;
   readonly done: boolean;
   peek(): PrivateKernel | undefined;
   bind(

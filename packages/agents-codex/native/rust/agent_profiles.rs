@@ -13,7 +13,7 @@ use codex_extension_api::{
 use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::dynamic_tools::{DynamicToolFunctionSpec, DynamicToolSpec};
 use codex_tools::{
-    FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolName, ToolOutput, ToolSpec,
+    FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolExposure, ToolName, ToolOutput, ToolSpec,
     dynamic_tool_to_responses_api_tool,
 };
 use serde::{Deserialize, Serialize};
@@ -1431,6 +1431,9 @@ struct HandoffExecutor {
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
+    fn exposure(&self) -> ToolExposure {
+        ToolExposure::DirectModelOnly
+    }
     fn tool_name(&self) -> ToolName {
         ToolName::new(None, self.name.clone())
     }
