@@ -104,7 +104,7 @@ it.each([undefined, false])(
     );
     expect(
       executor.requests.some((request) =>
-        JSON.stringify(request.params).includes('.claude'),
+        JSON.stringify(request.params).includes('.agents'),
       ),
     ).toBe(false);
     server.assertExhausted();
@@ -187,7 +187,7 @@ it('uses the captured acquired Environment for guidance through an async source'
     expect(foreignSource).not.toHaveBeenCalled();
     expect(dispose).toHaveBeenCalledOnce();
     expect(
-      executor.readRequested(join(rootB, '.claude', 'rules', 'general.md')),
+      executor.readRequested(join(rootB, '.agents', 'rules', 'general.md')),
     ).toBe(false);
     expect(executor.readRequested(join(rootB, 'src', 'source.txt'))).toBe(
       false,
@@ -538,7 +538,7 @@ it('refreshes edits, additions, removals and malformed snapshots on the next inf
       );
       expect(currentCanonicalGuidance(request)).toContain('ADDED_CITRINE');
       expect(currentCanonicalGuidance(request)).not.toContain('BEFORE_OPAL');
-      await rm(join(root, '.claude', 'rules', 'added.md'));
+      await rm(join(root, '.agents', 'rules', 'added.md'));
       await writeRule(root, 'broken', '---\npaths: src/**\n---\nINVALID_AGATE');
       return [call('tick', {}, { callId: 'break' })];
     },
@@ -546,7 +546,7 @@ it('refreshes edits, additions, removals and malformed snapshots on the next inf
       expect(currentCanonicalGuidance(request)).not.toContain('EDITED_QUARTZ');
       expect(currentCanonicalGuidance(request)).not.toContain('ADDED_CITRINE');
       expect(currentCanonicalGuidance(request)).not.toContain('INVALID_AGATE');
-      await rm(join(root, '.claude', 'rules', 'broken.md'));
+      await rm(join(root, '.agents', 'rules', 'broken.md'));
       return [call('tick', {}, { callId: 'repair' })];
     },
     (request) => {
@@ -713,20 +713,20 @@ it.each(['rules-directory', 'parent-directory', 'rule-file'] as const)(
     await mkdir(root, { recursive: true });
     await writeRule(foreign, 'escape', 'ESCAPED_MALACHITE');
     if (kind === 'parent-directory') {
-      await symlink(join(foreign, '.claude'), join(root, '.claude'), 'dir');
+      await symlink(join(foreign, '.agents'), join(root, '.agents'), 'dir');
     } else {
-      await mkdir(join(root, '.claude'), { recursive: true });
+      await mkdir(join(root, '.agents'), { recursive: true });
       if (kind === 'rules-directory') {
         await symlink(
-          join(foreign, '.claude', 'rules'),
-          join(root, '.claude', 'rules'),
+          join(foreign, '.agents', 'rules'),
+          join(root, '.agents', 'rules'),
           'dir',
         );
       } else {
-        await mkdir(join(root, '.claude', 'rules'));
+        await mkdir(join(root, '.agents', 'rules'));
         await symlink(
-          join(foreign, '.claude', 'rules', 'escape.md'),
-          join(root, '.claude', 'rules', 'escape.md'),
+          join(foreign, '.agents', 'rules', 'escape.md'),
+          join(root, '.agents', 'rules', 'escape.md'),
           'file',
         );
       }
@@ -763,7 +763,7 @@ it.each(['source', 'context', 'depth'] as const)(
       await writeRule(root, 'large', 'x'.repeat(3001));
     } else {
       await mkdir(
-        join(root, '.claude', 'rules', ...Array<string>(65).fill('d')),
+        join(root, '.agents', 'rules', ...Array<string>(65).fill('d')),
         { recursive: true },
       );
     }
@@ -866,10 +866,10 @@ it.each(['omitted', 'false', 'fresh-root'] as const)(
     );
     const newDiscovery = executor.requests.slice(beforeRestore);
     expect(JSON.stringify(newDiscovery)).not.toContain(
-      join(sourceRoot, '.claude'),
+      join(sourceRoot, '.agents'),
     );
     if (mode !== 'fresh-root') {
-      expect(JSON.stringify(newDiscovery)).not.toContain('.claude');
+      expect(JSON.stringify(newDiscovery)).not.toContain('.agents');
     }
     server.assertExhausted();
   },

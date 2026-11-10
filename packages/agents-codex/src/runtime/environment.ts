@@ -138,12 +138,18 @@ function captureStorageMounts(
   }
 }
 
-// Core's NON_INHERITABLE_ENV_VARS and the SDK's executor bootstrap controls.
+// Core's private credentials, runtime-owned values, and SDK bootstrap controls.
 const reservedEnvironmentNames = new Set([
   'CODEX_SDK_BWRAP_SEARCH_PATH',
   'CARGO_BIN_EXE_BWRAP',
   'CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE',
   'CODEX_SANDBOX_COMMAND_ENV_JSON',
+  'CODEX_THREAD_ID',
+  'CODEX_SESSION_ID',
+  'CODEX_VERSION',
+  'CODEX_PERMISSION_PROFILE',
+  'CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS',
+  'CODEX_PLUGIN_METRICS_OUTPUT',
   'CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN',
   'NODE_REPL_AUTH_TOKEN',
   'CODEX_GUARDIAN_DECISIONS_API_KEY',

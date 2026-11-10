@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{Context, Result, bail, ensure};
 use codex_code_mode::CodeModeNestedToolCall;
+use codex_config::config_toml::ConfigToml;
+use codex_config::{ProjectTrustLookup, ProjectTrustPath};
 use codex_core_api::{EnvironmentManager, Feature, ThreadManager};
 use codex_extension_api::{
     ContextContributor, ExtensionData, ExtensionFuture, PreviousWorldStateSection,
@@ -466,6 +468,36 @@ impl CanonicalRules {
             );
             (paths, scope.identity.clone())
         };
+        // Trust follows the captured executor cwd and native Git trust root.
+        let native_config: ConfigToml = config.config_layer_stack.effective_config().try_into()?;
+        let convention = selection
+            .cwd
+            .infer_path_convention()
+            .context("unknown executor path convention")?;
+        let repo =
+            codex_git_utils::resolve_root_git_project_uri_for_trust(&fs, &selection.cwd).await;
+        let repo = match repo {
+            Some(path) => Some(trust_path(&fs, &path).await),
+            None => None,
+        };
+        let lookup =
+            ProjectTrustLookup::from_paths(convention, trust_path(&fs, &selection.cwd).await, repo);
+        let project = native_config.get_active_project_for_lookup(&lookup);
+        // The SDK opt-in grants guidance at the captured cwd. An explicit
+        // untrusted project overrides it; absent entries preserve that grant.
+        if project.is_some_and(|project| !project.is_trusted()) {
+            let mut scope = rules.0.lock().expect("canonical rules scope poisoned");
+            if scope.turn == input.turn_id
+                && scope
+                    .identity
+                    .as_ref()
+                    .zip(origin.as_ref())
+                    .is_some_and(|(current, origin)| Arc::ptr_eq(current, origin))
+            {
+                scope.renew_context(input.step_store, None);
+            }
+            return Ok(RuleSnapshot::default());
+        }
         // Core spec_plan adds utility tools before external tools. A ready
         // primary selection above proves its advertisement environment condition,
         // including when StableEnvironmentTools is disabled. ViewImage is a
@@ -907,6 +939,17 @@ enum ReadAccess<'a> {
 }
 
 // Read-only discovery delegates every operation to the captured authority.
+async fn trust_path(fs: &ReadAccess<'_>, path: &PathUri) -> ProjectTrustPath {
+    ProjectTrustPath {
+        original: path.inferred_native_path_string(),
+        canonical: fs
+            .canonicalize(path, None)
+            .await
+            .ok()
+            .map(|path| path.inferred_native_path_string()),
+    }
+}
+
 impl ExecutorFileSystem for ReadAccess<'_> {
     fn canonicalize<'a>(
         &'a self,
@@ -1057,16 +1100,24 @@ async fn load_rules(
     canonical_root: &PathUri,
     paths: &HashSet<PathUri>,
 ) -> Result<RuleSnapshot> {
-    let directory = root.join(".claude/rules")?;
     let no_follow = GetMetadataOptions {
         follow_symlinks: false,
     };
-    match fs.get_metadata(&directory, no_follow, None).await {
-        Ok(m) if m.is_symlink => return Ok(RuleSnapshot::default()),
-        Ok(m) => ensure!(m.is_directory, ".claude/rules is not a directory"),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(RuleSnapshot::default()),
-        Err(e) => return Err(e.into()),
+    let mut directory = None;
+    for relative in [".agents/rules", ".claude/rules"] {
+        let candidate = root.join(relative)?;
+        match fs.get_metadata(&candidate, no_follow, None).await {
+            Ok(m) if m.is_symlink => return Ok(RuleSnapshot::default()),
+            Ok(m) => ensure!(m.is_directory, "{relative} is not a directory"),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        }
+        directory = Some(candidate);
+        break;
     }
+    let Some(directory) = directory else {
+        return Ok(RuleSnapshot::default());
+    };
     ensure!(
         contained(fs, canonical_root, &directory).await,
         "rules directory outside trusted project"

@@ -1682,6 +1682,7 @@ dependencies = [
  "codex-extension-api",
  "codex-file-system",
  "codex-git-attribution",
+ "codex-git-utils",
  "codex-goal-extension",
  "codex-guardian-v2",
  "codex-history",

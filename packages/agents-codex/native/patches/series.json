@@ -518,8 +518,12 @@
     },
     {
       "path": "0173-bounded-live-original-history.patch",
-      "sha256": "fd40ddfd3b81694bc8c86b43f1fd62162e6c8c0144f904c1265d477453d1cc88"
+      "sha256": "de2b2a77b93371fa287b88f566bca2d5fd5ac7604f6b58a3091eb6b747efffea"
+    },
+    {
+      "path": "0174-sdk-command-environment-overrides.patch",
+      "sha256": "4a6d3118ac0f5512fabe53aa80f8e82bc6fca1274ffba2731bde2ecca89d6532"
     }
   ],
-  "result_tree": "7e7e9340daf545c306289a4d02ffbd8c4fe7f1d4"
+  "result_tree": "0f1a87882f03361464c1efd56f00bb36a3476f0a"
 }

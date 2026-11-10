@@ -14,9 +14,16 @@ afterEach(async () => {
   await ModelServer.closeAll();
 });
 
-it.each([false, true])(
-  'projects explicit host trust=%s without ambient provider or default-model selection',
-  async (trusted) => {
+it.each([
+  { trust: 'trusted', directory: '.agents', extraRoot: false },
+  { trust: 'untrusted', directory: '.agents', extraRoot: false },
+  { trust: 'trusted', directory: '.claude', extraRoot: false },
+  { trust: 'untrusted', directory: '.claude', extraRoot: false },
+  { trust: 'missing', directory: 'both', extraRoot: false },
+  { trust: 'missing', directory: 'both', extraRoot: true },
+] as const)(
+  '$trust project trust with $directory rules and extra writable root=$extraRoot',
+  async ({ trust, directory, extraRoot }) => {
     const home = await mkdtemp(join(tmpdir(), 'guidance-host-config-'));
     vi.stubEnv('CODEX_HOME', home);
     try {
@@ -26,7 +33,9 @@ it.each([false, true])(
         'model = "ambient-model-canary"\nmodel_provider = "ambient-provider-canary"\n' +
           '[model_providers.ambient-provider-canary]\nname = "ambient-provider-canary"\n' +
           'base_url = "http://127.0.0.1:9/v1"\nwire_api = "responses"\n' +
-          `[projects.${JSON.stringify(executor.cwd)}]\ntrust_level = "${trusted ? 'trusted' : 'untrusted'}"\n`,
+          (trust === 'missing'
+            ? ''
+            : `[projects.${JSON.stringify(executor.cwd)}]\ntrust_level = "${trust}"\n`),
       );
       const image = join(executor.cwd, 'pixel.png');
       await writeFile(
@@ -36,10 +45,20 @@ it.each([false, true])(
           'base64',
         ),
       );
-      const rules = join(executor.cwd, '.agents', 'rules');
-      await mkdir(rules, { recursive: true });
-      const marker = 'EXPLICIT_HOST_TRUST_GUIDANCE';
-      await writeFile(join(rules, 'general.md'), marker);
+      const canonicalMarker = 'CANONICAL_HOST_TRUST_GUIDANCE';
+      const legacyMarker = 'LEGACY_HOST_TRUST_GUIDANCE';
+      for (const name of directory === 'both'
+        ? ['.agents', '.claude']
+        : [directory]) {
+        const rules = join(executor.cwd, name, 'rules');
+        await mkdir(rules, { recursive: true });
+        await writeFile(
+          join(rules, 'general.md'),
+          name === '.agents' ? canonicalMarker : legacyMarker,
+        );
+      }
+      const writableRoot = join(home, 'extra-workspace');
+      if (extraRoot) await mkdir(writableRoot);
       const server = new ModelServer([
         [message('baseline')],
         [call('view_image', { path: image }, { callId: 'image' })],
@@ -51,6 +70,7 @@ it.each([false, true])(
         url: executor.url,
         cwd: executor.cwd,
         headers: executor.headers,
+        ...(extraRoot ? { writableRoots: [writableRoot] } : {}),
       });
       {
         await using baseline = await agent.session({ environment });
@@ -60,7 +80,8 @@ it.each([false, true])(
       }
       const baselineModel = server.requests[0]!.model;
       expect(baselineModel).not.toBe('ambient-model-canary');
-      expect(JSON.stringify(server.requests[0])).not.toContain(marker);
+      expect(JSON.stringify(server.requests[0])).not.toContain(canonicalMarker);
+      expect(JSON.stringify(server.requests[0])).not.toContain(legacyMarker);
       {
         await using session = await agent.session({
           environment,
@@ -77,7 +98,13 @@ it.each([false, true])(
       expect(JSON.stringify(server.requests[2])).toContain(
         'data:image/png;base64,',
       );
-      expect(JSON.stringify(server.requests[2]).includes(marker)).toBe(trusted);
+      const modelInput = JSON.stringify(server.requests[2]);
+      expect(modelInput.includes(canonicalMarker)).toBe(
+        trust !== 'untrusted' && directory !== '.claude',
+      );
+      expect(modelInput.includes(legacyMarker)).toBe(
+        trust !== 'untrusted' && directory === '.claude',
+      );
       expect(environment.tools).toEqual([]);
       expect(
         JSON.stringify(server.requests.map((request) => request.tools)),
