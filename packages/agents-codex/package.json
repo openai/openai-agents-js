@@ -229,6 +229,9 @@
   ],
   "typesVersions": {
     "*": {
+      "internal": [
+        "dist/internal.d.ts"
+      ],
       "testing": [
         "dist/testing/index.d.ts"
       ],
