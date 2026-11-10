@@ -309,10 +309,13 @@ it.each([true, false])(
     const message: UserMessage = {
       role: 'user',
       content: audioOnly
-        ? [{ type: 'input_audio', audio_url: 'opaque:audio-source' }]
+        ? [{ type: 'input_audio', audio_url: 'data:audio/wav;base64,UklGRg==' }]
         : [
             { type: 'input_text', text: 'before' },
-            { type: 'input_audio', audio_url: 'opaque:audio-source' },
+            {
+              type: 'input_audio',
+              audio_url: 'data:audio/wav;base64,UklGRg==',
+            },
             { type: 'input_text', text: 'after' },
           ],
     };
