@@ -904,10 +904,24 @@ it.each(['date', 'function'] as const)(
   },
 );
 
-it.each([false, true])(
-  'finishes an approved terminal function without another sample (restored=%s)',
-  async (restore) => {
+it.each([
+  { restore: false, sibling: false },
+  { restore: true, sibling: false },
+  { restore: false, sibling: true },
+  { restore: true, sibling: true },
+])(
+  'finishes an approved terminal function without another sample (restored=$restore, sibling=$sibling)',
+  async ({ restore, sibling }) => {
     const effects: string[] = [];
+    const acceptedEffects: string[] = [];
+    const accepted = tool({
+      name: 'accepted',
+      parameters: z.object({}),
+      execute: () => {
+        acceptedEffects.push('accepted');
+        return 'sibling result';
+      },
+    });
     const risky = tool({
       name: 'risky',
       parameters: z.object({ value: z.string() }),
@@ -919,7 +933,12 @@ it.each([false, true])(
       },
     });
     const server = new ModelServer([
-      [call('risky', { value: 'A' }, { callId: 'terminal-approval' })],
+      [
+        ...(sibling
+          ? [call('accepted', {}, { callId: 'accepted-sibling' })]
+          : []),
+        call('risky', { value: 'A' }, { callId: 'terminal-approval' }),
+      ],
       [message('unexpected model continuation')],
     ]);
     await using provider = await providerFor(server);
@@ -927,7 +946,7 @@ it.each([false, true])(
       instructions: 'Use risky.',
       model: 'gpt-5',
       provider,
-      tools: [risky],
+      tools: [accepted, risky],
     });
     let result;
     if (restore) {
@@ -952,6 +971,7 @@ it.each([false, true])(
     expect(result.finalOutput).toBe('terminal result');
     expect(result.toolCall?.callId).toBe('terminal-approval');
     expect(effects).toEqual(['A']);
+    expect(acceptedEffects).toEqual(sibling ? ['accepted'] : []);
     expect(server.requests).toHaveLength(1);
   },
 );
