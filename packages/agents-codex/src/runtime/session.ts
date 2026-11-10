@@ -7620,7 +7620,7 @@ export class Session<OutputT = string, Context = unknown> {
           const converted = parseToolCompletion(output, msg.output);
           check();
           const beforeComplete = this.sourceModelCallbacks(msg).beforeComplete;
-          if (beforeComplete) {
+          if (beforeComplete && msg.guard_only !== true) {
             const scope = this.decisionScope(event.msg, signal);
             try {
               const model = z.string().parse(msg.model);
