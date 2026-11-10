@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Agent, NativeProvider, tool } from '@openai/agents';
+import { Agent, NativeProvider, ToolOutput, tool } from '@openai/agents';
 import { z } from 'zod';
 import {
   invokeFunctionTool,
@@ -10,7 +10,10 @@ import {
   type ToolCallContext,
 } from '../../src/runtime/tools';
 import { Codex } from '@openai/codex-sdk';
-import { nativeCodexTool } from '../../../agents-extensions/src/experimental/codex';
+import {
+  nativeCodexTool,
+  type NativeCodexToolOptions,
+} from '../../../agents-extensions/src/experimental/codex';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 const roots: string[] = [];
@@ -31,7 +34,7 @@ it.skipIf(process.platform === 'win32')(
     const image = '  authorized diagram.png  ';
     await writeFile(join(root, image), 'synthetic image');
     const resolveImage = vi.fn(async (_reference: string) => image);
-    const options = {
+    const options: NativeCodexToolOptions = {
       codexOptions: { codexPathOverride: cli },
       defaultThreadOptions: { workingDirectory: root },
       resolveImage,
@@ -217,7 +220,7 @@ it.skipIf(process.platform === 'win32').each([false, true])(
           timeoutBehavior: 'error_as_result',
           execute: async (_, context) => {
             nativeSignal = context.signal;
-            return invokeFunctionTool(
+            const output = await invokeFunctionTool(
               delegation,
               {
                 prompt: [{ type: 'local_image', path: 'asset' }],
@@ -226,6 +229,7 @@ it.skipIf(process.platform === 'win32').each([false, true])(
               context,
               () => {},
             );
+            return new ToolOutput(output.contentItems, output.success);
           },
         }),
       ],
