@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-feat: preview portable voice session settings, input, interruption, and usage.
+Portable voice input bounds and cancellation ownership fixes for queued provider events and nonfatal cancellation errors.

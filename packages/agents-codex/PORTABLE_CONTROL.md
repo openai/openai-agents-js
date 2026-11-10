@@ -111,3 +111,13 @@ The connectors resolve after configuration is accepted. Use `sendText()` to send
 A tool callback receives validated arguments, an `AbortSignal`, and context for its exact call. Return text from the callback. Tools with `needsApproval: true` require an affirmative decision from `onApproval`. An absent handler denies approval.
 
 Await `session.close()` in your end-call action or a `finally` block. Close releases owned media or the socket and aborts pending callbacks. Cooperate with each callback's cancellation signal. Invoke close from the outer application rather than from a callback that close has to join.
+
+## Input and cancellation limits
+
+Input admission has been enforcing an 8 MiB UTF-8 limit for native commands and wire frames, plus a shared 8 MiB UTF-16 budget and 256-frame limit for outstanding transport sends. `sendAudio()` has been accepting base64 chunks up to 256 KiB. Text escaping, Unicode, image extension fields, and generated response metadata have been contributing to these limits.
+
+Capacity rejection has been throwing `RangeError` before native input mutation. The session has been remaining usable for a retry after outstanding sends finish. JSON capture has been evaluating each caller getter or `toJSON` once and rejecting invalid Unicode before native input.
+
+`cancel()` has been binding cancellation to the default response already received at the call boundary, including events still waiting for a send receipt. Cancellation has also been suppressing received default tool work awaiting terminal admission, without sending an unnecessary provider cancellation for an already completed response. The provider cancellation frame has been retaining its explicit response or guardrail target. Correlated nonfatal cancellation errors have been remaining observable provider events without closing the session.
+
+Replay fences have been retaining up to 256 recent retired response IDs and 256 recent completed response IDs, including a protected active cancellation target. Response processing has been continuing after eviction. No historical-ID deduplication guarantee outside those windows.

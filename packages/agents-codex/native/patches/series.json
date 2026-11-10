@@ -587,7 +587,11 @@
     {
       "path": "native-box-model-deadline-futures.patch",
       "sha256": "68f27e496efe84385243d8067e9b45aae4948222d810af32cb2399716f15a717"
+    },
+    {
+      "path": "portable-realtime-session-parity.patch",
+      "sha256": "f5e9726955e387d0df6643daef949212c76cd3b4507cd5f95251e6cea777cc9d"
     }
   ],
-  "result_tree": "710b2c2520ef7f78acf7241ce74b2026a938e656"
+  "result_tree": "44a6daa6a532974f075299b9a8c31ee5ebd9d0ac"
 }

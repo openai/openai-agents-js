@@ -88,6 +88,36 @@ describe('real browser native acceptance', () => {
         ['/portable.mjs', portableModule],
         ['/runtime/realtime-usage.mjs', usageModule],
       ]);
+      const voiceDependencies = [
+        'bounded-voice-json',
+        'portable-binding',
+        'portable-session',
+        'portable-socket',
+        'portable-webrtc',
+        'portable-credentials',
+        'portable-history',
+        'conversation-history',
+        'event-observers',
+        'base64',
+      ];
+      for (const [path, bytes] of await Promise.all(
+        voiceDependencies.map(
+          async (name) =>
+            [
+              `/${name}.mjs`,
+              await readFile(
+                resolve(`packages/agents-codex/dist/voice/${name}.mjs`),
+              ),
+            ] as const,
+        ),
+      ))
+        scripts.set(path, bytes);
+      scripts.set(
+        '/runtime/realtime-guardrails.mjs',
+        await readFile(
+          resolve('packages/agents-codex/dist/runtime/realtime-guardrails.mjs'),
+        ),
+      );
       const offers: string[] = [];
       const hangups: string[] = [];
       const sidebands: string[] = [];

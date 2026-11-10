@@ -31,6 +31,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
             'portable-session',
             'portable-webrtc',
             'portable-binding',
+            'bounded-voice-json',
             'portable-socket',
             'portable-credentials',
             'portable-history',
