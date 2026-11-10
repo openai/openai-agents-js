@@ -90,6 +90,7 @@ async function formPeer(
   schema: unknown = standardSchema,
   requestId: number | string = 873,
   twoTurns = false,
+  handoff = false,
 ) {
   const replies: PeerReply[] = [];
   const replyWaiters = new Map<
@@ -206,6 +207,9 @@ async function formPeer(
   if (!address || typeof address === 'string')
     throw new Error('Expected TCP peer');
   const model = new ModelServer([
+    ...(handoff
+      ? [[call('transfer_to_b', {}, { callId: 'form-handoff' })]]
+      : []),
     [call('lookup', {}, { namespace: 'mcp__fixture', callId: 'form-call' })],
     ...(twoTurns
       ? [
@@ -229,9 +233,10 @@ async function formPeer(
       .base_url,
     apiKey: 'fixture',
   });
-  const agent = new Agent({
+  const target = new Agent({
+    name: handoff ? 'B' : undefined,
     instructions: 'Read lookup once.',
-    model: 'gpt-5',
+    model: handoff ? 'gpt-5.5' : 'gpt-5',
     provider,
     tools: [
       new HttpMCP({
@@ -242,6 +247,15 @@ async function formPeer(
       }),
     ],
   });
+  const agent = handoff
+    ? new Agent({
+        name: 'A',
+        instructions: 'Hand off to B.',
+        model: 'gpt-5.5',
+        provider,
+        handoffs: [target],
+      })
+    : target;
   return {
     agent,
     replies,
@@ -1061,3 +1075,26 @@ it('declines an unpublished real form on close while joining its held compilatio
     }
   }
 }, 30_000);
+
+it('delivers a target-only MCP form after handoff using the issuing step selection', async () => {
+  const f = await formPeer('form', standardSchema, 873, false, true);
+  let count = 0;
+  try {
+    const result = await f.agent.run('Read the fixture', {
+      onInteraction(request) {
+        if (request.type !== 'elicitation_request' || request.mode !== 'form')
+          throw new Error('Expected target form');
+        count++;
+        expect(request.schema).toEqual(standardSchema);
+        return request.reply({ value: 'Ada' });
+      },
+    });
+    expect(result.finalOutput).toBe('done');
+    expect(count).toBe(1);
+    expect(f.replies).toMatchObject([
+      { id: 873, result: { action: 'accept', content: { value: 'Ada' } } },
+    ]);
+  } finally {
+    await f.close();
+  }
+}, 20_000);

@@ -66,6 +66,7 @@ async function nextAction(session: Session<unknown>): Promise<ActionRequested> {
 
 async function fixture(
   options: {
+    observationRetention?: 'all';
     pending?: boolean;
     promptedOverride?: boolean;
     laterPlain?: boolean;
@@ -87,17 +88,47 @@ async function fixture(
       result: builder.string(),
     }),
   });
+  const retained = message('x'.repeat(350));
+  const retainedEvents = [
+    { type: 'response.created', response: { id: 'retained-response' } },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { ...retained, content: [] },
+    },
+    ...Array.from({ length: 350 }, () => ({
+      type: 'response.output_text.delta',
+      item_id: retained.id,
+      output_index: 0,
+      content_index: 0,
+      delta: 'x',
+    })),
+    { type: 'response.output_item.done', output_index: 0, item: retained },
+    { type: 'response.completed', response: { id: 'retained-response' } },
+  ];
   const responses = [
     [call('job', { id: 'one' }, { callId: 'job-call' })],
-    [
-      message(
-        options.repair
-          ? '{"answer":0}'
-          : options.promptedOverride
-            ? '{"answer":"done"}'
-            : 'done',
-      ),
-    ],
+    ...(options.observationRetention
+      ? [
+          {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+            body: retainedEvents
+              .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+              .join(''),
+          },
+        ]
+      : [
+          [
+            message(
+              options.repair
+                ? '{"answer":0}'
+                : options.promptedOverride
+                  ? '{"answer":"done"}'
+                  : 'done',
+            ),
+          ],
+        ]),
     ...(options.repair
       ? [
           async () => {
@@ -246,6 +277,7 @@ async function fixture(
     };
   try {
     const session = await agent.session({
+      observationRetention: options.observationRetention,
       ...(options.openingOverride ? { tools: [tool] } : {}),
       ...(options.perOpening ? { provider } : {}),
       ...(options.perOpening === 'overrides'
@@ -325,6 +357,24 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private deferred start ownership',
   () => {
+    it('retains complete observations in a deferred borrowed opening', async () => {
+      await using f = await fixture({ observationRetention: 'all' });
+      await f.jobs.start(f.session, f.request, {}, async ({ outcome }) => {
+        if (outcome.status !== 'continued')
+          throw new Error('Expected continuation');
+        expect((await outcome.turn.wait()).finalOutput).toBe('x'.repeat(350));
+        const events = await Array.fromAsync(outcome.turn.events());
+        expect(events.some((event) => event.type === 'gap')).toBe(false);
+        expect(
+          events
+            .filter((event) => event.type === 'output_text_delta')
+            .map((event) => event.delta)
+            .join(''),
+        ).toBe('x'.repeat(350));
+      });
+      expect(await f.completion).toBeInstanceOf(InteractionRequired);
+    });
+
     it('prepares and reopens with the original durable binding and a fresh request, then closes the borrowed Session', async () => {
       await using f = await fixture({ openingOverride: true });
       let borrowed: Session<unknown> | undefined;

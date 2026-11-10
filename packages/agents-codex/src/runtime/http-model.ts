@@ -22,6 +22,7 @@ import {
   decode,
   encode,
   jsonObject,
+  losslessJsonObjectSchema,
   parseNative,
   type JsonObject,
   type JsonValue,
@@ -223,7 +224,7 @@ export class NativeProviderRoutes {
       sdk_sentinel_thread: metadata.sdk_sentinel_thread,
       sdk_sentinel_nonce: metadata.sdk_sentinel_nonce,
     });
-    const receipt = jsonObject.parse(
+    const receipt = losslessJsonObjectSchema.parse(
       parseNative(await engine._sentinel_admit(provider, encode(metadata))),
     );
     if (
@@ -265,7 +266,10 @@ export class NativeProviderRoutes {
       }
       chunks.push(data);
     }
-    const body = decode(jsonObject, Buffer.concat(chunks).toString('utf8'));
+    const body = decode(
+      losslessJsonObjectSchema,
+      Buffer.concat(chunks).toString('utf8'),
+    );
     const receipt = await this.sentinelPrepare(
       route.engine,
       route.provider,
@@ -274,7 +278,7 @@ export class NativeProviderRoutes {
     Object.assign(
       body,
       decode(
-        jsonObject,
+        losslessJsonObjectSchema,
         await route.engine._sentinel_restore_schemas(
           route.provider,
           String(receipt.ticket),
@@ -438,7 +442,7 @@ export class NativeProviderRoutes {
     local.on('message', (data, binary) => {
       try {
         if (binary) throw new NativeError('Native Responses expects text');
-        const body = decode(jsonObject, data.toString());
+        const body = decode(losslessJsonObjectSchema, data.toString());
         if (body.type === 'response.interrupt') {
           if (
             pending?.kind !== 'generation' ||
@@ -468,7 +472,9 @@ export class NativeProviderRoutes {
               throw new NativeError('Unknown native WebSocket continuation');
             let tail: JsonValue[] = [];
             if (!prefix.warmup) {
-              const completion = jsonObject.parse(admitted.completion);
+              const completion = losslessJsonObjectSchema.parse(
+                admitted.completion,
+              );
               if (
                 completion.response_id !== ref ||
                 completion.model !== body.model ||
@@ -490,7 +496,7 @@ export class NativeProviderRoutes {
           Object.assign(
             body,
             decode(
-              jsonObject,
+              losslessJsonObjectSchema,
               await engine._sentinel_restore_schemas(
                 provider,
                 String(admitted.ticket),
@@ -516,7 +522,7 @@ export class NativeProviderRoutes {
                 throw new NativeError(
                   'Native provider ended before completion',
                 );
-              const event = decode(jsonObject, frame.text);
+              const event = decode(losslessJsonObjectSchema, frame.text);
               if (event.type === 'response.created') {
                 const response = jsonObject.parse(event.response);
                 prefix.activeId =
