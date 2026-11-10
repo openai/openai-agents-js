@@ -2238,6 +2238,14 @@ impl EngineState {
                     .await?;
                 environment.configure_local_proxy(&mut startup.config, &selection)?;
                 if let Some(strict) = strict {
+                    if startup
+                        .thread_extension_init
+                        .get::<crate::canonical_rules::Rules>()
+                        .is_some()
+                        && let Some(mapping) = environment.project_read_path_mapping(&strict)
+                    {
+                        startup.thread_extension_init.insert(mapping);
+                    }
                     startup.thread_extension_init.insert(strict);
                 }
                 startup.environments = Some(vec![selection]);
