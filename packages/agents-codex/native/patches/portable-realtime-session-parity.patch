@@ -1,5 +1,5 @@
 diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
-index b611f563..74a638bd 100644
+index b611f563..39129c56 100644
 --- a/codex-rs/realtime-control/src/lib.rs
 +++ b/codex-rs/realtime-control/src/lib.rs
 @@ -270,6 +270,20 @@ pub enum Command {
@@ -86,7 +86,7 @@ index b611f563..74a638bd 100644
          self.next_send += 1;
          self.pending_send.insert(self.next_send);
          effects.push(Effect::Send {
-@@ -522,7 +553,125 @@ impl Control {
+@@ -522,7 +553,126 @@ impl Control {
          });
          self.next_send
      }
@@ -122,7 +122,8 @@ index b611f563..74a638bd 100644
 +        let target = match response_id {
 +            Some(id)
 +                if self.responses.sdk_response_id.as_deref() != Some(id)
-+                    && received.as_deref() != Some(id) =>
++                    && received.as_deref() != Some(id)
++                    && !self.has_received_default_response(Some(id)) =>
 +            {
 +                self.detached
 +                    .get(id)
@@ -212,7 +213,7 @@ index b611f563..74a638bd 100644
          if let Command::ValidateHistory { delete_ids, items } = &command {
              self.require_ready()?;
              if delete_ids.len() + items.len() > MAX_CALLS {
-@@ -571,9 +720,12 @@ impl Control {
+@@ -571,9 +721,12 @@ impl Control {
          self.responses = ResponseCreateState::default();
          self.response_tools.clear();
          self.retired_responses.clear();
@@ -225,7 +226,7 @@ index b611f563..74a638bd 100644
      }
      fn transition(&mut self, command: Command) -> Result<Vec<Effect>, String> {
          if self.phase == Phase::Closed {
-@@ -585,7 +737,11 @@ impl Control {
+@@ -585,7 +738,11 @@ impl Control {
          }
          let mut effects = vec![];
          match command {
@@ -238,7 +239,7 @@ index b611f563..74a638bd 100644
              Command::Start { config } => {
                  if self.phase != Phase::New {
                      return Err("Realtime control already started".into());
-@@ -600,25 +756,31 @@ impl Control {
+@@ -600,25 +757,32 @@ impl Control {
              }
              Command::Cancel { response_id } => {
                  self.require_ready()?;
@@ -249,6 +250,7 @@ index b611f563..74a638bd 100644
 +                if let Some(id) = response_id.as_ref().filter(|id| {
 +                    self.responses.sdk_response_id.as_ref() != Some(id)
 +                        && target.as_ref() != Some(id)
++                        && !self.has_received_default_response(Some(id.as_str()))
 +                }) {
                      let active = self
                          .detached
@@ -276,7 +278,7 @@ index b611f563..74a638bd 100644
                  }
              }
              Command::Guardrail {
-@@ -656,7 +818,7 @@ impl Control {
+@@ -656,7 +820,7 @@ impl Control {
                          return Err("Guardrail does not own the active response".into());
                      }
                      self.last_completed = None;
@@ -285,7 +287,7 @@ index b611f563..74a638bd 100644
                      self.guardrail_output = Some(output);
                      self.release_guardrail(&mut effects);
                      if !effects.iter().any(|effect|matches!(effect,Effect::Retire {response_id:id} if id == &response_id)) {
-@@ -756,7 +918,10 @@ impl Control {
+@@ -756,7 +920,10 @@ impl Control {
                  if item_id.is_empty() {
                      return Err("Missing conversation item identity".into());
                  }
@@ -297,7 +299,7 @@ index b611f563..74a638bd 100644
              }
              Command::Sent { id } => {
                  if !self.pending_send.remove(&id) {
-@@ -922,24 +1087,27 @@ impl Control {
+@@ -922,24 +1089,27 @@ impl Control {
              message: "Conversation deletion requires a settled provider item".into(),
          });
      }
@@ -336,7 +338,7 @@ index b611f563..74a638bd 100644
      }
      fn begin_deletion(&mut self, item_id: &str, effects: &mut Vec<Effect>) {
          if self.pending_deletions.contains_key(item_id) {
-@@ -1339,6 +1507,29 @@ impl Control {
+@@ -1339,6 +1509,29 @@ impl Control {
                  .collect();
          }
      }
@@ -366,7 +368,7 @@ index b611f563..74a638bd 100644
      fn is_detached_event(&self, event: &Value) -> bool {
          let response = &event["response"];
          let id = event["response_id"]
-@@ -1410,7 +1601,54 @@ impl Control {
+@@ -1410,7 +1603,54 @@ impl Control {
              .or_else(|| event["response"]["id"].as_str())
              .is_some_and(|id| self.retired_responses.contains(id))
      }
@@ -422,11 +424,11 @@ index b611f563..74a638bd 100644
          let mut retired = BTreeSet::new();
          if let Some(id) = &self.responses.sdk_response_id {
              retired.insert(id.clone());
-@@ -1431,15 +1669,51 @@ impl Control {
+@@ -1431,15 +1671,51 @@ impl Control {
                  retired.insert(request.response_id.clone());
              }
          }
-+        let received_default = self.has_received_default_response();
++        let received_default = self.has_received_default_response(None);
 +        let unidentified = self.responses.active_default_response
 +            && self.responses.sdk_response_id.is_none()
 +            && !received_default;
@@ -480,7 +482,7 @@ index b611f563..74a638bd 100644
              self.cancel_before_created = true;
          }
          for (id, request) in &mut self.approvals {
-@@ -1536,7 +1810,9 @@ impl Control {
+@@ -1536,7 +1812,9 @@ impl Control {
                  return Err("Portable voice generation was cancelled".into());
              }
              "error"
@@ -491,7 +493,7 @@ index b611f563..74a638bd 100644
              {
                  return Err("Realtime provider rejected the operation".into());
              }
-@@ -1544,21 +1820,24 @@ impl Control {
+@@ -1544,21 +1822,24 @@ impl Control {
          }
          Ok(bytes)
      }
@@ -525,7 +527,7 @@ index b611f563..74a638bd 100644
          let needs_identity = response
              .as_object()
              .unwrap()
-@@ -1567,46 +1846,67 @@ impl Control {
+@@ -1567,46 +1848,68 @@ impl Control {
              || response["metadata"]
                  .as_object()
                  .is_some_and(|metadata| !metadata.is_empty());
@@ -595,9 +597,10 @@ index b611f563..74a638bd 100644
      }
 -    fn request_response(&mut self, effects: &mut Vec<Effect>) {
 -        if self.cancel_before_created
-+    fn has_received_default_response(&self) -> bool {
++    fn has_received_default_response(&self, response_id: Option<&str>) -> bool {
 +        self.incoming.iter().any(|(event, _)| {
 +            event["type"] == "response.created"
++                && response_id.is_none_or(|id| event["response"]["id"].as_str() == Some(id))
 +                && !self.is_detached_event(event)
 +                && !self.is_retired_event(event)
 +                && !event["response"]["id"]
@@ -609,7 +612,7 @@ index b611f563..74a638bd 100644
 +        self.cancel_before_created
              || self.cancel_waiting.is_some()
              || self.pending_default.is_some()
-+            || self.has_received_default_response()
++            || self.has_received_default_response(None)
              || self.phase != Phase::Ready
              || self
                  .batches
@@ -622,7 +625,7 @@ index b611f563..74a638bd 100644
              self.responses.pending_create = true;
          } else if self.responses.request_create() {
              let response = self.pending_response.take();
-@@ -1794,7 +2094,12 @@ impl Control {
+@@ -1794,7 +2097,12 @@ impl Control {
                  }
              }
              "input_audio_buffer.speech_started" => {
@@ -636,7 +639,7 @@ index b611f563..74a638bd 100644
              }
              "response.cancelled" => {
                  return Err("Portable voice generation was cancelled".into());
-@@ -1827,7 +2132,7 @@ impl Control {
+@@ -1827,7 +2135,7 @@ impl Control {
                      self.cancel_before_created = false;
                      self.pending_default = None;
                      self.pending_default_event = None;
@@ -645,7 +648,7 @@ index b611f563..74a638bd 100644
                      self.cancel_waiting = Some(id.clone());
                      self.send(json!({"type":"response.cancel","response_id":id}), effects);
                      effects.push(Effect::Retire {
-@@ -1836,9 +2141,6 @@ impl Control {
+@@ -1836,9 +2144,6 @@ impl Control {
                      effects.push(Effect::Event { event });
                      return Ok(());
                  }
@@ -655,7 +658,7 @@ index b611f563..74a638bd 100644
                  if matched {
                      let scope = self.pending_default.take().unwrap();
                      self.pending_default_event = None;
-@@ -1944,10 +2246,7 @@ impl Control {
+@@ -1944,10 +2249,7 @@ impl Control {
                      owner.output = output.clone();
                      false
                  } else {
@@ -667,7 +670,7 @@ index b611f563..74a638bd 100644
                      self.last_completed = Some(id.clone());
                      self.responses.sdk_response_id = None;
                      if self.pending_default.is_some() {
-@@ -2037,7 +2336,7 @@ impl Control {
+@@ -2037,7 +2339,7 @@ impl Control {
              .get(&request.name)
              .ok_or("Function is outside accepted configuration")?
              .needs_approval;
@@ -676,15 +679,15 @@ index b611f563..74a638bd 100644
          if let Some(old) = self.calls.get(&request.call_id) {
              if old.fingerprint != fingerprint || old.request.response_id != request.response_id {
                  return Err("Realtime function identity changed".into());
-@@ -2133,6 +2432,7 @@ impl Control {
+@@ -2133,6 +2435,7 @@ impl Control {
              } else if !self.responses.active_default_response
                  && self.cancel_waiting.is_none()
                  && !self.cancel_before_created
-+                && !self.has_received_default_response()
++                && !self.has_received_default_response(None)
              {
                  self.batches.get_mut(&id).unwrap().continued = true;
                  self.request_response(effects);
-@@ -2148,7 +2448,14 @@ impl Control {
+@@ -2148,7 +2451,14 @@ impl Control {
              serde_json::from_str::<Command>(input)
                  .map_err(|_| "Invalid control command".into())
                  .and_then(|command| {
@@ -700,7 +703,7 @@ index b611f563..74a638bd 100644
                      self.apply(command)
                  })
          };
-@@ -3011,7 +3318,7 @@ mod tests {
+@@ -3011,7 +3321,7 @@ mod tests {
              );
              assert_eq!(
                  guarded["effects"][0]["event"],
@@ -709,7 +712,7 @@ index b611f563..74a638bd 100644
              );
              assert!(
                  guarded["effects"]
-@@ -3069,7 +3376,7 @@ mod tests {
+@@ -3069,7 +3379,7 @@ mod tests {
          );
          assert_eq!(
              created["effects"][0]["event"],
@@ -718,7 +721,7 @@ index b611f563..74a638bd 100644
          );
          assert!(control.retired_responses.contains("cancel-me"));
          assert!(!control.responses.active_default_response);
-@@ -3166,7 +3473,7 @@ mod tests {
+@@ -3166,7 +3476,7 @@ mod tests {
                  .unwrap()
                  .iter()
                  .any(|effect| effect["event"]
@@ -727,7 +730,7 @@ index b611f563..74a638bd 100644
          );
          let done = command(
              &mut control,
-@@ -3745,7 +4052,7 @@ mod tests {
+@@ -3745,7 +4055,7 @@ mod tests {
                  );
                  assert_eq!(
                      cancelled["effects"][0]["event"],
@@ -736,7 +739,7 @@ index b611f563..74a638bd 100644
                  );
                  assert!(control.pending_default.is_none());
              } else {
-@@ -3815,4 +4122,997 @@ mod tests {
+@@ -3815,4 +4125,1097 @@ mod tests {
          claim.release();
          assert!(claim.claim());
      }
@@ -1481,78 +1484,93 @@ index b611f563..74a638bd 100644
 +    }
 +    #[test]
 +    fn named_cancel_preserves_queued_predecessor_tool_admission() {
-+        for scoped in [false, true] {
-+            let mut control = ready();
-+            let created = if scoped {
-+                let sent = command(
-+                    &mut control,
-+                    json!({"type":"create_response","response":{"instructions":"Scoped A"}}),
-+                );
-+                let event = sent["effects"][0]["event"]["response"].clone();
++        for terminal_queued in [false, true] {
++            for scoped in [false, true] {
++                let mut control = ready();
++                let created = if scoped {
++                    let sent = command(
++                        &mut control,
++                        json!({"type":"create_response","response":{"instructions":"Scoped A"}}),
++                    );
++                    let event = sent["effects"][0]["event"]["response"].clone();
++                    command(
++                        &mut control,
++                        json!({"type":"sent","id":sent["effects"][0]["id"]}),
++                    );
++                    let mut response = event;
++                    response["id"] = json!("response-1");
++                    response
++                } else {
++                    json!({"id":"response-1"})
++                };
 +                command(
 +                    &mut control,
-+                    json!({"type":"sent","id":sent["effects"][0]["id"]}),
++                    json!({"type":"provider","event":{"type":"response.created","response":created}}),
 +                );
-+                let mut response = event;
-+                response["id"] = json!("response-1");
-+                response
-+            } else {
-+                json!({"id":"response-1"})
-+            };
-+            command(
-+                &mut control,
-+                json!({"type":"provider","event":{"type":"response.created","response":created}}),
-+            );
-+            let audio = command(&mut control, json!({"type":"audio","audio":"AAAA"}));
-+            batch(&mut control);
-+            command(
-+                &mut control,
-+                json!({"type":"provider","event":{"type":"response.created","response":{"id":"B"}}}),
-+            );
-+            let cancelled = command(&mut control, json!({"type":"cancel","response_id":"B"}));
-+            assert!(cancelled["error"].is_null(), "{cancelled}");
-+            assert!(
-+                !cancelled["effects"]
++                let audio = command(&mut control, json!({"type":"audio","audio":"AAAA"}));
++                batch(&mut control);
++                command(
++                    &mut control,
++                    json!({"type":"provider","event":{"type":"response.created","response":{"id":"B"}}}),
++                );
++                if terminal_queued {
++                    let mut other = item();
++                    other["id"] = json!("item-B");
++                    other["call_id"] = json!("call-B");
++                    command(
++                        &mut control,
++                        json!({"type":"provider","event":{"type":"response.done","response":{"id":"B","status":"completed","output":[other]}}}),
++                    );
++                }
++                let cancelled = command(&mut control, json!({"type":"cancel","response_id":"B"}));
++                assert!(cancelled["error"].is_null(), "{cancelled}");
++                assert!(
++                    !cancelled["effects"]
++                        .as_array()
++                        .unwrap()
++                        .iter()
++                        .any(|e| e["type"] == "retire" && e["response_id"] == "response-1")
++                );
++                let drained = command(
++                    &mut control,
++                    json!({"type":"sent","id":audio["effects"][0]["id"]}),
++                );
++                // Cancellation itself also has a physical receipt before provider input drains.
++                let cancel_send = cancelled["effects"]
 +                    .as_array()
 +                    .unwrap()
 +                    .iter()
-+                    .any(|e| e["type"] == "retire" && e["response_id"] == "response-1")
-+            );
-+            let drained = command(
-+                &mut control,
-+                json!({"type":"sent","id":audio["effects"][0]["id"]}),
-+            );
-+            // Cancellation itself also has a physical receipt before provider input drains.
-+            let cancel_send = cancelled["effects"]
-+                .as_array()
-+                .unwrap()
-+                .iter()
-+                .find(|e| e["type"] == "send")
-+                .unwrap();
-+            let admitted = command(&mut control, json!({"type":"sent","id":cancel_send["id"]}));
-+            assert!(
-+                drained["error"].is_null() && admitted["error"].is_null(),
-+                "{drained} {admitted}"
-+            );
-+            assert!(
-+                admitted["effects"]
-+                    .as_array()
-+                    .unwrap()
-+                    .iter()
-+                    .any(|e| e["type"] == "approve" && e["call_id"] == "call-1"),
-+                "{admitted}"
-+            );
-+            let approved = command(
-+                &mut control,
-+                json!({"type":"approve","call_id":"call-1","approved":true}),
-+            );
-+            assert!(
-+                approved["effects"]
-+                    .as_array()
-+                    .unwrap()
-+                    .iter()
-+                    .any(|e| e["type"] == "execute")
-+            );
++                    .find(|e| e["type"] == "send");
++                assert_eq!(cancel_send.is_none(), terminal_queued);
++                let admitted = if let Some(cancel_send) = cancel_send {
++                    command(&mut control, json!({"type":"sent","id":cancel_send["id"]}))
++                } else {
++                    drained.clone()
++                };
++                assert!(
++                    drained["error"].is_null() && admitted["error"].is_null(),
++                    "{drained} {admitted}"
++                );
++                assert!(
++                    admitted["effects"]
++                        .as_array()
++                        .unwrap()
++                        .iter()
++                        .any(|e| e["type"] == "approve" && e["call_id"] == "call-1"),
++                    "{admitted}"
++                );
++                let approved = command(
++                    &mut control,
++                    json!({"type":"approve","call_id":"call-1","approved":true}),
++                );
++                assert!(
++                    approved["effects"]
++                        .as_array()
++                        .unwrap()
++                        .iter()
++                        .any(|e| e["type"] == "execute")
++                );
++            }
 +        }
 +    }
 +    #[test]
@@ -1732,5 +1750,90 @@ index b611f563..74a638bd 100644
 +                    && e["event"]["response_id"] == "C"),
 +            "{late}"
 +        );
++    }
++    #[test]
++    fn queued_completed_default_identity_can_be_fenced_without_wire_cancel() {
++        for named in [false, true] {
++            for scoped in [false, true] {
++                for detached_sibling in [false, true] {
++                    let mut control = ready();
++                    if detached_sibling {
++                        command(
++                            &mut control,
++                            json!({"type":"provider","event":{"type":"response.created","response":{"id":"D","conversation_id":null}}}),
++                        );
++                    }
++                    let created = command(
++                        &mut control,
++                        if scoped {
++                            json!({"type":"create_response","response":{"instructions":"B scoped"}})
++                        } else {
++                            json!({"type":"create_response"})
++                        },
++                    );
++                    let mut response = created["effects"][0]["event"]
++                        .get("response")
++                        .cloned()
++                        .unwrap_or(json!({}));
++                    response["id"] = json!("B");
++                    command(
++                        &mut control,
++                        json!({"type":"provider","event":{"type":"response.created","response":response}}),
++                    );
++                    response["status"] = json!("completed");
++                    response["output"] = json!([item()]);
++                    command(
++                        &mut control,
++                        json!({"type":"provider","event":{"type":"response.done","response":response}}),
++                    );
++                    let preview = command(
++                        &mut control,
++                        if named {
++                            json!({"type":"validate_cancel","response_id":"B"})
++                        } else {
++                            json!({"type":"validate_cancel"})
++                        },
++                    );
++                    assert!(
++                        preview["error"].is_null(),
++                        "named={named} scoped={scoped} detached={detached_sibling}: {preview}"
++                    );
++                    assert_eq!(preview["effects"], json!([]));
++                    let cancelled = command(
++                        &mut control,
++                        if named {
++                            json!({"type":"cancel","response_id":"B"})
++                        } else {
++                            json!({"type":"cancel"})
++                        },
++                    );
++                    assert!(cancelled["error"].is_null(), "{cancelled}");
++                    assert!(
++                        !cancelled["effects"]
++                            .as_array()
++                            .unwrap()
++                            .iter()
++                            .any(|e| e["type"] == "send")
++                    );
++                    let drained = command(
++                        &mut control,
++                        json!({"type":"sent","id":created["effects"][0]["id"]}),
++                    );
++                    assert!(drained["error"].is_null(), "{drained}");
++                    assert!(
++                        !drained["effects"]
++                            .as_array()
++                            .unwrap()
++                            .iter()
++                            .any(|e| e["type"] == "approve" || e["type"] == "execute")
++                    );
++                    let next = command(&mut control, json!({"type":"create_response"}));
++                    assert!(next["effects"].as_array().unwrap().iter().any(|e|e["type"] == "send" && e["event"]["type"] == "response.create"), "{next}");
++                    if detached_sibling {
++                        assert!(control.detached["D"].active);
++                    }
++                }
++            }
++        }
 +    }
  }
