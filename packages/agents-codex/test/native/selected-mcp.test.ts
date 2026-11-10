@@ -1,3 +1,9 @@
+import {
+  HttpMCP,
+  projectMcpToolNames,
+  selectHttpLeaves,
+} from '../../src/runtime/mcp';
+import vectors from './fixtures/mcp-projection.json';
 import { expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -143,42 +149,59 @@ it.each(['crm.tenant', 'café', 'crm\n', 'tool_search'])(
   },
 );
 
-it.each(['lookup.record', 'récord', 'lookup\n'])(
-  'rejects an unsupported selected tool name %j without dispatch or close',
-  async (name) => {
-    const server = new BorrowedPeer();
-    server.declarations.push(borrowedDeclaration(name));
-    await expect(
-      selectMcpTools(
-        { name: 'crm', server },
-        { context: undefined, toolNames: [name] },
-      ),
-    ).rejects.toThrow(TypeError);
-    expect(server.callTool).not.toHaveBeenCalled();
-    expect(server.close).not.toHaveBeenCalled();
-  },
-);
-
-it('admits a 128-byte identity beside invalid siblings and rejects a selected 129-byte identity', async () => {
+it('projects peer identities while preserving exact borrowed dispatch names', async () => {
   const server = new BorrowedPeer();
-  const namespace = { name: 'crm-v2', server };
+  const rawNames = [
+    'lookup.record',
+    'lookup_record',
+    'récord',
+    'a'.repeat(140),
+  ];
+  server.declarations = rawNames.map((name) => borrowedDeclaration(name));
+  const selected = await selectMcpTools(
+    { name: 'crm-v2', server },
+    { context: undefined },
+  );
+  expect(new Set(selected.map((tool) => tool.name)).size).toBe(rawNames.length);
+  for (const tool of selected) {
+    expect(tool.name).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(tool.namespace!.length + tool.name.length + 2).toBeLessThanOrEqual(
+      128,
+    );
+    await invoke(tool);
+  }
+  expect(server.callTool.mock.calls.map(([name]) => name)).toEqual(rawNames);
+  const repeated = await selectMcpTools(
+    { name: 'crm-v2', server },
+    { context: undefined },
+  );
+  expect(repeated.map((tool) => tool.name)).toEqual(
+    selected.map((tool) => tool.name),
+  );
+  expect(server.close).not.toHaveBeenCalled();
+});
+
+it('keeps compatible selected function identities and aliases overlong raw names', async () => {
+  const server = new BorrowedPeer();
   const atLimit = 'a'.repeat(120);
   const overLimit = `${atLimit}b`;
-  server.declarations.push(
+  server.declarations = [
     borrowedDeclaration(atLimit),
     borrowedDeclaration(overLimit),
-    borrowedDeclaration('lookup.record'),
+  ];
+  const selected = await selectMcpTools(
+    { name: 'crm-v2', server },
+    {
+      context: undefined,
+      toolNames: [atLimit, overLimit],
+    },
   );
-  const selected = await selectMcpTools(namespace, {
-    context: undefined,
-    toolNames: [atLimit],
-  });
-  expect(selected.map((tool) => tool.name)).toEqual([atLimit]);
-  await expect(
-    selectMcpTools(namespace, { context: undefined, toolNames: [overLimit] }),
-  ).rejects.toThrow('128 bytes');
+  expect(selected[0].name).toBe(atLimit);
+  expect(selected[1].name).not.toBe(overLimit);
+  expect(selected[1].name.length + 'crm-v2'.length + 2).toBeLessThanOrEqual(
+    128,
+  );
   expect(server.callTool).not.toHaveBeenCalled();
-  expect(server.close).not.toHaveBeenCalled();
 });
 
 it('preserves raw schemas and emits one slot envelope for each tool in a namespace', async () => {
@@ -528,4 +551,63 @@ it('preserves own literal JSON keys through a borrowed MCP argument adapter', as
   expect(Object.prototype).not.toHaveProperty('borrowedTop');
   expect(Object.prototype).not.toHaveProperty('borrowedNested');
   expect(server.close).not.toHaveBeenCalled();
+});
+
+it('matches Core name vectors independently of input order without native loading', () => {
+  for (const rows of [vectors, [...vectors].reverse()]) {
+    const servers = new Map<string, string[]>();
+    for (const row of rows)
+      servers.set(row.server, [...(servers.get(row.server) ?? []), row.raw]);
+    const names = projectMcpToolNames(
+      [...servers].map(([name, tools]) => ({ name, tools })),
+    );
+    for (const row of rows)
+      expect(names.get(JSON.stringify([row.server, row.raw]))).toEqual({
+        namespace: row.namespace,
+        name: row.name,
+      });
+  }
+});
+
+it('keeps distinct declared collision refs without loading a native addon', () => {
+  const server = new HttpMCP({
+    name: 'docs',
+    tools: ['a.b', 'a_b'],
+    url: 'http://127.0.0.1:1/mcp',
+  });
+  expect(server.tool('a.b').name).toBe('a_b_98fddac4920d');
+  expect(server.tool('a_b').name).not.toBe(server.tool('a.b').name);
+});
+
+it('keeps a captured collision identity when narrowing the selected raw leaves', () => {
+  const server = new HttpMCP({
+    name: 'docs',
+    tools: ['a.b', 'a_b'],
+    url: 'http://127.0.0.1:1/mcp',
+  });
+  const selected = selectHttpLeaves(server, ['a.b']);
+  expect(selected.tool('a.b')).toEqual(server.tool('a.b'));
+});
+
+it.each(['\ud800', 'nul\0name'])(
+  'rejects invalid raw Unicode %j before borrowed dispatch',
+  async (raw) => {
+    const server = new BorrowedPeer();
+    server.declarations = [borrowedDeclaration(raw)];
+    await expect(
+      selectMcpTools({ name: 'docs', server }, { context: undefined }),
+    ).rejects.toThrow(TypeError);
+    expect(server.callTool).not.toHaveBeenCalled();
+  },
+);
+
+it('rejects duplicate declared raw MCP identities before alias allocation', () => {
+  expect(
+    () =>
+      new HttpMCP({
+        name: 'docs',
+        tools: ['lookup', 'lookup'],
+        url: 'http://127.0.0.1:1/mcp',
+      }),
+  ).toThrow('unique');
 });

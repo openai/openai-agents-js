@@ -181,6 +181,7 @@ import {
   hasMcpPrePolicy,
   applyMcpPrePolicy,
   mcpToolNames,
+  mcpRefIdentity,
   checkMcpPublication,
   transformMcpResult,
   splitToolDeclarations,
@@ -292,6 +293,12 @@ type ToolStatus = 'completed' | 'failed' | 'cancelled';
 interface CapturedStepMcp {
   readonly servers: readonly McpTool[];
   readonly names: readonly ReturnType<typeof toolIdentity>[];
+  readonly projection: readonly {
+    server: string;
+    tool: string;
+    namespace: string;
+    name: string;
+  }[];
   readonly generation: bigint;
 }
 type ToolIdentity = {
@@ -4053,6 +4060,7 @@ export class Session<OutputT = string, Context = unknown> {
     sourceCatalog: ToolCatalog | undefined = this.options.agentGraph
       ? this.catalog
       : undefined,
+    sourceMcp: readonly McpTool[] = this.openingMcpTools,
   ): readonly ReturnType<typeof toolIdentity>[] {
     // A graph operation captures object authority, not a historical name alias.
     // Keep ordinary mono Session selector compatibility unchanged.
@@ -4064,20 +4072,40 @@ export class Session<OutputT = string, Context = unknown> {
         : undefined;
     return Object.freeze(
       selectors.map((selector) => {
-        const identity =
+        let identity =
           selector.kind === 'tool_ref'
             ? {
                 name: selector.name,
                 namespace: selector.namespace || 'functions',
               }
             : toolIdentity(selector);
+        const rawIdentity =
+          selector.kind === 'tool_ref' ? mcpRefIdentity(selector) : undefined;
+        if (rawIdentity) {
+          const server = sourceMcp.find(
+            (server) =>
+              server.name === rawIdentity[0] &&
+              server.tools.includes(rawIdentity[1]),
+          );
+          if (!server)
+            throw new TypeError(
+              'MCP identity was not admitted by this Session',
+            );
+          identity = mcpToolNames([server])[
+            server.tools.indexOf(rawIdentity[1])
+          ]!;
+        }
         const key = JSON.stringify([identity.namespace, identity.name]);
         // Preserve immediate rejection outside the captured opening authority.
         // Core derives tool_search from admitted leaves and still resolves every
         // reference against the actual model's candidates before sampling.
         if (selector.kind === 'tool_ref')
           assertAdmittedToolReference(identity, opening);
-        if (this.hasOperationMcp && selector.kind === 'tool_ref') {
+        if (
+          this.hasOperationMcp &&
+          sourceMcp === this.openingMcpTools &&
+          selector.kind === 'tool_ref'
+        ) {
           const matches = (server: McpTool) =>
             mcpToolNames([server]).some(
               (name) =>
@@ -4665,9 +4693,9 @@ export class Session<OutputT = string, Context = unknown> {
               (selected) => selected.name === server.name,
             )?.tools ?? [])
           : server.tools.filter((raw) => {
-              const projected = mcpToolNames([
-                { name: server.name, tools: [raw] },
-              ])[0];
+              const projected = mcpToolNames([server])[
+                server.tools.indexOf(raw)
+              ];
               return names.some(
                 (name) =>
                   name.namespace === projected.namespace &&
@@ -6278,9 +6306,10 @@ export class Session<OutputT = string, Context = unknown> {
         !source.servers.some(
           (server) =>
             server.name === invocation.server &&
-            mcpToolNames([server]).some(
-              (identity, index) =>
-                server.tools[index] === invocation.tool &&
+            source.projection.some(
+              (identity) =>
+                identity.server === server.name &&
+                identity.tool === invocation.tool &&
                 source.names.some(
                   (name) =>
                     name.namespace === identity.namespace &&
@@ -7542,11 +7571,15 @@ export class Session<OutputT = string, Context = unknown> {
           }
           selection.budget?.check(assertActive);
           signal.throwIfAborted();
-          if (this.options.agentGraph) {
-            const source = this.messageProfile(msg)!;
-            const servers = this.profileStepMcp.get(
-              this.profileKey(source.profile_id, sourceCatalog.generation),
-            );
+          {
+            const source = this.options.agentGraph
+              ? this.messageProfile(msg)!
+              : undefined;
+            const servers = source
+              ? this.profileStepMcp.get(
+                  this.profileKey(source.profile_id, sourceCatalog.generation),
+                )
+              : this.mcpTools;
             if (!servers)
               throw new NativeError(
                 'Native step has no captured source MCP bindings',
@@ -7556,14 +7589,20 @@ export class Session<OutputT = string, Context = unknown> {
             );
             this.stepMcp.set(run, {
               servers: servers.filter((server) =>
-                mcpToolNames([server]).some((identity) =>
-                  selectedNames.has(
-                    JSON.stringify([identity.namespace, identity.name]),
-                  ),
+                this.stepMcpProjection(event).some(
+                  (identity) =>
+                    identity.server === server.name &&
+                    server.tools.includes(identity.tool) &&
+                    selectedNames.has(
+                      JSON.stringify([identity.namespace, identity.name]),
+                    ),
                 ),
               ),
               names,
-              generation: sourceCatalog.generation,
+              projection: this.stepMcpProjection(event),
+              generation: source
+                ? sourceCatalog.generation
+                : this.mcpGeneration,
             });
           }
           reply(names);
@@ -7797,6 +7836,19 @@ export class Session<OutputT = string, Context = unknown> {
     });
   }
 
+  private stepMcpProjection(event: NativeEvent) {
+    return z
+      .array(
+        z.object({
+          server: z.string(),
+          tool: z.string(),
+          namespace: z.string(),
+          name: z.string(),
+        }),
+      )
+      .parse(event.msg.mcp_names ?? []);
+  }
+
   private selectedStepNames(
     event: NativeEvent,
     selected: readonly ToolSelector<Context>[] | undefined,
@@ -7816,14 +7868,55 @@ export class Session<OutputT = string, Context = unknown> {
       event.msg.defaults === undefined
         ? undefined
         : normalize(toolNames.parse(event.msg.defaults));
+    const projection = this.stepMcpProjection(event);
+    const source = this.options.agentGraph
+      ? this.messageProfile(event.msg)!
+      : undefined;
+    const servers = source
+      ? (this.profileStepMcp.get(
+          this.profileKey(source.profile_id, sourceCatalog!.generation),
+        ) ?? [])
+      : this.mcpTools;
+    const resolve = (
+      name: ReturnType<typeof toolIdentity>,
+      selector?: ToolSelector<Context>,
+    ) => {
+      const raw =
+        selector?.kind === 'tool_ref' ? mcpRefIdentity(selector) : undefined;
+      const match =
+        raw ??
+        servers
+          .flatMap((server) =>
+            mcpToolNames([server]).map((declared, index) =>
+              declared.name === name.name &&
+              declared.namespace === name.namespace
+                ? ([server.name, server.tools[index]!] as const)
+                : undefined,
+            ),
+          )
+          .find((identity) => identity !== undefined);
+      if (!match) return name;
+      const actual = projection.find(
+        (item) => item.server === match[0] && item.tool === match[1],
+      );
+      if (!actual)
+        throw new TypeError('MCP selector is outside the captured native step');
+      return { name: actual.name, namespace: actual.namespace };
+    };
     const names =
       selected === undefined
-        ? (defaults ?? nativeDefaults ?? candidates)
-        : this.selectionNames([...selected], sourceCatalog);
+        ? defaults
+          ? defaults.map((name) => resolve(name))
+          : (nativeDefaults ?? candidates)
+        : this.selectionNames([...selected], sourceCatalog, servers).map(
+            (name, index) => resolve(name, selected[index]),
+          );
     const ceiling =
       defaults && this.options.agentGraph
         ? new Set(
-            defaults.map((tool) => JSON.stringify([tool.namespace, tool.name])),
+            defaults
+              .map((name) => resolve(name))
+              .map((tool) => JSON.stringify([tool.namespace, tool.name])),
           )
         : undefined;
     const allowed = new Set(
@@ -12522,6 +12615,7 @@ export class Session<OutputT = string, Context = unknown> {
             z.object({
               nonce: z.string(),
               generation: z.string().optional(),
+              mcp_identity: z.tuple([z.string(), z.string()]).optional(),
               request: losslessJsonObjectSchema,
             }),
           ])
@@ -12761,7 +12855,13 @@ export class Session<OutputT = string, Context = unknown> {
                       sourceGeneration!,
                       this.options.context,
                       submission,
-                      { ...request!, _mcp_generation: notice.generation },
+                      {
+                        ...request!,
+                        _mcp_generation: notice.generation,
+                        ...(notice.mcp_identity
+                          ? { _mcp_identity: notice.mcp_identity }
+                          : {}),
+                      },
                       signal,
                       () => {
                         if (

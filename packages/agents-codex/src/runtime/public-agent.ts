@@ -79,6 +79,7 @@ import {
   isHostedRegistration,
   mcpConfig,
   mcpToolNames,
+  mcpToolSelections,
   splitToolDeclarations,
 } from './mcp';
 import {
@@ -1443,6 +1444,12 @@ export class Agent<Context = undefined, Output = string> {
             : {}),
           tool_policy: {
             allowed_tools: selected,
+            allowed_mcp_tools: mcpToolSelections([
+              ...declarations.mcp,
+              ...(graph
+                ? [...graph.profiles.values()].flatMap((profile) => profile.mcp)
+                : []),
+            ]),
             ...(environment
               ? {
                   require_managed_sandbox: true,

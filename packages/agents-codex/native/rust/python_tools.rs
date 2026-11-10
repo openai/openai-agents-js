@@ -2853,7 +2853,12 @@ impl ToolContributor for PythonContributor {
             if let Some(source) = thread.get::<crate::native_interception::ProfileMcpSource>() {
                 step.insert((*source).clone());
             } else if let Some(control) = thread.get::<crate::native_interception::Control>() {
-                step.insert(control.capture_mcp_source());
+                step.insert(match step.get::<Arc<codex_mcp::McpBinding>>() {
+                    Some(binding) => {
+                        control.capture_mcp_source_for_binding(&binding, &tools.policy)
+                    }
+                    None => control.capture_mcp_source(),
+                });
             }
         }
         let snapshot = step.get_or_init(|| {
@@ -2949,8 +2954,15 @@ impl ToolContributor for PythonContributor {
             let allowed = if profile.is_some() {
                 candidates.to_vec()
             } else if let Some(names) = active.as_ref().and_then(|active| active.names.as_ref()) {
-                validate_names(names, candidates).map_err(|error| error.to_string())?;
-                expand_step_helpers(names.clone(), candidates)
+                let names = match step.get::<Arc<codex_mcp::McpBinding>>() {
+                    Some(binding) => names
+                        .iter()
+                        .filter_map(|name| tools.policy.resolve_mcp_reference(name, &binding))
+                        .collect::<Vec<_>>(),
+                    None => names.clone(),
+                };
+                validate_names(&names, candidates).map_err(|error| error.to_string())?;
+                expand_step_helpers(names, candidates)
             } else {
                 // Legacy slots narrow managed tools; other admitted families keep
                 // their opening policy. Native-aware callers use explicit names.
@@ -2974,7 +2986,14 @@ impl ToolContributor for PythonContributor {
                     .cloned()
                     .collect::<Vec<_>>()
             });
-            if !source_owned && !active.as_ref().is_some_and(|active| active.before_step) {
+            if !source_owned
+                && !active.as_ref().is_some_and(|active| active.before_step)
+                && tools
+                    .policy
+                    .allowed_mcp_tools
+                    .as_ref()
+                    .is_none_or(|tools| tools.is_empty())
+            {
                 return Ok(Some(defaults.unwrap_or(allowed)));
             }
             let id = tools
@@ -3044,6 +3063,24 @@ impl ToolContributor for PythonContributor {
                 tools: tools.clone(),
                 id,
             };
+            let mcp_names = step
+                .get::<Arc<codex_mcp::McpBinding>>()
+                .map(|binding| {
+                    binding
+                        .tools()
+                        .iter()
+                        .filter_map(|tool| {
+                            let name = tool.canonical_tool_name();
+                            allowed.contains(&name).then(|| {
+                                json!({
+                                    "server": tool.server_name, "tool": tool.tool.name,
+                                    "namespace": name.namespace, "name": name.name,
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let tracing = if tools.instance.is_some() {
                 turn.get::<codex_otel::sdk_trace::CapturedContext>()
                     .and_then(|captured| captured.context.clone())
@@ -3054,7 +3091,7 @@ impl ToolContributor for PythonContributor {
                 "type": "_sdk_select_step", "turn_id": turn.level_id(),
                 "thread": thread.level_id(), "native_step": step.level_id(),
                 "request_id": id.to_string(), "generation": generation.id.to_string(),
-                "candidates": allowed
+                "candidates": allowed, "mcp_names": mcp_names
             }});
             if let Some(defaults) = defaults {
                 request["msg"]["defaults"] = json!(defaults);

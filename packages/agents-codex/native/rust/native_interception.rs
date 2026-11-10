@@ -302,6 +302,8 @@ struct Identified<'a, T> {
 #[derive(Serialize)]
 struct Notice<'a, T> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_identity: Option<&'a (String, String)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     profile_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile_epoch: Option<u64>,
@@ -377,17 +379,43 @@ pub(crate) struct ToolRule {
     result: bool,
     #[serde(default)]
     executor_before: bool,
+    #[serde(default)]
+    mcp_identity: Option<(String, String)>,
 }
 
-type Rules = HashMap<ToolName, (Option<Duration>, Scope, Option<u64>, bool, bool)>;
+type Rules = HashMap<
+    ToolName,
+    (
+        Option<Duration>,
+        Scope,
+        Option<u64>,
+        bool,
+        bool,
+        Option<(String, String)>,
+    ),
+>;
 
 /// Immutable MCP callback policy from the same native Agent profile as its tool router.
 #[derive(Clone, Default)]
 pub(crate) struct ProfileMcpPolicy {
+    identities: HashMap<ToolName, (String, String)>,
     names: HashSet<ToolName>,
     rules: Rules,
 }
 impl ProfileMcpPolicy {
+    fn identities(binding: &codex_mcp::McpBinding) -> HashMap<ToolName, (String, String)> {
+        binding
+            .tools()
+            .iter()
+            .map(|tool| {
+                (
+                    tool.canonical_tool_name().with_default_namespace(),
+                    (tool.server_name.clone(), tool.tool.name.to_string()),
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn has_pre_policy(&self) -> bool {
         self.rules.values().any(|rule| rule.2.is_some())
     }
@@ -428,9 +456,11 @@ impl ProfileMcpPolicy {
                 generation: Some(generation.to_string()),
                 result: false,
                 executor_before: false,
+                mcp_identity: Some((tool.server_name.clone(), tool.tool.name.to_string())),
             });
         }
         Ok(Self {
+            identities: Self::identities(binding),
             names,
             rules: Control::compile_rules(rules)?,
         })
@@ -1136,7 +1166,19 @@ impl Control {
 
     fn compile_rules(rules: Vec<ToolRule>) -> Result<Rules> {
         let mut tools = HashMap::new();
+        let mut identities = HashSet::new();
         for rule in rules {
+            ensure!(
+                rule.mcp_identity.as_ref().is_none_or(|identity| {
+                    rule.generation.is_some()
+                        && !identity.0.is_empty()
+                        && !identity.1.is_empty()
+                        && !identity.0.contains('\0')
+                        && !identity.1.contains('\0')
+                        && identities.insert(identity.clone())
+                }),
+                "Invalid or duplicate native MCP policy identity"
+            );
             ensure!(
                 !rule.name.is_empty()
                     && rule.timeout.is_none_or(|timeout| timeout.is_finite()
@@ -1158,6 +1200,7 @@ impl Control {
                                 .map_err(|_| anyhow::anyhow!("Invalid MCP policy generation"))?,
                             rule.result,
                             rule.executor_before,
+                            rule.mcp_identity,
                         ),
                     )
                     .is_none(),
@@ -1332,7 +1375,7 @@ impl Control {
         ensure!(
             !tools
                 .values()
-                .any(|(_, _, generation, _, _)| generation.is_some()),
+                .any(|(_, _, generation, _, _, _)| generation.is_some()),
             "MCP pre-policy rules require roster publication"
         );
         let mut state = self
@@ -1352,6 +1395,44 @@ impl Control {
         Ok(())
     }
 
+    pub(crate) fn capture_mcp_source_for_binding(
+        &self,
+        binding: &codex_mcp::McpBinding,
+        policy: &codex_extension_api::ToolPolicy,
+    ) -> ProfileMcpSource {
+        let mut source = self.capture_mcp_source();
+        let Some(selectors) = &policy.allowed_mcp_tools else {
+            return source;
+        };
+        let captured = source.policy.as_ref().expect("captured MCP policy");
+        let mut rules = captured.rules.clone();
+        let mut names = captured.names.clone();
+        for (_, _, declared) in selectors {
+            rules.remove(&declared.clone().with_default_namespace());
+            names.remove(&declared.clone().with_default_namespace());
+        }
+        for tool in binding.tools() {
+            let actual = tool.canonical_tool_name().with_default_namespace();
+            names.insert(actual.clone());
+            if let Some((_, _, declared)) = selectors.iter().find(|(server, raw, _)| {
+                tool.server_name == *server && tool.tool.name.as_ref() == raw
+            }) {
+                if let Some(rule) = captured
+                    .rules
+                    .get(&declared.clone().with_default_namespace())
+                {
+                    rules.insert(actual, rule.clone());
+                }
+            }
+        }
+        source.policy = Some(Arc::new(ProfileMcpPolicy {
+            identities: ProfileMcpPolicy::identities(binding),
+            names,
+            rules,
+        }));
+        source
+    }
+
     fn configured_in(&self, state: &State) -> bool {
         state.timeout.is_some() && (self.root || state.scope == Scope::ThreadTree)
     }
@@ -1369,7 +1450,7 @@ impl Control {
                 rules
                     .iter()
                     .filter(|(_, rule)| rule.2.is_some())
-                    .map(|(name, rule)| (name.clone(), *rule))
+                    .map(|(name, rule)| (name.clone(), rule.clone()))
                     .collect::<Rules>()
             })
             .unwrap_or_default()
@@ -1387,9 +1468,25 @@ impl Control {
                 .with_default_namespace()
             })
             .collect::<HashSet<_>>();
-        let mut rules = self.capture_mcp_rules();
-        rules.retain(|name, _| names.contains(name));
-        ProfileMcpPolicy { names, rules }
+        let tools = binding.tools();
+        let mut rules = HashMap::new();
+        for (declared, rule) in self.capture_mcp_rules() {
+            let actual = match &rule.5 {
+                Some((server, raw)) => tools
+                    .iter()
+                    .find(|tool| tool.server_name == *server && tool.tool.name.as_ref() == raw)
+                    .map(|tool| tool.canonical_tool_name().with_default_namespace()),
+                None => names.get(&declared).cloned(),
+            };
+            if let Some(actual) = actual {
+                rules.insert(actual, rule);
+            }
+        }
+        ProfileMcpPolicy {
+            identities: ProfileMcpPolicy::identities(binding),
+            names,
+            rules,
+        }
     }
 
     pub(crate) fn capture_mcp_source(&self) -> ProfileMcpSource {
@@ -1404,6 +1501,7 @@ impl Control {
                 .map(Arc::new),
             receipt: None,
             policy: Some(Arc::new(ProfileMcpPolicy {
+                identities: HashMap::new(),
                 names: rules.keys().cloned().collect(),
                 rules,
             })),
@@ -1789,7 +1887,7 @@ impl Control {
         });
         let source_rule = source_policy
             .and_then(|policy| identity.as_ref().and_then(|key| policy.rules.get(key)))
-            .copied();
+            .map(|rule| (rule.0, rule.1, rule.2, rule.3, rule.4));
         let owner = request.owner().cloned();
         let retained = request.retained();
         let binding = request.binding().is_some();
@@ -1818,7 +1916,7 @@ impl Control {
                     .tools
                     .as_ref()
                     .and_then(|tools| tools.get(key))
-                    .copied();
+                    .map(|rule| (rule.0, rule.1, rule.2, rule.3, rule.4));
                 let rule = if source_policy.is_some_and(|policy| policy.names.contains(key))
                     || (source_policy.is_some() && global.is_some_and(|rule| rule.2.is_some()))
                 {
@@ -1865,6 +1963,11 @@ impl Control {
             let nonce = state.nonce;
             let deadline = timeout.map(|timeout| Instant::now() + timeout);
             let notice = Notice {
+                mcp_identity: source_policy.and_then(|policy| {
+                    identity
+                        .as_ref()
+                        .and_then(|name| policy.identities.get(name))
+                }),
                 profile_id: profile_source
                     .as_ref()
                     .and_then(|source| source.receipt.as_ref())
@@ -8788,6 +8891,7 @@ mod mcp_policy_tests {
         let (boundary, root) = setup();
         let rules = Control::compile_rules(rules(1)).unwrap();
         let policy = Arc::new(ProfileMcpPolicy {
+            identities: HashMap::new(),
             names: rules.keys().cloned().collect(),
             rules,
         });
