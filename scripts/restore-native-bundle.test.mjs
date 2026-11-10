@@ -101,7 +101,7 @@ test('native publication precedes all SDK execution, including other platforms a
         ).toBe(false);
       const earlierSdk = {
         ...jobs[1],
-        name: 'Package and test (other-platform)',
+        name: `Package and test (${platform === 'linux-arm64' ? 'linux-x64' : 'linux-arm64'})`,
         started_at: at(2),
       };
       expect(
@@ -268,6 +268,10 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
       import { appendFileSync } from 'node:fs';
       import { syncBuiltinESMExports } from 'node:module';
       const fixture = ${JSON.stringify(fixture)};
+      if (${options.arm64 === true}) {
+        Object.defineProperty(process, 'platform', { value: 'linux' });
+        Object.defineProperty(process, 'arch', { value: 'arm64' });
+      }
       const original = cp.execFileSync;
       cp.execFileSync = (command, args, options) => {
         if (command !== 'gh') return original(command, args, options);
@@ -336,22 +340,22 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
   const inputs = /^inputs_hash=([a-f0-9]{64})$/m.exec(cold.output)[1];
   for (const key of Object.keys(nativePlatforms))
     expect(cold.output).toContain(key + '_hit=false');
-  const platform = process.platform + '-' + process.arch;
-  const key = Object.keys(nativePlatforms).find(
-    (k) => nativePlatforms[k] === platform,
+  const hostPlatform = process.platform + '-' + process.arch;
+  const hostKey = Object.keys(nativePlatforms).find(
+    (k) => nativePlatforms[k] === hostPlatform,
   );
+  const key = hostKey ?? 'linux-arm64';
+  const platform = nativePlatforms[key];
   const bundle = join(temp, 'bundle');
   const products = [
     'native/codex.node',
     'native/build-receipt.json',
     'bin/helper',
   ];
-  const fixture =
-    'native/test-bin/exec-server-fixture' +
-    (process.platform === 'win32' ? '.exe' : '');
-  if (['linux-x64', 'darwin-arm64', 'win32-x64'].includes(platform))
-    products.push(fixture);
-  for (const product of products) {
+  const armFixture = 'native/test-bin/exec-server-fixture';
+  const fixture = armFixture + (process.platform === 'win32' ? '.exe' : '');
+  if (hostKey) products.push(fixture);
+  for (const product of new Set([...products, armFixture])) {
     mkdirSync(dirname(join(bundle, product)), { recursive: true });
     writeFileSync(join(bundle, product), product + '\n');
   }
@@ -412,6 +416,14 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
     'artifact-id': '12',
     'artifact-digest': asset.digest.slice(7),
   };
+  const armRestored = run(
+    { inputs, artifact: pair, bytes: archive, arm64: true },
+    true,
+  );
+  expect(armRestored.status, armRestored.error).toBe(0);
+  const restoredArmFixture = join(repo, 'packages/agents-codex', armFixture);
+  expect(readFileSync(restoredArmFixture, 'utf8')).toBe(armFixture + '\n');
+  rmSync(restoredArmFixture);
   const restored = run({ inputs, artifact: pair, bytes: archive }, true);
   expect(restored.status, restored.error).toBe(0);
   expect(restored.requests).toEqual([
@@ -424,36 +436,35 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
     expect(
       readFileSync(join(repo, 'packages/agents-codex', product), 'utf8'),
     ).toBe(product + '\n');
-  if (['linux-x64', 'darwin-arm64', 'win32-x64'].includes(platform)) {
-    const withoutFixture = execFileSync(
-      'tar',
-      [
-        '-czf',
-        '-',
-        '-C',
-        bundle,
-        'native/codex.node',
-        'native/build-receipt.json',
-        'bin',
-      ],
-      { stdio: 'pipe' },
-    );
-    const incomplete = run(
-      {
-        inputs,
-        artifact: {
-          ...pair,
-          'artifact-digest': createHash('sha256')
-            .update(withoutFixture)
-            .digest('hex'),
-        },
-        bytes: withoutFixture,
+  const withoutFixture = execFileSync(
+    'tar',
+    [
+      '-czf',
+      '-',
+      '-C',
+      bundle,
+      'native/codex.node',
+      'native/build-receipt.json',
+      'bin',
+    ],
+    { stdio: 'pipe' },
+  );
+  const incomplete = run(
+    {
+      inputs,
+      artifact: {
+        ...pair,
+        'artifact-digest': createHash('sha256')
+          .update(withoutFixture)
+          .digest('hex'),
       },
-      true,
-    );
-    expect(incomplete.status).toBe(1);
-    expect(incomplete.error).toContain(fixture);
-  }
+      bytes: withoutFixture,
+      arm64: true,
+    },
+    true,
+  );
+  expect(incomplete.status).toBe(1);
+  expect(incomplete.error).toContain(armFixture);
   const corrupt = run(
     { inputs, artifact: pair, bytes: Buffer.from('corrupt') },
     true,
@@ -599,13 +610,22 @@ test('workflow keeps the publication barrier and qualification coverage on expli
   );
   const qualify = workflow.slice(workflow.indexOf('  package:'));
   expect(qualify).toContain(
-    'needs: [select, produce-linux, produce-macos, produce-windows]',
+    'needs: [select, produce-linux, produce-linux-arm64, produce-macos, produce-windows]',
   );
   expect(qualify).toContain("!cancelled() && needs.select.result == 'success'");
-  for (const key of Object.keys(nativePlatforms)) {
+  for (const [key, platform] of Object.entries(nativePlatforms)) {
     expect(workflow).toContain('toJSON(steps.upload_' + key + '.outputs)');
-    expect(qualify).toContain('needs.produce-' + key + ".result == 'skipped'");
-    expect(qualify).toContain('needs.produce-' + key + ".result == 'success'");
+    const hit = `needs.select.outputs.${key}_hit`;
+    const result = `needs.produce-${key}.result`;
+    expect(select).toContain(
+      `name: Publish native bundle (${platform})\n        id: upload_${key}\n        if: steps.select.outputs.${key}_hit == 'true'`,
+    );
+    expect(workflow).toContain(
+      `produce-${key}:\n    needs: select\n    if: ${hit} != 'true'\n    uses: ./.github/workflows/native-bundle.yml\n    with:\n      platform: ${platform}`,
+    );
+    expect(qualify).toContain(
+      `((${hit} == 'true' && ${result} == 'skipped') ||\n       (${hit} != 'true' && ${result} == 'success'))`,
+    );
     expect(qualify).toContain(
       'needs.select.outputs.' +
         key +
@@ -615,6 +635,14 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     );
   }
   expect(native).toContain('toJSON(steps.upload.outputs)');
+  expect(native).toContain('name: Native bundle (${{ inputs.platform }})');
+  expect(native).toContain('name: Publish native bundle\n');
+  expect(native).toContain(
+    `inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"'`,
+  );
+  expect(qualify).toContain(
+    'platform: linux-arm64\n            runner: ubuntu-24.04-arm\n',
+  );
   expect(native).toContain('macos-15-xlarge');
   expect(qualify).toContain('runner: macos-15\n');
   expect(qualify).not.toContain('macos-15-xlarge');

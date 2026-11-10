@@ -9,6 +9,7 @@ const repo = 'openai/openai-agents-js';
 const workflow = 'alpha-release-artifacts.yml';
 export const nativePlatforms = {
   linux: 'linux-x64',
+  'linux-arm64': 'linux-arm64',
   macos: 'darwin-arm64',
   windows: 'win32-x64',
 };

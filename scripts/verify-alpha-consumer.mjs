@@ -5,14 +5,23 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
-import { access, readFile, realpath } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import process from 'node:process';
 import console from 'node:console';
 import { promisify } from 'node:util';
-import { Agent, NativeProvider, tool } from '@openai/agents';
+import { Agent, Environment, NativeProvider, tool } from '@openai/agents';
 import { z } from 'zod';
 
 const execute = promisify(execFile);
@@ -317,6 +326,93 @@ await withModel(
     }
   },
 );
+
+if (receipt.platform === 'linux-arm64') {
+  assert.equal(`${process.platform}-${process.arch}`, receipt.platform);
+  const proof = process.argv[2];
+  assert(proof, 'Missing local sandbox proof path');
+  const temporary = await mkdtemp(join(tmpdir(), 'agents-alpha-sandbox-'));
+  try {
+    const root = await realpath(temporary);
+    const cwd = join(root, 'workspace');
+    const writable = join(root, 'writable');
+    const sentinel = join(root, 'sentinel');
+    await mkdir(cwd);
+    await mkdir(writable);
+    await writeFile(sentinel, 'protected');
+    const callId = 'sandbox-write';
+    await withModel(
+      [
+        [
+          {
+            type: 'function_call',
+            call_id: callId,
+            name: 'exec_command',
+            arguments: JSON.stringify({
+              cmd: 'if (printf overwritten > ../sentinel) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt',
+              workdir: cwd,
+            }),
+          },
+        ],
+        [message('Sandbox command finished.')],
+      ],
+      async (baseUrl) => {
+        const provider = new NativeProvider({
+          baseUrl,
+          apiKey: 'synthetic-alpha-key',
+          supportsWebsockets: false,
+        });
+        try {
+          const agent = new Agent({
+            instructions:
+              'Use the local command tool to verify the write grant.',
+            model: 'gpt-5',
+            provider,
+          });
+          const session = await agent.session({
+            environment: Environment.local({
+              cwd,
+              tools: ['exec_command'],
+              writableRoots: [writable],
+            }),
+          });
+          try {
+            const turn = await session.submit('Check the local write grant.');
+            assert.equal(
+              (await turn.wait()).finalOutput,
+              'Sandbox command finished.',
+            );
+            const command = (await Array.fromAsync(session.items())).find(
+              (item) =>
+                item.type === 'command_execution' && item.callId === callId,
+            );
+            assert.equal(
+              command?.status,
+              'completed',
+              'Missing completed sandbox command',
+            );
+            assert.equal(command.exitCode, 0, 'Sandbox command failed');
+            assert.deepEqual(
+              await readFile(join(writable, 'proof.txt')),
+              Buffer.from('granted'),
+            );
+            assert.deepEqual(
+              await readFile(sentinel),
+              Buffer.from('protected'),
+            );
+          } finally {
+            await session.close();
+          }
+        } finally {
+          await provider.close();
+        }
+      },
+    );
+    await writeFile(proof, '', { flag: 'wx' });
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
 
 for (const esm of [false, true]) {
   const classic = esm

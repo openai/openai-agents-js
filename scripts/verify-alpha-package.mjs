@@ -32,8 +32,7 @@ export async function hashes(file) {
   };
 }
 
-export async function verifyArtifactDirectory(directory) {
-  const platform = `${process.platform}-${process.arch}`;
+export async function verifyArtifactDirectory(directory, platform) {
   const receipt = JSON.parse(
     await readFile(join(directory, `build-${platform}.json`), 'utf8'),
   );
@@ -130,7 +129,17 @@ export async function verifyAlphaPackage(directory) {
       force: true,
     });
   }
-  const receipt = await verifyArtifactDirectory(directory);
+  const arm64 = platform === 'linux-arm64';
+  let glibc;
+  if (arm64) {
+    glibc = process.report.getReport().header.glibcVersionRuntime;
+    const [, major, minor] = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(glibc ?? '') ?? [];
+    assert(
+      Number(major) > 2 || (Number(major) === 2 && Number(minor) >= 39),
+      'Linux ARM64 verification requires glibc 2.39 or newer',
+    );
+  }
+  const receipt = await verifyArtifactDirectory(directory, platform);
   const npmCli = await bundledNpmCli();
   const staging = await mkdtemp(join(tmpdir(), 'agents-alpha-consumer-'));
   const checkout = fileURLToPath(new URL('../', import.meta.url));
@@ -147,6 +156,13 @@ export async function verifyAlphaPackage(directory) {
     if (key.toLowerCase() === 'path') delete installEnv[key];
   }
   installEnv.PATH = '';
+  const verifyConsumer = async (profile, consumer) => {
+    const args = ['verify-alpha-consumer.mjs'];
+    const proof = join(staging, `${profile}-local-sandbox`);
+    if (arm64) args.push(proof);
+    await run(process.execPath, args, consumer, env);
+    if (arm64) await access(proof);
+  };
   try {
     const archive = receipt.starter.archive;
     // Run tar with relative paths so Git Bash tar can extract on Windows.
@@ -186,7 +202,7 @@ export async function verifyAlphaPackage(directory) {
       consumer,
       installEnv,
     );
-    await run(process.execPath, ['verify-alpha-consumer.mjs'], consumer, env);
+    await verifyConsumer('starter', consumer);
     const types = await verifyTypes(consumer, env);
     const record = async (profile) =>
       writeFile(
@@ -196,6 +212,7 @@ export async function verifyAlphaPackage(directory) {
             ...receipt,
             profile,
             node: process.version,
+            ...(arm64 ? { arch: process.arch, glibc } : {}),
             ...types,
             verified: [
               'archive-hashes',
@@ -212,6 +229,7 @@ export async function verifyAlphaPackage(directory) {
               'starter-tool',
               'native-tool',
               'native-sessions',
+              ...(arm64 ? ['local-sandbox'] : []),
               'classic-sessions',
               'install-without-build-tools',
             ],
@@ -241,7 +259,7 @@ export async function verifyAlphaPackage(directory) {
       existing,
       installEnv,
     );
-    await run(process.execPath, ['verify-alpha-consumer.mjs'], existing, env);
+    await verifyConsumer('app', existing);
     await verifyTypes(existing, env);
     await record('app');
     console.log(
