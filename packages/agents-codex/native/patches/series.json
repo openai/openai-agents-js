@@ -471,7 +471,11 @@
     {
       "path": "sdk-managed-project-instruction-markers.patch",
       "sha256": "8d243ea5efea735d6d1ac9241df7a04d05d654e4c5ce78070541d58b57ae41ba"
+    },
+    {
+      "path": "sdk-realtime-raw-settings-and-item-deletion.patch",
+      "sha256": "4d8e6b052b72afb35f29cf8ae11516bdb1b0ba9002a5de8fdc7e3c37bdc6e11f"
     }
   ],
-  "result_tree": "a17cd4bef51a9bd6b1a20701da109a7f533095ef"
+  "result_tree": "9bc6ab61558eaf2c52e82a1d184f78ab97b023a7"
 }

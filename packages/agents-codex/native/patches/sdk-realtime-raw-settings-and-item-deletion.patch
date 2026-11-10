@@ -1,0 +1,1420 @@
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
+index 42da41746815689572a4d23663c4fa30971062ab..7faf98e96d6665bbfc0ac9bf4eb30270de484e2f 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
+@@ -159,6 +159,18 @@ impl HostedMcpState {
+             r.source.id.as_ref() == response && !r.completed && !r.source.output_guard.is_retired()
+         })
+     }
++    pub(super) fn caller_pending_for(&self, response: &str) -> bool {
++        self.records.iter().any(|record| {
++            record.source.id.as_ref() == response
++                && record.native_call_id.is_some()
++                && record
++                    .source
++                    .configuration
++                    .caller_manages_function(&record.name)
++                && !record.completed
++                && !record.source.output_guard.is_retired()
++        })
++    }
+     pub(super) fn has_calls(&self, response: &str) -> bool {
+         self.records
+             .iter()
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa296218631174aff9 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+@@ -7,6 +7,7 @@ use codex_protocol::realtime_settings::RealtimeAudioFormat;
+ use codex_protocol::realtime_settings::RealtimeSessionUpdate;
+ use codex_realtime_control::contains_expected;
+ use serde_json::Value;
++use std::collections::BTreeSet;
+ use std::collections::VecDeque;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+@@ -36,6 +37,7 @@ pub struct RealtimeAcceptedConfiguration {
+     pub input_format: Option<RealtimeAudioFormat>,
+     pub output_format: Option<RealtimeAudioFormat>,
+     contract: Arc<Value>,
++    caller_managed_functions: Option<Arc<BTreeSet<String>>>,
+     response_tool_scope: Option<Vec<bool>>,
+ }
+ 
+@@ -56,17 +58,28 @@ impl RealtimeAcceptedConfiguration {
+     }
+ 
+     pub fn allows_response_function(&self, name: &str) -> bool {
+-        self.response_tool_scope.is_none()
++        (self.response_tool_scope.is_none() && self.caller_managed_functions.is_none())
+             || self
+                 .tools()
+                 .any(|tool| tool["type"] == "function" && tool["name"].as_str() == Some(name))
+     }
+ 
+-    fn for_response(&self, response: &Value) -> Option<Self> {
++    pub fn caller_manages_function(&self, name: &str) -> bool {
++        self.caller_managed_functions
++            .as_ref()
++            .is_some_and(|functions| functions.contains(name))
++            && self.allows_response_function(name)
++    }
++
++    fn for_response(&self, response: &Value, out_of_band: bool) -> Option<Self> {
++        let output_format = accepted_format(response, "output");
+         let tools = response.get("tools").and_then(Value::as_array);
+         let choice = response.get("tool_choice");
+-        if tools.is_none() && choice.is_none() {
+-            return None;
++        if out_of_band || (tools.is_none() && choice.is_none()) {
++            return output_format.map(|format| Self {
++                output_format: Some(format),
++                ..self.clone()
++            });
+         }
+         let choice = choice.or_else(|| self.contract.get("tool_choice"));
+         let response_tool_scope = self
+@@ -81,6 +94,7 @@ impl RealtimeAcceptedConfiguration {
+             })
+             .collect();
+         Some(Self {
++            output_format: output_format.or(self.output_format),
+             response_tool_scope: Some(response_tool_scope),
+             ..self.clone()
+         })
+@@ -167,6 +181,7 @@ enum ReceiptState {
+ struct PendingConfiguration {
+     hosted_owned: bool,
+     native_source: Option<Arc<dyn RealtimeNativeSource>>,
++    caller_managed_functions: Option<Arc<BTreeSet<String>>>,
+     id: Option<String>,
+     contract: Value,
+     phase: PendingPhase,
+@@ -432,7 +447,7 @@ impl RealtimeConfiguration {
+         &self,
+         update: &RealtimeSessionUpdate,
+     ) -> Result<RealtimeConfigurationReservation, ApiError> {
+-        self.reserve_revision(update, None, None)
++        self.reserve_revision(update, None, None, None)
+     }
+ 
+     pub fn reserve_update_with_event_id(
+@@ -440,7 +455,16 @@ impl RealtimeConfiguration {
+         update: &RealtimeSessionUpdate,
+         event_id: Option<String>,
+     ) -> Result<RealtimeConfigurationReservation, ApiError> {
+-        self.reserve_revision(update, None, event_id)
++        self.reserve_revision(update, None, event_id, None)
++    }
++
++    pub fn reserve_raw_tool_update(
++        &self,
++        update: &RealtimeSessionUpdate,
++        event_id: Option<String>,
++        caller_managed_functions: BTreeSet<String>,
++    ) -> Result<RealtimeConfigurationReservation, ApiError> {
++        self.reserve_revision(update, None, event_id, Some(caller_managed_functions))
+     }
+ 
+     pub fn reserve_update_with_source(
+@@ -448,7 +472,7 @@ impl RealtimeConfiguration {
+         update: &RealtimeSessionUpdate,
+         source: Arc<dyn RealtimeNativeSource>,
+     ) -> Result<RealtimeConfigurationReservation, ApiError> {
+-        self.reserve_revision(update, Some(source), None)
++        self.reserve_revision(update, Some(source), None, None)
+     }
+ 
+     fn reserve_revision(
+@@ -456,12 +480,20 @@ impl RealtimeConfiguration {
+         update: &RealtimeSessionUpdate,
+         source: Option<Arc<dyn RealtimeNativeSource>>,
+         event_id: Option<String>,
++        caller_managed_functions: Option<BTreeSet<String>>,
+     ) -> Result<RealtimeConfigurationReservation, ApiError> {
++        if update.raw_tools.is_some() != caller_managed_functions.is_some() {
++            return Err(invalid(
++                "Raw Realtime tool update has no ownership classification",
++            ));
++        }
+         let mut payload = super::settings::realtime_v2_session_update_json(update)
+             .map_err(|error| invalid(&error.to_string()))?;
+         let mut state = self.inner.state.lock().unwrap();
+         let accepted = Self::settled(&state)?;
+-        if update.function_tools.is_some() || update.settings.hosted_mcp_tools.is_some() {
++        if update.raw_tools.is_none()
++            && (update.function_tools.is_some() || update.settings.hosted_mcp_tools.is_some())
++        {
+             let functions = update
+                 .function_tools
+                 .clone()
+@@ -471,8 +503,11 @@ impl RealtimeConfiguration {
+                 .hosted_mcp_tools
+                 .clone()
+                 .unwrap_or_else(|| accepted.hosted_mcp_tools());
+-            payload["session"]["tools"] = super::settings::tools_json(&functions, &hosted)
+-                .map_err(|error| invalid(&error.to_string()))?;
++            let include_reserved =
++                update.function_tools.is_some() || accepted.caller_managed_functions.is_none();
++            payload["session"]["tools"] =
++                super::settings::tools_json_with_reserved(&functions, &hosted, include_reserved)
++                    .map_err(|error| invalid(&error.to_string()))?;
+         }
+         let mut contract = (*accepted.contract).clone();
+         apply_contract_update(&mut contract, &payload["session"]);
+@@ -482,8 +517,17 @@ impl RealtimeConfiguration {
+         payload["event_id"] = Value::String(id.clone());
+         let (completion, result) = watch::channel(ReceiptState::Pending);
+         state.pending = Some(PendingConfiguration {
+-            hosted_owned: accepted.hosted_owned || update.settings.hosted_mcp_tools.is_some(),
++            hosted_owned: accepted.hosted_owned
++                || update.settings.hosted_mcp_tools.is_some()
++                || update.raw_tools.is_some(),
+             native_source: source.or_else(|| accepted.native_source.clone()),
++            caller_managed_functions: if let Some(functions) = caller_managed_functions {
++                Some(Arc::new(functions))
++            } else if update.function_tools.is_none() {
++                accepted.caller_managed_functions.clone()
++            } else {
++                None
++            },
+             id: Some(id.clone()),
+             contract,
+             phase: PendingPhase::Reserved,
+@@ -800,6 +844,7 @@ impl RealtimeConfiguration {
+                     .hosted_mcp
+                     .native_continuation_available(response_id, call)
+             })
++            && !state.hosted_mcp.caller_pending_for(response_id)
+             && ((native_call.is_some() && !state.hosted_mcp.has_hosted(response_id))
+                 || !state.hosted_mcp.pending_for(response_id));
+         if ready {
+@@ -879,12 +924,11 @@ impl RealtimeConfiguration {
+         state.pending_create_guard = Some(state.output_owner.new_response());
+         state.response_create_pending = true;
+         state.out_of_band_response_pending = out_of_band;
+-        state.pending_response_configuration = state
+-            .accepted
+-            .as_ref()
+-            .filter(|_| !state.out_of_band_response_pending)
+-            .and_then(|accepted| accepted.for_response(response))
+-            .map(Arc::new);
++        state.pending_response_configuration = state.accepted.as_ref().map(|accepted| {
++            accepted
++                .for_response(response, out_of_band)
++                .map_or_else(|| Arc::clone(accepted), Arc::new)
++        });
+         Ok(true)
+     }
+ 
+@@ -1248,6 +1292,7 @@ impl SessionReadiness {
+                         pending: Some(PendingConfiguration {
+                             hosted_owned: wait_for_update,
+                             native_source,
++                            caller_managed_functions: None,
+                             id: None,
+                             contract,
+                             phase: if wait_for_update {
+@@ -1435,6 +1480,7 @@ impl SessionReadiness {
+                         let accepted = Arc::new(RealtimeAcceptedConfiguration {
+                             hosted_owned: pending.hosted_owned,
+                             native_source: pending.native_source,
++                            caller_managed_functions: pending.caller_managed_functions,
+                             input_format: accepted_format(accepted, "input"),
+                             output_format: accepted_format(accepted, "output"),
+                             contract: Arc::new(pending.contract),
+@@ -1680,10 +1726,10 @@ impl SessionReadiness {
+             }
+             _ => {
+                 let is_function_item = event["item"]["type"] == "function_call";
+-                let scoped_response = state
+-                    .active_response
+-                    .as_ref()
+-                    .filter(|response| response.configuration.response_tool_scope.is_some());
++                let scoped_response = state.active_response.as_ref().filter(|response| {
++                    response.configuration.response_tool_scope.is_some()
++                        || response.configuration.caller_managed_functions.is_some()
++                });
+                 let retained_response_id = if (detached_in_progress || scoped_response.is_some())
+                     && response_id.is_none()
+                     && is_function_item
+@@ -2048,6 +2094,38 @@ mod tests {
+         assert!(configuration.validate_audio(&frame).is_err());
+     }
+ 
++    #[test]
++    fn written_response_keeps_configuration_when_update_ack_precedes_response_created() {
++        let observer = accepted_observer();
++        let configuration = observer.configuration();
++        let original = configuration.accepted().unwrap();
++        assert!(configuration.observe_response_create(&json!({})).unwrap());
++        let reservation = configuration.reserve_update(&g711_update()).unwrap();
++        let contract = configuration
++            .inner
++            .state
++            .lock()
++            .unwrap()
++            .pending
++            .as_ref()
++            .unwrap()
++            .contract
++            .clone();
++        reservation.arm().unwrap();
++        acknowledge(&observer, contract);
++        assert_eq!(
++            configuration.accepted().unwrap().output_format,
++            Some(RealtimeAudioFormat::G711Alaw)
++        );
++        let created = observer
++            .observe_media(
++                r#"{"type":"response.created","response":{"id":"before-update"}}"#,
++                true,
++            )
++            .unwrap();
++        assert!(Arc::ptr_eq(&original, &created));
++    }
++
+     #[test]
+     fn active_response_keeps_accepted_codec_across_update_and_matching_terminal() {
+         let observer = accepted_observer();
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
+index 0906f3aa6997d270cc075627c933e67c1a8abd9d..63be224e7b356e2301fbe3f74a0cbe8d9be8c8ac 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
+@@ -44,6 +44,15 @@ pub(super) fn response_create_json(options: &RealtimeResponseOptions) -> serde_j
+         &options.max_output_tokens,
+     )?;
+     put(&mut response, "metadata", &options.metadata)?;
++    put(&mut response, "prompt", &options.prompt)?;
++    if let Some(audio) = &options.audio_output {
++        let mut output = Map::new();
++        if let Some(format) = audio.format {
++            output.insert("format".into(), format_value(format));
++        }
++        put(&mut output, "voice", &audio.voice)?;
++        response.insert("audio".into(), serde_json::json!({"output": output}));
++    }
+     put(
+         &mut response,
+         "parallel_tool_calls",
+@@ -167,19 +176,27 @@ pub(super) fn validate_tool_choice_in_tools(
+     Ok(())
+ }
+ 
+-pub(super) fn function_tools_json(functions: &[RealtimeFunctionTool]) -> serde_json::Result<Value> {
++fn function_tools_json(
++    functions: &[RealtimeFunctionTool],
++    include_reserved: bool,
++) -> serde_json::Result<Vec<Value>> {
+     if functions.len() > 128 || serde_json::to_vec(functions)?.len() > 1024 * 1024 {
+         return Err(serde::ser::Error::custom(
+             "SDK Realtime function subset exceeds capacity",
+         ));
+     }
+-    let mut tools = serde_json::to_value(super::methods_v2::reserved_function_tools())?
+-        .as_array()
+-        .unwrap()
+-        .clone();
++    let mut tools = if include_reserved {
++        serde_json::to_value(super::methods_v2::reserved_function_tools())?
++            .as_array()
++            .unwrap()
++            .clone()
++    } else {
++        Vec::new()
++    };
+     let mut names = std::collections::HashSet::new();
+     for tool in functions {
+         if tool.name.is_empty()
++            || tool.name.len() > 512
+             || matches!(tool.name.as_str(), "background_agent" | "remain_silent")
+             || !names.insert(tool.name.as_str())
+             || !tool.parameters.is_object()
+@@ -192,16 +209,22 @@ pub(super) fn function_tools_json(functions: &[RealtimeFunctionTool]) -> serde_j
+         value["type"] = Value::String("function".into());
+         tools.push(value);
+     }
+-    Ok(Value::Array(tools))
++    Ok(tools)
+ }
+ 
+ pub(super) fn tools_json(
+     functions: &[RealtimeFunctionTool],
+     hosted: &[RealtimeHostedMcpTool],
+ ) -> serde_json::Result<Value> {
+-    let Value::Array(mut tools) = function_tools_json(functions)? else {
+-        unreachable!()
+-    };
++    tools_json_with_reserved(functions, hosted, /*include_reserved*/ true)
++}
++
++pub(super) fn tools_json_with_reserved(
++    functions: &[RealtimeFunctionTool],
++    hosted: &[RealtimeHostedMcpTool],
++    include_reserved: bool,
++) -> serde_json::Result<Value> {
++    let mut tools = function_tools_json(functions, include_reserved)?;
+     let mut labels = std::collections::HashSet::new();
+     for server in hosted {
+         if server.server_label.is_empty() || !labels.insert(server.server_label.as_str()) {
+@@ -238,6 +261,19 @@ pub(super) fn tools_json(
+     Ok(tools)
+ }
+ 
++fn raw_tools_json(tools: &[RealtimeSessionTool]) -> serde_json::Result<Value> {
++    let mut functions = Vec::new();
++    let mut hosted = Vec::new();
++    for tool in tools {
++        match tool {
++            RealtimeSessionTool::Function(function) => functions.push(function.clone()),
++            RealtimeSessionTool::Mcp(server) => hosted.push(server.clone()),
++        }
++    }
++    tools_json_with_reserved(&functions, &hosted, /*include_reserved*/ false)?;
++    serde_json::to_value(tools)
++}
++
+ /// Build a sparse public V2 session.update event without connecting to a provider.
+ /// Only supplied fields are sent. The provider owns phase-dependent mutability.
+ /// A connection merges omitted tool domains against its accepted configuration.
+@@ -256,7 +292,9 @@ pub fn realtime_v2_session_update_json(
+         session.insert("output_modalities".into(), serde_json::json!([value]));
+     }
+     apply(&update.settings, &mut session)?;
+-    if update.function_tools.is_some() || update.settings.hosted_mcp_tools.is_some() {
++    if let Some(tools) = &update.raw_tools {
++        session.insert("tools".into(), raw_tools_json(tools)?);
++    } else if update.function_tools.is_some() || update.settings.hosted_mcp_tools.is_some() {
+         session.insert(
+             "tools".into(),
+             tools_json(
+diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
+index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b3db7c2d1 100644
+--- a/codex-rs/core/src/realtime_conversation.rs
++++ b/codex-rs/core/src/realtime_conversation.rs
+@@ -735,6 +735,10 @@ impl SdkRealtimeState {
+         if retire_generation {
+             self.active.store(false, Ordering::Release);
+         }
++        self.history
++            .lock()
++            .unwrap()
++            .retire_caller_calls(response_id);
+         let mut calls = self.function_calls.lock().await;
+         let mut pending = self.pending.lock().await;
+         let mut work = SdkToolRetirement {
+@@ -1636,7 +1640,7 @@ impl RealtimeConversationManager {
+                     "Item deletion requires RealtimeV2".into(),
+                 ));
+             }
+-            sdk.item_deletion.lock().unwrap().validate(item_id)?;
++            sdk.item_deletion.lock().unwrap().needs_lookup(item_id)?;
+         }
+         let is_update = matches!(&command, SdkRealtimeCommand::OwnedUpdate { .. });
+         #[cfg(test)]
+@@ -1909,6 +1913,16 @@ impl RealtimeConversationManager {
+                                 source: profile.source,
+                             }),
+                         )))
++                    } else if let Some(tools) = &mut update.raw_tools {
++                        let accepted = configuration
++                            .accepted()
++                            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++                        let caller_managed =
++                            tool_task::classify_raw_session_tools(&accepted, tools)?;
++                        let reservation = configuration
++                            .reserve_raw_tool_update(&update, event_id, caller_managed)
++                            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++                        Ok(Some((reservation, None, None)))
+                     } else {
+                         if let Some(tools) = update.function_tools.take() {
+                             let accepted = configuration
+@@ -3190,19 +3204,26 @@ async fn run_history_action(
+                 sdk.history.lock().unwrap().fail(error);
+                 return Ok(());
+             }
++            let direct_delete = sdk.history.lock().unwrap().deletion_request();
+             let (reply, _result) = tokio::sync::oneshot::channel();
+-            if !sdk
+-                .item_deletion
+-                .lock()
+-                .unwrap()
+-                .begin_history_delete(id.clone(), item_deletion::DeleteReply::new(reply))
+-            {
++            let reply = item_deletion::DeleteReply::new(reply);
++            let begun = {
++                let mut deletion = sdk.item_deletion.lock().unwrap();
++                if direct_delete.is_some() {
++                    deletion.begin(id.clone(), reply)
++                } else {
++                    deletion.begin_history_delete(id.clone(), reply)
++                }
++            };
++            if !begun {
+                 sdk.history.lock().unwrap().fail(CodexErr::InvalidRequest(
+                     "Provider item cannot be edited while work is unresolved".into(),
+                 ));
+                 return Ok(());
+             }
+-            writer.send_conversation_item_delete(id, None).await
++            writer
++                .send_conversation_item_delete(id, direct_delete.flatten())
++                .await
+         }
+         None => return Ok(()),
+     };
+@@ -5232,8 +5253,10 @@ async fn handle_sdk_realtime_command(
+                     request,
+                     CodexErr::InvalidRequest("Provider item deletion is pending".into()),
+                 );
+-            } else if (matches!(request, provider_history::Request::Update { .. })
+-                || matches!(&request, provider_history::Request::Create { item, .. }
++            } else if !matches!(&request, provider_history::Request::Create { item, .. }
++                if sdk.history.lock().unwrap().is_live_caller_output(item))
++                && (matches!(request, provider_history::Request::Update { .. })
++                    || matches!(&request, provider_history::Request::Create { item, .. }
+                     if provider_history::is_tool_replay(item)))
+                 && (responses.active_default_response || !sdk.pending.lock().await.is_empty())
+             {
+@@ -5271,6 +5294,36 @@ async fn handle_sdk_realtime_command(
+                 )));
+                 return Ok(());
+             }
++            let lookup = sdk.item_deletion.lock().unwrap().needs_lookup(&item_id);
++            match lookup {
++                Err(error) => {
++                    reply.finish(Err(error));
++                    return Ok(());
++                }
++                Ok(true) => {
++                    if responses.active_default_response || !sdk.pending.lock().await.is_empty() {
++                        reply.finish(Err(CodexErr::InvalidRequest(
++                            "Unobserved provider deletion cannot run during an active response or native work".into(),
++                        )));
++                        return Ok(());
++                    }
++                    let action =
++                        sdk.history
++                            .lock()
++                            .unwrap()
++                            .start(provider_history::Request::Delete {
++                                id: item_id,
++                                event_id,
++                                reply,
++                            });
++                    match action {
++                        Ok(action) => run_history_action(sdk, writer, action).await?,
++                        Err(error) => sdk.history.lock().unwrap().fail(error),
++                    }
++                    return Ok(());
++                }
++                Ok(false) => {}
++            }
+             if sdk
+                 .item_deletion
+                 .lock()
+@@ -5908,7 +5961,7 @@ async fn handle_realtime_server_event_with_configuration(
+ ) -> anyhow::Result<()> {
+     // An echo of a historical call is a history receipt. Only a provider-owned
+     // call may enter the live function dispatcher.
+-    let event = match (&handoff_state.sdk, &event) {
++    let mut event = match (&handoff_state.sdk, &event) {
+         (Some(sdk), RealtimeEvent::FunctionCallRequested(call))
+             if sdk
+                 .history
+@@ -5922,10 +5975,26 @@ async fn handle_realtime_server_event_with_configuration(
+         }
+         _ => event,
+     };
++    if let Some(sdk) = &handoff_state.sdk {
++        let mut history = sdk.history.lock().unwrap();
++        match &mut event {
++            RealtimeEvent::ResponseDone(response) => response
++                .function_call_ids
++                .retain(|id| !history.is_caller_call(id, response.response_id.as_deref())),
++            RealtimeEvent::ResponseCancelled(response) => {
++                history.retire_caller_calls(response.response_id.as_deref());
++            }
++            RealtimeEvent::InputAudioSpeechStarted(_) => history.retire_caller_calls(None),
++            _ => {}
++        }
++    }
+     if let Some(sdk) = &handoff_state.sdk {
+         let action = match &event {
+             RealtimeEvent::ConversationItemRetrieved(item) => {
+-                Some(sdk.history.lock().unwrap().retrieved(item.clone()))
++                let mut history = sdk.history.lock().unwrap();
++                let prepared =
++                    history.prepare_retrieved_delete(item, &mut sdk.item_deletion.lock().unwrap());
++                Some(prepared.and_then(|()| history.retrieved(item.clone())))
+             }
+             RealtimeEvent::ConversationItemAdded {
+                 item,
+@@ -6251,9 +6320,6 @@ async fn handle_realtime_server_event_with_configuration(
+                 return Ok(());
+             };
+             let mut request = request.clone();
+-            if let Some(configuration) = &configuration {
+-                tool_task::captured_definition(configuration, &request.name)?;
+-            }
+             let fingerprint = codex_realtime_control::FunctionCall {
+                 namespace: request.namespace.clone(),
+                 call_id: request.call_id.clone(),
+@@ -6264,6 +6330,44 @@ async fn handle_realtime_server_event_with_configuration(
+             }
+             .fingerprint()
+             .map_err(anyhow::Error::msg)?;
++            if configuration
++                .as_ref()
++                .is_some_and(|accepted| accepted.caller_manages_function(&request.name))
++            {
++                // The provider tracker retires this response's output guard on
++                // cancellation, including calls that arrive after retirement.
++                if !writer
++                    .configuration()
++                    .zip(request.response_id.as_deref())
++                    .is_some_and(|(accepted, id)| accepted.response_tools_pending(id))
++                {
++                    return Ok(());
++                }
++                if sdk.seen.lock().await.contains_key(&request.call_id) {
++                    anyhow::bail!("Caller-managed function reused a native call ID");
++                }
++                sdk.history.lock().unwrap().observe_caller_call(&request)?;
++                // Preserve the ordinary completed-item notification. Callers can
++                // retrieve its provider body without acquiring native authority.
++                events_tx
++                    .send(RealtimeEvent::ConversationItemDone {
++                        item_id: request.item_id.clone(),
++                    })
++                    .await
++                    .context("SDK Realtime event channel closed")?;
++                return Ok(());
++            }
++            if sdk
++                .history
++                .lock()
++                .unwrap()
++                .is_caller_call(&request.call_id, None)
++            {
++                anyhow::bail!("Native function reused a caller-managed call ID");
++            }
++            if let Some(configuration) = &configuration {
++                tool_task::captured_definition(configuration, &request.name)?;
++            }
+             sdk.reclaim_terminal_calls(&request.call_id).await;
+             let mut calls = sdk.function_calls.lock().await;
+             if let Some(previous) = calls.get_mut(&request.call_id) {
+diff --git a/codex-rs/core/src/realtime_conversation/item_deletion.rs b/codex-rs/core/src/realtime_conversation/item_deletion.rs
+index d8941ea55b1e89a7ca6fd350ed3dc282b868282a..298f20f0188d91375ee2c5dd21afcfac5e292c69 100644
+--- a/codex-rs/core/src/realtime_conversation/item_deletion.rs
++++ b/codex-rs/core/src/realtime_conversation/item_deletion.rs
+@@ -290,6 +290,55 @@ impl State {
+             item.effect_done = true;
+         }
+     }
++    pub(super) fn needs_lookup(&self, id: &str) -> CodexResult<bool> {
++        if self.items.contains_key(id) {
++            self.validate(id)?;
++            return Ok(false);
++        }
++        if !Self::valid_id(id) || id == "root" || self.pending.is_some() || !self.can_retrieve(id) {
++            return Err(CodexErr::InvalidRequest(
++                "Invalid, deleted, or unverifiable provider conversation item".into(),
++            ));
++        }
++        Ok(true)
++    }
++    pub(super) fn admit_retrieved_message(&mut self, value: &serde_json::Value) -> CodexResult<()> {
++        let id = value["id"].as_str().ok_or_else(|| {
++            CodexErr::InvalidRequest("Provider deletion lookup returned no item ID".into())
++        })?;
++        if !Self::valid_id(id)
++            || id == "root"
++            || !self.can_retrieve(id)
++            || value.get("call_id").is_some_and(|value| !value.is_null())
++            || value
++                .get("approval_request_id")
++                .is_some_and(|value| !value.is_null())
++            || value["type"] != "message"
++            || value["status"] != "completed"
++            || !matches!(
++                value["role"].as_str(),
++                Some("user" | "assistant" | "system")
++            )
++        {
++            return Err(CodexErr::InvalidRequest(
++                "Unobserved provider deletion requires a completed message; tool and approval dependencies require native receipts".into(),
++            ));
++        }
++        self.upsert(
++            id,
++            Item {
++                kind: "message".into(),
++                present: true,
++                role: value["role"].as_str().map(str::to_owned),
++                call_id: None,
++                approval_request_id: None,
++                done: true,
++                effect_done: false,
++            },
++        )
++        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++        self.validate(id)
++    }
+     pub(super) fn validate(&self, id: &str) -> CodexResult<()> {
+         let item = self
+             .items
+diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
+index 9590e663d66e51fee5cd93d36faaefe03625e80a..55572236774fc12ba8aa8a203f0a2e2e858b7e5b 100644
+--- a/codex-rs/core/src/realtime_conversation/provider_history.rs
++++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
+@@ -14,6 +14,11 @@ const MAX_IMAGE_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+ type Reply<T> = tokio::sync::oneshot::Sender<CodexResult<T>>;
+ #[derive(Debug)]
+ pub(crate) enum Request {
++    Delete {
++        id: String,
++        event_id: Option<String>,
++        reply: item_deletion::DeleteReply,
++    },
+     Item {
+         id: String,
+         event_id: Option<String>,
+@@ -63,6 +68,12 @@ struct ReplayedCall {
+     item_id: String,
+     output_id: Option<String>,
+     confirmed: bool,
++    caller: Option<CallerCall>,
++}
++#[derive(Debug)]
++struct CallerCall {
++    response_id: String,
++    fingerprint: [u8; 32],
+ }
+ 
+ #[derive(Debug)]
+@@ -101,7 +112,7 @@ pub(super) fn validate_request_ids(
+     deletion: &item_deletion::State,
+ ) -> CodexResult<()> {
+     let deleted = match request {
+-        Request::Item { id, .. } => !deletion.can_retrieve(id),
++        Request::Item { id, .. } | Request::Delete { id, .. } => !deletion.can_retrieve(id),
+         Request::Create { item, .. } => deletion.is_deleted(item_id(item)?),
+         Request::Update { items, .. } => items.iter().any(|item| {
+             item["id"].as_str().is_some_and(|id| {
+@@ -575,9 +586,12 @@ impl State {
+         self.pending.is_some()
+     }
+     pub(super) fn editing(&self) -> bool {
+-        self.pending
+-            .as_ref()
+-            .is_some_and(|pending| matches!(pending.request, Some(Request::Update { .. })))
++        self.pending.as_ref().is_some_and(|pending| {
++            matches!(
++                pending.request,
++                Some(Request::Update { .. } | Request::Delete { .. })
++            )
++        })
+     }
+     pub(super) fn deadline(&self) -> Option<tokio::time::Instant> {
+         self.pending.as_ref().and_then(|pending| {
+@@ -751,6 +765,7 @@ impl State {
+                         item_id: id.to_owned(),
+                         output_id: None,
+                         confirmed: false,
++                        caller: None,
+                     },
+                 );
+             } else {
+@@ -772,10 +787,93 @@ impl State {
+         })
+     }
+ 
++    // Caller-owned live calls share the exact call/output receipt ledger with
++    // imported calls, but never acquire native dispatch or batch authority.
++    pub(super) fn observe_caller_call(
++        &mut self,
++        request: &codex_protocol::protocol::RealtimeFunctionCallRequested,
++    ) -> CodexResult<()> {
++        let response_id = request
++            .response_id
++            .as_deref()
++            .filter(|id| valid_id(id))
++            .ok_or_else(|| invalid("Caller-managed function has no response identity"))?;
++        if !valid_id(&request.call_id) || !valid_id(&request.item_id) || request.namespace.is_some()
++        {
++            return Err(invalid("Invalid caller-managed function identity"));
++        }
++        let fingerprint: [u8; 32] = Sha256::digest(
++            serde_json::to_vec(request).map_err(|_| invalid("Invalid caller-managed function"))?,
++        )
++        .into();
++        if let Some(previous) = self.replayed_calls.get(&request.call_id) {
++            if previous.item_id == request.item_id
++                && previous.caller.as_ref().is_some_and(|caller| {
++                    caller.response_id == response_id && caller.fingerprint == fingerprint
++                })
++            {
++                return Ok(());
++            }
++            return Err(invalid(
++                "Caller-managed function ID changed ownership or payload",
++            ));
++        }
++        if self.replayed_calls.len() == LIMIT {
++            return Err(invalid(
++                "Caller-managed function identity capacity exceeded",
++            ));
++        }
++        self.replayed_calls.insert(
++            request.call_id.clone(),
++            ReplayedCall {
++                item_id: request.item_id.clone(),
++                output_id: None,
++                confirmed: true,
++                caller: Some(CallerCall {
++                    response_id: response_id.to_owned(),
++                    fingerprint,
++                }),
++            },
++        );
++        Ok(())
++    }
++
++    pub(super) fn is_caller_call(&self, call_id: &str, response_id: Option<&str>) -> bool {
++        self.replayed_calls.get(call_id).is_some_and(|call| {
++            call.caller.as_ref().is_some_and(|caller| {
++                response_id.is_none_or(|response| caller.response_id == response)
++            })
++        })
++    }
++
++    pub(super) fn is_live_caller_output(&self, item: &Value) -> bool {
++        item["type"] == "function_call_output"
++            && replay_item(item).is_ok()
++            && item["call_id"]
++                .as_str()
++                .and_then(|id| self.replayed_calls.get(id))
++                .is_some_and(|call| {
++                    call.caller.is_some()
++                        && call.confirmed
++                        && call.output_id.is_none()
++                        && self.order.contains(&call.item_id)
++                })
++    }
++
++    pub(super) fn retire_caller_calls(&mut self, response_id: Option<&str>) {
++        for call in self.replayed_calls.values_mut() {
++            if call.caller.as_ref().is_some_and(|caller| {
++                response_id.is_none_or(|response| caller.response_id == response)
++            }) {
++                call.confirmed = false;
++            }
++        }
++    }
++
+     pub(super) fn is_replayed_call(&self, call_id: &str, item_id: &str) -> bool {
+         self.replayed_calls
+             .get(call_id)
+-            .is_some_and(|call| call.item_id == item_id)
++            .is_some_and(|call| call.caller.is_none() && call.item_id == item_id)
+     }
+ 
+     pub(super) fn replayed_call_for_item<'a>(&self, item: &'a Value) -> Option<&'a str> {
+@@ -809,7 +907,7 @@ impl State {
+         }
+         let mut actions = VecDeque::new();
+         let ids = match &request {
+-            Request::Item { id, .. } => {
++            Request::Item { id, .. } | Request::Delete { id, .. } => {
+                 if !valid_id(id) {
+                     finish_request(request, Err(invalid("Invalid provider item ID")));
+                     return Ok(None);
+@@ -885,6 +983,30 @@ impl State {
+         });
+         self.advance()
+     }
++    pub(super) fn deletion_request(&self) -> Option<Option<String>> {
++        match self.pending.as_ref()?.request.as_ref()? {
++            Request::Delete { event_id, .. } => Some(event_id.clone()),
++            _ => None,
++        }
++    }
++    pub(super) fn prepare_retrieved_delete(
++        &self,
++        item: &Value,
++        deletion: &mut item_deletion::State,
++    ) -> CodexResult<()> {
++        let Some(pending) = &self.pending else {
++            return Ok(());
++        };
++        if matches!((&pending.request, &pending.waiting),
++            (Some(Request::Delete { id, .. }), Some(Action::Retrieve { id: expected, .. }))
++                if item["id"].as_str() == Some(id.as_str()) && id == expected)
++        {
++            // Retrieval confirms identity only. It cannot establish an item's
++            // position or completion of tool/approval effects.
++            deletion.admit_retrieved_message(item)?;
++        }
++        Ok(())
++    }
+     pub(super) fn retrieved(&mut self, item: Value) -> CodexResult<Option<Action>> {
+         if !self
+             .pending
+@@ -922,6 +1044,8 @@ impl State {
+                 ));
+                 return Ok(None);
+             }
++        } else if let Some(Request::Delete { id, .. }) = &pending.request {
++            pending.actions.push_back(Action::Delete(id.clone()));
+         } else if pending.request.is_some() {
+             codex_api::charge_realtime_json_storage(&item, &mut pending.retained_bytes).map_err(
+                 |_| invalid("Provider history exceeds its 8 MiB estimated storage limit"),
+@@ -1005,7 +1129,9 @@ impl State {
+             .pending
+             .as_ref()
+             .is_some_and(|pending| match &pending.request {
+-                Some(Request::Item { id: requested, .. }) => requested == id,
++                Some(
++                    Request::Item { id: requested, .. } | Request::Delete { id: requested, .. },
++                ) => requested == id,
+                 Some(Request::Create { item, previous, .. }) => {
+                     item["id"].as_str() == Some(id) || previous.as_deref() == Some(id)
+                 }
+@@ -1089,6 +1215,7 @@ impl State {
+         }
+         let pending = self.pending.take().unwrap();
+         match pending.request.unwrap() {
++            Request::Delete { mut reply, .. } => reply.finish(Ok(())),
+             Request::Item { reply, .. } => {
+                 let _ = reply.send(
+                     pending
+@@ -1136,6 +1263,7 @@ impl State {
+ fn finish_request(request: Request, result: CodexResult<()>) {
+     let error = result.err().unwrap_or(CodexErr::TurnAborted);
+     match request {
++        Request::Delete { mut reply, .. } => reply.finish(Err(error)),
+         Request::Item { reply, .. } => {
+             let _ = reply.send(Err(error));
+         }
+@@ -1186,6 +1314,120 @@ mod tests {
+     fn message(id: &str, text: &str) -> Value {
+         json!({"id":id,"type":"message","role":"user","content":[{"type":"input_text","text":text}]})
+     }
++    #[tokio::test]
++    async fn unobserved_delete_waits_for_lookup_and_persisted_deletion_without_inventing_order() {
++        let mut history = State::default();
++        history.set_boundary(false);
++        let mut deletion = item_deletion::State::default();
++        assert!(deletion.needs_lookup("hidden").unwrap());
++        let (reply, mut receipt) = tokio::sync::oneshot::channel();
++        let request = Request::Delete {
++            id: "hidden".into(),
++            event_id: Some("delete-event".into()),
++            reply: item_deletion::DeleteReply::new(reply),
++        };
++        assert!(matches!(history.start(request).unwrap(),
++            Some(Action::Retrieve { id, event_id: None }) if id == "hidden"));
++        assert!(receipt.try_recv().is_err());
++        let mut item = message("hidden", "pre-attach speech");
++        item["status"] = json!("completed");
++        history
++            .prepare_retrieved_delete(&item, &mut deletion)
++            .unwrap();
++        assert!(matches!(history.retrieved(item).unwrap(),
++            Some(Action::Delete(id)) if id == "hidden"));
++        assert_eq!(
++            history.deletion_request(),
++            Some(Some("delete-event".into()))
++        );
++        assert!(history.order.is_empty());
++        assert!(history.boundary.is_none());
++        assert!(!history.incomplete);
++        let (reply, _internal_receipt) = tokio::sync::oneshot::channel();
++        assert!(deletion.begin("hidden".into(), item_deletion::DeleteReply::new(reply)));
++        assert!(receipt.try_recv().is_err());
++        assert!(!deletion.acknowledge("other"));
++        assert!(deletion.acknowledge("hidden"));
++        assert!(receipt.try_recv().is_err());
++        // The fanout owner invokes these only after persistence completes.
++        deletion.finish("hidden", Ok(()));
++        assert!(history.deleted("hidden").unwrap());
++        assert!(history.advance().unwrap().is_none());
++        assert!(receipt.await.unwrap().is_ok());
++        assert!(deletion.is_deleted("hidden"));
++        assert!(!deletion.can_recreate_message("hidden"));
++        assert!(deletion.needs_lookup("hidden").is_err());
++        assert!(history.order.is_empty());
++    }
++
++    #[tokio::test]
++    async fn unobserved_delete_rejects_unresolved_or_tool_identity() {
++        for item in [
++            json!({"id":"hidden","type":"message","role":"user","status":"in_progress"}),
++            json!({"id":"hidden","type":"message","role":"user"}),
++            json!({"id":"hidden","type":"message","role":"user","status":"completed","call_id":"call"}),
++            json!({"id":"hidden","type":"message","role":"user","status":"completed","approval_request_id":"approval"}),
++            json!({"id":"hidden","type":"function_call","call_id":"call","status":"completed"}),
++            json!({"id":"hidden","type":"function_call_output","call_id":"call","status":"completed"}),
++            json!({"id":"hidden","type":"mcp_call","status":"completed"}),
++            json!({"id":"hidden","type":"mcp_approval_request","status":"completed"}),
++            json!({"id":"hidden","type":"mcp_approval_response","approval_request_id":"approval","status":"completed"}),
++        ] {
++            let mut history = State::default();
++            let mut deletion = item_deletion::State::default();
++            let (reply, receipt) = tokio::sync::oneshot::channel();
++            history
++                .start(Request::Delete {
++                    id: "hidden".into(),
++                    event_id: None,
++                    reply: item_deletion::DeleteReply::new(reply),
++                })
++                .unwrap();
++            let error = history
++                .prepare_retrieved_delete(&item, &mut deletion)
++                .unwrap_err();
++            history.fail(error);
++            assert!(receipt.await.unwrap().is_err());
++            assert!(deletion.validate("hidden").is_err());
++            assert!(!deletion.is_deleted("hidden"));
++            assert!(history.order.is_empty());
++        }
++    }
++
++    #[tokio::test]
++    async fn interrupted_unobserved_delete_drains_late_lookup_without_admitting_or_deleting() {
++        for external_deletion in [false, true] {
++            let mut history = State::default();
++            let mut deletion = item_deletion::State::default();
++            let (reply, receipt) = tokio::sync::oneshot::channel();
++            history
++                .start(Request::Delete {
++                    id: "hidden".into(),
++                    event_id: None,
++                    reply: item_deletion::DeleteReply::new(reply),
++                })
++                .unwrap();
++            if external_deletion {
++                deletion.observe_deleted("hidden").unwrap();
++                history.observe_deleted("hidden");
++            } else {
++                history.interrupt(invalid("Response started during preflight"));
++            }
++            assert!(receipt.await.unwrap().is_err());
++            assert!(history.busy());
++            let mut item = message("hidden", "late");
++            item["status"] = json!("completed");
++            history
++                .prepare_retrieved_delete(&item, &mut deletion)
++                .unwrap();
++            assert!(history.retrieved(item).unwrap().is_none());
++            assert!(!history.busy());
++            assert!(deletion.validate("hidden").is_err());
++            assert_eq!(deletion.is_deleted("hidden"), external_deletion);
++            assert!(history.order.is_empty());
++        }
++    }
++
+     fn replay_pair(id: &str) -> (Value, Value) {
+         let call_id = format!("call-{id}");
+         (
+@@ -1770,6 +2012,68 @@ mod tests {
+         assert!(!state.busy());
+     }
+ 
++    #[tokio::test]
++    async fn caller_function_output_uses_exact_live_call_and_history_receipt() {
++        let mut state = State::default();
++        let request = codex_protocol::protocol::RealtimeFunctionCallRequested {
++            namespace: None,
++            call_id: "caller-call".into(),
++            item_id: "caller-item".into(),
++            name: "external".into(),
++            arguments: "{}".into(),
++            response_id: Some("response".into()),
++        };
++        let call = json!({"id":"caller-item", "type":"function_call",
++            "call_id":"caller-call", "name":"external", "arguments":"{}"});
++        state.observe_added(&call, Some(None)).unwrap();
++        state.observe_caller_call(&request).unwrap();
++        state.observe_caller_call(&request).unwrap();
++        assert!(!state.is_replayed_call("caller-call", "caller-item"));
++        assert!(state.is_caller_call("caller-call", Some("response")));
++        assert!(!state.is_caller_call("caller-call", Some("other-response")));
++        let mut changed = request.clone();
++        changed.arguments = "{\"changed\":true}".into();
++        assert!(state.observe_caller_call(&changed).is_err());
++        let output = json!({"id":"caller-output", "type":"function_call_output",
++            "call_id":"caller-call", "output":"42"});
++        assert!(state.is_live_caller_output(&output));
++        let mut foreign = output.clone();
++        foreign["call_id"] = json!("foreign");
++        assert!(!state.is_live_caller_output(&foreign));
++        let (reply, mut receipt) = tokio::sync::oneshot::channel();
++        let action = state
++            .start(Request::Create {
++                item: output.clone(),
++                previous: None,
++                event_id: Some("raw-output".into()),
++                reply,
++            })
++            .unwrap();
++        assert!(
++            matches!(action, Some(Action::Create { event_id: Some(id), .. }) if id == "raw-output")
++        );
++        assert!(!state.is_live_caller_output(&output));
++        assert!(matches!(
++            receipt.try_recv(),
++            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
++        ));
++        state
++            .observe_added(&output, Some(Some("caller-item")))
++            .unwrap();
++        state.created(&output, true).unwrap();
++        receipt.await.unwrap().unwrap();
++        assert!(!state.is_live_caller_output(&output));
++
++        let mut state = State::default();
++        state.observe_added(&call, Some(None)).unwrap();
++        state.observe_caller_call(&request).unwrap();
++        state.retire_caller_calls(Some("other-response"));
++        assert!(state.is_live_caller_output(&output));
++        state.retire_caller_calls(Some("response"));
++        state.observe_caller_call(&request).unwrap();
++        assert!(!state.is_live_caller_output(&output));
++    }
++
+     #[tokio::test]
+     async fn replayed_tool_history_requires_a_receipted_call_and_one_output() {
+         let mut state = State::default();
+diff --git a/codex-rs/core/src/realtime_conversation/raw_event.rs b/codex-rs/core/src/realtime_conversation/raw_event.rs
+index 67df20febdf169d70f46c55c4bbfbec7d8a8d459..5ccb45313777a53e3827dfbc6c3a2c27e0c65167 100644
+--- a/codex-rs/core/src/realtime_conversation/raw_event.rs
++++ b/codex-rs/core/src/realtime_conversation/raw_event.rs
+@@ -27,6 +27,8 @@ use super::handle_delete_item_sdk;
+ use super::handle_history_sdk;
+ use super::preparation::dispatch_update_sdk;
+ use super::provider_history::Request;
++use super::raw_settings::response_audio;
++use super::raw_settings::response_prompt;
+ use super::raw_settings::session_update;
+ use crate::session::session::Session;
+ 
+@@ -79,6 +81,10 @@ struct Response {
+     metadata: Option<BTreeMap<String, String>>,
+     parallel_tool_calls: Option<bool>,
+     reasoning: Option<Reasoning>,
++    #[serde(default, deserialize_with = "present_value")]
++    prompt: Option<Value>,
++    #[serde(default, deserialize_with = "present_value")]
++    audio: Option<Value>,
+     tools: Option<Vec<RealtimeResponseTool>>,
+     tool_choice: Option<RealtimeToolChoice>,
+ }
+@@ -89,6 +95,12 @@ struct Reasoning {
+     effort: Option<String>,
+ }
+ 
++fn present_value<'de, D: serde::Deserializer<'de>>(
++    deserializer: D,
++) -> Result<Option<Value>, D::Error> {
++    Value::deserialize(deserializer).map(Some)
++}
++
+ fn invalid(message: &str) -> CodexErr {
+     CodexErr::InvalidRequest(message.into())
+ }
+@@ -151,6 +163,18 @@ fn response_options(
+         reasoning: response
+             .reasoning
+             .map(|Reasoning { effort }| RealtimeReasoning { effort }),
++        prompt: response
++            .prompt
++            .map(response_prompt)
++            .transpose()
++            .map_err(|_| invalid("Unsupported or invalid raw Realtime response prompt"))?,
++        audio_output: response
++            .audio
++            .as_ref()
++            .map(response_audio)
++            .transpose()
++            .map_err(|_| invalid("Unsupported or invalid raw Realtime response audio"))?
++            .flatten(),
+         tools: response.tools,
+         tool_choice: response.tool_choice,
+         event_id,
+diff --git a/codex-rs/core/src/realtime_conversation/raw_settings.rs b/codex-rs/core/src/realtime_conversation/raw_settings.rs
+index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..3b2c5e6b81a30fca17b4097991de22096f8586a2 100644
+--- a/codex-rs/core/src/realtime_conversation/raw_settings.rs
++++ b/codex-rs/core/src/realtime_conversation/raw_settings.rs
+@@ -1,6 +1,10 @@
+-//! Translate provider session patches into the existing native settings path.
++//! Translate provider session and response settings into native settings.
+ use codex_protocol::error::CodexErr;
+ use codex_protocol::error::Result as CodexResult;
++use codex_protocol::realtime_settings::RealtimeAudioFormat;
++use codex_protocol::realtime_settings::RealtimePrompt;
++use codex_protocol::realtime_settings::RealtimeResponseAudioOutput;
++use codex_protocol::realtime_settings::RealtimeSessionTool;
+ use codex_protocol::realtime_settings::RealtimeSessionUpdate;
+ use serde_json::Map;
+ use serde_json::Value;
+@@ -17,15 +21,20 @@ fn object<'a>(value: &'a Value, keys: &[&str]) -> CodexResult<&'a Map<String, Va
+     Ok(fields)
+ }
+ 
+-fn format(value: &Value) -> CodexResult<Value> {
++fn format(value: &Value) -> CodexResult<RealtimeAudioFormat> {
+     let fields = object(value, &["type", "rate"])?;
+-    let name = match fields.get("type").and_then(Value::as_str) {
+-        Some("audio/pcm") if fields.get("rate").and_then(Value::as_u64) == Some(24000) => "pcm16",
+-        Some("audio/pcmu") if !fields.contains_key("rate") => "g711_ulaw",
+-        Some("audio/pcma") if !fields.contains_key("rate") => "g711_alaw",
++    Ok(match fields.get("type").and_then(Value::as_str) {
++        Some("audio/pcm")
++            if fields
++                .get("rate")
++                .is_none_or(|rate| rate.as_u64() == Some(24000)) =>
++        {
++            RealtimeAudioFormat::Pcm24k
++        }
++        Some("audio/pcmu") if !fields.contains_key("rate") => RealtimeAudioFormat::G711Ulaw,
++        Some("audio/pcma") if !fields.contains_key("rate") => RealtimeAudioFormat::G711Alaw,
+         _ => return Err(invalid()),
+-    };
+-    Ok(Value::String(name.into()))
++    })
+ }
+ 
+ // Protocol DTOs intentionally tolerate extra fields on several settings. Raw
+@@ -117,8 +126,28 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
+     Ok(())
+ }
+ 
+-/// Decode the `session` object, never an entire client event. Tool declarations
+-/// cannot enter through this path; native typed update admission retains policy.
++pub(super) fn response_prompt(value: Value) -> CodexResult<Option<RealtimePrompt>> {
++    nested("prompt", &value)?;
++    serde_json::from_value(value).map_err(|_| invalid())
++}
++
++pub(super) fn response_audio(value: &Value) -> CodexResult<Option<RealtimeResponseAudioOutput>> {
++    let Some(output) = object(value, &["output"])?.get("output") else {
++        return Ok(None);
++    };
++    let output = object(output, &["format", "voice"])?;
++    let format = output.get("format").map(format).transpose()?;
++    let voice = output
++        .get("voice")
++        .map(|value| {
++            nested("voice", value)?;
++            serde_json::from_value(value.clone()).map_err(|_| invalid())
++        })
++        .transpose()?;
++    Ok(Some(RealtimeResponseAudioOutput { format, voice }))
++}
++
++/// Decode the `session` object before checking the native tool catalog.
+ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate> {
+     let fields = object(
+         &value,
+@@ -128,6 +157,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+             "instructions",
+             "output_modalities",
+             "audio",
++            "tools",
+             "tool_choice",
+             "prompt",
+             "tracing",
+@@ -188,7 +218,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+                         } else {
+                             "output_format"
+                         },
+-                        format(value)?,
++                        serde_json::to_value(format(value)?).map_err(|_| invalid())?,
+                     )
+                 } else {
+                     nested(name, value)?;
+@@ -205,7 +235,31 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+             }
+         }
+     }
+-    serde_json::from_value(Value::Object(update)).map_err(|_| invalid())
++    let mut update: RealtimeSessionUpdate =
++        serde_json::from_value(Value::Object(update)).map_err(|_| invalid())?;
++    update.raw_tools = fields
++        .get("tools")
++        .map(|value| {
++            value
++                .as_array()
++                .filter(|tools| tools.len() <= 128)
++                .ok_or_else(invalid)?
++                .iter()
++                .map(|tool| {
++                    let mut tool = tool.clone();
++                    if tool["type"] == "function"
++                        && let Some(fields) = tool.as_object_mut()
++                    {
++                        fields.entry("parameters").or_insert_with(
++                            || serde_json::json!({"type": "object", "properties": {}}),
++                        );
++                    }
++                    serde_json::from_value::<RealtimeSessionTool>(tool).map_err(|_| invalid())
++                })
++                .collect()
++        })
++        .transpose()?;
++    Ok(update)
+ }
+ 
+ #[cfg(test)]
+@@ -238,7 +292,8 @@ mod tests {
+     fn rejects_unknown_nested_fields_and_authority_changes() {
+         for value in [
+             json!([]),
+-            json!({"tools":[]}),
++            json!({"tools":[{"type":"unsupported"}]}),
++            json!({"tools":null}),
+             json!({"function_tools":[]}),
+             json!({"hosted_mcp_tools":[]}),
+             json!({"type":"transcription"}),
+diff --git a/codex-rs/core/src/realtime_conversation/tool_task.rs b/codex-rs/core/src/realtime_conversation/tool_task.rs
+index 1c059a6a6fd49ab314f01ca395d9c10c7fa23979..a200457597fb34ad481a10c6fa391bd14d2fa809 100644
+--- a/codex-rs/core/src/realtime_conversation/tool_task.rs
++++ b/codex-rs/core/src/realtime_conversation/tool_task.rs
+@@ -19,9 +19,11 @@ use codex_protocol::error::CodexErr;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::RealtimeFunctionCallRequested;
+ use codex_protocol::realtime_settings::RealtimeFunctionTool;
++use codex_protocol::realtime_settings::RealtimeSessionTool;
+ use codex_tools::ToolSpec;
+ use futures::FutureExt;
+ use futures::StreamExt;
++use std::collections::BTreeSet;
+ use std::sync::Arc;
+ use std::sync::atomic::Ordering;
+ use tokio::sync::Mutex;
+@@ -237,6 +239,15 @@ fn wire_definition(
+     })
+ }
+ 
++fn matches_definition(captured: &RealtimeFunctionTool, requested: &RealtimeFunctionTool) -> bool {
++    captured.name == requested.name
++        && captured.description == requested.description
++        && captured.parameters == requested.parameters
++        && requested
++            .strict
++            .is_none_or(|strict| captured.strict == Some(strict))
++}
++
+ pub(super) fn select_source_tools(
+     source: &Arc<dyn codex_api::RealtimeNativeSource>,
+     requested: Option<Vec<RealtimeFunctionTool>>,
+@@ -267,14 +278,7 @@ pub(super) fn select_source_tools(
+         .map(|definition| {
+             admitted
+                 .iter()
+-                .find(|captured| {
+-                    captured.name == definition.name
+-                        && captured.description == definition.description
+-                        && captured.parameters == definition.parameters
+-                        && definition
+-                            .strict
+-                            .is_none_or(|strict| captured.strict == Some(strict))
+-                })
++                .find(|captured| matches_definition(captured, &definition))
+                 .cloned()
+                 .ok_or_else(|| {
+                     CodexErr::InvalidRequest(
+@@ -285,6 +289,41 @@ pub(super) fn select_source_tools(
+         .collect()
+ }
+ 
++pub(super) fn classify_raw_session_tools(
++    configuration: &codex_api::RealtimeAcceptedConfiguration,
++    tools: &mut [RealtimeSessionTool],
++) -> codex_protocol::error::Result<BTreeSet<String>> {
++    let source = configuration
++        .native_source
++        .as_ref()
++        .and_then(|source| source.as_any().downcast_ref::<RealtimeToolSource>());
++    let mut caller_managed = BTreeSet::new();
++    for tool in tools {
++        let RealtimeSessionTool::Function(function) = tool else {
++            continue;
++        };
++        if let Some((source, declaration)) = source.and_then(|source| {
++            source
++                .declarations
++                .iter()
++                .find(|declaration| declaration.spec.name == function.name)
++                .map(|declaration| (source, declaration))
++        }) {
++            // Raw replacements use the same frozen source as typed wire-only updates.
++            let captured = wire_definition(declaration)?;
++            if source.selection_id.is_empty() || !matches_definition(&captured, function) {
++                return Err(CodexErr::InvalidRequest(
++                    "Raw Realtime tool conflicts with a captured native declaration".into(),
++                ));
++            }
++            *function = captured;
++        } else {
++            caller_managed.insert(function.name.clone());
++        }
++    }
++    Ok(caller_managed)
++}
++
+ pub(super) fn source_instructions(
+     source: &Arc<dyn codex_api::RealtimeNativeSource>,
+ ) -> codex_protocol::error::Result<Option<String>> {
+diff --git a/codex-rs/protocol/src/realtime_settings.rs b/codex-rs/protocol/src/realtime_settings.rs
+index df56402f20807cf6021fb359eda7e6d37a77d8f0..3bfb11fab0a001a6ba5af97291667c7d1d27f37d 100644
+--- a/codex-rs/protocol/src/realtime_settings.rs
++++ b/codex-rs/protocol/src/realtime_settings.rs
+@@ -225,6 +225,8 @@ pub struct RealtimeV2SessionSettings {
+ 
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ pub struct RealtimeSessionUpdate {
++    #[serde(skip)]
++    pub raw_tools: Option<Vec<RealtimeSessionTool>>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub function_tools: Option<Vec<RealtimeFunctionTool>>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+@@ -237,6 +239,13 @@ pub struct RealtimeSessionUpdate {
+     pub settings: RealtimeV2SessionSettings,
+ }
+ 
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(tag = "type", rename_all = "snake_case")]
++pub enum RealtimeSessionTool {
++    Function(RealtimeFunctionTool),
++    Mcp(RealtimeHostedMcpTool),
++}
++
+ /// Overrides for one provider response, without changing accepted session settings.
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ #[serde(default, deny_unknown_fields)]
+@@ -261,11 +270,21 @@ pub struct RealtimeResponseOptions {
+     #[serde(skip)]
+     pub reasoning: Option<RealtimeReasoning>,
+     #[serde(skip)]
++    pub prompt: Option<Option<RealtimePrompt>>,
++    #[serde(skip)]
++    pub audio_output: Option<RealtimeResponseAudioOutput>,
++    #[serde(skip)]
+     pub tools: Option<Vec<RealtimeResponseTool>>,
+     #[serde(skip)]
+     pub tool_choice: Option<RealtimeToolChoice>,
+ }
+ 
++#[derive(Debug, Clone, PartialEq)]
++pub struct RealtimeResponseAudioOutput {
++    pub format: Option<RealtimeAudioFormat>,
++    pub voice: Option<RealtimeOutputVoice>,
++}
++
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case")]
+ pub enum RealtimeResponseTool {

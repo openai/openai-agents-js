@@ -163,6 +163,195 @@ async function observe(
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 
 nativeIt(
+  'replaces the provider tool list through raw session updates',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      const lookup = tool({
+        name: 'native_lookup',
+        description: 'Look up a value using the native agent.',
+        parameters: z.object({ query: z.string() }),
+        execute: () => 'Found',
+      });
+      await using session = await new Agent({
+        provider,
+        instructions: 'Use the configured tools.',
+        tools: [lookup],
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const initial = await peer.frame('session.update');
+      const nativeTool = initial.session.tools.find(
+        (declaration: Frame) => declaration.name === 'native_lookup',
+      ) as JsonObject;
+      expect(nativeTool).toBeDefined();
+      const hostedTool = {
+        type: 'mcp',
+        server_label: 'fixture',
+        server_url: 'https://fixture.invalid/mcp',
+        allowed_tools: ['read'],
+        require_approval: 'always',
+      };
+      const tools = [hostedTool, nativeTool];
+      const after = peer.frames.length;
+      await expect(
+        voice.sendEvent({
+          type: 'session.update',
+          event_id: 'raw-tool-replacement',
+          session: { tools },
+        }),
+      ).resolves.toBeNull();
+      expect(await peer.frame('session.update', after)).toMatchObject({
+        event_id: 'raw-tool-replacement',
+        session: { tools },
+      });
+      const next = peer.frames.length;
+      await expect(
+        voice.sendEvent({
+          type: 'session.update',
+          session: {
+            tools: [{ ...nativeTool, parameters: { type: 'object' } }],
+          },
+        }),
+      ).rejects.toThrow(/captured native declaration/);
+      await voice.sendEvent({
+        type: 'session.update',
+        session: { instructions: 'Continue with the same tools.' },
+      });
+      expect(peer.frames.slice(next)).toEqual([
+        expect.objectContaining({
+          type: 'session.update',
+          session: {
+            type: 'realtime',
+            instructions: 'Continue with the same tools.',
+          },
+        }),
+      ]);
+      const beforeClear = peer.frames.length;
+      await voice.sendEvent({ type: 'session.update', session: { tools: [] } });
+      expect(
+        (await peer.frame('session.update', beforeClear)).session.tools,
+      ).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'accepts one acknowledged output for a linked application function call',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Use the application function.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        await voice.sendEvent({
+          type: 'session.update',
+          session: {
+            tools: [{ type: 'function', name: 'lookup_application' }],
+          },
+        });
+        await voice.sendEvent({ type: 'response.create' });
+        const responseId = 'application-response';
+        const call = {
+          id: 'application-call-item',
+          type: 'function_call',
+          name: 'lookup_application',
+          call_id: 'application-call',
+          arguments: '{"key":"fixture"}',
+          status: 'completed',
+        };
+        peer.retrievals.set(call.id, call);
+        peer.send({
+          type: 'response.created',
+          response: { id: responseId },
+        });
+        peer.send({
+          type: 'response.output_item.done',
+          response_id: responseId,
+          output_index: 0,
+          item: call,
+        });
+        peer.send({
+          type: 'conversation.item.added',
+          previous_item_id: null,
+          item: call,
+        });
+        peer.send({ type: 'conversation.item.done', item: call });
+        peer.send({
+          type: 'response.done',
+          response: { id: responseId, status: 'completed', output: [call] },
+        });
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual(
+            expect.objectContaining({
+              type: 'conversation_item',
+              kind: 'function_call',
+              status: 'done',
+              itemId: call.id,
+            }),
+          ),
+        );
+        expect(await voice.retrieveConversationItem(call.id)).toEqual(call);
+        const item = {
+          id: 'application-output-item',
+          type: 'function_call_output',
+          call_id: call.call_id,
+          output: 'found',
+        };
+        const after = peer.frames.length;
+        const creating = voice.sendEvent({
+          type: 'conversation.item.create',
+          item,
+        });
+        void creating.catch(() => {});
+        const created = await peer.frame('conversation.item.create', after);
+        expect(created.item).toMatchObject(item);
+        peer.send({
+          type: 'conversation.item.added',
+          previous_item_id: call.id,
+          item: created.item,
+        });
+        await expect(creating).resolves.toBeNull();
+        await expect(
+          voice.sendEvent({
+            type: 'conversation.item.create',
+            item: { ...item, id: 'duplicate-application-output' },
+          }),
+        ).rejects.toThrow();
+        expect(seen.filter((event) => event.type === 'function_call')).toEqual(
+          [],
+        );
+        expect(
+          peer.frames.filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(1);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
   'forwards unknown raw provider events while rejecting malformed known controls before writing',
   async () => {
     const model = new ModelServer([]);
@@ -241,6 +430,249 @@ nativeIt(
         type: 'response.create',
       });
       expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'preserves raw per-response prompt references, variables, and explicit null',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Use the accepted Session instructions by default.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const prompts: (JsonObject | null)[] = [
+        { id: 'pmpt_fixture' },
+        {
+          id: 'pmpt_fixture',
+          version: '2',
+          variables: {
+            recipient: 'Sam',
+            tone: { type: 'input_text', text: 'brief' },
+          },
+        },
+        null,
+      ];
+      for (const [index, prompt] of prompts.entries()) {
+        const event: JsonObject = {
+          type: 'response.create',
+          event_id: `response-prompt-${index}`,
+          response: { prompt },
+        };
+        const after = peer.frames.length;
+        await voice.sendEvent(event);
+        expect(await peer.frame('response.create', after)).toEqual(event);
+        const responseId = `prompt-response-${index}`;
+        peer.send({
+          type: 'response.created',
+          response: { id: responseId },
+        });
+        peer.send({
+          type: 'response.done',
+          response: { id: responseId, status: 'completed', output: [] },
+        });
+      }
+      const after = peer.frames.length;
+      await voice.requestResponse();
+      expect(await peer.frame('response.create', after)).toEqual({
+        type: 'response.create',
+      });
+      expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each(['pcm16', 'g711_ulaw', 'g711_alaw'] as const)(
+  'retains raw per-response %s audio options and restores the default response codec',
+  async (format) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Use PCM16 unless a response overrides its output.',
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: { outputFormat: 'pcm16', outputVoice: 'marin' },
+      });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const output: JsonObject = {
+          voice: format === 'g711_ulaw' ? { id: 'voice_fixture' } : 'ash',
+          format:
+            format === 'pcm16'
+              ? { type: 'audio/pcm', rate: 24000 }
+              : { type: format === 'g711_ulaw' ? 'audio/pcmu' : 'audio/pcma' },
+        };
+        const event: JsonObject = {
+          type: 'response.create',
+          event_id: `response-audio-${format}`,
+          response: { audio: { output } },
+        };
+        await voice.sendEvent(event);
+        expect(await peer.frame('response.create')).toEqual(event);
+        const responseId = `override-${format}`;
+        peer.send({
+          type: 'response.created',
+          response: { id: responseId },
+        });
+        const data = Buffer.from([1, 2, 3, 4]);
+        peer.send({
+          type: 'response.output_audio.delta',
+          response_id: responseId,
+          item_id: `audio-${format}`,
+          content_index: 0,
+          output_index: 0,
+          delta: data.toString('base64'),
+        });
+        await vi.waitFor(() =>
+          expect(
+            seen.find(
+              (entry) =>
+                entry.type === 'audio' && entry.responseId === responseId,
+            ),
+          ).toMatchObject({
+            type: 'audio',
+            responseId,
+            itemId: `audio-${format}`,
+            format,
+            sampleRate: format === 'pcm16' ? 24000 : 8000,
+            channels: 1,
+            data: new Uint8Array(data),
+          }),
+        );
+        peer.send({
+          type: 'response.done',
+          response: { id: responseId, status: 'completed', output: [] },
+        });
+        const after = peer.frames.length;
+        await voice.requestResponse();
+        expect(await peer.frame('response.create', after)).toEqual({
+          type: 'response.create',
+        });
+        const defaultId = `default-after-${format}`;
+        peer.send({
+          type: 'response.created',
+          response: { id: defaultId },
+        });
+        peer.send({
+          type: 'response.output_audio.delta',
+          response_id: defaultId,
+          item_id: `default-audio-${format}`,
+          content_index: 0,
+          output_index: 0,
+          delta: data.toString('base64'),
+        });
+        await vi.waitFor(() =>
+          expect(
+            seen.find(
+              (entry) =>
+                entry.type === 'audio' && entry.responseId === defaultId,
+            ),
+          ).toMatchObject({
+            type: 'audio',
+            responseId: defaultId,
+            format: 'pcm16',
+            sampleRate: 24000,
+            channels: 1,
+            data: new Uint8Array(data),
+          }),
+        );
+        expect(
+          peer.frames.filter((frame) => frame.type === 'session.update'),
+        ).toHaveLength(1);
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'retrieves an unobserved application item before deleting it with the caller event ID',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Delete only the requested application item.',
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        const item: JsonObject = {
+          ...userItem('application-item-before-attachment', 'Earlier input.'),
+          status: 'completed',
+        };
+        peer.retrievals.set(item.id as string, item);
+        const event: JsonObject = {
+          type: 'conversation.item.delete',
+          item_id: item.id,
+          event_id: 'delete-application-item',
+        };
+        const after = peer.frames.length;
+        let settled = false;
+        const deleting = voice.sendEvent(event).then((result) => {
+          settled = true;
+          return result;
+        });
+        void deleting.catch(() => {});
+        const lookup = await peer.frame('conversation.item.retrieve', after);
+        expect(lookup.item_id).toBe(item.id);
+        expect(lookup.event_id).not.toBe(event.event_id);
+        const deletion = await peer.frame('conversation.item.delete', after);
+        expect(deletion).toEqual(event);
+        expect(peer.frames.slice(after).map((frame) => frame.type)).toEqual([
+          'conversation.item.retrieve',
+          'conversation.item.delete',
+        ]);
+        expect(settled).toBe(false);
+        peer.send({
+          type: 'conversation.item.deleted',
+          event_id: 'provider-deletion-receipt',
+          item_id: item.id,
+        });
+        await expect(deleting).resolves.toBeNull();
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual({
+            type: 'conversation_item_deleted',
+            itemId: item.id,
+          }),
+        );
+        expect(model.requests).toEqual([]);
+      } finally {
+        await voice.close();
+        await reading;
+      }
     } finally {
       await peer.close();
       await ModelServer.closeAll();
