@@ -175,6 +175,35 @@ In `0.22.0-alpha.2`, pass `{ maxModelSteps: 4 }` to `agent.run` or to a new Sess
 
 A pending manual checkpoint stores the remaining steps. Resume with `agent.run(null, { state, onInteraction })` on an SDK version that supports `maxModelSteps` to enforce that allowance. Earlier alpha versions ignore the saved limit. Each independent submission starts with its own budget. If you also supply a `beforeStep` callback, the usual callback checkpoint restrictions apply.
 
+### Limit root requests, tokens, and estimated cost
+
+In `0.22.0-alpha.2` and the matching [source build](building.md), `agent.run()` and `session.submit()` have been accepting a root `budget`. This complete example has been requiring the built SDK, Node.js 24, and default-provider credentials such as `OPENAI_API_KEY`:
+
+```ts
+import { Agent, NativeProvider, type RunBudget } from '@openai/agents';
+
+await using provider = new NativeProvider();
+const agent = new Agent({ instructions: 'Answer briefly.', provider });
+const budget: RunBudget = { maxRequests: 3, maxTokens: 10_000 };
+console.log(
+  (await agent.run('Explain prime numbers.', { budget })).finalOutput,
+);
+
+await using session = await agent.session();
+const turn = await session.submit('Give one example.', { budget });
+console.log((await turn.wait()).finalOutput);
+```
+
+Each new root has been starting fresh. Live manual replies, retained steering, and SDK output repairs have been sharing that root's allowance. `maxRequests` has been counting controlled root model-preparation admissions, including preparations that send no physical request. Transport retries, internal requests without their own admission check, and independent child requests have not been adding root admissions. `maxTokens` has been adding provider-reported total tokens from observed root completions, including compaction usage reported there; work without a root completion has been remaining outside that accounting.
+
+The SDK has been checking limits before the next preparation. An admitted request has been remaining able to exceed a token or cost limit and finish successfully. These limits have not been guaranteeing actual spending. Each limit has been requiring a nonnegative safe integer. Budget configuration has been requiring at least one limit, and zero has been blocking the first preparation.
+
+`maxEstimatedCostMicros` has been limiting application-estimated integer micro-USD. `estimateCostMicros(usage)` has been supplying a synchronous, stable, nonnegative safe integer or `undefined` for each observed response when the next admission needs it. The application has been owning model-specific pricing. Optional omitted cached-input, cache-write, and reasoning counters have been appearing as zero in that usage view.
+
+With the default `missingUsage: 'stop'`, missing token usage or a missing estimate for a limited metric has been blocking the next preparation. An absent estimator has been counting as missing data for a cost limit. `missingUsage: 'continue'` has been skipping missing data; reported zero usage has been remaining known data. Request-only limits have not been requiring usage.
+
+Budget failures have been rejecting with `NativeError.code` of `run_budget_exceeded`, `run_budget_usage_unavailable`, or `run_budget_invalid_estimate`. Active portable checkpoint capture has been rejecting a root with a budget, including manual suspension; the live allowance has not been becoming resumable state. The separate `maxModelSteps` checkpoint behavior above has been remaining available.
+
 ### Select tools before a model step
 
 `beforeStep` receives the issued Turn, application context, zero-based `stepIndex`, and an AbortSignal. Return a subset of the tools selected for the root. Return `undefined` to allow that full set for the step. Selection limits eligibility and leaves tool choice to the model.
@@ -224,6 +253,30 @@ Executor callbacks use the issued decisions imported from `@openai/agents`. They
 Use the factories themselves. A copied or serialized decision loses its authority. An object such as `{ action: 'stop' }` is replacement data in an argument transform, and ordinary result data in a result transform. See the [executor policy example](../executor-decisions.ts).
 
 A direct `false` approval denies that call through the native tool path. In Code Mode, `false` stops the owning Turn so generated code cannot catch the denial and continue dispatching. An issued stop also targets that exact owner: stopping a child leaves its parent and siblings running. Settlement joins entered callbacks and native cleanup. Earlier effects remain, and the optional reason stays private. Open or submit later work only after observing the stopped Turn's outcome.
+
+## Delegate to the Codex CLI
+
+The matching [source build](building.md) of `@openai/agents-extensions` has been exposing `nativeCodexTool()` as a native function tool. This fragment has been assuming an application-authorized executable, workspace, and CLI credentials:
+
+```ts
+import { Agent } from '@openai/agents';
+import { nativeCodexTool } from '@openai/agents-extensions/experimental/codex';
+
+const agent = new Agent({
+  instructions: 'Delegate repository inspection to Codex.',
+  tools: [
+    nativeCodexTool({
+      codexOptions: { codexPathOverride: '/opt/codex/bin/codex' },
+      defaultThreadOptions: { workingDirectory: '/srv/approved-repository' },
+      persistSession: true,
+    }),
+  ],
+});
+```
+
+The application has been owning executable selection, CLI credentials, workspace access, and subprocess policy. Native Environment grants have not been constraining this application tool. Default subprocess environment selection has been retaining platform paths, Codex credentials, and transport settings; explicit `codexOptions.env` mappings or supplied Codex instances have been remaining application-owned policy.
+
+`persistSession: true` has been serializing calls and reusing the most recently completed CLI thread within the same live native Session. Different native Sessions have been retaining independent state, and model-supplied thread IDs have been selecting only successful threads from that Session or the application-supplied `threadId`. Separate `agent.run()` calls have been opening separate Sessions; an explicit [Session](sessions.md) has been keeping reuse alive across turns. Cancellation has been joining the CLI stream.
 
 ## Programmatic tool calling
 

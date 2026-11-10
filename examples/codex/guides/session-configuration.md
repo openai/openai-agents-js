@@ -12,7 +12,7 @@ Context, environment, opening overrides, and native model requirements still nee
 
 ## Provider connection and credentials
 
-`NativeProvider` sends model requests through Codex's built-in Responses client. Choose the endpoint, API key, and WebSocket policy in the provider options. A custom endpoint must implement Responses.
+The default `NativeProvider` transport has been sending model requests through Codex's built-in Responses client. Custom endpoints on this transport have been requiring the Responses protocol. The provider options have been controlling its endpoint, API key, and WebSocket policy.
 
 - `baseUrl` defaults to `https://api.openai.com/v1`. To use `OPENAI_BASE_URL`, pass `baseUrl: process.env.OPENAI_BASE_URL`.
 - A custom endpoint uses HTTP by default.
@@ -34,7 +34,30 @@ Reuse is unavailable for runs with tools, structured output, initial messages, r
 
 Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. This also releases any retained native engine and HTTP connections. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
 
-For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#check-application-compatibility).
+### Supply an application model
+
+The matching [source build](building.md) has been accepting `modelBackend` as either a `NativeModel` with `complete(request)` or a `ModelProvider` with `getModel(modelName)`. The native runtime has been retaining conversation history and tool execution while the application backend has been producing complete Responses-shaped output items. This route has been using HTTP mode without ChatGPT authentication; `supportsWebsockets: true` has been rejecting it.
+
+```ts
+import OpenAI from 'openai';
+import { Agent, ChatCompletionsModel, NativeProvider } from '@openai/agents';
+
+const client = new OpenAI(); // Application-owned client and credentials.
+await using provider = new NativeProvider({
+  supportsWebsockets: false,
+  modelBackend: new ChatCompletionsModel(client, 'gpt-5.5'),
+});
+const agent = new Agent({
+  instructions: 'Answer briefly.',
+  model: 'gpt-5.5',
+  provider,
+});
+console.log((await agent.run('What is a prime number?')).finalOutput);
+```
+
+This example has been requiring Node.js 24, the matching built SDK, the `openai` package, and client credentials such as `OPENAI_API_KEY`. A custom `NativeModel` has been owning its own authentication and has not been requiring an SDK API key. Each `complete` call has been receiving detached request data, application context, IDs, and an `AbortSignal`; it has been returning `{ output, responseId?, usage? }` with complete Responses items rather than deltas. Cancellation has been joining admitted backend work and discarding late output, so backends have been needing to honor the signal and settle their work.
+
+`ChatCompletionsModel` has been requesting `stream: false` and exactly one response choice. It has been translating text, image URLs, default-namespace function tools, text tool results, and native JSON-schema output. It has been accepting completed `stop` and `tool_calls` choices, plus refusals; truncated and unsupported completions have been failing. Hosted tools, other function namespaces, other message content, and Responses-only prompt, truncation, and context-management controls have been requiring a Responses provider or a custom `NativeModel`. The adapter has been forwarding the cancellation signal to the injected client's request. Existing [classic model configuration](../../../packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) has been remaining available for staged migrations.
 
 ## Per-session configuration
 
