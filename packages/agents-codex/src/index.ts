@@ -397,6 +397,8 @@ export type {
   NativeModel,
   AiSdkLanguageModel,
   ModelAdapterOptions,
+  ModelRequestOptions,
+  ModelRequestOptionsFactory,
   ModelProvider,
   ModelRequest,
   ModelResponse,
