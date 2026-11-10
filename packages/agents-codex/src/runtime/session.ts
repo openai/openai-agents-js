@@ -1,3 +1,4 @@
+import { audioInputByteLimit } from './media';
 import {
   hasRealtimeAgentConfiguration,
   resolveRealtimeAgentConfiguration,
@@ -4573,13 +4574,16 @@ export class Session<OutputT = string, Context = unknown> {
       const receipt = decode(
         submissionSchema,
         await this.#native._submit(
-          encode({
-            mode: 'steer',
-            expected_turn_id: run.id,
-            input,
-            ...(expectedTurnId !== undefined ? { exact_steering: true } : {}),
-            ...(tracingContext ? { tracing_context: tracingContext } : {}),
-          }),
+          encode(
+            {
+              mode: 'steer',
+              expected_turn_id: run.id,
+              input,
+              ...(expectedTurnId !== undefined ? { exact_steering: true } : {}),
+              ...(tracingContext ? { tracing_context: tracingContext } : {}),
+            },
+            audioInputByteLimit(input),
+          ),
         ),
       );
       if (receipt.status === 'not_submitted') {
@@ -5090,7 +5094,8 @@ export class Session<OutputT = string, Context = unknown> {
         'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
       );
     if (selection) selection.generation = this.catalog.generation;
-    const wire = encodeReceipt({
+    const byteLimit = audioInputByteLimit(parts);
+    const receipt = {
       ...(selection
         ? {
             selection: {
@@ -5123,20 +5128,21 @@ export class Session<OutputT = string, Context = unknown> {
       ...(output.schema === undefined
         ? {}
         : { start: { final_output_json_schema: output.schema } }),
-    });
+    };
+    const wire = run.tracing ? undefined : encodeReceipt(receipt, byteLimit);
     // Active-only state never changes when another root merely registers.
     this.manualCheckpointRun = run;
     this.dispatchRun(
       run,
       () => {
-        if (!run.tracing) return this.#native._submit(wire);
+        if (!run.tracing) return this.#native._submit(wire!);
         return this.tracingContext(run).then((context) => {
           if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
             throw new TurnAborted(
               'Tracing admission stopped before native submission',
             );
           return this.#native._submit(
-            JSON.stringify({ ...JSON.parse(wire), tracing_context: context }),
+            encodeReceipt({ ...receipt, tracing_context: context }, byteLimit),
           );
         });
       },
@@ -11288,10 +11294,11 @@ export class Session<OutputT = string, Context = unknown> {
       throw new NativeError('Session graph is stopping');
     const thread = this.#native;
     const producer = this.childObservationProducer;
+    const parts = nativeInput(input as UserInput);
     const native = await thread._child_submit(
       id,
       instance,
-      encode({ input: nativeInput(input as UserInput) }),
+      encode({ input: parts }, audioInputByteLimit(parts)),
     );
     return this.publicChildTurn(native, producer);
   }

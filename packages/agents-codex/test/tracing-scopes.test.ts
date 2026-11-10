@@ -2306,3 +2306,52 @@ it('releases discarded workflow aliases while a native callback carrier keeps it
     native.release_trace_context(carrier);
   }
 });
+
+it('counts the complete traced audio envelope before encoding or native submission', async () => {
+  const { TraceCapture } = await import('../src/runtime/tracing-context');
+  const context = vi
+    .spyOn(TraceCapture.prototype, 'context')
+    .mockResolvedValue('t'.repeat(1024));
+  const submit = vi.fn(async () => {
+    throw new Error('unexpected native submission');
+  });
+  const session = await rootFixture(submit);
+  const real = JSON.stringify;
+  let fullAudioEncodings = 0;
+  const stringify = vi.spyOn(JSON, 'stringify').mockImplementation(((
+    value: any,
+    ...args: unknown[]
+  ) => {
+    if (
+      Array.isArray(value?.input) &&
+      value.input.some((part: any) => part.type === 'audio')
+    )
+      fullAudioEncodings++;
+    return Reflect.apply(real, JSON, [value, ...args]);
+  }) as typeof JSON.stringify);
+  try {
+    await expect(
+      (async () => {
+        const turn = await session.submit(
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_audio',
+                audio_url: 'a'.repeat(64 * 1024 * 1024 - 512),
+              },
+            ],
+          },
+          { tracing: { name: 'audio-envelope' } },
+        );
+        await turn.wait();
+      })(),
+    ).rejects.toThrow(RangeError);
+    expect(submit).not.toHaveBeenCalled();
+    expect(fullAudioEncodings).toBe(0);
+  } finally {
+    stringify.mockRestore();
+    context.mockRestore();
+    await session.close();
+  }
+});

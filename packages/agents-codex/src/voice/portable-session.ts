@@ -1,3 +1,4 @@
+import { boundedVoiceJSON } from './bounded-voice-json';
 import { VoiceConversationHistory } from './conversation-history';
 import {
   PortableVoiceHistory,
@@ -123,6 +124,7 @@ interface Profile {
   guardrails: NativeRealtimeGuardrails<PortableVoiceOptions>;
 }
 export type PortableVoiceEffect =
+  | { type: 'preflight'; event: unknown; immediate: boolean }
   | { type: 'send'; id: number; event: unknown }
   | {
       type: 'approve' | 'execute';
@@ -235,7 +237,7 @@ export class PortableVoiceSession {
       (command) =>
         command.type === 'validate_history'
           ? this.#apply(command)
-          : this.#dispatch(command),
+          : this.#dispatch(this.#preflightHistoryCommand(command)),
       (error) => this.fail(error),
       (error) => {
         if (!this.#closed) this.#notify(this.options.onError, error);
@@ -412,14 +414,21 @@ export class PortableVoiceSession {
   }
 
   sendAudio(audio: string): void {
-    this.#dispatch({ type: 'audio', audio });
+    if (typeof audio !== 'string' || audio.length > 256 * 1024)
+      throw new RangeError('Audio input exceeds capacity.');
+    this.#dispatch(
+      this.#captureInput(
+        { type: 'audio', audio },
+        'input_audio_buffer.append'.length - 'audio'.length,
+      ).command,
+    );
   }
   /** Audio-buffer commit, followed by explicit createResponse() when needed. */
   commitAudio(): void {
-    this.#dispatch({ type: 'commit_audio' });
+    this.#sendAudioControl('commit_audio');
   }
   clearAudio(): void {
-    this.#dispatch({ type: 'clear_audio' });
+    this.#sendAudioControl('clear_audio');
   }
 
   createResponse(response?: Record<string, unknown>): void {
@@ -430,6 +439,10 @@ export class PortableVoiceSession {
   }
 
   cancel(responseId?: string): void {
+    this.#preflight({
+      type: 'validate_cancel',
+      ...(responseId ? { response_id: responseId } : {}),
+    });
     this.#dispatch({
       type: 'cancel',
       ...(responseId ? { response_id: responseId } : {}),
@@ -440,6 +453,7 @@ export class PortableVoiceSession {
   }
   deleteItem(itemId: string): void {
     if (this.#closed) throw new Error('Portable voice session is closed.');
+    this.#preflight({ type: 'validate_delete', item_id: itemId });
     void this.#historyUpdates.delete(itemId).catch(() => {});
   }
   truncateItem(itemId: string, contentIndex: number, audioEndMs: number): void {
@@ -449,6 +463,90 @@ export class PortableVoiceSession {
       content_index: contentIndex,
       audio_end_ms: audioEndMs,
     });
+  }
+
+  #captureInput(
+    command: unknown,
+    overhead: number,
+  ): { command: unknown; bytes: number } {
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    if (this.#queuedSends >= 256)
+      throw new RangeError('Portable voice input exceeds capacity.');
+    const json = boundedVoiceJSON(
+      command,
+      Math.floor((8 * 1024 * 1024 - this.#queuedSendBytes) / 2) - overhead,
+    );
+    const snapshot = JSON.parse(json);
+    const event =
+      snapshot.type === 'input'
+        ? {
+            type: 'conversation.item.create',
+            item: snapshot.item,
+            ...('previous_item_id' in snapshot
+              ? { previous_item_id: snapshot.previous_item_id }
+              : {}),
+          }
+        : snapshot.type === 'text'
+          ? {
+              type: 'conversation.item.create',
+              item: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: snapshot.text }],
+              },
+            }
+          : snapshot.type === 'audio'
+            ? { type: 'input_audio_buffer.append', audio: snapshot.audio }
+            : snapshot;
+    const wire = boundedVoiceJSON(
+      event,
+      Math.floor((8 * 1024 * 1024 - this.#queuedSendBytes) / 2),
+    );
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    if (
+      this.#queuedSends >= 256 ||
+      this.#queuedSendBytes + 2 * wire.length > 8 * 1024 * 1024
+    )
+      throw new RangeError('Portable voice input exceeds capacity.');
+    return { command: snapshot, bytes: 2 * wire.length };
+  }
+
+  #sendAudioControl(type: 'commit_audio' | 'clear_audio'): void {
+    const wireType =
+      type === 'commit_audio'
+        ? 'input_audio_buffer.commit'
+        : 'input_audio_buffer.clear';
+    this.#captureInput({ type: wireType }, 0);
+    this.#dispatch({ type });
+  }
+
+  #preflight(
+    command: unknown,
+    sends = 256 - this.#queuedSends,
+    bytes = 8 * 1024 * 1024 - this.#queuedSendBytes,
+  ): void {
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    for (const effect of this.control.apply(command)) {
+      if (effect.type !== 'preflight')
+        throw new Error('Invalid native voice egress preflight.');
+      const availableSends = effect.immediate ? sends : 256;
+      const availableBytes = effect.immediate ? bytes : 8 * 1024 * 1024;
+      if (availableSends < 1)
+        throw new RangeError('Portable voice input exceeds capacity.');
+      boundedVoiceJSON(effect.event, Math.floor(availableBytes / 2));
+    }
+  }
+
+  #preflightResponse(
+    response?: unknown,
+    sends = 256 - this.#queuedSends,
+    bytes = 8 * 1024 * 1024 - this.#queuedSendBytes,
+  ): void {
+    this.#preflight(
+      { type: 'validate_response', ...(response ? { response } : {}) },
+      sends,
+      bytes,
+    );
   }
 
   #notify<Value>(
@@ -806,13 +904,51 @@ export class PortableVoiceSession {
 
   #dispatchAfterHistory(command: Record<string, unknown>): void {
     if (this.#closed) throw new Error('Portable voice session is closed.');
-    this.#historyUpdates.dispatchAfterEdits(command, (captured) => {
-      this.#dispatch(
+    const snapshot = this.#preflightHistoryCommand(command);
+    this.#historyUpdates.dispatchAfterEdits(snapshot, (captured) => {
+      const ready =
         captured.type === 'create_response'
           ? { ...captured, history: this.#history.providerSnapshot() }
-          : captured,
-      );
+          : captured;
+      // History edits can suspend admission while the transport budget changes.
+      this.#dispatch(this.#preflightHistoryCommand(ready));
     });
+  }
+
+  #preflightHistoryCommand(
+    command: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (command.type === 'text' || command.type === 'input') {
+      const overhead =
+        command.type === 'input'
+          ? 'conversation.item.create'.length - 'input'.length
+          : JSON.stringify({
+              type: 'conversation.item.create',
+              item: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: '' }],
+              },
+            }).length - JSON.stringify({ type: 'text', text: '' }).length;
+      const input = this.#captureInput(command, overhead);
+      if (command.type === 'text' || command.create_response !== false)
+        this.#preflightResponse(
+          undefined,
+          256 - this.#queuedSends - 1,
+          8 * 1024 * 1024 - this.#queuedSendBytes - input.bytes,
+        );
+      return input.command as Record<string, unknown>;
+    }
+    const snapshot = JSON.parse(boundedVoiceJSON(command));
+    if (snapshot.type === 'delete' || snapshot.type === 'truncate')
+      this.#preflight({
+        ...snapshot,
+        type:
+          snapshot.type === 'delete' ? 'validate_delete' : 'validate_truncate',
+      });
+    if (snapshot.type === 'create_response')
+      this.#preflightResponse(snapshot.response);
+    return snapshot;
   }
 
   #dispatch(command: unknown): void {
@@ -956,17 +1092,22 @@ export class PortableVoiceSession {
             throw new Error('Portable voice egress exceeds capacity.');
           this.#queuedSends++;
           this.#queuedSendBytes += bytes;
+          let charged = true;
+          const release = () => {
+            if (!charged) return;
+            charged = false;
+            this.#queuedSends--;
+            this.#queuedSendBytes -= bytes;
+          };
           const sending = this.#send
             .then(async () => {
               if (this.#closed) return;
               await this.transport.send(frame);
+              release();
               if (!this.#closed)
                 this.#dispatch({ type: 'sent', id: effect.id });
             })
-            .finally(() => {
-              this.#queuedSends--;
-              this.#queuedSendBytes -= bytes;
-            });
+            .finally(release);
           this.#send = sending.catch(() => {});
           this.#track(sending);
           this.#historyUpdates.trackSend(effect.event, sending);
