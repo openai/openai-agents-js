@@ -195,7 +195,6 @@ import {
   encodeReceipt,
   encodeOperationSelection,
   jsonObject,
-  jsonValue,
   losslessJsonObjectSchema,
   losslessJsonValueSchema,
   parseNative,
@@ -269,6 +268,12 @@ import {
 import type { NativeProviderRoutes } from './http-model';
 
 type ToolStatus = 'completed' | 'failed' | 'cancelled';
+
+interface CapturedStepMcp {
+  readonly servers: readonly McpTool[];
+  readonly names: readonly ReturnType<typeof toolIdentity>[];
+  readonly generation: bigint;
+}
 type ToolIdentity = {
   callId: string;
   toolName: string;
@@ -283,7 +288,10 @@ const submissionSchema = z.discriminatedUnion('status', [
     turn_id: z.string(),
     input_id: z.string().min(1).optional(),
   }),
-  z.object({ status: z.literal('not_submitted'), reason: jsonValue }),
+  z.object({
+    status: z.literal('not_submitted'),
+    reason: losslessJsonValueSchema,
+  }),
 ]);
 export type AcceptedSubmission = Exclude<
   z.infer<typeof submissionSchema>,
@@ -1780,6 +1788,9 @@ export class Session<OutputT = string, Context = unknown> {
     NativeTurn | ChildCallbackOwner,
     Map<string, { server: string; tool: string }>
   >();
+  // The selector barrier drains the preceding sample before publishing this source.
+  private readonly stepMcp = new WeakMap<NativeTurn, CapturedStepMcp>();
+  private readonly questionMcp = new WeakMap<NativeEvent, CapturedStepMcp>();
   private starting?: SessionStartup;
   private defaultOutput: PreparedOutput;
   private openingCatalog: ToolCatalog;
@@ -2751,7 +2762,13 @@ export class Session<OutputT = string, Context = unknown> {
           requestIdToken: string;
         }
       | undefined;
-    const generation = this.mcpGeneration;
+    const stepSource = this.questionMcp.get(event);
+    const sourceServers = stepSource?.servers ?? this.mcpTools;
+    const generation = stepSource?.generation ?? this.mcpGeneration;
+    const sourceCurrent = () =>
+      stepSource
+        ? this.stepMcp.get(run as NativeTurn) === stepSource
+        : this.mcpGeneration === generation;
     const registrations =
       this.nativeFormRegistrations.get(run) ?? new Set<string>();
     this.nativeFormRegistrations.set(run, registrations);
@@ -2876,7 +2893,7 @@ export class Session<OutputT = string, Context = unknown> {
           if (
             !preparation.active ||
             this.#native !== native ||
-            this.mcpGeneration !== generation ||
+            !sourceCurrent() ||
             !this.canAnswerNativeQuestions(run) ||
             this.nativeFormStopped(run) ||
             !(await native._native_question_pending(questionId))
@@ -2942,7 +2959,7 @@ export class Session<OutputT = string, Context = unknown> {
         return;
       } else if (
         request.mode === 'url' &&
-        this.mcpTools.some((tool) => tool.name === server)
+        sourceServers.some((tool) => tool.name === server)
       ) {
         type = 'elicitation_request';
         sessionScoped = msg.turn_id == null;
@@ -2985,6 +3002,7 @@ export class Session<OutputT = string, Context = unknown> {
       generation,
       encodeReply,
       url,
+      current: url ? undefined : sourceCurrent,
     });
   }
 
@@ -3093,7 +3111,7 @@ export class Session<OutputT = string, Context = unknown> {
         !completion?.expired() &&
         (options.current?.() ?? true) &&
         (!form ||
-          (this.mcpGeneration === generation &&
+          ((options.current?.() ?? this.mcpGeneration === generation) &&
             !this.nativeFormStopped(run))) &&
         this.nativeQuestions.get(grant.request)?.grant === grant,
       form,
@@ -3857,6 +3875,7 @@ export class Session<OutputT = string, Context = unknown> {
     budget = RunBudgetTracker.capture(options?.budget),
   ): OperationSelection | undefined {
     if (
+      !this.options.agentGraph &&
       options?.tools === undefined &&
       options?.beforeStep === undefined &&
       options?.maxModelSteps === undefined &&
@@ -4522,9 +4541,7 @@ export class Session<OutputT = string, Context = unknown> {
                 : {}),
               names: selection.names ?? null,
               before_step:
-                (this.options.agentGraph !== undefined &&
-                  (selection.names !== undefined ||
-                    selection.prepareRequest !== undefined)) ||
+                this.options.agentGraph !== undefined ||
                 selection.beforeStep !== undefined ||
                 selection.maxModelSteps !== undefined ||
                 selection.budget !== undefined,
@@ -5885,10 +5902,28 @@ export class Session<OutputT = string, Context = unknown> {
         event.subagent_id !== undefined ||
         event.subagent_incarnation !== undefined ||
         event.subagent_instance_id !== undefined ||
-        !this.mcpTools.some(
+        !(this.stepMcp.get(owner)?.servers ?? this.mcpTools).some(
           (server) =>
             server.name === invocation.server &&
             server.tools.includes(invocation.tool as string),
+        )
+      )
+        return;
+      const source = this.stepMcp.get(owner);
+      if (
+        source &&
+        !source.servers.some(
+          (server) =>
+            server.name === invocation.server &&
+            mcpToolNames([server]).some(
+              (identity, index) =>
+                server.tools[index] === invocation.tool &&
+                source.names.some(
+                  (name) =>
+                    name.namespace === identity.namespace &&
+                    name.name === identity.name,
+                ),
+            ),
         )
       )
         return;
@@ -6099,6 +6134,8 @@ export class Session<OutputT = string, Context = unknown> {
         'elicitation_request',
       ].includes(kind)
     ) {
+      const source = this.stepMcp.get(run);
+      if (source) this.questionMcp.set(event, source);
       void this.trackNativeQuestion(run, event).catch(() => {});
       return;
     }
@@ -7062,6 +7099,30 @@ export class Session<OutputT = string, Context = unknown> {
             sourceCatalog,
           );
           signal.throwIfAborted();
+          if (this.options.agentGraph) {
+            const source = this.messageProfile(msg)!;
+            const servers = this.profileStepMcp.get(
+              this.profileKey(source.profile_id, sourceCatalog.generation),
+            );
+            if (!servers)
+              throw new NativeError(
+                'Native step has no captured source MCP bindings',
+              );
+            const selectedNames = new Set(
+              names.map((name) => JSON.stringify([name.namespace, name.name])),
+            );
+            this.stepMcp.set(run, {
+              servers: servers.filter((server) =>
+                mcpToolNames([server]).some((identity) =>
+                  selectedNames.has(
+                    JSON.stringify([identity.namespace, identity.name]),
+                  ),
+                ),
+              ),
+              names,
+              generation: sourceCatalog.generation,
+            });
+          }
           reply(names);
           selection.budget?.charge();
         } catch (error) {
@@ -7824,8 +7885,7 @@ export class Session<OutputT = string, Context = unknown> {
                   names: run.selection.names ?? null,
                   before_step:
                     run.selection.maxModelSteps !== undefined ||
-                    (this.options.agentGraph !== undefined &&
-                      run.selection.names !== undefined),
+                    this.options.agentGraph !== undefined,
                 })
               : undefined,
             this.options.parentTrace
@@ -7945,11 +8005,26 @@ export class Session<OutputT = string, Context = unknown> {
       });
   }
 
+  /** @internal Resolve only an original current grant's captured declaration. */
+  _manualTool(request: ManualToolRequest): ManualTool | undefined {
+    return [...this.manualCalls.values()].find(
+      (call) => call.grant.request() === request && this.current(call.run),
+    )?.tool;
+  }
+
+  private async refreshManualProfile(run: NativeTurn): Promise<void> {
+    if (!this.options.agentGraph || !this.current(run)) return;
+    await this.refreshProfileBindings(true, run);
+    if (this.current(run) && !submissions.get(run)!.outputOverride)
+      submissions.get(run)!.output = this.defaultOutput;
+  }
+
   private async captureManualTurn(
     run: NativeTurn,
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
   ): Promise<SessionState> {
+    await this.refreshManualProfile(run);
     for (;;) {
       signal?.throwIfAborted();
       if (
@@ -8109,7 +8184,7 @@ export class Session<OutputT = string, Context = unknown> {
             }),
             z.object({
               checkpoint: z.unknown(),
-              manual_continuation: jsonObject,
+              manual_continuation: losslessJsonObjectSchema,
             }),
           ])
           .parse(parseNative(wire));
@@ -8225,7 +8300,11 @@ export class Session<OutputT = string, Context = unknown> {
       ? this.profileRuntimes.get(origin.profile_id)!
       : undefined;
     const remaining = state.manual_context.remaining_model_steps;
-    if (operation !== undefined || remaining !== undefined)
+    if (
+      this.options.agentGraph ||
+      operation !== undefined ||
+      remaining !== undefined
+    )
       run.selection = {
         originCatalog: originalProfile?.catalog ?? this.catalog,
         originMcp: originalProfile?.mcp ?? this.mcpBindings,
@@ -9207,7 +9286,7 @@ export class Session<OutputT = string, Context = unknown> {
             // uncertain failure is retired below, rather than retried as old state.
             published = true;
             if (
-              jsonObject.parse(jsonObject.parse(receipt).result)
+              losslessJsonObjectSchema.parse(jsonObject.parse(receipt).result)
                 .tools_generation !== candidate.generation.toString()
             )
               throw new NativeError(
@@ -10183,7 +10262,7 @@ export class Session<OutputT = string, Context = unknown> {
         ),
       undefined,
       false,
-      undefined,
+      this.captureSelection(),
       tracing,
     );
     run.parentTrace = parentTrace;
@@ -10387,6 +10466,21 @@ export class Session<OutputT = string, Context = unknown> {
     const run = this.lifecycle.run;
     const captureRefusal = manualCaptureRefusal(run.selection);
     if (captureRefusal) return checkpointStatus('notReady', captureRefusal);
+    try {
+      await this.refreshManualProfile(run);
+    } catch {
+      return this.current(run) &&
+        run.failure === undefined &&
+        !run.controller.signal.aborted &&
+        !this.checkpointRefusal()
+        ? checkpointStatus(
+            'unknown',
+            'Native checkpoint readiness could not be verified',
+          )
+        : checkpointStatus('notReady', 'No settled pending manual boundary');
+    }
+    const afterRefresh = this.checkpointRefusal();
+    if (afterRefresh) return checkpointStatus('notReady', afterRefresh);
     const output = submissions.get(run)?.output;
     const valid = () =>
       this.current(run) &&
@@ -10790,12 +10884,6 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.sealedStateJson !== undefined)
       return parseSessionState(this.sealedStateJson);
     this.checkCallbackOperation('suspend');
-    if (this.options.agentGraph && this.lifecycle.kind === 'turn') {
-      const run = this.lifecycle.run;
-      await this.refreshProfileBindings(true, run);
-      if (!submissions.get(run)!.outputOverride)
-        submissions.get(run)!.output = this.defaultOutput;
-    }
     if (this.pendingRoots.length)
       throw new NativeError('Cannot suspend while roots are queued');
     if (
@@ -10950,6 +11038,8 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('prepare');
     signal.throwIfAborted();
     const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : undefined;
+    if (run) await this.refreshManualProfile(run);
+    signal.throwIfAborted();
     if (
       !run ||
       !this.current(run) ||
@@ -11045,7 +11135,10 @@ export class Session<OutputT = string, Context = unknown> {
       selection.operation_tools !== undefined
       ? {
           ...state,
-          managed_tool_specs: decode(jsonValue, this.catalog.specsJson),
+          managed_tool_specs: decode(
+            losslessJsonValueSchema,
+            this.catalog.specsJson,
+          ),
         }
       : state;
   }

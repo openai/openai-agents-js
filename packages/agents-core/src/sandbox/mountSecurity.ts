@@ -18,6 +18,7 @@ import { isUnderPosixPath, normalizePosixPath } from './shared/posixPath';
 import { typedMountProviderConfig } from './shared/typedMountConfig';
 import {
   copyLocalSandboxStateAuthority,
+  copyRemoteSnapshotAuthority,
   getLocalSandboxStateAuthority,
   getSandboxStateIdentity,
 } from './internal/sessionStateTrust';
@@ -468,6 +469,7 @@ export function copySandboxStateRuntimeAuthority(
   source: object,
   target: object,
 ): void {
+  copyRemoteSnapshotAuthority(source, target);
   const authority = getLocalSandboxStateAuthority(source);
   if (!authority) return;
   const generation = captureSandboxStateGeneration(source);

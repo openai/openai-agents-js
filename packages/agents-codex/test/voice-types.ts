@@ -2,6 +2,7 @@ import {
   VoicePipeline,
   type AudioFrame,
   type SpeechProvider,
+  type VoicePipelineOptions,
 } from '../src/voice';
 
 async function voiceOutputTypes(provider: SpeechProvider) {
@@ -15,6 +16,14 @@ async function voiceOutputTypes(provider: SpeechProvider) {
     sampleRate: 24000,
     channels: 1,
   };
+  // @ts-expect-error A float32 promise needs its runtime discriminator.
+  new VoicePipeline<'float32'>({ workflow, provider });
+  // @ts-expect-error Options must carry the same runtime discriminator.
+  const missingDtype: VoicePipelineOptions<'float32'> = { workflow, provider };
+  void missingDtype;
+  new VoicePipeline<'int16'>({ workflow, provider });
+  new VoicePipeline<'int16' | 'float32'>({ workflow, provider });
+  new VoicePipeline<'float32'>({ workflow, provider, outputDtype: 'float32' });
   for await (const event of new VoicePipeline({ workflow, provider }).run(
     input,
   )) {

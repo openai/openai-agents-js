@@ -371,3 +371,7 @@ export type {
   ModelRequest,
   ModelResponse,
 } from './runtime/models';
+export type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageCounters,
+} from './runtime/realtime-usage';

@@ -737,3 +737,41 @@ it('refuses hosted and undeclared resource/prompt aliases before native dispatch
   }
   expect(call).not.toHaveBeenCalled();
 });
+
+it('preserves literal own keys through MCP policy views and argument replacements', async () => {
+  const supplied = JSON.parse(
+    '{"__proto__":{"retained":"input"},"constructor":"ctor","prototype":"proto","ordinary":"value"}',
+  );
+  const replacement = JSON.parse(
+    '{"__proto__":{"retained":"replacement"},"constructor":"ctor","prototype":"proto","ordinary":"changed"}',
+  );
+  const server = new HttpMCP({
+    name: 'records',
+    tools: ['find-record'],
+    url: 'https://example.invalid/mcp',
+    before: (context) => {
+      expect(context.originalArguments).toEqual(supplied);
+      expect(Object.hasOwn(context.originalArguments, '__proto__')).toBe(true);
+      return { action: 'replaceArguments', arguments: replacement };
+    },
+    approval: (context) => {
+      expect(context.originalArguments).toEqual(supplied);
+      expect(context.effectiveArguments).toEqual(replacement);
+      expect(Object.hasOwn(context.effectiveArguments, '__proto__')).toBe(true);
+      return true;
+    },
+  });
+  const decision = await applyMcpPrePolicy(
+    [server],
+    9007199254740993n,
+    undefined,
+    submission,
+    { ...original(), input: JSON.stringify(supplied) },
+    new AbortController().signal,
+    () => {},
+    () => {},
+  );
+  expect(decision.action).toBe('replace');
+  expect(decision.value).toEqual(replacement);
+  expect(Object.hasOwn(decision.value as object, '__proto__')).toBe(true);
+});

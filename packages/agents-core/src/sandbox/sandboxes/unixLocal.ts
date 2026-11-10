@@ -1,6 +1,8 @@
 import {
+  copyRemoteSnapshotAuthority,
   getRunStateSessionTrustedConfig,
   getLocalSandboxStateAuthority,
+  getRemoteSnapshotStoreAuthority,
   setLocalSandboxStateAuthority,
 } from '../internal/sessionStateTrust';
 import type {
@@ -110,6 +112,7 @@ import {
   truncateOutput,
 } from '../shared/output';
 import {
+  authorizeRemoteSnapshot,
   canReuseLocalSnapshotWorkspace,
   createWorkspaceArchive,
   localSnapshotIsRestorable,
@@ -144,7 +147,7 @@ export interface UnixLocalSandboxClientOptions extends SandboxClientOptions {
   fileIOProtection?: LocalFileIOProtection;
   workspaceBaseDir?: string;
   /**
-   * Trusted host paths for resuming saved state. Obtain these values from your
+   * Trusted paths and remote snapshot ID for resuming saved state. Obtain these values from your
    * application's trusted configuration, never from the saved state itself.
    * Without a workspace binding, a bound snapshot restores into a fresh workspace.
    */
@@ -153,6 +156,8 @@ export interface UnixLocalSandboxClientOptions extends SandboxClientOptions {
     /** Whether the SDK may remove the bound workspace on close. Defaults to false. */
     workspaceRootOwned?: boolean;
     localSnapshotPath?: string;
+    /** Remote ID from trusted application storage, never from saved state. */
+    remoteSnapshotId?: string;
   };
   snapshot?: LocalSandboxSnapshotSpec;
   defaultShell?: string;
@@ -1474,6 +1479,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
       // Public setters cannot turn changed paths/ownership into new authority.
       assertSandboxStateGenerationUnchanged(inputState, stateGeneration);
       if (authority) setLocalSandboxStateAuthority(inputState, authority);
+      copyRemoteSnapshotAuthority(state, inputState);
     }
 
     const serialized = {
@@ -1534,12 +1540,14 @@ export class UnixLocalSandboxClient implements SandboxClient<
     );
 
     try {
+      const restoredState = {
+        ...state,
+        workspaceRootPath,
+        workspaceRootOwned: true,
+      };
+      copyRemoteSnapshotAuthority(state, restoredState);
       return await restoreSnapshotAndMounts(
-        {
-          ...state,
-          workspaceRootPath,
-          workspaceRootOwned: true,
-        },
+        restoredState,
         workspaceRootPath,
         archiveLimits,
       );
@@ -1578,10 +1586,20 @@ export class UnixLocalSandboxClient implements SandboxClient<
     }
     const policy =
       snapshotSpec ?? options.snapshot ?? liveAuthority?.snapshotSpec ?? null;
+    const remotePolicy =
+      policy?.type === 'remote' ? policy : this.options.snapshot;
+    authorizeRemoteSnapshot(
+      state,
+      options.resumeAuthority?.remoteSnapshotId,
+      remotePolicy?.type === 'remote' ? remotePolicy.store : undefined,
+    );
     if (
       !authority?.workspaceRootPath &&
       !(state.snapshot?.type === 'local' && authority?.localSnapshotPath) &&
-      !(state.snapshot?.type === 'remote' && policy?.type === 'remote')
+      !(
+        state.snapshot?.type === 'remote' &&
+        getRemoteSnapshotStoreAuthority(state)
+      )
     ) {
       throw new UserError(
         'UnixLocal saved state requires trusted resumeAuthority host paths or a configured remote snapshot store.',
@@ -1592,12 +1610,14 @@ export class UnixLocalSandboxClient implements SandboxClient<
       state.snapshotSpec = policy ? { ...policy } : null;
       return state;
     }
-    return {
+    const authorizedState = {
       ...state,
       workspaceRootPath: authority?.workspaceRootPath ?? '',
       workspaceRootOwned: authority?.workspaceRootOwned ?? false,
       snapshotSpec: policy ? { ...policy } : null,
     };
+    copyRemoteSnapshotAuthority(state, authorizedState);
+    return authorizedState;
   }
 }
 

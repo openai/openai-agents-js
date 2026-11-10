@@ -21,6 +21,7 @@ import {
 import * as nativeBinding from '../../src/runtime/binding';
 import { NativeProviderRoutes } from '../../src/runtime/http-model';
 import { Session as OwnedSession } from '../../src/runtime/session';
+import type { SessionItem } from '../../src/runtime/history';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -119,6 +120,54 @@ const exists = (path: string) =>
   );
 
 describe('public native local profiles', () => {
+  it.each([false, true])(
+    'keeps one user item per file submission after reopen (with text: %s)',
+    async (withText) => {
+      const p = await profile();
+      const server = new ModelServer([[message('first')], [message('second')]]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        instructions: 'Answer.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      const input = {
+        role: 'user' as const,
+        content: [
+          ...(withText
+            ? [{ type: 'input_text' as const, text: 'Read this file.' }]
+            : []),
+          {
+            type: 'input_file' as const,
+            filename: 'example.pdf',
+            file_data: 'data:application/pdf;base64,JVBERi0xLjcK',
+          },
+        ],
+      };
+      const session = await agent.session({ storage: p.storage });
+      let items: SessionItem[];
+      try {
+        for (let index = 0; index < 2; index++)
+          await (await session.submit(input)).wait();
+        items = await Array.fromAsync(session.items());
+        const users = items.filter(
+          (item) => item.type === 'message' && item.role === 'user',
+        );
+        expect(users).toHaveLength(2);
+        expect(new Set(users.map((item) => item.id)).size).toBe(2);
+        expect(server.requests).toHaveLength(2);
+        server.assertExhausted();
+      } finally {
+        await session.close();
+      }
+      await using restored = await agent.session({
+        storage: p.storage,
+        resume: session.id,
+      });
+      expect(await Array.fromAsync(restored.items())).toEqual(items);
+    },
+  );
+
   it('captures a structural absolute profile before the binding await', async () => {
     const p = await profile();
     const server = new ModelServer([]);
