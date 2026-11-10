@@ -22,6 +22,7 @@ import {
   type JsonObject,
 } from './binding';
 import type { Turn } from './session';
+import { usageReportBinding, type UsageReporter } from './run-events';
 import type { WebSearch } from './web-search';
 import type { HostedTool } from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
@@ -145,6 +146,8 @@ export interface ToolContext<
   Context = unknown,
 > extends ToolCallContext<Context> {
   readonly decide: BoundDecide;
+  /** Explicitly report trusted measured usage while this native invocation is admitted. */
+  readonly reportUsage: UsageReporter;
   /** Detached snapshot of the model's arguments. */
   readonly originalArguments: Readonly<JsonObject>;
   /** Shallow read-only view of the validated callback arguments. */
@@ -486,6 +489,19 @@ export function tool<
         : parameters.parse(effectiveArgs === undefined ? args : effectiveArgs);
       let callContext: ToolContext<Context> = {
         ...context,
+        reportUsage: (usage, options) => {
+          const reporter = (
+            context as ToolCallContext<Context> & {
+              [usageReportBinding]?: UsageReporter;
+            }
+          )[usageReportBinding];
+          if (!reporter)
+            throw new Error(
+              'Usage reporting requires an admitted native ToolContext',
+            );
+          context.signal.throwIfAborted();
+          reporter(usage, options);
+        },
         decide:
           context.decide ??
           ((() =>
@@ -643,6 +659,19 @@ export function tool<
       let effective = effectiveArgs;
       let callContext: ToolContext<Context> = {
         ...context,
+        reportUsage: (usage, options) => {
+          const reporter = (
+            context as ToolCallContext<Context> & {
+              [usageReportBinding]?: UsageReporter;
+            }
+          )[usageReportBinding];
+          if (!reporter)
+            throw new Error(
+              'Usage reporting requires an admitted native ToolContext',
+            );
+          context.signal.throwIfAborted();
+          reporter(usage, options);
+        },
         decide:
           context.decide ??
           ((() =>

@@ -21,7 +21,7 @@ import { ObservationBuffer } from './observation';
 import type { ProviderLease } from './provider';
 import { decodeRequestMetadata } from './request-metadata';
 import { projectResponseFactRecord } from './response-facts';
-import { tokenUsageInfo } from './run-events';
+import { tokenUsageInfo, runUsageSnapshot } from './run-events';
 import {
   issueTurn,
   StaleTurnError,
@@ -52,6 +52,14 @@ async function completedPlainRun(
     !Array.isArray(dto.events)
   )
     throw new NativeError('Invalid plain run result');
+  // The dedicated plain bridge has been populating this DTO only from its
+  // final observed response completion, independently of retained history.
+  const threadUsage = tokenUsageInfo(dto.usage);
+  const measuredUsage = runUsageSnapshot(
+    threadUsage?.lastTokenUsage ?? null,
+    1,
+    threadUsage === null ? 1 : 0,
+  );
   const observations = new ObservationBuffer(sessionId, { retention });
   const identity = { submissionId, turnId };
   let rates: ApiRateLimits = Object.freeze({});
@@ -167,6 +175,7 @@ async function completedPlainRun(
     undefined,
     {
       rootResultReady: () => true,
+      runUsage: () => measuredUsage,
       notify: () => observations.notify(),
       rateLimits: () => rates,
       wait: async (_turn, { signal }, completion: TurnCompletion<string>) => {
@@ -196,7 +205,8 @@ async function completedPlainRun(
   const completed: Completed<string> = Object.freeze({
     turn,
     finalOutput,
-    threadUsage: tokenUsageInfo(dto.usage),
+    threadUsage,
+    runUsage: measuredUsage,
     repairAttempts: Object.freeze([]),
     guardrailResults: Object.freeze([]),
   });

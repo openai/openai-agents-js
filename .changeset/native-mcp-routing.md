@@ -1,5 +1,6 @@
 ---
 '@openai/agents-codex': patch
+'@openai/agents-extensions': patch
 ---
 
-fix: stable native MCP identity selection and safe transport-failure result policies.
+Add native MCP policy routing, guardrails, bounded history, CLI usage accounting, and borrowed model request controls.

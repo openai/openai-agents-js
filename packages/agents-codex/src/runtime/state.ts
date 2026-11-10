@@ -341,6 +341,8 @@ const manualContextSchema = z.object({
   ),
   usage: z
     .object({
+      requests: nonnegativeTokenCountWireSchema.optional(),
+      missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
       inputTokens: nonnegativeTokenCountWireSchema,
       cachedInputTokens: nonnegativeTokenCountWireSchema,
       cacheWriteInputTokens: nonnegativeTokenCountWireSchema,

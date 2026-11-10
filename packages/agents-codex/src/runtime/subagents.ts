@@ -61,6 +61,7 @@ export interface ChildTurn extends Pick<
   | 'childId'
   | 'instanceId'
   | 'events'
+  | 'runUsage'
 > {
   wait(): Promise<ChildCompleted>;
   wait(
@@ -190,6 +191,7 @@ export function issueChildTurn(
         ? { toolCall: callbacks.toolCompletion!(result.tool_completion) }
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
+      runUsage: turn.runUsage,
       repairAttempts: Object.freeze([]),
       guardrailResults: turn.guardrailResults,
     });

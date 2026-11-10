@@ -245,6 +245,14 @@ import {
 import {
   tokenUsageInfo,
   addRunUsage,
+  addTokenCounts,
+  parseTokenCount,
+  captureUsageReport,
+  usageReportBinding,
+  runUsageSnapshot,
+  mergeRunUsage,
+  type TokenUsage,
+  type UsageReporter,
   runUsageToWire,
   type RunUsage,
   type TokenCount,
@@ -569,6 +577,7 @@ export interface Completed<OutputT = string> {
   readonly toolCall?: ToolCallInfo;
   /** Cumulative native thread usage at completion, rather than a per-turn delta. */
   readonly threadUsage: TokenUsageInfo | null;
+  readonly runUsage: RunUsage;
   readonly state?: SessionState;
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
@@ -654,6 +663,7 @@ export interface TurnCompletion<T> {
 export interface TurnRequestWait<T, NativeId extends string | null = string> {
   rootResultReady?(): boolean;
   guardrailResults?(): readonly GuardrailRecord[];
+  runUsage?(): RunUsage;
   notify(): void;
   rateLimits(): ApiRateLimits;
   wait(
@@ -739,6 +749,11 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
 
   get guardrailResults(): readonly GuardrailRecord[] {
     return Object.freeze([...(this.requests?.guardrailResults?.() ?? [])]);
+  }
+
+  /** Detached measured totals; root snapshots include exactly attributed native children. */
+  get runUsage(): RunUsage {
+    return this.requests?.runUsage?.() ?? runUsageSnapshot(null);
   }
 
   get turnId(): NativeId {
@@ -1100,9 +1115,20 @@ class NativeTurn {
   preparation?: AbortController;
   id: string | null = null;
   usage: JsonValue | null = null;
-  tokenUsage: RunUsage | null = null;
-  addUsage(raw: JsonObject): void {
+  tokenUsage: TokenUsage | null = null;
+  requests: TokenCount = 0;
+  missingUsageRequests: TokenCount = 0;
+  addUsage(
+    raw: JsonObject,
+    requests: TokenCount = 1,
+    missing: TokenCount = 0,
+  ): void {
     this.tokenUsage = addRunUsage(this.tokenUsage, raw);
+    this.requests = addTokenCounts(this.requests, requests);
+    this.missingUsageRequests = addTokenCounts(
+      this.missingUsageRequests,
+      missing,
+    );
   }
   failure: unknown;
   nativeFailure?: NativeError;
@@ -3848,6 +3874,7 @@ export class Session<OutputT = string, Context = unknown> {
         {
           guardrailResults: () => run.guardrailResults,
           rootResultReady: () => scope.phase() === 'ended',
+          runUsage: () => this.runUsage(run),
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
@@ -3886,6 +3913,7 @@ export class Session<OutputT = string, Context = unknown> {
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
       guardrailResults: Object.freeze([...run.guardrailResults]),
+      runUsage: this.runUsage(root),
       repairAttempts: Object.freeze(
         this.repairTurns
           .filter((turn) => turn.parentTurnId === result.turnId)
@@ -3928,6 +3956,56 @@ export class Session<OutputT = string, Context = unknown> {
   private owns(run: NativeTurn): boolean {
     return this.lifecycle.kind === 'turn' && this.lifecycle.run === run;
   }
+  private runUsage(run: NativeTurn): RunUsage {
+    let total = runUsageSnapshot(null);
+    const origins = new Set<string>();
+    for (const step of this.rootSteps(this.rootRun(run))) {
+      if (step.id) origins.add(step.id);
+      total = mergeRunUsage(
+        total,
+        runUsageSnapshot(
+          step.tokenUsage,
+          step.requests,
+          step.missingUsageRequests,
+        ),
+      );
+    }
+    for (const child of this.childCallbacks.forOrigins(origins))
+      total = mergeRunUsage(
+        total,
+        runUsageSnapshot(
+          child.tokenUsage,
+          child.requests,
+          child.missingUsageRequests,
+        ),
+      );
+    return total;
+  }
+
+  private toolUsageReporter(
+    owner: NativeTurn | ChildCallbackOwner,
+    check: () => boolean,
+  ): UsageReporter {
+    return (usage, options) => {
+      owner.controller.signal.throwIfAborted();
+      if (!check())
+        throw new NativeError('Usage report invocation is no longer admitted');
+      const captured = captureUsageReport(usage, options?.requests);
+      if (!check())
+        throw new NativeError('Usage report invocation is no longer admitted');
+      if (owner instanceof NativeTurn)
+        owner.addUsage(captured.raw, captured.requests, captured.missing);
+      else {
+        owner.tokenUsage = addRunUsage(owner.tokenUsage, captured.raw);
+        owner.requests = addTokenCounts(owner.requests, captured.requests);
+        owner.missingUsageRequests = addTokenCounts(
+          owner.missingUsageRequests,
+          captured.missing,
+        );
+      }
+    };
+  }
+
   private rootRun(run: NativeTurn): NativeTurn {
     for (;;) {
       const previous = submissions.get(run)?.previous;
@@ -6336,6 +6414,7 @@ export class Session<OutputT = string, Context = unknown> {
         'turn_complete',
         'turn_aborted',
         'token_count',
+        'raw_response_completed',
         'hosted_tool_call_progress',
       ].includes(msg.type)
         ? event.id
@@ -6408,7 +6487,7 @@ export class Session<OutputT = string, Context = unknown> {
           owner.turnId !== turnId,
       );
     const owner =
-      msg.type === 'token_count'
+      msg.type === 'token_count' || msg.type === 'raw_response_completed'
         ? this.childCallbacks.find(id, incarnation, turnId)
         : this.childOwner(
             id,
@@ -6422,12 +6501,31 @@ export class Session<OutputT = string, Context = unknown> {
     // Only starts from this ordered reader establish prior-turn ownership.
     if (startsTurn) {
       owner.nativeStartObserved = true;
+      if (
+        owner.rootTurnId === undefined &&
+        typeof msg.root_turn_id === 'string' &&
+        msg.root_turn_id
+      )
+        owner.rootTurnId = msg.root_turn_id;
       this.observations.notify();
     }
     owner.instanceId ??= event.subagent_instance_id;
     if (msg.type === 'raw_response_item')
       this.releaseTerminalObservation(owner, msg.item);
 
+    if (msg.type === 'raw_response_completed' && event.id === owner.turnId) {
+      const raw = msg.token_usage;
+      const usage =
+        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+          ? raw
+          : undefined;
+      owner.tokenUsage = addRunUsage(owner.tokenUsage, usage ?? {});
+      owner.requests = addTokenCounts(owner.requests, 1);
+      owner.missingUsageRequests = addTokenCounts(
+        owner.missingUsageRequests,
+        usage ? 0 : 1,
+      );
+    }
     const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
@@ -7070,7 +7168,7 @@ export class Session<OutputT = string, Context = unknown> {
         raw !== null && typeof raw === 'object' && !Array.isArray(raw)
           ? raw
           : undefined;
-      if (usage) run.addUsage(usage);
+      run.addUsage(usage ?? {}, 1, usage ? 0 : 1);
       run.selection?.budget?.observe(usage);
       this.notifyManualProgress();
       this.maybeSealManual(run);
@@ -9821,6 +9919,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (!this.manualRestoring) await this.readers[0];
         if (!this.current(run))
           throw new TurnAborted('Manual checkpoint cancelled');
+        const measuredUsage = this.runUsage(run);
         const state = fromNativeCheckpoint(
           this.checkpointCatalog(
             parseNativeCheckpoint(result.checkpoint),
@@ -9848,7 +9947,13 @@ export class Session<OutputT = string, Context = unknown> {
                   schema: manualResultSchema(tool),
                 })),
               usage:
-                run.tokenUsage === null ? null : runUsageToWire(run.tokenUsage),
+                run.tokenUsage === null
+                  ? null
+                  : runUsageToWire(
+                      measuredUsage,
+                      measuredUsage.requests,
+                      measuredUsage.missingUsageRequests,
+                    ),
             },
           },
           this.checkpointSelections(run),
@@ -9947,14 +10052,18 @@ export class Session<OutputT = string, Context = unknown> {
     run.accepted.resolve({ status: 'started', turn_id: run.id });
     const usage = state.manual_context.usage;
     if (usage)
-      run.addUsage({
-        input_tokens: usage.inputTokens,
-        cached_input_tokens: usage.cachedInputTokens,
-        cache_write_input_tokens: usage.cacheWriteInputTokens,
-        output_tokens: usage.outputTokens,
-        reasoning_output_tokens: usage.reasoningOutputTokens,
-        total_tokens: usage.totalTokens,
-      });
+      run.addUsage(
+        {
+          input_tokens: usage.inputTokens,
+          cached_input_tokens: usage.cachedInputTokens,
+          cache_write_input_tokens: usage.cacheWriteInputTokens,
+          output_tokens: usage.outputTokens,
+          reasoning_output_tokens: usage.reasoningOutputTokens,
+          total_tokens: usage.totalTokens,
+        },
+        parseTokenCount(usage.requests ?? 0),
+        parseTokenCount(usage.missingUsageRequests ?? 0),
+      );
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
     this.manualCheckpointRun = run;
@@ -10070,6 +10179,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       const scope = this.decisionScope(event.msg, signal);
       const context = {
+        [usageReportBinding]: this.toolUsageReporter(owner, check),
         decide: scope.decide,
         [decisionBinding]: scope[decisionBinding],
         traceContext: nativeTraceContext(
@@ -11785,6 +11895,12 @@ export class Session<OutputT = string, Context = unknown> {
           ),
         requests: {
           guardrailResults: () => owner.guardrailResults,
+          runUsage: () =>
+            runUsageSnapshot(
+              owner.tokenUsage,
+              owner.requests,
+              owner.missingUsageRequests,
+            ),
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
