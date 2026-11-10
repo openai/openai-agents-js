@@ -435,6 +435,8 @@ function projectResponsesResponse(response: any): ModelResponse {
             output_tokens: usage.output_tokens ?? 0,
             total_tokens: usage.total_tokens ?? 0,
             cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
+            cache_write_input_tokens:
+              usage.input_tokens_details?.cache_write_tokens ?? 0,
             reasoning_output_tokens:
               usage.output_tokens_details?.reasoning_tokens ?? 0,
           },
@@ -494,6 +496,16 @@ export class AiSdkModel implements NativeModel {
       throw new TypeError('AiSdkModel received unsupported request controls');
     const reasoning = (body.reasoning ?? {}) as JsonObject;
     const providerOptions = copyJsonValue(this.#providerOptions) as JsonObject;
+    const thinking = (providerOptions.anthropic as JsonObject | undefined)
+      ?.thinking as JsonObject | undefined;
+    if (
+      this.model.provider.startsWith('anthropic.') &&
+      thinking != null &&
+      thinking.type !== 'disabled'
+    )
+      throw new TypeError(
+        'AiSdkModel does not support configured Anthropic thinking',
+      );
     if (this.model.provider.startsWith('openai.')) {
       const openaiOptions = (providerOptions.openai ?? {}) as JsonObject;
       providerOptions.openai = {
@@ -508,6 +520,9 @@ export class AiSdkModel implements NativeModel {
           : {}),
         ...(reasoning.effort != null
           ? { reasoningEffort: reasoning.effort }
+          : {}),
+        ...(reasoning.summary != null
+          ? { reasoningSummary: reasoning.summary }
           : {}),
       };
     } else if (reasoning.effort != null) {
@@ -777,6 +792,17 @@ export class AiSdkModel implements NativeModel {
     if (this.model.provider === 'openai.responses' && raw?.status != null)
       return projectResponsesResponse(raw);
     const output: JsonObject[] = [];
+    let pendingTextParts: string[] = [];
+    const flushText = () => {
+      if (pendingTextParts.length) {
+        output.push({
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: pendingTextParts.join('') }],
+        });
+        pendingTextParts = [];
+      }
+    };
     for (const part of result.content ?? []) {
       if (
         ['google', 'googleVertex', 'vertex'].some(
@@ -787,13 +813,14 @@ export class AiSdkModel implements NativeModel {
         throw new TypeError(
           'AiSdkModel does not support Google thought signatures',
         );
-      if (part.type === 'text')
-        output.push({
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: part.text }],
-        });
-      else if (part.type === 'tool-call' && !part.providerExecuted)
+      if (part.type === 'text') {
+        if (typeof part.text !== 'string')
+          throw new TypeError('AiSdkModel received unsupported output content');
+        pendingTextParts.push(part.text);
+        continue;
+      }
+      flushText();
+      if (part.type === 'tool-call' && !part.providerExecuted)
         output.push({
           type: 'function_call',
           call_id: part.toolCallId,
@@ -806,6 +833,7 @@ export class AiSdkModel implements NativeModel {
       else
         throw new TypeError('AiSdkModel received unsupported output content');
     }
+    flushText();
     if (refusal != null)
       output.push({
         type: 'message',

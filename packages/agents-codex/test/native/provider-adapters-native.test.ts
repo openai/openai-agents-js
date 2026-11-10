@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import OpenAI from 'openai';
 import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import { expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -57,11 +58,37 @@ const reasoningCases = (['reasoning-summary', 'reasoning-empty'] as const).map(
     penalties: false,
   }),
 );
-it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
+const controlCases = [
+  ...(['responses', 'ai-sdk-responses'] as const).map((adapter) => ({
+    adapter,
+    outcome: 'cache-write' as const,
+    cacheMode: 'ordinary',
+    cacheKey: undefined,
+    penalties: false,
+  })),
+  {
+    adapter: 'ai-sdk-responses' as const,
+    outcome: 'summary-auto' as const,
+    cacheMode: 'summary-native',
+    cacheKey: undefined,
+    penalties: false,
+  },
+];
+it.each([
+  ...ordinaryCases,
+  ...cacheCases,
+  ...penaltyCases,
+  ...reasoningCases,
+  ...controlCases,
+])(
   'keeps borrowed $adapter $outcome $cacheMode cache key inside the native tool loop',
   async ({ adapter, outcome, cacheMode, cacheKey, penalties }) => {
     const reasoning = outcome.startsWith('reasoning-');
-    const success = outcome === 'complete' || reasoning;
+    const success =
+      outcome === 'complete' ||
+      reasoning ||
+      outcome === 'cache-write' ||
+      outcome === 'summary-auto';
     const reasoningSummary =
       outcome === 'reasoning-empty'
         ? []
@@ -98,7 +125,6 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
       const final = seen.length > 1;
       if (reasoning) {
         expect(body.metadata).toEqual({ owner: 'private-options' });
-        expect(body.reasoning.summary).toBe('detailed');
         if (final)
           expect(
             body.input.find((item: any) => item.type === 'reasoning'),
@@ -148,7 +174,10 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
             input_tokens: 3,
             output_tokens: 2,
             total_tokens: 5,
-            input_tokens_details: { cached_tokens: 1 },
+            input_tokens_details: {
+              cached_tokens: 1,
+              ...(outcome === 'cache-write' ? { cache_write_tokens: 2 } : {}),
+            },
             output_tokens_details: { reasoning_tokens: 1 },
           },
         };
@@ -258,7 +287,9 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
                       'gpt-4.1',
                     )
                   : createOpenAI({ apiKey: 'synthetic', baseURL }).responses(
-                      reasoning ? 'gpt-5' : 'gpt-4.1',
+                      reasoning || outcome === 'summary-auto'
+                        ? 'gpt-5'
+                        : 'gpt-4.1',
                     ),
                 cacheMode === 'ordinary' ? {} : providerOptions,
               );
@@ -272,12 +303,15 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
         modelBackend: backend,
       });
       await using session = await new Agent({
-        model: reasoning ? 'gpt-5' : 'gpt-4.1',
+        model: reasoning || outcome === 'summary-auto' ? 'gpt-5' : 'gpt-4.1',
         instructions: 'Use double.',
         ...(cacheMode !== 'ordinary'
           ? {
               modelSettings: {
                 parallelToolCalls: true,
+                ...(outcome === 'summary-auto'
+                  ? { reasoningSummary: 'auto' }
+                  : {}),
                 ...(penalties
                   ? {
                       extraBody: {
@@ -323,6 +357,16 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
         expect(result.finalOutput).toBe('42');
         expect(result.threadUsage?.totalTokenUsage.inputTokens).toBe(6);
         expect(result.threadUsage?.totalTokenUsage.outputTokens).toBe(4);
+        if (outcome === 'cache-write') {
+          expect(
+            result.threadUsage?.totalTokenUsage.cacheWriteInputTokens,
+          ).toBe(4);
+          const turns = [];
+          for await (const recorded of session.turns()) turns.push(recorded);
+          expect(turns[0].usage?.inputTokensDetails.cacheWriteTokens).toBe(4);
+        }
+        if (reasoning || outcome === 'summary-auto')
+          for (const body of seen) expect(body.reasoning?.summary).toBe('auto');
       }
       expect(effects).toEqual(success ? [21] : []);
       expect(seen).toHaveLength(success ? 2 : 1);
@@ -354,4 +398,79 @@ it.each([...ordinaryCases, ...cacheCases, ...penaltyCases, ...reasoningCases])(
     }
   },
   30_000,
+);
+
+it.each(['v2', 'v3', 'v4', 'anthropic-v3'] as const)(
+  'keeps complete %s text in native one-shot finalOutput',
+  async (version) => {
+    let fallback = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      if (request.url?.startsWith('/fallback')) {
+        fallback++;
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({ error: { message: 'Unexpected fallback' } }),
+        );
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          id: 'msg_split',
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-sonnet-4-5',
+          content: [
+            { type: 'text', text: '4' },
+            { type: 'text', text: '2' },
+          ],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address() as { port: number };
+    const baseURL = `http://127.0.0.1:${address.port}`;
+    try {
+      const model =
+        version === 'anthropic-v3'
+          ? createAnthropic({ apiKey: 'fixture', baseURL })('claude-sonnet-4-5')
+          : {
+              specificationVersion: version,
+              provider: 'fixture.messages',
+              modelId: 'fixture',
+              doGenerate() {
+                return {
+                  finishReason: 'stop',
+                  content: [
+                    { type: 'text', text: '4' },
+                    { type: 'text', text: '2' },
+                  ],
+                };
+              },
+            };
+      await using provider = new NativeProvider({
+        apiKey: 'fixture',
+        baseUrl: `${baseURL}/fallback`,
+        modelBackend: new AiSdkModel(model),
+      });
+      expect(
+        (
+          await new Agent({
+            model: 'gpt-4.1',
+            instructions: 'Reply42.',
+            provider,
+          }).run('Reply.')
+        ).finalOutput,
+      ).toBe('42');
+      expect(fallback).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
 );
