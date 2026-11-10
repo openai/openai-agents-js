@@ -22,7 +22,7 @@ The command prints two dispatch observations and two request-to-response joins. 
 | `reasoningSummary` | Resolved summary string, or `null` when omitted. |
 | `serviceTier` | Resolved service-tier string, or `null` when omitted. |
 | `wire` | `responses` or `responses_lite`. |
-| `transport` | Selected `http_sse` or `websocket` invocation path. |
+| `transport` | Selected transport. `http_sse` for streaming HTTP, `http_json` for buffered HTTP, or `websocket`. |
 
 The event also carries Session, submission, thread, native turn, and sequence identities. A correction attempt retains its own thread and submission identity and links to the original submission with `parentSubmissionId`.
 
