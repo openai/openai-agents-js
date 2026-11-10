@@ -1262,6 +1262,11 @@ mod native_question_tests {
 }
 
 params!(RealtimeSdkGeneration { generation: String });
+params!(RealtimeSdkResponse {
+    generation: String,
+    #[serde(default)]
+    response: codex_protocol::realtime_settings::RealtimeResponseOptions,
+});
 fn realtime_auto_response_default() -> bool {
     true
 }
@@ -1667,9 +1672,10 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
             }
         }
         "realtime_conversation_response_sdk" => {
-            let p: RealtimeSdkGeneration = decode(params)?;
+            let p: RealtimeSdkResponse = decode(params)?;
             Op::RealtimeConversationResponseSdk {
                 generation: p.generation,
+                response: p.response,
                 reply,
             }
         }

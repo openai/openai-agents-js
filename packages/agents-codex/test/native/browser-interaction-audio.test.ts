@@ -49,12 +49,18 @@ describe('real browser native acceptance', () => {
   browserIt(
     'captures a fake microphone and plays actual browser peer audio through native WebRTC ownership',
     async () => {
-      const client = await readFile(
-        resolve('examples/codex/browser-acceptance/realtime-client.mjs'),
-      );
-      const browserModule = await readFile(
-        resolve('packages/agents-codex/dist/voice/browser.mjs'),
-      );
+      const [client, browserModule, webrtcModule] = await Promise.all([
+        readFile(
+          resolve('examples/codex/browser-acceptance/realtime-client.mjs'),
+        ),
+        readFile(resolve('packages/agents-codex/dist/voice/browser.mjs')),
+        readFile(resolve('packages/agents-codex/dist/voice/webrtc.mjs')),
+      ]);
+      const scripts = new Map([
+        ['/client.mjs', client],
+        ['/voice-browser.mjs', browserModule],
+        ['/webrtc.mjs', webrtcModule],
+      ]);
       const offers: string[] = [];
       const hangups: string[] = [];
       const sidebands: string[] = [];
@@ -68,16 +74,17 @@ describe('real browser native acceptance', () => {
       const server = createServer(async (request, response) => {
         try {
           const path = new URL(request.url!, 'http://localhost').pathname;
+          const script = scripts.get(path);
           if (path === '/') {
             response
               .writeHead(200, { 'content-type': 'text/html' })
               .end(
                 '<button>Connect</button><audio autoplay></audio><script type="module" src="/client.mjs"></script>',
               );
-          } else if (path === '/client.mjs' || path === '/voice-browser.mjs') {
+          } else if (script) {
             response
               .writeHead(200, { 'content-type': 'text/javascript' })
-              .end(path === '/client.mjs' ? client : browserModule);
+              .end(script);
           } else if (request.method === 'POST' && path === '/exchange') {
             const chunks: Buffer[] = [];
             for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -198,7 +205,7 @@ describe('real browser native acceptance', () => {
         const observed = await page.evaluate(
           async () => await (window as any).acceptance,
         );
-        expect(observed).toMatchObject({
+        expect(observed, observed?.error).toMatchObject({
           ok: true,
           result: { mutedAndRestored: true, closed: true },
         });

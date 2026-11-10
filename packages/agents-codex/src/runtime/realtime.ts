@@ -71,6 +71,8 @@ export interface NativeRealtimeOptions {
   model?: string;
   voice?: string;
   instructions?: string;
+  /** Initial provider output modality; defaults to audio. */
+  outputModality?: 'audio' | 'text';
   /** Resolve once per connection without changing the Session provider's auth. */
   apiKey?: string | ((signal?: AbortSignal) => string | Promise<string>);
   signal?: AbortSignal;
@@ -90,8 +92,15 @@ export interface NativeRealtimeOptions {
 /** Session configuration for accepting an inbound SIP call before attaching sideband media. */
 export type NativeRealtimeSipConfigOptions = Pick<
   NativeRealtimeOptions,
-  'model' | 'voice' | 'instructions' | 'settings' | 'tools'
+  'model' | 'voice' | 'instructions' | 'outputModality' | 'settings' | 'tools'
 >;
+
+/** Overrides for one response; the accepted Session configuration remains unchanged. */
+export type NativeRealtimeResponseOptions = {
+  readonly instructions?: string;
+  readonly outputModality?: 'audio' | 'text';
+  readonly maxOutputTokens?: number | 'inf';
+};
 
 /** @internal Both connection admission and SIP acceptance use Core's config builder. */
 export function realtimePrepareParams(
@@ -117,7 +126,7 @@ export function realtimePrepareParams(
       backend_reasoning_status: false,
       codex_response_handoff_channel_prefixes: null,
       model: options.model ?? null,
-      output_modality: 'audio',
+      output_modality: options.outputModality ?? 'audio',
       include_startup_context: false,
       initial_items: [],
       realtime_start_instructions: null,
@@ -1044,12 +1053,44 @@ class NativeRealtimeOwner {
       options,
     );
   }
-  /** Request a response using the current accepted Session configuration. */
-  async requestResponse(): Promise<void> {
+  /** Request one response, optionally overriding the accepted configuration for this response. */
+  async requestResponse(
+    response?: NativeRealtimeResponseOptions,
+  ): Promise<void> {
     this.checkLive();
+    let captured: JsonObject | undefined;
+    let bytes = 0;
+    if (response !== undefined) {
+      if (
+        typeof response !== 'object' ||
+        response === null ||
+        Array.isArray(response) ||
+        Object.keys(response).some(
+          (key) =>
+            !['instructions', 'outputModality', 'maxOutputTokens'].includes(
+              key,
+            ),
+        )
+      )
+        throw new TypeError('Unsupported Realtime response options');
+      const { instructions, outputModality, maxOutputTokens } = response;
+      if (instructions !== undefined) bytes = userInputBytes(instructions);
+      captured = {
+        ...(instructions === undefined ? {} : { instructions }),
+        ...(outputModality === undefined
+          ? {}
+          : { output_modality: outputModality }),
+        ...(maxOutputTokens === undefined
+          ? {}
+          : { max_output_tokens: maxOutputTokens }),
+      };
+    }
     await this.enqueueInput(async () => {
-      await this.call('response');
-    });
+      await this.call(
+        'response',
+        captured === undefined ? {} : { response: captured },
+      );
+    }, bytes);
   }
   /**
    * Reconcile provider items observed during this connection with the supplied items.

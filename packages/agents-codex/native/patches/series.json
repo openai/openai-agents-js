@@ -451,7 +451,11 @@
     {
       "path": "0099-retained-trace-start-sequence.patch",
       "sha256": "860664c1fbf24002588e74e5dbbda2ea7b14d4aadd0bca5ba2c1f0e8871625f9"
+    },
+    {
+      "path": "0152-native-realtime-response-options.patch",
+      "sha256": "149229c9a3cef8fad7156ecbcf9658977330bcb89df53a4b22ac0dd945d51b6d"
     }
   ],
-  "result_tree": "6041b87b22bc9df3ad24161d37c5e5452f4cdc3c"
+  "result_tree": "8cc0da81965328aa79caf946399e4453b4127cdb"
 }

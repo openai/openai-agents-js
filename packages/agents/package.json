@@ -173,6 +173,16 @@
         "default": "./dist/voice/browser.js"
       }
     },
+    "./voice/react-native": {
+      "import": {
+        "types": "./dist/voice/react-native.d.mts",
+        "default": "./dist/voice/react-native.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/react-native.d.ts",
+        "default": "./dist/voice/react-native.js"
+      }
+    },
     "./voice/workerd": {
       "import": {
         "types": "./dist/voice/workerd.d.mts",
@@ -332,6 +342,9 @@
       ],
       "voice/browser": [
         "dist/voice/browser.d.ts"
+      ],
+      "voice/react-native": [
+        "dist/voice/react-native.d.ts"
       ],
       "voice/workerd": [
         "dist/voice/workerd.d.ts"

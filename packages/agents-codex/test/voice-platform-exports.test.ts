@@ -22,7 +22,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
       );
       // Produce only these independent entry artifacts; package exports resolve
       // normally, with no alias that could conceal a native barrel dependency.
-      for (const leaf of ['browser', 'workerd', 'portable']) {
+      for (const leaf of ['browser', 'workerd', 'portable', 'react-native']) {
         const entry = manifest.exports[`./voice/${leaf}`].import
           .default as string;
         const source = await readFile(
@@ -51,6 +51,23 @@ it('bundles actual public voice platform subpaths for browsers without native or
         await writeFile(path, emitted);
       }
     }
+    const shared = await readFile(
+      resolve('packages/agents-codex/src/voice/webrtc.ts'),
+      'utf8',
+    );
+    const sharedOutput = join(
+      directory,
+      'node_modules/@openai/agents-codex/dist/voice/webrtc.mjs',
+    );
+    await writeFile(
+      sharedOutput,
+      ts.transpileModule(shared, {
+        compilerOptions: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.ESNext,
+        },
+      }).outputText,
+    );
     // tsx is a direct workspace dev dependency and declares esbuild itself.
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -58,7 +75,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
       absWorkingDir: directory,
       stdin: {
         contents:
-          "export { NativeVoiceWebRTC } from '@openai/agents/voice/browser'; export { openVoiceWebSocket } from '@openai/agents/voice/workerd'; export { NativeVoiceControl, PortableVoiceSession } from '@openai/agents/voice/portable';",
+          "export { NativeVoiceWebRTC } from '@openai/agents/voice/browser'; export { openVoiceWebSocket } from '@openai/agents/voice/workerd'; export { NativeVoiceControl, PortableVoiceSession } from '@openai/agents/voice/portable'; export { NativeVoiceWebRTC as MobileVoice } from '@openai/agents/voice/react-native';",
         resolveDir: directory,
         sourcefile: 'consumer.js',
       },
@@ -68,13 +85,51 @@ it('bundles actual public voice platform subpaths for browsers without native or
       write: false,
       metafile: true,
     });
-    expect(Object.keys(result.metafile!.inputs)).toHaveLength(7);
+    expect(Object.keys(result.metafile!.inputs)).toHaveLength(10);
     expect(result.outputFiles[0].text).toContain('NativeVoiceWebRTC');
     expect(result.outputFiles[0].text).toContain('openVoiceWebSocket');
     expect(result.outputFiles[0].text).not.toMatch(
       /codex\.node|node:|NativeProvider|ClassicRealtimeSession/,
     );
+    const mobile = await build({
+      absWorkingDir: directory,
+      stdin: {
+        contents:
+          "export { NativeVoiceWebRTC } from '@openai/agents/voice/react-native';",
+        resolveDir: directory,
+        sourcefile: 'mobile.js',
+      },
+      platform: 'neutral',
+      conditions: ['react-native'],
+      format: 'esm',
+      bundle: true,
+      write: false,
+    });
+    expect(mobile.outputFiles[0].text).not.toMatch(
+      /codex\.node|node:|navigator|document|HTMLMediaElement|ClassicRealtimeSession/,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it('typechecks the mobile public entry without DOM libraries', () => {
+  const program = ts.createProgram(
+    [resolve('packages/agents-codex/src/voice/react-native.ts')],
+    {
+      noEmit: true,
+      strict: true,
+      skipLibCheck: true,
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      lib: ['lib.esnext.d.ts'],
+      types: ['node'],
+    },
+  );
+  expect(
+    ts
+      .getPreEmitDiagnostics(program)
+      .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n')),
+  ).toEqual([]);
 });

@@ -12,6 +12,7 @@ export type NativeRealtimeTranscription = {
 export type NativeRealtimeTurnDetection =
   | {
       readonly type: 'server_vad';
+      readonly modelVersion?: string;
       readonly createResponse?: boolean;
       readonly interruptResponse?: boolean;
       readonly threshold?: number;
@@ -21,6 +22,7 @@ export type NativeRealtimeTurnDetection =
     }
   | {
       readonly type: 'semantic_vad';
+      readonly modelVersion?: string;
       readonly createResponse?: boolean;
       readonly interruptResponse?: boolean;
       readonly eagerness?: 'auto' | 'low' | 'medium' | 'high';
@@ -262,6 +264,7 @@ function settingsObject(
         ? null
         : fields(settings.turnDetection, [
             'type',
+            ['modelVersion', 'model_version'],
             ['createResponse', 'create_response'],
             ['interruptResponse', 'interrupt_response'],
             'threshold',
