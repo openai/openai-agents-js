@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import {
@@ -307,6 +307,75 @@ it('uses successful native image reads, not image arguments, as path-access evid
   );
   server.assertExhausted();
 }, 30_000);
+
+it.skipIf(process.platform === 'win32')(
+  'publishes scoped guidance after a relative native image read through a cwd symlink',
+  async () => {
+    await using executor = await startProjectExecutor();
+    const root = join(executor.cwd, 'project');
+    const cwd = join(executor.cwd, 'project-alias');
+    const imagePath = 'src/pixel.png';
+    await seedProject(root, 'ALIAS_JADE');
+    await writeRule(executor.cwd, 'ancestor', 'ANCESTOR_RUBY');
+    await symlink(root, cwd, 'dir');
+    const png = await readFile(join(root, imagePath));
+    const target = join(cwd, imagePath);
+    const server = new ModelServer([
+      () => {
+        expect(executor.readRequested(target)).toBe(false);
+        return [call('view_image', { path: imagePath }, { callId: 'image' })];
+      },
+      [message('image read')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      provider,
+      instructions: 'Answer.',
+      model: 'gpt-5',
+    }).session({
+      environment: new Environment({
+        url: executor.url,
+        cwd,
+        headers: executor.headers,
+        writePolicy: 'strict',
+        tools: [],
+      }),
+      projectGuidance: true,
+    });
+    expect((await (await session.submit('Go.')).wait()).finalOutput).toBe(
+      'image read',
+    );
+    server.assertExhausted();
+    const [before, after] = server.requests;
+    expect(JSON.stringify(before!.tools ?? [])).toContain(
+      '"name":"view_image"',
+    );
+    expect(executor.readRequested(target)).toBe(true);
+    expect(functionOutput(after!, 'image')).toMatchObject({
+      output: expect.arrayContaining([
+        expect.objectContaining({
+          type: 'input_image',
+          image_url: `data:image/png;base64,${png.toString('base64')}`,
+        }),
+      ]),
+    });
+    expect(
+      executor.requests.filter((rpc) => rpc.method === 'process/start'),
+    ).toHaveLength(0);
+    for (const request of server.requests) {
+      expect(JSON.stringify(request.tools ?? [])).not.toMatch(
+        /"name":"(?:exec_command|write_stdin)"/,
+      );
+      expect(modelInput(request)).not.toMatch(
+        /ALIAS_JADE_UNRELATED|ANCESTOR_RUBY/,
+      );
+    }
+    expect(currentCanonicalGuidance(before!)).toContain('ALIAS_JADE_GENERAL');
+    expect(modelInput(before!)).not.toContain('ALIAS_JADE_SCOPED');
+    expect(currentCanonicalGuidance(after!)).toContain('ALIAS_JADE_SCOPED');
+  },
+  30_000,
+);
 
 it.each([
   ['read_text_file', 'src/missing', false],

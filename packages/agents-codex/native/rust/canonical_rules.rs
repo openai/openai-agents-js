@@ -1057,7 +1057,7 @@ async fn load_rules(
     canonical_root: &PathUri,
     paths: &HashSet<PathUri>,
 ) -> Result<RuleSnapshot> {
-    let directory = root.join(".claude/rules")?;
+    let directory = canonical_root.join(".claude/rules")?;
     let no_follow = GetMetadataOptions {
         follow_symlinks: false,
     };
@@ -1114,7 +1114,7 @@ async fn load_rules(
     let mut result = RuleSnapshot::default();
     for path in files {
         let label = path
-            .relative_path_from(root)
+            .relative_path_from(canonical_root)
             .context("rule outside project")?;
         ensure!(
             contained(fs, canonical_root, &path).await,
