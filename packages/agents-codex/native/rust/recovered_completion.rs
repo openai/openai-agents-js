@@ -104,26 +104,8 @@ impl ToolOutcomes {
             outcomes,
         }))
     }
-    pub(super) fn validate(&self, history: &[RolloutItem], turn: &str) -> Result<()> {
-        // Fresh imports remap the runtime thread, while provider observations
-        // retain their original attribution. This anchor is ordinary history
-        // data; only a fresh admitted callback receipt authorizes completion.
-        let mut anchors = history.iter().filter_map(|item| match item {
-            RolloutItem::ResponseObservationRecord(record)
-                if record.id == self.response_observation_id && record.turn_id == turn =>
-            {
-                Some(record)
-            }
-            _ => None,
-        });
-        let original = anchors
-            .next()
-            .context("Recovered tool outcomes lack their original response anchor")?;
-        ensure!(
-            anchors.next().is_none(),
-            "Duplicate recovered response anchor"
-        );
-        let expected = Self::capture(history, &original.thread_id.to_string(), turn)?
+    pub(super) fn validate(&self, history: &[RolloutItem], thread: &str, turn: &str) -> Result<()> {
+        let expected = Self::capture(history, thread, turn)?
             .context("Recovered tool outcomes lack a retained completed response")?;
         ensure!(
             self.response_observation_id == expected.response_observation_id
