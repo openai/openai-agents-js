@@ -11,13 +11,18 @@ use codex_protocol::{
     models::ResponseItem,
     protocol::{EventMsg, ThreadHistoryMode},
 };
+use codex_rollout::{WriterLockCoordinator, WriterLockGuard};
 use codex_thread_store::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
+
+#[path = "local_tree_recovery.rs"]
+mod local_tree_recovery;
+use local_tree_recovery::*;
 
 pub(crate) const CHECKLIST_DIRECTORY: &str = "sdk-checklists";
 
@@ -29,6 +34,9 @@ pub struct LocalChecklistStore {
     graph: Arc<MemoryAgentGraph>,
     state: Arc<codex_state::StateRuntime>,
     writers: Mutex<HashMap<ThreadId, Writer>>,
+    writer_locks: Arc<WriterLockCoordinator>,
+    #[cfg(test)]
+    fail_recovery_write: std::sync::Mutex<Option<(ThreadId, RecoveryWritePoint)>>,
     // Stop new acquisitions before database draining; this is not close completion.
     admissions_closed: std::sync::atomic::AtomicBool,
     resume_admissions: std::sync::Mutex<ResumeAdmissions>,
@@ -117,6 +125,7 @@ pub(crate) struct LocalResumeAdmission<'a> {
     store: &'a LocalChecklistStore,
     id: ThreadId,
     expected: Arc<ResumeExpectation>,
+    descendant_leases: Vec<WriterLockGuard>,
 }
 
 impl LocalResumeAdmission<'_> {
@@ -243,8 +252,8 @@ fn validate_resume_provider(history: &[RolloutItem], expected: &str) -> ThreadSt
     Ok(())
 }
 
-fn recorded_turns(history: &[RolloutItem]) -> HashMap<String, bool> {
-    let mut turns = HashMap::new();
+fn recorded_turns(history: &[RolloutItem]) -> BTreeMap<String, bool> {
+    let mut turns = BTreeMap::new();
     for item in history {
         match item {
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => {
@@ -262,72 +271,6 @@ fn recorded_turns(history: &[RolloutItem]) -> HashMap<String, bool> {
         }
     }
     turns
-}
-
-fn validate_local_tree(
-    root: ThreadId,
-    edges: &[(ThreadId, SpawnEdge)],
-    histories: &HashMap<ThreadId, Vec<RolloutItem>>,
-) -> ThreadStoreResult<()> {
-    let root_history = histories
-        .get(&root)
-        .ok_or_else(|| checklist_error("missing root history during descendant admission"))?;
-    validate_root_header(root, root_history)?;
-    validate_settled(root_history)?;
-    let mut parents = HashMap::new();
-    for (child, edge) in edges {
-        if *child == root || parents.insert(*child, edge.parent).is_some() {
-            return Err(checklist_error("invalid descendant topology"));
-        }
-    }
-    let mut turns = HashMap::from([(root, recorded_turns(root_history))]);
-    for (child, edge) in edges {
-        let mut parent = *child;
-        let mut visited = HashSet::new();
-        while parent != root {
-            if !visited.insert(parent) {
-                return Err(checklist_error("cyclic descendant topology"));
-            }
-            parent = *parents
-                .get(&parent)
-                .ok_or_else(|| checklist_error("descendant is not connected to this root"))?;
-        }
-        let history = histories
-            .get(child)
-            .ok_or_else(|| checklist_error("missing recorded descendant history"))?;
-        if !matches!(history.first(), Some(RolloutItem::SessionMeta(header))
-            if header.meta.id == *child
-                && header.meta.source.parent_thread_id().is_none_or(|id| id == edge.parent)
-                && header.meta.parent_thread_id.is_none_or(|id| id == edge.parent)
-                && (header.meta.source.parent_thread_id().is_some()
-                    || header.meta.parent_thread_id.is_some()))
-        {
-            return Err(checklist_error(
-                "descendant header does not match its graph edge",
-            ));
-        }
-        // Closed edges do not prove an external effect's outcome.
-        validate_settled(history)?;
-        turns.insert(*child, recorded_turns(history));
-    }
-    for (child, edge) in edges {
-        if edge.status == ThreadSpawnEdgeStatus::Closed {
-            continue;
-        }
-        let parent_turns = turns
-            .get(&edge.parent)
-            .ok_or_else(|| checklist_error("missing parent turns during descendant admission"))?;
-        let own: Vec<_> = turns[child]
-            .iter()
-            .filter(|(id, _)| !parent_turns.contains_key(*id))
-            .collect();
-        if own.is_empty() || own.iter().any(|(_, active)| **active) {
-            return Err(checklist_error(
-                "local history has an active descendant; its runtime cannot be restored",
-            ));
-        }
-    }
-    Ok(())
 }
 
 impl LocalChecklistStore {
@@ -374,6 +317,9 @@ impl LocalChecklistStore {
             graph,
             state,
             writers: Mutex::default(),
+            writer_locks: Arc::new(WriterLockCoordinator::new(&home)),
+            #[cfg(test)]
+            fail_recovery_write: Default::default(),
             admissions_closed: std::sync::atomic::AtomicBool::new(false),
             resume_admissions: std::sync::Mutex::default(),
             #[cfg(test)]
@@ -451,6 +397,7 @@ impl LocalChecklistStore {
             store: self,
             id,
             expected,
+            descendant_leases: Vec::new(),
         })
     }
 
@@ -470,12 +417,12 @@ impl LocalChecklistStore {
             .ok_or_else(|| checklist_error("local preparation requires stored history"))?;
         validate_root_header(params.thread_id, &history)?;
         validate_resume_provider(&history, &params.metadata.model_provider)?;
-        let admission = self.admit_resume(params.thread_id, model, history, instructions)?;
+        let mut admission = self.admit_resume(params.thread_id, model, history, instructions)?;
         let expected = admission.expected.clone();
         let store = self.clone();
         // The admission guard is registered before spawning or awaiting any
         // operation that can install a native recorder.
-        tokio::spawn(async move {
+        admission.descendant_leases = tokio::spawn(async move {
             store
                 .prepare_writer(params, expected, executor_policy, receipts)
                 .await
@@ -491,7 +438,7 @@ impl LocalChecklistStore {
         expected: Arc<ResumeExpectation>,
         executor_policy: crate::environment::LocalResumeExecutorPolicy,
         receipts: Vec<Receipt>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Vec<WriterLockGuard>> {
         let id = params.thread_id;
         let mut writers = self.writers.lock().await;
         if self.admissions_closed.load(Ordering::Acquire)
@@ -512,68 +459,79 @@ impl LocalChecklistStore {
             },
         );
         let mut acquired = false;
-        let result: anyhow::Result<()> = async {
+        let result: anyhow::Result<Vec<WriterLockGuard>> = async {
             #[cfg(test)]
             self.hold_startup_close_probe(Some(id), StartupClosePoint::BeforePreparedAcquire)
                 .await;
             if expected.retired.load(Ordering::Acquire) {
                 return Err(checklist_error("local resume preparation was retired").into());
             }
-            let mut history = self.inner.resume_thread(params.clone()).await?;
-            acquired = true;
-            #[cfg(test)]
-            self.hold_startup_close_probe(Some(id), StartupClosePoint::PreparedNativeWriter)
-                .await;
-            let current = self
-                .inner
-                .read_thread(ReadThreadParams {
-                    thread_id: id,
-                    include_archived: params.include_archived,
-                    include_history: false,
-                })
-                .await?;
+            let root_lease = self.writer_locks.acquire(id).map_err(checklist_error)?;
+            let edges = self.recovery_edges(id).await.map_err(checklist_error)?;
+            let descendant_leases = self
+                .lock_descendants(id, &edges, &writers)
+                .map_err(checklist_error)?;
+            if !same_edges(
+                &edges,
+                &self.recovery_edges(id).await.map_err(checklist_error)?,
+            ) {
+                return Err(
+                    checklist_error("local descendant graph changed during recovery").into(),
+                );
+            }
+            let read = ReadThreadParams {
+                thread_id: id,
+                include_archived: params.include_archived,
+                include_history: false,
+            };
+            let current = self.inner.read_thread(read.clone()).await?;
             if current.model != expected.model {
                 return Err(checklist_error("local model changed during resume admission").into());
             }
-            let path = self.inner.live_rollout_path(id).await?;
-            let (mut complete, owner, errors) =
-                codex_rollout::RolloutRecorder::load_rollout_items(&path)
-                    .await
-                    .map_err(checklist_error)?;
-            if owner != Some(id) || errors != 0 {
-                return Err(checklist_error(
-                    "cannot resume incomplete rollout or another thread's history",
-                )
-                .into());
-            }
-            validate_root_header(id, &complete)?;
-            validate_root_header(id, &history)?;
-            validate_resume_provider(&complete, &params.metadata.model_provider)?;
-            validate_resume_provider(&history, &params.metadata.model_provider)?;
-            executor_policy
-                .validate(&complete, id)
+            let path = self
+                .recovery_path(current.rollout_path)
+                .await
                 .map_err(checklist_error)?;
-            let plan = match local_reconciliation::plan(id, &complete, &history, &receipts) {
-                Ok(plan) => plan,
-                Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
-                    Ok(mut hold) => {
-                        hold.history = complete;
-                        return Err(hold.into());
+            if let Some(requested) = &params.rollout_path
+                && self
+                    .recovery_path(Some(requested.clone()))
+                    .await
+                    .map_err(checklist_error)?
+                    != path
+            {
+                return Err(
+                    checklist_error("local rollout path changed during resume admission").into(),
+                );
+            }
+            let root = RecoverySource::read(id, path.clone(), None)
+                .await
+                .map_err(checklist_error)?;
+            validate_resume_provider(&root.items, &params.metadata.model_provider)?;
+            let sources = self
+                .read_recovery_sources(root, &edges)
+                .await
+                .map_err(checklist_error)?;
+            let complete = &sources[0].items;
+            executor_policy
+                .validate(complete, id)
+                .map_err(checklist_error)?;
+            let mut selected = self.inner.load_model_context_for_rollout(id, &path).await?;
+            validate_root_header(id, &selected.items)?;
+            validate_resume_provider(&selected.items, &params.metadata.model_provider)?;
+            let tree =
+                match plan_recovery_tree(&self.inner, &sources, &selected.items, receipts).await {
+                    Err(error) if !error.is::<local_reconciliation::RecoveryRequired>() => {
+                        return Err(checklist_error(error).into());
                     }
-                    Err(error) => return Err(checklist_error(error).into()),
-                },
-            };
-            complete.extend(plan.append.iter().cloned());
-            self.graph.hydrate(id).await.map_err(checklist_error)?;
-            self.check_tree_settled_inner(id, &complete, &writers)
-                .await?;
+                    result => result?,
+                };
             if expected.instructions.managed() {
                 let text = expected
                     .instructions
                     .text()
                     .map_err(checklist_error)?
                     .unwrap_or_default();
-                if let Some(accepted) = crate::application_instructions::validate(&complete, &text)
+                if let Some(accepted) = crate::application_instructions::validate(complete, &text)
                     .map_err(checklist_error)?
                 {
                     expected
@@ -582,11 +540,117 @@ impl LocalChecklistStore {
                         .map_err(checklist_error)?;
                 }
             }
-            if expected.retired.load(Ordering::Acquire)
-                || self.admissions_closed.load(Ordering::Acquire)
+            let materialized_path = codex_rollout::plain_rollout_path(&path);
+            let mut previous_locator = None;
+            if tree.stage_root
+                && let Some(recorded) = self
+                    .state
+                    .find_rollout_path_by_id(id, None)
+                    .await
+                    .map_err(checklist_error)?
+                && codex_rollout::plain_rollout_path(&recorded) != materialized_path
             {
-                return Err(checklist_error("local resume preparation was retired").into());
+                if selected.revision.is_none()
+                    || self
+                        .recovery_path(Some(recorded.clone()))
+                        .await
+                        .map_err(checklist_error)?
+                        != path
+                {
+                    return Err(
+                        checklist_error("local rollout changed during resume admission").into(),
+                    );
+                }
+                previous_locator = Some(recorded);
             }
+            // The root always opens a recorder. A cold descendant needs write
+            // authorization only when recovery will replace or sync its rollout.
+            executor_policy
+                .check_rollout_path(&path)
+                .await
+                .map_err(checklist_error)?;
+            for (source, write) in sources.iter().zip(&tree.writes).skip(1) {
+                if write.needs_publication() {
+                    executor_policy
+                        .check_rollout_path(&source.path)
+                        .await
+                        .map_err(checklist_error)?;
+                }
+            }
+            let check_active = || {
+                if expected.retired.load(Ordering::Acquire)
+                    || self.admissions_closed.load(Ordering::Acquire)
+                {
+                    return Err(checklist_error("local resume preparation was retired"));
+                }
+                Ok(())
+            };
+            check_active()?;
+            if let Some(recorded) = previous_locator {
+                // Keep the selected rollout reachable when Core opens the plain recorder.
+                if !self
+                    .state
+                    .replace_rollout_path_if_current(id, &recorded, &path)
+                    .await
+                    .map_err(checklist_error)?
+                {
+                    return Err(checklist_error(
+                        "local rollout locator changed during resume admission",
+                    )
+                    .into());
+                }
+                check_active()?;
+            }
+            // The root recorder opens an append descriptor. Publish any atomic
+            // root update before handing the root lease back to Core.
+            for (source, write) in sources.iter().zip(&tree.writes) {
+                #[cfg(test)]
+                let fail = {
+                    let mut fail = self.fail_recovery_write.lock().unwrap();
+                    if fail.as_ref().is_some_and(|(id, _)| *id == source.id) {
+                        fail.take().map(|(_, point)| point)
+                    } else {
+                        None
+                    }
+                };
+                publish_recovery(
+                    source,
+                    write,
+                    #[cfg(test)]
+                    fail,
+                )
+                .await
+                .map_err(checklist_error)?;
+            }
+            if tree.stage_root {
+                selected = self.inner.load_model_context_for_rollout(id, &path).await?;
+            }
+            let selected_history = Arc::new(selected.items);
+            params.rollout_path = Some(path.clone());
+            params.history = Some(selected_history.clone());
+            params.history_revision = selected.revision;
+            drop(root_lease);
+            let mut history = self.inner.resume_thread(params.clone()).await?;
+            acquired = true;
+            #[cfg(test)]
+            self.hold_startup_close_probe(Some(id), StartupClosePoint::PreparedNativeWriter)
+                .await;
+            let live_path = self.inner.live_rollout_path(id).await?;
+            let current = self.inner.read_thread(read).await?;
+            // Core only returns this exact Arc after checking the revision with
+            // its writer lease held, before decompressing or opening the file.
+            if !Arc::ptr_eq(&history, &selected_history)
+                || live_path != materialized_path
+                || current.model != expected.model
+                || !same_edges(
+                    &edges,
+                    &self.recovery_edges(id).await.map_err(checklist_error)?,
+                )
+            {
+                return Err(checklist_error("local history changed during writer handoff").into());
+            }
+            check_active()?;
+            let plan = tree.root;
             if !plan.append.is_empty() {
                 self.inner
                     .append_items(AppendThreadItemsParams {
@@ -595,8 +659,9 @@ impl LocalChecklistStore {
                     })
                     .await?;
                 let persisted = self.load_owned_history_inner(id).await?;
-                let verified = local_reconciliation::plan(id, &persisted, &history, &receipts)
-                    .map_err(checklist_error)?;
+                let verified =
+                    local_reconciliation::plan(id, &persisted, &history, &tree.root_receipts)
+                        .map_err(checklist_error)?;
                 if !verified.append.is_empty() {
                     return Err(checklist_error(
                         "reconciliation results were not confirmed in storage",
@@ -611,7 +676,7 @@ impl LocalChecklistStore {
                 .map_err(|_| checklist_error("local replay guard already prepared"))?;
             // Core will use this canonical path and exact authoritative Arc.
             // Revision selection has already happened in the native acquisition.
-            params.rollout_path = Some(path);
+            params.rollout_path = Some(live_path);
             params.history = Some(history.clone());
             params.history_revision = None;
             expected
@@ -623,37 +688,39 @@ impl LocalChecklistStore {
                 observe_turn(&mut writer.turn, row);
             }
             writer.prepared = Some(expected.clone());
-            Ok(())
+            Ok(descendant_leases)
         }
         .await;
-        if let Err(error) = result {
-            if !acquired {
-                // Native resume registers its recorder as its final fallible
-                // operation. An unsuccessful acquisition installed no writer;
-                // never shut down a competing opening's recorder on this path.
-                writers.remove(&id);
-                return Err(error);
-            }
-            writers
-                .get_mut(&id)
-                .expect("registered local acquisition")
-                .failure = Some(error.to_string());
-            return match self.shutdown_native_writer(id).await {
-                Ok(()) => {
+        match result {
+            Ok(leases) => Ok(leases),
+            Err(error) => {
+                if !acquired {
+                    // Native resume registers its recorder as its final fallible
+                    // operation. An unsuccessful acquisition installed no writer;
+                    // never shut down a competing opening's recorder on this path.
                     writers.remove(&id);
-                    Err(error)
+                    return Err(error);
                 }
-                Err(cleanup) => {
-                    let failure = format!("{error}; native writer cleanup failed: {cleanup}");
-                    writers
-                        .get_mut(&id)
-                        .expect("retained local acquisition")
-                        .failure = Some(failure.clone());
-                    Err(checklist_error(failure).into())
-                }
-            };
+                writers
+                    .get_mut(&id)
+                    .expect("registered local acquisition")
+                    .failure = Some(error.to_string());
+                return match self.shutdown_native_writer(id).await {
+                    Ok(()) => {
+                        writers.remove(&id);
+                        Err(error)
+                    }
+                    Err(cleanup) => {
+                        let failure = format!("{error}; native writer cleanup failed: {cleanup}");
+                        writers
+                            .get_mut(&id)
+                            .expect("retained local acquisition")
+                            .failure = Some(failure.clone());
+                        Err(checklist_error(failure).into())
+                    }
+                };
+            }
         }
-        Ok(())
     }
 
     fn claim_resume(
@@ -730,55 +797,6 @@ impl LocalChecklistStore {
 
     pub(crate) async fn check_settled(&self, id: ThreadId) -> ThreadStoreResult<()> {
         validate_settled(&self.load_owned_history(id).await?)
-    }
-
-    async fn check_tree_settled_inner(
-        &self,
-        root: ThreadId,
-        history: &[RolloutItem],
-        writers: &HashMap<ThreadId, Writer>,
-    ) -> ThreadStoreResult<()> {
-        let mut histories = HashMap::from([(root, history.to_vec())]);
-        let mut edges = Vec::new();
-        for child in self
-            .graph
-            .list_thread_spawn_descendants(root, None)
-            .await
-            .map_err(checklist_error)?
-        {
-            if writers.contains_key(&child) {
-                return Err(checklist_error(
-                    "local descendant still has a native writer",
-                ));
-            }
-            let edge = self
-                .graph
-                .edge(child)
-                .await
-                .ok_or_else(|| checklist_error("descendant graph was not fully hydrated"))?;
-            let stored = self
-                .inner
-                .read_thread(ReadThreadParams {
-                    thread_id: child,
-                    include_archived: true,
-                    include_history: false,
-                })
-                .await?;
-            let path = stored
-                .rollout_path
-                .ok_or_else(|| checklist_error("missing descendant rollout path"))?;
-            let (items, owner, errors) = codex_rollout::RolloutRecorder::load_rollout_items(&path)
-                .await
-                .map_err(checklist_error)?;
-            if owner != Some(child) || errors != 0 {
-                return Err(checklist_error(
-                    "cannot read incomplete descendant rollout or another thread's history",
-                ));
-            }
-            histories.insert(child, items);
-            edges.push((child, edge));
-        }
-        validate_local_tree(root, &edges, &histories)
     }
 
     pub(crate) async fn close_database(&self) -> ThreadStoreResult<()> {
@@ -1536,10 +1554,14 @@ impl ThreadStore for LocalChecklistStore {
             // Native rejects its legacy history API for paginated threads.
             // Public SDK item/turn views need the complete saved audit, not
             // only the current model window returned by load_latest_model_context.
-            // Resolve the path exclusively through this authorized native store.
-            let path = stored.rollout_path.ok_or_else(|| {
-                checklist_error("native thread store returned no path for stored history")
-            })?;
+            let path = match self.inner.live_rollout_path(id).await {
+                Ok(path) => path,
+                Err(ThreadStoreError::ThreadNotFound { .. }) => self
+                    .recovery_path(stored.rollout_path)
+                    .await
+                    .map_err(checklist_error)?,
+                Err(error) => return Err(error),
+            };
             let (items, owner, parse_errors) =
                 codex_rollout::RolloutRecorder::load_rollout_items(&path)
                     .await
