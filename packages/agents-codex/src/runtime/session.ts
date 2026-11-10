@@ -5857,7 +5857,7 @@ export class Session<OutputT = string, Context = unknown> {
     const profile = this.messageProfile(message);
     const provider =
       (profile
-        ? this.profileRuntimes.get(profile.profile_id)!.profile.declaration
+        ? this.callbackProfileRuntime(profile.profile_id)!.profile.declaration
             .decisions
         : undefined) ?? this.options.decisions;
     let active = true;
