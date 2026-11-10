@@ -7,6 +7,49 @@ const connection = {
   cwd: '/workspace',
 };
 
+it('keeps the omitted local write policy identical to explicit strict', () => {
+  const omitted = Environment.local({ cwd: process.cwd() });
+  const strict = Environment.local({
+    cwd: process.cwd(),
+    writePolicy: 'strict',
+  });
+  expect(environmentConfig(omitted)).toEqual(environmentConfig(strict));
+  expect(environmentConfig(strict)).not.toHaveProperty('write_policy');
+});
+
+it('accepts an immutable trusted workspace write policy only on local Linux', () => {
+  const options = {
+    cwd: process.cwd(),
+    writePolicy: 'trusted_workspace_write' as const,
+    env: { SDK_TEST_VALUE: 'captured' },
+    writableRoots: [process.cwd()],
+  };
+  expect(
+    () =>
+      new Environment({
+        ...connection,
+        writePolicy: options.writePolicy as never,
+      }),
+  ).toThrow('Trusted workspace writes require Environment.local');
+  if (process.platform !== 'linux') {
+    expect(() => Environment.local(options)).toThrow(/require Linux/);
+    return;
+  }
+  expect(() => Environment.local({ ...options, readOnly: true })).toThrow(
+    /Read-only/,
+  );
+  const environment = Environment.local(options);
+  options.writableRoots.pop();
+  options.env.SDK_TEST_VALUE = 'changed';
+  expect(Object.isFrozen(environment)).toBe(true);
+  expect(environment.writePolicy).toBe(options.writePolicy);
+  expect(environmentConfig(environment)).toMatchObject({
+    write_policy: 'trusted_workspace_write',
+    env_json: JSON.stringify({ SDK_TEST_VALUE: 'captured' }),
+    writable_roots: [expect.any(String)],
+  });
+});
+
 it('preserves omitted roots separately from an explicitly empty selection', () => {
   expect(environmentConfig(new Environment(connection))).not.toHaveProperty(
     'capability_directories',

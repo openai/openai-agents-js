@@ -271,6 +271,7 @@ export async function tryOpenPlainRun(
   let environmentFailure: unknown;
   let cancellationError: unknown;
   const cancel = () => {
+    borrow?.invalidate?.();
     try {
       owned?.cancel();
     } catch (error) {
@@ -353,6 +354,10 @@ export async function tryOpenPlainRun(
     cleanup(false),
   );
   if (idle) {
+    if (borrow?.concurrent && setup.apiKey !== idle.apiKey) {
+      lease.retainOpeningCleanup(previousOpeningCleanup ?? lease.release);
+      return undefined;
+    }
     const transports = lease.httpTransports(
       native._create_provider_http_transports,
       idle.engine,
@@ -363,7 +368,8 @@ export async function tryOpenPlainRun(
       !idle.engine._private_reuse_ready ||
       !idle.carrier.reuseBinding(idle.engine)
     ) {
-      idle.plainAdmission = undefined;
+      borrow?.invalidate?.();
+      if (!borrow?.concurrent) idle.plainAdmission = undefined;
       lease.retainOpeningCleanup(previousOpeningCleanup ?? lease.release);
       return undefined;
     }
@@ -392,6 +398,10 @@ export async function tryOpenPlainRun(
     cached.runtimeJson === runtimeJson &&
     cached.model === model;
   if (!admitted) {
+    if (idle && borrow?.concurrent) {
+      lease.retainOpeningCleanup(previousOpeningCleanup ?? lease.release);
+      return undefined;
+    }
     if (idle) idle.plainAdmission = undefined;
     if (!(await engine!._plain_run_supported(configJson, runtimeJson, model))) {
       if (!pooled) {
@@ -425,7 +435,8 @@ export async function tryOpenPlainRun(
     entry &&
     entry.engine === engine &&
     entry.phase === 'engine' &&
-    (!idle || entry === idle)
+    (!idle || entry === idle) &&
+    (!borrow?.concurrent || entry.plainAdmission === undefined)
   ) {
     entry.plainAdmission = { configJson, runtimeJson, model };
   }
@@ -468,6 +479,7 @@ export async function tryOpenPlainRun(
       signal?.throwIfAborted();
       return result;
     } catch (error) {
+      borrow?.invalidate?.();
       const primary = signal?.aborted ? signal.reason : error;
       try {
         await cleanup(false);

@@ -56,7 +56,8 @@ type Mode =
   | 'overlap'
   | 'hosted-media'
   | 'code'
-  | 'local';
+  | 'local'
+  | 'trusted-credentials';
 
 function json(response: ServerResponse, status: number, body: object) {
   response.writeHead(status, { 'content-type': 'application/json' });
@@ -65,43 +66,51 @@ function json(response: ServerResponse, status: number, body: object) {
 
 // On Linux native proxy resolution uses the child environment. System proxy
 // settings can take precedence on macOS and Windows.
-it
-  .runIf(
-    process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
-      process.platform === 'linux',
-  )
-  .for([
-    {
-      title:
-        'finishes saved login rotation after Turn cancellation, isolates Realtime auth, and restores configured execution',
-      closeFailure: undefined,
-    },
-    {
-      title: 'reports a saved login refresh cache read failure on owner close',
-      closeFailure: 'refresh-cache-read',
-    },
-    {
-      title:
-        'reports both saved login cache save and SessionStore release failures on owner close',
-      closeFailure: 'refresh-cache-save',
-    },
-    {
-      title:
-        'reports a retained SessionStore flush failure and a separate saved login refresh failure',
-      closeFailure: 'refresh-cache-save-flush',
-    },
-    {
-      title:
-        'reads saved Codex plan usage and cancels a pending read on Session close',
-      closeFailure: undefined,
-      usage: true,
-    },
-  ] as const)(
-  '$title',
-  { timeout: 110_000 },
-  async (testScenario, { skip }) => {
+const savedLoginTest = it.runIf(
+  process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
+    process.platform === 'linux',
+);
+for (const testScenario of [
+  {
+    title:
+      'finishes saved login rotation after Turn cancellation, isolates Realtime auth, and restores configured execution',
+    closeFailure: undefined,
+    // Ten 15s children, two 25s children, and three 5s TLS commands,
+    // plus 5s for setup and cleanup.
+    timeout: 220_000,
+  },
+  {
+    title: 'reports a saved login refresh cache read failure on owner close',
+    closeFailure: 'refresh-cache-read',
+  },
+  {
+    title:
+      'reports both saved login cache save and SessionStore release failures on owner close',
+    closeFailure: 'refresh-cache-save',
+  },
+  {
+    title:
+      'reports a retained SessionStore flush failure and a separate saved login refresh failure',
+    closeFailure: 'refresh-cache-save-flush',
+  },
+  {
+    title: 'keeps selected saved-login credentials private in trusted commands',
+    closeFailure: undefined,
+    trustedCredentials: true,
+  },
+  {
+    title:
+      'reads saved Codex plan usage and cancels a pending read on Session close',
+    closeFailure: undefined,
+    usage: true,
+  },
+] as const) {
+  const { title } = testScenario;
+  const timeout = 'timeout' in testScenario ? testScenario.timeout : 110_000;
+  savedLoginTest(title, { timeout }, async ({ skip }) => {
     const { closeFailure } = testScenario;
     const usage = 'usage' in testScenario;
+    const trustedCredentials = 'trustedCredentials' in testScenario;
     if (
       closeFailure?.startsWith('refresh-cache-save') &&
       process.getuid?.() === 0
@@ -125,6 +134,7 @@ it
       | 'overlap'
       | 'code'
       | 'local'
+      | 'trusted-credentials'
       | 'stalled-refresh'
       | 'hosted-media'
       | undefined;
@@ -151,6 +161,17 @@ it
       await symlink(codexHome, loginAlias);
       const source = join(sourceHome, 'auth.json');
       const heldSource = join(directory, 'held-auth.json');
+      const mcpStore = join(directory, 'mcp-store');
+      const fallback = join(mcpStore, '.credentials.json');
+      const ordinary = join(codexHome, 'ordinary.txt');
+      if (trustedCredentials) {
+        await mkdir(mcpStore);
+        await Promise.all([
+          writeFile(fallback, 'synthetic-mcp-marker'),
+          symlink(fallback, join(codexHome, '.credentials.json')),
+          writeFile(ordinary, 'ordinary-sibling'),
+        ]);
+      }
       const cache = join(codexHome, 'auth.json');
       const claims = Buffer.from(
         JSON.stringify({
@@ -184,10 +205,11 @@ it
         sourceHome,
         loginAlias,
         join(directory, 'relocated-login'),
+        mcpStore,
       ];
       const sourceBytes = JSON.stringify(original);
       await writeFile(source, sourceBytes, { mode: 0o600 });
-      if (closeFailure) {
+      if (closeFailure || trustedCredentials) {
         // An unrelated healthy cache proves the process-wide permit was released.
         await writeFile(
           cache,
@@ -405,7 +427,11 @@ it
         }
         if (execution === 'repair')
           return fail('Unsupported repair configuration dispatched a request');
-        if (execution === 'hosted-media' || execution === 'local') {
+        if (
+          execution === 'hosted-media' ||
+          execution === 'local' ||
+          (execution === 'trusted-credentials' && executionRequests === 0)
+        ) {
           // The saved-login provider sends plain JSON on this route.
           try {
             const chunks: Buffer[] = [];
@@ -421,7 +447,7 @@ it
             if (credentialMarkers.some((marker) => body.includes(marker))) {
               return fail('Saved-login request contained credential material');
             }
-            if (execution === 'local') {
+            if (execution === 'local' || execution === 'trusted-credentials') {
               if (privateLoginPaths.some((path) => body.includes(path))) {
                 return fail('Configured local request contained a login path');
               }
@@ -518,6 +544,36 @@ it
                     "store('savedLoginFixture', 'ran'); text('cell completed');",
                 }
               : message('Accepted Code Mode.');
+        } else if (execution === 'trusted-credentials') {
+          if (++executionRequests > 2)
+            return fail('Unexpected trusted request');
+          const quote = (path: string) =>
+            "'" + path.replaceAll("'", "'\\''") + "'";
+          const paths = [
+            join(loginAlias, 'auth.json'),
+            cache,
+            join(loginAlias, '.credentials.json'),
+            join(codexHome, '.credentials.json'),
+            fallback,
+          ];
+          item =
+            executionRequests === 1
+              ? call(
+                  'exec_command',
+                  {
+                    cmd: [
+                      'set -eu',
+                      ...paths.map(
+                        (path) =>
+                          `if ( : < ${quote(path)} ) 2>/dev/null; then exit 12; fi`,
+                      ),
+                      `test "$(cat ${quote(ordinary)})" = ordinary-sibling`,
+                      'printf verified > credential-boundary',
+                    ].join('; '),
+                  },
+                  { callId: 'trusted-credential-boundary' },
+                )
+              : message('Verified trusted credential boundaries.');
         } else if (execution === 'local') {
           if (++executionRequests > 4) return fail('Unexpected local request');
           item =
@@ -550,7 +606,7 @@ it
         home,
         failures,
         onRequest,
-        allowAuth: !usage,
+        allowAuth: !usage && !trustedCredentials,
         onUpgrade: usage ? undefined : onUpgrade,
       });
       const { tunnels } = loopback;
@@ -567,7 +623,9 @@ it
           const loginHome =
             mode === 'stalled-refresh' || mode === closeFailure
               ? sourceHome
-              : mode === 'overlap' || mode === 'local'
+              : mode === 'overlap' ||
+                  mode === 'local' ||
+                  mode === 'trusted-credentials'
                 ? loginAlias
                 : codexHome;
           ({ stdout } = await loopback.runChild(
@@ -576,11 +634,16 @@ it
               loginHome,
               accountId,
               mode,
-              ...(mode === 'local' && optionalLocalSandbox
+              ...((mode === 'local' || mode === 'trusted-credentials') &&
+              optionalLocalSandbox
                 ? ['optional-sandbox']
                 : []),
             ],
-            mode === 'local' || mode === 'stalled-refresh' ? 25_000 : 15_000,
+            mode === 'local' ||
+              mode === 'stalled-refresh' ||
+              mode === 'trusted-credentials'
+              ? 25_000
+              : 15_000,
           ));
         } catch (error) {
           const { stdout: stage, killed } = error as {
@@ -619,6 +682,17 @@ it
           }
           expect((await readFile(source, 'utf8')) === sourceBytes).toBe(true);
         }
+        return;
+      }
+
+      if (trustedCredentials) {
+        execution = 'trusted-credentials';
+        const result = await run('trusted-credentials');
+        if (result === 'local sandbox unavailable') {
+          skip('This host cannot launch a nested platform sandbox');
+        }
+        expect(executionRequests).toBe(2);
+        expect(grantCount).toBe(0);
         return;
       }
 
@@ -755,5 +829,5 @@ it
       grantConsumed.resolve();
       await rm(directory, { recursive: true, force: true });
     }
-  },
-);
+  });
+}

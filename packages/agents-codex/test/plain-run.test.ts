@@ -274,7 +274,7 @@ describe('plain owned-run cleanup', () => {
   });
 });
 
-function retained() {
+function retained(concurrent = false) {
   const p = prepared();
   p.engine._private_reuse_ready = true;
   const transports = {} as never;
@@ -296,6 +296,9 @@ function retained() {
     if (!keep) entry = undefined;
   });
   const borrow: PrivateRuntimeBorrow = {
+    get concurrent() {
+      return concurrent;
+    },
     get done() {
       return entry === undefined;
     },
@@ -321,6 +324,9 @@ function retained() {
     lease,
     run,
     finish,
+    enableConcurrency: () => {
+      concurrent = true;
+    },
     replaceEntry: () => {
       entry = fresh();
     },
@@ -386,6 +392,34 @@ describe('plain entry admission', () => {
     await p.run();
     expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
   });
+  it.each(['config', 'runtime', 'model', 'apiKey'] as const)(
+    'keeps a concurrent entry immutable on a changed %s key',
+    async (field) => {
+      const p = retained();
+      await p.run();
+      p.enableConcurrency();
+      const entry = p.lease.privateRuntime!.peek()!;
+      const admission = entry.plainAdmission;
+      const changed = {
+        ...p.setup,
+        ...(field === 'model'
+          ? { model: 'gpt-5' }
+          : field === 'config'
+            ? { config: { model_reasoning_summary: 'auto' } }
+            : field === 'apiKey'
+              ? { apiKey: 'another-key' }
+              : { runtime: { strict_config: true } }),
+      };
+      expect(
+        await tryOpenPlainRun(changed, {}, p.lease, 'input'),
+      ).toBeUndefined();
+      expect(entry.plainAdmission).toBe(admission);
+      expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(1);
+      await p.run();
+      expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(1);
+      expect(p.engine._plain_run).toHaveBeenCalledTimes(2);
+    },
+  );
 });
 
 describe('declared input modalities retain ordinary native session opening', () => {

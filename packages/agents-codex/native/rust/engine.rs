@@ -71,6 +71,7 @@ pub struct EngineState {
     telemetry: Option<crate::telemetry::EmissionSettings>,
     pub(crate) config_json: String,
     pub(crate) runtime_json: String,
+    trusted_command_temp: std::sync::Mutex<Option<tempfile::TempDir>>,
     private_system_origin: Option<std::path::PathBuf>,
     pub(crate) closed: AtomicBool,
     pub(crate) retired: AtomicBool,
@@ -594,7 +595,6 @@ impl EngineState {
                     && !config::native_goal_store_enabled(&runtime_json)?),
             "custom canonical storage cannot combine local, checkpoint, or goal stores"
         );
-        let telemetry = crate::telemetry::engine_starting().await?;
         let original: serde_json::Value = serde_json::from_str(&runtime_json)?;
         let injected = [
             "managed_config_path",
@@ -620,6 +620,11 @@ impl EngineState {
         .flatten();
         drop(original);
         drop(prepared);
+        let environment_options = config::environment(&runtime_json)?;
+        if let Some(environment) = &environment_options {
+            environment.check_trusted_write_policy()?;
+        }
+        let telemetry = crate::telemetry::engine_starting().await?;
         let saved_login = config::saved_codex_login(&runtime_json)?;
         ensure!(
             !chatgpt_plan || (saved_login.is_none() && inherited_saved_login.is_none()),
@@ -655,7 +660,6 @@ impl EngineState {
             custom_store.is_none() || !config.update_plan_enabled,
             "custom canonical storage does not support Checklist"
         );
-        let environment_options = config::environment(&runtime_json)?;
         if let Some(environment) = &environment_options {
             environment.restrict_network_approval(&mut config)?;
             environment.check_config(&config)?;
@@ -920,11 +924,21 @@ impl EngineState {
                 .map_err(|_| anyhow::anyhow!("candidate environment owner poisoned"))? =
                 Some(crate::RuntimeOwned::new(environment.clone()));
         }
-        if let Some(options) = &environment_options {
-            options
-                .check_ready(&config, &environment, private_paths)
-                .await?;
-        }
+        let trusted_command_temp = match &environment_options {
+            Some(options) => {
+                let temp = options.trusted_command_temp()?;
+                options
+                    .check_ready(
+                        &config,
+                        &environment,
+                        private_paths,
+                        temp.as_ref().map(tempfile::TempDir::path),
+                    )
+                    .await?;
+                temp
+            }
+            None => None,
+        };
         let project_search = config::project_search(&runtime_json)?;
         let manager = Arc::new_cyclic(|weak| {
             let extensions = extensions::build(
@@ -979,6 +993,7 @@ impl EngineState {
             telemetry,
             config_json,
             runtime_json,
+            trusted_command_temp: std::sync::Mutex::new(trusted_command_temp),
             private_system_origin,
             closed: AtomicBool::new(false),
             retired: AtomicBool::new(false),
@@ -1816,6 +1831,9 @@ impl EngineState {
                 }
             };
             diagnostics.extend(canonical);
+            if diagnostics.is_empty() {
+                self.release_trusted_command_temp();
+            }
             return Ok(EngineCloseReport {
                 diagnostic: (!diagnostics.is_empty()).then(|| diagnostics.join("; ")),
                 saved_login_refresh: self.saved_login_refresh_report().await?,
@@ -1923,11 +1941,21 @@ impl EngineState {
         if let Some(diagnostic) = diagnostic {
             fork_diagnostics.push(diagnostic);
         }
+        if fork_diagnostics.is_empty() {
+            self.release_trusted_command_temp();
+        }
         self.closed.store(true, Ordering::Release);
         Ok(EngineCloseReport {
             diagnostic: (!fork_diagnostics.is_empty()).then(|| fork_diagnostics.join("; ")),
             saved_login_refresh,
         })
+    }
+
+    fn release_trusted_command_temp(&self) {
+        self.trusted_command_temp
+            .lock()
+            .expect("trusted command temp poisoned")
+            .take();
     }
 
     pub(crate) fn register_native_thread(
@@ -2229,11 +2257,18 @@ impl EngineState {
             environment.restrict_network_approval(&mut startup.config)?;
             environment.check_config(&startup.config)?;
             if startup.environments.is_none() {
+                let trusted_temp = self
+                    .trusted_command_temp
+                    .lock()
+                    .expect("trusted command temp poisoned")
+                    .as_ref()
+                    .map(|temp| temp.path().to_owned());
                 let (selection, strict) = environment
                     .selection(
                         &startup.config,
                         &self.manager.environment_manager(),
                         self.local_private_paths(),
+                        trusted_temp.as_deref(),
                     )
                     .await?;
                 environment.configure_local_proxy(&mut startup.config, &selection)?;

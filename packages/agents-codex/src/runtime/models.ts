@@ -456,7 +456,15 @@ export class ResponsesModel implements NativeModel {
         { signal: request.signal },
       );
     } catch (error) {
-      if (error instanceof APIUserAbortError && request.signal.aborted)
+      // Borrowed ESM clients can throw the other OpenAI module graph's class.
+      if (
+        request.signal.aborted &&
+        (error instanceof APIUserAbortError ||
+          (error instanceof Error &&
+            error.constructor?.name === 'APIUserAbortError' &&
+            'status' in error &&
+            error.status === undefined))
+      )
         request.signal.throwIfAborted();
       throw error;
     }

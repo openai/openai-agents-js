@@ -12,9 +12,41 @@ import {
 // Bound derived PCM/base64 buffers per write, without limiting utterance length.
 const STREAM_CHUNK_SAMPLES = 32 * 1024;
 
+// Keep injected clients compatible with both OpenAI module declaration graphs.
+type SpeechClient = Pick<
+  OpenAI,
+  'baseURL' | 'apiKey' | 'organization' | 'project'
+> & {
+  audio: {
+    transcriptions: {
+      create(
+        body: Pick<
+          OpenAI.Audio.TranscriptionCreateParamsNonStreaming,
+          'model' | 'language' | 'prompt' | 'temperature'
+        > & { file: File },
+        options?: { signal?: AbortSignal },
+      ): PromiseLike<{ text: string }>;
+    };
+    speech: {
+      create(
+        body: Pick<
+          OpenAI.Audio.SpeechCreateParams,
+          | 'model'
+          | 'voice'
+          | 'input'
+          | 'response_format'
+          | 'speed'
+          | 'instructions'
+        >,
+        options?: { signal?: AbortSignal },
+      ): PromiseLike<Pick<Response, 'body'>>;
+    };
+  };
+};
+
 export interface OpenAISpeechProviderOptions {
   /** HTTP client; streamed transcription reuses its URL, static key, organization, and project. */
-  client?: OpenAI;
+  client?: SpeechClient;
   apiKey?: string;
   baseURL?: string;
   transcriptionModel?: string;
@@ -39,7 +71,7 @@ export interface OpenAISpeechProviderOptions {
 
 /** Server-side speech provider. Streaming input uses explicit commits, without VAD. */
 export class OpenAISpeechProvider implements SpeechProvider {
-  private readonly client: OpenAI;
+  private readonly client: SpeechClient;
   private readonly options: OpenAISpeechProviderOptions;
   constructor(options: OpenAISpeechProviderOptions = {}) {
     if (

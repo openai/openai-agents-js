@@ -88,7 +88,11 @@ export class ModelServer {
           response.flushHeaders();
           await this.beforeBody(requestBody);
         }
-        response.end(output.body);
+        if (this.beforeEnd) {
+          response.write(output.body);
+          await this.beforeEnd(requestBody);
+          response.end();
+        } else response.end(output.body);
         return;
       }
       const id = `response-${requestIndex + 1}`;
@@ -124,6 +128,7 @@ export class ModelServer {
         frame: completed,
       });
       response.write(`data: ${completed}\n\n`);
+      if (this.beforeEnd) await this.beforeEnd(requestBody);
       response.end();
     } catch (error) {
       this.failures.push(error);
@@ -148,6 +153,7 @@ export class ModelServer {
     private readonly terminalFrames?: readonly string[],
     private readonly beforeBody?: (request: JsonObject) => void | Promise<void>,
     tls?: TlsOptions,
+    private readonly beforeEnd?: (request: JsonObject) => void | Promise<void>,
   ) {
     this.rawUsage = Array.isArray(usage)
       ? usage

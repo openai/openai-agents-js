@@ -9,6 +9,13 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "node": {
+        "types": "./dist/index.d.ts",
+        "import": {
+          "module-sync": "./node/index.mjs"
+        },
+        "module-sync": "./dist/index.js"
+      },
       "import": {
         "types": "./dist/index.d.mts",
         "default": "./dist/index.mjs"
@@ -19,6 +26,10 @@
       }
     },
     "./internal": {
+      "node": {
+        "types": "./dist/internal.d.ts",
+        "module-sync": "./dist/internal.js"
+      },
       "import": {
         "types": "./dist/internal.d.mts",
         "default": "./dist/internal.mjs"
@@ -29,6 +40,10 @@
       }
     },
     "./testing": {
+      "node": {
+        "types": "./dist/testing/index.d.ts",
+        "module-sync": "./dist/testing/index.js"
+      },
       "import": {
         "types": "./dist/testing/index.d.mts",
         "default": "./dist/testing/index.mjs"
@@ -39,6 +54,10 @@
       }
     },
     "./experimental/deferred": {
+      "node": {
+        "types": "./dist/experimental/deferred.d.ts",
+        "module-sync": "./dist/experimental/deferred.js"
+      },
       "import": {
         "types": "./dist/experimental/deferred.d.mts",
         "default": "./dist/experimental/deferred.mjs"
@@ -49,6 +68,10 @@
       }
     },
     "./experimental/mcp-tasks": {
+      "node": {
+        "types": "./dist/experimental/mcp-tasks/index.d.ts",
+        "module-sync": "./experimental/mcp-tasks.cjs"
+      },
       "import": {
         "types": "./dist/experimental/mcp-tasks/index.d.mts",
         "default": "./experimental/mcp-tasks.mjs"
@@ -59,6 +82,10 @@
       }
     },
     "./a2a": {
+      "node": {
+        "types": "./dist/a2a/index.d.ts",
+        "module-sync": "./a2a/index.cjs"
+      },
       "import": {
         "types": "./dist/a2a/index.d.mts",
         "default": "./a2a/index.mjs"
@@ -69,6 +96,10 @@
       }
     },
     "./voice": {
+      "node": {
+        "types": "./dist/voice/index.d.ts",
+        "module-sync": "./dist/voice/index.js"
+      },
       "import": {
         "types": "./dist/voice/index.d.mts",
         "default": "./dist/voice/index.mjs"
@@ -79,6 +110,10 @@
       }
     },
     "./voice/browser": {
+      "node": {
+        "types": "./dist/voice/browser.d.ts",
+        "module-sync": "./dist/voice/browser.js"
+      },
       "import": {
         "types": "./dist/voice/browser.d.mts",
         "default": "./dist/voice/browser.mjs"
@@ -89,6 +124,10 @@
       }
     },
     "./voice/react-native": {
+      "node": {
+        "types": "./dist/voice/react-native.d.ts",
+        "module-sync": "./dist/voice/react-native.js"
+      },
       "import": {
         "types": "./dist/voice/react-native.d.mts",
         "default": "./dist/voice/react-native.mjs"
@@ -99,6 +138,10 @@
       }
     },
     "./voice/workerd": {
+      "node": {
+        "types": "./dist/voice/workerd.d.ts",
+        "module-sync": "./dist/voice/workerd.js"
+      },
       "import": {
         "types": "./dist/voice/workerd.d.mts",
         "default": "./dist/voice/workerd.mjs"
@@ -109,6 +152,10 @@
       }
     },
     "./voice/twilio": {
+      "node": {
+        "types": "./dist/voice/twilio.d.ts",
+        "module-sync": "./dist/voice/twilio.js"
+      },
       "import": {
         "types": "./dist/voice/twilio.d.mts",
         "default": "./dist/voice/twilio.mjs"
@@ -119,6 +166,10 @@
       }
     },
     "./voice/portable": {
+      "node": {
+        "types": "./dist/voice/portable.d.ts",
+        "module-sync": "./dist/voice/portable.js"
+      },
       "import": {
         "types": "./dist/voice/portable.d.mts",
         "default": "./dist/voice/portable.mjs"
@@ -130,6 +181,10 @@
     },
     "./voice/control.wasm": "./native/codex-realtime-control.wasm",
     "./memory": {
+      "node": {
+        "types": "./dist/memory/index.d.ts",
+        "module-sync": "./dist/memory/index.js"
+      },
       "import": {
         "types": "./dist/memory/index.d.mts",
         "default": "./dist/memory/index.mjs"
@@ -140,6 +195,10 @@
       }
     },
     "./artifacts": {
+      "node": {
+        "types": "./dist/artifacts/index.d.ts",
+        "module-sync": "./dist/artifacts/index.js"
+      },
       "import": {
         "types": "./dist/artifacts/index.d.mts",
         "default": "./dist/artifacts/index.mjs"
@@ -150,6 +209,10 @@
       }
     },
     "./ui": {
+      "node": {
+        "types": "./dist/ui/index.d.ts",
+        "module-sync": "./dist/ui/index.js"
+      },
       "import": {
         "types": "./dist/ui/index.d.mts",
         "default": "./dist/ui/index.mjs"
@@ -160,6 +223,10 @@
       }
     },
     "./mcp-apps": {
+      "node": {
+        "types": "./dist/mcp-apps/index.d.ts",
+        "module-sync": "./dist/mcp-apps/index.js"
+      },
       "import": {
         "types": "./dist/mcp-apps/index.d.mts",
         "default": "./dist/mcp-apps/index.mjs"
@@ -170,6 +237,10 @@
       }
     },
     "./voice/control.hermes": {
+      "node": {
+        "types": "./dist/voice/control.hermes.d.ts",
+        "module-sync": "./native/codex-realtime-control.cjs"
+      },
       "import": {
         "types": "./dist/voice/control.hermes.d.mts",
         "default": "./native/codex-realtime-control.mjs"
@@ -219,6 +290,7 @@
   },
   "files": [
     "dist",
+    "node",
     "native/index.js",
     "native/index.d.ts",
     "native/codex.node",

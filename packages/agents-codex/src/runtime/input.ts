@@ -1,5 +1,12 @@
 import { copyJsonValue, type JsonValue } from './binding';
-import { captureAudio, captureFile, captureImage, mediaRecord } from './media';
+import {
+  captureAudio,
+  captureFile,
+  captureImage,
+  mediaRecord,
+  MAX_AUDIO_INPUT_BYTES,
+  type AudioInputBudget,
+} from './media';
 import type { FileReference, ImageDetail, NativeToolContent } from './media';
 
 export interface InputText {
@@ -41,7 +48,10 @@ export interface FunctionCallOutput {
 export type UserInput = string | UserMessage;
 
 /** Capture complete ordered input before native admission. */
-export function nativeInput(input: UserInput): JsonValue[] {
+export function nativeInput(
+  input: UserInput,
+  audioBudget: AudioInputBudget = { remaining: MAX_AUDIO_INPUT_BYTES },
+): JsonValue[] {
   if (typeof input === 'string') return [{ type: 'text', text: input }];
   const captured = mediaRecord(input);
   if (
@@ -68,7 +78,10 @@ export function nativeInput(input: UserInput): JsonValue[] {
       return { type: 'text', text: part.text };
     }
     if (kind === 'input_audio')
-      return copyJsonValue({ type: 'audio', ...captureAudio(part) });
+      return copyJsonValue({
+        type: 'audio',
+        ...captureAudio(part, audioBudget),
+      });
     if (kind === 'input_image')
       return copyJsonValue({ type: 'image', ...captureImage(part) });
     if (kind === 'input_file')

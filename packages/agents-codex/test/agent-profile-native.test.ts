@@ -1,6 +1,13 @@
 import { expect, it } from 'vitest';
 import { z } from 'zod';
-import { Agent, NativeError, NativeProvider, tool, toolRef } from '../src';
+import {
+  Agent,
+  NativeError,
+  NativeProvider,
+  realtimeHandoff,
+  tool,
+  toolRef,
+} from '../src';
 import type { JsonObject } from '../src/runtime/binding';
 import { ModelServer, call, message } from './native/fixtures/model-server';
 
@@ -467,4 +474,85 @@ nativeIt(
     }
   },
   30000,
+);
+
+nativeIt(
+  'keeps handoff callbacks outside Code Mode while preserving direct handoffs',
+  async () => {
+    const effects: string[] = [];
+    const model = new ModelServer([
+      [
+        {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'nested-handoffs',
+          input:
+            'text(await tools.lookup({})); try { await tools.route_b({}); } catch (error) { text(String(error)); } try { await tools.route_c({}); } catch (error) { text(String(error)); }',
+        },
+      ],
+      () => {
+        expect(effects).toEqual(['lookup']);
+        return [call('route_b', {}, { callId: 'direct-handoff' })];
+      },
+      [message('done')],
+    ]);
+    try {
+      const config = await model.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-profile-code-mode',
+        supportsWebsockets: false,
+      });
+      const b = new Agent({
+        name: 'B',
+        instructions: 'Answer.',
+        programmaticToolCalling: true,
+      });
+      const c = new Agent({
+        name: 'C',
+        instructions: 'Answer.',
+        programmaticToolCalling: true,
+      });
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Use lookup, then hand off.',
+        provider,
+        programmaticToolCalling: true,
+        tools: [
+          tool({
+            name: 'lookup',
+            parameters: z.object({}),
+            execute: () => {
+              effects.push('lookup');
+              return 'lookup';
+            },
+          }),
+        ],
+        handoffs: [
+          realtimeHandoff(b, {
+            name: 'route_b',
+            onHandoff: () => {
+              effects.push('B');
+            },
+          }),
+          realtimeHandoff(c, {
+            name: 'route_c',
+            onHandoff: () => {
+              effects.push('C');
+            },
+          }),
+        ],
+      }).session();
+      expect((await (await session.submit('run')).wait()).finalOutput).toBe(
+        'done',
+      );
+      expect(effects).toEqual(['lookup', 'B']);
+      expect(await session.getActiveAgent()).toBe(b);
+      model.assertExhausted();
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  35_000,
 );
