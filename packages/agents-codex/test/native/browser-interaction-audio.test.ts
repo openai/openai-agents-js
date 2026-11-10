@@ -69,55 +69,10 @@ describe('real browser native acceptance', () => {
   browserIt(
     'captures a fake microphone and plays actual browser peer audio through native WebRTC ownership',
     async () => {
-      const [client, browserModule, webrtcModule, portableModule, usageModule] =
-        await Promise.all([
-          readFile(
-            resolve('examples/codex/browser-acceptance/realtime-client.mjs'),
-          ),
-          readFile(resolve('packages/agents-codex/dist/voice/browser.mjs')),
-          readFile(resolve('packages/agents-codex/dist/voice/webrtc.mjs')),
-          readFile(resolve('packages/agents-codex/dist/voice/portable.mjs')),
-          readFile(
-            resolve('packages/agents-codex/dist/runtime/realtime-usage.mjs'),
-          ),
-        ]);
-      const scripts = new Map([
-        ['/client.mjs', client],
-        ['/voice-browser.mjs', browserModule],
-        ['/webrtc.mjs', webrtcModule],
-        ['/portable.mjs', portableModule],
-        ['/runtime/realtime-usage.mjs', usageModule],
-      ]);
-      const voiceDependencies = [
-        'bounded-voice-json',
-        'portable-binding',
-        'portable-session',
-        'portable-socket',
-        'portable-webrtc',
-        'portable-credentials',
-        'portable-history',
-        'conversation-history',
-        'event-observers',
-        'base64',
-      ];
-      for (const [path, bytes] of await Promise.all(
-        voiceDependencies.map(
-          async (name) =>
-            [
-              `/${name}.mjs`,
-              await readFile(
-                resolve(`packages/agents-codex/dist/voice/${name}.mjs`),
-              ),
-            ] as const,
-        ),
-      ))
-        scripts.set(path, bytes);
-      scripts.set(
-        '/runtime/realtime-guardrails.mjs',
-        await readFile(
-          resolve('packages/agents-codex/dist/runtime/realtime-guardrails.mjs'),
-        ),
+      const client = await readFile(
+        resolve('examples/codex/browser-acceptance/realtime-client.mjs'),
       );
+      const sdkRoot = resolve('packages/agents-codex/dist');
       const offers: string[] = [];
       const hangups: string[] = [];
       const sidebands: string[] = [];
@@ -131,14 +86,23 @@ describe('real browser native acceptance', () => {
       const server = createServer(async (request, response) => {
         try {
           const path = new URL(request.url!, 'http://localhost').pathname;
-          const script = scripts.get(path);
+          const sdkModule = /^\/sdk\/(voice|runtime)\/([\w-]+\.mjs)$/.exec(
+            path,
+          );
           if (path === '/') {
             response
               .writeHead(200, { 'content-type': 'text/html' })
               .end(
                 '<button>Connect</button><audio autoplay></audio><script type="module" src="/client.mjs"></script>',
               );
-          } else if (script) {
+          } else if (request.method === 'GET' && path === '/client.mjs') {
+            response
+              .writeHead(200, { 'content-type': 'text/javascript' })
+              .end(client);
+          } else if (request.method === 'GET' && sdkModule) {
+            const script = await readFile(
+              join(sdkRoot, sdkModule[1], sdkModule[2]),
+            );
             response
               .writeHead(200, { 'content-type': 'text/javascript' })
               .end(script);
@@ -257,12 +221,30 @@ describe('real browser native acceptance', () => {
         const page = await context.newPage();
         const errors: string[] = [];
         page.on('pageerror', (error) => errors.push(error.message));
+        page.on('response', (response) => {
+          if (
+            response.request().resourceType() === 'script' &&
+            !response.ok()
+          ) {
+            errors.push(`Script HTTP ${response.status()}: ${response.url()}`);
+          }
+        });
+        page.on('requestfailed', (request) => {
+          if (request.resourceType() === 'script') {
+            errors.push(
+              `Script request failed: ${request.url()}: ${request.failure()?.errorText}`,
+            );
+          }
+        });
         await page.goto(origin);
         await page.getByRole('button', { name: 'Connect' }).click();
         const observed = await page.evaluate(
           async () => await (window as any).acceptance,
         );
-        expect(observed, observed?.error).toMatchObject({
+        expect(
+          observed,
+          [observed?.error, ...errors].filter(Boolean).join('\n'),
+        ).toMatchObject({
           ok: true,
           result: { mutedAndRestored: true, closed: true },
         });
