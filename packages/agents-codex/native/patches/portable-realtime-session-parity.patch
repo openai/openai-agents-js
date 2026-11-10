@@ -1,5 +1,5 @@
 diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
-index f8690a24f8..dbc699e543 100644
+index f8690a24f8..11475705ee 100644
 --- a/codex-rs/realtime-control/src/lib.rs
 +++ b/codex-rs/realtime-control/src/lib.rs
 @@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -7,7 +7,7 @@ index f8690a24f8..dbc699e543 100644
  const MAX_CALL_BYTES: usize = 256 * 1024;
  const MAX_CALLS: usize = 256;
 +const MAX_RECENT_RESPONSES: usize = 256;
- 
+
  /// A single-use execution claim shared with the server Core tool lifecycle.
  #[derive(Debug, Default)]
 @@ -226,16 +227,64 @@ pub struct Config {
@@ -361,7 +361,7 @@ index f8690a24f8..dbc699e543 100644
 +            .values()
 +            .filter(|batch| batch.continued)
 +            .count()
-+            > MAX_CALLS
++            > MAX_RECENT_RESPONSES
 +        {
 +            let oldest = self
 +                .batches
