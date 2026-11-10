@@ -498,11 +498,7 @@ export class AiSdkModel implements NativeModel {
     const providerOptions = copyJsonValue(this.#providerOptions) as JsonObject;
     const thinking = (providerOptions.anthropic as JsonObject | undefined)
       ?.thinking as JsonObject | undefined;
-    if (
-      this.model.provider.startsWith('anthropic.') &&
-      thinking != null &&
-      thinking.type !== 'disabled'
-    )
+    if (thinking != null && thinking.type !== 'disabled')
       throw new TypeError(
         'AiSdkModel does not support configured Anthropic thinking',
       );

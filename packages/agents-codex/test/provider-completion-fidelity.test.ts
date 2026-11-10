@@ -20,11 +20,16 @@ function request(): ModelRequest {
     signal: new AbortController().signal,
   };
 }
-it.each(['enabled', 'adaptive'])(
-  'rejects configured Anthropic %s thinking before client entry',
-  async (type) => {
+it.each(
+  ['anthropic.messages', 'custom.messages'].flatMap((name) =>
+    ['enabled', 'adaptive'].map((type) => ({ name, type })),
+  ),
+)(
+  'rejects configured Anthropic $type thinking for $name before client entry',
+  async ({ name, type }) => {
     let calls = 0;
     const provider = createAnthropic({
+      name,
       apiKey: 'fixture',
       fetch: async () => {
         calls++;
