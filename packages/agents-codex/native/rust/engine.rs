@@ -1105,8 +1105,7 @@ impl EngineState {
                     crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
                 if let Some(path) = history.rollout_path.as_deref() {
                     let home = self.local_storage_home().expect("checked local store");
-                    crate::environment::check_local_resume_rollout_path(&startup, &home.join(path))
-                        .await?;
+                    executor_policy.check_rollout_path(&home.join(path)).await?;
                 }
                 let admission = self
                     .local_checklist_store
