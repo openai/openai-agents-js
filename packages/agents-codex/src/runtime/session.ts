@@ -268,6 +268,7 @@ import {
 } from './environment';
 import {
   managedApproval,
+  ToolOutput,
   captureTools,
   isDirectFunctionTool,
   toolIdentity,
@@ -7839,8 +7840,9 @@ export class Session<OutputT = string, Context = unknown> {
     owner: NativeTurn | ChildCallbackOwner,
     identity: ToolIdentity,
     status: ToolStatus,
+    output: ToolOutput | null = null,
   ): void {
-    this.observeTool(owner, identity, 'tool_finished', status);
+    this.observeTool(owner, identity, 'tool_finished', status, output);
   }
 
   private observeTool(
@@ -7848,6 +7850,7 @@ export class Session<OutputT = string, Context = unknown> {
     identity: ToolIdentity,
     type: 'tool_started' | 'tool_finished',
     status: 'completed' | 'failed' | 'cancelled' = 'completed',
+    output: ToolOutput | null = null,
   ): void {
     const event = {
       turnId: run instanceof NativeTurn ? run.id! : run.turnId,
@@ -7861,7 +7864,7 @@ export class Session<OutputT = string, Context = unknown> {
       family: identity.family,
     };
     if (type === 'tool_finished')
-      this.observations.append({ ...event, type, status });
+      this.observations.append({ ...event, type, status, output });
     else this.observations.append({ ...event, type });
   }
 
@@ -9012,6 +9015,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (msg._sdk_managed_approved !== true)
         this.observeToolStart(owner, identity);
       let status: ToolStatus | undefined;
+      let observedOutput: ToolOutput | null = null;
       try {
         const args =
           typeof msg.arguments === 'string'
@@ -9065,12 +9069,13 @@ export class Session<OutputT = string, Context = unknown> {
           status = 'cancelled';
           return;
         }
+        const responseOutput = structuredClone(response);
         let accepted: boolean;
         try {
           accepted = await native._respond_python_tool(
             encodeReceipt({
               request: msg,
-              response,
+              response: responseOutput,
               ...(isBackgroundToolResponse(response)
                 ? { start_response: false }
                 : {}),
@@ -9083,8 +9088,13 @@ export class Session<OutputT = string, Context = unknown> {
         } catch (error) {
           this.callbackAuthorityFailed(delivery, error);
         }
+        if (accepted)
+          observedOutput = new ToolOutput(
+            responseOutput.contentItems,
+            responseOutput.success,
+          );
         status = accepted
-          ? response.success
+          ? responseOutput.success
             ? 'completed'
             : 'failed'
           : 'cancelled';
@@ -9123,7 +9133,12 @@ export class Session<OutputT = string, Context = unknown> {
                   ? 'tool_error'
                   : undefined,
           });
-        this.observeToolEnd(owner, identity, finalStatus ?? 'failed');
+        this.observeToolEnd(
+          owner,
+          identity,
+          finalStatus ?? 'failed',
+          finalStatus === 'cancelled' ? null : observedOutput,
+        );
       }
     };
     const release = admission ? await admission.acquire(signal) : undefined;

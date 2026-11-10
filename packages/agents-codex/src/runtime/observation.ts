@@ -1,4 +1,5 @@
 import { summarizeResponseFactRecord } from './response-facts';
+import { ToolOutput } from './tools';
 import type { ExecutionItem, SearchItem } from './history';
 import type { JsonObject } from './binding';
 import type { HostedToolItem } from './hosted-tools';
@@ -119,6 +120,10 @@ export type Observation =
       Readonly<{
         type: 'tool_finished';
         status: 'completed' | 'failed' | 'cancelled';
+        /** Acknowledged post-hook function response, only with includeExecutionDetails.
+         * Null for cancellation and other completions; retained history owns model input.
+         */
+        output?: ToolOutput | null;
       }>)
   | (Event &
       Readonly<{
@@ -162,6 +167,17 @@ function projectObservation(
   event: RetainedObservation,
   includeExecutionDetails: boolean,
 ): Observation {
+  if (event.type === 'tool_finished')
+    return Object.freeze({
+      ...event,
+      output:
+        includeExecutionDetails && event.output
+          ? new ToolOutput(
+              structuredClone(event.output.contentItems),
+              event.output.success,
+            )
+          : null,
+    });
   if (event.type === 'response_fact')
     return Object.freeze({
       ...event,
@@ -318,19 +334,21 @@ export class ObservationBuffer {
     const payloadSize = partial?.length ?? 0;
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
-      event.type === 'response_fact'
-        ? JSON.stringify(event.record).length
-        : event.type === 'execution_item_completed' ||
-            event.type === 'search_item_completed' ||
-            event.type === 'hosted_tool_item_completed'
-          ? JSON.stringify(event.item).length
-          : event.type === 'hosted_tool_call_progress'
-            ? JSON.stringify(
-                partial === undefined
-                  ? event.event
-                  : { ...event.event, partial_image_b64: '' },
-              ).length
-            : 0,
+      event.type === 'tool_finished' && event.output
+        ? JSON.stringify(event.output).length
+        : event.type === 'response_fact'
+          ? JSON.stringify(event.record).length
+          : event.type === 'execution_item_completed' ||
+              event.type === 'search_item_completed' ||
+              event.type === 'hosted_tool_item_completed'
+            ? JSON.stringify(event.item).length
+            : event.type === 'hosted_tool_call_progress'
+              ? JSON.stringify(
+                  partial === undefined
+                    ? event.event
+                    : { ...event.event, partial_image_b64: '' },
+                ).length
+              : 0,
     );
     if (
       this.options.retention !== 'all' &&

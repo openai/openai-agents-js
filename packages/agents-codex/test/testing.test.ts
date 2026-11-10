@@ -3,6 +3,7 @@ import {
   text,
   withScriptedResponses,
   type ScriptedResponse,
+  type ScriptedResponses,
 } from '../src/testing';
 
 it('captures response usage and headers before serving the real HTTP envelope', async () => {
@@ -54,9 +55,14 @@ it('refuses response framing overrides before starting a scripted scope', async 
 });
 
 it('supports dynamic responders, queue mutation and explicit raw-event identifiers', async () => {
+  let retained!: ScriptedResponses;
   await withScriptedResponses([[text('discard')]], async (peer) => {
+    retained = peer;
+    expect(peer.remainingSteps).toBe(1);
     peer.clear();
+    expect(peer.remainingSteps).toBe(0);
     peer.append(async (request) => {
+      expect(peer.remainingSteps).toBe(0);
       expect(request.input).toBe('synthetic');
       peer.append({
         items: [],
@@ -73,16 +79,19 @@ it('supports dynamic responders, queue mutation and explicit raw-event identifie
           },
         ],
       });
+      expect(peer.remainingSteps).toBe(1);
       return {
         items: [text('dynamic answer', { itemId: 'msg_dynamic_fixture' })],
         responseId: 'resp_dynamic_fixture',
       };
     });
+    expect(peer.remainingSteps).toBe(1);
     const first = await fetch(`${peer.provider.baseUrl}/responses`, {
       method: 'POST',
       body: JSON.stringify({ input: 'synthetic' }),
     });
     const firstText = await first.text();
+    expect(peer.remainingSteps).toBe(1);
     expect(firstText).toContain('resp_dynamic_fixture');
     expect(firstText).toContain('msg_dynamic_fixture');
     const second = await fetch(`${peer.provider.baseUrl}/responses`, {
@@ -90,10 +99,12 @@ it('supports dynamic responders, queue mutation and explicit raw-event identifie
       body: JSON.stringify({ input: 'next synthetic' }),
     });
     const secondText = await second.text();
+    expect(peer.remainingSteps).toBe(0);
     expect(secondText).toContain('resp_raw_fixture');
     expect(secondText).toContain('raw answer');
     expect(peer.requests).toHaveLength(2);
   });
+  expect(retained.remainingSteps).toBe(0);
 });
 
 it('retains dynamic assertion failures locally without sending them to the provider', async () => {
