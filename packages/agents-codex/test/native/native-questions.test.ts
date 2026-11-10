@@ -142,15 +142,16 @@ async function fixture(
         ? 'reply'
         : '<other>';
   if (diagnosticEnabled)
-    onTestFailed(() => {
+    onTestFailed(({ task }) => {
+      const details: string[] = [];
       const emit = (label: string, row: Record<string, unknown>) => {
         const text = JSON.stringify(row);
         for (let offset = 0; offset < text.length; offset += 120)
-          console.error(
+          details.push(
             `[native-question-fixture] ${label}[${offset / 120}] ${text.slice(offset, offset + 120)}`,
           );
       };
-      // CI caps each console line at 200 characters. Keep the latest retained
+      // CI caps each output line at 200 characters. Keep the latest retained
       // phase first and split each record so the useful fields remain visible.
       diagnosticRows.toReversed().forEach((row, index) => {
         emit(`phase-${index}`, row);
@@ -165,6 +166,8 @@ async function fixture(
         latestGet,
         droppedRows: droppedDiagnosticRows,
       });
+      const error = task.result?.errors?.[0];
+      if (error) error.message += `\n${details.join('\n')}`;
     });
   const disconnected = Promise.withResolvers<void>();
   const childFormSent = Promise.withResolvers<void>();
