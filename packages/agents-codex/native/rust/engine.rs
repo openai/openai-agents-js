@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::{Future, poll_fn};
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{
     Arc, OnceLock, RwLock, Weak,
@@ -30,6 +29,7 @@ use codex_thread_store::{
 };
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
+use crate::auth::SavedLoginFile;
 use crate::environment::LocalPrivatePaths;
 use crate::{NativeThread, config, extensions, goals, options};
 
@@ -61,7 +61,7 @@ struct ProcessCleanupHold {
 
 pub struct EngineState {
     pub manager: Arc<ThreadManager>,
-    pub(crate) saved_login_file: Option<PathBuf>,
+    pub(crate) saved_login_file: Option<SavedLoginFile>,
     pub store: Arc<dyn ThreadStore>,
     pub(crate) custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     pub(crate) local_checklist_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
@@ -123,7 +123,7 @@ impl EngineState {
     pub(crate) fn local_private_paths(&self) -> LocalPrivatePaths<'_> {
         LocalPrivatePaths {
             storage: self.local_storage_home(),
-            saved_login_file: self.saved_login_file.as_deref(),
+            saved_login_file: self.saved_login_file.as_ref(),
         }
     }
 
@@ -579,7 +579,7 @@ impl EngineState {
         initial_models: crate::checkpoint::InitialModels,
         custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
         plan: Option<(http::HeaderValue, String)>,
-        inherited_saved_login: Option<(Arc<AuthManager>, PathBuf)>,
+        inherited_saved_login: Option<(Arc<AuthManager>, SavedLoginFile)>,
     ) -> anyhow::Result<Self> {
         let (plan_authorization, plan_provider) = match plan {
             Some((authorization, provider)) => (Some(authorization), Some(provider)),
@@ -709,7 +709,7 @@ impl EngineState {
             if let Some(home) = instructions_home {
                 let provider = CodexHomeUserInstructionsProvider::new(home);
                 Arc::new(match &saved_login {
-                    Some((_, file)) => provider.with_protected_file(file.clone()),
+                    Some((_, file)) => provider.with_protected_file(file.canonical.clone()),
                     None => provider,
                 })
             } else {
@@ -717,7 +717,7 @@ impl EngineState {
             };
         let private_paths = LocalPrivatePaths {
             storage: (goals_enabled || local_home.is_some()).then(|| config.sqlite.home()),
-            saved_login_file: saved_login.as_ref().map(|(_, file)| file.as_path()),
+            saved_login_file: saved_login.as_ref().map(|(_, file)| file),
         };
         // Check before opening SQLite or launching the executor.
         if let Some(environment) = &environment_options {

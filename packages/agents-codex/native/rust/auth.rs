@@ -19,17 +19,34 @@ pub(crate) struct SavedCodexLogin {
     account_id: Option<String>,
 }
 
+#[derive(Clone)]
+pub(crate) struct SavedLoginFile {
+    pub(crate) declared: PathBuf,
+    pub(crate) canonical: PathBuf,
+}
+
 impl SavedCodexLogin {
-    pub(crate) async fn open(self, config: &Config) -> Result<(Arc<AuthManager>, PathBuf)> {
-        let codex_home = match self.codex_home {
-            Some(path) => path,
-            None => codex_core::config::find_codex_home()
-                .context("Cannot locate the Codex login directory")?
-                .to_path_buf(),
-        }
-        .canonicalize()
-        .context("Cannot open the Codex login directory")?;
+    pub(crate) async fn open(self, config: &Config) -> Result<(Arc<AuthManager>, SavedLoginFile)> {
+        let (home, declared) = match self.codex_home {
+            Some(path) => (path.clone(), path),
+            None => {
+                let home = codex_core::config::find_codex_home()
+                    .context("Cannot locate the Codex login directory")?
+                    .to_path_buf();
+                let declared = std::env::var("CODEX_HOME")
+                    .ok()
+                    .filter(|path| !path.is_empty())
+                    .map_or_else(|| home.clone(), PathBuf::from);
+                (home, declared)
+            }
+        };
+        let codex_home = home
+            .canonicalize()
+            .context("Cannot open the Codex login directory")?;
         let auth_file = codex_home.join("auth.json");
+        let declared = std::path::absolute(declared)
+            .context("Cannot locate the Codex login directory")?
+            .join("auth.json");
         ensure!(
             auth_file
                 .symlink_metadata()
@@ -51,7 +68,13 @@ impl SavedCodexLogin {
                 .is_none_or(|expected| account.as_ref() == Some(expected)),
             "Saved Codex login does not match the expected account"
         );
-        Ok((manager, auth_file))
+        Ok((
+            manager,
+            SavedLoginFile {
+                declared,
+                canonical: auth_file,
+            },
+        ))
     }
 
     pub(crate) fn check_provider(config: &Config) -> Result<()> {
