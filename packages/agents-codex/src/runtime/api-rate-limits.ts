@@ -8,7 +8,7 @@ export interface ApiRateLimitWindow {
   readonly resetAfterSeconds?: number;
 }
 
-/** Latest response with usable API-key limits. An absent field is unknown. */
+/** Latest usable provider limits and retry advice. An absent field is unknown. */
 export interface ApiRateLimits {
   readonly requests?: ApiRateLimitWindow;
   readonly tokens?: ApiRateLimitWindow;
