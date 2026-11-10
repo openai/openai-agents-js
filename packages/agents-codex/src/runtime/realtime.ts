@@ -1103,10 +1103,11 @@ class NativeRealtimeOwner {
     }, bytes);
   }
   /**
-   * Send a supported provider event through native validation and response ordering.
+   * Send a provider event through the native connection.
    * Returns the provider item for conversation.item.retrieve, otherwise null.
-   * Supports response controls, message creation/retrieval/deletion, sparse session
-   * settings, input audio buffers, known audio truncation and provider playback clear.
+   * Core validates managed controls and forwards other event types as JSON.
+   * Linked responses can select advertised functions for one response.
+   * Detached responses can declare functions that the caller handles.
    * Cancellation allows later input after dispatch and resolves after retirement.
    * Tool and approval authority remains with the native Session.
    */
@@ -1166,9 +1167,10 @@ class NativeRealtimeOwner {
    * Reconcile provider items observed during this connection with the supplied items.
    * Unobserved items, including SIP items from before attachment, remain outside
    * this replacement. Core validates the replacement before sending changes and
-   * waits for provider acknowledgements. Only system/user/assistant messages are
-   * editable. Surviving tool, MCP, and approval rows retain exact content and
-   * relative order; settled rows can be removed. Supported messages can move
+   * waits for provider acknowledgements. Edit supported messages and import
+   * completed historical function call and output pairs as context. Surviving
+   * tool, MCP, and approval rows retain exact content and relative order.
+   * Settled rows can be removed. Supported messages can move
    * across surviving rows. A provider failure after some
    * acknowledgements can leave partial edits; retrieve observed history before
    * retrying. Canonical audit history, background work, and retained context for

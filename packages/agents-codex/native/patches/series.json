@@ -463,7 +463,11 @@
     {
       "path": "sdk-realtime-response-context-and-history.patch",
       "sha256": "3fbc07c2bd3900d64a0ee8a688e97f262fc9faed3c3f0d250b0be793021e5635"
+    },
+    {
+      "path": "sdk-realtime-provider-controls-and-tool-history.patch",
+      "sha256": "c322e9722ee12080ed6f0209222c816600127e1b2dbb37b1e3aac371228c3421"
     }
   ],
-  "result_tree": "02d78a06cecceb35c7304f7e33216e0ae082bcd6"
+  "result_tree": "d39b9c3ad7958a3a2a8000df9e84b4ca5d452267"
 }
