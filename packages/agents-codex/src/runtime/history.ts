@@ -89,6 +89,7 @@ export interface RecordedResponse {
   id: string | null;
   threadId: string;
   turnId: string;
+  /** Provider response body ID, or null when unavailable. */
   responseId: string | null;
   /** Actual provider request header; absent on profiles that cannot supply it. */
   upstreamRequestId?: string;

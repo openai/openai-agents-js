@@ -189,6 +189,7 @@ export async function applyNativeAgentsApproval<Context>(
   submission: ToolCallContext<Context>['submission'],
   request: JsonObject,
   signal: AbortSignal,
+  decide: ToolContext<Context>['decide'],
 ): Promise<JsonObject> {
   const tool = jsonObject.parse(request.tool_name);
   if (
@@ -226,6 +227,7 @@ export async function applyNativeAgentsApproval<Context>(
       Object.freeze({
         context,
         submission,
+        decide,
         call: interceptedCallInfo(submission, request),
         threadId: call.threadId,
         turnId: call.turnId,

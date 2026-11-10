@@ -1,3 +1,8 @@
+import {
+  decisionBinding,
+  withDecisionSignal,
+  type BoundDecide,
+} from './decisions';
 import { captureToolPart, mediaRecord } from './media';
 import type { FileReference, ImageDetail } from './media';
 import { z } from 'zod';
@@ -91,6 +96,9 @@ export type ToolTimeoutErrorFunction<Context = unknown> = (
 ) => string | Promise<string>;
 
 export interface ToolCallContext<Context = unknown> {
+  readonly decide?: BoundDecide;
+  /** @internal */
+  readonly [decisionBinding]?: (signal: AbortSignal) => BoundDecide;
   /** Exact issuing native span, when native tracing has an active context. */
   readonly traceContext?: import('./trace-context').TraceContext;
   /** SDK-issued contexts include frozen observed metadata. */
@@ -131,6 +139,7 @@ function inheritToolSessionOwner<T extends ToolCallContext>(
 export interface ToolContext<
   Context = unknown,
 > extends ToolCallContext<Context> {
+  readonly decide: BoundDecide;
   /** Detached snapshot of the model's arguments. */
   readonly originalArguments: Readonly<JsonObject>;
   /** Shallow read-only view of the validated callback arguments. */
@@ -458,6 +467,12 @@ export function tool<
       );
       let callContext: ToolContext<Context> = {
         ...context,
+        decide:
+          context.decide ??
+          ((() =>
+            Promise.reject(
+              new Error('Decision helper requires an admitted callback'),
+            )) as BoundDecide),
         originalArguments,
         effectiveArguments: Object.freeze({
           ...(parsed as Record<string, unknown>),
@@ -502,7 +517,10 @@ export function tool<
           (signal) =>
             execute(
               parsed,
-              inheritToolSessionOwner({ ...callContext, signal }, context),
+              inheritToolSessionOwner(
+                withDecisionSignal(callContext, signal),
+                context,
+              ),
             ),
           context.signal,
           callbackTimeout,
@@ -587,6 +605,12 @@ export function tool<
       let effective = effectiveArgs;
       let callContext: ToolContext<Context> = {
         ...context,
+        decide:
+          context.decide ??
+          ((() =>
+            Promise.reject(
+              new Error('Decision helper requires an admitted callback'),
+            )) as BoundDecide),
         originalArguments: Object.freeze(structuredClone(args) as JsonObject),
         effectiveArguments: Object.freeze({
           ...(parsed as Record<string, unknown>),

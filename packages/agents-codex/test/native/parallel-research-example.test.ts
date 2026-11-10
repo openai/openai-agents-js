@@ -957,6 +957,11 @@ describe('parallel research admission and owned lifecycle without Core', () => {
             expect(
               await approve(
                 {
+                  decide: () => {
+                    throw new Error(
+                      'Unexpected decision call in synthetic approval context',
+                    );
+                  },
                   context: undefined,
                   submission: root,
                   threadId: sessionId,

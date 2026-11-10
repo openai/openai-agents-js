@@ -233,7 +233,8 @@ impl PythonTools {
             message["profile_id"] = json!(profile.profile_id);
             message["profile_epoch"] = json!(profile.epoch);
         }
-        if let Some(context) = codex_otel::sdk_trace::ContextLease::capture() {
+        let tracing = codex_otel::sdk_trace::ContextLease::capture();
+        if let Some(context) = &tracing {
             message["tracing_context"] = json!(context.token());
         }
         let mut event = json!({"id":turn, "msg":message});

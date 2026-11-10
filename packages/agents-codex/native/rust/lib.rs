@@ -17,6 +17,7 @@ mod commands;
 mod config;
 mod context;
 mod custom_storage;
+mod decisions;
 mod engine;
 mod environment;
 mod extensions;

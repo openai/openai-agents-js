@@ -24,7 +24,7 @@ import {
   type WriteStdinArgs,
   type WorkspaceArchiveData,
   type WorkspaceArchiveOptions,
-  normalizeSandboxClientCreateArgs,
+  normalizeSandboxClientCreateArgs as normalizeCreateArgs,
 } from '@openai/agents-core/sandbox';
 import {
   appendPtyOutput,
@@ -1125,7 +1125,7 @@ export class E2BSandboxClient implements SandboxClient<
     args?: SandboxClientCreateArgs<E2BSandboxClientOptions> | Manifest,
     manifestOptions?: E2BSandboxClientOptions,
   ): Promise<E2BSandboxSession> {
-    const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
+    const createArgs = normalizeCreateArgs(args, manifestOptions);
     const archiveLimits = resolveCreateArchiveLimits(
       createArgs.archiveLimits,
       createArgs.options?.archiveLimits,

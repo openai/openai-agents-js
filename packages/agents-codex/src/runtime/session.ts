@@ -5,8 +5,15 @@ import {
   type ModelProvider,
 } from './models';
 import {
+  bindDecide,
+  decisionBinding,
+  type BoundDecide,
+  type DecisionProvider,
+} from './decisions';
+import {
   captureCompletionDecision,
   type BeforeComplete,
+  type CompletionDecision,
   type BeforeCompact,
   type ContextTransform,
 } from './model-callbacks';
@@ -306,6 +313,7 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   modelBackend?: NativeModel | ModelProvider;
+  decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
   beforeCompact?: BeforeCompact<any>;
@@ -369,6 +377,7 @@ export interface ManualCheckpointEntry {
 export type OneShotOptions = {
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
+  beforeStep?: OperationOptions<any>['beforeStep'];
   /** Private single-use owned-factory grant; never interpreted by truthiness. */
   privateEngineGrant?: object;
 };
@@ -443,6 +452,7 @@ export interface PrepareRequestContext<Context = unknown> extends Omit<
   readonly recoveryAttempt: number;
 }
 export interface BeforeStepContext<Context = unknown> {
+  readonly decide: BoundDecide;
   readonly context: Context;
   readonly submission: Turn<unknown>;
   readonly stepIndex: number;
@@ -882,6 +892,17 @@ function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
   );
 }
 
+interface CompletionInspection {
+  readonly candidate: (text: string) => Promise<CompletionDecision | undefined>;
+  readonly signal: AbortSignal;
+  readonly check: () => void;
+}
+
+type RepairedOutput =
+  | { readonly type: 'validated'; readonly output: unknown }
+  | { readonly type: 'decision'; readonly decision: CompletionDecision }
+  | { readonly type: 'stopped' };
+
 interface OutputRepair {
   completion: Promise<void>;
   finished: boolean;
@@ -913,6 +934,7 @@ const submissions = new WeakMap<
     retirement?: Promise<never>;
     tracingAdmissionFailed?: boolean;
     repair?: OutputRepair;
+    repairAttemptsUsed?: number;
   }
 >();
 
@@ -3488,7 +3510,11 @@ export class Session<OutputT = string, Context = unknown> {
       undefined,
       false,
       this.captureSelection(
-        { maxModelSteps, prepareRequest: this.oneShot?.prepareRequest },
+        {
+          maxModelSteps,
+          prepareRequest: this.oneShot?.prepareRequest,
+          beforeStep: this.oneShot?.beforeStep,
+        },
         this.defaultOutput,
         budget,
       ),
@@ -4798,6 +4824,26 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private startOutputRepair(run: NativeTurn, output: string): void {
+    void this.runOutputRepair(run, output, submissions.get(run)!.output).then(
+      (result) => {
+        if (result.type === 'validated')
+          this.decodedOutputs.set(run, result.output);
+        this.finish(run, run.failure, output);
+      },
+      (error: unknown) => {
+        const repair = submissions.get(run)!.repair!;
+        if (!repair.session && !repair.opening?.failedOpeningCleanup)
+          this.finish(run, run.failure ?? error, output);
+      },
+    );
+  }
+
+  private runOutputRepair(
+    run: NativeTurn,
+    output: string,
+    prepared: PreparedOutput,
+    inspect?: CompletionInspection,
+  ): Promise<RepairedOutput> {
     const submission = submissions.get(run)!;
     const repair: OutputRepair = {
       completion: Promise.resolve(),
@@ -4807,23 +4853,23 @@ export class Session<OutputT = string, Context = unknown> {
     for (const stop of this.graphStops)
       if (stop.run === run) this.stopCorrection(repair, stop.options.mode);
     const abort = () => this.stopCorrection(repair, 'force');
-    run.controller.signal.addEventListener('abort', abort, { once: true });
+    const signal = inspect?.signal ?? run.controller.signal;
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    let result: RepairedOutput;
     repair.completion = Promise.resolve().then(async () => {
       let failure: unknown;
       try {
-        this.decodedOutputs.set(
-          run,
-          await (run.tracing
-            ? run.tracing.run('host.output_repair', 'validation', () =>
-                this.repairOutput(run, repair, output),
-              )
-            : this.repairOutput(run, repair, output)),
-        );
+        const correct = () =>
+          this.repairOutput(run, repair, output, prepared, inspect);
+        result = await (run.tracing
+          ? run.tracing.run('host.output_repair', 'validation', correct)
+          : correct());
       } catch (error) {
         failure = run.failure ?? error;
       } finally {
         repair.finished = true;
-        run.controller.signal.removeEventListener('abort', abort);
+        signal.removeEventListener('abort', abort);
       }
       if (repair.session || repair.opening?.failedOpeningCleanup) {
         // A failed close retains its exact Session for the parent's next close.
@@ -4832,28 +4878,37 @@ export class Session<OutputT = string, Context = unknown> {
         this.retire(error);
         throw error;
       }
-      this.finish(run, run.failure ?? failure, output);
+      if (failure !== undefined) throw failure;
     });
     repair.completion.catch(() => {});
+    return repair.completion.then(() => result!);
   }
 
   private async repairOutput(
     run: NativeTurn,
     repair: OutputRepair,
     text: string,
-  ): Promise<unknown> {
-    const prepared = submissions.get(run)!.output;
+    prepared: PreparedOutput,
+    inspect?: CompletionInspection,
+  ): Promise<RepairedOutput> {
+    const submission = submissions.get(run)!;
     const check = (opening = false) => {
+      inspect?.signal.throwIfAborted();
+      inspect?.check();
       if (run.failure !== undefined) throw run.failure;
       if (
         !this.owns(run) ||
         run.controller.signal.aborted ||
-        repair.stop === 'force' ||
-        (opening && repair.stop === 'graceful')
+        repair.stop === 'force'
       )
         throw new TurnAborted('Output repair stopped');
+      if (opening && repair.stop === 'graceful') {
+        if (inspect) return false;
+        throw new TurnAborted('Output repair stopped');
+      }
+      return true;
     };
-    check(true);
+    if (!check(true)) return { type: 'stopped' };
     // Output overrides do not identify the producing Agent. Capture Core's
     // committed profile before opening any correction Session.
     const source = this.options.agentGraph
@@ -4862,13 +4917,13 @@ export class Session<OutputT = string, Context = unknown> {
           this.options.agentGraph,
         )
       : undefined;
-    check(true);
+    if (!check(true)) return { type: 'stopped' };
     const transformContext = source
       ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
           .transformContext
       : this.options.transformContext;
     const history = await this.#readHistory();
-    check(true);
+    if (!check(true)) return { type: 'stopped' };
     const settingsEvent = history
       .toReversed()
       .find(
@@ -4903,8 +4958,9 @@ export class Session<OutputT = string, Context = unknown> {
     if (!open)
       throw new NativeError('This Session does not support output repair');
     let issues: OutputValidationError['issues'] = [];
-    for (let index = 0; index < prepared.repair!.maxRetries; index++) {
-      check(true);
+    while ((submission.repairAttemptsUsed ?? 0) < prepared.repair!.maxRetries) {
+      if (!check(true)) return { type: 'stopped' };
+      submission.repairAttemptsUsed = (submission.repairAttemptsUsed ?? 0) + 1;
       repair.session = await open(
         accepted.data.model,
         settings,
@@ -4924,27 +4980,30 @@ export class Session<OutputT = string, Context = unknown> {
         this.submissionIds.get(run)!,
       );
       let possiblyAdmitted = false;
+      let stoppedBeforeAdmission = false;
       let result: NativeRunResult | undefined;
       let failure: unknown;
       try {
-        check(true);
-        // startTurn checks the live Session before invoking native admission.
-        repair.run = correction.startTurn(
-          JSON.stringify({
-            schema: prepared.repair!.schema,
-            invalid_output: text,
-          }),
-          true,
-          correction.defaultOutput,
-          false,
-          correction.captureSelection(
-            undefined,
+        stoppedBeforeAdmission = !check(true);
+        if (!stoppedBeforeAdmission) {
+          // startTurn checks the live Session before invoking native admission.
+          repair.run = correction.startTurn(
+            JSON.stringify({
+              schema: prepared.repair!.schema,
+              invalid_output: text,
+            }),
+            true,
             correction.defaultOutput,
-            run.selection?.budget,
-          ),
-        );
-        possiblyAdmitted = true;
-        result = await repair.run.wait();
+            false,
+            correction.captureSelection(
+              undefined,
+              correction.defaultOutput,
+              run.selection?.budget,
+            ),
+          );
+          possiblyAdmitted = true;
+          result = await repair.run.wait();
+        }
       } catch (error) {
         failure = error;
         if (
@@ -5003,14 +5062,22 @@ export class Session<OutputT = string, Context = unknown> {
       }
       check();
       if (failure !== undefined) throw failure;
+      if (stoppedBeforeAdmission) return { type: 'stopped' };
       text = result!.finalOutput;
+      const continuation = await inspect?.candidate(text);
+      check();
+      if (continuation) {
+        if (!check(true)) return { type: 'stopped' };
+        return { type: 'decision', decision: continuation };
+      }
       try {
-        return prepared.parse!(text);
+        return { type: 'validated', output: prepared.parse!(text) };
       } catch (error) {
         if (!(error instanceof OutputValidationError)) throw error;
         issues = error.issues;
       }
     }
+    if (!check(true)) return { type: 'stopped' };
     throw new OutputValidationError(text, issues);
   }
 
@@ -5275,6 +5342,32 @@ export class Session<OutputT = string, Context = unknown> {
     }
     throw error;
   }
+  private decisionScope(message: Record<string, unknown>, signal: AbortSignal) {
+    const profile = this.messageProfile(message);
+    const provider =
+      (profile
+        ? this.profileRuntimes.get(profile.profile_id)!.profile.declaration
+            .decisions
+        : undefined) ?? this.options.decisions;
+    let active = true;
+    const make = (effectiveSignal: AbortSignal): BoundDecide =>
+      bindDecide({
+        provider,
+        signal: effectiveSignal,
+        assertActive() {
+          if (!active)
+            throw new NativeError('Decision callback is no longer active');
+        },
+      });
+    return {
+      decide: make(signal),
+      [decisionBinding]: make,
+      close() {
+        active = false;
+      },
+    };
+  }
+
   private async ownCallbackDelivery(
     event: NativeEvent,
     owner: NativeTurn | ChildCallbackOwner,
@@ -5356,7 +5449,7 @@ export class Session<OutputT = string, Context = unknown> {
           if (this.manualSuspending || this.replacingNative === native) return;
           throw error;
         }
-        if (!this.isOpen || this.#native !== native) return;
+        if (this.#native !== native) return;
         if (event.msg.type === '_sdk_callback_cancel') {
           const wire = encodeReceipt(
             nativeCallbackReceipt.parse(event.msg.receipt),
@@ -5366,6 +5459,7 @@ export class Session<OutputT = string, Context = unknown> {
             this.retireCallbackDelivery(cancelled);
           continue;
         }
+        if (!this.isOpen) return;
         if (this.realtimeOwner?._ingest(event)) continue;
         const msg = event.msg;
         if (msg.type === 'token_count') {
@@ -6628,61 +6722,69 @@ export class Session<OutputT = string, Context = unknown> {
           check();
           const beforeComplete = this.sourceModelCallbacks(msg).beforeComplete;
           if (beforeComplete) {
-            const model = z.string().parse(msg.model);
-            const returned = beforeComplete(
-              Object.freeze({
-                context: this.options.context,
-                text: null,
-                sessionId: this.id,
-                turnId: z.string().parse(turnId),
-                ...(child ? { subagentId: owner.childId } : {}),
-                model,
-                continuationCount: z
-                  .number()
-                  .int()
-                  .nonnegative()
-                  .safe()
-                  .parse(msg.continuation_count),
-                signal,
-                finalOutput: losslessJsonValueSchema.parse(converted.json),
-                toolCall: Object.freeze({
-                  ...terminalCallInfo(
-                    {
-                      sessionId: this.id,
-                      turnId: z.string().parse(turnId),
-                      childId: child ? owner.childId : null,
-                      childIncarnation: child ? owner.incarnation : null,
-                    },
-                    {
-                      call_id: z.string().parse(msg.call_id),
-                      name: declaration.name,
-                      namespace: toolNamespace(declaration),
-                      final_output: converted.json,
-                    },
-                  ),
+            const scope = this.decisionScope(event.msg, signal);
+            try {
+              const model = z.string().parse(msg.model);
+              const returned = beforeComplete(
+                Object.freeze({
+                  decide: scope.decide,
+                  context: this.options.context,
+                  text: null,
+                  sessionId: this.id,
+                  turnId: z.string().parse(turnId),
+                  ...(child ? { subagentId: owner.childId } : {}),
                   model,
+                  continuationCount: z
+                    .number()
+                    .int()
+                    .nonnegative()
+                    .safe()
+                    .parse(msg.continuation_count),
+                  signal,
+                  finalOutput: losslessJsonValueSchema.parse(converted.json),
+                  toolCall: Object.freeze({
+                    ...terminalCallInfo(
+                      {
+                        sessionId: this.id,
+                        turnId: z.string().parse(turnId),
+                        childId: child ? owner.childId : null,
+                        childIncarnation: child ? owner.incarnation : null,
+                      },
+                      {
+                        call_id: z.string().parse(msg.call_id),
+                        name: declaration.name,
+                        namespace: toolNamespace(declaration),
+                        final_output: converted.json,
+                      },
+                    ),
+                    model,
+                  }),
                 }),
-              }),
-            );
-            const settled =
-              returned &&
-              typeof (returned as Promise<unknown>).then === 'function'
-                ? await returned
-                : returned;
-            const decision = captureCompletionDecision(settled);
-            check();
-            if (decision) {
-              this.discardTerminalValue(owner);
-              const data =
-                decision.action === 'stop'
-                  ? { stop: true }
-                  : { continue: decision.instructions };
-              if (
-                !native._reply_tool_completion(encode({ ...receipt, ...data }))
-              )
-                throw new NativeError('Terminal decision reply expired');
-              replied = true;
-              return;
+              );
+              const settled =
+                returned &&
+                typeof (returned as Promise<unknown>).then === 'function'
+                  ? await returned
+                  : returned;
+              const decision = captureCompletionDecision(settled);
+              check();
+              if (decision) {
+                this.discardTerminalValue(owner);
+                const data =
+                  decision.action === 'stop'
+                    ? { stop: true }
+                    : { continue: decision.instructions };
+                if (
+                  !native._reply_tool_completion(
+                    encode({ ...receipt, ...data }),
+                  )
+                )
+                  throw new NativeError('Terminal decision reply expired');
+                replied = true;
+                return;
+              }
+            } finally {
+              scope.close();
             }
           }
           check();
@@ -6872,28 +6974,76 @@ export class Session<OutputT = string, Context = unknown> {
               check();
               reply(replacement === undefined ? {} : { items: replacement });
             } else {
-              const returned = beforeComplete?.(
-                Object.freeze({
-                  ...base,
-                  text: z.string().nullable().parse(msg.text),
-                  continuationCount: z
-                    .number()
-                    .int()
-                    .nonnegative()
-                    .safe()
-                    .parse(msg.continuation_count),
-                }),
-              );
-              const settled =
-                returned &&
-                typeof (returned as Promise<unknown>).then === 'function'
-                  ? await returned
-                  : returned;
-              const decision = captureCompletionDecision(settled);
+              const invoke = async (text: string | null) => {
+                const scope = this.decisionScope(event.msg, signal);
+                try {
+                  const returned = beforeComplete?.(
+                    Object.freeze({
+                      ...base,
+                      text,
+                      continuationCount: z
+                        .number()
+                        .int()
+                        .nonnegative()
+                        .safe()
+                        .parse(msg.continuation_count),
+                      decide: scope.decide,
+                    }),
+                  );
+                  const settled =
+                    returned &&
+                    typeof (returned as Promise<unknown>).then === 'function'
+                      ? await returned
+                      : returned;
+                  const decision = captureCompletionDecision(settled);
+                  check();
+                  return decision;
+                } finally {
+                  scope.close();
+                }
+              };
+              if (!child) this.decodedOutputs.delete(owner);
+              const text = z.string().nullable().parse(msg.text);
+              let decision = await invoke(text);
+              if (!child && decision === undefined) {
+                const submission = submissions.get(owner)!;
+                const profile = this.messageProfile(msg);
+                const prepared =
+                  profile &&
+                  !submission.outputOverride &&
+                  !submission.realtimeTools
+                    ? this.profileRuntimes.get(profile.profile_id)!.output
+                    : submission.output;
+                if (!submission.compaction && prepared.repair) {
+                  try {
+                    this.decodedOutputs.set(owner, prepared.parse!(text ?? ''));
+                  } catch (error) {
+                    if (!(error instanceof OutputValidationError)) throw error;
+                    const repaired = await this.runOutputRepair(
+                      owner,
+                      text ?? '',
+                      prepared,
+                      { candidate: invoke, signal, check },
+                    );
+                    if (repaired.type === 'stopped') {
+                      // Preserve the accepted repair stop before Core settles the callback.
+                      owner.failure ??= new TurnAborted('Turn interrupted');
+                      decision = { action: 'stop' };
+                    } else if (repaired.type === 'decision') {
+                      decision = repaired.decision;
+                    } else {
+                      this.decodedOutputs.set(owner, repaired.output);
+                    }
+                  }
+                }
+              }
+              if (!child && decision !== undefined)
+                this.decodedOutputs.delete(owner);
               check();
               reply(decision === undefined ? {} : { decision });
             }
           } catch (error) {
+            if (!child) this.decodedOutputs.delete(owner);
             reject();
             owner.failure ??= error;
             throw error;
@@ -6968,25 +7118,32 @@ export class Session<OutputT = string, Context = unknown> {
           signal.throwIfAborted();
           if (this.graphStops.size)
             throw new TurnAborted('Request preparation stopped');
-          const returned = selection.prepareRequest({
-            context: this.options.context as Context,
-            submission: this.#turnFor(this.rootRun(run)),
-            preparationIndex: selection.preparationIndex++,
-            recoveryAttempt: msg.recovery_attempt as number,
-            signal,
-            request: preparedRequestFromNative(msg.data),
-          });
-          const replacement =
-            returned &&
-            typeof (returned as Promise<PreparedRequestData>).then ===
-              'function'
-              ? await returned
-              : returned;
-          // Capture immediately after settlement, before cancellation/owner checks or another await.
-          const captured =
-            replacement === undefined
-              ? undefined
-              : capturePreparedRequest(replacement);
+          const scope = this.decisionScope(event.msg, signal);
+          let captured: ReturnType<typeof capturePreparedRequest> | undefined;
+          try {
+            const returned = selection.prepareRequest({
+              decide: scope.decide,
+              context: this.options.context as Context,
+              submission: this.#turnFor(this.rootRun(run)),
+              preparationIndex: selection.preparationIndex++,
+              recoveryAttempt: msg.recovery_attempt as number,
+              signal,
+              request: preparedRequestFromNative(msg.data),
+            });
+            const replacement =
+              returned &&
+              typeof (returned as Promise<PreparedRequestData>).then ===
+                'function'
+                ? await returned
+                : (returned as PreparedRequestData | undefined);
+            // Capture mutable application data before joining admitted helper work.
+            captured =
+              replacement === undefined
+                ? undefined
+                : capturePreparedRequest(replacement);
+          } finally {
+            scope.close();
+          }
           signal.throwIfAborted();
           if (
             !this.current(run) ||
@@ -7099,24 +7256,35 @@ export class Session<OutputT = string, Context = unknown> {
           assertActive();
           selection.budget?.check(assertActive);
           const stepIndex = selection.stepIndex++;
-          const selected = await selection.beforeStep?.({
-            context: this.options.context as Context,
-            submission: this.#turnFor(this.rootRun(run)),
-            stepIndex,
-            signal,
-          });
+          const scope = this.decisionScope(event.msg, signal);
+          let names: ReturnType<typeof this.selectedStepNames> = [];
+          let stopped = false;
+          try {
+            const selected = await selection.beforeStep?.({
+              decide: scope.decide,
+              context: this.options.context as Context,
+              submission: this.#turnFor(this.rootRun(run)),
+              stepIndex,
+              signal,
+            });
+            if (isStepStop(selected)) stopped = true;
+            else
+              names = this.selectedStepNames(
+                event,
+                selected,
+                this.profileOperationNames(selection, event, sourceCatalog),
+                sourceCatalog,
+              );
+          } finally {
+            scope.close();
+          }
           assertActive();
-          if (isStepStop(selected)) {
+          if (stopped) {
             if (native._stop_step(nonce)) replied = true;
             else reply(null);
             return;
           }
-          const names = this.selectedStepNames(
-            event,
-            selected,
-            this.profileOperationNames(selection, event, sourceCatalog),
-            sourceCatalog,
-          );
+          selection.budget?.check(assertActive);
           signal.throwIfAborted();
           if (this.options.agentGraph) {
             const source = this.messageProfile(msg)!;
@@ -7249,7 +7417,9 @@ export class Session<OutputT = string, Context = unknown> {
         original,
         owner.observationProducer,
       );
+      const scope = this.decisionScope(event.msg, signal);
       const context = Object.freeze({
+        decide: scope.decide,
         context: this.options.context as Context,
         submission,
         child: Object.freeze({
@@ -7280,14 +7450,22 @@ export class Session<OutputT = string, Context = unknown> {
       }
       signal.throwIfAborted();
       capturedSelection.stepIndex++;
-      const selected = await withNativeCallbackContext(
-        typeof event.msg.tracing_context === 'string'
-          ? event.msg.tracing_context
-          : undefined,
-        () => beforeStep?.(context),
-        signal,
-        workflowForTrace,
-      );
+      let names: ReturnType<typeof this.selectedStepNames> = [];
+      let stopped = false;
+      try {
+        const selected = await withNativeCallbackContext(
+          typeof event.msg.tracing_context === 'string'
+            ? event.msg.tracing_context
+            : undefined,
+          () => beforeStep?.(context),
+          signal,
+          workflowForTrace,
+        );
+        if (isStepStop(selected)) stopped = true;
+        else names = this.selectedStepNames(event, selected);
+      } finally {
+        scope.close();
+      }
       signal.throwIfAborted();
       if (
         !this.current(owner) ||
@@ -7312,12 +7490,12 @@ export class Session<OutputT = string, Context = unknown> {
       } catch (error) {
         this.callbackAuthorityFailed(delivery, error);
       }
-      if (isStepStop(selected)) {
+      if (stopped) {
         if (native._stop_step(encode(receipt))) replied = true;
         else reply(null);
         return;
       }
-      reply(this.selectedStepNames(event, selected));
+      reply(names);
     } catch (error) {
       reply(null);
       throw error;
@@ -7748,7 +7926,10 @@ export class Session<OutputT = string, Context = unknown> {
           const cached = this.approvalDecisions
             .get(toolDeclarationIdentity(tool))
             ?.get(source);
+          const scope = this.decisionScope(event.msg, run.controller.signal);
           const context = {
+            decide: scope.decide,
+            [decisionBinding]: scope[decisionBinding],
             context: this.options.context,
             submission,
             call: managedCallInfo(
@@ -7772,15 +7953,20 @@ export class Session<OutputT = string, Context = unknown> {
                 'Managed approval expired during policy evaluation',
               );
           };
-          const decision = await approval.prepare(
-            args,
-            context,
-            check,
-            msg._sdk_restored_approval === true || cached !== undefined,
-            msg._sdk_effective_arguments === undefined
-              ? undefined
-              : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
-          );
+          let decision: Awaited<ReturnType<typeof approval.prepare>>;
+          try {
+            decision = await approval.prepare(
+              args,
+              context,
+              check,
+              msg._sdk_restored_approval === true || cached !== undefined,
+              msg._sdk_effective_arguments === undefined
+                ? undefined
+                : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
+            );
+          } finally {
+            scope.close();
+          }
           check();
           if (
             !this.#native._require_tool_approval(
@@ -8654,7 +8840,10 @@ export class Session<OutputT = string, Context = unknown> {
         if (!this.current(owner)) return;
         if (!check()) return;
       }
+      const scope = this.decisionScope(event.msg, signal);
       const context = {
+        decide: scope.decide,
+        [decisionBinding]: scope[decisionBinding],
         traceContext: nativeTraceContext(
           msg._sdk_trace_context as TraceContextHeaders | null | undefined,
         ),
@@ -8767,6 +8956,7 @@ export class Session<OutputT = string, Context = unknown> {
         }
         throw error;
       } finally {
+        scope.close();
         const finalStatus = signal.aborted ? 'cancelled' : status;
         if (finalStatus !== undefined)
           getCurrentSpan()?.end({
@@ -12173,13 +12363,24 @@ export class Session<OutputT = string, Context = unknown> {
                       },
                     )
                   : this.options.nativeAgents && collaboration
-                    ? await applyNativeAgentsApproval(
-                        this.options.nativeAgents,
-                        this.options.context,
-                        submission,
-                        request!,
-                        signal,
-                      )
+                    ? await (async () => {
+                        const scope = this.decisionScope(
+                          raw as JsonObject,
+                          signal,
+                        );
+                        try {
+                          return await applyNativeAgentsApproval(
+                            this.options.nativeAgents!,
+                            this.options.context,
+                            submission,
+                            request!,
+                            signal,
+                            scope.decide,
+                          );
+                        } finally {
+                          scope.close();
+                        }
+                      })()
                     : this.environment instanceof Environment &&
                         hasExecutorPolicy(this.environment)
                       ? await applyExecutorPolicy(
@@ -12445,6 +12646,13 @@ export class Session<OutputT = string, Context = unknown> {
     done.promise.catch(() => {});
     void (async () => {
       if (repair) {
+        // A repaired completion hook may await auxiliary work until revoked.
+        // Keep the native reader alive below while that work commits its usage.
+        run?.controller.abort(
+          state.kind === 'retired'
+            ? state.cause
+            : new TurnAborted('Session closed'),
+        );
         const failure = await repair.completion.then(
           () => undefined,
           (error: unknown) => error,
@@ -12485,8 +12693,6 @@ export class Session<OutputT = string, Context = unknown> {
         this.clearManualCalls(run);
         run.controller.abort(closed);
         try {
-          // Stop native sampling before joining callbacks whose results may
-          // already have been accepted. Keep the engine until cleanup finishes.
           acknowledgmentFailure =
             (await this.closeNative()) ?? acknowledgmentFailure;
         } finally {

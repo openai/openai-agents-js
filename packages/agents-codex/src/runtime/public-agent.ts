@@ -4,6 +4,12 @@ import type {
   ContextTransform,
 } from './model-callbacks';
 import {
+  bindDecide,
+  captureDecisionProvider,
+  type DecisionProvider,
+  type BoundDecide,
+} from './decisions';
+import {
   captureProfileRuntimes,
   profileRoster,
   parseProfileReceipt,
@@ -98,6 +104,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
   instructions: string;
   name?: string;
   model?: string;
+  /** Default decision provider, independent of the generative model. */
+  decisions?: DecisionProvider;
   modelSettings?: ModelSettings;
   /** Await completion policy before accepting a root or native child result.
    * Feedback continues the same turn. Stop affects only its issuing owner.
@@ -193,6 +201,8 @@ export interface RunOptions<Context = undefined> extends Omit<
    * Manual tools require onInteraction because an edited run cannot save an active checkpoint.
    */
   prepareRequest?: import('./session').OperationOptions<Context>['prepareRequest'];
+  /** Select tools for each model step of a new run. */
+  beforeStep?: import('./session').OperationOptions<Context>['beforeStep'];
   returnState?: boolean;
 }
 
@@ -219,6 +229,7 @@ interface CapturedOpening {
   readonly context: unknown;
   readonly onInteraction?: InteractionHandler;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
+  readonly decisions?: DecisionProvider;
   readonly maxFunctionConcurrency?: number;
   readonly observationRetention?: 'bounded' | 'all';
   readonly contextTransformPurpose: 'turn' | 'output_repair';
@@ -228,7 +239,10 @@ interface CapturedOpening {
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
-  [ownedRun]?: OneShotOptions;
+  [ownedRun]?: OneShotOptions & {
+    decisions?: DecisionProvider;
+    beforeComplete?: BeforeComplete<Context>;
+  };
   [deferredOpening]?: {
     readonly opening: CapturedOpening;
     readonly restoredOutput: {
@@ -318,6 +332,15 @@ export class Agent<Context = undefined, Output = string> {
   instructions: string;
   name?: string;
   model?: string;
+  decisions?: DecisionProvider;
+  readonly decide: BoundDecide = ((
+    question: string,
+    options: Parameters<BoundDecide>[1],
+  ) =>
+    bindDecide({
+      provider: captureDecisionProvider(this.decisions),
+      assertActive() {},
+    })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
   beforeCompact?: BeforeCompact<Context>;
@@ -336,6 +359,7 @@ export class Agent<Context = undefined, Output = string> {
     this.instructions = options.instructions;
     this.name = options.name;
     this.model = options.model;
+    this.decisions = captureDecisionProvider(options.decisions);
     this.modelSettings =
       options.modelSettings === undefined
         ? undefined
@@ -553,6 +577,11 @@ export class Agent<Context = undefined, Output = string> {
     // Validate input before acquiring a provider or touching the filesystem.
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
+    const beforeStep = options.beforeStep;
+    if (beforeStep !== undefined && typeof beforeStep !== 'function')
+      throw new TypeError('beforeStep must be callable');
+    if (beforeStep !== undefined && input == null)
+      throw new TypeError('A resumed turn cannot add beforeStep');
     if (input === null && maxModelSteps !== undefined)
       throw new TypeError(
         'Cannot replace the model step budget when resuming a run',
@@ -585,8 +614,11 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
+        decisions: captureDecisionProvider(this.decisions),
+        beforeComplete: this.beforeComplete,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
+        beforeStep,
       },
     };
     const factoryApply = factory.apply;
@@ -631,9 +663,15 @@ export class Agent<Context = undefined, Output = string> {
       deferredOpening
     ];
     const opening = selection?.opening;
+    const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
+    const decisions = captureDecisionProvider(
+      opening ? opening.decisions : owned ? owned.decisions : this.decisions,
+    );
     const beforeComplete = opening
       ? opening.beforeComplete
-      : this.beforeComplete;
+      : owned
+        ? owned.beforeComplete
+        : this.beforeComplete;
     const beforeCompact = opening ? opening.beforeCompact : this.beforeCompact;
     const transformContext = opening
       ? opening.transformContext
@@ -786,8 +824,9 @@ export class Agent<Context = undefined, Output = string> {
               outputType: outputType as OutputSpec<Output> | undefined,
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
-              programmaticToolCalling,
+              decisions,
               beforeComplete,
+              programmaticToolCalling,
               beforeCompact,
               transformContext,
             } as AgentOptions<Context, Output>),
@@ -1302,6 +1341,7 @@ export class Agent<Context = undefined, Output = string> {
         observationRetention,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
+        decisions,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
         localStorage: persistent,
@@ -1363,32 +1403,33 @@ export class Agent<Context = undefined, Output = string> {
           )) as CoreSession<string>;
         },
       };
-      const captured: CapturedOpening =
-        opening ??
-        Object.freeze({
-          agent: this,
-          profiles,
-          factory,
-          instructions,
-          instructionFiles: files,
-          name,
-          model,
-          settings,
-          programmaticToolCalling,
-          declarations,
-          output,
-          outputType,
-          provider,
-          apiKey: lease.apiKey,
-          context,
-          onInteraction: options.onInteraction,
-          maxFunctionConcurrency,
-          observationRetention,
-          contextTransformPurpose,
-          beforeComplete,
-          beforeCompact,
-          transformContext,
-        });
+      const captured: CapturedOpening = opening
+        ? Object.freeze({ ...opening, decisions })
+        : Object.freeze({
+            agent: this,
+            profiles,
+            decisions,
+            beforeComplete,
+            factory,
+            instructions,
+            instructionFiles: files,
+            name,
+            model,
+            settings,
+            programmaticToolCalling,
+            declarations,
+            output,
+            outputType,
+            provider,
+            apiKey: lease.apiKey,
+            context,
+            onInteraction: options.onInteraction,
+            maxFunctionConcurrency,
+            observationRetention,
+            contextTransformPurpose,
+            beforeCompact,
+            transformContext,
+          });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
         session.deferredReopen = async (
@@ -1515,6 +1556,7 @@ export function captureAgentProfiles<Context, Output>(
       instructions: source.instructions,
       name: source.name,
       model: source.model,
+      decisions: source.decisions,
       modelSettings: source.modelSettings,
       provider: captureProvider ? rootDeclaration.provider : undefined,
       outputType,

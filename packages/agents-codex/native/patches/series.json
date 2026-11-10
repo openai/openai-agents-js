@@ -443,7 +443,15 @@
     {
       "path": "0170-canonical-history-transactions.patch",
       "sha256": "e88a2db32ae35587399c2eeae49284f96ef83383399b26f60961f9748d74e779"
+    },
+    {
+      "path": "0095-decisions.patch",
+      "sha256": "f184609e68d3353303c1ed22e2dbdccce69445f4be696411687e3d0daf1fd394"
+    },
+    {
+      "path": "0099-retained-trace-start-sequence.patch",
+      "sha256": "860664c1fbf24002588e74e5dbbda2ea7b14d4aadd0bca5ba2c1f0e8871625f9"
     }
   ],
-  "result_tree": "76065eef554bcf0524957ff96283c4cf0c8f0234"
+  "result_tree": "6041b87b22bc9df3ad24161d37c5e5452f4cdc3c"
 }

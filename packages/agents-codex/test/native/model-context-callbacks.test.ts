@@ -219,6 +219,41 @@ nativeIt(
 );
 
 nativeIt(
+  'captures a synchronous completion decision before queued mutations',
+  async () => {
+    const model = new ModelServer([
+      [message('first proposal')],
+      [message('final answer')],
+    ]);
+    await using provider = await providerFor(model);
+    const agent = new Agent({
+      instructions: 'Test native callbacks.',
+      provider,
+      beforeComplete: (context) => {
+        if (context.continuationCount !== 0) return;
+        const decision = {
+          action: 'continue' as const,
+          instructions: 'CAPTURED_CONTINUATION',
+        };
+        queueMicrotask(() => {
+          decision.instructions = 'MUTATED_CONTINUATION';
+        });
+        return decision;
+      },
+    });
+    expect((await agent.run('one')).finalOutput).toBe('final answer');
+    expect(model.requests).toHaveLength(2);
+    expect(historyText(model.requests[1]!.input)).toContain(
+      'CAPTURED_CONTINUATION',
+    );
+    expect(historyText(model.requests[1]!.input)).not.toContain(
+      'MUTATED_CONTINUATION',
+    );
+    model.assertExhausted();
+  },
+);
+
+nativeIt(
   'a completion stop prevents another request and leaves the Session usable',
   async () => {
     const model = new ModelServer([
@@ -373,7 +408,7 @@ nativeIt(
 );
 
 nativeIt(
-  'captures output-repair context and purpose without running completion acceptance for the repair',
+  'captures output-repair context and purpose and rechecks repaired output under the original completion owner',
   async () => {
     const model = new ModelServer([
       [message('invalid')],
@@ -404,7 +439,19 @@ nativeIt(
       'output_repair',
     ]);
     expect(requests.every((request) => request.context === app)).toBe(true);
-    expect(completion).toHaveBeenCalledTimes(1);
+    expect(completion).toHaveBeenCalledTimes(2);
+    const proposals = completion.mock.calls.map(([context]) => context);
+    expect(proposals.map((context) => context.text)).toEqual([
+      'invalid',
+      '{"value":9}',
+    ]);
+    expect(proposals.every((context) => context.context === app)).toBe(true);
+    expect(proposals.every((context) => context.sessionId === session.id)).toBe(
+      true,
+    );
+    expect(new Set(proposals.map((context) => context.turnId)).size).toBe(1);
+    // The formatting Agent has its own session and no completion hook.
+    expect(requests[1].sessionId).not.toBe(session.id);
   },
 );
 

@@ -42,6 +42,7 @@ Try the [greeting](../../examples/codex/basic.ts) and [typed-context](../../exam
 
 - [Architecture](../../examples/codex/guides/architecture.md). Understand the native runtime, how it differs from v0, and which adoption route fits your application.
 - [Native API guide](NATIVE.md). Find the reference for sessions, output, tools, and native interactions.
+- [Decisions](../../examples/codex/guides/decisions.md). Make typed decisions directly or bind a replaceable provider to Agent callbacks.
 - <a name="sessions"></a>[Sessions](../../examples/codex/guides/sessions.md). Open a conversation and run multiple turns. Use [session configuration](../../examples/codex/guides/session-configuration.md) to choose a provider, model, and tools.
 - [Session history and state](../../examples/codex/guides/state.md). Save a checkpoint, resume pending work, or choose a persistent store.
 - [Native telemetry](../../examples/codex/guides/telemetry.md). Trace one workflow or send native signals to a collector.
