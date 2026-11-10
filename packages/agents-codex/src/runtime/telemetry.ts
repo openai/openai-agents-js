@@ -382,6 +382,7 @@ async function route(
               lossWatermark = 0;
             }
             const routes = new Map<string, TraceEvent[]>();
+            const snapshots: TraceEvent[] = [];
             for (const event of group) {
               const descriptor =
                 batch.root_descriptors?.[String(event.sequence)];
@@ -390,13 +391,14 @@ async function route(
                   ? event
                   : { ...event, root_descriptor: descriptor },
               );
+              snapshots.push(snapshot);
               for (const id of event.processor_ids) {
                 const events = routes.get(id) ?? [];
                 events.push(snapshot);
                 routes.set(id, events);
               }
             }
-            for (const event of group) {
+            for (const event of snapshots) {
               for (const id of event.processor_ids) {
                 const events = routes.get(id);
                 if (!events) continue;

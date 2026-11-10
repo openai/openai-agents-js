@@ -6,6 +6,8 @@ import type { TraceEvent, TraceSpan } from '../../../src/runtime/telemetry';
 
 async function main() {
   const large = process.argv.includes('--large');
+  const single = process.argv.includes('--single');
+  const forwarded: TraceEvent[] = [];
   const rootName = 'retained-workflow' + (large ? 'r'.repeat(4000) : '');
   const childName = 'late-child' + (large ? 'c'.repeat(4000) : '');
   const metadata = {
@@ -30,12 +32,20 @@ async function main() {
   assert.ok(address && typeof address !== 'string');
   let configured = false;
   try {
+    const exporter = new telemetry.OpenAITraceExporter({
+      apiKey: 'synthetic',
+      endpoint: `http://127.0.0.1:${address.port}/ingest`,
+    });
     await telemetry.configure({
       traceProcessors: [
-        new telemetry.OpenAITraceExporter({
-          apiKey: 'synthetic',
-          endpoint: `http://127.0.0.1:${address.port}/ingest`,
-        }),
+        single
+          ? {
+              onEvent(event: TraceEvent) {
+                forwarded.push(event);
+                return exporter.onEvent(event);
+              },
+            }
+          : exporter,
         {
           onEvent(event) {
             observed.push(event);
@@ -105,6 +115,19 @@ async function main() {
     );
     assert.equal(result.droppedRecords, 0);
     assert.equal(result.status, 'success');
+    if (single) {
+      const forwardedLate = forwarded.filter(
+        (event) => event.name === childName,
+      );
+      assert.equal(forwardedLate.length, 2);
+      for (const [index, event] of forwardedLate.entries()) {
+        assert.equal(event, late[index]);
+        assert.ok(Object.isFrozen(event));
+        assert.ok(event.root_descriptor);
+        assert.ok(Object.isFrozen(event.root_descriptor));
+        assert.ok(Object.isFrozen(event.attributes));
+      }
+    }
     const traces = records.filter(
       (record) =>
         record.object === 'trace' &&
@@ -132,7 +155,7 @@ async function main() {
       exported[0].parent_id,
       `span_${parent.context.spanId.padStart(24, '0')}`,
     );
-    if (!large) {
+    if (!large && !single) {
       const native = await (
         await import('../../../src/runtime/binding')
       ).binding();
