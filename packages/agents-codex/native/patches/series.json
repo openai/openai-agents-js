@@ -399,7 +399,11 @@
     {
       "path": "0098-retained-trace-root-descriptors.patch",
       "sha256": "e1b504271356e706a1c6510b548b94669a4d7a444ccdbe2ab667b8fe0c03b750"
+    },
+    {
+      "path": "0099-retained-trace-start-sequence.patch",
+      "sha256": "860664c1fbf24002588e74e5dbbda2ea7b14d4aadd0bca5ba2c1f0e8871625f9"
     }
   ],
-  "result_tree": "e89f84b9336decc2e3ceda59249fb01f9b824d3b"
+  "result_tree": "c021341756b4f24bb89078c8acdb1e1b9c497b24"
 }

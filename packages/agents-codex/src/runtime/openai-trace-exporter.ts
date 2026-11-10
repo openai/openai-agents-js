@@ -49,8 +49,8 @@ function descriptor(
  * Unknown child records never fabricate a root descriptor. Metadata preserves
  * native flattened values; runtime is reserved for the native marker.
  * After native record loss, descriptors are invalidated after a captured native
- * sequence watermark drains. Only fresh root starts re-establish identity; old
- * child/end records fail closed. Flush continues reporting loss. Lossless active
+ * sequence watermark drains. Fresh root starts and native descriptors born after
+ * that watermark re-establish identity; old child/end records fail closed. Flush continues reporting loss. Lossless active
  * roots retain their original eviction guarantee.
  */
 export class OpenAITraceExporter implements TraceProcessor {
@@ -60,7 +60,7 @@ export class OpenAITraceExporter implements TraceProcessor {
   readonly #maxRetries: number;
   readonly #traces = new Map<string, TraceState>();
   #credentialRevision = 0;
-  #requiresRootStart = false;
+  #recoverySequence: number | undefined;
 
   constructor(options: {
     apiKey: string;
@@ -125,9 +125,9 @@ export class OpenAITraceExporter implements TraceProcessor {
     this.#credentialRevision++;
   }
   /** @internal Called serially by the native pump after its loss watermark. */
-  _onNativeTraceLoss(): void {
+  _onNativeTraceLoss(sequence = 0): void {
     this.#traces.clear();
-    this.#requiresRootStart = true;
+    this.#recoverySequence = Math.max(this.#recoverySequence ?? 0, sequence);
   }
   async onEvent(event: TraceEvent): Promise<void> {
     await this.onEvents([event]);
@@ -140,17 +140,36 @@ export class OpenAITraceExporter implements TraceProcessor {
     const admitted: TraceEvent[] = [];
     let admissionError: string | undefined;
     for (const event of events) {
+      const recovery = event.recovery_sequence;
+      if (
+        typeof recovery === 'number' &&
+        recovery > (this.#recoverySequence ?? 0)
+      ) {
+        this._onNativeTraceLoss(recovery);
+      }
+      if (event.sequence <= (this.#recoverySequence ?? -1)) {
+        admissionError ??= 'Native trace root descriptor is unavailable';
+        continue;
+      }
       const traceId = `trace_${event.trace_id}`;
       const root = event.parent_span_id === null;
       let state = this.#traces.get(traceId);
       if (!state) {
-        const retained = !this.#requiresRootStart
-          ? (event.root_descriptor as
-              Pick<TraceEvent, 'name' | 'attributes'> | undefined)
-          : undefined;
+        let retained = event.root_descriptor as
+          | (Pick<TraceEvent, 'name' | 'attributes'> & {
+              start_sequence?: number;
+            })
+          | undefined;
+        if (
+          this.#recoverySequence !== undefined &&
+          (retained?.start_sequence ?? 0) <= this.#recoverySequence
+        )
+          retained = undefined;
         if (
           (!root && retained === undefined) ||
-          (this.#requiresRootStart && (!root || event.lifecycle !== 'start'))
+          (this.#recoverySequence !== undefined &&
+            root &&
+            event.lifecycle !== 'start')
         ) {
           admissionError ??= 'Native trace root descriptor is unavailable';
           continue;
