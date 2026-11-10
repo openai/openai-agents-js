@@ -483,7 +483,11 @@
     {
       "path": "sdk-saved-codex-login.patch",
       "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
+    },
+    {
+      "path": "0153-sdk-codex-login-terminal-rate-limits.patch",
+      "sha256": "0e29f8f15ebe8ec1a59d12fe61b203bf57dcb91dd6b6705b60ede95e5600f010"
     }
   ],
-  "result_tree": "b8e196c184a9076caad504b4f8417e395d2c595d"
+  "result_tree": "30843eef7eac1e0dd96e732c01383613af0c907e"
 }

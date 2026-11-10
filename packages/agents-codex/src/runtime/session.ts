@@ -1783,7 +1783,7 @@ export class Session<OutputT = string, Context = unknown> {
     snapshot: Object.freeze({}),
   };
 
-  /** Latest usable API-key limits observed in this live session. */
+  /** Latest usable provider limits and retry advice observed in this live session. */
   rateLimits(): ApiRateLimits {
     return this.apiRateLimitState.snapshot;
   }
