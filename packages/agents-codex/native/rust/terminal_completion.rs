@@ -509,7 +509,10 @@ pub(super) async fn propose(
                 .any(|(item, _)| item.item == *input.output)
         })
     };
-    let guard_only = key.is_none();
+    let guard_only = input.guard_only || key.is_none();
+    if input.guard_only && !is_held() {
+        return Ok(None);
+    }
     if guard_only && !is_held() {
         return Err("Missing accepted terminal tool receipt".into());
     }
@@ -830,6 +833,7 @@ mod tests {
         .unwrap();
         let output: ResponseItem = serde_json::from_value(json!({"type":"function_call_output", "call_id":"call", "output":"settled after hooks"})).unwrap();
         let input = || ToolCompletionInput {
+            guard_only: false,
             continuation_count: 0,
             turn_id: "turn",
             model: "fixture-model",

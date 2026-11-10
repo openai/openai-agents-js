@@ -635,7 +635,11 @@
     {
       "path": "sdk-terminal-candidate-admission.patch",
       "sha256": "81e0fb0a23d63afd6a0d0826c7f74750eabb087e140eee22b05c65f5bd32c25b"
+    },
+    {
+      "path": "sdk-held-terminal-eligibility.patch",
+      "sha256": "92383d61f3a047490b1e88ed6930ee7018d58d14e5f068e7c3a09ff703516e3f"
     }
   ],
-  "result_tree": "8f6b1e62d03b2fc09033fd2a2e164be8b165e125"
+  "result_tree": "96ded168c7056bb5772b185659e694de8b77df0b"
 }
