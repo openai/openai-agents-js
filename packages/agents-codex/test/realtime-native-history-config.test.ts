@@ -165,6 +165,133 @@ async function observe(
   );
 }
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
+
+nativeIt(
+  'reclaims unpublished Agent graphs after repeated callback failures while preserving accepted response sources',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      const execute = vi.fn(() => 'accepted result');
+      const opening = new Agent({
+        provider,
+        name: 'Opening',
+        instructions: 'Opening',
+      });
+      const accepted = new Agent({
+        provider,
+        name: 'Accepted',
+        instructions: 'Accepted',
+        tools: [tool({ name: 'lookup', parameters: z.object({}), execute })],
+      });
+      const rejected = new Agent({
+        provider,
+        name: 'Rejected',
+        instructions: 'Rejected',
+        tools: [
+          tool({
+            name: 'rejected_tool',
+            parameters: z.object({}),
+            execute: () => 'unreachable',
+          }),
+        ],
+        realtime: {
+          instructions: () => {
+            throw new Error('candidate callback failed');
+          },
+        },
+      });
+      await using session = await opening.session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seen: NativeRealtimeEvent[] = [];
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })().catch(() => {});
+      try {
+        await voice.updateAgent(accepted);
+        const stores = [
+          'voiceProfileGraphs',
+          'profileCatalogs',
+          'profileMcp',
+          'profileStepMcp',
+        ] as const;
+        const footprint = () =>
+          Object.fromEntries(
+            stores.map((name) => [
+              name,
+              (session as unknown as Record<string, Map<unknown, unknown>>)[
+                name
+              ].size,
+            ]),
+          );
+        const retained = footprint();
+        const after = peer.frames.length;
+        await voice.requestResponse();
+        const create = await peer.frame('response.create', after);
+        peer.send({
+          type: 'response.created',
+          response: {
+            id: 'accepted-source',
+            metadata: create.response?.metadata,
+          },
+        });
+        // More than the native profile/source bound must remain recoverable.
+        for (let attempt = 0; attempt < 1030; attempt++) {
+          await expect(voice.updateAgent(rejected)).rejects.toThrow(
+            'candidate callback failed',
+          );
+          expect(footprint()).toEqual(retained);
+        }
+        await expect(voice.getActiveAgent()).resolves.toBe(accepted);
+        const item = {
+          type: 'function_call',
+          id: 'accepted-call-item',
+          call_id: 'accepted-call',
+          name: 'lookup',
+          arguments: '{}',
+          status: 'completed',
+        };
+        peer.send({
+          type: 'response.output_item.done',
+          response_id: 'accepted-source',
+          output_index: 0,
+          item,
+        });
+        peer.send({
+          type: 'response.done',
+          response: {
+            id: 'accepted-source',
+            status: 'completed',
+            output: [item],
+          },
+        });
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce(), {
+          timeout: 10000,
+        });
+        await peer.frame('conversation.item.create', after);
+        const valid = new Agent({
+          provider,
+          name: 'Valid',
+          instructions: 'Still updatable',
+        });
+        await voice.updateAgent(valid);
+        await expect(voice.getActiveAgent()).resolves.toBe(valid);
+        await expect(session.getActiveAgent()).resolves.toBe(opening);
+        expect(
+          peer.frames.filter((frame) => frame.type === 'session.update'),
+        ).toHaveLength(3);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  60000,
+);
 const defaultResponseCreate = {
   type: 'response.create',
   event_id: expect.any(String),

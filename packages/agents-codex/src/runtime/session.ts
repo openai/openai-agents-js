@@ -1856,6 +1856,30 @@ export class Session<OutputT = string, Context = unknown> {
     return realtimeToolSelection(raw, allocated);
   }
 
+  /** @internal Discard only an admitted graph whose update has never been invoked. */
+  async _discardRealtimeGraph(
+    generation: string,
+    receipt: JsonObject | null,
+  ): Promise<void> {
+    const graph =
+      receipt && this.voiceProfileGraphs.get(receipt.profile_id as string);
+    if (this.voiceGraphGeneration !== generation || !graph)
+      throw new NativeError('Voice has no matching staged Agent graph');
+    const target = checkProfileReceipt(receipt, graph);
+    await this.#native._discard_realtime_agent_graph(
+      generation,
+      JSON.stringify(target),
+    );
+    for (const [id, profile] of graph.profiles) {
+      this.voiceProfileGraphs.delete(id);
+      const key = this.profileKey(id, profile.catalog.generation);
+      this.profileCatalogs.delete(key);
+      this.profileMcp.delete(key);
+      this.profileStepMcp.delete(key);
+    }
+    if (!this.voiceProfileGraphs.size) this.voiceGraphGeneration = undefined;
+  }
+
   _hasRetainedRealtimeProfile(receipt: JsonObject | null | undefined): boolean {
     return (
       typeof receipt?.profile_id === 'string' &&

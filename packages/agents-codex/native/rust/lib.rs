@@ -2611,6 +2611,21 @@ impl NativeThread {
         serde_json::to_string(&result).map_err(native_error)
     }
 
+    #[napi(js_name = "_discard_realtime_agent_graph")]
+    pub async fn _discard_realtime_agent_graph(
+        &self,
+        generation: String,
+        receipt_json: String,
+    ) -> napi::Result<()> {
+        let receipt: Value = serde_json::from_str(&receipt_json).map_err(input_error)?;
+        let receipt = agent_profiles::profile_receipt(&receipt).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        agent_profiles::discard_realtime_graph(&inner.thread, &generation, &receipt)
+            .map_err(native_error)
+    }
+
     #[napi(js_name = "_realtime_agent_source")]
     pub async fn _realtime_agent_source(
         &self,

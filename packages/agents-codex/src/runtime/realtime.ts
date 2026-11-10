@@ -1121,7 +1121,7 @@ class NativeRealtimeOwner {
         this.profileSource === undefined
           ? await this.session._realtimeCurrentProfile()
           : this.profileSource;
-      this.voiceGraphAdmitted = true;
+      const previouslyAdmitted = this.voiceGraphAdmitted;
       const selection = await this.session._admitRealtimeGraph(
         this.#generation,
         agent,
@@ -1130,7 +1130,26 @@ class NativeRealtimeOwner {
       const target = this.session._realtimeProfileTarget(
         selection.profile_receipt,
       );
-      await this.applyProfile(target, selection, undefined, true);
+      this.voiceGraphAdmitted = true;
+      let updateInvoked = false;
+      try {
+        await this.applyProfile(target, selection, undefined, true, () => {
+          updateInvoked = true;
+        });
+      } catch (error) {
+        if (!updateInvoked) {
+          try {
+            await this.session._discardRealtimeGraph(this.#generation, target);
+            this.voiceGraphAdmitted = previouslyAdmitted;
+          } catch (discardError) {
+            this.finish(discardError);
+            throw discardError;
+          }
+        } else {
+          this.finish(error);
+        }
+        throw error;
+      }
     });
   }
 
@@ -1169,6 +1188,7 @@ class NativeRealtimeOwner {
       | { responseId: string; target: unknown; delegationId?: never }
       | { delegationId: string; responseId?: never; target?: never },
     resetPrompt = false,
+    beforeNativeUpdate?: () => void,
   ): Promise<void> {
     await this.settingsTail;
     this.checkLive();
@@ -1251,6 +1271,7 @@ class NativeRealtimeOwner {
         return;
       Object.assign(update, this.profileOverrides);
       if (config) this.setProfileGuardrails(target, config.guardrails);
+      beforeNativeUpdate?.();
       const receipt = await this.call('update', {
         update,
         profile: {
