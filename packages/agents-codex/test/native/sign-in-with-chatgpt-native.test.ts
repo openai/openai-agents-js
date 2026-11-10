@@ -732,28 +732,40 @@ it.each(['portable', 'local', 'application'] as const)(
         'resumed ordinary',
       );
     }
-    const stored = storage
-      ? Buffer.concat(
-          await Promise.all(
-            (await readdir(root, { recursive: true, withFileTypes: true }))
-              .filter((entry) => entry.isFile())
-              .map((entry) => {
-                const path = join(entry.parentPath, entry.name);
-                return readFile(path).catch((error: NodeJS.ErrnoException) => {
-                  if (
-                    kind === 'local' &&
-                    path === join(root, 'thread_history_1.sqlite-shm') &&
-                    error.code === 'ENOENT'
-                  ) {
-                    // SQLite can remove this sidecar after enumeration.
-                    return Buffer.alloc(0);
-                  }
-                  throw error;
-                });
-              }),
+    let stored: Buffer;
+    if (storage) {
+      const historyDb =
+        kind === 'local' ? join(root, 'thread_history_1.sqlite') : undefined;
+      const files = await readdir(root, {
+        recursive: true,
+        withFileTypes: true,
+      });
+      const buffers = await Promise.all(
+        files
+          .filter((entry) => entry.isFile())
+          .map((entry) => join(entry.parentPath, entry.name))
+          .filter((path) => path !== historyDb)
+          .map((path) =>
+            readFile(path).catch((error: NodeJS.ErrnoException) => {
+              if (
+                historyDb &&
+                error.code === 'ENOENT' &&
+                (path === `${historyDb}-shm` || path === `${historyDb}-wal`)
+              ) {
+                return Buffer.alloc(0);
+              }
+              throw error;
+            }),
           ),
-        )
-      : Buffer.from(JSON.stringify(bound));
+      );
+      if (historyDb) {
+        // SQLite can checkpoint WAL bytes into the database and remove both sidecars.
+        buffers.push(await readFile(historyDb));
+      }
+      stored = Buffer.concat(buffers);
+    } else {
+      stored = Buffer.from(JSON.stringify(bound));
+    }
     for (const value of [
       original,
       renewed,

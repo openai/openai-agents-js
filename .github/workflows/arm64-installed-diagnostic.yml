@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 9beeabe12a095116f16e0a511af9b2640d5543bc
+          ref: de7744dc73e1304558f214f6f30fc3dab3df6add
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -31,8 +31,8 @@ jobs:
           package-manager-cache: false
       - name: Verify source and runner
         run: |
-          test "$(git rev-parse HEAD)" = 9beeabe12a095116f16e0a511af9b2640d5543bc
-          test "$(git rev-parse 'HEAD^{tree}')" = 0ae265a58031b3b4e6a6d91c5d234630c730ec04
+          test "$(git rev-parse HEAD)" = de7744dc73e1304558f214f6f30fc3dab3df6add
+          test "$(git rev-parse 'HEAD^{tree}')" = 14f1de5c8c7fea1875fc22305b7fd5a2e1bf2938
           test "$(id -u)" -ne 0
           node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "linux-arm64")'
           printf 'SDK %s tree %s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
