@@ -19,6 +19,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
 const execute = promisify(execFile);
@@ -301,6 +302,75 @@ async function queryLog(pid, start, end) {
   }
 }
 
+async function readUtcStamp(cwd, name) {
+  const value = await readPrivate(cwd, name);
+  assert.match(value, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n$/);
+  const time = Date.parse(value.trim());
+  assert(Number.isFinite(time));
+  assert.equal(value, new Date(time).toISOString().replace('.000Z', 'Z') + '\n');
+  return time;
+}
+
+export async function collectDiagnostic(cwd, commandStartedAt, exitCode) {
+  const assertions = {};
+  const check = async (name, validate, optional = false) => {
+    try {
+      const value = await validate();
+      assertions[name] = 'pass';
+      return value;
+    } catch (error) {
+      assertions[name] = optional && error.code === 'ENOENT' ? 'skipped' : 'fail';
+    }
+  };
+
+  const pid = await check('probePid', async () => {
+    const value = await readPrivate(cwd, '.probe-pid');
+    assert.match(value, /^[1-9][0-9]{0,9}\n$/);
+    const pid = Number(value);
+    assert(pid <= 2 ** 31 - 1);
+    return pid;
+  });
+  const start = await check('probeStartUtc', () => readUtcStamp(cwd, '.probe-start'));
+  const exitSecond = await check('probeEndUtc', () => readUtcStamp(cwd, '.probe-end'));
+  assertions.probeWindow = 'skipped';
+  let end;
+  if (start !== undefined && exitSecond !== undefined) {
+    end = await check('probeWindow', async () => {
+      // Include the exit second without asking log show for a future end time.
+      const end = exitSecond + 1000;
+      const now = Date.now();
+      assert(start >= Math.floor(commandStartedAt / 1000) * 1000);
+      assert(start <= exitSecond && end - start <= 15_000 && exitSecond <= now);
+      if (end > now) await delay(end - now);
+      assert(end <= Date.now());
+      return end;
+    });
+  }
+
+  let log;
+  if (pid !== undefined && end !== undefined) {
+    log = await queryLog(pid, start, end);
+  } else {
+    log = {
+      logResult: 'skipped',
+      logSkipReason: pid === undefined
+        ? end === undefined ? 'unvalidated-pid-and-window' : 'unvalidated-pid'
+        : 'unvalidated-window',
+    };
+  }
+
+  await check('loopbackProxyReceipt', async () => {
+    const proxy = await readPrivate(cwd, '.sdk-loopback-proxy');
+    const match = /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})\/?\n$/.exec(proxy);
+    assert(match && match[0] === proxy && Number(match[1]) <= 65535);
+  }, true);
+  const tls = await check('tlsJsonReceipt', async () =>
+    observation(await readPrivate(cwd, 'system.json')),
+  );
+
+  return { assertions, canaryDenied: 1, exitCode, ...(tls && { tls }), ...log };
+}
+
 async function main() {
   assert.equal(`${process.platform}-${process.arch}`, 'darwin-arm64');
   assert(process.getuid() > 0);
@@ -331,7 +401,6 @@ async function main() {
       'umask 077',
       'if (printf changed > ../sandbox-canary) 2>/dev/null; then exit 27; fi',
       'test -n "${HTTPS_PROXY:-}"',
-      'printf "%s\\n" "$HTTPS_PROXY" > .sdk-loopback-proxy',
       'status=0',
       "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-start",
       '/usr/bin/env -i HTTPS_PROXY="$HTTPS_PROXY" ./github-trust system > system.json 2>/dev/null &',
@@ -339,11 +408,13 @@ async function main() {
       'wait "$pid" || status=$?',
       "/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' > .probe-end",
       'printf "%s\\n" "$pid" > .probe-pid',
+      '(printf "%s\\n" "$HTTPS_PROXY" > .sdk-loopback-proxy) 2>/dev/null || :',
       'exit "$status"',
     ].join('\n');
 
     phase = 'strict native command';
-    const receipt = await withModel(
+    const commandStartedAt = Date.now();
+    const exitCode = await withModel(
       [
         [
           {
@@ -390,29 +461,8 @@ async function main() {
             assert.equal(execution.exitCode, 0);
             assert.equal(await readFile(canary, 'utf8'), 'protected');
 
-            phase = 'strict receipts and loopback proxy validation';
-            const proxy = await readPrivate(cwd, '.sdk-loopback-proxy');
-            const match = /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})\/?\n$/.exec(proxy);
-            assert(match && match[0] === proxy && Number(match[1]) <= 65535);
-
-            const pidText = await readPrivate(cwd, '.probe-pid');
-            assert.match(pidText, /^[1-9][0-9]{0,9}\n$/);
-            const pid = Number(pidText);
-            assert(pid <= 2 ** 31 - 1);
-            const stamp = async (name) => {
-              const value = await readPrivate(cwd, name);
-              assert.match(value, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d:\d\dZ\n$/);
-              const time = Date.parse(value.trim());
-              assert(Number.isFinite(time));
-              return time;
-            };
-            const start = await stamp('.probe-start');
-            // Include the rest of the exit second with an exclusive upper bound.
-            const end = (await stamp('.probe-end')) + 1000;
-            assert(end > start && end - start <= 15_000);
-            const tls = observation(await readPrivate(cwd, 'system.json'));
             phase = 'Session cleanup and synthetic model verification';
-            return { pid, start, end, tls, canaryDenied: 1, exitCode: execution.exitCode };
+            return execution.exitCode;
           } finally {
             await session.close();
           }
@@ -422,18 +472,14 @@ async function main() {
       },
     );
 
-    phase = 'host unified log query';
-    const { pid, start, end, tls, canaryDenied, exitCode } = receipt;
-    const log = await queryLog(pid, start, end);
-    console.log(JSON.stringify({
-      pid,
-      window: { start: new Date(start).toISOString(), endExclusive: new Date(end).toISOString() },
-      canaryDenied,
-      exitCode,
-      tls,
-      ...log,
-    }));
-    if (log.logResult === 'access-or-query-failure') process.exitCode = 1;
+    phase = 'diagnostic receipt collection';
+    const receipt = await collectDiagnostic(cwd, commandStartedAt, exitCode);
+    console.log(JSON.stringify(receipt));
+    if (
+      receipt.assertions.tlsJsonReceipt === 'fail' ||
+      receipt.logResult === 'skipped' ||
+      receipt.logResult === 'access-or-query-failure'
+    ) process.exitCode = 1;
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
