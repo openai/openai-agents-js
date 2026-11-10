@@ -34,6 +34,7 @@ import {
 
 const realtimeKey = 'synthetic-realtime-key';
 const accountId = 'synthetic-workspace';
+const userId = 'synthetic-user';
 const sessionCount = 3;
 const hostGuidance = 'SYNTHETIC_SAVED_LOGIN_HOST_GUIDANCE';
 const expiredAccess = 'synthetic-expired-access';
@@ -41,6 +42,7 @@ const savedRefresh = 'synthetic-saved-refresh';
 const rotatedAccess = 'synthetic-rotated-access';
 const rotatedRefresh = 'synthetic-rotated-refresh';
 type Mode =
+  | 'usage'
   | 'mismatch'
   | 'cancel-refresh'
   | 'cancel-all-refresh'
@@ -88,10 +90,18 @@ it
         'reports a retained SessionStore flush failure and a separate saved login refresh failure',
       closeFailure: 'refresh-cache-save-flush',
     },
+    {
+      title:
+        'reads saved Codex plan usage and cancels a pending read on Session close',
+      closeFailure: undefined,
+      usage: true,
+    },
   ] as const)(
   '$title',
   { timeout: 110_000 },
-  async ({ closeFailure }, { skip }) => {
+  async (testScenario, { skip }) => {
+    const { closeFailure } = testScenario;
+    const usage = 'usage' in testScenario;
     if (
       closeFailure?.startsWith('refresh-cache-save') &&
       process.getuid?.() === 0
@@ -108,6 +118,7 @@ it
     let grantConsumed = Promise.withResolvers<void>();
     const realtimeRoutes: string[] = [];
     let grantCount = 0;
+    let usageReads = 0;
     let restarting = false;
     let execution:
       | 'repair'
@@ -145,7 +156,7 @@ it
         JSON.stringify({
           'https://api.openai.com/auth': {
             chatgpt_account_id: accountId,
-            chatgpt_user_id: 'synthetic-user',
+            chatgpt_user_id: userId,
             chatgpt_plan_type: 'pro',
           },
         }),
@@ -248,6 +259,7 @@ it
           return fail('Realtime key used on a non-Realtime HTTP route');
         }
         if (
+          !usage &&
           host === authHost &&
           request.method === 'POST' &&
           path === '/oauth/token'
@@ -364,6 +376,25 @@ it
         if (request.method === 'GET' && path === '/backend-api/codex/models') {
           request.resume();
           return json(response, 200, { models: [] });
+        }
+        if (usage) {
+          if (
+            request.method !== 'GET' ||
+            request.url !== '/backend-api/wham/usage' ||
+            authorization !== `Bearer ${expiredAccess}` ||
+            ++usageReads > 2
+          ) {
+            return fail('Unexpected plan usage request');
+          }
+          // Keep one admitted read pending while the other can complete.
+          if (usageReads === 1) return;
+          return json(response, 200, {
+            account_id: accountId,
+            user_id: userId,
+            plan_type: 'pro',
+            rate_limit: { allowed: true, limit_reached: false },
+            rate_limit_reset_credits: { available_count: 0 },
+          });
         }
         if (
           request.method !== 'POST' ||
@@ -519,7 +550,8 @@ it
         home,
         failures,
         onRequest,
-        onUpgrade,
+        allowAuth: !usage,
+        onUpgrade: usage ? undefined : onUpgrade,
       });
       const { tunnels } = loopback;
       const child = fileURLToPath(
@@ -560,7 +592,8 @@ it
           throw new Error(
             `Saved login ${mode} child ${killed ? 'timed out' : 'failed'}${detail}. ` +
               `CONNECTs=${tunnels.length}, expired attempts=[${[...expired.values()]}], ` +
-              `grants=${grantCount}, rotated requests=${rotated.length}. ${failures.join('. ')}`,
+              `grants=${grantCount}, rotated requests=${rotated.length}, ` +
+              `usage reads=${usageReads}. ${failures.join('. ')}`,
           );
         }
         expect(failures).toEqual([]);
@@ -586,6 +619,13 @@ it
           }
           expect((await readFile(source, 'utf8')) === sourceBytes).toBe(true);
         }
+        return;
+      }
+
+      if (usage) {
+        await run('usage');
+        expect(usageReads).toBe(2);
+        expect(await readFile(cache, 'utf8')).toBe(sourceBytes);
         return;
       }
 

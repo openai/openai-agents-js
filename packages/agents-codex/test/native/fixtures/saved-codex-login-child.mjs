@@ -80,6 +80,31 @@ try {
       } finally {
         await unexpectedSession?.close();
       }
+    } else if (mode === 'usage') {
+      stage = 'open a saved login Session for plan usage';
+      const session = await agent.session();
+      const reads = [session.planUsage(), session.planUsage()];
+      const completed = Promise.allSettled(reads);
+      try {
+        stage = 'verify the plan usage snapshot';
+        const usage = await Promise.race(reads);
+        assert(usage);
+        assert.equal(usage.accountId, accountId);
+        assert.equal(usage.identityVerified, true);
+        assert.equal(usage.ordinaryUsageAllowed, true);
+        assert.equal(usage.resetCreditsAvailable, 0);
+      } finally {
+        await session.close();
+      }
+      stage = 'verify close cancelled the pending read';
+      const results = await completed;
+      assert.equal(
+        results.filter((read) => read.status === 'fulfilled').length,
+        1,
+      );
+      const failure = results.find((read) => read.status === 'rejected');
+      assert(failure);
+      assert.match(failure.reason.message, /Session is closed/);
     } else if (mode === 'repair') {
       const schema = z.object({ answer: z.string() });
       const prompted = { mode: 'prompted', schema, maxRetries: 0 };

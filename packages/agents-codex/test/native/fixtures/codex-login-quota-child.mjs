@@ -12,7 +12,7 @@ try {
     supportsWebsockets: false,
     requestMaxRetries: 1,
     streamMaxRetries: 1,
-    streamIdleTimeoutMs: 1_000,
+    streamIdleTimeoutMs: expected?.compaction ? 20_000 : 1_000,
   });
   try {
     stage = 'open the Session';
@@ -23,15 +23,25 @@ try {
     }).session();
     try {
       stage = 'submit the first turn';
-      const turn = await session.submit('Reply.');
+      let turn = await session.submit('Reply.');
+      if (expected?.compaction) {
+        stage = 'wait for the warm up turn';
+        assert.equal((await turn.wait()).finalOutput, 'Recovered.');
+        stage = 'submit the turn that triggers compaction';
+        turn = await session.submit('Reply again.');
+      }
       if (expected === null) {
         stage = 'wait for ordinary overload recovery';
         assert.equal((await turn.wait()).finalOutput, 'Recovered.');
       } else {
         stage = 'wait for provider attention';
-        const attention = await turn.waitForAttention({
-          signal: AbortSignal.timeout(8_000),
-        });
+        const signal = AbortSignal.timeout(8_000);
+        const attention = await turn
+          .waitForAttention({ signal })
+          .catch((error) => {
+            if (error === signal.reason) stage = 'provider attention deadline';
+            throw error;
+          });
         stage = 'check typed terminal attention';
         assert.equal(attention.type, 'needs_attention');
         assert.equal(attention.reason, expected.reason);
@@ -55,9 +65,11 @@ try {
         }
         await assert.rejects(turn.wait(), (error) => error === attention.error);
 
-        stage = 'submit a fresh turn in the same Session';
-        const next = await session.submit('Reply again.');
-        assert.equal((await next.wait()).finalOutput, 'Recovered.');
+        if (!expected.compaction) {
+          stage = 'submit a fresh turn in the same Session';
+          const next = await session.submit('Reply again.');
+          assert.equal((await next.wait()).finalOutput, 'Recovered.');
+        }
       }
     } finally {
       await session.close();

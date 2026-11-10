@@ -306,10 +306,28 @@ index 8e1188a..200fc19 100644
          )
          .await?;
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 7c34909..146db0a 100644
+index 7c34909..399fa8c 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -1665,6 +1665,16 @@ impl Drop for ModelClientSession {
+@@ -38,6 +38,9 @@ mod tool_metadata;
+ use crate::CodexResponsesHeaders;
+ use crate::tools::ExecutedToolCalls;
+ use async_channel::Sender;
++use codex_analytics::CompactionImplementation;
++use codex_analytics::CompactionPhase;
++use codex_analytics::CompactionTrigger;
+ use codex_api::AgentIdentityTelemetry;
+ use codex_api::ApiError;
+ use codex_api::AuthProvider;
+@@ -132,6 +135,7 @@ use crate::context::ContextualUserFragment;
+ use crate::cyber_access_program;
+ use crate::feedback_tags;
+ use crate::responses_metadata::CodexResponsesMetadata;
++use crate::responses_metadata::CodexResponsesRequestKind;
+ use crate::responses_metadata::subagent_header_value;
+ use crate::util::emit_feedback_auth_recovery_tags;
+ use codex_feedback::FeedbackRequestTags;
+@@ -1665,6 +1669,39 @@ impl Drop for ModelClientSession {
  }
 
  impl ModelClientSession {
@@ -323,20 +341,79 @@ index 7c34909..146db0a 100644
 +                .is_some_and(|manager| manager.is_saved_chatgpt())
 +    }
 +
++    pub(crate) fn terminal_saved_login_limits(
++        &self,
++        request_kind: Option<CodexResponsesRequestKind>,
++    ) -> bool {
++        let in_active_turn = match request_kind {
++            Some(CodexResponsesRequestKind::Turn) => true,
++            Some(CodexResponsesRequestKind::Compaction(metadata)) => {
++                matches!(
++                    metadata.implementation(),
++                    CompactionImplementation::Responses
++                ) && matches!(metadata.trigger(), CompactionTrigger::Auto)
++                    && matches!(
++                        metadata.phase(),
++                        CompactionPhase::PreTurn | CompactionPhase::MidTurn
++                    )
++            }
++            Some(CodexResponsesRequestKind::Prewarm | CodexResponsesRequestKind::Memory) | None => {
++                false
++            }
++        };
++        in_active_turn && self.saved_login_limits_need_attention()
++    }
++
      pub(crate) fn inference_tools_changed(&self, tools: &Arc<[ToolSpec]>) -> bool {
          let previous = self
              .client
-@@ -1709,6 +1719,10 @@ impl ModelClientSession {
+@@ -1709,6 +1746,8 @@ impl ModelClientSession {
              },
              compression,
              turn_state: Some(Arc::clone(&self.turn_state)),
-+            terminal_limit_errors: matches!(
-+                responses_metadata.request_kind,
-+                Some(crate::responses_metadata::CodexResponsesRequestKind::Turn)
-+            ) && self.saved_login_limits_need_attention(),
++            terminal_limit_errors: self
++                .terminal_saved_login_limits(responses_metadata.request_kind),
          }
      }
 
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index 8753a16..08dde6c 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -44,6 +44,7 @@ use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ContentItemKind;
+ use codex_protocol::models::ResponseInputItem;
+ use codex_protocol::models::ResponseItem;
++use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::EventMsg;
+ use codex_protocol::protocol::WarningEvent;
+ use codex_protocol::user_input::UserInput;
+@@ -452,6 +453,25 @@ async fn run_compact_task_inner_impl(
+             Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded) => {
+                 return Err(e);
+             }
++            Err(e)
++                if client_session.terminal_saved_login_limits(responses_metadata.request_kind)
++                    && matches!(
++                        e.to_codex_protocol_error(),
++                        CodexErrorInfo::UsageLimitExceeded
++                            | CodexErrorInfo::RateLimitExceeded
++                            | CodexErrorInfo::ResponseTooManyFailedAttempts {
++                                http_status_code: Some(429),
++                            }
++                    ) =>
++            {
++                // Stream snapshots have already been drained; failed HTTP responses carry
++                // their snapshot on the error instead.
++                if let Some(snapshot) = e.api_rate_limits().cloned() {
++                    sess.emit_api_rate_limits(turn_context.as_ref(), snapshot)
++                        .await;
++                }
++                return Err(e);
++            }
+             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
+                 if turn_input_len > 1 {
+                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
 index 99b3b3e..4ee0ed3 100644
 --- a/codex-rs/core/src/session/turn.rs

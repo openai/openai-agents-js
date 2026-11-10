@@ -94,12 +94,14 @@ export async function openSavedLoginLoopback({
   home,
   failures,
   onRequest,
+  allowAuth = true,
   onUpgrade,
 }: {
   directory: string;
   home: string;
   failures: string[];
   onRequest: RequestListener;
+  allowAuth?: boolean;
   onUpgrade?: (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
 }) {
   const sockets = new Set<Socket>();
@@ -124,7 +126,8 @@ export async function openSavedLoginLoopback({
     servers.push(tls);
     if (onUpgrade) tls.on('upgrade', onUpgrade);
     const tlsPort = await listen(tls, sockets);
-    const allowed = new Set([`${modelHost}:443`, `${authHost}:443`]);
+    const allowed = new Set([`${modelHost}:443`]);
+    if (allowAuth) allowed.add(`${authHost}:443`);
     if (onUpgrade) allowed.add(`${apiHost}:443`);
     const proxy = createServer((request, response) => {
       request.resume();
