@@ -474,7 +474,7 @@
     },
     {
       "path": "sdk-realtime-raw-settings-and-item-deletion.patch",
-      "sha256": "0ab7da8b87a0bcfe84d3e60b6d2850953c781880efbb82b196f8c8a123559f18"
+      "sha256": "d29d1837c691d4f4fc4942c7f6f721fe61ddfa5febacfded10ccf1e43461f69e"
     },
     {
       "path": "sdk-chatgpt-plan-responses-and-storage.patch",
@@ -485,5 +485,5 @@
       "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
     }
   ],
-  "result_tree": "b8e196c184a9076caad504b4f8417e395d2c595d"
+  "result_tree": "f8054cc146010a945274e19f86df9183cbbb269f"
 }
