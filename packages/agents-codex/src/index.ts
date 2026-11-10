@@ -367,3 +367,7 @@ export type {
 
 // Private extension hook for Session-scoped state, not execution authority.
 export { _nativeToolSessionOwner } from './runtime/tools';
+export type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageCounters,
+} from './runtime/realtime-usage';
