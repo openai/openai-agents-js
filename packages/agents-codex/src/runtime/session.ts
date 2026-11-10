@@ -1129,10 +1129,14 @@ class NativeTurn {
       this.missingUsageRequests,
       missing,
     );
+    this.usageParent?.addUsage(raw, requests, missing);
   }
   failure: unknown;
   nativeFailure?: NativeError;
-  constructor(private readonly beforeWait: () => void) {
+  constructor(
+    private readonly beforeWait: () => void,
+    private readonly usageParent?: NativeTurn,
+  ) {
     this.accepted.promise.catch(() => {});
     this.completion.promise.catch(() => {});
   }
@@ -2224,6 +2228,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     return this.restoredRoot.turn as Turn<OutputT>;
   }
+  private repairUsageParent?: NativeTurn;
   private apiRateLimitState: { snapshot: ApiRateLimits } = {
     snapshot: Object.freeze({}),
   };
@@ -5310,7 +5315,10 @@ export class Session<OutputT = string, Context = unknown> {
   ): NativeTurn {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
-    const run = new NativeTurn(() => this.assertCanWait(run));
+    const run = new NativeTurn(
+      () => this.assertCanWait(run),
+      this.repairUsageParent,
+    );
     run.controller.signal.addEventListener(
       'abort',
       () => this.discardTerminalValue(run),
@@ -5657,6 +5665,7 @@ export class Session<OutputT = string, Context = unknown> {
       // A correction uses the owning session's model provider and reports into
       // the same live snapshot in the order its response headers arrive.
       correction.apiRateLimitState = this.apiRateLimitState;
+      correction.repairUsageParent = run;
       correction.observations.linkRepairParent(
         this.observations,
         this.submissionIds.get(run)!,
