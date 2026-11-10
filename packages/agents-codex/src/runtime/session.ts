@@ -1,3 +1,4 @@
+import { resolveRealtimePolicy } from './realtime-policy';
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
@@ -1194,6 +1195,7 @@ export class Session<OutputT = string, Context = unknown> {
           'model',
           'voice',
           'instructions',
+          'isToolEnabled',
           'outputModality',
           'settings',
           'tools',
@@ -1203,12 +1205,23 @@ export class Session<OutputT = string, Context = unknown> {
           `Unsupported Realtime SIP configuration option: ${name}`,
         );
       if (
-        ['model', 'voice', 'instructions'].includes(name) &&
+        ['model', 'voice'].includes(name) &&
         value !== undefined &&
         typeof value !== 'string'
       )
         throw new TypeError(`Realtime ${name} must be a string`);
     }
+    if (
+      options.instructions !== undefined &&
+      typeof options.instructions !== 'string' &&
+      typeof options.instructions !== 'function'
+    )
+      throw new TypeError('Realtime instructions must be a string or callback');
+    if (
+      options.isToolEnabled !== undefined &&
+      typeof options.isToolEnabled !== 'function'
+    )
+      throw new TypeError('Realtime isToolEnabled must be a callback');
     if (options.tools !== undefined && !Array.isArray(options.tools))
       throw new TypeError(
         'Realtime tools must be an array of captured function declarations',
@@ -1225,13 +1238,18 @@ export class Session<OutputT = string, Context = unknown> {
       options.tools === undefined
         ? null
         : await this._realtimeFunctionTools([...options.tools]);
+    const policy = await resolveRealtimePolicy(this, options, undefined, () => {
+      if (!this.isOpen) throw new NativeError('Session is not open');
+    });
     const params = realtimePrepareParams(
-      options,
+      { ...options, instructions: policy.instructions },
       { type: 'websocket' },
       settings,
       selection?.tools ?? null,
-      selection?.selectionId ?? null,
+      policy.selectionId ?? selection?.selectionId ?? null,
     );
+    if (policy.disabledToolNames !== undefined)
+      params.disabled_tool_names = policy.disabledToolNames;
     delete params.hosted_mcp_auto_response;
     const result: unknown = JSON.parse(
       await this.#native.call(
@@ -1275,6 +1293,8 @@ export class Session<OutputT = string, Context = unknown> {
           'model',
           'voice',
           'instructions',
+          'isToolEnabled',
+          'toolErrorFormatter',
           'signal',
           'outputModality',
           'settings',
@@ -1289,6 +1309,9 @@ export class Session<OutputT = string, Context = unknown> {
       )
         throw new TypeError(`Unsupported Realtime option: ${name}`);
       if (
+        name !== 'instructions' &&
+        name !== 'isToolEnabled' &&
+        name !== 'toolErrorFormatter' &&
         name !== 'signal' &&
         name !== 'settings' &&
         name !== 'transport' &&
@@ -1303,6 +1326,22 @@ export class Session<OutputT = string, Context = unknown> {
       )
         throw new TypeError(`Realtime ${name} must be a string`);
     }
+    if (
+      options.instructions !== undefined &&
+      typeof options.instructions !== 'string' &&
+      typeof options.instructions !== 'function'
+    )
+      throw new TypeError('Realtime instructions must be a string or callback');
+    if (
+      options.isToolEnabled !== undefined &&
+      typeof options.isToolEnabled !== 'function'
+    )
+      throw new TypeError('Realtime isToolEnabled must be a callback');
+    if (
+      options.toolErrorFormatter !== undefined &&
+      typeof options.toolErrorFormatter !== 'function'
+    )
+      throw new TypeError('Realtime toolErrorFormatter must be a callback');
     if (
       this.options.modelBackend !== undefined &&
       options.adapter === undefined &&
@@ -1429,13 +1468,7 @@ export class Session<OutputT = string, Context = unknown> {
     });
   }
 
-  /** @internal Select only sealed captured functions; Core rechecks its atomic source catalog. */
-  async _realtimeFunctionTools(
-    tools: readonly FunctionTool<any>[],
-    { allowMissing = false }: { allowMissing?: boolean } = {},
-  ): Promise<{ tools: JsonObject[]; selectionId: string | null }> {
-    this.checkCallbackOperation('configure Realtime tools in');
-    if (!tools.length) return { tools: [], selectionId: null };
+  private async realtimeToolSelection() {
     const raw = parseProfileReceipt(
       await this.#native.call('realtime_tool_selection_sdk', '{}'),
     );
@@ -1476,6 +1509,56 @@ export class Session<OutputT = string, Context = unknown> {
       throw new NativeError(
         'Native Realtime tool selection has no captured catalog',
       );
+    return {
+      raw,
+      catalog,
+      declarationCatalog,
+      selectionId: raw.selection_id as string,
+    };
+  }
+
+  /** @internal Resolve policies against the exact current native selection receipt. */
+  async _realtimePolicySource() {
+    this.checkCallbackOperation('configure Realtime policies in');
+    const { raw, catalog, selectionId } = await this.realtimeToolSelection();
+    const receipt = 'profile_receipt' in raw ? raw.profile_receipt : null;
+    const source = this._realtimeGuardrailSource(receipt);
+    const profile = this.options.agentGraph
+      ? this.profileRuntimes.get(
+          checkProfileReceipt(receipt, this.options.agentGraph).profile_id,
+        )
+      : undefined;
+    const specs = JSON.parse(catalog.specsJson) as JsonObject[];
+    const tools: import('./realtime-policy').NativeRealtimeTool[] =
+      specs.flatMap((spec) =>
+        spec.type === 'function' && typeof spec.name === 'string'
+          ? [{ type: 'function' as const, name: spec.name }]
+          : [],
+      );
+    for (const name of Object.keys(profile?.profile.handoffs ?? {}))
+      tools.push({ type: 'handoff', name });
+    return { ...source, receipt, tools, selectionId };
+  }
+
+  /** @internal A completed response keeps its original captured handoff source. */
+  _realtimeHandoffSource(receipt: unknown, name: string) {
+    if (!this.options.agentGraph) return undefined;
+    const source = checkProfileReceipt(receipt, this.options.agentGraph);
+    const profile = this.profileRuntimes.get(source.profile_id)!;
+    return Object.hasOwn(profile.profile.handoffs, name)
+      ? this._realtimeGuardrailSource(source)
+      : undefined;
+  }
+
+  /** @internal Select only sealed captured functions; Core rechecks its atomic source catalog. */
+  async _realtimeFunctionTools(
+    tools: readonly FunctionTool<any>[],
+    { allowMissing = false }: { allowMissing?: boolean } = {},
+  ): Promise<{ tools: JsonObject[]; selectionId: string | null }> {
+    this.checkCallbackOperation('configure Realtime tools in');
+    if (!tools.length) return { tools: [], selectionId: null };
+    const { catalog, declarationCatalog, selectionId } =
+      await this.realtimeToolSelection();
     const selected: JsonObject[] = [];
     const seen = new Set<SessionTool>();
     for (const tool of tools) {
@@ -1512,7 +1595,7 @@ export class Session<OutputT = string, Context = unknown> {
       const { type: _type, ...definition } = spec;
       selected.push(definition);
     }
-    return { tools: selected, selectionId: raw.selection_id };
+    return { tools: selected, selectionId };
   }
 
   /** @internal A provider refresh carries the native receipt, never an inferred Agent. */
@@ -3834,6 +3917,7 @@ export class Session<OutputT = string, Context = unknown> {
     responseId: string,
     callIds: readonly string[],
     signal?: AbortSignal,
+    beforeDispatch?: () => Promise<readonly string[]>,
   ): Promise<Turn<unknown>> {
     this.checkCallbackOperation('start Realtime tools in');
     if (
@@ -3881,12 +3965,15 @@ export class Session<OutputT = string, Context = unknown> {
         : undefined;
       signal?.throwIfAborted();
       if (!this.owns(current)) continue;
+      const disabled = beforeDispatch ? await beforeDispatch() : [];
+      signal?.throwIfAborted();
       const raw = parseNative(
         await this.#native._submit_realtime_tools(
           JSON.stringify({
             generation,
             response_id: responseId,
             call_ids: selected,
+            disabled_call_ids: disabled,
             expected_root_turn_id: current.id,
             ...(parentTrace ? { trace: parentTrace.toHeaders() } : {}),
             ...(tracingContext ? { tracing_context: tracingContext } : {}),
@@ -3927,13 +4014,15 @@ export class Session<OutputT = string, Context = unknown> {
     run.parentTrace = parentTrace;
     run.selection = selection;
     run.tracing = this.captureRootTracing(undefined);
-    const send = (tracingContext?: string) => {
+    const send = async (tracingContext?: string) => {
+      const disabled = beforeDispatch ? await beforeDispatch() : [];
       signal?.throwIfAborted();
       return this.#native._submit_realtime_tools(
         JSON.stringify({
           generation,
           response_id: responseId,
           call_ids: selected,
+          disabled_call_ids: disabled,
           observation_submission_id: this.submissionIds.get(run)!,
           ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
           ...(tracingContext ? { tracing_context: tracingContext } : {}),
@@ -5549,6 +5638,27 @@ export class Session<OutputT = string, Context = unknown> {
     if (primary) throw primary.error;
   }
 
+  private observeProfileChange(
+    msg: NativeEvent['msg'],
+    submissionId: string | null,
+  ): void {
+    if (msg.thread_id !== this.id) return;
+    const receipt = checkProfileReceipt(
+      { profile_id: msg.profile_id, epoch: msg.profile_epoch },
+      this.options.agentGraph!,
+    );
+    const declaration = this.profileRuntimes.get(receipt.profile_id)!.profile
+      .declaration;
+    this.observations.append({
+      type: 'agent_profile_changed',
+      profileId: receipt.profile_id,
+      profileEpoch: receipt.epoch,
+      agentName: declaration.name ?? null,
+      turnId: typeof msg.turn_id === 'string' ? msg.turn_id : null,
+      submissionId,
+    });
+  }
+
   private async readEvents(): Promise<void> {
     const native = this.#native;
     const producer = this.childObservationProducer;
@@ -5613,6 +5723,10 @@ export class Session<OutputT = string, Context = unknown> {
             if (route.id === null) route.pending.push(event);
             else this.observeRequestMetadata(route, event);
           }
+          continue;
+        }
+        if (msg.type === 'agent_profile_changed' && msg.turn_id === null) {
+          this.observeProfileChange(msg, null);
           continue;
         }
         const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
@@ -6455,6 +6569,10 @@ export class Session<OutputT = string, Context = unknown> {
         : null);
     if (eventTurn !== null && eventTurn !== undefined && eventTurn !== run.id)
       return;
+    if (kind === 'agent_profile_changed') {
+      this.observeProfileChange(msg, this.submissionIds.get(run)!);
+      return;
+    }
     if (
       (kind === 'mcp_tool_call_begin' || kind === 'mcp_tool_call_end') &&
       msg.turn_id === run.id
@@ -7999,6 +8117,32 @@ export class Session<OutputT = string, Context = unknown> {
           !this.manualCurrent(event)
         )
           return;
+        if (
+          !(await this.realtimeFunctionEnabled(
+            run,
+            msg,
+            tool.name,
+            run.controller.signal,
+          ))
+        ) {
+          if (this.current(run) && this.manualCurrent(event)) {
+            const accepted = await this.#native._respond_python_tool(
+              encodeReceipt({
+                request: msg,
+                response: {
+                  success: false,
+                  contentItems: [
+                    { type: 'inputText', text: `Tool ${tool.name} not found` },
+                  ],
+                },
+                start_response: false,
+              }),
+            );
+            if (accepted) this.observeToolEnd(run, identity, 'failed');
+          }
+          return;
+        }
+        if (!this.current(run) || !this.manualCurrent(event)) return;
         const args =
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
@@ -8135,7 +8279,12 @@ export class Session<OutputT = string, Context = unknown> {
             await this.submitManualResult(
               remembered.approve && decision.denial === undefined
                 ? action.approve()
-                : action.reject(decision.denial ?? remembered.reason),
+                : action.reject(
+                    decision.denial ??
+                      (cached?.useDefaultReason
+                        ? undefined
+                        : remembered.reason),
+                  ),
               key,
             );
           } else if (!decision.required) {
@@ -8296,9 +8445,27 @@ export class Session<OutputT = string, Context = unknown> {
           encodeReceipt(call.event.msg),
         );
       else {
+        if (!this.current(run) || !this.manualCurrent(call.event)) return false;
+        let reason = decision.reason;
+        if (
+          decision.useDefaultReason &&
+          run instanceof NativeTurn &&
+          submissions.get(run)?.realtimeTools &&
+          this.realtimeOwner
+        ) {
+          const source = this.sourceApplicationAgent(call.event.msg);
+          reason = await this.realtimeOwner._formatApprovalRejection(
+            source,
+            this.options.context,
+            call.tool.name,
+            call.event.msg.callId as string,
+            reason,
+            run.controller.signal,
+          );
+        }
         const response: ToolResponse = {
           success: false,
-          contentItems: [{ type: 'inputText', text: decision.reason }],
+          contentItems: [{ type: 'inputText', text: reason }],
         };
         if (this.manualRestoring) {
           await this.#native._respond_manual_continuation(
@@ -8911,6 +9078,29 @@ export class Session<OutputT = string, Context = unknown> {
       this.publishManualRequest(run, event);
     }
   }
+  private async realtimeFunctionEnabled(
+    owner: NativeTurn | ChildCallbackOwner,
+    msg: NativeEvent['msg'],
+    name: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      !(owner instanceof NativeTurn) ||
+      !submissions.get(owner)?.realtimeTools ||
+      !this.realtimeOwner
+    )
+      return true;
+    const source = this.sourceApplicationAgent(msg);
+    const enabled = await this.realtimeOwner._toolEnabled(
+      source,
+      this.options.context,
+      name,
+      signal,
+    );
+    if (!enabled) this.realtimeOwner._markToolUnavailable(msg.callId as string);
+    return enabled;
+  }
+
   private handleRequest(
     owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
@@ -9017,6 +9207,28 @@ export class Session<OutputT = string, Context = unknown> {
       let status: ToolStatus | undefined;
       let observedOutput: ToolOutput | null = null;
       try {
+        if (
+          !(await this.realtimeFunctionEnabled(owner, msg, tool.name, signal))
+        ) {
+          if (
+            check() &&
+            (await native._respond_python_tool(
+              encodeReceipt({
+                request: msg,
+                response: {
+                  success: false,
+                  contentItems: [
+                    { type: 'inputText', text: `Tool ${tool.name} not found` },
+                  ],
+                },
+                start_response: false,
+              }),
+            ))
+          )
+            status = 'failed';
+          return;
+        }
+        if (!check()) return;
         const args =
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)

@@ -2,7 +2,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
-import { Agent, NativeProvider, backgroundResult, tool } from '../src';
+import {
+  Agent,
+  NativeProvider,
+  backgroundResult,
+  isFunctionApprovalRequest,
+  tool,
+} from '../src';
 import { ModelServer, message } from './native/fixtures/model-server';
 
 type Frame = Record<string, any>;
@@ -46,24 +52,28 @@ class PolicyPeer {
     this.socket.send(JSON.stringify(frame));
   }
   call(name: string, args: Frame, callId: string): string {
-    const responseId = `response-${callId}`;
-    const item = {
+    return this.calls([[name, args, callId]], `response-${callId}`);
+  }
+  calls(calls: [string, Frame, string][], responseId: string): string {
+    const items = calls.map(([name, args, callId]) => ({
       id: `item-${callId}`,
       type: 'function_call',
       name,
       call_id: callId,
       arguments: JSON.stringify(args),
-    };
+    }));
     this.send({ type: 'response.created', response: { id: responseId } });
-    this.send({
-      type: 'response.output_item.done',
-      response_id: responseId,
-      output_index: 0,
-      item,
-    });
+    items.forEach((item, output_index) =>
+      this.send({
+        type: 'response.output_item.done',
+        response_id: responseId,
+        output_index,
+        item,
+      }),
+    );
     this.send({
       type: 'response.done',
-      response: { id: responseId, output: [item] },
+      response: { id: responseId, output: items },
     });
     return responseId;
   }
@@ -389,6 +399,426 @@ nativeIt.each([
     } finally {
       releaseA.resolve();
       releaseB.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'resolves native voice policies for each active profile and filters functions and handoffs',
+  async () => {
+    const context = { marker: 'policy-owner' };
+    const seen: string[] = [];
+    const hidden = tool({
+      name: 'hidden',
+      parameters: z.object({}),
+      execute: () => 'forbidden',
+    });
+    const visible = tool({
+      name: 'visible',
+      parameters: z.object({}),
+      execute: () => 'accepted',
+    });
+    const target = new Agent({
+      name: 'B',
+      instructions: 'B',
+      tools: [visible, hidden],
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'A',
+        tools: [visible, hidden],
+        handoffs: [target],
+        provider,
+      }).session({ context });
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        instructions: async (run) => {
+          expect(run.context).toBe(context);
+          return `Voice for ${run.agent.name}`;
+        },
+        isToolEnabled: async (run, declaration) => {
+          expect(run.context).toBe(context);
+          seen.push(
+            `${run.agent.name}:${declaration.type}:${declaration.name}`,
+          );
+          return declaration.name === 'visible';
+        },
+      });
+      try {
+        const initial = peer.frames.find(
+          (frame) => frame.type === 'session.update',
+        )!;
+        expect(initial.session.instructions).toContain('Voice for A');
+        expect(
+          initial.session.tools
+            .filter((entry: Frame) =>
+              ['visible', 'hidden', 'transfer_to_b'].includes(entry.name),
+            )
+            .map((entry: Frame) => entry.name),
+        ).toEqual(['visible']);
+        expect(seen).toContain('A:handoff:transfer_to_b');
+        const start = peer.frames.length;
+        await session.update({ agent: target });
+        const updated = peer.frames
+          .slice(start)
+          .find((frame) => frame.type === 'session.update')!;
+        expect(updated.session.instructions).toContain('Voice for B');
+        expect(
+          updated.session.tools
+            .filter((entry: Frame) =>
+              ['visible', 'hidden', 'transfer_to_b'].includes(entry.name),
+            )
+            .map((entry: Frame) => entry.name),
+        ).toEqual(['visible']);
+        peer.call('visible', {}, 'profile-call');
+        expect(await peer.output('profile-call')).toBe('accepted');
+        expect(seen).toContain('B:function:visible');
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([false, true])(
+  'recovers native response batches after rejected unknown calls (mixed=%s)',
+  async (mixed) => {
+    const execute = vi.fn(() => 'accepted');
+    const selected = tool({ name: 'known', parameters: z.object({}), execute });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use known.',
+        tools: [selected],
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        peer.calls(
+          [
+            ['unknown', {}, 'rejected-call'],
+            ...(mixed
+              ? [['known', {}, 'mixed-call'] as [string, Frame, string]]
+              : []),
+          ],
+          'rejected-response',
+        );
+        if (mixed) {
+          expect(await peer.output('mixed-call')).toBe('accepted');
+          await vi.waitFor(() =>
+            expect(
+              peer.frames.filter((frame) => frame.type === 'response.create'),
+            ).toHaveLength(1),
+          );
+        }
+        await voice.update({ instructions: 'Still listening.' });
+        expect(
+          peer.frames.filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(mixed ? 1 : 0);
+        peer.call('known', {}, 'recovery-call');
+        expect(await peer.output('recovery-call')).toBe('accepted');
+        await vi.waitFor(() =>
+          expect(
+            peer.frames.filter((frame) => frame.type === 'response.create'),
+          ).toHaveLength(mixed ? 2 : 1),
+        );
+        expect(execute).toHaveBeenCalledTimes(mixed ? 2 : 1);
+        const rejected = peer.frames.filter(
+          (frame) =>
+            frame.item?.type === 'function_call_output' &&
+            frame.item.call_id === 'rejected-call',
+        );
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0].item.output).toBe('Tool unknown not found');
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([false, true])(
+  'finishes unavailable native tool observations (approval=%s)',
+  async (needsApproval) => {
+    let enabled = true;
+    const execute = vi.fn(() => 'forbidden');
+    const selected = tool({
+      name: 'revoked',
+      parameters: z.object({}),
+      needsApproval,
+      execute,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use revoked.',
+        tools: [selected],
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        isToolEnabled: () => enabled,
+      });
+      const observations = session.events();
+      const seen: { type: string; callId?: string; status?: string }[] = [];
+      const completed = (async () => {
+        for await (const event of observations) {
+          seen.push(event);
+          if (event.type === 'turn_finished') return;
+        }
+      })();
+      void completed.catch(() => {});
+      try {
+        enabled = false;
+        peer.call('revoked', {}, 'revoked-call');
+        expect(await peer.output('revoked-call')).toBe(
+          'Tool revoked not found',
+        );
+        await completed;
+        expect(
+          seen
+            .filter(
+              (event) =>
+                event.type === 'tool_started' || event.type === 'tool_finished',
+            )
+            .map(({ type, status }) => ({ type, status })),
+        ).toEqual([
+          { type: 'tool_started', status: undefined },
+          { type: 'tool_finished', status: 'failed' },
+        ]);
+        expect(execute).not.toHaveBeenCalled();
+        expect(await session.pendingInteractions()).toEqual([]);
+      } finally {
+        await voice.close();
+        await observations.return?.();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([
+  { explicit: false, remembered: false },
+  { explicit: true, remembered: false },
+  { explicit: false, remembered: true },
+  { explicit: true, remembered: true },
+])(
+  'formats only implicit native approval rejection (explicit=$explicit, remembered=$remembered)',
+  async ({ explicit, remembered }) => {
+    let denyInput = false;
+    const execute = vi.fn(() => 'forbidden');
+    const formatter = vi.fn(async () => 'Application declined');
+    const selected = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: true,
+      runBeforeApproval: true,
+      before: () =>
+        denyInput
+          ? { action: 'deny' as const, reason: 'Input denied' }
+          : { action: 'allow' as const },
+      execute,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use risky.',
+        tools: [selected],
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        toolErrorFormatter: formatter,
+      });
+      const reader = session.interactions();
+      try {
+        peer.call('risky', {}, 'approval-call');
+        const { value: request } = await reader.next();
+        if (!isFunctionApprovalRequest(request))
+          throw new Error('Native approval missing');
+        await session.respond(
+          request.reject(explicit ? 'Explicit denial' : undefined, {
+            always: remembered,
+          }),
+        );
+        expect(await peer.output('approval-call')).toBe(
+          explicit ? 'Explicit denial' : 'Application declined',
+        );
+        expect(formatter).toHaveBeenCalledTimes(explicit ? 0 : 1);
+        if (remembered) {
+          peer.call('risky', {}, 'remembered-call');
+          expect(await peer.output('remembered-call')).toBe(
+            explicit ? 'Explicit denial' : 'Application declined',
+          );
+          expect(formatter).toHaveBeenCalledTimes(explicit ? 0 : 2);
+          denyInput = true;
+          peer.call('risky', {}, 'policy-denied-call');
+          expect(await peer.output('policy-denied-call')).toBe('Input denied');
+          expect(formatter).toHaveBeenCalledTimes(explicit ? 0 : 2);
+        }
+        expect(execute).not.toHaveBeenCalled();
+        expect(await session.pendingInteractions()).toEqual([]);
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await reader.return?.();
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each(['invalid', 'null', 'exception'] as const)(
+  'validates native approval formatter returns and joins cleanup (%s)',
+  async (outcome) => {
+    const execute = vi.fn(() => 'forbidden');
+    const formatter = vi.fn(async () => {
+      if (outcome === 'exception')
+        throw new Error('Application formatter failure');
+      return outcome === 'null' ? null : 42;
+    });
+    const selected = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use risky.',
+        tools: [selected],
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        // Exercise an unchecked application return through the public runtime boundary.
+        toolErrorFormatter: formatter as never,
+      });
+      const reader = session.interactions();
+      try {
+        peer.call('risky', {}, 'formatter-return');
+        const { value: request } = await reader.next();
+        if (!isFunctionApprovalRequest(request))
+          throw new Error('Native approval missing');
+        if (outcome === 'invalid') {
+          await expect(session.respond(request.reject())).rejects.toThrow(
+            'formatter must return a string, null or undefined',
+          );
+          await voice.close();
+          await peer.disconnected.promise;
+          expect(await session.pendingInteractions()).toEqual([]);
+          expect(
+            peer.frames
+              .filter(
+                (frame) =>
+                  frame.item?.type === 'function_call_output' &&
+                  frame.item.call_id === 'formatter-return',
+              )
+              .map((frame) => frame.item.output),
+          ).toEqual(['The function failed.']);
+          expect(formatter).toHaveBeenCalledTimes(1);
+          expect(execute).not.toHaveBeenCalled();
+          expect(model.requests).toHaveLength(0);
+          return;
+        } else {
+          await session.respond(request.reject());
+        }
+        expect(await peer.output('formatter-return')).toBe(
+          'Tool execution was rejected',
+        );
+        expect(formatter).toHaveBeenCalledTimes(1);
+        expect(execute).not.toHaveBeenCalled();
+        expect(await session.pendingInteractions()).toEqual([]);
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await reader.return?.();
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'discards a late native availability allowance after voice close',
+  async () => {
+    const entered = Promise.withResolvers<void>();
+    const execute = vi.fn(() => 'forbidden');
+    let checks = 0;
+    const selected = tool({ name: 'known', parameters: z.object({}), execute });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use known.',
+        tools: [selected],
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        isToolEnabled: async ({ signal }) => {
+          if (++checks > 1) {
+            entered.resolve();
+            await new Promise<void>((resolve) => {
+              if (signal!.aborted) resolve();
+              else
+                signal!.addEventListener('abort', () => resolve(), {
+                  once: true,
+                });
+            });
+          }
+          return true;
+        },
+      });
+      try {
+        peer.call('known', {}, 'retired-call');
+        await entered.promise;
+        await voice.close();
+        expect(execute).not.toHaveBeenCalled();
+        expect(
+          peer.frames.some((frame) => frame.item?.call_id === 'retired-call'),
+        ).toBe(false);
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+      }
+    } finally {
       await peer.close();
       await ModelServer.closeAll();
     }

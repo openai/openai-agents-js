@@ -89,7 +89,23 @@ export type HostedToolProgress = SubmissionEvent &
     event: JsonObject;
   }>;
 
+/** A committed captured-Agent identity change. Initial/restored bindings and
+ * same-profile refreshes are silent. Idle changes have null operation identity.
+ * agentName comes from the captured declaration, not the mutable original Agent.
+ */
+export type AgentProfileChanged = Event &
+  Readonly<{
+    type: 'agent_profile_changed';
+    profileId: string;
+    profileEpoch: string;
+    agentName: string | null;
+    submissionId: string | null;
+    turnId: string | null;
+    parentSubmissionId?: string;
+  }>;
+
 export type Observation =
+  | AgentProfileChanged
   | HostedToolProgress
   | (HostedToolItemObservation &
       Readonly<{ item: HostedToolItemSummary | HostedToolItem }>)

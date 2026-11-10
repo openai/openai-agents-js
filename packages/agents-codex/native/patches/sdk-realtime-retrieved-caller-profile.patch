@@ -1,0 +1,20 @@
+diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
+index bad9d78..7b32ce9 100644
+--- a/codex-rs/core/src/realtime_conversation/provider_history.rs
++++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
+@@ -1103,6 +1103,7 @@ impl State {
+             return Err(mismatch());
+         }
+         let request = RealtimeFunctionCallRequested {
++            source_profile: None,
+             namespace: None,
+             call_id: call_id.clone(),
+             item_id: id.to_owned(),
+@@ -2313,6 +2314,7 @@ mod tests {
+     async fn retrieval_verifies_the_observed_caller_function() {
+         let mut state = State::default();
+         let observed = RealtimeFunctionCallRequested {
++            source_profile: None,
+             namespace: None,
+             call_id: "call".into(),
+             item_id: "item".into(),

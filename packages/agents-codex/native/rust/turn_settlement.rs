@@ -850,6 +850,7 @@ pub(crate) async fn start_realtime<'a>(
     generation: String,
     response_id: String,
     call_ids: Vec<String>,
+    disabled_call_ids: Vec<String>,
     trace: Option<codex_protocol::protocol::W3cTraceContext>,
     init: ExtensionDataInit,
 ) -> anyhow::Result<StartIfIdleSubmission> {
@@ -857,15 +858,17 @@ pub(crate) async fn start_realtime<'a>(
         let generation = generation.clone();
         let response_id = response_id.clone();
         let call_ids = call_ids.clone();
+        let disabled_call_ids = disabled_call_ids.clone();
         let trace = trace.clone();
         async move {
             Ok(
                 match state
                     .thread
-                    .start_realtime_tools_if_idle(
+                    .start_realtime_tools_if_idle_with_policy(
                         generation,
                         response_id,
                         call_ids,
+                        disabled_call_ids,
                         WithTurnExtensionData::new(
                             codex_protocol::protocol::ThreadSettingsOverrides::default(),
                             init,

@@ -175,7 +175,7 @@ it('retries a failed carrier phase without closing the Engine twice or removing 
   });
 });
 
-it('keeps buffered HTTP providers on fresh engines', async () => {
+it('admits buffered HTTP providers to private runtime reuse', async () => {
   await using provider = new NativeProvider({
     apiKey: 'synthetic',
     responseMode: 'buffered',
@@ -183,7 +183,7 @@ it('keeps buffered HTTP providers on fresh engines', async () => {
   });
   const lease = provider._acquire(undefined, true);
   try {
-    expect(lease.privateRuntime).toBeUndefined();
+    expect(lease.privateRuntime).toBeDefined();
   } finally {
     await lease.release();
   }
