@@ -71,3 +71,46 @@ The assertions verify effects rather than relying on the scripted final answer. 
 | A command cannot find an application variable or executable | Check the command's fresh environment and system `PATH`; the host application's environment is not inherited. |
 
 Await the issued Turn and [Session cleanup](sessions.md#open-and-run-a-session) before deleting its workspace. A Turn's final answer alone does not show that every retained process ended. Changing a shell wrapper or an approval answer does not expand the workspace grant.
+
+### Allow the Linux sandbox helper to use user namespaces on Ubuntu 24.04
+
+On Ubuntu 24.04, AppArmor can deny Bubblewrap (`bwrap`) the capabilities it needs to set up the local sandbox. See the [Ubuntu 24.04 release notes on user namespace restrictions](https://discourse.ubuntu.com/t/ubuntu-24-04-lts-noble-numbat-release-notes/39890#p-99950-unprivileged-user-namespace-restrictions-15).
+
+1. Check the kernel audit log after the failed launch. Continue only if a denial from that attempt includes `apparmor="DENIED"`, `profile="unprivileged_userns"`, `operation="capable"`, and `comm="bwrap"`. One observed capability is `capname="net_admin"`.
+
+   ```sh
+   sudo journalctl -k --since '5 minutes ago' --grep='apparmor="DENIED".*comm="bwrap"'
+   ```
+
+   If the host uses `auditd`, check `/var/log/audit/audit.log` for the same fields.
+
+2. From your application directory, print the resolved path to the installed helper. Resolving `@openai/agents-codex` from the `@openai/agents` entry point also works with pnpm's isolated dependency layout.
+
+   ```sh
+   node --input-type=commonjs <<'NODE'
+   const { realpathSync } = require('node:fs');
+   const { createRequire } = require('node:module');
+   const { dirname, resolve } = require('node:path');
+   const requireFromAgents = createRequire(require.resolve('@openai/agents'));
+   const codexEntry = requireFromAgents.resolve('@openai/agents-codex');
+   const helper = resolve(dirname(codexEntry), '../bin/codex-linux-sandbox');
+   console.log(realpathSync(helper));
+   NODE
+   ```
+
+3. Use an administrator-controlled SDK installation outside the workspace and all extra writable roots. The helper and every parent directory must be writable only by trusted administrators. Save the profile below as an administrator in `/etc/apparmor.d/openai-agents-codex-linux-sandbox`. Substitute the resolved helper path and use a literal path without AppArmor glob characters.
+
+   ```text
+   abi <abi/4.0>,
+   include <tunables/global>
+
+   profile openai-agents-codex-linux-sandbox "/absolute/path/to/codex-linux-sandbox" flags=(unconfined) {
+     userns,
+   }
+   ```
+
+4. Load the profile, then retry the same local command as your usual user with the host's user namespace restriction still enabled.
+
+   ```sh
+   sudo apparmor_parser -r /etc/apparmor.d/openai-agents-codex-linux-sandbox
+   ```
