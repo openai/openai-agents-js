@@ -1,5 +1,8 @@
 import { z } from 'zod-deferred';
-import { decode, jsonValue } from '../runtime/binding';
+import {
+  decode,
+  losslessJsonValueSchema as jsonValue,
+} from '../runtime/binding';
 import { outputOf } from '../runtime/tools';
 import { assembleManualTool, type ManualTool } from '../runtime/manual';
 import { createDeferredCodec } from './deferred-codec';

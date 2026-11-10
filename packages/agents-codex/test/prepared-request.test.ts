@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as nativeBinding from '../src/runtime/binding';
 import * as turnReceipt from '../src/runtime/turn-receipt';
-import { Agent, NativeProvider, tool, HttpMCP, checklist } from '../src';
+import {
+  Agent,
+  NativeProvider,
+  tool,
+  HttpMCP,
+  checklist,
+  webSearch,
+  fileSearch,
+} from '../src';
 import { z } from 'zod';
 import {
   capturePreparedRequest,
@@ -37,6 +45,17 @@ const native = () => ({
 });
 
 describe('prepared request capture boundary', () => {
+  it('preserves own JSON keys in replacement tool schemas', () => {
+    const request = preparedRequestFromNative(native());
+    const parameters = JSON.parse(
+      '{"type":"object","__proto__":{"annotation":"data"},"properties":{}}',
+    );
+    request.tools[0].parameters = parameters;
+    const captured = JSON.parse(capturePreparedRequest(request));
+    expect(captured.tools[0].parameters).toEqual(parameters);
+    expect(Object.hasOwn(captured.tools[0].parameters, '__proto__')).toBe(true);
+  });
+
   it('detaches native input and preserves public camelCase evidence through strict capture', () => {
     const source = native();
     const request = preparedRequestFromNative(source);
@@ -96,6 +115,8 @@ it.each([
   'deferred-function',
   'deferred-mcp',
   'checklist',
+  'hosted-web-search',
+  'hosted-file-search',
 ] as const)(
   'rejects unsupported %s before provider acquisition or editor invocation',
   async (profile) => {
@@ -103,6 +124,9 @@ it.each([
       profile === 'websocket' ? {} : { supportsWebsockets: false },
     );
     const acquire = vi.spyOn(provider, '_acquire');
+    const loader = vi
+      .spyOn(nativeBinding, 'binding')
+      .mockRejectedValue(new Error('unexpected native loading'));
     const editor = vi.fn(() => undefined);
     const tools =
       profile === 'deferred-function'
@@ -125,7 +149,11 @@ it.each([
             ]
           : profile === 'checklist'
             ? [checklist()]
-            : [];
+            : profile === 'hosted-web-search'
+              ? [webSearch({ route: 'hosted' })]
+              : profile === 'hosted-file-search'
+                ? [fileSearch('vs_fixture')]
+                : [];
     await expect(
       new Agent({ instructions: 'Answer.', provider, tools }).run('go', {
         prepareRequest: editor,
@@ -134,8 +162,37 @@ it.each([
       profile === 'websocket' ? 'supportsWebsockets: false' : 'eager function',
     );
     expect(acquire).not.toHaveBeenCalled();
+    expect(loader).not.toHaveBeenCalled();
     expect(editor).not.toHaveBeenCalled();
     await provider.close();
+  },
+);
+
+it.each([
+  { responseMode: 'buffered' as const },
+  { responseMode: 'buffered' as const, supportsWebsockets: false },
+  { baseUrl: 'http://127.0.0.1:1/v1' },
+])(
+  'admits prepared requests for the effective HTTP transport: %j',
+  async (options) => {
+    await using provider = new NativeProvider(options);
+    const boundary = new Error(
+      'instruction loading follows transport preflight',
+    );
+    const loadFiles = vi
+      .spyOn(turnReceipt, 'loadInstructionFiles')
+      .mockRejectedValueOnce(boundary);
+    const acquire = vi.spyOn(provider, '_acquire');
+    const prepareRequest = vi.fn(() => undefined);
+    await expect(
+      new Agent({ instructions: 'Answer.', provider }).run('go', {
+        prepareRequest,
+        instructionFiles: ['unreachable-instructions.md'],
+      }),
+    ).rejects.toBe(boundary);
+    expect(loadFiles).toHaveBeenCalledTimes(1);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(prepareRequest).not.toHaveBeenCalled();
   },
 );
 

@@ -13,6 +13,8 @@ import {
   NativeAgents,
   nativeGoals,
   checklist,
+  manualTool,
+  webSearch,
   fileSessionStore,
   reconcileSessionStore,
   tool,
@@ -114,7 +116,7 @@ async function worker(server: ModelServer, config: Record<string, unknown>) {
 // Exercise the public native runner with a real durable adapter. Faults cross
 // the application-owned storage boundary, never fabricated native events.
 describe('public native custom storage durability', () => {
-  it.each(['goals', 'children', 'checklist'] as const)(
+  it.each(['goals', 'children', 'checklist', 'manual'] as const)(
     'rejects unsupported %s before acquiring storage or dispatching work',
     async (kind) => {
       const durable = fileSessionStore(await directory());
@@ -134,11 +136,19 @@ describe('public native custom storage durability', () => {
         model: 'gpt-5.1-codex',
         provider,
         tools: [
+          webSearch({ route: 'hosted' }),
           kind === 'goals'
             ? nativeGoals()
             : kind === 'children'
               ? new NativeAgents()
-              : checklist(),
+              : kind === 'manual'
+                ? manualTool({
+                    name: 'pending',
+                    description: 'Read.',
+                    parameters: z.object({}),
+                    result: z.string(),
+                  })
+                : checklist(),
           tool({
             name: 'record',
             description: 'Record.',
@@ -887,6 +897,7 @@ describe('public native custom storage durability', () => {
         model: 'gpt-5',
         provider,
         tools: [
+          webSearch({ route: 'hosted' }),
           tool({
             name: 'record',
             description: 'Record once.',

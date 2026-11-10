@@ -1,6 +1,7 @@
 import {
   jsonObject,
-  jsonValue,
+  losslessJsonValueSchema,
+  losslessJsonObjectSchema,
   type JsonObject,
   copyJsonValue,
 } from './binding';
@@ -99,7 +100,7 @@ export async function applyExecutorPolicy<Context>(
   });
   let supplied = before ? request.input : request.result;
   if (before && request.tool_kind === 'function_json')
-    supplied = jsonObject.parse(JSON.parse(supplied as string));
+    supplied = losslessJsonObjectSchema.parse(JSON.parse(supplied as string));
   if (before && environment.approval) {
     const approved = await environment.approval(
       identity,
@@ -138,7 +139,9 @@ export async function applyExecutorPolicy<Context>(
     if (decision?.kind === 'stop') return stop();
     if (decision?.kind === 'allow') return { action: 'continue' };
     const replacement =
-      decision?.kind === 'replace' ? decision.value : jsonValue.parse(value);
+      decision?.kind === 'replace'
+        ? decision.value
+        : losslessJsonValueSchema.parse(value);
     if (
       name.name === 'apply_patch'
         ? typeof replacement !== 'string'

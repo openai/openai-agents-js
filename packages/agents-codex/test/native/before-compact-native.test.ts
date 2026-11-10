@@ -408,8 +408,11 @@ nativeIt(
       handoffs: [destination],
     }).session({ context: application });
     destination.beforeCompact = late;
-    await (await session.submit('Transfer.')).wait();
+    const beforeStep = vi.fn(() => undefined);
+    await (await session.submit('Transfer.', { beforeStep })).wait();
+    expect(beforeStep).toHaveBeenCalledTimes(2);
     await session.compact();
+    expect(beforeStep).toHaveBeenCalledTimes(2);
     expect(captured).toHaveBeenCalledTimes(1);
     expect(late).not.toHaveBeenCalled();
     expect(text((await session.saveState()).history)).toContain(

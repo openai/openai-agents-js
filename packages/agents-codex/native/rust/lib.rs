@@ -10,6 +10,7 @@ use opentelemetry::trace::TraceContextExt as _;
 mod agent_profiles;
 mod application_instructions;
 mod auth;
+mod canonical_history;
 mod canonical_rules;
 mod checkpoint;
 mod commands;
@@ -3854,6 +3855,31 @@ impl NativeThread {
             inner.instructions.check_usable().map_err(native_error)?;
         }
         serde_json::to_string(&result).map_err(native_error)
+    }
+
+    #[napi(js_name = "_canonical_history")]
+    pub async fn canonical_history(&self, limit: Option<u32>) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value = canonical_history::snapshot(&inner, limit.map(|n| n as usize))
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_transact_history")]
+    pub async fn transact_history(
+        &self,
+        expected_revision: String,
+        keep: u32,
+        items_json: String,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let items = serde_json::from_str(&items_json)
+            .map_err(|_| native_error("Invalid canonical history items"))?;
+        let value = canonical_history::replace(&inner, expected_revision, keep as usize, items)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
     }
 
     #[napi(js_name = "read_thread_history")]

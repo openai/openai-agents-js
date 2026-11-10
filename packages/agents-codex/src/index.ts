@@ -190,6 +190,7 @@ export type {
   ExecutionItem,
   PatchChange,
   RecordedTurn,
+  CanonicalHistorySnapshot,
   Failure,
   RecordedTokenUsage,
   ReceivedTokenUsage,
@@ -237,6 +238,7 @@ export type {
   ReconciledToolResult,
 } from './runtime/custom-thread-store';
 export { fileSessionStore } from './runtime/file-thread-store';
+export { encryptedSessionStore } from './runtime/encrypted-thread-store';
 export type { LocalStorage } from './runtime/local-storage';
 export type {
   ExecutorNetworkReceipt,
@@ -376,3 +378,8 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+
+export type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageCounters,
+} from './runtime/realtime-usage';

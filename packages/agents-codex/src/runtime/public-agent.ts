@@ -312,6 +312,8 @@ export type Session<Output = string, Context = any> = Pick<
   | 'checklist'
   | 'update'
   | 'interrupt'
+  | 'historySnapshot'
+  | 'transactHistory'
   | 'modelContext'
   | 'compact'
   | 'executeCommand'
@@ -780,15 +782,14 @@ export class Agent<Context = undefined, Output = string> {
     if (
       customStore &&
       (environmentInput !== undefined ||
-        declarations.webSearch ||
-        declarations.hostedTools.length > 0 ||
+        (declarations.webSearch && declarations.webSearch.route !== 'hosted') ||
         declarations.checklist ||
         declarations.nativeGoals ||
         declarations.nativeAgents ||
         catalog.tools.some((tool) => tool.kind === 'manual'))
     )
       throw new TypeError(
-        'Custom canonical storage does not support environments, native search, checklists, goals, child agents, or manual tools',
+        'Custom canonical storage does not support environments, standalone native search, checklists, goals, child agents, or manual tools',
       );
     const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
     if (
@@ -846,8 +847,9 @@ export class Agent<Context = undefined, Output = string> {
           'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
         );
       if (
+        provider.responseMode !== 'buffered' &&
         (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
-        false
+          false
       )
         throw new TypeError(
           'prepareRequest requires NativeProvider({ supportsWebsockets: false })',

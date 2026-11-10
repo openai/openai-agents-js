@@ -20,10 +20,8 @@ import {
   type TokenCountWire,
 } from './run-events';
 import {
-  jsonObject,
-  jsonValue,
-  losslessJsonObjectSchema,
-  losslessJsonValueSchema,
+  losslessJsonObjectSchema as jsonObject,
+  losslessJsonValueSchema as jsonValue,
   type JsonObject,
   type JsonValue,
 } from './binding';
@@ -32,9 +30,9 @@ export const threadHistorySchema = z.array(
   z
     .object({
       type: z.string(),
-      payload: losslessJsonObjectSchema,
+      payload: jsonObject,
     })
-    .catchall(losslessJsonValueSchema),
+    .catchall(jsonValue),
 );
 export type ThreadHistory = z.infer<typeof threadHistorySchema>;
 
@@ -874,6 +872,7 @@ function failure(raw: JsonObject): Failure {
       other: 'internal_error',
     };
     const known = [
+      'model_invocation_deadline_exceeded',
       'session_budget_exceeded',
       'usage_limit_exceeded',
       'project_spend_limit_exceeded',
@@ -1403,13 +1402,11 @@ export function projectHistory(
         ids.add(payload.id);
         observations.set(payload.turn_id, ids);
         const reason = text(payload.incomplete_reason);
-        const upstreamRequestId = text(payload.upstream_request_id);
         appendResponse(responses, payload.turn_id, {
           id: payload.id,
           threadId: String(payload.thread_id),
           turnId: payload.turn_id,
           responseId: text(payload.response_id),
-          ...(upstreamRequestId === null ? {} : { upstreamRequestId }),
           status: payload.status as RecordedResponse['status'],
           ...(typeof payload.upstream_request_id === 'string'
             ? { upstreamRequestId: payload.upstream_request_id }
@@ -1492,6 +1489,7 @@ export function projectHistory(
               (kind) =>
                 kind === 'user.text' ||
                 kind === 'user.image' ||
+                kind === 'user.file' ||
                 kind === 'images.preparation_error',
             )
           )
@@ -1813,4 +1811,11 @@ export function projectNativeHostedToolItem(
       turnId,
     );
   }
+}
+
+/** Effective canonical response items; raw rollout audit records remain separate. */
+export interface CanonicalHistorySnapshot {
+  readonly revision: string;
+  readonly total: number;
+  readonly items: readonly Record<string, unknown>[];
 }

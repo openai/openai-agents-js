@@ -2216,7 +2216,11 @@ describe('UnixLocalSandboxClient', () => {
 
     const deserialized = await client.deserializeSessionState(serialized);
     expect((deserialized.snapshotSpec as any)?.store).toBe(store);
-    const restored = await client.resume(deserialized);
+    const restored = await client.resume(deserialized, {
+      clientOptions: {
+        resumeAuthority: { remoteSnapshotId: 'remote-snapshot' },
+      },
+    });
 
     expect(snapshot).toEqual({ type: 'remote', id: 'remote-snapshot' });
     await expect(
@@ -2456,6 +2460,10 @@ function trustedResumeOptions(session: UnixLocalSandboxSession) {
         localSnapshotPath:
           session.state.snapshot?.type === 'local'
             ? session.state.snapshot.path
+            : undefined,
+        remoteSnapshotId:
+          session.state.snapshot?.type === 'remote'
+            ? session.state.snapshot.id
             : undefined,
       },
     },
