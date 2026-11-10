@@ -839,3 +839,164 @@ it.each([1, 2])(
     }
   },
 );
+
+it.each(['date', 'function'] as const)(
+  'preserves opaque schema transforms through managed approval (%s)',
+  async (kind) => {
+    for (const required of [false, true]) {
+      const raw = '2026-11-01T12:00:00.000Z';
+      const effects: string[] = [];
+      const risky = tool({
+        name: 'risky',
+        parameters: z.object({
+          value: z
+            .string()
+            .transform((value) =>
+              kind === 'date' ? new Date(value) : () => value,
+            ),
+        }),
+        needsApproval: required ? true : () => false,
+        execute: ({ value }) => {
+          const output =
+            typeof value === 'function' ? value() : value.toISOString();
+          effects.push(output);
+          return output;
+        },
+      });
+      const server = new ModelServer([
+        [call('risky', { value: raw }, { callId: 'opaque-input' })],
+        [message('done')],
+      ]);
+      await using provider = await providerFor(server);
+      await using session = await new Agent({
+        instructions: 'Use risky.',
+        model: 'gpt-5',
+        provider,
+        tools: [risky],
+      }).session();
+      const turn = await session.submit('begin');
+      const completion = turn.wait();
+      void completion.catch(() => {});
+      if (required) {
+        const request = await Promise.race([
+          nextApproval(session),
+          completion.then(() => {
+            throw new Error('Approval missing');
+          }),
+        ]);
+        const value = (
+          request.effectiveArguments as { value: Date | (() => string) }
+        ).value;
+        if (typeof value === 'function') expect(value()).toBe(raw);
+        else {
+          expect(value.toISOString()).toBe(raw);
+          value.setUTCFullYear(2000);
+          expect(
+            (request.effectiveArguments as { value: Date }).value.toISOString(),
+          ).toBe(raw);
+        }
+        await session.respond(request.approve());
+      }
+      expect((await completion).finalOutput).toBe('done');
+      expect(effects).toEqual([raw]);
+      server.assertExhausted();
+    }
+  },
+);
+
+it.each([false, true])(
+  'finishes an approved terminal function without another sample (restored=%s)',
+  async (restore) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: true,
+      finishTurn: true,
+      execute: ({ value }) => {
+        effects.push(value);
+        return 'terminal result';
+      },
+    });
+    const server = new ModelServer([
+      [call('risky', { value: 'A' }, { callId: 'terminal-approval' })],
+      [message('unexpected model continuation')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use risky.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky],
+    });
+    let result;
+    if (restore) {
+      let saved;
+      {
+        await using source = await agent.session();
+        await source.submit('begin');
+        await nextApproval(source);
+        saved = await source.suspend();
+      }
+      await using session = await agent.session({ state: saved });
+      const request = await nextApproval(session);
+      await session.respond(request.approve());
+      result = await session.restoredTurn!.wait();
+    } else {
+      await using session = await agent.session();
+      const turn = await session.submit('begin');
+      const request = await nextApproval(session);
+      await session.respond(request.approve());
+      result = await turn.wait();
+    }
+    expect(result.finalOutput).toBe('terminal result');
+    expect(result.toolCall?.callId).toBe('terminal-approval');
+    expect(effects).toEqual(['A']);
+    expect(server.requests).toHaveLength(1);
+  },
+);
+
+it('keeps portable JSON separate from mutating managed transforms', async () => {
+  const originals: number[] = [],
+    effects: number[] = [];
+  const risky = tool({
+    name: 'risky',
+    parameters: z.object({
+      payload: z.unknown().transform((input) => {
+        const value = input as { value: number };
+        value.value++;
+        return value;
+      }),
+    }),
+    needsApproval: (context) => {
+      originals.push(
+        (context.originalArguments.payload as { value: number }).value,
+      );
+      return false;
+    },
+    execute: ({ payload }, context) => {
+      originals.push(
+        (context.originalArguments.payload as { value: number }).value,
+      );
+      effects.push(payload.value);
+      return String(payload.value);
+    },
+  });
+  const server = new ModelServer([
+    [call('risky', { payload: { value: 1 } }, { callId: 'mutating-input' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Use risky.',
+    model: 'gpt-5',
+    provider,
+    tools: [risky],
+  }).session();
+  expect((await (await session.submit('begin')).wait()).finalOutput).toBe(
+    'done',
+  );
+  expect(originals).toEqual([1, 1]);
+  expect(effects).toEqual([2]);
+  server.assertExhausted();
+});

@@ -9,6 +9,40 @@ import type { ThreadOptions } from './options';
 import type { ToolCallInfo } from './call-metadata';
 import { outputOf, type ToolDeclaration, type ToolResponse } from './tools';
 
+// Parsed function inputs can contain opaque application values. Keep their
+// semantics while detaching ordinary containers and dates from approval views.
+function copyApprovalInput(
+  value: unknown,
+  copies = new Map<object, unknown>(),
+): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (copies.has(value)) return copies.get(value);
+  if (value instanceof Date)
+    return new Date(Date.prototype.getTime.call(value));
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    !Array.isArray(value) &&
+    prototype !== Object.prototype &&
+    prototype !== null
+  )
+    return value;
+  const result = Array.isArray(value)
+    ? new Array(value.length)
+    : Object.create(prototype);
+  copies.set(value, result);
+  for (const key of Reflect.ownKeys(value)) {
+    if (Array.isArray(value) && key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    Object.defineProperty(result, key, {
+      value: copyApprovalInput(Reflect.get(value, key), copies),
+      enumerable: descriptor.enumerable,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return result;
+}
+
 const manualDefinition = Symbol('manual tool declaration');
 declare const manualReplyType: unique symbol;
 
@@ -43,7 +77,9 @@ export interface FunctionApprovalRequest<
   Input = unknown,
 > extends ManualToolRequest<Input, never> {
   readonly approvalRequired: true;
-  /** Detached validated arguments after the pre-approval input policy. */
+  /** Validated arguments after the pre-approval input policy.
+   * Plain objects, arrays and dates are detached; opaque values retain application identity.
+   */
   readonly effectiveArguments: Input;
   approve(options?: { always?: boolean }): ManualToolReply;
   reject(reason?: string, options?: { always?: boolean }): ManualToolReply;
@@ -236,9 +272,10 @@ export function createManualRequest<Input, Result>(
       throw new TypeError('Manual tool request is no longer active');
   };
   checkCurrent();
-  let parsed: JsonValue;
+  const copyInput = managedApproval ? copyApprovalInput : copyJsonValue;
+  let parsed: unknown;
   try {
-    parsed = copyJsonValue(definition.parseInput(args));
+    parsed = copyInput(definition.parseInput(args));
   } catch {
     throw new TypeError('Manual tool arguments failed validation');
   }
@@ -265,7 +302,7 @@ export function createManualRequest<Input, Result>(
   return {
     setEffectiveArguments(value: JsonValue): void {
       checkCurrent();
-      effectiveArguments = copyJsonValue(definition.parseInput(value));
+      effectiveArguments = copyInput(definition.parseInput(value));
       checkCurrent();
     },
     takeApprovalReply(reply: unknown): ApprovalDecision | undefined {
@@ -306,7 +343,7 @@ export function createManualRequest<Input, Result>(
         callId: identity.callId,
         call: identity.call,
         get arguments() {
-          return copyJsonValue(parsed) as Input;
+          return copyInput(parsed) as Input;
         },
         reply(value: Result): ManualToolReply<Result> {
           if (managedApproval)
@@ -321,7 +358,7 @@ export function createManualRequest<Input, Result>(
       if (managedApproval)
         Object.defineProperty(request, 'effectiveArguments', {
           enumerable: true,
-          get: () => copyJsonValue(effectiveArguments) as Input,
+          get: () => copyInput(effectiveArguments) as Input,
         });
       Object.freeze(request);
       requests.set(request, authority);

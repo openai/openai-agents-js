@@ -515,11 +515,11 @@ export function tool<
           JSON.stringify(z.toJSONSchema(result, { io: 'input' })),
         )
       : {},
-    parseInput: (args) => parameters.parse(args),
+    parseInput: (args) => parameters.parse(structuredClone(args)),
     async prepare(args, context, admit, skipPredicate = false, effectiveArgs) {
       admit();
       let parsed = parameters.parse(
-        effectiveArgs === undefined ? args : effectiveArgs,
+        structuredClone(effectiveArgs === undefined ? args : effectiveArgs),
       );
       let effective = effectiveArgs;
       let callContext: ToolContext<Context> = {
@@ -544,7 +544,7 @@ export function tool<
         }
         if (decision.action === 'replaceArguments') {
           effective = losslessJsonValueSchema.parse(decision.arguments);
-          parsed = parameters.parse(effective);
+          parsed = parameters.parse(structuredClone(effective));
           callContext = {
             ...callContext,
             effectiveArguments: Object.freeze({
