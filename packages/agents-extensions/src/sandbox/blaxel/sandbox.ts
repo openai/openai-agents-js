@@ -11,6 +11,9 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxClientResumeOptions,
+  type SandboxSessionResumeValidationInput,
+  type SandboxSessionLike,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type ExposedPortEndpoint,
@@ -972,6 +975,32 @@ export class BlaxelSandboxClient implements SandboxClient<
     this.options = options;
   }
 
+  assertBorrowedSessionManifestAuthority(
+    session: SandboxSessionLike<BlaxelSandboxSessionState>,
+    _manifest: Manifest,
+    options?: BlaxelSandboxClientOptions,
+  ): void {
+    this.validateSessionStateForResume(
+      { source: 'explicit', state: session.state },
+      { clientOptions: options },
+    );
+  }
+
+  validateSessionStateForResume(
+    input: SandboxSessionResumeValidationInput<BlaxelSandboxSessionState>,
+    options: SandboxClientResumeOptions<BlaxelSandboxClientOptions> = {},
+  ): void {
+    const current = { ...this.options, ...options.clientOptions };
+    if (
+      current.exposedPortPublic === false &&
+      readOptionalBoolean(input.state, 'exposedPortPublic') !== false
+    ) {
+      throw new UserError(
+        'Current Blaxel networking options require a fresh sandbox session',
+      );
+    }
+  }
+
   async create(
     args?: SandboxClientCreateArgs<BlaxelSandboxClientOptions> | Manifest,
     manifestOptions?: BlaxelSandboxClientOptions,
@@ -1190,7 +1219,9 @@ export class BlaxelSandboxClient implements SandboxClient<
 
   async resume(
     state: BlaxelSandboxSessionState,
+    options: SandboxClientResumeOptions<BlaxelSandboxClientOptions> = {},
   ): Promise<BlaxelSandboxSession> {
+    this.validateSessionStateForResume({ source: 'explicit', state }, options);
     assertRemoteSandboxSessionStateCanResume(state);
     const SandboxInstance = await loadBlaxelSandboxClass();
     let sandbox: BlaxelSandboxLike;

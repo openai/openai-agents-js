@@ -10,6 +10,7 @@ import {
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
   type SandboxClientResumeOptions,
+  type SandboxSessionResumeValidationInput,
   type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
@@ -1452,10 +1453,20 @@ export class ModalSandboxClient implements SandboxClient<
     _manifest: Manifest,
     options?: ModalSandboxClientOptions,
   ): void {
-    const current = resolveOptions(this.options, options);
+    this.validateSessionStateForResume(
+      { source: 'explicit', state: session.state },
+      { clientOptions: options },
+    );
+  }
+
+  validateSessionStateForResume(
+    input: SandboxSessionResumeValidationInput<ModalSandboxSessionState>,
+    options: SandboxClientResumeOptions<ModalSandboxClientOptions> = {},
+  ): void {
+    const current = resolveOptions(this.options, options.clientOptions);
     if (current.exposedPorts === undefined) return;
     const recorded = new Set(
-      (readOptionalNumberArray(session.state.configuredExposedPorts) ?? []).map(
+      (readOptionalNumberArray(input.state.configuredExposedPorts) ?? []).map(
         normalizeExposedPort,
       ),
     );
@@ -1791,6 +1802,7 @@ export class ModalSandboxClient implements SandboxClient<
     state: ModalSandboxSessionState,
     options: SandboxClientResumeOptions<ModalSandboxClientOptions> = {},
   ): Promise<ModalSandboxSession> {
+    this.validateSessionStateForResume({ source: 'explicit', state }, options);
     assertRemoteSandboxSessionStateCanResume(state);
     const trustedResourceOptions = modalResourceOptionsFrom(
       resolveOptions(this.options, options.clientOptions),
