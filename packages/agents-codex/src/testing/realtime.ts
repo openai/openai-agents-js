@@ -17,6 +17,10 @@ export interface RealtimeStep {
 }
 export interface RealtimeConnectCall {
   readonly model?: string;
+  /** Absolute endpoint without userinfo, query, or fragment. */
+  readonly url?: string;
+  /** Case-insensitive Authorization header-name presence, without its value. */
+  readonly apiKeyProvided?: boolean;
   readonly headersProvided: boolean;
 }
 export interface RealtimeScenario {
@@ -37,10 +41,26 @@ function matchesFrame(
       : isDeepStrictEqual(actual, expected);
 }
 
+function connectionEndpoint(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol))
+      return undefined;
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Deterministic canonical-frame I/O; the native owner interprets all protocol.
  * Use synthetic data: sentEvents intentionally records complete test frames.
- * Connection snapshots never retain URLs, headers, signals, or credentials.
+ * Connection snapshots have been retaining only redacted endpoints, models,
+ * and header-presence flags, without header values or signals.
  * The incoming iterator stays open until close. Assert completion after closing
  * the native session so final outgoing sends have settled.
  */
@@ -241,8 +261,13 @@ export class ScriptedRealtimeAdapter
     context.signal.throwIfAborted();
     if (this.calls.length || this.closed)
       throw new Error('Scripted realtime adapter supports one connection');
+    const endpoint = connectionEndpoint(context.url);
     this.calls.push({
       model: context.model,
+      ...(endpoint === undefined ? {} : { url: endpoint }),
+      apiKeyProvided: Object.keys(context.headers).some(
+        (name) => name.toLowerCase() === 'authorization',
+      ),
       headersProvided: Object.keys(context.headers).length > 0,
     });
     if (this.options.connectError) throw this.options.connectError;

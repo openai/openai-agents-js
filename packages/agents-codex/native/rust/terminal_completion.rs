@@ -403,6 +403,14 @@ pub(super) async fn propose(
     let Some(catalog) = input.step_store.get::<StepCatalog>() else {
         return Ok(None);
     };
+    if let Some(fresh) = input
+        .turn_store
+        .get::<super::recovered_completion::FreshTerminalReceipts>()
+    {
+        fresh
+            .adopt(&tools, &catalog)
+            .map_err(|error| error.to_string())?;
+    }
     let ResponseItem::FunctionCall {
         name,
         namespace,

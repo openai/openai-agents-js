@@ -810,3 +810,42 @@ function nativeUser(
     },
   };
 }
+
+it('keeps a computer effect uncertain until its canonical screenshot receipt', () => {
+  const original = {
+    type: 'computer_call',
+    id: 'computer-item',
+    call_id: 'computer-id',
+    actions: [{ type: 'wait' }],
+    pending_safety_checks: [{ id: 'screen' }],
+  };
+  const projected = projectHistory(
+    [
+      { type: 'turn_context', payload: { turn_id: 'original-turn' } },
+      { type: 'response_item', payload: original },
+      {
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          turn_id: 'original-turn',
+          item: {
+            type: 'DynamicToolCall',
+            id: 'computer-id',
+            tool: 'computer',
+            status: 'completed',
+            success: true,
+            arguments: { normalized: true },
+          },
+        },
+      },
+    ],
+    'thread',
+  );
+  expect(projected.items).toHaveLength(1);
+  expect(projected.items[0]).toMatchObject({
+    type: 'function_call',
+    name: 'computer',
+    status: 'in_progress',
+    arguments: original,
+  });
+});

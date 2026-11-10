@@ -953,6 +953,9 @@ importers:
 
   packages/agents-extensions:
     dependencies:
+      '@openai/agents-codex':
+        specifier: workspace:*
+        version: link:../agents-codex
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../agents-core

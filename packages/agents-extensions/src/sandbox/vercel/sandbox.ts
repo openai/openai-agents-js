@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { UserError } from '@openai/agents-core';
 import { loadEnv } from '@openai/agents-core/_shims';
 import {
@@ -10,10 +11,13 @@ import {
   SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
+  type SandboxSessionLike,
+  type SandboxSessionResumeValidationInput,
+  type SandboxClientResumeOptions,
+  normalizeExposedPort,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
-  type SandboxClientResumeOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type MaterializeEntryArgs,
@@ -1669,6 +1673,59 @@ export class VercelSandboxClient implements SandboxClient<
     return withReleasedVercelS3CredentialExposureCompatibility(
       resolveManifestRoot(manifest),
       resolvedOptions.allowS3CredentialExposure === true,
+    );
+  }
+
+  assertBorrowedSessionManifestAuthority(
+    session: SandboxSessionLike<VercelSandboxSessionState>,
+    _manifest: Manifest,
+    options?: VercelSandboxClientOptions,
+  ): void {
+    this.validateSessionStateForResume(
+      { source: 'explicit', state: session.state },
+      { clientOptions: options },
+    );
+  }
+
+  validateSessionStateForResume(
+    input: SandboxSessionResumeValidationInput<VercelSandboxSessionState>,
+    options: SandboxClientResumeOptions<VercelSandboxClientOptions> = {},
+  ): void {
+    const current = { ...this.options, ...options.clientOptions };
+    const recordedPorts = new Set(
+      (readOptionalNumberArray(input.state.configuredExposedPorts) ?? []).map(
+        normalizeExposedPort,
+      ),
+    );
+    const requestedPorts =
+      current.exposedPorts === undefined
+        ? undefined
+        : new Set(current.exposedPorts.map(normalizeExposedPort));
+    const portMismatch =
+      requestedPorts !== undefined &&
+      (requestedPorts.size !== recordedPorts.size ||
+        [...requestedPorts].some((port) => !recordedPorts.has(port)));
+    if (
+      (current.networkPolicy !== undefined &&
+        !isDeepStrictEqual(
+          current.networkPolicy,
+          readOptionalRecord(input.state.networkPolicy),
+        )) ||
+      portMismatch
+    ) {
+      throw new UserError(
+        'Current Vercel networking options require a fresh sandbox session',
+      );
+    }
+  }
+
+  resolveTrustedEnvironment(
+    manifest: Manifest,
+    options?: VercelSandboxClientOptions,
+  ): Promise<Record<string, string>> {
+    return materializeEnvironment(
+      manifest,
+      resolveVercelOptions(this.options, options).env,
     );
   }
 

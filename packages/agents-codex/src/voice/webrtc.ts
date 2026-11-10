@@ -41,7 +41,9 @@ export interface NativeVoicePeerConnection {
 interface NativeVoiceMediaOptions<Stream extends NativeVoiceMediaStream> {
   mediaStream?: Stream;
   acquireMedia?: () => Promise<Stream>;
-  createPeerConnection: () => NativeVoicePeerConnection;
+  createPeerConnection: () =>
+    NativeVoicePeerConnection | Promise<NativeVoicePeerConnection>;
+  onDataChannel?: (channel: NativeVoiceDataChannel) => void;
   play(stream: Stream): void | Promise<void>;
   clear?(stream: Stream): void;
   onTransportEvent?: (event: unknown) => void;
@@ -57,6 +59,7 @@ function trackEvents(track: NativeVoiceMediaTrack) {
 }
 function channelEvents(channel: NativeVoiceDataChannel) {
   return channel as NativeVoiceDataChannel & {
+    onopen: (() => void) | null;
     onmessage: ((event: { data: string }) => void) | null;
     onerror: (() => void) | null;
     onclose: (() => void) | null;
@@ -149,10 +152,6 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
     const tracks = stream.getAudioTracks();
     if (tracks.length !== 1 || tracks[0].readyState === 'ended')
       throw new Error('Voice media requires one live microphone audio track.');
-    const peer = this.options.createPeerConnection();
-    this.#peer = peer;
-    const channel = channelEvents(peer.createDataChannel('oai-events'));
-    this.#channel = channel;
     const fail = (error: Error) => {
       if (signal.aborted) return;
       this.abort(error);
@@ -165,6 +164,18 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
     };
     this.#trackEnded = () => fail(new Error('Voice microphone ended.'));
     trackEvents(tracks[0]).addEventListener('ended', this.#trackEnded);
+    const peer = await this.options.createPeerConnection();
+    if (signal.aborted) {
+      try {
+        peer.close();
+      } catch {
+        /* Preserve the cancellation. */
+      }
+      this.throwIfAborted();
+    }
+    this.#peer = peer;
+    const channel = channelEvents(peer.createDataChannel('oai-events'));
+    this.#channel = channel;
     channel.onmessage = ({ data }) => {
       if (signal.aborted) return;
       let event: unknown;
@@ -176,6 +187,7 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
       }
       this.options.onTransportEvent?.(event);
     };
+    this.options.onDataChannel?.(this.#channel!);
     channel.onerror = () => fail(new Error('Voice data channel failed.'));
     channel.onclose = () => fail(new Error('Voice data channel closed.'));
     const callbacks = peerEvents<Stream>(peer);
@@ -255,7 +267,11 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
     };
     if (channel) {
       const callbacks = channelEvents(channel);
-      callbacks.onmessage = callbacks.onerror = callbacks.onclose = null;
+      callbacks.onopen =
+        callbacks.onmessage =
+        callbacks.onerror =
+        callbacks.onclose =
+          null;
       clean(() => channel.close());
     }
     if (peer) {

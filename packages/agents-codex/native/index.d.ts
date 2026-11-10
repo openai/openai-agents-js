@@ -238,6 +238,7 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_model_producer(response_json: string): void;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _reply_compaction(response_json: string): void;
@@ -265,6 +266,8 @@ export class NativeThread {
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(response_json: string): Promise<boolean>;
+  _require_tool_approval(requestJson: string, argumentsJson?: string): boolean;
+  _approve_manual_tool(requestJson: string): Promise<boolean>;
   _configure_manual_tools(
     slots_json: string,
     terminal_slots_json?: string,

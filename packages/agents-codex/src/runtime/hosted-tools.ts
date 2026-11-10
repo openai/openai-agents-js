@@ -1,7 +1,12 @@
 import type OpenAI from 'openai';
-import type { JsonObject } from './binding';
+import { copyJsonValue, type JsonObject } from './binding';
 
-export interface FileSearchOptions {
+export interface HostedToolOptions {
+  /** Additional provider fields; declared fields and tool identity cannot be replaced. */
+  providerData?: JsonObject;
+}
+
+export interface FileSearchOptions extends HostedToolOptions {
   maxNumResults?: number;
   includeSearchResults?: boolean;
   rankingOptions?: OpenAI.Responses.FileSearchTool.RankingOptions;
@@ -14,7 +19,9 @@ export interface FileSearch extends FileSearchOptions {
   readonly vectorStoreIds: readonly string[];
 }
 
-export interface CodeInterpreterOptions {
+export interface CodeInterpreterOptions extends HostedToolOptions {
+  /** Request raw provider outputs in accepted history. Defaults to true. */
+  includeOutputs?: boolean;
   /** The provider owns container creation, reuse, expiry, and file retention. */
   container:
     string | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
@@ -27,7 +34,7 @@ export interface CodeInterpreter extends CodeInterpreterOptions {
   readonly kind: 'code_interpreter';
 }
 
-export interface ImageGenerationOptions {
+export interface ImageGenerationOptions extends HostedToolOptions {
   action?: OpenAI.Responses.Tool.ImageGeneration['action'];
   background?: OpenAI.Responses.Tool.ImageGeneration['background'];
   inputFidelity?: 'high' | 'low' | null;
@@ -104,8 +111,55 @@ export function captureHostedTool(tool: HostedTool): HostedTool {
 /** @internal The bridge removes SDK include controls before provider serialization. */
 export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
   return tools.map((tool): JsonObject => {
+    const providerData = copyJsonValue(tool.providerData ?? {});
+    if (
+      providerData === null ||
+      typeof providerData !== 'object' ||
+      Array.isArray(providerData)
+    )
+      throw new TypeError('Hosted tool providerData must be a JSON object');
+    const fieldsByKind = {
+      file_search: [
+        'vector_store_ids',
+        'max_num_results',
+        'include_search_results',
+        'ranking_options',
+        'filters',
+      ],
+      code_interpreter: ['container', 'allowed_callers', 'include_outputs'],
+      image_generation: [
+        'action',
+        'complexity',
+        'frame_count',
+        'frame_duration_ms',
+        'svg',
+        'background',
+        'input_fidelity',
+        'input_image_mask',
+        'model',
+        'moderation',
+        'output_compression',
+        'output_format',
+        'partial_images',
+        'quality',
+        'size',
+      ],
+    };
+    const reserved = new Set([
+      'type',
+      'kind',
+      'provider_data',
+      'providerData',
+      ...fieldsByKind[tool.kind],
+    ]);
+    if (Object.keys(providerData).some((key) => reserved.has(key))) {
+      throw new TypeError(
+        'Hosted tool providerData cannot replace declared fields',
+      );
+    }
     if (tool.kind === 'file_search')
       return {
+        ...providerData,
         type: tool.kind,
         vector_store_ids: [...tool.vectorStoreIds],
         ...(tool.maxNumResults === undefined
@@ -123,8 +177,12 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
       };
     if (tool.kind === 'code_interpreter')
       return {
+        ...providerData,
         type: tool.kind,
         container: tool.container as JsonObject | string,
+        ...(tool.includeOutputs === undefined
+          ? {}
+          : { include_outputs: tool.includeOutputs }),
         ...(tool.allowedCallers === undefined
           ? {}
           : { allowed_callers: tool.allowedCallers }),
@@ -147,6 +205,7 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
       size: tool.size,
     };
     return {
+      ...providerData,
       type: tool.kind,
       ...Object.fromEntries(
         Object.entries(fields).filter(([, value]) => value !== undefined),

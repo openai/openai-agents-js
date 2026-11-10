@@ -1,0 +1,81 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index cee20b76492af72242e1b214a4f08f33b1544d4a..e6670baf98915ea7f4a57e694a0f40d3da664adb 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -2176,7 +2176,11 @@ impl ModelClientSession {
+                     },
+                 )
+             };
+-            let stream_result = if prompt.prefer_buffered_response {
++            let produced = crate::model_request::produce_response(&interceptors, &request)
++                .await.map_err(CodexErr::Fatal)?;
++            let stream_result = if let Some(events) = produced {
++                Ok((None, None, events, None, None))
++            } else if prompt.prefer_buffered_response {
+                 client
+                     .json_request(request, options)
+                     .await
+diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
+index d0b6fb0df54923cc8d5955a92a45e8ee726469ab..cc4823497352308662b0152a1f6a116ed5ca77da 100644
+--- a/codex-rs/core/src/model_request.rs
++++ b/codex-rs/core/src/model_request.rs
+@@ -63,6 +63,16 @@ struct BoundInterceptor {
+     admission: Option<Arc<dyn ModelToolAdmission>>,
+ }
+ impl ModelResponseInterceptor for BoundInterceptor {
++    fn produces_response(&self) -> bool { self.inner.produces_response() }
++    fn produce_response<'a>(
++        &'a self,
++        request: serde_json::Value,
++        _: Option<Arc<dyn ModelToolAdmission>>,
++    ) -> Option<futures::future::BoxFuture<'a, Result<ModelResponseStream, String>>> {
++        self.inner.produce_response(request, self.admission.clone())
++    }
++
++
+     fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream {
+         self.inner
+             .intercept_with_tool_admission(stream, self.admission)
+@@ -149,3 +159,17 @@ pub(crate) fn intercept_stream(
+ #[cfg(test)]
+ #[path = "model_request_tests.rs"]
+ mod tests;
++
++/// Resolve exactly one producer after native request admission. No provider
++/// transport may run when a selected producer fails or is cancelled.
++pub(crate) async fn produce_response(
++    interceptors: &[Box<dyn ModelResponseInterceptor>],
++    request: &impl serde::Serialize,
++) -> Result<Option<ModelResponseStream>, String> {
++    let mut producers = interceptors.iter().filter(|interceptor| interceptor.produces_response());
++    let Some(selected) = producers.next() else { return Ok(None); };
++    if producers.next().is_some() { return Err("Multiple native model producers selected".into()); }
++    let request = serde_json::to_value(request).map_err(|_| "Native model request serialization failed")?;
++    let producer = selected.produce_response(request, None).ok_or("Selected native model producer is unavailable")?;
++    producer.await.map(Some)
++}
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 858f6d096ddf0cbe2d66074e487e828aa8c54792..903ebbbd43b011acaab6780f43802028262c9323 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -241,6 +241,20 @@ pub trait ModelToolAdmission: Send + Sync + std::fmt::Debug {
+ /// Interceptors compose in registration order; dropping their stream must release unfinished work.
+ /// Trusted host implementations must bound any model-visible content they synthesize.
+ pub trait ModelResponseInterceptor: Send + Sync {
++    /// Select a model producer before materializing the detached request JSON.
++    fn produces_response(&self) -> bool { false }
++    /// Optional native model producer. Core retains canonical history, tools, and
++    /// response processing. A producer must join its application work on cancellation.
++    /// Returning None retains ordinary provider transport.
++    fn produce_response<'a>(
++        &'a self,
++        _request: Value,
++        _admission: Option<Arc<dyn ModelToolAdmission>>,
++    ) -> Option<BoxFuture<'a, Result<ModelResponseStream, String>>> {
++        None
++    }
++
++
+     /// Bind immutable routing evidence before wrapping this request's stream.
+     /// Existing interceptors keep their behavior; configured policies can reject missing evidence.
+     fn intercept_with_tool_admission(

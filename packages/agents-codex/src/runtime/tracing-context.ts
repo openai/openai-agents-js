@@ -6,6 +6,35 @@ type Native = Awaited<ReturnType<typeof binding>>;
 
 const ambient = new AsyncLocalStorage<TraceSpan | undefined>();
 const processorSuppressed = new AsyncLocalStorage<boolean>();
+let tracingDisabled = false;
+let sensitiveDataLoggingEnabled = true;
+
+/** Set capture policy for new scopes and operations; admitted work retains its policy. */
+export function setTracingDisabled(disabled: boolean): void {
+  if (typeof disabled !== 'boolean')
+    throw new TypeError('disabled must be boolean');
+  tracingDisabled = disabled;
+}
+
+/** Permit explicit content capture when enabled; never relax ancestor restrictions. */
+export function setSensitiveDataLoggingEnabled(enabled: boolean): void {
+  if (typeof enabled !== 'boolean')
+    throw new TypeError('enabled must be boolean');
+  sensitiveDataLoggingEnabled = enabled;
+}
+
+function admissionPolicy(): {
+  disabled?: boolean;
+  includeSensitiveData?: boolean;
+} {
+  return {
+    ...(tracingDisabled || processorSuppressed.getStore()
+      ? { disabled: true }
+      : {}),
+    ...(!sensitiveDataLoggingEnabled ? { includeSensitiveData: false } : {}),
+  };
+}
+
 const workflows = new Map<string, WeakRef<TraceSpan>>();
 const contextFinalizer = new FinalizationRegistry<{
   native: Native;
@@ -144,7 +173,7 @@ export function captureTracing(
     options === undefined &&
     ambient.getStore() === undefined &&
     opening === undefined &&
-    !processorSuppressed.getStore()
+    Object.keys(admissionPolicy()).length === 0
   )
     return undefined;
   return new TraceCapture(start(options ?? {}, 'operation', opening));
@@ -259,7 +288,7 @@ async function start(
   const metadata = copyJsonValue(options.metadata ?? {});
   const parentToken = parent?.retain();
   const restrictionToken = current?.retain();
-  const snapshot = { ...options, metadata };
+  const snapshot = { ...options, metadata, ...admissionPolicy() };
   const openingLease = opening?.retain();
   let inherited: Awaited<ReturnType<TraceCapture['retain']>> | undefined;
   try {
@@ -290,8 +319,7 @@ async function start(
           trace_id: snapshot.traceId ?? null,
           group_id: snapshot.groupId ?? null,
           metadata,
-          disabled:
-            processorSuppressed.getStore() || (snapshot.disabled ?? false),
+          disabled: snapshot.disabled ?? false,
           ...(snapshot.includeSensitiveData === undefined
             ? kind === 'workflow'
               ? { include_sensitive_data: false }

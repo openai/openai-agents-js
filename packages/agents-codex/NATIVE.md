@@ -6,6 +6,8 @@ Read [the architecture guide](../../examples/codex/guides/architecture.md) for r
 
 For an existing v0 application, follow the [direct migration to native v1](../../examples/codex/guides/migration.md). Use classic only when a staged migration is necessary.
 
+For the source-only browser and Worker control experiment, see [Portable Realtime control](PORTABLE_CONTROL.md).
+
 ## Install
 
 - [Install the SDK and run the starter](../../examples/codex/guides/installation.md)

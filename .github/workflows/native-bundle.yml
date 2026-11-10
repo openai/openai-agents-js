@@ -71,6 +71,8 @@ jobs:
       - name: Test Windows project-search filename handling
         if: runner.os == 'Windows'
         working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/agents-project-search-target
         run: |
           native_host=$(rustc -vV | sed -n 's/^host: //p')
           cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture

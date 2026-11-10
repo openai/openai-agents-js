@@ -104,6 +104,40 @@ SDK-issued function, collaboration, and executor callback contexts include froze
 
 `call.callId` is the provider call ID. Generated function/manual calls have no provider or outer ID; their cell and nested runtime IDs remain separate. The existing non-null context or manual request `callId` still identifies its invocation and reply. Metadata never grants permission to execute or answer a call; keep using live manual requests and their `reply()` method. See [the call metadata example](../call-metadata.ts).
 
+### Managed function approvals (preview source)
+
+Use the matching native preview source and artifacts for this API. Set `needsApproval: true` on a bare `tool()` declaration to ask the application before its callback runs. A synchronous or asynchronous predicate can inspect the tool context instead; `false` runs the callback without an interaction.
+
+```ts
+import { Agent, isFunctionApprovalRequest, tool } from '@openai/agents-codex';
+import { z } from 'zod';
+
+const record = tool({
+  name: 'record',
+  parameters: z.object({ value: z.string() }),
+  needsApproval: true,
+  execute: ({ value }) => `Recorded ${value}`,
+});
+const agent = new Agent({ instructions: 'Use record once.', tools: [record] });
+await using session = await agent.session();
+const turn = await session.submit('Record the synthetic value.');
+for await (const request of session.interactions()) {
+  if (!isFunctionApprovalRequest(request)) continue;
+  console.log(request.effectiveArguments);
+  await session.respond(request.approve());
+  break;
+}
+console.log((await turn.wait()).finalOutput);
+```
+
+Configure the provider as usual before running this live example. `request.approve()` creates a single-use decision; `session.respond()` delivers it to the original native call. Approval runs the registered callback. `request.reject(reason)` supplies a failed tool result without calling it. A decision from another Session or an expired request fails.
+
+By default, `before` runs after approval, immediately before execution. With `runBeforeApproval: true`, `before` also checks input before the approval predicate. Its replacement becomes `effectiveArguments`. After approval, the SDK has been repeating the input check and rejecting replacements with different effective arguments before execution. Output checks run after execution. Use `approve({ always: true })` or `reject(reason, { always: true })` to remember a decision for the exact captured declaration and Agent binding in this Session. The cache does not carry into a new Session or replace input checks.
+
+Await `session.suspend()` while approval is pending to capture portable state. Restore it with current trusted tools and provider configuration. A saved required approval remains required even if the current predicate returns false. Core retains accepted sibling results; saved history never grants callback authority. Without `onInteraction`, one-shot `agent.run()` raises `InteractionRequired` with its portable `state` before a required callback runs. Live Realtime function calls share these decisions and guard checks; closing the voice operation expires its request.
+
+This slice excludes managed MCP, nested guarded restore, namespaced or generated-code approvals, Computer approvals, and persistent-store composition. `manualTool()` still supplies an application result rather than approving a registered callback. Cancellation joins callback cleanup and cannot roll back effects. Portable snapshots do not coordinate independent writers or make uncertain effects safe to retry.
+
 ### Manual tool requests
 
 `manualTool()` creates a declaration whose `ActionRequested` events require an application reply. Call `request.reply(value)` and deliver that reply with `session.respond()`. Validation occurs on submission, so an invalid reply does not consume the request. An `onInteraction` handler supplied to `run()` or `session()` can supply replies instead.
@@ -170,7 +204,7 @@ Preparation callbacks remain application-owned and cannot be captured. Keep curr
 
 | Declared tool | Before execution | Before its result is consumed |
 | --- | --- | --- |
-| Application `tool()` callback | Zod validates arguments. `before(context)` can allow, deny, or replace them. Replacement arguments are validated again. | `result` validates the callback value. `after(output, context)` receives and returns normalized `ToolOutput`. |
+| Application `tool()` callback | Zod validates arguments. `before(context)` can allow, deny, or replace them. Replacement arguments are validated again. After managed approval, replacements with different effective arguments have been failing before execution. | `result` validates the callback value. `after(output, context)` receives and returns normalized `ToolOutput`. |
 | `HttpMCP` or `StdioMCP` | Select tools and set native `approvalMode` on the declaration. Application `before(context)` can allow, replace arguments, or return `{ action: 'stop' }`. Application `approval(context)` returns `true` to continue, `false` to deny, or `{ action: 'stop' }` to stop the owning Turn. These callbacks do not answer native approval. | `transformResult(context, result)` transforms the MCP result before the model and history receive it. |
 | Environment executor tool | `approval(context, originalArguments)` runs first. Only allowance permits `transformArguments`. | `transformResult` replaces the admitted builtin whole JSON result before the model or a code cell consumes it. It also controls direct dispatch. Raw output is withheld from native output projections. |
 | Native collaboration tool | `NativeAgents.approval` can allow or deny a call. It cannot replace arguments. | No general after-result callback is exposed. |
@@ -198,6 +232,48 @@ Programmatic tool calling is optional and off by default. Ordinary function call
 The tools selected for each model step must have unique generated JavaScript names. Distinct qualified identities can flatten to the same generated name, and names such as `foo-bar` and `foo_bar` both become `foo_bar`. Select only one colliding declaration, or use direct function calls with Code Mode disabled. The admitted catalog may contain both when each effective selection is unambiguous.
 
 The bundled host itself grants no shell tools or workspace access. Supply an [Environment](executors.md#remote-executor-tools) with current tool permissions for remote file and process operations.
+
+## Computer tools
+
+These computer APIs require a [current source build](building.md). Use `computerTool()` to connect an application-supplied computer driver. This fragment assumes an existing `driver` implementing `Computer` and [configured provider credentials](session-configuration.md):
+
+```ts
+import { Agent, computerTool } from '@openai/agents';
+
+const agent = new Agent({
+  instructions: 'Use the computer to complete the task.',
+  tools: [computerTool({ computer: driver })],
+});
+const result = await agent.run('Read the current screen.');
+```
+
+The driver implements the public `Computer` interface: click, double-click, scroll, type, wait, move, keypress, drag, and screenshot. `screenshot()` returns a nonempty base64 PNG string. The SDK executes a call's actions in order and sends the final screenshot to the provider. If the last action takes a screenshot, the SDK reuses that result.
+
+Driver methods can be synchronous or asynchronous. Coordinates are numbers, `keys` is a list of key names, and `path` is a list of coordinate pairs. Append the current callback context as the last parameter to every method below.
+
+| Action       | Method                           |
+| ------------ | -------------------------------- |
+| Screenshot   | `screenshot()`                   |
+| Click        | `click(x, y, button)`            |
+| Double click | `doubleClick(x, y)`              |
+| Scroll       | `scroll(x, y, scrollX, scrollY)` |
+| Type         | `type(text)`                     |
+| Wait         | `wait()`                         |
+| Move         | `move(x, y)`                     |
+| Keypress     | `keypress(keys)`                 |
+| Drag         | `drag(path)`                     |
+
+Passing a driver borrows it; your application closes it. For Session ownership, pass a provider with `create(context)` and `dispose(driver)` callbacks. The Session calls `create` when its first permitted call needs a driver and reuses that declaration's driver across turns and child calls. Each Session calls `create` independently. The SDK calls `dispose` once after all callbacks finish, including after cancellation or failure. Cancellation joins running work before disposal and prevents queued actions from starting. It cannot undo actions that already ran.
+
+For an owned driver, set `computer: { create: createComputer, dispose: closeComputer }`. Both callbacks can return promises. Driver methods receive the current `ToolContext`, including its abort signal, as their last argument. An optional `initRun(context)` runs once for each acquired driver. A failed initializer is not retried against that driver.
+
+Set `approve(context, actions)` to review each call before SDK acquisition or device actions. When supplied, it must return literal `true` to permit the call. Set `onSafetyCheck(context, checks)` to ask your application to approve the provider's pending safety checks. The policy receives the full check objects and must return literal `true` after application approval. An initially missing or refused policy raises `ComputerSafetyError` before SDK acquisition or device actions. Calls without pending checks do not invoke this policy. The example above therefore refuses calls that need safety confirmation until you supply this policy.
+
+The default declaration uses `computer`. For preview, set `toolType: 'computer_use_preview'`, `dimensions: [width, height]`, and `environment: 'browser'`, `'mac'`, `'windows'`, or `'ubuntu'`. A borrowed driver can supply its preview dimensions and environment. Nonempty `actions` take precedence over a legacy single `action`. A call with neither requests a screenshot. Use `toolRef('computer')` to select this declaration by name.
+
+A factory without a disposer returns a borrowed driver. Its first call runs the policies before creation, then runs them again under the resolved device's shared gate before any action or screenshot. Policies must allow both checks. Later calls run them once under that gate. Separate factories and direct declarations that return the same driver share the gate.
+
+These live callbacks do not create a durable approval to resume after a restart. Saved state carries no driver or permission grant; restore with the current trusted declaration. [Unknown effects require explicit reconciliation](recovery.md#reconcile-external-effects). A computer reconciliation result must contain an actual `computer_screenshot` and all full original safety checks approved by your application, for either outcome. Text-only function receipts cannot settle a computer call.
 
 ## Native web search
 

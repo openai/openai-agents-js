@@ -573,7 +573,7 @@ impl Engine {
             .map_err(native_error)?;
         let specs = checkpoint::restore_specs(&raw, &mut options, specs).map_err(input_error)?;
         let payload = serde_json::from_value(raw).map_err(native_error)?;
-        (async move {
+        Box::pin(async move {
             let _context_operation = inner.operation(false).map_err(native_error)?;
             checkpoint::restore(
                 &inner,
@@ -611,7 +611,7 @@ impl Engine {
         specs_json: String,
         initial_messages_json: String,
     ) -> napi::Result<NativeThread> {
-        self.start_native_thread(&options_json, &specs_json, Some(&initial_messages_json))
+        Box::pin(self.start_native_thread(&options_json, &specs_json, Some(&initial_messages_json)))
             .await
             .map_err(native_error)
     }
@@ -622,10 +622,7 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<Either<NativeThread, String>> {
-        match self
-            .start_native_thread(&options_json, &specs_json, None)
-            .await
-        {
+        match Box::pin(self.start_native_thread(&options_json, &specs_json, None)).await {
             Ok(thread) => Ok(Either::A(thread)),
             Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
                 Ok(hold) => {
@@ -658,10 +655,16 @@ impl Engine {
         let options = config::decode(serde_json::from_str(&options_json).map_err(native_error)?)
             .map_err(native_error)?;
         let specs = serde_json::from_str(&specs_json).map_err(native_error)?;
-        current
-            .private_start_with_tools(&config_json, &runtime_json, &origin, &grant, options, specs)
-            .await
-            .map_err(native_error)
+        Box::pin(current.private_start_with_tools(
+            &config_json,
+            &runtime_json,
+            &origin,
+            &grant,
+            options,
+            specs,
+        ))
+        .await
+        .map_err(native_error)
     }
 
     #[napi(js_name = "close")]
@@ -2767,6 +2770,26 @@ impl NativeThread {
         owner.reply_step(&thread, response).map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_model_producer")]
+    pub fn _reply_model_producer(&self, response_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::context_callbacks::ModelProducerReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner.reply_model_producer(response).map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_compaction")]
     pub fn _reply_compaction(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;
@@ -3195,13 +3218,23 @@ impl NativeThread {
                 let Some(native_media) = tools.native_media(&request) else {
                     return Ok(false);
                 };
+                let restored = tools.has_restored_manual() && request.reply.manual_grant.is_some();
+                let restored_model = if restored {
+                    Some(
+                        tools
+                            .restored_media_model(&request.reply.thread, &request)
+                            .map_err(native_error)?,
+                    )
+                } else {
+                    None
+                };
                 inner
                     .engine
                     .validate_tool_media(
                         &request.reply.thread,
                         &request.turn,
-                        false,
-                        None,
+                        restored,
+                        restored_model.as_deref(),
                         native_media.as_ref(),
                         &response,
                     )
@@ -3210,6 +3243,19 @@ impl NativeThread {
                 // Rejected media must leave the exact live sender parked until the
                 // owning host failure requests stop. Taking it before validation
                 // could wake Core before that fatal failure is recorded.
+                let receipt = if inner.engine.local_checklist_store.is_some()
+                    || inner.engine.custom_store.is_some()
+                {
+                    let Some(receipt) = tools
+                        .response_receipt(&request, response.clone())
+                        .map_err(native_error)?
+                    else {
+                        return Ok(false);
+                    };
+                    Some(receipt)
+                } else {
+                    None
+                };
                 let Some(sender) = tools
                     .take_reply(&request.reply.thread, &request)
                     .map_err(native_error)?
@@ -3224,7 +3270,7 @@ impl NativeThread {
                         .commit_sdk_receipt(
                             receipt_thread,
                             &request,
-                            python_tools::PythonOutput(response.clone()).receipt(&request),
+                            receipt.clone().expect("selected durable callback receipt"),
                         )
                         .await
                         .map_err(native_error)?;
@@ -3233,10 +3279,7 @@ impl NativeThread {
                     let id = codex_protocol::ThreadId::from_string(&request.reply.thread)
                         .map_err(native_error)?;
                     store
-                        .receipt(
-                            id,
-                            python_tools::PythonOutput(response.clone()).receipt(&request),
-                        )
+                        .receipt(id, receipt.expect("selected durable callback receipt"))
                         .await
                         .map_err(native_error)?;
                 }
@@ -3253,6 +3296,54 @@ impl NativeThread {
             }
         })
         .await
+    }
+
+    #[napi(js_name = "_require_tool_approval")]
+    pub fn require_tool_approval(
+        &self,
+        request_json: String,
+        arguments_json: Option<String>,
+    ) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let arguments = arguments_json
+            .map(|text| serde_json::from_str::<Value>(&text))
+            .transpose()
+            .map_err(native_error)?;
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .and_then(|tools| tools.owner(&inner.id.to_string(), &key))
+        else {
+            return Ok(false);
+        };
+        tools
+            .require_approval(&key.reply.thread, &key, arguments)
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_approve_manual_tool")]
+    pub async fn approve_manual_tool(&self, request_json: String) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .and_then(|tools| tools.owner(&inner.id.to_string(), &key))
+        else {
+            return Ok(false);
+        };
+        tools
+            .approve_manual(&key.reply.thread, &key)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "_configure_manual_tools")]
@@ -3772,7 +3863,7 @@ impl NativeThread {
             let saved = checkpoint::export_restored_manual(&inner)
                 .await
                 .map_err(native_error)?;
-            let (frame, items, settings) = tools
+            let (mut frame, items, settings) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
             if !items.is_empty() {
@@ -3784,6 +3875,7 @@ impl NativeThread {
                     .await
                     .map_err(native_error)?;
             }
+            let terminal = frame.terminal_seed();
             let result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
@@ -3793,6 +3885,7 @@ impl NativeThread {
                 selection,
                 trace,
                 observation_submission_id,
+                terminal,
             )
             .await
             .map_err(native_error)?;

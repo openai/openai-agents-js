@@ -276,6 +276,15 @@ const treeState = {
     .optional(),
 };
 const manualContinuationSchema = z.object({
+  // Outcome metadata remains ordinary data; native restore validates its
+  // original completed-response anchor and binds fresh callback receipts.
+  tool_outcomes: z
+    .object({
+      response_observation_id: z.string().min(1),
+      call_ids: z.array(z.string().min(1)),
+      outcomes: z.array(z.tuple([z.string().min(1), z.boolean()])),
+    })
+    .optional(),
   turn_id: z.string().min(1),
   reply_order: z.array(z.string().min(1)),
   // Legacy format3 stored text function outputs; new checked receipts retain
@@ -313,6 +322,8 @@ const manualContinuationSchema = z.object({
         name: z.string().min(1),
         namespace: z.string().optional(),
         arguments: z.string(),
+        approval_required: z.boolean().optional(),
+        effective_arguments: z.string().optional(),
       }),
     )
     .min(1),

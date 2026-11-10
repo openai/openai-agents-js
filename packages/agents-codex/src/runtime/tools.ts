@@ -1,3 +1,4 @@
+import type { ApprovedArguments } from './manual';
 import {
   decisionBinding,
   withDecisionSignal,
@@ -14,6 +15,7 @@ import {
 import {
   decode,
   encode,
+  jsonValue,
   losslessJsonObjectSchema,
   losslessJsonValueSchema,
   type JsonValue,
@@ -24,7 +26,7 @@ import type { WebSearch } from './web-search';
 import type { HostedTool } from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
 import type { HttpMCP, StdioMCP } from './mcp';
-import type { ManualTool } from './manual';
+import { assembleManualTool, type ManualTool } from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
 
@@ -109,6 +111,32 @@ export interface ToolCallContext<Context = unknown> {
   readonly callId: string;
   readonly signal: AbortSignal;
 }
+const toolSessionOwners = new WeakMap<object, object>();
+
+/** @internal Bind SDK-issued callback contexts to their opaque Session identity. */
+export function registerToolSessionOwner(
+  context: ToolCallContext,
+  owner: object,
+): void {
+  toolSessionOwners.set(context, owner);
+}
+
+// Private extension hook; retained in declarations for the sibling package.
+export function _nativeToolSessionOwner(context: ToolCallContext): object {
+  const owner = toolSessionOwners.get(context);
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
+  return owner;
+}
+
+function inheritToolSessionOwner<T extends ToolCallContext>(
+  context: T,
+  source: ToolCallContext,
+): T {
+  const owner = toolSessionOwners.get(source);
+  if (owner) toolSessionOwners.set(context, owner);
+  return context;
+}
+
 export interface ToolContext<
   Context = unknown,
 > extends ToolCallContext<Context> {
@@ -150,11 +178,14 @@ export interface ToolDeclaration {
 }
 
 const prepareInvocation = Symbol('function tool binding');
+const computerDeclaration = Symbol('native computer declaration');
 type Invocation<Context> = (
   args: JsonValue,
   context: ToolCallContext<Context>,
   onTimeout: (error: Error) => void,
   admit: () => void,
+  effectiveArgs?: JsonValue,
+  approved?: ApprovedArguments,
 ) => Promise<ToolResponse>;
 
 /** A tool-local decision made before its execution callback runs. */
@@ -162,6 +193,33 @@ export type ToolDecision<Arguments = unknown> =
   | { readonly action: 'allow' }
   | { readonly action: 'deny'; readonly reason: string }
   | { readonly action: 'replaceArguments'; readonly arguments: Arguments };
+
+const approvalDefinition = Symbol('managed function approval');
+interface ManagedApproval<Context = unknown> {
+  readonly function: FunctionTool<Context>;
+  readonly resultSchema: JsonValue;
+  parseInput(args: JsonValue): unknown;
+  prepare(
+    args: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+    skipPredicate?: boolean,
+    effectiveArgs?: JsonValue,
+  ): Promise<{
+    required: boolean;
+    effective?: JsonValue;
+    validated?: unknown;
+    denial?: string;
+  }>;
+}
+/** @internal Captured declarations share the existing manual owner before callback admission. */
+export function managedApproval(
+  tool: SessionTool,
+): ManagedApproval | undefined {
+  return (tool as SessionTool & { [approvalDefinition]?: ManagedApproval })[
+    approvalDefinition
+  ];
+}
 
 export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   /** Complete the turn from an accepted direct result; captured outside the schema. */
@@ -172,6 +230,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly kind?: 'function';
+  readonly [computerDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
@@ -185,6 +244,33 @@ export function toolIdentity(tool: SessionTool): {
   namespace: string;
 } {
   return { name: tool.name, namespace: toolNamespace(tool) ?? 'functions' };
+}
+
+/** @internal Bind a real computer declaration to the current callback owner. */
+export function createComputerTool<Context>(
+  declaration: JsonObject,
+  execute: (
+    args: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+    reportFailure: (error: Error) => void,
+  ) => Promise<ToolResponse>,
+): FunctionTool<Context> {
+  return Object.freeze({
+    name: 'computer',
+    description: "Operate the application's computer",
+    parameters: {},
+    [computerDeclaration]: declaration,
+    async [prepareInvocation](
+      args: JsonValue,
+      context: ToolCallContext<Context>,
+      reportFailure: (error: Error) => void,
+      admit: () => void,
+    ) {
+      admit();
+      return execute(args, context, admit, reportFailure);
+    },
+  });
 }
 
 /** @internal Bind one borrowed MCP tool to the existing managed callback owner. */
@@ -273,6 +359,10 @@ export function tool<
   timeoutBehavior?: FunctionToolTimeoutBehavior;
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  needsApproval?:
+    boolean | ((context: ToolContext<Context>) => boolean | Promise<boolean>);
+  /** Run the input policy before approval and again before callback execution. */
+  runBeforeApproval?: boolean;
   name: string;
   /** Publish this function under a captured native namespace. */
   namespace?: string;
@@ -326,6 +416,21 @@ export function tool<
     options.namespace === undefined
   )
     throw new TypeError('namespaceDescription requires namespace');
+  if (
+    options.needsApproval !== undefined &&
+    typeof options.needsApproval !== 'boolean' &&
+    typeof options.needsApproval !== 'function'
+  )
+    throw new TypeError('needsApproval must be a boolean or function');
+  if (
+    options.runBeforeApproval !== undefined &&
+    typeof options.runBeforeApproval !== 'boolean'
+  )
+    throw new TypeError('runBeforeApproval must be a boolean');
+  if (options.needsApproval && options.namespace !== undefined)
+    throw new TypeError('Managed approvals require an unnamespaced function');
+  if (options.runBeforeApproval && !options.needsApproval)
+    throw new TypeError('runBeforeApproval requires needsApproval');
   const {
     name,
     parameters,
@@ -337,7 +442,9 @@ export function tool<
     timeoutBehavior = 'raise_exception',
     timeoutErrorFunction,
   } = options;
-  return Object.freeze({
+  const needsApproval = options.needsApproval;
+  const runBeforeApproval = options.runBeforeApproval ?? false;
+  const declaration: FunctionTool<Context> = Object.freeze({
     finishTurn: options.finishTurn ?? false,
     name: options.name,
     namespace: options.namespace,
@@ -356,12 +463,17 @@ export function tool<
       context: ToolCallContext<Context>,
       onTimeout: (error: Error) => void,
       admit: () => void,
+      effectiveArgs?: JsonValue,
+      approved?: ApprovedArguments,
     ) {
       admit();
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed = parameters.parse(args);
+      let parsed = parameters.parse(
+        effectiveArgs === undefined ? args : effectiveArgs,
+      );
+      if (approved) parsed = approved.value as typeof parsed;
       let callContext: ToolContext<Context> = {
         ...context,
         decide:
@@ -404,6 +516,25 @@ export function tool<
         }
       }
       admit();
+      if (approved && !approved.matches(parsed))
+        return {
+          success: false,
+          contentItems: [
+            {
+              type: 'inputText' as const,
+              text: 'Tool input policy changed approved arguments',
+            },
+          ],
+        };
+      if (approved) {
+        parsed = approved.value as typeof parsed;
+        callContext = {
+          ...callContext,
+          effectiveArguments: Object.freeze({
+            ...(parsed as Record<string, unknown>),
+          }),
+        };
+      }
       const timeoutError =
         callbackTimeout === undefined
           ? undefined
@@ -411,7 +542,14 @@ export function tool<
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
       try {
         value = await invokeWithTimeout(
-          (signal) => execute(parsed, withDecisionSignal(callContext, signal)),
+          (signal) =>
+            execute(
+              parsed,
+              inheritToolSessionOwner(
+                withDecisionSignal(callContext, signal),
+                context,
+              ),
+            ),
           context.signal,
           callbackTimeout,
           name,
@@ -473,6 +611,78 @@ export function tool<
       return background ? markBackgroundToolResponse(response) : response;
     },
   });
+  if (!needsApproval) return declaration;
+  const approval: ManagedApproval<Context> = {
+    function: declaration,
+    resultSchema: result
+      ? decode(
+          jsonValue,
+          // Managed results retain their callback validator; this portable
+          // metadata need not represent non-JSON instance validators.
+          JSON.stringify(
+            z.toJSONSchema(result, { io: 'input', unrepresentable: 'any' }),
+          ),
+        )
+      : {},
+    parseInput: (args) => parameters.parse(structuredClone(args)),
+    async prepare(args, context, admit, skipPredicate = false, effectiveArgs) {
+      admit();
+      let parsed = parameters.parse(
+        structuredClone(effectiveArgs === undefined ? args : effectiveArgs),
+      );
+      let effective = effectiveArgs;
+      let callContext: ToolContext<Context> = {
+        ...context,
+        decide:
+          context.decide ??
+          ((() =>
+            Promise.reject(
+              new Error('Decision helper requires an admitted callback'),
+            )) as BoundDecide),
+        originalArguments: Object.freeze(structuredClone(args) as JsonObject),
+        effectiveArguments: Object.freeze({
+          ...(parsed as Record<string, unknown>),
+        }),
+      };
+      admit();
+      if (
+        runBeforeApproval &&
+        before &&
+        !(skipPredicate && effectiveArgs !== undefined)
+      ) {
+        const decision = await before(callContext);
+        admit();
+        if (decision.action === 'deny') {
+          if (typeof decision.reason !== 'string')
+            throw new TypeError('Tool denial requires a reason');
+          return { required: false, denial: decision.reason };
+        }
+        if (decision.action === 'replaceArguments') {
+          effective = losslessJsonValueSchema.parse(decision.arguments);
+          parsed = parameters.parse(structuredClone(effective));
+          callContext = {
+            ...callContext,
+            effectiveArguments: Object.freeze({
+              ...(parsed as Record<string, unknown>),
+            }),
+          };
+        } else if (decision.action !== 'allow')
+          throw new TypeError(
+            'Tool before must allow, deny, or replace arguments',
+          );
+      }
+      const required = skipPredicate
+        ? true
+        : typeof needsApproval === 'function'
+          ? await needsApproval(callContext)
+          : needsApproval;
+      admit();
+      if (typeof required !== 'boolean')
+        throw new TypeError('needsApproval must return a boolean');
+      return { required, effective, validated: parsed };
+    },
+  };
+  return Object.freeze({ ...declaration, [approvalDefinition]: approval });
 }
 
 export function outputOf(value: unknown): ToolResponse {
@@ -523,8 +733,21 @@ export function captureTools(
       typeof tool.finishTurn !== 'boolean'
     )
       throw new TypeError('finishTurn must be a boolean');
+    const approval = managedApproval(tool);
+    const source = approval
+      ? Object.freeze({
+          ...assembleManualTool(tool, {
+            resultSchema: approval.resultSchema,
+            parseInput: approval.parseInput,
+            parseResult: () => {
+              throw new TypeError('Use an approval decision');
+            },
+          }),
+          [approvalDefinition]: approval,
+        })
+      : tool;
     const binding = Object.freeze({
-      ...tool,
+      ...source,
       ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
@@ -540,6 +763,19 @@ export function captureTools(
     if (names.has(key))
       throw new TypeError(`Duplicate tool ${identity.namespace}.${tool.name}`);
     names.add(key);
+    if (tool.kind !== 'manual' && tool[computerDeclaration]) {
+      if (
+        tool.name !== 'computer' ||
+        tool.namespace !== undefined ||
+        tool.deferLoading ||
+        tool.finishTurn ||
+        tool.callbackTimeout !== undefined
+      )
+        throw new TypeError(
+          'Computer declarations retain their native identity and policies',
+        );
+      return losslessJsonObjectSchema.parse(tool[computerDeclaration]);
+    }
     const spec = {
       type: 'function',
       name: tool.name,
@@ -572,12 +808,21 @@ export async function invokeFunctionTool(
   context: ToolCallContext<any>,
   onTimeout: (error: Error) => void,
   checkAdmission?: () => void,
+  effectiveArgs?: JsonValue,
+  approved?: ApprovedArguments,
 ): Promise<ToolResponse> {
   const admit = () => {
     context.signal.throwIfAborted();
     checkAdmission?.();
   };
-  return tool[prepareInvocation](args, context, onTimeout, admit);
+  return tool[prepareInvocation](
+    args,
+    context,
+    onTimeout,
+    admit,
+    effectiveArgs,
+    approved,
+  );
 }
 
 /** @internal A callback deadline revokes publication; the caller still joins physical work. */

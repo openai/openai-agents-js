@@ -397,6 +397,50 @@
       "sha256": "cd078f600aafb1078014ec3005198de0637d2f66c7a45c2a3ca35f1d054dd4af"
     },
     {
+      "path": "0100-native-hosted-option-fidelity.patch",
+      "sha256": "c06cdc7449e3767e439c349e2253546e15e2fa1b97b7f2d048fb3e429cd632a6"
+    },
+    {
+      "path": "0101-native-request-extensions.patch",
+      "sha256": "fc28e524a2b71b3501d232cad8a2a3e420f8463f719c2415b89ab853b9beaa68"
+    },
+    {
+      "path": "0102-native-model-producer.patch",
+      "sha256": "65519ed8b6e669fd17c2f80aea75f0e0ccb0af25715e5f38f1b9492ee063b68d"
+    },
+    {
+      "path": "0103-empty-extra-body-lite.patch",
+      "sha256": "8b13438eea150779e0adcb4d2b533e4192cb5e5c4539f054a8402aaaef29cf77"
+    },
+    {
+      "path": "0104-native-model-response-fidelity.patch",
+      "sha256": "a1f354cdd0b303ce91db87626aea68a509823d5cd893a2874094aa3fbd3d9672"
+    },
+    {
+      "path": "0210-native-computer-use.patch",
+      "sha256": "6f2e8711da00c50f64b3fcb48ae3c11ce2df2e7a74c6d55d7521d9e4c71568ce"
+    },
+    {
+      "path": "0211-native-computer-guardian.patch",
+      "sha256": "70a07e4e7e46d5e0ae324fd80d53da0b18a9e944287a7cb59f8bd5e2e05a3887"
+    },
+    {
+      "path": "0180-portable-realtime-control.patch",
+      "sha256": "83f796bd2ec4bf671ebba69bf3cf34c348908e711b2c4cb9173f5d2a8db8f5b9"
+    },
+    {
+      "path": "0181-retire-portable-cancelled-work.patch",
+      "sha256": "c973e1824da67ef769db151b9658a328aab51fe7b81196477c991b5957e8fddb"
+    },
+    {
+      "path": "0182-preempt-retirement-and-fence-continuation.patch",
+      "sha256": "e181d7460d3b958e034169baf84906909d70933814c6feb7a4680dbd2ca05a75"
+    },
+    {
+      "path": "0098-retained-trace-root-descriptors.patch",
+      "sha256": "e1b504271356e706a1c6510b548b94669a4d7a444ccdbe2ab667b8fe0c03b750"
+    },
+    {
       "path": "0170-canonical-history-transactions.patch",
       "sha256": "e88a2db32ae35587399c2eeae49284f96ef83383399b26f60961f9748d74e779"
     },
@@ -405,13 +449,17 @@
       "sha256": "f184609e68d3353303c1ed22e2dbdccce69445f4be696411687e3d0daf1fd394"
     },
     {
+      "path": "0099-retained-trace-start-sequence.patch",
+      "sha256": "860664c1fbf24002588e74e5dbbda2ea7b14d4aadd0bca5ba2c1f0e8871625f9"
+    },
+    {
       "path": "0152-native-realtime-response-options.patch",
-      "sha256": "fa77798ebf5d7146262143836f490bf11d24eecaeb8991e47baa08be044e0935"
+      "sha256": "149229c9a3cef8fad7156ecbcf9658977330bcb89df53a4b22ac0dd945d51b6d"
     },
     {
       "path": "sdk-realtime-raw-events-and-history.patch",
-      "sha256": "4675d414b2e5ff22f463581e1e72ec6b1b44fca1bcf226d7eaf3fb18559f7406"
+      "sha256": "9178e228bc69706d7cbb5361127e84861f752a0dba509602d089e4cee0ef85b0"
     }
   ],
-  "result_tree": "5dac5cb4a4376b3826d182663e6a835f88bb3fd2"
+  "result_tree": "28f0ea7aecee6601220cbcef3d83ee11c62584a7"
 }

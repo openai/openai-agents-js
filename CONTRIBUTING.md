@@ -34,6 +34,7 @@ The repository also contains these directories:
 
 - Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later
 - The pnpm version pinned in the root `package.json` `packageManager` field
+- Rustup, which installs the pinned Rust toolchain and WebAssembly target when building the portable native voice asset
 
 ### Setup
 

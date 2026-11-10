@@ -173,3 +173,115 @@ for (const transport of ['http', 'grpc'] as const) {
     }
   }, 60_000);
 }
+
+it('qualifies native capture controls, OpenAI export and dynamic fixtures', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agents-native-capture-'));
+  try {
+    const result = await execute(
+      process.execPath,
+      ['--import', 'tsx', join(fixtures, 'tracing-capture-controls-child.ts')],
+      {
+        timeout: 50_000,
+        maxBuffer: 2_097_152,
+        env: { ...process.env, CODEX_HOME: join(directory, 'home') },
+      },
+    );
+    expect(result.stdout).toContain(
+      'PASS native capture controls and dynamic fixtures',
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it('releases the collector and preserves a child fixture primary failure', async () => {
+  await expect(
+    execute(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(fixtures, 'tracing-capture-controls-child.ts'),
+        '--fail-after-configure',
+      ],
+      { timeout: 5000 },
+    ),
+  ).rejects.toMatchObject({
+    code: 1,
+    stderr: expect.stringContaining('synthetic fixture primary failure'),
+  });
+}, 10000);
+
+it('batches real native spans while keeping flush acknowledgement after HTTP delivery', async () => {
+  const result = await execute(
+    process.execPath,
+    ['--import', 'tsx', join(fixtures, 'tracing-export-batch-child.ts')],
+    { timeout: 15000, maxBuffer: 2_097_152 },
+  );
+  expect(result.stdout).toContain(
+    'PASS native batch export and acknowledgement',
+  );
+}, 20000);
+
+it('retains native active roots across cache churn and fences callback retries', async () => {
+  const result = await execute(
+    process.execPath,
+    ['--import', 'tsx', join(fixtures, 'tracing-review-regressions-child.ts')],
+    { timeout: 30000, maxBuffer: 2097152 },
+  );
+  expect(result.stdout).toContain(
+    'PASS native active-root churn and callback retry fence',
+  );
+}, 35000);
+
+it.each([[], ['--bytes'], ['--forward'], ['--retained-after-recovery']])(
+  'recovers bounded native descriptor capacity after queue loss %j',
+  async (...arguments_: string[]) => {
+    const result = await execute(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(fixtures, 'tracing-loss-recovery-child.ts'),
+        ...arguments_,
+      ],
+      { timeout: 30000, maxBuffer: 2097152 },
+    );
+    expect(result.stdout).toContain('PASS native loss recovery');
+  },
+  35000,
+);
+
+for (const large of [false, true]) {
+  it(`preserves retained native context after descriptor eviction (large=${large})`, async () => {
+    const result = await execute(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(fixtures, 'tracing-retained-eviction-child.ts'),
+        ...(large ? ['--large'] : []),
+      ],
+      { timeout: 40000, maxBuffer: 2097152 },
+    );
+    expect(result.stdout).toContain(
+      'PASS retained native context after descriptor eviction',
+    );
+  }, 45000);
+}
+
+it('forwards immutable retained descriptors through single-event processors', async () => {
+  const result = await execute(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      join(fixtures, 'tracing-retained-eviction-child.ts'),
+      '--single',
+    ],
+    { timeout: 40000, maxBuffer: 2097152 },
+  );
+  expect(result.stdout).toContain(
+    'PASS retained native context after descriptor eviction',
+  );
+}, 45000);

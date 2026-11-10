@@ -253,7 +253,7 @@ it('captures the admitted prefix, revision and items before scheduling a history
   server.assertExhausted();
 });
 
-it.each(['function', 'custom', 'search'])(
+it.each(['function', 'custom', 'search', 'computer'])(
   'rejects split or unpaired %s client-tool history before changing state',
   async (family) => {
     const server = new ModelServer([[message('pairs preserved')]]);
@@ -275,7 +275,13 @@ it.each(['function', 'custom', 'search'])(
         ? { type: 'function_call', name: 'lookup', arguments: '{}' }
         : family === 'custom'
           ? { type: 'custom_tool_call', name: 'lookup', input: 'raw input' }
-          : { type: 'tool_search_call', execution: 'client', arguments: {} }),
+          : family === 'computer'
+            ? {
+                type: 'computer_call',
+                actions: [{ type: 'wait' }],
+                pending_safety_checks: [],
+              }
+            : { type: 'tool_search_call', execution: 'client', arguments: {} }),
     };
     const output: import('../../src/runtime/binding').JsonObject = {
       id: 'result-item',
@@ -284,12 +290,21 @@ it.each(['function', 'custom', 'search'])(
         ? { type: 'function_call_output', output: 'retained result' }
         : family === 'custom'
           ? { type: 'custom_tool_call_output', output: 'retained result' }
-          : {
-              type: 'tool_search_output',
-              execution: 'client',
-              status: 'completed',
-              tools: [],
-            }),
+          : family === 'computer'
+            ? {
+                type: 'computer_call_output',
+                output: {
+                  type: 'computer_screenshot',
+                  image_url: 'data:image/png;base64,AA==',
+                },
+                acknowledged_safety_checks: [],
+              }
+            : {
+                type: 'tool_search_output',
+                execution: 'client',
+                status: 'completed',
+                tools: [],
+              }),
     };
     try {
       const initial = await session.historySnapshot();

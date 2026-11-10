@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
+import { createRewriteImportTransformer } from 'tsc-multi/dist/transformers/rewriteImport';
 import { expect, it } from 'vitest';
 
 it('bundles actual public voice platform subpaths for browsers without native or Node imports', async () => {
@@ -21,7 +22,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
       );
       // Produce only these independent entry artifacts; package exports resolve
       // normally, with no alias that could conceal a native barrel dependency.
-      for (const leaf of ['browser', 'workerd', 'react-native']) {
+      for (const leaf of ['browser', 'workerd', 'portable', 'react-native']) {
         const entry = manifest.exports[`./voice/${leaf}`].import
           .default as string;
         const source = await readFile(
@@ -29,6 +30,17 @@ it('bundles actual public voice platform subpaths for browsers without native or
           'utf8',
         );
         const emitted = ts.transpileModule(source, {
+          fileName: join(sourceRoot, 'src/voice', `${leaf}.ts`),
+          // Apply the producer's exact ESM import rewrite, including local dependencies.
+          transformers: {
+            after: [
+              createRewriteImportTransformer({
+                extname: '.mjs',
+                system: ts.sys,
+                ts,
+              }),
+            ],
+          },
           compilerOptions: {
             target: ts.ScriptTarget.ES2022,
             module: ts.ModuleKind.ESNext,
@@ -45,7 +57,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
     );
     const sharedOutput = join(
       directory,
-      'node_modules/@openai/agents-codex/dist/voice/webrtc.js',
+      'node_modules/@openai/agents-codex/dist/voice/webrtc.mjs',
     );
     await writeFile(
       sharedOutput,
@@ -63,7 +75,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
       absWorkingDir: directory,
       stdin: {
         contents:
-          "export { NativeVoiceWebRTC } from '@openai/agents/voice/browser'; export { openVoiceWebSocket } from '@openai/agents/voice/workerd'; export { NativeVoiceWebRTC as MobileVoice } from '@openai/agents/voice/react-native';",
+          "export { NativeVoiceWebRTC } from '@openai/agents/voice/browser'; export { openVoiceWebSocket } from '@openai/agents/voice/workerd'; export { NativeVoiceControl, PortableVoiceSession } from '@openai/agents/voice/portable'; export { NativeVoiceWebRTC as MobileVoice } from '@openai/agents/voice/react-native';",
         resolveDir: directory,
         sourcefile: 'consumer.js',
       },
@@ -73,7 +85,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
       write: false,
       metafile: true,
     });
-    expect(Object.keys(result.metafile!.inputs)).toHaveLength(8);
+    expect(Object.keys(result.metafile!.inputs)).toHaveLength(10);
     expect(result.outputFiles[0].text).toContain('NativeVoiceWebRTC');
     expect(result.outputFiles[0].text).toContain('openVoiceWebSocket');
     expect(result.outputFiles[0].text).not.toMatch(

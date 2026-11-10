@@ -1,4 +1,8 @@
 import {
+  tool as nativeTool,
+  _nativeToolSessionOwner,
+} from '@openai/agents-codex';
+import {
   RunContext,
   Usage,
   UserError,
@@ -1876,4 +1880,249 @@ function isErrorItem(item: ThreadItem): item is ErrorItem {
 
 function isReasoningItem(item: ThreadItem): item is ReasoningItem {
   return item?.type === 'reasoning';
+}
+
+const nativeCliEnvironmentNames = new Set([
+  'PATH',
+  'PATHEXT',
+  'COMSPEC',
+  'SYSTEMROOT',
+  'WINDIR',
+  'SYSTEMDRIVE',
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'SHELL',
+  'LOGNAME',
+  'USER',
+  'USERNAME',
+  'USERDOMAIN',
+  'TERM',
+  'CODEX_HOME',
+  'CODEX_API_KEY',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
+]);
+
+export type NativeCodexToolOptions = Pick<
+  CodexToolOptions,
+  | 'name'
+  | 'description'
+  | 'codex'
+  | 'codexOptions'
+  | 'defaultThreadOptions'
+  | 'defaultTurnOptions'
+  | 'persistSession'
+  | 'threadId'
+> & {
+  /** Observes CLI events without changing execution success; observer failures are isolated. */
+  onEvent?: (event: ThreadEvent) => void | Promise<void>;
+};
+
+/**
+ * Delegate through a native function tool to the external Codex CLI.
+ * The application authorizes executable, credentials and workspace in the
+ * options. Native Environment grants do not constrain this application tool.
+ * Cancellation has been joining the CLI stream.
+ * Persistent calls have been running sequentially and reusing the most recently
+ * completed thread in the same native Session. Model thread IDs have been
+ * selecting only successful threads from that Session or the application-supplied
+ * options.threadId. Different native Sessions have been retaining independent state.
+ * Configured turn signals also cancel calls waiting for persistent-session admission.
+ * Default subprocess environment: platform paths, Codex credentials and transport
+ * settings only. Explicit codexOptions.env mappings and supplied Codex instances:
+ * application-owned environment policy. Full inheritance: pass an explicit copy
+ * of the process environment in codexOptions.env.
+ */
+export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
+  let codexOptions = resolveCodexOptions(
+    options.codexOptions ? structuredClone(options.codexOptions) : undefined,
+  );
+  if (!options.codex && codexOptions?.env === undefined) {
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(loadEnv())) {
+      if (
+        typeof value === 'string' &&
+        nativeCliEnvironmentNames.has(name.toUpperCase())
+      ) {
+        env[name] = value;
+      }
+    }
+    codexOptions = { ...codexOptions, env };
+  }
+  const resolveCodex = createCodexResolver(options.codex, codexOptions);
+  const threadOptions = options.defaultThreadOptions
+    ? structuredClone(options.defaultThreadOptions)
+    : undefined;
+  const turnOptions = options.defaultTurnOptions
+    ? {
+        ...options.defaultTurnOptions,
+        ...(options.defaultTurnOptions.outputSchema !== undefined
+          ? {
+              outputSchema: structuredClone(
+                options.defaultTurnOptions.outputSchema,
+              ),
+            }
+          : {}),
+      }
+    : undefined;
+  const persistSession = options.persistSession ?? false;
+  const onEvent = options.onEvent;
+  const threadIdSchema = z
+    .string()
+    .min(1)
+    .refine(
+      (value) => !value.trimStart().startsWith('-'),
+      'threadId must be a thread ID, not a CLI option',
+    );
+  const initialThreadId =
+    options.threadId === undefined
+      ? undefined
+      : threadIdSchema.parse(options.threadId);
+  const sessions = new WeakMap<
+    object,
+    { persisted?: Thread; pending: Promise<void>; issuedIds: Set<string> }
+  >();
+  return nativeTool({
+    name: resolveCodexToolName(options.name ?? DEFAULT_CODEX_TOOL_NAME),
+    description:
+      options.description ??
+      'Run an external Codex CLI task in the configured workspace.',
+    parameters: z.object({
+      prompt: z.string().min(1),
+      threadId: threadIdSchema
+        .nullable()
+        .default(null)
+        .describe(
+          'A thread ID returned by this Session or configured by the application.',
+        ),
+    }),
+    execute: async ({ prompt, threadId }, context) => {
+      const signal = turnOptions?.signal
+        ? AbortSignal.any([context.signal, turnOptions.signal])
+        : context.signal;
+      const sessionOwner = _nativeToolSessionOwner(context);
+      let state = sessions.get(sessionOwner);
+      if (!state) {
+        state = { pending: Promise.resolve(), issuedIds: new Set() };
+        sessions.set(sessionOwner, state);
+      }
+      let previous = Promise.resolve();
+      let release: (() => void) | undefined;
+      if (persistSession) {
+        previous = state.pending;
+        const slot = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        // A cancelled waiter settles promptly but its successors still wait for
+        // every earlier invocation to release ownership.
+        state.pending = previous.then(() => slot);
+      }
+      try {
+        if (persistSession) await waitForNativeCodexSlot(previous, signal);
+        signal.throwIfAborted();
+        if (
+          threadId !== null &&
+          threadId !== initialThreadId &&
+          !state.issuedIds.has(threadId)
+        ) {
+          throw new UserError(
+            'Codex thread ID is not authorized for this Session',
+          );
+        }
+        const codex = await resolveCodex();
+        const persisted = persistSession ? state.persisted : undefined;
+        const selectedThreadId =
+          threadId ?? (persisted ? undefined : initialThreadId);
+        const thread =
+          selectedThreadId !== undefined
+            ? codex.resumeThread(selectedThreadId, threadOptions)
+            : (persisted ?? codex.startThread(threadOptions));
+        const stream = await thread.runStreamed(prompt, {
+          ...turnOptions,
+          signal,
+        });
+        let response = '';
+        let usage: CodexUsage | null = null;
+        let completed = false;
+        for await (const event of stream.events) {
+          context.signal.throwIfAborted();
+          if (onEvent)
+            await Promise.allSettled([
+              Promise.resolve().then(() => onEvent(event)),
+            ]);
+          context.signal.throwIfAborted();
+          if (
+            event.type === 'item.completed' &&
+            event.item.type === 'agent_message'
+          )
+            response = event.item.text;
+          else if (event.type === 'turn.completed') {
+            usage = event.usage;
+            completed = true;
+          } else if (event.type === 'turn.failed')
+            throw new Error(event.error.message);
+          else if (event.type === 'error') throw new Error(event.message);
+        }
+        signal.throwIfAborted();
+        if (!completed) {
+          throw new Error(
+            'Codex CLI stream ended before successful completion',
+          );
+        }
+        const completedThreadId = thread.id;
+        if (completedThreadId) state.issuedIds.add(completedThreadId);
+        if (persistSession) state.persisted = thread;
+        return { threadId: completedThreadId, response, usage };
+      } catch (error) {
+        // Node spawn wraps AbortSignal.reason. Preserve the native cancellation
+        // identity so a joined expected abort is not reported as cleanup failure.
+        if (
+          context.signal.aborted &&
+          error instanceof Error &&
+          error.name === 'AbortError' &&
+          error.cause === context.signal.reason
+        )
+          throw context.signal.reason;
+        throw error;
+      } finally {
+        release?.();
+      }
+    },
+  });
+}
+
+async function waitForNativeCodexSlot(
+  previous: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  signal.throwIfAborted();
+  let abort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    await Promise.race([previous, cancelled]);
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
 }

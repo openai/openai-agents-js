@@ -35,10 +35,13 @@ export type ScriptedItem =
       call_id: string;
       input: string;
     }>;
-export type ScriptedResponse =
+export type ScriptedResult =
   | readonly ScriptedItem[]
   | Readonly<{
       items: readonly ScriptedItem[];
+      /** Extra raw SSE events for wire-level fixture scenarios. */
+      events?: readonly JsonObject[];
+      responseId?: string;
       /** Provider-reported usage; omission leaves it unknown. */
       usage?: JsonObject;
       /** Additional HTTP metadata. Framing headers remain SDK-owned. */
@@ -51,18 +54,32 @@ export type ScriptedResponse =
       headers?: Readonly<Record<string, string>>;
     }>;
 
+/** Dynamic responders receive a detached request body, never credentials. */
+export type ScriptedResponse =
+  | ScriptedResult
+  | ((
+      request: Readonly<JsonObject>,
+    ) => ScriptedResult | Promise<ScriptedResult>);
+
 /** A callback-scoped native provider with detached request-body readback. */
 export interface ScriptedResponses {
   readonly provider: NativeProvider;
   readonly requests: readonly Readonly<JsonObject>[];
   toolOutput(callId: string): string | undefined;
   assertExhausted(): void;
+  /** Append responses for subsequent requests, including from dynamic responders. */
+  append(...responses: ScriptedResponse[]): void;
+  /** Discard queued responses while preserving recorded request history. */
+  clear(): void;
 }
-export function text(value: string): ScriptedItem {
+export function text(
+  value: string,
+  options: { itemId?: string } = {},
+): ScriptedItem {
   return {
     type: 'message',
     role: 'assistant',
-    id: randomUUID(),
+    id: options.itemId ?? randomUUID(),
     content: [{ type: 'output_text', text: value }],
   };
 }
@@ -100,7 +117,7 @@ const statusSchema = z.number().int().min(400).max(599);
 export function httpError(
   status: number,
   body: JsonObject = errorBody,
-): ScriptedResponse {
+): ScriptedResult {
   try {
     return {
       kind: 'httpError',
@@ -166,6 +183,8 @@ const responseSchema = z.union([
   z
     .object({
       items: z.array(itemSchema),
+      events: z.array(jsonObject).optional(),
+      responseId: z.string().optional(),
       usage: jsonObject.optional(),
       headers: headersSchema.optional(),
     })
@@ -190,6 +209,8 @@ class Peer implements ScriptedResponses {
   private next = 0;
   private unexpected = 0;
   private failures = 0;
+  private callbackFailure: { error: unknown } | undefined;
+  private callbackInFlight: Promise<void> | undefined;
   private readonly sockets = new Set<Socket>();
   private readonly reads = new Set<BodyRead>();
   private readonly handlers = new Set<Promise<void>>();
@@ -199,7 +220,7 @@ class Peer implements ScriptedResponses {
     this.handlers.add(handler);
     void handler.then(() => this.handlers.delete(handler));
   });
-  constructor(private readonly responses: readonly ScriptedResponse[]) {
+  constructor(private responses: ScriptedResponse[]) {
     this.server.on('connection', (socket) => {
       this.sockets.add(socket);
       socket.once('close', () => this.sockets.delete(socket));
@@ -261,12 +282,38 @@ class Peer implements ScriptedResponses {
     }
     return undefined;
   }
+  retainCallbackFailure(primary: unknown): void {
+    if (
+      primary instanceof Error &&
+      this.callbackFailure &&
+      primary !== this.callbackFailure.error
+    ) {
+      try {
+        if (primary.cause === undefined)
+          Object.defineProperty(primary, 'cause', {
+            value: this.callbackFailure.error,
+            configurable: true,
+            writable: true,
+          });
+      } catch {
+        // Diagnostic attachment must not replace a frozen or unusual primary error.
+      }
+    }
+  }
   assertExhausted(): void {
+    if (this.callbackFailure) throw this.callbackFailure.error;
     const remaining = this.responses.length - this.next;
     if (remaining || this.unexpected || this.failures)
       throw new AssertionError({
         message: `Scripted responses: ${remaining} remaining, ${this.unexpected} unexpected requests, ${this.failures} internal failures`,
       });
+  }
+  append(...responses: ScriptedResponse[]): void {
+    this.responses.push(...responses.map(captureResponse));
+  }
+  clear(): void {
+    this.responses = [];
+    this.next = 0;
   }
   private reject(response: ServerResponse): void {
     response
@@ -312,13 +359,39 @@ class Peer implements ScriptedResponses {
         return;
       }
       this.bodies.push(body);
-      const selected = this.responses[this.next];
-      if (selected === undefined) {
+      while (this.callbackInFlight) await this.callbackInFlight;
+      if (this.callbackFailure) {
+        this.unexpected++;
+        this.reject(response);
+        return;
+      }
+      const script = this.responses[this.next];
+      if (script === undefined) {
         this.unexpected++;
         this.reject(response);
         return;
       }
       this.next++;
+      let selected: ScriptedResult;
+      let releaseCallback: (() => void) | undefined;
+      if (typeof script === 'function')
+        this.callbackInFlight = new Promise<void>((resolve) => {
+          releaseCallback = resolve;
+        });
+      try {
+        selected =
+          typeof script === 'function'
+            ? responseSchema.parse(await script(structuredClone(body)))
+            : script;
+      } catch (error) {
+        this.callbackFailure ??= { error };
+        throw error;
+      } finally {
+        if (releaseCallback) {
+          this.callbackInFlight = undefined;
+          releaseCallback();
+        }
+      }
       if ('kind' in selected) {
         const error = selected;
         response
@@ -329,9 +402,13 @@ class Peer implements ScriptedResponses {
           .end(JSON.stringify(error.body));
         return;
       }
-      const id = randomUUID();
+      const id =
+        'responseId' in selected
+          ? (selected.responseId ?? randomUUID())
+          : randomUUID();
       const envelope: {
         items: readonly ScriptedItem[];
+        events?: readonly JsonObject[];
         usage?: JsonObject;
         headers?: Readonly<Record<string, string>>;
       } = 'items' in selected ? selected : { items: selected };
@@ -346,6 +423,7 @@ class Peer implements ScriptedResponses {
           output_index,
           item,
         })),
+        ...(envelope.events ?? []),
         {
           type: 'response.completed',
           response: {
@@ -360,7 +438,9 @@ class Peer implements ScriptedResponses {
     } catch {
       this.failures++;
       if (!response.headersSent && !response.destroyed)
-        response.writeHead(500).end('Scripted provider failed');
+        response
+          .writeHead(this.callbackFailure ? 400 : 500)
+          .end('Scripted provider failed');
       else response.destroy();
     } finally {
       this.reads.delete(read);
@@ -408,6 +488,17 @@ class Peer implements ScriptedResponses {
     return this.closing;
   }
 }
+function captureResponse(
+  response: ScriptedResponse,
+  index: number,
+): ScriptedResponse {
+  if (typeof response === 'function') return response;
+  try {
+    return responseSchema.parse(response);
+  } catch {
+    throw new TypeError(`Invalid scripted response at index ${index}`);
+  }
+}
 /**
  * Serve prescribed Responses events through the real native loop. Close borrowed
  * Sessions before returning. Keep direct/bypassed loopback proxy routing stable
@@ -421,29 +512,26 @@ export async function withScriptedResponses<T>(
   if (!Array.isArray(responses)) {
     throw new TypeError('Scripted responses must be an array');
   }
-  const captured = Array.from(responses, (response, index) => {
-    try {
-      return responseSchema.parse(response);
-    } catch {
-      throw new TypeError(`Invalid scripted response at index ${index}`);
-    }
-  });
+  const captured = Array.from(responses, captureResponse);
   const peer = new Peer(captured);
   let result: T;
   try {
     await peer.start();
     result = await run(peer);
   } catch (error) {
+    const primary = error;
     try {
       await peer.close();
     } catch (cleanupError) {
       throw new AggregateError(
-        [error, cleanupError],
+        [primary, cleanupError],
         'Scripted scope and cleanup failed',
-        { cause: error },
+        { cause: primary },
       );
+    } finally {
+      peer.retainCallbackFailure(primary);
     }
-    throw error;
+    throw primary;
   }
   await peer.close();
   peer.assertExhausted();

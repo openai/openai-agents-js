@@ -1,0 +1,345 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+index dc4a750d..f8690a24 100644
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -2,7 +2,7 @@
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+ use sha2::{Digest, Sha256};
+-use std::collections::{BTreeMap, BTreeSet};
++use std::collections::{BTreeMap, BTreeSet, VecDeque};
+ 
+ const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+ const MAX_CALL_BYTES: usize = 256 * 1024;
+@@ -297,6 +297,8 @@ pub struct Control {
+     responses: ResponseCreateState<()>,
+     next_send: u64,
+     pending_send: BTreeSet<u64>,
++    incoming: VecDeque<(Value, usize)>,
++    incoming_bytes: usize,
+     startup_send: Option<u64>,
+     startup_sent: bool,
+     startup_accepted: bool,
+@@ -312,6 +314,8 @@ impl Default for Control {
+             responses: ResponseCreateState::default(),
+             next_send: 0,
+             pending_send: BTreeSet::new(),
++            incoming: VecDeque::new(),
++            incoming_bytes: 0,
+             startup_send: None,
+             startup_sent: false,
+             startup_accepted: false,
+@@ -342,6 +346,8 @@ impl Control {
+         self.calls.clear();
+         self.batches.clear();
+         self.pending_send.clear();
++        self.incoming.clear();
++        self.incoming_bytes = 0;
+         self.responses = ResponseCreateState::default();
+     }
+     fn transition(&mut self, command: Command) -> Result<Vec<Effect>, String> {
+@@ -394,9 +400,31 @@ impl Control {
+                         call.phase = CallPhase::Published;
+                     }
+                 }
++                while self.pending_send.is_empty() {
++                    let Some((event, bytes)) = self.incoming.pop_front() else {
++                        break;
++                    };
++                    self.incoming_bytes -= bytes;
++                    // Each queued event remains a canonical transition, including readiness.
++                    effects.extend(self.transition(Command::Provider { event })?);
++                }
+                 self.continue_batches(&mut effects);
+             }
+-            Command::Provider { event } => self.provider(event, &mut effects)?,
++            Command::Provider { event } => {
++                // Retirement is never delayed by another operation's send receipt.
++                let bytes = self.provider_gate(&event)?;
++                if self.pending_send.is_empty() {
++                    self.provider(event, &mut effects)?;
++                } else {
++                    if self.incoming.len() == MAX_CALLS
++                        || self.incoming_bytes + bytes > MAX_FRAME_BYTES
++                    {
++                        return Err("Portable voice ingress exceeds capacity".into());
++                    }
++                    self.incoming.push_back((event, bytes));
++                    self.incoming_bytes += bytes;
++                }
++            }
+             Command::Approve { call_id, approved } => {
+                 self.require_ready()?;
+                 let call = self.calls.get_mut(&call_id).ok_or("Unknown approval")?;
+@@ -428,10 +456,7 @@ impl Control {
+             Command::Text { text } => {
+                 self.require_ready()?;
+                 self.send(json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}), &mut effects);
+-                if self.responses.request_create() {
+-                    self.responses.mark_started();
+-                    self.send(json!({"type":"response.create"}), &mut effects);
+-                }
++                self.request_response(&mut effects);
+             }
+             Command::Close => {
+                 self.retire();
+@@ -451,12 +476,11 @@ impl Control {
+             Ok(())
+         }
+     }
+-    fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
+-        if serde_json::to_vec(&event)
++    fn provider_gate(&self, event: &Value) -> Result<usize, String> {
++        let bytes = serde_json::to_vec(event)
+             .map_err(|_| "Invalid provider event")?
+-            .len()
+-            > MAX_FRAME_BYTES
+-        {
++            .len();
++        if bytes > MAX_FRAME_BYTES {
+             return Err("Provider event exceeds capacity".into());
+         }
+         let kind = event
+@@ -464,19 +488,17 @@ impl Control {
+             .and_then(Value::as_str)
+             .ok_or("Provider event has no type")?;
+         match kind {
+-            "session.updated" => {
+-                if self.phase == Phase::Configuring || self.phase == Phase::Ready {
+-                    let session = event
+-                        .get("session")
+-                        .ok_or("Invalid accepted configuration")?;
+-                    if !contains_expected(session, &self.expected_session) {
+-                        return Err("Provider accepted another tool configuration".into());
+-                    }
+-                    self.startup_accepted = true;
++            "session.updated" if self.phase == Phase::Configuring || self.phase == Phase::Ready => {
++                let session = event
++                    .get("session")
++                    .ok_or("Invalid accepted configuration")?;
++                if !contains_expected(session, &self.expected_session) {
++                    return Err("Provider accepted another tool configuration".into());
+                 }
+             }
+-            "response.cancelled" => {
+-                return Err("Portable voice generation was cancelled".into());
++            "response.cancelled" => return Err("Portable voice generation was cancelled".into()),
++            "response.done" if event["response"]["status"].as_str() != Some("completed") => {
++                return Err("Incomplete Realtime response cannot admit functions".into());
+             }
+             "input_audio_buffer.speech_started" => {
+                 if self.responses.active_default_response
+@@ -484,10 +506,38 @@ impl Control {
+                         .calls
+                         .values()
+                         .any(|call| call.phase != CallPhase::Published)
++                    || self
++                        .incoming
++                        .iter()
++                        .any(|(event, _)| event["type"] == "response.created")
+                 {
+                     return Err("Portable voice interruption requires a new generation".into());
+                 }
+             }
++            "error" => return Err("Realtime provider rejected the operation".into()),
++            _ => {}
++        }
++        Ok(bytes)
++    }
++    fn request_response(&mut self, effects: &mut Vec<Effect>) {
++        if self.batches.values().any(|batch| !batch.continued) {
++            self.responses.pending_create = true;
++        } else if self.responses.request_create() {
++            self.responses.mark_started();
++            self.send(json!({"type":"response.create"}), effects);
++        }
++    }
++    fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
++        let kind = event
++            .get("type")
++            .and_then(Value::as_str)
++            .ok_or("Provider event has no type")?;
++        match kind {
++            "session.updated" => {
++                if self.phase == Phase::Configuring || self.phase == Phase::Ready {
++                    self.startup_accepted = true;
++                }
++            }
+             "response.created" => {
+                 self.require_ready()?;
+                 let id = string(&event["response"], "id")?;
+@@ -522,9 +572,6 @@ impl Control {
+             "response.done" => {
+                 self.require_ready()?;
+                 let response = event.get("response").ok_or("Missing response")?;
+-                if response.get("status").and_then(Value::as_str) != Some("completed") {
+-                    return Err("Incomplete Realtime response cannot admit functions".into());
+-                }
+                 let id = string(response, "id")?;
+                 if self.responses.sdk_response_id.as_ref() != Some(&id) {
+                     return Err("Completed response does not own the active response".into());
+@@ -561,10 +608,7 @@ impl Control {
+                     return Err("Completed response omitted a discovered function".into());
+                 }
+                 self.responses.sdk_response_id = None;
+-                if self.responses.mark_finished().is_some() {
+-                    self.responses.mark_started();
+-                    self.send(json!({"type":"response.create"}), effects);
+-                }
++                let deferred_create = self.responses.mark_finished().is_some();
+                 if !ids.is_empty() {
+                     if self.batches.contains_key(&id) {
+                         return Err("Response batch already admitted".into());
+@@ -598,8 +642,10 @@ impl Control {
+                         }
+                     }
+                 }
++                if deferred_create {
++                    self.request_response(effects);
++                }
+             }
+-            "error" => return Err("Realtime provider rejected the operation".into()),
+             _ => {}
+         }
+         effects.push(Effect::Event { event });
+@@ -662,6 +708,10 @@ impl Control {
+             .map(|(id, _)| id.clone())
+             .collect();
+         if let Some(id) = ready.into_iter().next() {
++            // Tool continuation consumes any coalesced user request exactly once.
++            if !self.responses.request_create() {
++                return;
++            }
+             self.responses.mark_started();
+             self.batches.get_mut(&id).unwrap().continued = true;
+             self.send(json!({"type":"response.create"}), effects);
+@@ -759,6 +809,129 @@ mod tests {
+         )
+     }
+     #[test]
++    fn queued_text_waits_for_batch_approval_and_physical_output() {
++        for before_completion in [true, false] {
++            let mut control = ready();
++            request(&mut control);
++            if before_completion {
++                let text = command(&mut control, json!({"type":"text","text":"queued"}));
++                assert_eq!(text["effects"].as_array().unwrap().len(), 1);
++                command(
++                    &mut control,
++                    json!({"type":"sent","id":text["effects"][0]["id"]}),
++                );
++            }
++            let admitted = batch(&mut control);
++            assert!(
++                !admitted["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|effect| effect["type"] == "send")
++            );
++            if !before_completion {
++                let text = command(&mut control, json!({"type":"text","text":"queued"}));
++                assert_eq!(text["effects"].as_array().unwrap().len(), 1);
++                command(
++                    &mut control,
++                    json!({"type":"sent","id":text["effects"][0]["id"]}),
++                );
++            }
++            command(
++                &mut control,
++                json!({"type":"approve","call_id":"call-1","approved":true}),
++            );
++            let output = command(
++                &mut control,
++                json!({"type":"tool_result","call_id":"call-1","output":"seven"}),
++            );
++            assert_eq!(output["effects"].as_array().unwrap().len(), 1);
++            assert_eq!(
++                output["effects"][0]["event"]["item"]["type"],
++                "function_call_output"
++            );
++            let receipt = command(
++                &mut control,
++                json!({"type":"sent","id":output["effects"][0]["id"]}),
++            );
++            assert_eq!(receipt["effects"].as_array().unwrap().len(), 1);
++            assert_eq!(receipt["effects"][0]["event"]["type"], "response.create");
++            assert!(!control.responses.pending_create);
++        }
++    }
++    #[test]
++    fn retirement_preempts_pending_output_and_unsettled_approval() {
++        for event in [
++            json!({"type":"response.cancelled","response_id":"response-1"}),
++            json!({"type":"response.done","response":{"id":"response-1","status":"cancelled","output":[]}}),
++            json!({"type":"response.done","response":{"id":"response-1","status":"failed","output":[]}}),
++            json!({"type":"response.done","response":{"id":"response-1","status":"incomplete","output":[]}}),
++            json!({"type":"input_audio_buffer.speech_started"}),
++            json!({"type":"error"}),
++            json!({"type":"session.updated","session":{}}),
++        ] {
++            let mut control = ready();
++            request(&mut control);
++            let mut second = item();
++            second["call_id"] = json!("call-2");
++            second["id"] = json!("item-2");
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item(),second]}}}),
++            );
++            command(
++                &mut control,
++                json!({"type":"approve","call_id":"call-1","approved":true}),
++            );
++            command(
++                &mut control,
++                json!({"type":"tool_result","call_id":"call-1","output":"seven"}),
++            );
++            assert!(!control.pending_send.is_empty());
++            let retired = command(&mut control, json!({"type":"provider","event":event}));
++            assert!(retired.get("error").is_some());
++            assert_eq!(
++                command(
++                    &mut control,
++                    json!({"type":"approve","call_id":"call-2","approved":true})
++                )["error"],
++                "Realtime control is closed"
++            );
++            assert!(control.calls.is_empty());
++            assert!(control.incoming.is_empty());
++        }
++    }
++    #[test]
++    fn rust_ingress_preserves_startup_order_and_retirement_preempts_a_full_inbox() {
++        let mut control = Control::default();
++        startup(&mut control);
++        assert_eq!(accepted(&mut control)["effects"], json!([]));
++        assert_eq!(request(&mut control)["effects"], json!([]));
++        assert_eq!(batch(&mut control)["effects"], json!([]));
++        let released = command(&mut control, json!({"type":"sent","id":1}));
++        assert_eq!(released["effects"][1]["type"], "ready");
++        assert_eq!(released["effects"][4]["type"], "approve");
++        let mut control = Control::default();
++        startup(&mut control);
++        for _ in 0..MAX_CALLS {
++            assert_eq!(
++                command(
++                    &mut control,
++                    json!({"type":"provider","event":{"type":"response.output_text.delta","delta":"x"}})
++                )["effects"],
++                json!([])
++            );
++        }
++        assert_eq!(
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.cancelled"}})
++            )["error"],
++            "Portable voice generation was cancelled"
++        );
++        assert!(control.incoming.is_empty());
++    }
++    #[test]
+     fn readiness_requires_send_receipt_and_accepted_configuration_in_either_order() {
+         for receipt_first in [true, false] {
+             let mut c = Control::default();

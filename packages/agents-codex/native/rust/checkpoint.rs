@@ -1407,6 +1407,15 @@ pub async fn restore(
                     );
                     header.meta.id = root;
                 }
+                RolloutItem::ResponseObservationRecord(record) => {
+                    ensure!(
+                        record.thread_id == old,
+                        "manual history has foreign response observation"
+                    );
+                    // Remap host ownership only; preserve observation identity,
+                    // original turn, and every provider observation field.
+                    record.thread_id = root;
+                }
                 RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(settings))
                     if settings.thread_id == Some(old) =>
                 {

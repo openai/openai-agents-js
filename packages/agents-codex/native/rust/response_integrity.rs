@@ -64,6 +64,7 @@ impl SupportedOutput {
                         call_id: Some(_),
                         ..
                     } | ResponseItem::CustomToolCallOutput { .. }
+                        | ResponseItem::ComputerCallOutput { .. }
                 ) || matches!(
                     item,
                     ResponseItem::ToolSearchOutput { call_id: Some(_), execution, .. }
@@ -94,6 +95,7 @@ impl SupportedOutput {
                         });
                     }
                     ResponseItem::FunctionCall { .. }
+                    | ResponseItem::ComputerCall { .. }
                     | ResponseItem::CustomToolCall { .. }
                     | ResponseItem::WebSearchCall { .. }
                     | ResponseItem::FileSearchCall { .. }
@@ -207,6 +209,7 @@ mod tests {
         for value in [
             json!({"type":"function_call_output","call_id":"provider-only","output":"untrusted"}),
             json!({"type":"custom_tool_call_output","call_id":"provider-only","output":"untrusted"}),
+            json!({"type":"computer_call_output","call_id":"provider-only","output":{"type":"computer_screenshot","image_url":"data:image/png;base64,private-image"},"acknowledged_safety_checks":[]}),
             json!({"type":"tool_search_output","call_id":"provider-only","status":"completed","execution":"client","tools":[]}),
         ] {
             for added in [true, false] {
@@ -233,6 +236,16 @@ mod tests {
             assert!(!output.rejects(&ResponseEvent::OutputItemDone(item(value))));
             assert!(!output.rejects(&completed(Some(true))));
         }
+    }
+
+    #[test]
+    fn completed_computer_call_grants_supported_output_without_a_function_item() {
+        let mut output = SupportedOutput::default();
+        let call = item(
+            json!({"type":"computer_call","call_id":"computer-only","actions":[{"type":"wait"}]}),
+        );
+        assert!(!output.rejects(&ResponseEvent::OutputItemDone(call)));
+        assert!(!output.rejects(&completed(None)));
     }
 
     #[test]

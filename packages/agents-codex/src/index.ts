@@ -1,3 +1,4 @@
+export { applyDiff } from '@openai/agents-core';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
 export { Agent, Runner } from './runtime/public-agent';
@@ -380,6 +381,26 @@ export type {
   ContextTransform,
 } from './runtime/model-callbacks';
 
+export { ChatCompletionsModel } from './runtime/models';
+export type {
+  NativeModel,
+  ModelProvider,
+  ModelRequest,
+  ModelResponse,
+} from './runtime/models';
+export { computerTool, ComputerSafetyError } from './runtime/computer';
+export type {
+  Computer,
+  ComputerProvider,
+  ComputerAction,
+  ComputerButton,
+  ComputerEnvironment,
+  ComputerToolOptions,
+} from './runtime/computer';
+// Private extension hook for Session-scoped state, not execution authority.
+export { _nativeToolSessionOwner } from './runtime/tools';
+export { isFunctionApprovalRequest } from './runtime/manual';
+export type { FunctionApprovalRequest } from './runtime/manual';
 export type {
   NativeRealtimeUsage,
   NativeRealtimeUsageCounters,

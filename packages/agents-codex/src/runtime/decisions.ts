@@ -174,6 +174,7 @@ export function captureDecisionProvider(
 interface DecisionOwner {
   readonly provider?: DecisionProvider;
   readonly signal?: AbortSignal;
+  track?(work: Promise<unknown>): void;
   assertActive(): void;
 }
 
@@ -194,6 +195,7 @@ export function bindDecide(owner: DecisionOwner): BoundDecide {
         signal,
       });
       const result = performDecision(captured, owner);
+      owner.track?.(result);
       void result.catch(() => {});
       return result;
     } catch (error) {

@@ -2,7 +2,8 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from './config';
-import type { JsonObject } from './binding';
+import type { NativeModel, ModelProvider } from './models';
+import { copyJsonValue, type JsonObject } from './binding';
 import type { ToolRef } from './tools';
 import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
@@ -14,6 +15,10 @@ import {
 import { NativeError } from './native-error';
 
 export interface NativeProviderOptions {
+  modelBackend?: NativeModel | ModelProvider;
+  /** Native phase timeouts in integer milliseconds; zero expires immediately. */
+  streamIdleTimeoutMs?: number;
+  websocketConnectTimeoutMs?: number;
   baseUrl?: string;
   apiKey?: string;
   /**
@@ -83,6 +88,32 @@ export class NativeProvider {
   #runtime?: PrivateRuntimeSlot;
 
   constructor(options: NativeProviderOptions = {}) {
+    if (options.modelBackend !== undefined) {
+      if (
+        !options.modelBackend ||
+        ((!('complete' in options.modelBackend) ||
+          typeof options.modelBackend.complete !== 'function') &&
+          (!('getModel' in options.modelBackend) ||
+            typeof options.modelBackend.getModel !== 'function'))
+      )
+        throw new TypeError(
+          'modelBackend must implement complete(request) or getModel(modelName)',
+        );
+      if (options.supportsWebsockets === true || options.chatGPT !== undefined)
+        throw new TypeError(
+          'modelBackend requires HTTP mode without ChatGPT authentication',
+        );
+    }
+    for (const key of [
+      'requestMaxRetries',
+      'streamMaxRetries',
+      'streamIdleTimeoutMs',
+      'websocketConnectTimeoutMs',
+    ] as const) {
+      const value = options[key];
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+        throw new TypeError(`${key} must be a nonnegative safe integer`);
+    }
     for (const key of ['baseUrl', 'apiKey'] as const) {
       if (
         options[key] !== undefined &&
@@ -107,11 +138,6 @@ export class NativeProvider {
       throw new TypeError(
         'buffered Responses requires HTTP without WebSockets',
       );
-    for (const key of ['requestMaxRetries', 'streamMaxRetries'] as const) {
-      const value = options[key];
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
-        throw new TypeError(`${key} must be a non-negative safe integer`);
-    }
     const routing = captureProviderRouting(options);
     this.#routing = routing.config;
     const captured = { ...options, ...routing.options };
@@ -121,6 +147,9 @@ export class NativeProvider {
     });
   }
 
+  get modelBackend(): NativeModel | ModelProvider | undefined {
+    return this.#options.modelBackend;
+  }
   #schedulePrivateCleanup(): void {
     const slot = this.#runtime;
     if (
@@ -187,18 +216,24 @@ export class NativeProvider {
       pendingIdle.idle = undefined;
     }
     const options = this.#options;
-    const apiKey = captured
-      ? captured.apiKey
-      : (options.apiKey ?? process.env.OPENAI_API_KEY);
+    const apiKey =
+      options.modelBackend !== undefined
+        ? 'native-model-producer'
+        : captured
+          ? captured.apiKey
+          : (options.apiKey ?? process.env.OPENAI_API_KEY);
     const privateCandidate =
       privateRun &&
       this.constructor === NativeProvider &&
       !options.chatGPT &&
       apiKey !== undefined &&
       apiKey.length > 0 &&
-      (options.apiKey === undefined || apiKey === options.apiKey) &&
+      (options.modelBackend !== undefined ||
+        options.apiKey === undefined ||
+        apiKey === options.apiKey) &&
       options.responseMode !== 'buffered';
     const websocketsAllowed =
+      options.modelBackend === undefined &&
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ??
         (options.baseUrl === undefined && !privateCandidate));
@@ -327,12 +362,14 @@ export class NativeProvider {
           requires_openai_auth: true,
           supports_websockets: websocketsAllowed,
           ...this.#routing,
-          ...(options.requestMaxRetries === undefined
-            ? {}
-            : { request_max_retries: options.requestMaxRetries }),
-          ...(options.streamMaxRetries === undefined
-            ? {}
-            : { stream_max_retries: options.streamMaxRetries }),
+          ...Object.fromEntries(
+            Object.entries({
+              request_max_retries: options.requestMaxRetries,
+              stream_max_retries: options.streamMaxRetries,
+              stream_idle_timeout_ms: options.streamIdleTimeoutMs,
+              websocket_connect_timeout_ms: options.websocketConnectTimeoutMs,
+            }).filter(([, value]) => value !== undefined),
+          ),
         },
       },
       async open() {
@@ -461,6 +498,11 @@ export interface ModelSettings {
   promptCacheRetention?: 'in_memory' | '24h' | null;
   /** Distinct from retention; omission leaves the provider default omitted. */
   promptCacheTtl?: '30m' | '12h' | null;
+  truncation?: 'auto' | 'disabled' | null;
+  /** Additional response fields; native replay and hosted-tool includes remain enabled. */
+  include?: readonly string[] | null;
+  contextManagement?: readonly JsonObject[] | null;
+  extraBody?: JsonObject | null;
 }
 
 /** @internal Capture nested settings before opening can await. */
@@ -485,6 +527,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'store',
     'promptCacheRetention',
     'promptCacheTtl',
+    'truncation',
+    'include',
+    'contextManagement',
+    'extraBody',
   ]);
   for (const key of Object.getOwnPropertyNames(source)) {
     if (!allowed.has(key))
@@ -522,6 +568,72 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
       } else if (key === 'parallelToolCalls' || key === 'store') {
         if (typeof value !== 'boolean')
           throw new TypeError(`${key} must be boolean or null`);
+      } else if (key === 'truncation') {
+        if (value !== 'auto' && value !== 'disabled')
+          throw new TypeError('truncation must be auto or disabled');
+      } else if (key === 'include') {
+        if (
+          !Array.isArray(value) ||
+          value.some((item) => typeof item !== 'string')
+        )
+          throw new TypeError('include must be an array of strings');
+        value = [...value];
+      } else if (key === 'contextManagement' || key === 'extraBody') {
+        if (key === 'contextManagement') {
+          if (
+            !Array.isArray(value) ||
+            value.some(
+              (item) =>
+                item === null ||
+                typeof item !== 'object' ||
+                Array.isArray(item),
+            )
+          )
+            throw new TypeError(
+              'contextManagement must be an array of JSON objects',
+            );
+        } else if (typeof value !== 'object' || Array.isArray(value))
+          throw new TypeError('extraBody must be a JSON object');
+        if (
+          key === 'extraBody' &&
+          Object.keys(value).some((field) =>
+            [
+              'type',
+              'generate',
+              'model',
+              'stream',
+              'input',
+              'instructions',
+              'tools',
+              'tool_choice',
+              'parallel_tool_calls',
+              'reasoning',
+              'store',
+              'stream_options',
+              'include',
+              'prompt_cache_key',
+              'text',
+              'client_metadata',
+              'access_programs',
+              'previous_response_id',
+              'conversation',
+              'service_tier',
+              'max_output_tokens',
+              'temperature',
+              'top_p',
+              'top_logprobs',
+              'metadata',
+              'prompt_cache_retention',
+              'prompt_cache_options',
+              'truncation',
+              'context_management',
+            ].includes(field),
+          )
+        )
+          throw new TypeError(
+            'extraBody cannot replace native request fields; use the corresponding model setting',
+          );
+        value = copyJsonValue(value);
       } else if (key === 'metadata') {
         if (typeof value !== 'object' || Array.isArray(value))
           throw new TypeError('metadata must be a string map');
@@ -569,6 +681,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'store',
         'promptCacheRetention',
         'promptCacheTtl',
+        'truncation',
+        'include',
+        'contextManagement',
+        'extraBody',
       ].includes(key)
     ) {
       throw new TypeError(`Invalid null model setting: ${key}`);
@@ -752,10 +868,14 @@ export function modelOverrides(
     store: 'store',
     promptCacheRetention: 'prompt_cache_retention',
     promptCacheTtl: 'prompt_cache_ttl',
+    truncation: 'truncation',
+    include: 'include',
+    contextManagement: 'context_management',
+    extraBody: 'extra_body',
   } as const;
   for (const [key, wire] of Object.entries(names)) {
     const value = selected[key as keyof typeof names];
-    if (value !== undefined) controls[wire] = value;
+    if (value !== undefined) controls[wire] = copyJsonValue(value);
   }
   if (selected.toolChoice !== undefined) {
     const choice = selected.toolChoice;

@@ -463,6 +463,10 @@ it('sends controls on real native WebSocket generation frames', async () => {
         maxOutputTokens: 29,
         temperature: 0.25,
         metadata: { wire: 'websocket' },
+        truncation: 'disabled',
+        include: ['message.output_text.logprobs'],
+        extraBody: { provider_feature: { websocket: true } },
+        contextManagement: [{ type: 'compaction', compact_threshold: 1024 }],
         promptCacheTtl: '12h',
         promptCacheRetention: 'in_memory',
       },
@@ -479,11 +483,48 @@ it('sends controls on real native WebSocket generation frames', async () => {
       prompt_cache_options: { ttl: '12h' },
       prompt_cache_retention: 'in_memory',
     });
+    expect(generated.at(-1)).toMatchObject({
+      type: 'response.create',
+      truncation: 'disabled',
+      provider_feature: { websocket: true },
+      context_management: [{ type: 'compaction', compact_threshold: 1024 }],
+    });
+    expect(generated.at(-1)?.include).toContain('message.output_text.logprobs');
     expect(errors).toEqual([]);
   } finally {
     for (const socket of peer.clients) socket.terminate();
     await new Promise<void>((resolve) => peer.close(() => resolve()));
   }
+}, 30_000);
+
+it('keeps empty extraBody as a no-wire patch on Lite', async () => {
+  const server = new ModelServer([
+    [message('empty body accepted')],
+    [message('empty patch accepted')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.6-sol',
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { extraBody: {} },
+  }).session();
+  expect((await (await session.submit('empty body')).wait()).finalOutput).toBe(
+    'empty body accepted',
+  );
+  await session.update({ modelSettings: { extraBody: {} } });
+  await expect(
+    session.update({
+      modelSettings: { extraBody: { provider_feature: null } },
+    }),
+  ).rejects.toThrow(/standard Responses|Responses Lite/);
+  expect((await (await session.submit('empty patch')).wait()).finalOutput).toBe(
+    'empty patch accepted',
+  );
+  expect(server.requests).toHaveLength(2);
+  for (const request of server.requests)
+    expect(request).not.toHaveProperty('provider_feature');
+  server.assertExhausted();
 }, 30_000);
 
 it('rejects known Lite before publishing a model or controls change', async () => {
@@ -529,5 +570,153 @@ it('surfaces provider rejection of an unknown model control without dropping it 
   ).rejects.toThrow(/unsupported explicit temperature/);
   expect(server.requests).toHaveLength(1);
   expect(server.requests[0]?.temperature).toBe(0.4);
+  server.assertExhausted();
+}, 30_000);
+
+it('captures extended provider fields and restores values after explicit clears', async () => {
+  const server = new ModelServer(
+    Array.from({ length: 3 }, () => [message('finished')]),
+  );
+  const extraBody = { provider_feature: { mode: 'captured' } };
+  const include = ['message.output_text.logprobs'];
+  const contextManagement = [{ type: 'compaction', compact_threshold: 1024 }];
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: MODEL,
+    instructions: 'Answer.',
+    provider,
+    modelSettings: {
+      truncation: 'auto',
+      include,
+      contextManagement,
+      extraBody,
+    },
+  });
+  extraBody.provider_feature.mode = 'mutated';
+  include.push('mutated');
+  contextManagement[0].compact_threshold = 999;
+  const session = await agent.session();
+  let saved;
+  try {
+    await (await session.submit('first')).wait();
+    saved = await session.saveState();
+    await session.update({
+      modelSettings: {
+        truncation: null,
+        include: null,
+        contextManagement: null,
+        extraBody: null,
+      },
+    });
+    await (await session.submit('clear')).wait();
+  } finally {
+    await session.close();
+  }
+  const restored = await agent.session({ state: saved });
+  try {
+    await (await restored.submit('restore')).wait();
+  } finally {
+    await restored.close();
+  }
+  for (const index of [0, 2]) {
+    const request = server.requests[index];
+    expect(request.truncation).toBe('auto');
+    expect(request.provider_feature).toEqual({ mode: 'captured' });
+    expect(request.context_management).toEqual([
+      { type: 'compaction', compact_threshold: 1024 },
+    ]);
+    expect(request.include).toContain('message.output_text.logprobs');
+    expect(request.include).toContain('reasoning.encrypted_content');
+    expect(request.include).not.toContain('mutated');
+  }
+  for (const key of ['truncation', 'provider_feature', 'context_management'])
+    expect(server.requests[1]).not.toHaveProperty(key);
+  expect(server.requests[1].include).not.toContain(
+    'message.output_text.logprobs',
+  );
+});
+
+it.each(['type', 'generate', 'input', 'tools', 'previous_response_id'])(
+  'rejects extraBody native envelope field %s before opening',
+  (key) => {
+    expect(
+      () =>
+        new Agent({
+          instructions: 'Answer.',
+          modelSettings: { extraBody: { [key]: false } },
+        }),
+    ).toThrow('extraBody cannot replace');
+  },
+);
+
+it('keeps include=[] as a sparse no-wire patch across Lite update, clear and restore', async () => {
+  const server = new ModelServer([
+    [message('opened')],
+    [message('cleared')],
+    [message('restored')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: 'gpt-5.6-sol',
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { include: [] },
+  });
+  let saved;
+  {
+    await using session = await agent.session();
+    expect((await (await session.submit('open')).wait()).finalOutput).toBe(
+      'opened',
+    );
+    await session.update({ modelSettings: { include: [] } });
+    saved = await session.saveState();
+    await expect(
+      session.update({
+        modelSettings: { include: ['message.output_text.logprobs'] },
+      }),
+    ).rejects.toThrow(/standard Responses|Responses Lite/);
+    await session.update({ modelSettings: { include: null } });
+    expect((await (await session.submit('clear')).wait()).finalOutput).toBe(
+      'cleared',
+    );
+  }
+  await using restored = await agent.session({ state: saved });
+  expect((await (await restored.submit('restore')).wait()).finalOutput).toBe(
+    'restored',
+  );
+  expect(server.requests).toHaveLength(3);
+  for (const request of server.requests)
+    expect(request.include ?? []).not.toContain('message.output_text.logprobs');
+  server.assertExhausted();
+}, 30_000);
+
+it('clears caller includes with [] while preserving native required includes after restore', async () => {
+  const server = new ModelServer([
+    [message('before')],
+    [message('empty')],
+    [message('restored')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: MODEL,
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { include: ['message.output_text.logprobs'] },
+  });
+  let saved;
+  {
+    await using session = await agent.session();
+    await (await session.submit('before')).wait();
+    await session.update({ modelSettings: { include: [] } });
+    await (await session.submit('empty')).wait();
+    saved = await session.saveState();
+  }
+  await using restored = await agent.session({ state: saved });
+  await (await restored.submit('restore')).wait();
+  expect(server.requests[0].include).toContain('message.output_text.logprobs');
+  for (const request of server.requests.slice(1)) {
+    expect(request.include).not.toContain('message.output_text.logprobs');
+    expect(request.include).toContain('reasoning.encrypted_content');
+  }
   server.assertExhausted();
 }, 30_000);
