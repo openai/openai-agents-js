@@ -195,6 +195,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^5.0.3
         version: 5.0.3(vitest@5.0.3)
+      binaryen:
+        specifier: 108.0.0
+        version: 108.0.0
       eslint:
         specifier: ^9.39.4
         version: 9.39.4(jiti@2.7.0)(supports-color@10.2.2)
@@ -4837,6 +4840,10 @@ packages:
   big-integer@1.6.52:
     resolution: {integrity: sha512-QxD8cf2eVqJOOz63z6JIN9BzvVs/dlySa5HGSBH5xtR8dPteIRQnBxxKqkNTiT6jbDTF6jAfrd4oMcND9RGbQg==}
     engines: {node: '>=0.6'}
+
+  binaryen@108.0.0:
+    resolution: {integrity: sha512-VqGs7YFpWoHqI8bZZEAsDo5zx0BxdjU3tBJs4rw0BYfVwFwv1DGR1EtlTXmZOGBOEqZ72S2xmfRxRN9NaNmWaA==}
+    hasBin: true
 
   body-parser@1.20.6:
     resolution: {integrity: sha512-p5tAzS57i5MV9fZFDj9LeIiTZEufbSe2eDozP+ElheSUq1m74CRq1jI4mYNDdVs9vQztXFLuk/Gd6BWTdwRJ5g==}
@@ -14195,6 +14202,8 @@ snapshots:
 
   big-integer@1.6.52: {}
 
+  binaryen@108.0.0: {}
+
   body-parser@1.20.6(supports-color@10.2.2):
     dependencies:
       bytes: 3.1.2
@@ -16248,6 +16257,7 @@ snapshots:
       '@koromix/koffi-win32-arm64': 3.3.6
       '@koromix/koffi-win32-ia32': 3.3.6
       '@koromix/koffi-win32-x64': 3.3.6
+    optional: true
 
   lan-network@0.2.1: {}
 

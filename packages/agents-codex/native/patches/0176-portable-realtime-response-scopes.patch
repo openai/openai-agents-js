@@ -1,0 +1,2105 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+index a16a9df25d0ca526386e10debf30608b2f016181..d65ee1b7833aa85755cb88eb7f556d9d327c5259 100644
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -210,7 +210,7 @@ fn contains_expected_at(accepted: &Value, expected: &Value, site: MatchSite) ->
+     }
+ }
+ 
+-#[derive(Clone, Deserialize)]
++#[derive(Clone, Deserialize, Serialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct Tool {
+     pub name: String,
+@@ -228,6 +228,10 @@ pub struct Config {
+     pub tools: Vec<Tool>,
+     #[serde(default)]
+     pub settings: BTreeMap<String, Value>,
++    #[serde(default)]
++    pub hosted_tools: Vec<Value>,
++    #[serde(default)]
++    pub profile_id: u64,
+ }
+ #[derive(Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+@@ -238,19 +242,37 @@ pub enum Command {
+     Update {
+         config: Config,
+     },
+-    Cancel,
++    Cancel {
++        response_id: Option<String>,
++    },
+     Audio {
+         audio: String,
+     },
+     CommitAudio,
+     ClearAudio,
+-    CreateResponse,
++    CreateResponse {
++        response: Option<Value>,
++        #[serde(default)]
++        history: Vec<Value>,
++    },
++    ApproveMcp {
++        request_id: String,
++        approved: bool,
++    },
+     Input {
+         item: Value,
++        #[serde(default, deserialize_with = "present_value")]
++        previous_item_id: Option<Value>,
++        #[serde(default = "default_true")]
++        create_response: bool,
+     },
+     Delete {
+         item_id: String,
+     },
++    ValidateHistory {
++        delete_ids: Vec<String>,
++        items: Vec<Value>,
++    },
+     Truncate {
+         item_id: String,
+         content_index: u32,
+@@ -301,6 +323,25 @@ pub enum Effect {
+     },
+     Ready,
+     Configured,
++    Retire {
++        response_id: String,
++    },
++    Scope {
++        response_id: String,
++        profile_id: u64,
++        out_of_band: bool,
++        #[serde(skip_serializing_if = "Option::is_none")]
++        history: Option<Vec<Value>>,
++    },
++    ApproveMcp {
++        request_id: String,
++        server_label: String,
++        name: String,
++        arguments: Value,
++    },
++    AbortMcp {
++        request_id: String,
++    },
+     Abort {
+         call_id: String,
+     },
+@@ -328,9 +369,32 @@ struct Call {
+     phase: CallPhase,
+     claim: CallClaim,
+     needs_approval: bool,
++    output: Option<String>,
++}
++struct HostedApproval {
++    response_id: String,
++    item: Value,
++    phase: CallPhase,
++    decision: Option<bool>,
++}
++#[derive(Clone, Serialize)]
++struct ResponseScope {
++    profile_id: u64,
++    tools: BTreeMap<String, Tool>,
++    hosted: BTreeMap<String, Value>,
++    request: Value,
++    continuation: Value,
++    history: Vec<Value>,
++}
++struct DetachedResponse {
++    active: bool,
++    scope: Option<ResponseScope>,
++    output: Vec<Value>,
+ }
+ struct Batch {
+     calls: Vec<String>,
++    hosted: Vec<String>,
++    out_of_band: bool,
+     continued: bool,
+ }
+ /// All mutation is synchronous and serialized by the host's Wasm instance.
+@@ -339,8 +403,25 @@ pub struct Control {
+     phase: Phase,
+     tools: BTreeMap<String, Tool>,
+     expected_session: Value,
++    accepted_session: Value,
+     pending_tools: BTreeMap<String, Tool>,
+     calls: BTreeMap<String, Call>,
++    hosted: BTreeMap<String, Value>,
++    pending_hosted: BTreeMap<String, Value>,
++    response_hosted: BTreeMap<String, Value>,
++    approvals: BTreeMap<String, HostedApproval>,
++    detached: BTreeMap<String, DetachedResponse>,
++    pending_detached: Option<ResponseScope>,
++    detached_bytes: usize,
++    profile_id: u64,
++    pending_profile_id: u64,
++    response_profile_id: u64,
++    pending_response: Option<Value>,
++    pending_default: Option<ResponseScope>,
++    pending_default_event: Option<String>,
++    default_metadata_generated: bool,
++    detached_guardrails: BTreeMap<String, (String, bool)>,
++    last_completed: Option<String>,
+     batches: BTreeMap<String, Batch>,
+     responses: ResponseCreateState<()>,
+     next_send: u64,
+@@ -353,6 +434,7 @@ pub struct Control {
+     updating: bool,
+     response_tools: BTreeMap<String, Tool>,
+     retired_responses: BTreeSet<String>,
++    completed_responses: BTreeSet<String>,
+     cancel_before_created: bool,
+     cancel_waiting: Option<String>,
+     guardrail_output: Option<String>,
+@@ -363,8 +445,25 @@ impl Default for Control {
+             phase: Phase::New,
+             tools: BTreeMap::new(),
+             expected_session: Value::Null,
++            accepted_session: Value::Null,
+             pending_tools: BTreeMap::new(),
+             calls: BTreeMap::new(),
++            hosted: BTreeMap::new(),
++            pending_hosted: BTreeMap::new(),
++            response_hosted: BTreeMap::new(),
++            approvals: BTreeMap::new(),
++            detached: BTreeMap::new(),
++            pending_detached: None,
++            detached_bytes: 0,
++            profile_id: 0,
++            pending_profile_id: 0,
++            response_profile_id: 0,
++            pending_response: None,
++            pending_default: None,
++            pending_default_event: None,
++            default_metadata_generated: false,
++            detached_guardrails: BTreeMap::new(),
++            last_completed: None,
+             batches: BTreeMap::new(),
+             responses: ResponseCreateState::default(),
+             next_send: 0,
+@@ -377,6 +476,7 @@ impl Default for Control {
+             updating: false,
+             response_tools: BTreeMap::new(),
+             retired_responses: BTreeSet::new(),
++            completed_responses: BTreeSet::new(),
+             cancel_before_created: false,
+             cancel_waiting: None,
+             guardrail_output: None,
+@@ -394,6 +494,19 @@ impl Control {
+         self.next_send
+     }
+     pub fn apply(&mut self, command: Command) -> Result<Vec<Effect>, String> {
++        if let Command::ValidateHistory { delete_ids, items } = &command {
++            self.require_ready()?;
++            if delete_ids.len() + items.len() > MAX_CALLS {
++                return Err("History plan exceeds capacity".into());
++            }
++            for id in delete_ids {
++                self.validate_deletion(id)?;
++            }
++            for item in items {
++                Self::validate_input(item)?;
++            }
++            return Ok(vec![]);
++        }
+         let result = self.transition(command);
+         if result.is_err() {
+             self.retire();
+@@ -405,7 +518,20 @@ impl Control {
+         self.tools.clear();
+         self.pending_tools.clear();
+         self.expected_session = Value::Null;
++        self.accepted_session = Value::Null;
+         self.calls.clear();
++        self.hosted.clear();
++        self.pending_hosted.clear();
++        self.response_hosted.clear();
++        self.approvals.clear();
++        self.detached.clear();
++        self.pending_detached = None;
++        self.detached_bytes = 0;
++        self.pending_response = None;
++        self.pending_default = None;
++        self.pending_default_event = None;
++        self.detached_guardrails.clear();
++        self.last_completed = None;
+         self.batches.clear();
+         self.pending_send.clear();
+         self.incoming.clear();
+@@ -413,6 +539,7 @@ impl Control {
+         self.responses = ResponseCreateState::default();
+         self.response_tools.clear();
+         self.retired_responses.clear();
++        self.completed_responses.clear();
+         self.guardrail_output = None;
+         self.cancel_waiting = None;
+     }
+@@ -426,6 +553,7 @@ impl Control {
+         }
+         let mut effects = vec![];
+         match command {
++            Command::ValidateHistory { .. } => unreachable!("history preflight is read-only"),
+             Command::Start { config } => {
+                 if self.phase != Phase::New {
+                     return Err("Realtime control already started".into());
+@@ -438,24 +566,71 @@ impl Control {
+                 }
+                 self.configure(config, true, &mut effects)?;
+             }
+-            Command::Cancel => {
++            Command::Cancel { response_id } => {
+                 self.require_ready()?;
+-                self.interrupt(&mut effects)?;
++                if let Some(id) =
++                    response_id.filter(|id| self.responses.sdk_response_id.as_ref() != Some(id))
++                {
++                    let active = self
++                        .detached
++                        .get_mut(&id)
++                        .ok_or("Unknown response cancellation identity")?;
++                    if !active.active {
++                        return Err("Detached response is already finished".into());
++                    }
++                    active.active = false;
++                    self.abort_scope(&id, &mut effects);
++                    self.detached_guardrails.remove(&id);
++                    self.send(
++                        json!({"type":"response.cancel","response_id":id}),
++                        &mut effects,
++                    );
++                } else {
++                    self.interrupt(&mut effects)?;
++                }
+             }
+             Command::Guardrail {
+                 response_id,
+                 output,
+             } => {
+                 self.require_ready()?;
+-                if self.responses.sdk_response_id.as_ref() != Some(&response_id) {
+-                    return Err("Guardrail does not own the active response".into());
+-                }
+                 if output.len() > MAX_CALL_BYTES {
+                     return Err("Guardrail output exceeds capacity".into());
+                 }
+-                self.interrupt(&mut effects)?;
+-                self.guardrail_output = Some(output);
+-                self.release_guardrail(&mut effects);
++                if let Some(active) = self.detached.get_mut(&response_id) {
++                    if active.scope.is_none() {
++                        return Err(
++                            "Unmanaged detached response has no SDK guardrail source".into()
++                        );
++                    }
++                    let active = std::mem::replace(&mut active.active, false);
++                    if self.detached_guardrails.contains_key(&response_id) {
++                        return Err("Detached guardrail already settled".into());
++                    }
++                    self.detached_guardrails
++                        .insert(response_id.clone(), (output, !active));
++                    if active {
++                        self.send(
++                            json!({"type":"response.cancel","response_id":response_id}),
++                            &mut effects,
++                        );
++                    }
++                    self.abort_scope(&response_id, &mut effects);
++                } else {
++                    if self.responses.sdk_response_id.as_ref() != Some(&response_id)
++                        && !(self.last_completed.as_ref() == Some(&response_id)
++                            && !self.responses.active_default_response)
++                    {
++                        return Err("Guardrail does not own the active response".into());
++                    }
++                    self.last_completed = None;
++                    self.interrupt(&mut effects)?;
++                    self.guardrail_output = Some(output);
++                    self.release_guardrail(&mut effects);
++                    if !effects.iter().any(|effect|matches!(effect,Effect::Retire {response_id:id} if id == &response_id)) {
++                        effects.push(Effect::Retire {response_id});
++                    }
++                }
+             }
+             Command::Audio { audio } => {
+                 self.require_ready()?;
+@@ -476,35 +651,69 @@ impl Control {
+             Command::CommitAudio => {
+                 self.require_ready()?;
+                 self.send(json!({"type":"input_audio_buffer.commit"}), &mut effects);
+-                self.request_response(&mut effects);
+             }
+             Command::ClearAudio => {
+                 self.require_ready()?;
+                 self.send(json!({"type":"input_audio_buffer.clear"}), &mut effects);
+             }
+-            Command::CreateResponse => {
++            Command::CreateResponse { response, history } => {
+                 self.require_ready()?;
+-                self.request_response(&mut effects);
++                if let Some(response) = response {
++                    self.validate_response(&response)?;
++                    if response["conversation"] == "none" {
++                        let scope = self.new_scope(response, history);
++                        self.send_detached(scope, &mut effects)?;
++                    } else {
++                        self.pending_response = Some(response);
++                        self.request_response(&mut effects);
++                    }
++                } else {
++                    self.request_response(&mut effects);
++                }
+             }
+-            Command::Input { item } => {
++            Command::ApproveMcp {
++                request_id,
++                approved,
++            } => {
+                 self.require_ready()?;
+-                if item["type"] != "message"
+-                    || !matches!(item["role"].as_str(), Some("user" | "assistant" | "system"))
+-                    || !item["content"].is_array()
+-                {
+-                    return Err("Input must be a conversation message".into());
++                let request = self
++                    .approvals
++                    .get(&request_id)
++                    .ok_or("Unknown hosted MCP approval")?;
++                if request.phase != CallPhase::Approval {
++                    return Err("Hosted MCP approval is stale or already settled".into());
++                }
++                if self.detached.contains_key(&request.response_id) {
++                    let request = self.approvals.get_mut(&request_id).unwrap();
++                    request.decision = Some(approved);
++                    request.phase = CallPhase::Published;
++                } else {
++                    let id = self.send(json!({"type":"conversation.item.create","item":{"type":"mcp_approval_response","approval_request_id":request_id,"approve":approved}}), &mut effects);
++                    self.approvals.get_mut(&request_id).unwrap().phase = CallPhase::Publishing(id);
+                 }
+-                self.send(
+-                    json!({"type":"conversation.item.create","item":item}),
+-                    &mut effects,
+-                );
+-                self.request_response(&mut effects);
+             }
+-            Command::Delete { item_id } => {
++            Command::Input {
++                item,
++                previous_item_id,
++                create_response,
++            } => {
+                 self.require_ready()?;
+-                if item_id.is_empty() {
+-                    return Err("Missing conversation item identity".into());
++                Self::validate_input(&item)?;
++                let mut event = json!({"type":"conversation.item.create","item":item});
++                if let Some(previous) = previous_item_id {
++                    if !previous.is_null() && !previous.is_string() {
++                        return Err("Invalid previous item identity".into());
++                    }
++                    event["previous_item_id"] = previous;
+                 }
++                self.send(event, &mut effects);
++                if create_response {
++                    self.request_response(&mut effects);
++                }
++            }
++            Command::Delete { item_id } => {
++                self.require_ready()?;
++                self.validate_deletion(&item_id)?;
+                 self.send(
+                     json!({"type":"conversation.item.delete","item_id":item_id}),
+                     &mut effects,
+@@ -528,6 +737,11 @@ impl Control {
+                 if self.startup_send == Some(id) {
+                     self.startup_sent = true;
+                 }
++                for approval in self.approvals.values_mut() {
++                    if approval.phase == CallPhase::Publishing(id) {
++                        approval.phase = CallPhase::Published;
++                    }
++                }
+                 for call in self.calls.values_mut() {
+                     if call.phase == CallPhase::Publishing(id) {
+                         call.phase = CallPhase::Published;
+@@ -541,7 +755,6 @@ impl Control {
+                     // Each queued event remains a canonical transition, including readiness.
+                     effects.extend(self.transition(Command::Provider { event })?);
+                 }
+-                self.continue_batches(&mut effects);
+                 self.release_guardrail(&mut effects);
+             }
+             Command::Provider { event } => {
+@@ -600,26 +813,53 @@ impl Control {
+                 effects.push(Effect::Closed);
+             }
+         }
+-        if self.pending_send.len() > MAX_CALLS {
+-            return Err("Portable voice send capacity exceeded".into());
+-        }
+         if self.phase == Phase::Configuring && self.startup_sent && self.startup_accepted {
+             self.phase = Phase::Ready;
+             self.tools = std::mem::take(&mut self.pending_tools);
++            self.hosted = std::mem::take(&mut self.pending_hosted);
++            self.profile_id = self.pending_profile_id;
++            self.accepted_session = self.expected_session.clone();
+             effects.push(if self.updating {
+                 Effect::Configured
+             } else {
+                 Effect::Ready
+             });
+             self.updating = false;
+-            self.continue_batches(&mut effects);
+             self.release_guardrail(&mut effects);
+             if self.responses.pending_create && !self.responses.active_default_response {
+                 self.request_response(&mut effects);
+             }
+         }
++        self.release_detached_guardrails(&mut effects)?;
++        self.continue_batches(&mut effects)?;
++        if self.pending_send.len() > MAX_CALLS {
++            return Err("Portable voice send capacity exceeded".into());
++        }
+         Ok(effects)
+     }
++    fn validate_input(item: &Value) -> Result<(), String> {
++        if item["type"] != "message"
++            || !matches!(item["role"].as_str(), Some("user" | "assistant" | "system"))
++            || !item["content"].is_array()
++        {
++            return Err("Input must be a conversation message".into());
++        }
++        Ok(())
++    }
++    fn validate_deletion(&self, item_id: &str) -> Result<(), String> {
++        if item_id.is_empty() {
++            return Err("Missing conversation item identity".into());
++        }
++        if self.calls.values().any(|call| {
++            call.request.item_id == item_id
++                && !matches!(call.phase, CallPhase::Published | CallPhase::Cancelled)
++        }) || self.approvals.get(item_id).is_some_and(|request| {
++            !matches!(request.phase, CallPhase::Published | CallPhase::Cancelled)
++        }) {
++            return Err("Conversation deletion conflicts with live tool ownership".into());
++        }
++        Ok(())
++    }
+     fn configure(
+         &mut self,
+         config: Config,
+@@ -649,6 +889,22 @@ impl Control {
+             wire_tools.push(json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters}));
+             tools.insert(tool.name.clone(), tool);
+         }
++        let mut hosted = BTreeMap::new();
++        if config.hosted_tools.len() + wire_tools.len() > MAX_CALLS {
++            return Err("Realtime tool capacity exceeded".into());
++        }
++        for tool in config.hosted_tools {
++            let label = string(&tool, "server_label")?;
++            let url = tool["server_url"].as_str().is_some_and(|s| !s.is_empty());
++            let connector = tool["connector_id"].as_str().is_some_and(|s| !s.is_empty());
++            if tool["type"] != "mcp" || url == connector || hosted.contains_key(&label) {
++                return Err("Invalid or duplicate hosted MCP declaration".into());
++            }
++            hosted.insert(label, tool.clone());
++            wire_tools.push(tool);
++        }
++        self.pending_hosted = hosted;
++        self.pending_profile_id = config.profile_id;
+         let mut session = json!({"type":"realtime","model":config.model,"instructions":config.instructions,"tools":wire_tools,"tool_choice":"auto"});
+         session.as_object_mut().unwrap().extend(config.settings);
+         // Catalog changes become observable only after the ordered exact ACK.
+@@ -662,6 +918,279 @@ impl Control {
+             Some(self.send(json!({"type":"session.update","session":session}), effects));
+         Ok(())
+     }
++    fn new_scope(&self, mut request: Value, history: Vec<Value>) -> ResponseScope {
++        let mut tools = self.tools.clone();
++        let mut hosted = self.hosted.clone();
++        if let Some(selected) = request["tools"].as_array() {
++            tools.retain(|name, _| {
++                selected
++                    .iter()
++                    .any(|tool| tool["type"] == "function" && tool["name"] == *name)
++            });
++            hosted = selected
++                .iter()
++                .filter(|tool| tool["type"] == "mcp")
++                .map(|tool| {
++                    (
++                        tool["server_label"].as_str().unwrap().to_owned(),
++                        tool.clone(),
++                    )
++                })
++                .collect();
++        }
++        let wire_request = request.clone();
++        if request.get("instructions").is_none() {
++            request["instructions"] = self.accepted_session["instructions"].clone();
++        }
++        if request.get("tools").is_none() {
++            request["tools"] = self.accepted_session["tools"].clone();
++        }
++        // Defaults are captured for continuations; the first provider request remains unchanged.
++        ResponseScope {
++            profile_id: self.profile_id,
++            tools,
++            hosted,
++            request: wire_request,
++            continuation: request,
++            history,
++        }
++    }
++    fn send_detached(
++        &mut self,
++        scope: ResponseScope,
++        effects: &mut Vec<Effect>,
++    ) -> Result<(), String> {
++        if self.pending_detached.is_some() || self.detached.len() >= MAX_CALLS {
++            return Err("Detached response request exceeds capacity".into());
++        }
++        self.detached_bytes += serde_json::to_vec(&scope)
++            .map_err(|_| "Invalid detached scope")?
++            .len();
++        if self.detached_bytes > MAX_FRAME_BYTES {
++            return Err("Detached response context exceeds capacity".into());
++        }
++        self.send(
++            json!({"type":"response.create","response":scope.request}),
++            effects,
++        );
++        self.pending_detached = Some(scope);
++        Ok(())
++    }
++    fn release_detached_guardrails(&mut self, effects: &mut Vec<Effect>) -> Result<(), String> {
++        if self.phase != Phase::Ready
++            || self.pending_detached.is_some()
++            || !self.pending_send.is_empty()
++        {
++            return Ok(());
++        }
++        let ready = self
++            .detached_guardrails
++            .iter()
++            .find(|(_, (_, done))| *done)
++            .map(|(id, _)| id.clone());
++        if let Some(id) = ready {
++            let (output, _) = self.detached_guardrails.remove(&id).unwrap();
++            let mut scope = self
++                .detached
++                .get(&id)
++                .and_then(|response| response.scope.clone())
++                .ok_or("Detached guardrail has no managed source")?;
++            let mut request = scope.continuation.clone();
++            request["instructions"] = json!(output);
++            scope.request = request.clone();
++            scope.continuation = request;
++            self.send_detached(scope, effects)?;
++        }
++        Ok(())
++    }
++    fn abort_scope(&mut self, response_id: &str, effects: &mut Vec<Effect>) {
++        effects.push(Effect::Retire {
++            response_id: response_id.to_owned(),
++        });
++        for (id, call) in &mut self.calls {
++            if call.request.response_id.as_deref() == Some(response_id)
++                && !matches!(call.phase, CallPhase::Published | CallPhase::Cancelled)
++            {
++                call.phase = CallPhase::Cancelled;
++                effects.push(Effect::Abort {
++                    call_id: id.clone(),
++                });
++            }
++        }
++        for (id, request) in &mut self.approvals {
++            if request.response_id == response_id
++                && !matches!(request.phase, CallPhase::Published | CallPhase::Cancelled)
++            {
++                request.phase = CallPhase::Cancelled;
++                effects.push(Effect::AbortMcp {
++                    request_id: id.clone(),
++                });
++            }
++        }
++        self.batches.remove(response_id);
++    }
++    fn validate_response(&self, response: &Value) -> Result<(), String> {
++        let object = response
++            .as_object()
++            .ok_or("Response options must be an object")?;
++        if object.keys().any(|key| {
++            !matches!(
++                key.as_str(),
++                "conversation"
++                    | "input"
++                    | "instructions"
++                    | "output_modalities"
++                    | "max_output_tokens"
++                    | "metadata"
++                    | "parallel_tool_calls"
++                    | "reasoning"
++                    | "prompt"
++                    | "audio"
++                    | "tools"
++                    | "tool_choice"
++            )
++        }) {
++            return Err("Unsupported Realtime response option".into());
++        }
++        if response
++            .get("conversation")
++            .is_some_and(|value| value != "auto" && value != "none")
++        {
++            return Err("Invalid response conversation scope".into());
++        }
++        if let Some(metadata) = response.get("metadata").filter(|v| !v.is_null()) {
++            let metadata = metadata.as_object().ok_or("Invalid response metadata")?;
++            if metadata.len() > 16
++                || metadata.iter().any(|(key, value)| {
++                    key.chars().count() > 64
++                        || value
++                            .as_str()
++                            .is_none_or(|value| value.chars().count() > 512)
++                })
++            {
++                return Err("Invalid or reserved response metadata".into());
++            }
++        }
++        {
++            if let Some(tools) = response.get("tools") {
++                for tool in tools.as_array().ok_or("Response tools must be an array")? {
++                    let expected = if tool["type"] == "function" {
++                        let tool = self
++                            .tools
++                            .get(tool["name"].as_str().unwrap_or_default())
++                            .ok_or("Response tool is outside accepted configuration")?;
++                        json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.parameters})
++                    } else {
++                        let url = tool["server_url"].as_str().is_some_and(|s| !s.is_empty());
++                        let connector =
++                            tool["connector_id"].as_str().is_some_and(|s| !s.is_empty());
++                        if tool["type"] != "mcp"
++                            || tool["server_label"].as_str().is_none_or(str::is_empty)
++                            || url == connector
++                        {
++                            return Err("Invalid response hosted MCP declaration".into());
++                        }
++                        tool.clone()
++                    };
++                    if tool != &expected {
++                        return Err("Response tool changed accepted configuration".into());
++                    }
++                }
++            }
++        }
++        Ok(())
++    }
++    fn capture_response_tools(&mut self) {
++        self.response_tools = self.tools.clone();
++        self.response_hosted = self.hosted.clone();
++        self.response_profile_id = self.profile_id;
++        if let Some(tools) = self
++            .pending_response
++            .as_ref()
++            .and_then(|response| response["tools"].as_array())
++        {
++            self.response_tools.retain(|name, _| {
++                tools
++                    .iter()
++                    .any(|tool| tool["type"] == "function" && tool["name"] == *name)
++            });
++            self.response_hosted = tools
++                .iter()
++                .filter(|tool| tool["type"] == "mcp")
++                .map(|tool| {
++                    (
++                        tool["server_label"].as_str().unwrap().to_owned(),
++                        tool.clone(),
++                    )
++                })
++                .collect();
++        }
++    }
++    fn is_detached_event(&self, event: &Value) -> bool {
++        let response = &event["response"];
++        let id = event["response_id"]
++            .as_str()
++            .or_else(|| response["id"].as_str());
++        id.is_some_and(|id| self.detached.contains_key(id))
++            || response.get("conversation_id").is_some_and(Value::is_null)
++    }
++    fn discover_hosted(&mut self, item: &Value, response_id: &str) -> Result<(), String> {
++        let hosted = if let Some(response) = self.detached.get(response_id) {
++            &response
++                .scope
++                .as_ref()
++                .filter(|_| response.active)
++                .ok_or("Hosted MCP response has no live managed source")?
++                .hosted
++        } else {
++            if self.responses.sdk_response_id.as_deref() != Some(response_id) {
++                return Err("Hosted MCP request does not own active response".into());
++            }
++            &self.response_hosted
++        };
++        let id = string(item, "id")?;
++        let label = string(item, "server_label")?;
++        let name = string(item, "name")?;
++        let declaration = hosted
++            .get(&label)
++            .ok_or("Hosted MCP server is outside accepted configuration")?;
++        if declaration["allowed_tools"]
++            .as_array()
++            .or_else(|| declaration["allowed_tools"]["tool_names"].as_array())
++            .is_some_and(|names| !names.iter().any(|allowed| allowed.as_str() == Some(&name)))
++        {
++            return Err("Hosted MCP tool is outside accepted configuration".into());
++        }
++        let encoded = serde_json::to_vec(item).map_err(|_| "Invalid hosted MCP request")?;
++        let arguments: Value = serde_json::from_str(&string(item, "arguments")?)
++            .map_err(|_| "Invalid hosted MCP arguments")?;
++        if encoded.len() > MAX_CALL_BYTES || !arguments.is_object() {
++            return Err("Invalid or oversized hosted MCP request".into());
++        }
++        if let Some(old) = self.approvals.get(&id) {
++            if old.response_id != response_id
++                || ["id", "server_label", "name", "arguments"]
++                    .iter()
++                    .any(|key| old.item[*key] != item[*key])
++            {
++                return Err("Hosted MCP approval identity changed".into());
++            }
++        } else {
++            if self.approvals.len() >= MAX_CALLS {
++                return Err("Hosted MCP approval capacity exceeded".into());
++            }
++            self.approvals.insert(
++                id,
++                HostedApproval {
++                    response_id: response_id.to_owned(),
++                    item: item.clone(),
++                    phase: CallPhase::Discovered,
++                    decision: None,
++                },
++            );
++        }
++        Ok(())
++    }
+     fn is_retired_event(&self, event: &Value) -> bool {
+         event["response_id"]
+             .as_str()
+@@ -669,6 +1198,26 @@ impl Control {
+             .is_some_and(|id| self.retired_responses.contains(id))
+     }
+     fn interrupt(&mut self, effects: &mut Vec<Effect>) -> Result<(), String> {
++        let mut retired = BTreeSet::new();
++        if let Some(id) = &self.responses.sdk_response_id {
++            retired.insert(id.clone());
++        }
++        for call in self.calls.values() {
++            if !matches!(call.phase, CallPhase::Published | CallPhase::Cancelled) {
++                if let Some(id) = &call.request.response_id {
++                    if !self.detached.contains_key(id) {
++                        retired.insert(id.clone());
++                    }
++                }
++            }
++        }
++        for request in self.approvals.values() {
++            if !self.detached.contains_key(&request.response_id)
++                && !matches!(request.phase, CallPhase::Published | CallPhase::Cancelled)
++            {
++                retired.insert(request.response_id.clone());
++            }
++        }
+         self.guardrail_output = None;
+         if let Some(id) = self.responses.sdk_response_id.take() {
+             if self.retired_responses.len() >= MAX_CALLS {
+@@ -680,15 +1229,43 @@ impl Control {
+         } else if self.responses.active_default_response {
+             self.cancel_before_created = true;
+         }
++        for (id, request) in &mut self.approvals {
++            if !self.detached.contains_key(&request.response_id)
++                && !matches!(request.phase, CallPhase::Published | CallPhase::Cancelled)
++            {
++                effects.push(Effect::AbortMcp {
++                    request_id: id.clone(),
++                });
++                request.phase = CallPhase::Cancelled;
++            }
++        }
++        self.pending_response = None;
++        if self.pending_default.is_some() {
++            self.cancel_before_created = true;
++        }
++        if !self.cancel_before_created {
++            self.pending_default_event = None;
++        }
+         for (id, call) in &mut self.calls {
+-            if !matches!(call.phase, CallPhase::Published | CallPhase::Cancelled) {
++            if !call
++                .request
++                .response_id
++                .as_ref()
++                .is_some_and(|id| self.detached.contains_key(id))
++                && !matches!(call.phase, CallPhase::Published | CallPhase::Cancelled)
++            {
+                 effects.push(Effect::Abort {
+                     call_id: id.clone(),
+                 });
+                 call.phase = CallPhase::Cancelled;
+             }
+         }
+-        self.batches.clear();
++        self.batches.retain(|_, batch| batch.out_of_band);
++        effects.extend(
++            retired
++                .into_iter()
++                .map(|response_id| Effect::Retire { response_id }),
++        );
+         self.responses = ResponseCreateState::default();
+         Ok(())
+     }
+@@ -702,12 +1279,8 @@ impl Control {
+             return;
+         }
+         if let Some(output) = self.guardrail_output.take() {
+-            self.responses.mark_started();
+-            self.response_tools = self.tools.clone();
+-            self.send(
+-                json!({"type":"response.create","response":{"instructions":output}}),
+-                effects,
+-            );
++            self.pending_response = Some(json!({"instructions":output}));
++            self.request_response(effects);
+         }
+     }
+     fn require_ready(&self) -> Result<(), String> {
+@@ -739,29 +1312,90 @@ impl Control {
+             }
+             "response.done"
+                 if event["response"]["status"].as_str() != Some("completed")
+-                    && !self.is_retired_event(event) =>
++                    && !self.is_retired_event(event)
++                    && !self.is_detached_event(event) =>
+             {
+                 return Err("Incomplete Realtime response cannot admit functions".into());
+             }
+-            "response.cancelled" if !self.is_retired_event(event) => {
++            "response.cancelled"
++                if !self.is_retired_event(event) && !self.is_detached_event(event) =>
++            {
+                 return Err("Portable voice generation was cancelled".into());
+             }
+-            "error" => return Err("Realtime provider rejected the operation".into()),
++            "error" if !self.is_response_race(event) => {
++                return Err("Realtime provider rejected the operation".into());
++            }
+             _ => {}
+         }
+         Ok(bytes)
+     }
++    fn is_response_race(&self, event: &Value) -> bool {
++        self.pending_default_event
++            .as_deref()
++            .is_some_and(|id| event["error"]["event_id"].as_str() == Some(id))
++            && event["error"]["code"] == "conversation_already_has_active_response"
++    }
++    fn send_default(&mut self, response: Option<Value>, effects: &mut Vec<Effect>) {
++        self.responses.mark_started();
++        let Some(mut response) = response else {
++            self.response_tools = self.tools.clone();
++            self.response_hosted = self.hosted.clone();
++            self.response_profile_id = self.profile_id;
++            self.send(json!({"type":"response.create"}), effects);
++            return;
++        };
++        let needs_identity = response
++            .as_object()
++            .unwrap()
++            .keys()
++            .any(|key| key != "conversation" && key != "metadata")
++            || response["metadata"]
++                .as_object()
++                .is_some_and(|metadata| !metadata.is_empty());
++        if needs_identity {
++            let token = format!("portable-{}", self.next_send + 1);
++            self.default_metadata_generated = response.get("metadata").is_none_or(|value| {
++                value.is_null()
++                    || value
++                        .as_object()
++                        .is_some_and(|metadata| metadata.is_empty())
++            });
++            if response.get("metadata").is_none_or(|value| {
++                value.is_null()
++                    || value
++                        .as_object()
++                        .is_some_and(|metadata| metadata.is_empty())
++            }) {
++                response["metadata"] = json!({"codex_response_id":token});
++            }
++            self.pending_default = Some(self.new_scope(response.clone(), vec![]));
++            self.pending_default_event = Some(token.clone());
++            self.send(
++                json!({"type":"response.create","event_id":token,"response":response}),
++                effects,
++            );
++        } else {
++            self.capture_response_tools();
++            self.send(
++                json!({"type":"response.create","response":response}),
++                effects,
++            );
++        }
++    }
+     fn request_response(&mut self, effects: &mut Vec<Effect>) {
+         if self.cancel_before_created
+             || self.cancel_waiting.is_some()
++            || self.pending_default.is_some()
+             || self.phase != Phase::Ready
+-            || self.batches.values().any(|batch| !batch.continued)
++            || self
++                .batches
++                .values()
++                .any(|batch| !batch.out_of_band && !batch.continued)
+         {
+             self.responses.pending_create = true;
+         } else if self.responses.request_create() {
+-            self.responses.mark_started();
+-            self.response_tools = self.tools.clone();
+-            self.send(json!({"type":"response.create"}), effects);
++            let response = self.pending_response.take();
++            self.send_default(response, effects);
+         }
+     }
+     fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
+@@ -769,6 +1403,88 @@ impl Control {
+             .get("type")
+             .and_then(Value::as_str)
+             .ok_or("Provider event has no type")?;
++        let mut managed_detached = false;
++        if self.is_detached_event(&event) {
++            let response = &event["response"];
++            let id = event["response_id"]
++                .as_str()
++                .or_else(|| response["id"].as_str())
++                .ok_or("Detached response has no identity")?
++                .to_owned();
++            if kind == "response.created" {
++                if self.detached.contains_key(&id) {
++                    effects.push(Effect::Event { event });
++                    return Ok(());
++                }
++                if self.detached.len() >= MAX_CALLS && !self.detached.contains_key(&id) {
++                    return Err("Detached response capacity exceeded".into());
++                }
++                let matches = self.pending_detached.as_ref().is_some_and(|scope| {
++                    response.get("metadata").unwrap_or(&Value::Null)
++                        == scope.request.get("metadata").unwrap_or(&Value::Null)
++                });
++                let scope = if matches {
++                    self.pending_detached.take()
++                } else {
++                    None
++                };
++                if let Some(scope) = &scope {
++                    effects.push(Effect::Scope {
++                        response_id: id.clone(),
++                        profile_id: scope.profile_id,
++                        out_of_band: true,
++                        history: Some(
++                            scope.request["input"]
++                                .as_array()
++                                .cloned()
++                                .unwrap_or_else(|| scope.history.clone()),
++                        ),
++                    });
++                }
++                self.detached.entry(id).or_insert(DetachedResponse {
++                    active: true,
++                    scope,
++                    output: vec![],
++                });
++                effects.push(Effect::Event { event });
++                return Ok(());
++            }
++            let owner = self.detached.get(&id);
++            managed_detached = owner.is_some_and(|owner| owner.active && owner.scope.is_some());
++            let completed = kind == "response.done";
++            let terminal = completed || kind == "response.cancelled";
++            if terminal {
++                if let Some((_, done)) = self.detached_guardrails.get_mut(&id) {
++                    *done = true;
++                }
++            }
++            if !managed_detached || (terminal && response["status"] != "completed") {
++                if terminal {
++                    if let Some(owner) = self.detached.get_mut(&id) {
++                        owner.active = false;
++                    }
++                    if self
++                        .detached
++                        .get(&id)
++                        .is_some_and(|owner| owner.scope.is_some())
++                    {
++                        self.abort_scope(&id, effects);
++                    }
++                }
++                effects.push(Effect::Event { event });
++                return Ok(());
++            }
++        }
++        let response_id = event["response_id"]
++            .as_str()
++            .or_else(|| event["response"]["id"].as_str());
++        if response_id.is_some_and(|id| self.completed_responses.contains(id))
++            && kind != "response.cancelled"
++            && !(kind == "response.done" && event["response"]["status"] != "completed")
++        {
++            effects.push(Effect::Event { event });
++            return Ok(());
++        }
+         if self.is_retired_event(&event) {
+             let id = event["response_id"]
+                 .as_str()
+@@ -787,6 +1503,23 @@ impl Control {
+             return Ok(());
+         }
+         match kind {
++            "error" if self.is_response_race(&event) => {
++                let cancelled = self.cancel_before_created;
++                let response = self.pending_default.take().map(|scope| scope.request);
++                self.pending_response = if cancelled { None } else { response };
++                if self.default_metadata_generated {
++                    if let Some(response) = &mut self.pending_response {
++                        response["metadata"] = json!({});
++                    }
++                }
++                self.default_metadata_generated = false;
++                self.pending_default_event = None;
++                if cancelled {
++                    self.cancel_before_created = false;
++                } else {
++                    self.responses.raced_active_response();
++                }
++            }
+             "input_audio_buffer.speech_started" => {
+                 self.interrupt(effects)?;
+             }
+@@ -801,6 +1534,10 @@ impl Control {
+             "response.created" => {
+                 self.require_ready()?;
+                 let id = string(&event["response"], "id")?;
++                if self.responses.sdk_response_id.as_ref() == Some(&id) {
++                    effects.push(Effect::Event { event });
++                    return Ok(());
++                }
+                 if self
+                     .responses
+                     .sdk_response_id
+@@ -809,26 +1546,52 @@ impl Control {
+                 {
+                     return Err("Concurrent default responses are not supported".into());
+                 }
+-                if self.cancel_before_created {
++                let matched = self.pending_default.as_ref().is_some_and(|scope| {
++                    event["response"].get("metadata").unwrap_or(&Value::Null)
++                        == scope.request.get("metadata").unwrap_or(&Value::Null)
++                });
++                if self.cancel_before_created && (self.pending_default.is_none() || matched) {
+                     self.cancel_before_created = false;
++                    self.pending_default = None;
++                    self.pending_default_event = None;
+                     self.retired_responses.insert(id.clone());
+                     self.cancel_waiting = Some(id.clone());
+                     self.send(json!({"type":"response.cancel","response_id":id}), effects);
++                    effects.push(Effect::Retire {
++                        response_id: self.cancel_waiting.clone().unwrap(),
++                    });
+                     effects.push(Effect::Event { event });
+                     return Ok(());
+                 }
+-                if self.retired_responses.len() >= MAX_CALLS {
++                if self.retired_responses.len() + self.completed_responses.len() >= MAX_CALLS {
+                     return Err("Response identity capacity exceeded".into());
+                 }
+-                if !self.responses.active_default_response {
++                if matched {
++                    let scope = self.pending_default.take().unwrap();
++                    self.pending_default_event = None;
++                    self.response_tools = scope.tools;
++                    self.response_hosted = scope.hosted;
++                    self.response_profile_id = scope.profile_id;
++                } else {
+                     self.response_tools = self.tools.clone();
++                    self.response_hosted = self.hosted.clone();
++                    self.response_profile_id = self.profile_id;
+                 }
++                effects.push(Effect::Scope {
++                    response_id: id.clone(),
++                    profile_id: self.response_profile_id,
++                    out_of_band: false,
++                    history: None,
++                });
+                 self.responses.sdk_response_id = Some(id);
+                 self.responses.mark_started();
+             }
+             "response.output_item.done" => {
+                 self.require_ready()?;
+                 let item = event.get("item").ok_or("Provider item is missing")?;
++                if item["type"] == "mcp_approval_request" {
++                    self.discover_hosted(item, &string(&event, "response_id")?)?;
++                }
+                 if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                     self.discover(FunctionCall {
+                         namespace: item
+@@ -847,7 +1610,7 @@ impl Control {
+                 self.require_ready()?;
+                 let response = event.get("response").ok_or("Missing response")?;
+                 let id = string(response, "id")?;
+-                if self.responses.sdk_response_id.as_ref() != Some(&id) {
++                if !managed_detached && self.responses.sdk_response_id.as_ref() != Some(&id) {
+                     return Err("Completed response does not own the active response".into());
+                 }
+                 let output = response
+@@ -855,7 +1618,16 @@ impl Control {
+                     .and_then(Value::as_array)
+                     .ok_or("Missing response output")?;
+                 let mut ids = vec![];
++                let mut hosted_ids = vec![];
+                 for item in output {
++                    if item["type"] == "mcp_approval_request" {
++                        self.discover_hosted(item, &id)?;
++                        let request_id = string(item, "id")?;
++                        if hosted_ids.contains(&request_id) {
++                            return Err("Duplicate hosted MCP approval in response".into());
++                        }
++                        hosted_ids.push(request_id);
++                    }
+                     if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                         let request = FunctionCall {
+                             namespace: item
+@@ -881,9 +1653,38 @@ impl Control {
+                 }) {
+                     return Err("Completed response omitted a discovered function".into());
+                 }
+-                self.responses.sdk_response_id = None;
+-                let deferred_create = self.responses.mark_finished().is_some();
+-                if !ids.is_empty() {
++                if self.approvals.values().any(|request| {
++                    request.response_id == id
++                        && !hosted_ids.contains(&string(&request.item, "id").unwrap_or_default())
++                }) {
++                    return Err("Completed response omitted a hosted MCP approval".into());
++                }
++                let deferred_create = if managed_detached {
++                    let owner = self.detached.get_mut(&id).unwrap();
++                    owner.active = false;
++                    self.detached_bytes += serde_json::to_vec(output)
++                        .map_err(|_| "Invalid detached output")?
++                        .len();
++                    if self.detached_bytes > MAX_FRAME_BYTES {
++                        return Err("Detached response context exceeds capacity".into());
++                    }
++                    owner.output = output.clone();
++                    false
++                } else {
++                    if self.retired_responses.len() + self.completed_responses.len() >= MAX_CALLS {
++                        return Err("Response identity capacity exceeded".into());
++                    }
++                    self.completed_responses.insert(id.clone());
++                    self.last_completed = Some(id.clone());
++                    self.responses.sdk_response_id = None;
++                    if self.pending_default.is_some() {
++                        self.responses.mark_started();
++                        false
++                    } else {
++                        self.responses.mark_finished().is_some()
++                    }
++                };
++                if !ids.is_empty() || !hosted_ids.is_empty() {
+                     if self.batches.contains_key(&id) {
+                         return Err("Response batch already admitted".into());
+                     }
+@@ -891,9 +1692,27 @@ impl Control {
+                         id,
+                         Batch {
+                             calls: ids.clone(),
++                            hosted: hosted_ids.clone(),
++                            out_of_band: managed_detached,
+                             continued: false,
+                         },
+                     );
++                    for request_id in hosted_ids {
++                        let request = self.approvals.get_mut(&request_id).unwrap();
++                        if request.phase != CallPhase::Discovered {
++                            return Err("Hosted MCP approval already admitted".into());
++                        }
++                        request.phase = CallPhase::Approval;
++                        effects.push(Effect::ApproveMcp {
++                            request_id,
++                            server_label: string(&request.item, "server_label")?,
++                            name: string(&request.item, "name")?,
++                            arguments: serde_json::from_str(
++                                request.item["arguments"].as_str().unwrap(),
++                            )
++                            .map_err(|_| "Invalid hosted MCP arguments")?,
++                        });
++                    }
+                     for call_id in ids {
+                         let call = self.calls.get_mut(&call_id).ok_or("Missing function")?;
+                         if !call.claim.claim() {
+@@ -924,11 +1743,24 @@ impl Control {
+     }
+     fn discover(&mut self, request: FunctionCall) -> Result<(), String> {
+         let fingerprint = request.fingerprint()?;
+-        if request.response_id != self.responses.sdk_response_id {
+-            return Err("Function does not own the active response".into());
+-        }
+-        let needs_approval = self
+-            .response_tools
++        let tools = if let Some(owner) = request
++            .response_id
++            .as_ref()
++            .and_then(|id| self.detached.get(id))
++        {
++            &owner
++                .scope
++                .as_ref()
++                .filter(|_| owner.active)
++                .ok_or("Function has no live managed response source")?
++                .tools
++        } else {
++            if request.response_id != self.responses.sdk_response_id {
++                return Err("Function does not own the active response".into());
++            }
++            &self.response_tools
++        };
++        let needs_approval = tools
+             .get(&request.name)
+             .ok_or("Function is outside accepted configuration")?
+             .needs_approval;
+@@ -950,6 +1782,7 @@ impl Control {
+                 phase: CallPhase::Discovered,
+                 claim: CallClaim::default(),
+                 needs_approval,
++                output: None,
+             },
+         );
+         Ok(())
+@@ -963,23 +1796,35 @@ impl Control {
+         if output.len() > MAX_CALL_BYTES {
+             return Err("Tool output exceeds capacity".into());
+         }
++        if self
++            .calls
++            .get(call_id)
++            .and_then(|call| call.request.response_id.as_ref())
++            .is_some_and(|id| self.detached.contains_key(id))
++        {
++            let call = self.calls.get_mut(call_id).unwrap();
++            call.output = Some(output);
++            call.phase = CallPhase::Published;
++            return Ok(());
++        }
+         let id = self.send(json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":call_id,"output":output}}), effects);
+         self.calls.get_mut(call_id).ok_or("Unknown function")?.phase = CallPhase::Publishing(id);
+         Ok(())
+     }
+-    fn continue_batches(&mut self, effects: &mut Vec<Effect>) {
+-        if self.responses.active_default_response
+-            || self.phase != Phase::Ready
+-            || self.cancel_waiting.is_some()
+-            || self.cancel_before_created
+-        {
+-            return;
++    fn continue_batches(&mut self, effects: &mut Vec<Effect>) -> Result<(), String> {
++        if self.phase != Phase::Ready {
++            return Ok(());
+         }
+         let ready: Vec<_> = self
+             .batches
+             .iter()
+             .filter(|(_, batch)| {
+                 !batch.continued
++                    && batch.hosted.iter().all(|id| {
++                        self.approvals
++                            .get(id)
++                            .is_some_and(|request| request.phase == CallPhase::Published)
++                    })
+                     && batch.calls.iter().all(|id| {
+                         self.calls
+                             .get(id)
+@@ -988,34 +1833,71 @@ impl Control {
+             })
+             .map(|(id, _)| id.clone())
+             .collect();
+-        if let Some(id) = ready.into_iter().next() {
+-            // Tool continuation consumes any coalesced user request exactly once.
+-            if !self.responses.request_create() {
+-                return;
++        for id in ready {
++            if self.batches[&id].out_of_band {
++                if self.pending_detached.is_some() {
++                    continue;
++                }
++                let owner = &self.detached[&id];
++                let mut scope = owner.scope.clone().unwrap();
++                let mut request = scope.continuation.clone();
++                let mut input = request["input"]
++                    .as_array()
++                    .cloned()
++                    .unwrap_or_else(|| scope.history.clone());
++                input.extend(owner.output.clone());
++                for call_id in &self.batches[&id].calls {
++                    input.push(json!({"type":"function_call_output","call_id":call_id,"output":self.calls[call_id].output.as_ref().unwrap()}));
++                }
++                for request_id in &self.batches[&id].hosted {
++                    input.push(json!({"type":"mcp_approval_response","approval_request_id":request_id,"approve":self.approvals[request_id].decision.unwrap()}));
++                }
++                request["input"] = json!(input);
++                scope.request = request.clone();
++                scope.continuation = request;
++                self.send_detached(scope, effects)?;
++                self.batches.get_mut(&id).unwrap().continued = true;
++            } else if !self.responses.active_default_response
++                && self.cancel_waiting.is_none()
++                && !self.cancel_before_created
++            {
++                self.batches.get_mut(&id).unwrap().continued = true;
++                self.request_response(effects);
+             }
+-            self.responses.mark_started();
+-            self.response_tools = self.tools.clone();
+-            self.batches.get_mut(&id).unwrap().continued = true;
+-            self.send(json!({"type":"response.create"}), effects);
+         }
++        Ok(())
+     }
+     pub fn apply_json(&mut self, input: &str) -> String {
++        let mut preflight = false;
+         let result = if input.len() > MAX_FRAME_BYTES {
+             Err("Command exceeds capacity".into())
+         } else {
+             serde_json::from_str::<Command>(input)
+                 .map_err(|_| "Invalid control command".into())
+-                .and_then(|command| self.apply(command))
++                .and_then(|command| {
++                    preflight = matches!(command, Command::ValidateHistory { .. });
++                    self.apply(command)
++                })
+         };
+         match result {
+             Ok(effects) => json!({"effects":effects}).to_string(),
+             Err(error) => {
+-                self.retire();
++                if !preflight {
++                    self.retire();
++                }
+                 json!({"error":error}).to_string()
+             }
+         }
+     }
+ }
++fn default_true() -> bool {
++    true
++}
++fn present_value<'de, D: serde::Deserializer<'de>>(
++    deserializer: D,
++) -> Result<Option<Value>, D::Error> {
++    Value::deserialize(deserializer).map(Some)
++}
+ fn string(value: &Value, key: &str) -> Result<String, String> {
+     value
+         .get(key)
+@@ -1191,7 +2073,13 @@ mod tests {
+         assert_eq!(batch(&mut control)["effects"], json!([]));
+         let released = command(&mut control, json!({"type":"sent","id":1}));
+         assert_eq!(released["effects"][1]["type"], "ready");
+-        assert_eq!(released["effects"][4]["type"], "approve");
++        assert!(
++            released["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["type"] == "approve")
++        );
+         let mut control = Control::default();
+         startup(&mut control);
+         for _ in 0..MAX_CALLS {
+@@ -1652,7 +2540,11 @@ mod tests {
+             committed["effects"][0]["event"]["type"],
+             "input_audio_buffer.commit"
+         );
+-        assert_eq!(committed["effects"][1]["event"]["type"], "response.create");
++        assert_eq!(committed["effects"].as_array().unwrap().len(), 1);
++        assert_eq!(
++            command(&mut control, json!({"type":"create_response"}))["effects"][0]["event"]["type"],
++            "response.create"
++        );
+         assert_eq!(
+             command(&mut control, json!({"type":"clear_audio"}))["effects"][0]["event"]["type"],
+             "input_audio_buffer.clear"
+@@ -1682,6 +2574,655 @@ mod tests {
+             "Guardrail does not own the active response"
+         );
+     }
++    fn detached(control: &mut Control, id: &str) -> Value {
++        let requested = command(
++            control,
++            json!({"type":"create_response","response":{"conversation":"none","instructions":"Independent","metadata":{"purpose":"test"}}}),
++        );
++        let send = &requested["effects"][0];
++        command(control, json!({"type":"sent","id":send["id"]}));
++        let response = json!({"id":id,"conversation_id":null,"metadata":send["event"]["response"]["metadata"]});
++        let created = command(
++            control,
++            json!({"type":"provider","event":{"type":"response.created","response":response}}),
++        );
++        assert!(created.get("error").is_none(), "{created}");
++        response
++    }
++    #[test]
++    fn detached_scopes_acknowledge_independently_and_cannot_admit_local_tools() {
++        let mut control = ready();
++        request(&mut control);
++        detached(&mut control, "detached-1");
++        detached(&mut control, "detached-2");
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"external","conversation_id":null,"metadata":{"purpose":"external"}}}}),
++        );
++        let passive = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"external","item":item()}}),
++        );
++        assert_eq!(passive["effects"].as_array().unwrap().len(), 1);
++        assert_eq!(passive["effects"][0]["type"], "event");
++        assert_eq!(
++            control.responses.sdk_response_id.as_deref(),
++            Some("response-1")
++        );
++        let cancelled = command(
++            &mut control,
++            json!({"type":"cancel","response_id":"detached-2"}),
++        );
++        assert!(
++            cancelled["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["event"]
++                    == json!({"type":"response.cancel","response_id":"detached-2"}))
++        );
++        let done = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"detached-1","status":"failed","output":[item()]}}}),
++        );
++        assert!(done.get("error").is_none());
++        assert_eq!(control.calls.len(), 1);
++        assert_eq!(
++            control.responses.sdk_response_id.as_deref(),
++            Some("response-1")
++        );
++    }
++    #[test]
++    fn detached_scope_preserves_all_metadata_keys_and_awaits_matching_ack() {
++        let mut control = ready();
++        let metadata: BTreeMap<_, _> = (0..16)
++            .map(|index| (format!("key-{index}"), json!("value")))
++            .collect();
++        let requested = command(
++            &mut control,
++            json!({"type":"create_response","response":{"conversation":"none","metadata":metadata}}),
++        );
++        assert_eq!(
++            requested["effects"][0]["event"]["response"]["metadata"],
++            json!(metadata)
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":requested["effects"][0]["id"]}),
++        );
++        let foreign = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"foreign","conversation_id":null,"metadata":{}}}}),
++        );
++        assert!(
++            !foreign["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["type"] == "scope")
++        );
++        assert!(control.pending_detached.is_some());
++        let owned = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"owned","conversation_id":null,"metadata":metadata}}}),
++        );
++        assert_eq!(owned["effects"][0]["type"], "scope");
++        assert_eq!(owned["effects"][0]["out_of_band"], true);
++        assert!(control.pending_detached.is_none());
++    }
++    #[test]
++    fn detached_guardrail_replacement_keeps_scope_and_default_response_owner() {
++        let mut control = ready();
++        request(&mut control);
++        detached(&mut control, "guarded-detached");
++        let guarded = command(
++            &mut control,
++            json!({"type":"guardrail","response_id":"guarded-detached","output":"Safe independent output"}),
++        );
++        assert_eq!(
++            guarded["effects"][0]["event"]["response_id"],
++            "guarded-detached"
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":guarded["effects"][0]["id"]}),
++        );
++        let finished = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"guarded-detached","status":"cancelled","output":[]}}}),
++        );
++        assert!(
++            finished["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["type"] == "send"
++                    && effect["event"]["response"]["conversation"] == "none"
++                    && effect["event"]["response"]["instructions"] == "Safe independent output")
++        );
++        assert_eq!(
++            control.responses.sdk_response_id.as_deref(),
++            Some("response-1")
++        );
++    }
++    #[test]
++    fn guardrail_can_replace_a_completed_response_without_cancelling_another_owner() {
++        let mut control = ready();
++        request(&mut control);
++        batch(&mut control);
++        let guarded = command(
++            &mut control,
++            json!({"type":"guardrail","response_id":"response-1","output":"Safe final output"}),
++        );
++        assert!(
++            guarded["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["type"] == "abort")
++        );
++        assert!(
++            guarded["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["event"]["type"] == "response.create"
++                    && effect["event"]["response"]["instructions"] == "Safe final output")
++        );
++        assert!(
++            !guarded["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["event"]["type"] == "response.cancel")
++        );
++    }
++    #[test]
++    fn manual_default_response_options_survive_deferral() {
++        let mut control = ready();
++        request(&mut control);
++        let queued = command(
++            &mut control,
++            json!({"type":"create_response","response":{"instructions":"Manual response","output_modalities":["text"]}}),
++        );
++        assert_eq!(queued["effects"], json!([]));
++        let completed = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
++        );
++        assert_eq!(completed["effects"][0]["type"], "approve");
++        command(
++            &mut control,
++            json!({"type":"approve","call_id":"call-1","approved":false}),
++        );
++        let sent = *control.pending_send.iter().next().unwrap();
++        let released = command(&mut control, json!({"type":"sent","id":sent}));
++        assert_eq!(
++            released["effects"][0]["event"]["response"]["instructions"],
++            "Manual response"
++        );
++    }
++    fn hosted_item() -> Value {
++        json!({"type":"mcp_approval_request","id":"approval-1","server_label":"docs","name":"search","arguments":"{\"query\":\"Realtime\"}"})
++    }
++    fn hosted_ready() -> Control {
++        let mut control = Control::default();
++        let start = command(
++            &mut control,
++            json!({"type":"start","config":{"model":"test-realtime","instructions":"Help.","hosted_tools":[{"type":"mcp","server_label":"docs","server_url":"https://example.com/mcp","allowed_tools":["search"],"require_approval":"always","authorization":"synthetic"}]}}),
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":start["effects"][0]["id"]}),
++        );
++        let mut session = start["effects"][0]["event"]["session"].clone();
++        session["tools"][0]
++            .as_object_mut()
++            .unwrap()
++            .remove("authorization");
++        let ack = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"session.updated","session":session}}),
++        );
++        assert!(ack.get("error").is_none(), "{ack}");
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"hosted-response"}}}),
++        );
++        control
++    }
++    fn hosted_batch(control: &mut Control) -> Value {
++        command(
++            control,
++            json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"hosted-response","item":hosted_item()}}),
++        );
++        command(
++            control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"hosted-response","status":"completed","output":[hosted_item()]}}}),
++        )
++    }
++    #[test]
++    fn hosted_mcp_approval_uses_source_catalog_and_physical_receipt_without_local_execution() {
++        let mut control = hosted_ready();
++        let update = command(
++            &mut control,
++            json!({"type":"update","config":{"model":"test-realtime","instructions":"New profile"}}),
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":update["effects"][0]["id"]}),
++        );
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"session.updated","session":update["effects"][0]["event"]["session"]}}),
++        );
++        let batch = hosted_batch(&mut control);
++        assert_eq!(
++            batch["effects"][0],
++            json!({"type":"approve_mcp","request_id":"approval-1","server_label":"docs","name":"search","arguments":{"query":"Realtime"}})
++        );
++        let approved = command(
++            &mut control,
++            json!({"type":"approve_mcp","request_id":"approval-1","approved":true}),
++        );
++        assert_eq!(approved["effects"].as_array().unwrap().len(), 1);
++        assert_eq!(
++            approved["effects"][0]["event"]["item"],
++            json!({"type":"mcp_approval_response","approval_request_id":"approval-1","approve":true})
++        );
++        let sent = command(
++            &mut control,
++            json!({"type":"sent","id":approved["effects"][0]["id"]}),
++        );
++        assert_eq!(sent["effects"][0]["event"]["type"], "response.create");
++        assert!(
++            command(
++                &mut control,
++                json!({"type":"approve_mcp","request_id":"approval-1","approved":true})
++            )
++            .get("error")
++            .is_some()
++        );
++    }
++    #[test]
++    fn hosted_mcp_approval_revocation_prevents_late_or_foreign_decisions() {
++        let mut control = hosted_ready();
++        hosted_batch(&mut control);
++        let cancelled = command(&mut control, json!({"type":"cancel"}));
++        assert!(cancelled["effects"].as_array().unwrap().iter().any(|effect|effect["type"] == "abort_mcp" && effect["request_id"] == "approval-1"));
++        assert!(
++            cancelled["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["type"] == "retire"
++                    && effect["response_id"] == "hosted-response")
++        );
++        assert!(
++            command(
++                &mut control,
++                json!({"type":"approve_mcp","request_id":"approval-1","approved":true})
++            )
++            .get("error")
++            .is_some()
++        );
++        for key in ["server_label", "name"] {
++            let mut control = hosted_ready();
++            let mut foreign = hosted_item();
++            foreign[key] = json!("foreign");
++            assert!(command(&mut control, json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"hosted-response","item":foreign}})).get("error").is_some());
++        }
++    }
++    #[test]
++    fn managed_detached_function_uses_captured_source_and_detached_continuation_input() {
++        let mut control = ready();
++        request(&mut control);
++        let history = json!([{"type":"message","id":"user-1","role":"user","content":[{"type":"input_text","text":"Independent context"}]}]);
++        let created = command(
++            &mut control,
++            json!({"type":"create_response","response":{"conversation":"none","metadata":{"purpose":"managed"}},"history":history}),
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":created["effects"][0]["id"]}),
++        );
++        let owned = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"managed","conversation_id":null,"metadata":{"purpose":"managed"}}}}),
++        );
++        assert_eq!(owned["effects"][0]["type"], "scope");
++        assert_eq!(owned["effects"][0]["history"], history);
++        let update = command(
++            &mut control,
++            json!({"type":"update","config":{"profile_id":42,"model":"test-realtime","instructions":"New source","tools":[]}}),
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":update["effects"][0]["id"]}),
++        );
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"session.updated","session":update["effects"][0]["event"]["session"]}}),
++        );
++        let mut call = item();
++        call["id"] = json!("managed-item");
++        call["call_id"] = json!("managed-call");
++        let completed = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"managed","status":"completed","output":[call]}}}),
++        );
++        assert_eq!(completed["effects"][0]["type"], "approve");
++        command(
++            &mut control,
++            json!({"type":"approve","call_id":"managed-call","approved":true}),
++        );
++        let result = command(
++            &mut control,
++            json!({"type":"tool_result","call_id":"managed-call","output":"seven"}),
++        );
++        assert_eq!(result["effects"].as_array().unwrap().len(), 1);
++        let event = &result["effects"][0]["event"];
++        assert_eq!(event["type"], "response.create");
++        assert_eq!(event["response"]["conversation"], "none");
++        assert_eq!(event["response"]["instructions"], "Help.");
++        assert_eq!(event["response"]["input"][0], history[0]);
++        assert_eq!(
++            event["response"]["input"][2]["type"],
++            "function_call_output"
++        );
++        assert_eq!(
++            control.responses.sdk_response_id.as_deref(),
++            Some("response-1")
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":result["effects"][0]["id"]}),
++        );
++        let continuation = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"managed-next","conversation_id":null,"metadata":{"purpose":"managed"}}}}),
++        );
++        assert_eq!(continuation["effects"][0]["profile_id"], 0);
++    }
++    #[test]
++    fn response_only_hosted_mcp_is_routable_on_managed_detached_scope() {
++        let mut control = ready();
++        let declaration = json!({"type":"mcp","server_label":"docs","server_url":"https://example.com/mcp","allowed_tools":["search"],"require_approval":"always"});
++        let requested = command(
++            &mut control,
++            json!({"type":"create_response","response":{"conversation":"none","input":[],"tools":[declaration]}}),
++        );
++        assert!(requested.get("error").is_none(), "{requested}");
++        command(
++            &mut control,
++            json!({"type":"sent","id":requested["effects"][0]["id"]}),
++        );
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"scoped-mcp","conversation_id":null,"metadata":null}}}),
++        );
++        let batch = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"scoped-mcp","status":"completed","output":[hosted_item()]}}}),
++        );
++        assert_eq!(batch["effects"][0]["type"], "approve_mcp");
++        let approved = command(
++            &mut control,
++            json!({"type":"approve_mcp","request_id":"approval-1","approved":true}),
++        );
++        assert_eq!(approved["effects"][0]["event"]["type"], "response.create");
++        assert_eq!(
++            approved["effects"][0]["event"]["response"]["conversation"],
++            "none"
++        );
++        assert_eq!(
++            approved["effects"][0]["event"]["response"]["input"][1]["type"],
++            "mcp_approval_response"
++        );
++        assert!(!control.responses.active_default_response);
++    }
++    #[test]
++    fn scoped_default_ack_does_not_let_automatic_vad_consume_response_tool_authority() {
++        let mut control = ready();
++        let declaration = json!({"type":"mcp","server_label":"docs","server_url":"https://example.com/mcp","require_approval":"always"});
++        let metadata: BTreeMap<_, _> = (0..16)
++            .map(|index| (format!("key-{index}"), json!("value")))
++            .collect();
++        let requested = command(
++            &mut control,
++            json!({"type":"create_response","response":{"instructions":"Scoped","tools":[declaration],"metadata":metadata}}),
++        );
++        assert_eq!(
++            requested["effects"][0]["event"]["response"]["metadata"],
++            json!(metadata)
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":requested["effects"][0]["id"]}),
++        );
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"automatic","conversation_id":"default","metadata":null}}}),
++        );
++        assert!(control.pending_default.is_some());
++        assert!(control.response_tools.contains_key("lookup"));
++        assert!(control.response_hosted.is_empty());
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"automatic","status":"completed","output":[]}}}),
++        );
++        assert!(control.pending_default.is_some());
++        let acknowledged = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"scoped-default","conversation_id":"default","metadata":metadata}}}),
++        );
++        assert_eq!(acknowledged["effects"][0]["type"], "scope");
++        assert!(control.pending_default.is_none());
++        let batch = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"scoped-default","status":"completed","output":[hosted_item()]}}}),
++        );
++        assert_eq!(batch["effects"][0]["type"], "approve_mcp");
++    }
++    #[test]
++    fn exact_provider_response_rejection_defers_without_replaying_an_accepted_create() {
++        let mut control = ready();
++        let requested = command(
++            &mut control,
++            json!({"type":"create_response","response":{"instructions":"Scoped"}}),
++        );
++        let send = &requested["effects"][0];
++        assert!(send["event"]["response"]["metadata"]["codex_response_id"].is_string());
++        command(&mut control, json!({"type":"sent","id":send["id"]}));
++        let rejected = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"error","error":{"event_id":send["event"]["event_id"],"code":"conversation_already_has_active_response"}}}),
++        );
++        assert_eq!(rejected["effects"][0]["type"], "event");
++        assert!(control.pending_default.is_none());
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"raced-vad","metadata":null}}}),
++        );
++        let done = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.done","response":{"id":"raced-vad","status":"completed","output":[]}}}),
++        );
++        assert_eq!(done["effects"][0]["event"]["type"], "response.create");
++        assert_eq!(
++            done["effects"][0]["event"]["response"]["instructions"],
++            "Scoped"
++        );
++    }
++    #[test]
++    fn inert_history_input_and_preflight_preserve_live_claims_and_recheck_deletes() {
++        let mut control = ready();
++        request(&mut control);
++        batch(&mut control);
++        let before = control.next_send;
++        let rejected = command(
++            &mut control,
++            json!({"type":"validate_history","delete_ids":["safe","item-1"],"items":[]}),
++        );
++        assert_eq!(
++            rejected["error"],
++            "Conversation deletion conflicts with live tool ownership"
++        );
++        assert!(control.phase == Phase::Ready);
++        assert_eq!(control.next_send, before);
++        let invalid = command(
++            &mut control,
++            json!({"type":"validate_history","delete_ids":["safe"],"items":[item()]}),
++        );
++        assert_eq!(invalid["error"], "Input must be a conversation message");
++        let message = json!({"type":"message","id":"inert","role":"user","content":[{"type":"input_text","text":"Historic"}]});
++        assert_eq!(
++            command(
++                &mut control,
++                json!({"type":"validate_history","delete_ids":["safe"],"items":[message]})
++            )["effects"],
++            json!([])
++        );
++        let inserted = command(
++            &mut control,
++            json!({"type":"input","item":message,"previous_item_id":null,"create_response":false}),
++        );
++        assert_eq!(inserted["effects"].as_array().unwrap().len(), 1);
++        assert_eq!(inserted["effects"][0]["event"]["item"]["id"], "inert");
++        assert!(
++            inserted["effects"][0]["event"]
++                .get("previous_item_id")
++                .unwrap()
++                .is_null()
++        );
++        assert_eq!(
++            command(
++                &mut control,
++                json!({"type":"approve","call_id":"call-1","approved":true})
++            )["effects"][0]["type"],
++            "execute"
++        );
++        assert_eq!(
++            command(&mut control, json!({"type":"delete","item_id":"item-1"}))["error"],
++            "Conversation deletion conflicts with live tool ownership"
++        );
++    }
++    #[test]
++    fn duplicate_created_response_cannot_steal_pending_detached_source() {
++        let mut control = ready();
++        detached(&mut control, "first");
++        let pending = command(
++            &mut control,
++            json!({"type":"create_response","response":{"conversation":"none","metadata":{"purpose":"test"}}}),
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":pending["effects"][0]["id"]}),
++        );
++        let duplicate = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"first","conversation_id":null,"metadata":{"purpose":"test"}}}}),
++        );
++        assert_eq!(duplicate["effects"].as_array().unwrap().len(), 1);
++        assert_eq!(duplicate["effects"][0]["type"], "event");
++        assert!(control.pending_detached.is_some());
++        let next = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"second","conversation_id":null,"metadata":{"purpose":"test"}}}}),
++        );
++        assert_eq!(next["effects"][0]["type"], "scope");
++    }
++    #[test]
++    fn duplicate_default_created_does_not_replace_a_live_scope_snapshot() {
++        let mut control = ready();
++        request(&mut control);
++        let duplicate = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"response-1","metadata":{"changed":"provider"}}}}),
++        );
++        assert_eq!(duplicate["effects"].as_array().unwrap().len(), 1);
++        assert_eq!(duplicate["effects"][0]["type"], "event");
++        assert_eq!(batch(&mut control)["effects"][0]["type"], "approve");
++    }
++    #[test]
++    fn cancelling_unacknowledged_default_scope_does_not_cancel_unrelated_vad_or_retry() {
++        for rejected in [false, true] {
++            let mut control = ready();
++            let requested = command(
++                &mut control,
++                json!({"type":"create_response","response":{"instructions":"Scoped"}}),
++            );
++            let send = &requested["effects"][0];
++            command(&mut control, json!({"type":"sent","id":send["id"]}));
++            assert_eq!(
++                command(&mut control, json!({"type":"cancel"}))["effects"],
++                json!([])
++            );
++            let vad = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.created","response":{"id":"unrelated-vad","metadata":null}}}),
++            );
++            assert_eq!(vad["effects"][0]["type"], "scope");
++            assert!(
++                !vad["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|effect| effect["event"]["type"] == "response.cancel")
++            );
++            if rejected {
++                command(
++                    &mut control,
++                    json!({"type":"provider","event":{"type":"error","error":{"event_id":send["event"]["event_id"],"code":"conversation_already_has_active_response"}}}),
++                );
++            }
++            let done = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.done","response":{"id":"unrelated-vad","status":"completed","output":[]}}}),
++            );
++            assert!(
++                !done["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|effect| effect["event"]["type"] == "response.create")
++            );
++            if !rejected {
++                let cancelled = command(
++                    &mut control,
++                    json!({"type":"provider","event":{"type":"response.created","response":{"id":"cancelled-scope","metadata":send["event"]["response"]["metadata"]}}}),
++                );
++                assert_eq!(
++                    cancelled["effects"][0]["event"],
++                    json!({"type":"response.cancel","response_id":"cancelled-scope"})
++                );
++                assert!(control.pending_default.is_none());
++            } else {
++                assert!(control.pending_response.is_none());
++            }
++        }
++    }
++    #[test]
++    fn metadata_character_limits_preserve_valid_unicode_values() {
++        let mut control = ready();
++        let metadata = json!({"海".repeat(64):"豚".repeat(512)});
++        let requested = command(
++            &mut control,
++            json!({"type":"create_response","response":{"conversation":"none","metadata":metadata}}),
++        );
++        assert_eq!(
++            requested["effects"][0]["event"]["response"]["metadata"],
++            metadata
++        );
++        let mut invalid = ready();
++        assert_eq!(
++            command(
++                &mut invalid,
++                json!({"type":"create_response","response":{"conversation":"none","metadata":{"key":"豚".repeat(513)}}})
++            )["error"],
++            "Invalid or reserved response metadata"
++        );
++    }
+     #[test]
+     fn shared_contract_matcher_keeps_defaults_numeric_aliases_and_schema_values() {
+         assert!(contains_expected(

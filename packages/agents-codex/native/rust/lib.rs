@@ -2582,6 +2582,74 @@ impl NativeThread {
         serde_json::to_string(&receipt).map_err(native_error)
     }
 
+    #[napi(js_name = "_admit_realtime_agent_graph")]
+    pub async fn _admit_realtime_agent_graph(
+        &self,
+        generation: String,
+        roster_json: String,
+        root_id: String,
+        expected_json: String,
+    ) -> napi::Result<String> {
+        let expected: Option<codex_extension_api::AgentProfileReceipt> =
+            serde_json::from_str(&expected_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(input_error)?;
+        let result = agent_profiles::admit_realtime_graph(
+            &inner,
+            &generation,
+            &roster_json,
+            &root_id,
+            expected,
+        )
+        .await
+        .map_err(native_error)?;
+        serde_json::to_string(&result).map_err(native_error)
+    }
+
+    #[napi(js_name = "_discard_realtime_agent_graph")]
+    pub async fn _discard_realtime_agent_graph(
+        &self,
+        generation: String,
+        receipt_json: String,
+    ) -> napi::Result<()> {
+        let receipt: codex_extension_api::AgentProfileReceipt =
+            serde_json::from_str(&receipt_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        agent_profiles::discard_realtime_graph(&inner.thread, &generation, &receipt)
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_realtime_agent_source")]
+    pub async fn _realtime_agent_source(
+        &self,
+        generation: String,
+        target_json: String,
+    ) -> napi::Result<String> {
+        let target: codex_extension_api::AgentProfileReceipt =
+            serde_json::from_str(&target_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let result = agent_profiles::realtime_source(&inner.thread, &generation, target)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&result).map_err(native_error)
+    }
+
+    #[napi(js_name = "_restore_realtime_agent_graph")]
+    pub async fn _restore_realtime_agent_graph(&self, generation: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        let result = agent_profiles::restore_realtime_graph(&inner.thread, &generation)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&result).map_err(native_error)
+    }
+
     #[napi(js_name = "_activate_agent_profile")]
     pub async fn _activate_agent_profile(
         &self,

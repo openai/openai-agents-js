@@ -8,7 +8,8 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import process from 'node:process';
 import console from 'node:console';
 import { fileURLToPath } from 'node:url';
@@ -69,13 +70,22 @@ const snapshot = () => ({
     inputFiles.map((name) => [name, sha256(readFileSync(join(crate, name)))]),
   ),
 });
+const require = createRequire(import.meta.url);
+const binaryen = dirname(require.resolve('binaryen'));
+const binaryenManifest = JSON.parse(
+  readFileSync(join(binaryen, 'package.json'), 'utf8'),
+);
+if (binaryenManifest.version !== '108.0.0')
+  throw new Error('Portable Hermes builds require pinned binaryen@108.0.0.');
+const wasm2js = join(binaryen, 'bin/wasm2js');
+const wasm2jsHash = sha256(readFileSync(wasm2js));
 const before = snapshot();
 const target = resolve(native, '.cache/portable-target');
 const environment = { ...process.env, CARGO_TARGET_DIR: target };
 delete environment.OPENAI_API_KEY;
-function run(program, args) {
+function run(program, args, cwd = native) {
   const result = spawnSync(program, args, {
-    cwd: native,
+    cwd,
     env: environment,
     stdio: ['ignore', 'pipe', 'inherit'],
     maxBuffer: 16 * 1024 * 1024,
@@ -119,6 +129,60 @@ for (const [name, kind] of [
 ])
   if (exports.get(name) !== kind)
     throw new Error(`Portable control omitted ABI export ${name}.`);
+// Binaryen's virtual filesystem does not consistently resolve Windows drive paths.
+// Keep its input and output local to an explicit working directory.
+const loweringDirectory = dirname(built);
+const loweredPath = join(
+  loweringDirectory,
+  'codex-realtime-control.lowered.js',
+);
+run(
+  process.execPath,
+  [
+    wasm2js,
+    basename(built),
+    '-o',
+    basename(loweredPath),
+    '--emscripten',
+    '--enable-multivalue',
+    '--enable-bulk-memory',
+    '--enable-nontrapping-float-to-int',
+    '--strip-debug',
+    '-O',
+  ],
+  loweringDirectory,
+);
+const lowered = readFileSync(loweredPath, 'utf8');
+if (
+  lowered.includes('WebAssembly') ||
+  !lowered.startsWith('function instantiate(')
+)
+  throw new Error(
+    'Hermes control is not an isolated host-independent factory.',
+  );
+if (sha256(readFileSync(wasm2js)) !== wasm2jsHash)
+  throw new Error('Binaryen changed during the portable build.');
+const hermesProducts = {};
+for (const [index, directory] of products.entries()) {
+  const owner = index === 0;
+  const banner =
+    '// Generated from reviewed Rust control with Binaryen 108 (Apache-2.0).\n';
+  const body = owner ? `${banner}${lowered}\n` : '';
+  const generated = {
+    'codex-realtime-control.mjs': owner
+      ? `${body}import { PortableVoiceControlBinding } from '../dist/voice/portable-binding.mjs';\nexport function createHermesVoiceControl() { return new PortableVoiceControlBinding(instantiate({})); }\n`
+      : `export { createHermesVoiceControl } from '@openai/agents-codex/voice/control.hermes';\n`,
+    'codex-realtime-control.cjs': owner
+      ? `${body}const { PortableVoiceControlBinding } = require('../dist/voice/portable-binding.js');\nexports.createHermesVoiceControl = function () { return new PortableVoiceControlBinding(instantiate({})); };\n`
+      : `module.exports = require('@openai/agents-codex/voice/control.hermes');\n`,
+  };
+  const hashes = {};
+  for (const [name, content] of Object.entries(generated)) {
+    writeFileSync(join(directory, name), content);
+    hashes[name] = sha256(readFileSync(join(directory, name)));
+  }
+  hermesProducts[owner ? '@openai/agents-codex' : '@openai/agents'] = hashes;
+}
 const afterSources = prepareSources(native, sources, false);
 if (
   JSON.stringify(afterSources) !== JSON.stringify(sourceIdentity) ||
@@ -132,6 +196,11 @@ const receipt = {
   toolchain,
   target: 'wasm32-unknown-unknown',
   artifact: { path: 'codex-realtime-control.wasm', sha256: artifact },
+  hermes: {
+    binaryen: binaryenManifest.version,
+    wasm2jsSha256: wasm2jsHash,
+    artifacts: hermesProducts,
+  },
 };
 for (const directory of products) {
   const staged = join(directory, `codex-realtime-control.${process.pid}.wasm`);

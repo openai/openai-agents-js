@@ -1,31 +1,84 @@
-# Portable Realtime control prototype
+# Direct Realtime sessions in JavaScript
 
-This source checkout includes a Rust control prototype for browsers and Workers. The Rust module admits function calls, requests approval, tracks output publication, and schedules a response after tool results. The JavaScript driver supplies physical I/O and invokes callbacks selected by Rust.
+Use a portable Realtime session to run agent instructions, tools, approvals, handoffs, and guardrails in a browser, React Native app, Worker, or Node.js process. The Rust controller owns response and tool state. The application supplies credentials, callbacks, and audio I/O. Use the [native voice guide](../../examples/codex/guides/native-voice.md) for voice attached to a file-backed Node.js `Session`.
 
-The prototype has its own `PortableVoiceSession` interface. It does not yet project native `Agent` and `Session` configuration. Existing `Session.realtime()` and media helpers remain available.
+## Load a matching controller
 
-## Build the module
+Use the controller artifact from the same SDK version as the JavaScript package. For a source checkout, install workspace dependencies and run `pnpm -F @openai/agents-codex native:portable`. The build verifies the pinned Rust patch series and writes the Wasm and Hermes artifacts and build receipt into both SDK packages. To use local Git repositories containing the pinned revisions, pass `--source /path/to/codex` and `--rmcp-source /path/to/rust-sdk`.
 
-From the repository root, install the Rust target and build the reviewed module:
+For browsers, Workers, and Node.js, load `@openai/agents/voice/control.wasm` through the host's asset loader. Pass its compiled `WebAssembly.Module` to `new NativeVoiceControl(module)`. A browser bundler can expose the asset URL for `WebAssembly.compileStreaming(fetch(assetUrl))`. A Worker bundler can import the asset as a compiled module. Create a new controller for each connection.
 
-```sh
-rustup target add wasm32-unknown-unknown --toolchain 1.95.0
-RUSTUP_TOOLCHAIN=1.95.0 pnpm -F @openai/agents-codex native:portable
+## Connect a browser
+
+Have your authenticated application server issue a short-lived Realtime client credential. Call this function from the browser's start-call action so it can request microphone access and play remote audio.
+
+```ts
+import { connectPortableVoiceBrowser } from '@openai/agents/voice/browser';
+import { NativeVoiceControl } from '@openai/agents/voice/portable';
+
+export async function connectBrowser(
+  module: WebAssembly.Module,
+  clientSecret: string,
+) {
+  const { session } = await connectPortableVoiceBrowser({
+    control: new NativeVoiceControl(module),
+    apiKey: clientSecret,
+    agent: {
+      model: 'gpt-realtime-1.5',
+      instructions: 'Answer spoken questions briefly.',
+    },
+    media: {},
+  });
+  return session;
+}
 ```
 
-You can pass `--source /path/to/codex-git-repository` and `--rmcp-source /path/to/rust-sdk-git-repository` to use local repositories containing the pinned revisions. The build verifies the full patch series before compilation. It writes `native/codex-realtime-control.wasm` and `native/portable-build-receipt.json` into both SDK packages. The receipt records the source identities, compiler version, and artifact hash.
+The SDK acquires microphone audio and plays the remote stream. Pass `media.audioElement` to choose the output element or `media.onRemoteStream` to handle playback yourself. The SDK stops tracks it acquires on close. If you supply `media.mediaStream`, stop its tracks in your application. Keep standard API keys on the server.
 
-Load `@openai/agents/voice/control.wasm` with your host's WebAssembly loader. The loader must produce a `WebAssembly.Module`. For example, a Worker bundler can import the `.wasm` asset as a compiled module. Browser bundlers can expose the asset URL for `WebAssembly.compileStreaming(fetch(assetUrl))`.
+## Connect React Native
+
+Import `createHermesVoiceControl` for an on-device controller that runs without a global WebAssembly implementation. Supply the peer connection and microphone stream from your app's `react-native-webrtc` installation. Your app owns microphone permission, audio routing, and stream cleanup.
+
+```ts
+import { createHermesVoiceControl } from '@openai/agents/voice/control.hermes';
+import {
+  connectPortableVoiceReactNative,
+  type NativeVoiceMediaStream,
+  type NativeVoiceWebRTCOptions,
+} from '@openai/agents/voice/react-native';
+
+export async function connectMobile<Stream extends NativeVoiceMediaStream>(
+  clientSecret: string,
+  media: NativeVoiceWebRTCOptions<Stream>,
+) {
+  const { session } = await connectPortableVoiceReactNative({
+    control: createHermesVoiceControl(),
+    apiKey: clientSecret,
+    agent: {
+      model: 'gpt-realtime-1.5',
+      instructions: 'Answer spoken questions briefly.',
+    },
+    media,
+  });
+  return session;
+}
+```
+
+Pass the acquired stream as `mediaStream`, construct the native peer in `createPeerConnection`, and handle the received stream through `onRemoteStream`. The SDK closes the peer when the session closes. Stop your microphone tracks even if connecting throws. The [React Native media example](../../examples/codex/react-native-voice.ts) shows a peer factory and stream ownership.
 
 ## Connect a Worker
 
-This function runs inside a Worker. Its caller supplies the compiled module and a server-side provider API key. It returns the connected session; the caller must eventually await `session.close()`.
+Pass a compiled controller module and a Worker secret. The Worker opens the provider WebSocket and executes the tool callbacks. Connect your own audio source and playback sink to the Worker.
 
 ```ts
 import { NativeVoiceControl } from '@openai/agents/voice/portable';
 import { connectPortableVoiceWorker } from '@openai/agents/voice/workerd';
 
-export async function connectVoice(module: WebAssembly.Module, apiKey: string) {
+export async function connectWorker(
+  module: WebAssembly.Module,
+  apiKey: string,
+  onApproval: (name: string) => Promise<boolean>,
+) {
   return connectPortableVoiceWorker({
     control: new NativeVoiceControl(module),
     apiKey,
@@ -36,25 +89,25 @@ export async function connectVoice(module: WebAssembly.Module, apiKey: string) {
         {
           name: 'current_label',
           description: 'Read the current application label.',
-          parameters: { type: 'object' },
+          parameters: { type: 'object', additionalProperties: false },
           needsApproval: true,
           execute: () => 'Example label',
         },
       ],
-      onApproval: async () => false,
+      onApproval: ({ name }) => onApproval(name),
     },
   });
 }
 ```
 
-`connectPortableVoiceWorker()` opens the provider WebSocket directly. It resolves after the provider accepts configuration and the physical configuration send completes. Configuration acceptance times out after 10 seconds. A tool with `needsApproval: true` runs only after `onApproval` returns `true`; an absent handler denies approval. Tool callbacks receive parsed arguments and an `AbortSignal` and must return text.
+Use `sendAudio(base64Audio)` to append audio in the configured input format. Use `commitAudio()` for manual input boundaries. Subscribe to `provider_event` to receive the provider's output audio events. In Node.js, import `connectPortableVoiceWebSocket` from `@openai/agents/voice/portable` and pass a socket factory that uses the URL and headers supplied by the connector.
 
-For browser WebRTC, use `connectPortableVoiceBrowser()` from `@openai/agents/voice/browser`. Supply a short-lived client credential, a `NativeVoiceControl`, and media options. Keep standard API keys on your server. `createPeerConnection`, `getUserMedia`, and `onRemoteStream` let the application supply media objects without global browser shims.
+## Run and close a session
 
-## Current limits
+The connectors resolve after configuration is accepted. Use `sendText()` to send a text prompt, `updateAgent()` to change the active agent, and `session.on(type, listener)` to observe events. Call the returned function to remove the listener. Read `session.history` for the observed provider items. Pass `storeAudio: true` in the initial agent options if you need bounded audio retention.
 
-The prototype supports function tools and text input. It does not yet implement native Agent projection, full schema validation, guardrails, handoffs, profile changes, history replacement, settings updates, interruption, or deletion. It stops accepting calls after 256 retained function IDs. Provider cancellation, an incomplete response, or speech during active work retires the prototype generation. Create a new generation after close or a protocol failure.
+`session.usage` has been retaining the reported speech-model counts after close. Tool callbacks have been receiving those counts in their tool context. Providers can omit individual usage counters.
 
-Closing aborts callbacks and waits for their promises to settle. Callbacks must observe cancellation. A callback must not await closing its own session.
+A tool callback receives validated arguments, an `AbortSignal`, and context for its exact call. Return text from the callback. Tools with `needsApproval: true` require an affirmative decision from `onApproval`. An absent handler denies approval.
 
-The WebRTC adapter has focused media and factory tests; real peer negotiation remains unverified. React Native media factories avoid global shims, but a supported on-device Rust binding is still required when the runtime cannot execute WebAssembly. These media hooks do not establish mobile agent execution support.
+Await `session.close()` in your end-call action or a `finally` block. Close releases owned media or the socket and aborts pending callbacks. Cooperate with each callback's cancellation signal. Invoke close from the outer application rather than from a callback that close has to join.

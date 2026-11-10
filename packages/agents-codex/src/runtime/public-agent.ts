@@ -1,3 +1,10 @@
+import {
+  captureRealtimeConfig,
+  isRealtimeHandoff,
+  realtimeHandoffTool,
+  type RealtimeAgentConfig,
+  type RealtimeHandoff,
+} from './realtime-agent-config';
 import type {
   BeforeCompact,
   BeforeComplete,
@@ -15,6 +22,7 @@ import {
   parseProfileReceipt,
   checkProfileReceipt,
   type CapturedAgentProfile,
+  type CapturedAgentGraph,
 } from './agent-profiles';
 import {
   privateOwnedGrant,
@@ -109,6 +117,7 @@ import type {
 
 export type AgentOptions<Context = undefined, Output = string> = {
   instructions: string;
+  realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
   /** Default decision provider, independent of the generative model. */
@@ -132,7 +141,9 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * identity is evaluated against those fresh declarations, not saved runtime grants.
    */
   handoffs?: readonly (
-    Agent<Context, Output> | (() => Agent<Context, Output>)
+    | Agent<Context, Output>
+    | RealtimeHandoff<Context>
+    | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling?: boolean;
 } & (string extends Output
@@ -351,6 +362,7 @@ export class Agent<Context = undefined, Output = string> {
   static readonly #canonicalPrepare = this.prototype.prepare;
   static readonly #canonicalApply = Function.prototype.apply;
   instructions: string;
+  realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
   decisions?: DecisionProvider;
@@ -370,7 +382,9 @@ export class Agent<Context = undefined, Output = string> {
   outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
   handoffs: readonly (
-    Agent<Context, Output> | (() => Agent<Context, Output>)
+    | Agent<Context, Output>
+    | RealtimeHandoff<Context>
+    | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling: boolean;
 
@@ -378,6 +392,7 @@ export class Agent<Context = undefined, Output = string> {
     if (typeof options.instructions !== 'string')
       throw new TypeError('Agent instructions are required');
     this.instructions = options.instructions;
+    this.realtime = captureRealtimeConfig(options.realtime);
     this.name = options.name;
     this.model = options.model;
     this.decisions = captureDecisionProvider(options.decisions);
@@ -403,7 +418,10 @@ export class Agent<Context = undefined, Output = string> {
     this.handoffs = Object.freeze([...(options.handoffs ?? [])]);
     if (
       this.handoffs.some(
-        (target) => !(target instanceof Agent) && typeof target !== 'function',
+        (target) =>
+          !(target instanceof Agent) &&
+          !isRealtimeHandoff(target) &&
+          typeof target !== 'function',
       )
     )
       throw new TypeError(
@@ -906,7 +924,7 @@ export class Agent<Context = undefined, Output = string> {
       );
     const profiles = opening
       ? opening.profiles
-      : this.handoffs.length
+      : this.handoffs.length || this.realtime !== undefined
         ? captureAgentProfiles(
             this,
             new Agent({
@@ -918,6 +936,7 @@ export class Agent<Context = undefined, Output = string> {
               outputType: outputType as OutputSpec<Output> | undefined,
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
+              realtime: this.realtime,
               decisions,
               beforeComplete,
               programmaticToolCalling,
@@ -1470,6 +1489,16 @@ export class Agent<Context = undefined, Output = string> {
         context,
         onInteraction: options.onInteraction,
         applicationAgent: this,
+        realtimeDeclaration:
+          profiles?.[0].declaration ??
+          (Object.freeze(
+            new Agent<Context, Output>({
+              ...this,
+              instructions: baseInstructions,
+              tools: options.tools ?? this.tools,
+              provider,
+            } as AgentOptions<Context, Output>),
+          ) as Agent<any, any>),
         beforeComplete,
         beforeCompact,
         transformContext,
@@ -1634,6 +1663,7 @@ export function captureAgentProfiles<Context, Output>(
   root: Agent<Context, Output>,
   rootDeclaration: Agent<Context, Output> = root,
   captureProvider = true,
+  idPrefix = 'agent_',
 ): readonly CapturedAgentProfile<Context, Output>[] {
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
@@ -1681,6 +1711,7 @@ export function captureAgentProfiles<Context, Output>(
         : source.outputType;
     const declaration = new Agent<Context, Output>({
       instructions: source.instructions,
+      realtime: source.realtime,
       name: source.name,
       model: source.model,
       decisions: source.decisions,
@@ -1714,9 +1745,16 @@ export function captureAgentProfiles<Context, Output>(
         'Handoff profiles must share native child-role configuration and non-function runtime grants',
       );
     const targets: Record<string, string> = Object.create(null);
+    const handoffCallbacks: Record<string, number> = Object.create(null);
+    const handoffOptions: Record<
+      string,
+      RealtimeHandoff<Context>
+    > = Object.create(null);
+    const callbackTools: import('./tools').FunctionTool<Context>[] = [];
     for (const reference of declaration.handoffs) {
       let target: Agent<Context, Output>;
-      if (reference instanceof Agent) target = reference;
+      if (isRealtimeHandoff(reference)) target = reference.agent;
+      else if (reference instanceof Agent) target = reference;
       else {
         if (typeof reference !== 'function')
           throw new TypeError(
@@ -1737,20 +1775,31 @@ export function captureAgentProfiles<Context, Output>(
           resolved.set(reference, target);
         }
       }
-      if (!target.name?.trim())
+      if (
+        (!isRealtimeHandoff(reference) || reference.name === undefined) &&
+        !target.name?.trim()
+      )
         throw new TypeError('A handoff target requires a nonempty Agent.name');
-      const name = `transfer_to_${target.name}`
-        .replace(/[^a-zA-Z0-9_-]/g, '_')
-        .toLowerCase()
-        .slice(0, 64);
+      const name =
+        isRealtimeHandoff(reference) && reference.name !== undefined
+          ? reference.name
+          : `transfer_to_${target.name}`
+              .replace(/[^a-zA-Z0-9_-]/g, '_')
+              .toLowerCase()
+              .slice(0, 64);
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name))
+        throw new TypeError('Invalid Realtime handoff name');
       let index = indices.get(target);
       if (index === undefined) {
         index = agents.length;
         indices.set(target, index);
         agents.push(target);
       }
-      const id = `agent_${index}`;
-      if (targets[name] !== undefined && targets[name] !== id)
+      const id = `${idPrefix}${index}`;
+      if (
+        targets[name] !== undefined &&
+        (targets[name] !== id || isRealtimeHandoff(reference))
+      )
         throw new TypeError(
           `Duplicate handoff name in Agent ${agent.name ?? 'root'}: ${name}`,
         );
@@ -1764,16 +1813,25 @@ export function captureAgentProfiles<Context, Output>(
           `Handoff name conflicts with declared tool: ${name}`,
         );
       targets[name] = id;
+      if (isRealtimeHandoff(reference)) {
+        handoffOptions[name] = reference;
+        handoffCallbacks[name] = capturedTools.length + callbackTools.length;
+        callbackTools.push(realtimeHandoffTool(reference, agent, name));
+      }
     }
+    declaration.tools = [...declaration.tools, ...callbackTools];
     Object.freeze(declaration.modelSettings);
     Object.freeze(declaration.tools);
     Object.freeze(declaration);
     profiles.push(
       Object.freeze({
-        id: `agent_${indices.get(agent)!}`,
+        id: `${idPrefix}${indices.get(agent)!}`,
         agent,
         declaration,
         handoffs: Object.freeze(targets),
+        handoffCallbacks: Object.freeze(handoffCallbacks),
+        handoffOptions: Object.freeze(handoffOptions),
+        callbackTools: Object.freeze(callbackTools),
       }),
     );
   }
@@ -1788,4 +1846,48 @@ export class Runner {
   ) {
     return agent.run(input, ...args);
   }
+}
+
+/** Capture fresh voice declarations while preserving the opening native contract. */
+export function captureRealtimeAgentGraph(
+  opening: Agent<any, any>,
+  candidate: Agent<any, any>,
+  idPrefix: string,
+): CapturedAgentGraph {
+  if (!(candidate instanceof Agent))
+    throw new TypeError('updateAgent requires a native Agent');
+  if (
+    candidate.provider !== opening.provider &&
+    !implicitProviders.get(candidate.provider)?.has(candidate)
+  )
+    throw new TypeError('A Realtime Agent must use the Session provider');
+  if (
+    prepareOutput(candidate.outputType).identity.fingerprint !==
+    prepareOutput(opening.outputType).identity.fingerprint
+  )
+    throw new TypeError(
+      'A Realtime Agent must preserve the Session output contract',
+    );
+  const fixed = (agent: Agent<any, any>) => {
+    const {
+      tools: _tools,
+      mcp: _mcp,
+      ...grants
+    } = splitToolDeclarations(agent.tools);
+    return {
+      ...grants,
+      programmaticToolCalling: agent.programmaticToolCalling,
+    };
+  };
+  if (!isDeepStrictEqual(fixed(opening), fixed(candidate)))
+    throw new TypeError(
+      'A Realtime Agent cannot change fixed native runtime tools',
+    );
+  const declaration = new Agent({ ...candidate, provider: opening.provider });
+  const profiles = captureAgentProfiles(candidate, declaration, true, idPrefix);
+  return captureProfileRuntimes(
+    profiles,
+    captureTools(splitToolDeclarations(declaration.tools).tools),
+    declaration.instructions,
+  );
 }

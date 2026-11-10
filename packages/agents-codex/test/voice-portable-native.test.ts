@@ -68,6 +68,48 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
+  it('counts provider usage once per response and retains it after close', async () => {
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      { model: 'test-realtime', instructions: 'Help.' },
+    );
+    await session.start();
+    expect(session.usage).toBeUndefined();
+    vi.stubGlobal('structuredClone', undefined);
+    for (const id of ['first', 'second']) {
+      session.receive({ type: 'response.created', response: { id } });
+      const done = {
+        type: 'response.done',
+        response: {
+          id,
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 4, input_token_details: { audio_tokens: 2 } },
+        },
+      };
+      session.receive(done);
+      session.receive(done);
+    }
+    await session.close();
+    expect(session.usage).toEqual({
+      input_tokens: 8,
+      input_token_details: { audio_tokens: 4 },
+    });
+  });
+
   it('rejects startup after close without leaving a readiness timer', async () => {
     vi.useFakeTimers();
     const owner = control();
@@ -330,6 +372,7 @@ describe.runIf(enabled)('portable Rust control', () => {
     expect(definition.execute).toHaveBeenCalledExactlyOnceWith(
       { value: 7 },
       expect.any(AbortSignal),
+      expect.objectContaining({ callId: 'call-1', history: [item] }),
     );
     expect(frames[1].item).toEqual({
       type: 'function_call_output',

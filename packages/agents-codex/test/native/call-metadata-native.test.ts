@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -305,11 +305,18 @@ it('keeps sibling manual owners distinct when their provider call IDs match', as
         route: 'direct',
         model: 'gpt-5.5',
       });
-      const descendants = await Array.fromAsync(session.subagents());
-      const turn = descendants.find(
-        (child) => child.id === request.subagentId,
-      )?.turn;
-      if (!turn) throw new Error('Expected captured child Turn');
+      const turn = await vi.waitFor(
+        async () => {
+          const descendants = await Array.fromAsync(session.subagents());
+          const turn = descendants.find(
+            (child) => child.id === request.subagentId,
+          )?.turn;
+          if (!turn) throw new Error('Expected captured child Turn');
+          expect(turn.turnId).toBe(request.turnId);
+          return turn;
+        },
+        { timeout: 5_000 },
+      );
       await session.respond(request.reply(`accepted-${request.arguments.key}`));
       expect(turn.childId).toBe(info.childId);
       expect(turn.submissionId.split(':').at(-2)).toBe(info.childIncarnation);

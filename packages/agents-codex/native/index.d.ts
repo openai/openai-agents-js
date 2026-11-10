@@ -125,6 +125,21 @@ export class NativeThread {
     rootId: string,
   ): Promise<string>;
   _active_agent_profile(): Promise<string>;
+  _admit_realtime_agent_graph(
+    generation: string,
+    rosterJson: string,
+    rootId: string,
+    expectedJson: string,
+  ): Promise<string>;
+  _discard_realtime_agent_graph(
+    generation: string,
+    receiptJson: string,
+  ): Promise<void>;
+  _realtime_agent_source(
+    generation: string,
+    targetJson: string,
+  ): Promise<string>;
+  _restore_realtime_agent_graph(generation: string): Promise<string>;
   _activate_agent_profile(
     target: string,
     expectedJson: string,

@@ -15,7 +15,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, delimiter, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
@@ -32,6 +32,7 @@ import {
   type Session,
   type SessionState,
 } from '@openai/agents';
+import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { nativeDescendantModel } from './fixtures/native-descendant-model';
@@ -2639,4 +2640,223 @@ it
       await rm(base, { recursive: true, force: true });
     }
   },
+);
+
+it.skipIf(process.platform !== 'darwin')(
+  'applies a per-turn write policy with macOS read-only roots and restores a named linked skill',
+  async () => {
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    // Seatbelt already grants access to the system scratch directories.
+    const temporary = await mkdtemp(
+      join(homedir(), '.agents-macos-read-roots-'),
+    );
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const granted = join(base, 'granted');
+      const harmless = join(base, 'harmless');
+      const other = join(base, 'other');
+      const homes = join(base, 'runtime-homes');
+      const skill = join(cwd, '.agents', 'skills', 'nov9_read_only_probe');
+      await Promise.all([
+        mkdir(join(cwd, '.agents', 'skills'), { recursive: true }),
+        mkdir(join(cwd, '.git'), { recursive: true }),
+        mkdir(granted),
+        mkdir(harmless),
+        mkdir(other),
+        mkdir(homes),
+      ]);
+      const skillBody =
+        '---\nname: nov9_read_only_probe\ndescription: NAMED_SKILL_CATALOG\n---\nRead marker.txt when this skill is requested.\n';
+      const marker = join(granted, 'marker.txt');
+      const outside = join(other, 'ungranted.txt');
+      const metadata = '[core]\n\trepositoryformatversion = 0\n';
+      await Promise.all([
+        writeFile(join(granted, 'SKILL.md'), skillBody),
+        writeFile(marker, 'GRANTED_SKILL_MARKER\n'),
+        writeFile(outside, 'UNGRANTED_PRIVATE_SENTINEL\n'),
+        writeFile(join(cwd, '.git', 'config'), metadata),
+        symlink(granted, skill),
+        symlink(outside, join(cwd, 'ungranted-link')),
+        symlink(outside, join(granted, 'ungranted-link')),
+      ]);
+      vi.stubEnv('TMPDIR', homes);
+      let privateMarker = '';
+      const denyRead = (path: string) =>
+        `if cat ${quote(path)} >/dev/null 2>&1; then exit 11; fi`;
+      const denyWrite = (path: string) =>
+        `if (printf changed >> ${quote(path)}) 2>/dev/null; then exit 12; fi`;
+      const probe = (name: string, allowed: boolean) =>
+        [
+          'set -eu',
+          ...(allowed
+            ? [
+                `cat ${quote(join(skill, 'SKILL.md'))}`,
+                `cat ${quote(join(skill, 'marker.txt'))}`,
+                `cat ${quote(marker)}`,
+              ]
+            : [denyRead(marker), denyRead(join(skill, 'marker.txt'))]),
+          denyRead(outside),
+          denyRead(join(cwd, 'ungranted-link')),
+          denyRead(join(granted, 'ungranted-link')),
+          denyRead(privateMarker),
+          denyWrite(marker),
+          denyWrite(join(skill, 'marker.txt')),
+          denyWrite(join(granted, 'new.txt')),
+          denyWrite(join(cwd, '.git', 'config')),
+          `printf workspace-ok > ${quote(join(cwd, name))}`,
+          'printf POLICY_OK',
+        ].join('; ');
+      const command = (name: string, allowed: boolean) => ({
+        items: [
+          toolCall(
+            'exec_command',
+            { cmd: probe(name, allowed) },
+            { callId: name },
+          ),
+        ],
+      });
+      const answer = () => ({ items: [text('done')] });
+      const readOnlyRoots: readonly string[] = [granted, harmless];
+      const options = { cwd, tools: ['exec_command'] as const };
+      await withScriptedResponses(
+        [
+          () => command('strict-default', false),
+          answer(),
+          () => command('initial', true),
+          answer(),
+          () => command('restored', true),
+          answer(),
+        ],
+        async (peer) => {
+          const agent = new Agent({
+            provider: peer.provider,
+            model: 'gpt-5.5',
+            instructions: 'Use the named skill and run the selected command.',
+          });
+          const setPrivateMarker = async (previous: string[]) => {
+            const created = (await readdir(homes)).filter(
+              (name) =>
+                name.startsWith('agents-session-') && !previous.includes(name),
+            );
+            expect(created).toHaveLength(1);
+            privateMarker = join(homes, created[0], 'private-sentinel');
+            await writeFile(privateMarker, 'NATIVE_PRIVATE_SENTINEL\n');
+          };
+          {
+            const environment = Environment.local(options);
+            expect(environment.writePolicy).toBe('strict');
+            const previous = await readdir(homes);
+            await using session = await agent.session({ environment });
+            await setPrivateMarker(previous);
+            expect(
+              (await (await session.submit('Check the default policy.')).wait())
+                .finalOutput,
+            ).toBe('done');
+          }
+          const sharedMarker = join(harmless, 'shared-marker');
+          await link(outside, sharedMarker);
+          await expect(
+            agent.session({
+              environment: Environment.local({ ...options, readOnlyRoots }),
+            }),
+          ).rejects.toThrow(/hard.link/i);
+          await rm(sharedMarker);
+          expect(peer.requests).toHaveLength(2);
+          let state: SessionState;
+          {
+            const environment = Environment.local({
+              ...options,
+              capabilityDirectories: [join(cwd, '.agents')],
+              readOnlyRoots,
+            });
+            expect(environment.writePolicy).toBe('strict');
+            const previous = await readdir(homes);
+            await using session = await agent.session({ environment });
+            await setPrivateMarker(previous);
+            await expect(
+              session.submit('Do not make the linked skill writable.', {
+                writableRoots: [skill],
+              }),
+            ).rejects.toThrow(/read.only|overlap|writ/i);
+            expect(peer.requests).toHaveLength(2);
+            expect(
+              (
+                await (
+                  await session.submit(
+                    'Use $nov9_read_only_probe and read its marker.txt.',
+                    { writableRoots: [] },
+                  )
+                ).wait()
+              ).finalOutput,
+            ).toBe('done');
+            state = parseSessionState(
+              JSON.stringify(await session.saveState()),
+            );
+          }
+          for (const roots of [undefined, [other]] as const) {
+            await expect(
+              agent.session({
+                state,
+                environment: Environment.local({
+                  ...options,
+                  readOnlyRoots: roots,
+                }),
+              }),
+            ).rejects.toThrow(
+              /recorded executor write and network policy|read.only roots/i,
+            );
+          }
+          expect(peer.requests).toHaveLength(4);
+          {
+            const previous = await readdir(homes);
+            await using session = await agent.session({
+              state,
+              environment: Environment.local({
+                ...options,
+                capabilityDirectories: [join(cwd, '.agents')],
+                readOnlyRoots: [harmless, granted],
+              }),
+            });
+            await setPrivateMarker(previous);
+            expect(
+              (
+                await (
+                  await session.submit('Use $nov9_read_only_probe again.')
+                ).wait()
+              ).finalOutput,
+            ).toBe('done');
+          }
+          expect(JSON.stringify(peer.requests[2])).toContain(
+            'NAMED_SKILL_CATALOG',
+          );
+          expect(peer.requests).toHaveLength(6);
+          peer.assertExhausted();
+          for (const phase of ['strict-default', 'initial', 'restored']) {
+            const output = peer.toolOutput(phase);
+            expect(output).toContain('POLICY_OK');
+            expect(output).not.toContain('UNGRANTED_PRIVATE_SENTINEL');
+            expect(output).not.toContain('NATIVE_PRIVATE_SENTINEL');
+            if (phase !== 'strict-default')
+              expect(output).toContain('GRANTED_SKILL_MARKER');
+          }
+        },
+      );
+      for (const name of ['strict-default', 'initial', 'restored'])
+        expect(await readFile(join(cwd, name), 'utf8')).toBe('workspace-ok');
+      expect(await readFile(marker, 'utf8')).toBe('GRANTED_SKILL_MARKER\n');
+      expect(await readFile(join(granted, 'SKILL.md'), 'utf8')).toBe(skillBody);
+      expect(await readFile(outside, 'utf8')).toBe(
+        'UNGRANTED_PRIVATE_SENTINEL\n',
+      );
+      expect(await readFile(join(cwd, '.git', 'config'), 'utf8')).toBe(
+        metadata,
+      );
+      expect(existsSync(join(granted, 'new.txt'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  60_000,
 );

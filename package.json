@@ -114,6 +114,7 @@
     "@openai/agents": "workspace:*",
     "@types/node": "22.19.13",
     "@vitest/coverage-v8": "^5.0.3",
+    "binaryen": "108.0.0",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "execa": "^9.6.1",
