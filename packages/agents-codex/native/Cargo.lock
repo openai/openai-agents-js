@@ -1702,6 +1702,7 @@ dependencies = [
  "codex-thread-store",
  "codex-tools",
  "codex-utils-path-uri",
+ "codex-utils-stream-parser",
  "codex-web-search-extension",
  "codex-websocket-client",
  "futures-core",

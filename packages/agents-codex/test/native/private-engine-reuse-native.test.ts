@@ -10,6 +10,12 @@ import { Agent, NativeProvider } from '../../src';
 import { binding } from '../../src/runtime/binding';
 import { ModelServer, message } from './fixtures/model-server';
 
+// Keep coverage of the full-Session fallback's Engine reuse. The direct plain
+// run path has its own public contract coverage in plain-run-native.test.ts.
+vi.mock('../../src/runtime/plain-run', () => ({
+  tryOpenPlainRun: async () => undefined,
+}));
+
 async function providerFor(model: ModelServer) {
   const config = await model.config();
   return new NativeProvider({

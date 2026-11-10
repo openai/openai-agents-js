@@ -34,7 +34,7 @@ From your application directory, run the example.
 npx tsx hello.ts
 ```
 
-The script makes a live model request and prints the reply. `agent.run()` creates and closes its own Session, and `await using` closes the provider.
+The script makes a live model request and prints the reply. `agent.run()` has been handling the request's cleanup, and `await using` has been closing the provider.
 
 Try the [greeting](../../examples/codex/basic.ts) and [typed-context](../../examples/codex/typed-context.ts) examples.
 

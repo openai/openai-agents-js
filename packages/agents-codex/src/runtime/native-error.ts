@@ -2,8 +2,8 @@ import type { SessionStoreCleanup } from './custom-thread-store';
 import { encode } from './binding';
 
 /**
- * A one-shot run and its owned Session cleanup failed.
- * Retry cleanup.close() on this error; it closes the same Session without
+ * A one-shot run and its owned resource cleanup failed.
+ * Retry cleanup.close() on this error; it closes the same resources without
  * repeating the run. Close can still report a diagnostic after retirement.
  * The original failure remains in cause and both failures remain in errors.
  */

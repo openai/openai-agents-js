@@ -80,6 +80,7 @@ codex-code-mode = { path = ".upstream/reviewed-codex/codex-rs/code-mode" }
 codex-code-mode-host = { path = ".upstream/reviewed-codex/codex-rs/code-mode-host" }
 codex-execpolicy = { path = ".upstream/reviewed-codex/codex-rs/execpolicy" }
 codex-utils-path-uri = { path = ".upstream/reviewed-codex/codex-rs/utils/path-uri" }
+codex-utils-stream-parser = { path = ".upstream/reviewed-codex/codex-rs/utils/stream-parser" }
 futures-core = "0.3"
 futures-util = "0.3"
 napi = { version = "3.16.1", default-features = false, features = ["napi8", "async-runtime", "serde-json", "dyn-symbols"] }
