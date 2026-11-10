@@ -370,7 +370,23 @@ it('delivers immutable processor snapshots in order and contains processor failu
       received.push(`${event.lifecycle}:second`);
     }),
   };
+  const batched = {
+    onEvent: vi.fn(),
+    onEvents: vi.fn(
+      (events: readonly import('../src/runtime/telemetry').TraceEvent[]) => {
+        received.push(
+          `batch:${events.map((event) => event.lifecycle).join(',')}`,
+        );
+        expect(Object.isFrozen(events)).toBe(true);
+        for (const event of events) {
+          expect(Object.isFrozen(event)).toBe(true);
+          expect(Object.isFrozen(event.attributes)).toBe(true);
+        }
+      },
+    ),
+  };
   await telemetry.addTraceProcessor(first);
+  await telemetry.addTraceProcessor(batched);
   await telemetry.addTraceProcessor(second);
   const routes = harness.native.set_trace_routes.mock.calls.map(
     ([wire]) => JSON.parse(wire).processor_ids[0],
@@ -395,10 +411,13 @@ it('delivers immutable processor snapshots in order and contains processor failu
   );
   expect(received).toEqual([
     'start:first',
+    'batch:start,end',
     'start:second',
     'end:first',
     'end:second',
   ]);
+  expect(batched.onEvents).toHaveBeenCalledTimes(1);
+  expect(batched.onEvent).not.toHaveBeenCalled();
   await telemetry.setTraceProcessors([]);
   expect(
     JSON.parse(harness.native.set_trace_routes.mock.calls.at(-1)![0]),

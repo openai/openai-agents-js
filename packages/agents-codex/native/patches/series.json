@@ -435,7 +435,11 @@
     {
       "path": "0182-preempt-retirement-and-fence-continuation.patch",
       "sha256": "e181d7460d3b958e034169baf84906909d70933814c6feb7a4680dbd2ca05a75"
+    },
+    {
+      "path": "0098-retained-trace-root-descriptors.patch",
+      "sha256": "e1b504271356e706a1c6510b548b94669a4d7a444ccdbe2ab667b8fe0c03b750"
     }
   ],
-  "result_tree": "86e999c8e5a61ec547e594d42a1430437fccdeb8"
+  "result_tree": "6d5b47506ff328423d34a9f00a3ad57c9007533c"
 }

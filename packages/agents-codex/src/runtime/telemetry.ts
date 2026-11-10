@@ -1,3 +1,7 @@
+export {
+  OpenAITraceExporter,
+  ConsoleTraceProcessor,
+} from './openai-trace-exporter';
 import {
   inTraceProcessor,
   suppressTracing,
@@ -15,6 +19,8 @@ export {
   withSpan,
   getCurrentTrace,
   getCurrentSpan,
+  setTracingDisabled,
+  setSensitiveDataLoggingEnabled,
 } from './tracing-context';
 type Native = Awaited<ReturnType<typeof binding>>;
 
@@ -253,6 +259,8 @@ export interface TraceEvent {
  */
 export interface TraceProcessor {
   onEvent(event: TraceEvent): void | Promise<void>;
+  /** Optional native-drain batch callback; acknowledgement waits for completion. */
+  onEvents?(events: readonly TraceEvent[]): void | Promise<void>;
 }
 
 /** Private credential storage; headers never enter span records or saved state. */
@@ -293,6 +301,10 @@ const processors = new Map<string, TraceProcessor>();
 const activeProcessorIds = new Set<string>();
 const retiredProcessorIds = new Map<string, number>();
 let acknowledgedSequence = 0;
+let droppedRecords = 0;
+let lossWatermark = 0;
+let recoveryEpoch = 0;
+const processorEpochs = new WeakMap<TraceProcessor, number>();
 function retireProcessors(): void {
   for (const [id, cutoff] of retiredProcessorIds) {
     if (cutoff <= acknowledgedSequence) {
@@ -345,14 +357,86 @@ async function route(
         while (processors.size) {
           const batch = JSON.parse(await native.drain_trace_events(128));
           let failures = 0;
-          for (const event of batch.events as TraceEvent[]) {
-            for (const id of event.processor_ids) {
-              try {
-                await suppressTracing(() =>
-                  processors.get(id)?.onEvent(freezeSnapshot(event)),
-                );
-              } catch {
-                failures++;
+          if (batch.dropped_records > droppedRecords) {
+            // No-op route merge captures the sequence, including a drop-only tail.
+            lossWatermark = native.set_trace_routes(
+              '{"processor_ids":[],"replace":false}',
+            );
+            droppedRecords = batch.dropped_records;
+          }
+          const watermark = lossWatermark;
+          const groups: TraceEvent[][] =
+            watermark && batch.through_sequence >= watermark
+              ? [
+                  batch.events.filter(
+                    (event: TraceEvent) => event.sequence <= watermark,
+                  ),
+                  batch.events.filter(
+                    (event: TraceEvent) => event.sequence > watermark,
+                  ),
+                ]
+              : [batch.events];
+          for (const [index, group] of groups.entries()) {
+            if (index === 1) {
+              recoveryEpoch = watermark;
+              lossWatermark = 0;
+            }
+            const routes = new Map<string, TraceEvent[]>();
+            for (const event of group) {
+              const descriptor =
+                batch.root_descriptors?.[String(event.sequence)];
+              const snapshot = freezeSnapshot(
+                descriptor === undefined
+                  ? event
+                  : { ...event, root_descriptor: descriptor },
+              );
+              for (const id of event.processor_ids) {
+                const events = routes.get(id) ?? [];
+                events.push(snapshot);
+                routes.set(id, events);
+              }
+            }
+            for (const event of group) {
+              for (const id of event.processor_ids) {
+                const events = routes.get(id);
+                if (!events) continue;
+                const processor = processors.get(id);
+                if (
+                  processor &&
+                  (processorEpochs.get(processor) ?? 0) < recoveryEpoch
+                ) {
+                  const recover = (
+                    processor as TraceProcessor & {
+                      _onNativeTraceLoss?: () => void | Promise<void>;
+                    }
+                  )._onNativeTraceLoss;
+                  try {
+                    if (recover)
+                      await suppressTracing(() => recover.call(processor));
+                    processorEpochs.set(processor, recoveryEpoch);
+                  } catch {
+                    failures++;
+                    continue;
+                  }
+                }
+                if (typeof processor?.onEvents === 'function') {
+                  // Deliver each batch at its first event's position. Ordinary
+                  // processors retain event-by-event registration order.
+                  routes.delete(id);
+                  try {
+                    await suppressTracing(() =>
+                      processor.onEvents!(Object.freeze(events)),
+                    );
+                  } catch {
+                    failures += events.length;
+                  }
+                } else {
+                  try {
+                    await suppressTracing(() => processor?.onEvent(event));
+                  } catch {
+                    failures++;
+                  }
+                }
               }
             }
           }
