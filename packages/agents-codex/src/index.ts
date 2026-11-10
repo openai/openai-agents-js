@@ -163,6 +163,7 @@ export type {
   UserInput,
   UserMessage,
   InputText,
+  InputAudio,
   InputImage,
   InputImageFile,
   InputFile,
