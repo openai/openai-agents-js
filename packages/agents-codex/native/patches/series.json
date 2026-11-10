@@ -399,7 +399,11 @@
     {
       "path": "0170-canonical-history-transactions.patch",
       "sha256": "e88a2db32ae35587399c2eeae49284f96ef83383399b26f60961f9748d74e779"
+    },
+    {
+      "path": "0095-decisions.patch",
+      "sha256": "f184609e68d3353303c1ed22e2dbdccce69445f4be696411687e3d0daf1fd394"
     }
   ],
-  "result_tree": "832569f43a1fa9d3abe8efb93de0ed292597b0c3"
+  "result_tree": "21bb73aaeee7921c33d41f2c3bde0e039b63cbc2"
 }

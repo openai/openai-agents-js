@@ -428,6 +428,8 @@ export function _embedded_commands(): string;
 export const CODEX_REVISION: string;
 
 declare const binding: {
+  _decision_questions: typeof _decision_questions;
+  _decision_result: typeof _decision_result;
   _agent_profiles_fingerprint: typeof _agent_profiles_fingerprint;
   _agent_profiles_restore_source: typeof _agent_profiles_restore_source;
   _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
@@ -510,3 +512,13 @@ export class _NativeRealtimeAdapterRequest {
   readonly event_json: string;
   complete(success: boolean): boolean;
 }
+
+export declare function _decision_questions(
+  schemaJson: string,
+  question: string,
+): string;
+export declare function _decision_result(
+  schemaJson: string,
+  question: string,
+  answersJson: string,
+): string;

@@ -10,6 +10,19 @@ export type {
   RunOptions,
 } from './runtime/public-agent';
 export { RunCleanupError } from './runtime/native-error';
+export { DecisionError } from './runtime/decisions';
+export type {
+  DecisionInput,
+  DecisionChoice,
+  DecisionRequest,
+  DecisionResponse,
+  DecisionProvider,
+  DecisionMetadata,
+  BoundDecisionOptions,
+  BoundDecide,
+} from './runtime/decisions';
+export { OpenAIDecisions } from './runtime/openai-decisions';
+export type { OpenAIDecisionsOptions } from './runtime/openai-decisions';
 export { NativeProvider } from './runtime/provider';
 export { CapabilityError } from './runtime/capabilities';
 export type {

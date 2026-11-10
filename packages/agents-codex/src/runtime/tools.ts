@@ -1,3 +1,8 @@
+import {
+  decisionBinding,
+  withDecisionSignal,
+  type BoundDecide,
+} from './decisions';
 import { captureToolPart, mediaRecord } from './media';
 import type { FileReference, ImageDetail } from './media';
 import { z } from 'zod';
@@ -90,6 +95,9 @@ export type ToolTimeoutErrorFunction<Context = unknown> = (
 ) => string | Promise<string>;
 
 export interface ToolCallContext<Context = unknown> {
+  readonly decide?: BoundDecide;
+  /** @internal */
+  readonly [decisionBinding]?: (signal: AbortSignal) => BoundDecide;
   /** Exact issuing native span, when native tracing has an active context. */
   readonly traceContext?: import('./trace-context').TraceContext;
   /** SDK-issued contexts include frozen observed metadata. */
@@ -104,6 +112,7 @@ export interface ToolCallContext<Context = unknown> {
 export interface ToolContext<
   Context = unknown,
 > extends ToolCallContext<Context> {
+  readonly decide: BoundDecide;
   /** Detached snapshot of the model's arguments. */
   readonly originalArguments: Readonly<JsonObject>;
   /** Shallow read-only view of the validated callback arguments. */
@@ -355,6 +364,12 @@ export function tool<
       let parsed = parameters.parse(args);
       let callContext: ToolContext<Context> = {
         ...context,
+        decide:
+          context.decide ??
+          ((() =>
+            Promise.reject(
+              new Error('Decision helper requires an admitted callback'),
+            )) as BoundDecide),
         originalArguments,
         effectiveArguments: Object.freeze({
           ...(parsed as Record<string, unknown>),
@@ -396,7 +411,7 @@ export function tool<
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
       try {
         value = await invokeWithTimeout(
-          (signal) => execute(parsed, { ...callContext, signal }),
+          (signal) => execute(parsed, withDecisionSignal(callContext, signal)),
           context.signal,
           callbackTimeout,
           name,

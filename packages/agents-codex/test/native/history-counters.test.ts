@@ -553,6 +553,45 @@ describe('recorded response observations', () => {
     }
   });
 
+  it('keeps upstream request IDs distinct from response body IDs and preserves legacy history', () => {
+    const turn = {
+      ...project([
+        observed(
+          'identified',
+          { input_tokens: 7, total_tokens: 9 },
+          {
+            response_id: 'body-response',
+            upstream_request_id: 'transport-request',
+          },
+        ),
+        accounting('identified'),
+        observed('unknown-request', null, { response_id: null }),
+      ]),
+      parentSessionId: 'parent',
+      parentTurnId: 'parent-turn',
+    };
+    const responses = turn.responses ?? [];
+    expect(responses).toHaveLength(2);
+    expect(responses[0]).toMatchObject({
+      responseId: 'body-response',
+      upstreamRequestId: 'transport-request',
+      usage: { inputTokens: 7, totalTokens: 9 },
+    });
+    expect(responses[1]).toMatchObject({ responseId: null, usage: null });
+    expect(responses[1]).not.toHaveProperty('upstreamRequestId');
+    const wire = repairTurnWireSchema.parse(
+      JSON.parse(JSON.stringify(recordedTurnToWire(turn))),
+    );
+    expect(wire.responses?.[0].upstreamRequestId).toBe('transport-request');
+    expect(recordedTurnFromWire(wire)).toEqual(turn);
+    const legacy = structuredClone(wire);
+    delete legacy.responses![0].upstreamRequestId;
+    const restored = recordedTurnFromWire(repairTurnWireSchema.parse(legacy));
+    expect(restored.responses?.[0].responseId).toBe('body-response');
+    expect(restored.responses?.[0]).not.toHaveProperty('upstreamRequestId');
+    expect(restored.usage).toEqual(turn.usage);
+  });
+
   it('preserves optional received counters, exact counts and absent whole usage', () => {
     const turn = project([
       observed('o1', { input_tokens: large, cached_input_tokens: 0 }),

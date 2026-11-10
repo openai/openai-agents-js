@@ -120,6 +120,7 @@ export interface PreparedOutput<Output = unknown> {
 /** Capture generation guidance and one local parser before opening resources. */
 export function prepareOutput<Output>(
   output: OutputSpec<Output> | undefined,
+  options: { applicationValue?: boolean } = {},
 ): PreparedOutput<Output> {
   if (!output)
     return {
@@ -180,7 +181,15 @@ export function prepareOutput<Output>(
       parse: validate((text) => schema.parse(JSON.parse(text))),
     };
   }
-  let native = decode(jsonObject, JSON.stringify(z.toJSONSchema(schema)));
+  let native = decode(
+    jsonObject,
+    JSON.stringify(
+      z.toJSONSchema(
+        schema,
+        options.applicationValue ? { io: 'input' } : undefined,
+      ),
+    ),
+  );
   if (
     !explicit &&
     native.type === 'string' &&
@@ -190,7 +199,7 @@ export function prepareOutput<Output>(
       identity: captureOutputIdentity('plain', native),
       parse: validate((text) => schema.parse(text)),
     };
-  const wrapped = native.type !== 'object';
+  const wrapped = !options.applicationValue && native.type !== 'object';
   const identity = captureOutputIdentity('native', { schema: native, wrapped });
   if (wrapped)
     native = decode(
@@ -199,6 +208,13 @@ export function prepareOutput<Output>(
     );
 
   const close = (node: JsonObject): void => {
+    if (
+      options.applicationValue &&
+      typeof node.$ref === 'string' &&
+      !node.$ref.startsWith('#')
+    )
+      throw new TypeError('Decision output schemas require local references');
+
     if (!('type' in node || '$ref' in node || 'anyOf' in node))
       throw new TypeError('Output schemas cannot contain unconstrained values');
     if (
