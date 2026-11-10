@@ -4906,8 +4906,8 @@ fn sanitize_plan_transport(
     result: Result<codex_client::StreamResponse, TransportError>,
     authorization: &http::HeaderValue,
 ) -> Result<codex_client::StreamResponse, TransportError> {
-    // The physical request is the sole bearer consumer. Drop provider diagnostic
-    // text and any response header that echoes the credential before Core sees it.
+    // The physical request is the sole bearer consumer. Keep only bounded
+    // recovery details and remove echoed credentials before Core sees them.
     let bearer = &authorization.as_bytes()[b"Bearer ".len()..];
     let clean_headers = |headers: &mut http::HeaderMap| {
         let echoed: Vec<_> = headers
@@ -4950,14 +4950,7 @@ fn sanitize_plan_transport(
             clean_headers(&mut headers);
             let body = body
                 .as_deref()
-                .and_then(provider_error::provider_code)
-                .filter(|code| {
-                    !code
-                        .as_bytes()
-                        .windows(bearer.len())
-                        .any(|part| part == bearer)
-                })
-                .map(|code| serde_json::json!({"error":{"code":code}}).to_string());
+                .and_then(|body| provider_error::sanitize_plan_http_body(body, bearer));
             Err(TransportError::Http {
                 status,
                 url: None,

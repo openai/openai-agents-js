@@ -1,7 +1,7 @@
 //! Bounded provider details retained by the pinned native error types.
 use codex_http_client::RetryAfter;
 use codex_protocol::error::{CodexErr, CodexErrorDetails};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 pub(crate) struct Receipt {
     diagnostics: Option<Value>,
@@ -32,10 +32,10 @@ impl Receipt {
 }
 
 pub(crate) fn metadata(details: &CodexErrorDetails) -> Option<Value> {
-    let (status, code, request_id) = match details {
+    let (status, body, request_id) = match details {
         CodexErrorDetails::UnexpectedStatus(error) => (
             error.status.as_u16(),
-            provider_code(&error.body),
+            Some(error.body.as_str()),
             error.request_id.as_deref(),
         ),
         // Other RetryLimit statuses can be synthetic transport failures.
@@ -50,27 +50,72 @@ pub(crate) fn metadata(details: &CodexErrorDetails) -> Option<Value> {
         }
         _ => return None,
     };
-    Some(json!({
+    let body = body.and_then(parse_body);
+    let mut metadata = json!({
         "status_code": status,
-        "code": code,
+        "code": body.as_ref().and_then(provider_code),
         "request_id": request_id.filter(|id| {
             !id.is_empty() && id.len() <= 256 && id.bytes().all(|byte| byte.is_ascii_graphic())
         }),
-    }))
+    });
+    if let Some(param) = body.as_ref().and_then(provider_param) {
+        metadata["param"] = json!(param);
+    }
+    Some(metadata)
 }
 
-pub(super) fn provider_code(body: &str) -> Option<String> {
+fn parse_body(body: &str) -> Option<Value> {
     if body.len() > 128 * 1024 {
         return None;
     }
-    let body: Value = serde_json::from_str(body).ok()?;
+    serde_json::from_str(body).ok()
+}
+
+fn provider_code(body: &Value) -> Option<&str> {
     let code = body.get("error")?.get("code")?.as_str()?;
     (!code.is_empty()
         && code.len() <= 128
         && code
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte)))
-    .then(|| code.to_owned())
+    .then_some(code)
+}
+
+fn provider_param(body: &Value) -> Option<&str> {
+    let param = body.get("error")?.get("param")?.as_str()?;
+    (!param.is_empty()
+        && param.len() <= 128
+        && param
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.-[]".contains(&byte)))
+    .then_some(param)
+}
+
+pub(super) fn sanitize_plan_http_body(body: &str, bearer: &[u8]) -> Option<String> {
+    let body = parse_body(body)?;
+    let echoes_bearer = |value: &str| {
+        value
+            .as_bytes()
+            .windows(bearer.len())
+            .any(|part| part == bearer)
+    };
+    let mut error = Map::new();
+    if let Some(code) = provider_code(&body).filter(|code| !echoes_bearer(code)) {
+        error.insert("code".into(), json!(code));
+    }
+    if let Some(param) = provider_param(&body).filter(|param| !echoes_bearer(param)) {
+        error.insert("param".into(), json!(param));
+    }
+    if !error.is_empty() {
+        return Some(json!({ "error": error }).to_string());
+    }
+    // Direct admission returns a diagnostic detail outside the Responses error.
+    let detail = body.get("detail")?.as_str()?;
+    (!detail.is_empty()
+        && detail.len() <= 384
+        && !detail.chars().any(char::is_control)
+        && !echoes_bearer(detail))
+    .then(|| json!({ "detail": detail }).to_string())
 }
 
 #[cfg(test)]
@@ -151,6 +196,12 @@ mod tests {
 
     #[test]
     fn bounds_provider_code_shape_bytes_and_characters() {
+        let code = |body: &str| {
+            parse_body(body)
+                .as_ref()
+                .and_then(provider_code)
+                .map(str::to_owned)
+        };
         for value in [
             json!(null),
             json!({"code":"nested"}),
@@ -159,23 +210,23 @@ mod tests {
             json!("x".repeat(129)),
             json!("é".repeat(65)),
         ] {
-            assert!(provider_code(&json!({"error":{"code":value}}).to_string()).is_none());
+            assert!(code(&json!({"error":{"code":value}}).to_string()).is_none());
         }
         assert_eq!(
-            provider_code(&json!({"error":{"code":"a_.-9"}}).to_string()).as_deref(),
+            code(&json!({"error":{"code":"a_.-9"}}).to_string()).as_deref(),
             Some("a_.-9")
         );
         assert_eq!(
-            provider_code(&json!({"error":{"code":"x".repeat(128)}}).to_string())
+            code(&json!({"error":{"code":"x".repeat(128)}}).to_string())
                 .unwrap()
                 .len(),
             128
         );
         let mut body = json!({"error":{"code":"valid"}}).to_string();
         body.push_str(&" ".repeat(128 * 1024 - body.len()));
-        assert_eq!(provider_code(&body).as_deref(), Some("valid"));
+        assert_eq!(code(&body).as_deref(), Some("valid"));
         body.push(' ');
-        assert!(provider_code(&body).is_none());
+        assert!(code(&body).is_none());
     }
 
     #[test]

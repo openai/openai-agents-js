@@ -1,6 +1,8 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 
+const TOKEN_CLOCK_TOLERANCE_SECONDS = 5;
+
 /** An application-owned source for one protected Sign in with ChatGPT profile. */
 export interface SignInWithChatGPT {
   /**
@@ -75,9 +77,10 @@ export async function capturePlanCredential(
       !scopes.includes('resource.invoke') ||
       !scopes.includes('chatgpt.tokens.use.direct') ||
       !Number.isSafeInteger(nbf) ||
-      nbf > now ||
+      nbf > now + TOKEN_CLOCK_TOLERANCE_SECONDS ||
       !Number.isSafeInteger(exp) ||
-      exp <= now
+      exp <= nbf ||
+      exp <= now - TOKEN_CLOCK_TOLERANCE_SECONDS
     )
       throw new Error();
     return {

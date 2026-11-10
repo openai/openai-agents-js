@@ -33,6 +33,7 @@ import { ModelServer, call, message } from './fixtures/model-server';
 
 const limit = 'subscription_sharing_usage_limit_exceeded';
 const unavailable = 'subscription_sharing_usage_unavailable';
+const unsupported = 'subscription_sharing_unsupported_capability';
 const verifierDiagnostic = 'synthetic verifier diagnostic';
 const directories: string[] = [];
 const cleanups: (() => Promise<void>)[] = [];
@@ -294,11 +295,12 @@ it('rejects incompatible routes and invalid credentials before inference', async
       }),
   ).toThrow(/signInWithChatGPT/);
   const now = Math.floor(Date.now() / 1000);
+  vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
   for (const invalid of [
     token() as unknown as PlanCredential,
     credential('malformed-bearer'),
-    credential(token(1, { nbf: now - 60, exp: now - 1 })),
-    credential(token(1, { nbf: now + 3600 })),
+    credential(token(1, { nbf: now - 60, exp: now - 6 })),
+    credential(token(1, { nbf: now + 6 })),
     credential(token(1, { scope: 'resource.invoke' })),
     credential(token(), { clientId: 'other-synthetic-registration' }),
   ]) {
@@ -315,6 +317,28 @@ it('rejects incompatible routes and invalid credentials before inference', async
   ).rejects.toThrow(/direct local function tools and settled state/);
   expect(source.getCredential).not.toHaveBeenCalled();
   expect(tunnels).toHaveLength(0);
+  server.assertExhausted();
+});
+
+it('accepts a small host clock difference before registered inference', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
+  const { server } = await planEndpoint([
+    [message('issued')],
+    [message('renew soon')],
+  ]);
+  for (const [claims, expected] of [
+    [{ nbf: now + 4 }, 'issued'],
+    [{ exp: now - 4 }, 'renew soon'],
+  ] as const) {
+    await using provider = plan(token(1, claims)).provider;
+    await expect(
+      agent(provider).run('test clock difference'),
+    ).resolves.toMatchObject({
+      finalOutput: expected,
+    });
+  }
+  expect(server.requests).toHaveLength(2);
   server.assertExhausted();
 });
 
@@ -472,8 +496,22 @@ it('keeps named HTTP and SSE failures and never repeats a physical request', asy
     item: call('unsafe', {}, { callId: 'interrupted-call' }),
   };
   const cases = [
-    { status: 401 },
-    { status: 403 },
+    { status: 401, body: JSON.stringify({ detail: bearer }) },
+    {
+      status: 403,
+      detail: 'Synthetic serving region restriction',
+      body: JSON.stringify({ detail: 'Synthetic serving region restriction' }),
+    },
+    {
+      status: 400,
+      code: unsupported,
+      param: 'tools[0].type',
+      category: 'invalid_request',
+      retryable: false,
+      body: JSON.stringify({
+        error: { code: unsupported, param: 'tools[0].type', message: bearer },
+      }),
+    },
     {
       status: 429,
       code: limit,
@@ -538,7 +576,9 @@ it('keeps named HTTP and SSE failures and never repeats a physical request', asy
   const { server, tunnels } = await planEndpoint(
     cases.map(({ status, code, location, body, retryAfter }, index) => ({
       status,
-      body: body ?? JSON.stringify({ error: { code, message: bearer } }),
+      body:
+        body ??
+        JSON.stringify({ error: { code, param: bearer, message: bearer } }),
       headers: {
         'content-type':
           status === 200 ? 'text/event-stream' : 'application/json',
@@ -586,6 +626,12 @@ it('keeps named HTTP and SSE failures and never repeats a physical request', asy
         'message',
         expect.stringContaining(entry.terminalReason),
       );
+    if (entry.detail)
+      expect(error).toHaveProperty(
+        'message',
+        expect.stringContaining(JSON.stringify({ detail: entry.detail })),
+      );
+    expect(error).toHaveProperty('param', entry.param ?? null);
     expect(String(error)).not.toContain(bearer);
     expect(server.requests).toHaveLength(index + 1);
     expect(execute).not.toHaveBeenCalled();
