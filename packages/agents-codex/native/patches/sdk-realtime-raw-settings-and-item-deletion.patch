@@ -1,12 +1,12 @@
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
-index 42da41746815689572a4d23663c4fa30971062ab..7faf98e96d6665bbfc0ac9bf4eb30270de484e2f 100644
+index 42da41746815689572a4d23663c4fa30971062ab..8e674c19cde5ce4bde6298bdcd527811c5f1981a 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/hosted_mcp.rs
-@@ -159,6 +159,18 @@ impl HostedMcpState {
+@@ -159,6 +159,17 @@ impl HostedMcpState {
              r.source.id.as_ref() == response && !r.completed && !r.source.output_guard.is_retired()
          })
      }
-+    pub(super) fn caller_pending_for(&self, response: &str) -> bool {
++    pub(super) fn caller_owns_continuation(&self, response: &str) -> bool {
 +        self.records.iter().any(|record| {
 +            record.source.id.as_ref() == response
 +                && record.native_call_id.is_some()
@@ -14,15 +14,42 @@ index 42da41746815689572a4d23663c4fa30971062ab..7faf98e96d6665bbfc0ac9bf4eb30270
 +                    .source
 +                    .configuration
 +                    .caller_manages_function(&record.name)
-+                && !record.completed
 +                && !record.source.output_guard.is_retired()
 +        })
 +    }
      pub(super) fn has_calls(&self, response: &str) -> bool {
          self.records
              .iter()
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+index 9a6d45109f4e9c42b2c16427bd8e0566483c6d08..ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+@@ -1390,6 +1390,15 @@ impl RealtimeWebsocketEvents {
+                     if let Some(mut event) = parse_realtime_event(&text, self.event_parser) {
+                         if out_of_band {
+                             match &mut event {
++                                RealtimeEvent::FunctionCallRequested(call)
++                                    if call.response_id.is_some()
++                                        && !output_guard.is_retired()
++                                        && configuration.as_ref().is_some_and(|accepted| {
++                                            accepted.allows_detached_function(&call.name)
++                                        }) =>
++                                {
++                                    event = RealtimeEvent::DetachedFunctionCall(call.clone());
++                                }
+                                 RealtimeEvent::ConversationItemAdded { .. }
+                                 | RealtimeEvent::ConversationItemDone { .. }
+                                 | RealtimeEvent::FunctionCallRequested(_)
+@@ -1592,6 +1601,7 @@ impl RealtimeWebsocketEvents {
+             | RealtimeEvent::HostedMcpToolsListed(_)
+             | RealtimeEvent::HostedMcpCallCompleted(_)
+             | RealtimeEvent::FunctionCallRequested(_)
++            | RealtimeEvent::DetachedFunctionCall(_)
+             | RealtimeEvent::FunctionCallFinished { .. }
+             | RealtimeEvent::FunctionBatchFinished { .. }
+             | RealtimeEvent::ConversationItemAdded { .. }
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
-index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa296218631174aff9 100644
+index 7c3307db266182a376acf709ed16594c0f66637b..0126b721d0dfbaa12a9a462690b8e99b4b83dc61 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 @@ -7,6 +7,7 @@ use codex_protocol::realtime_settings::RealtimeAudioFormat;
@@ -33,15 +60,17 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
  use std::collections::VecDeque;
  use std::sync::Arc;
  use std::sync::Mutex;
-@@ -36,6 +37,7 @@ pub struct RealtimeAcceptedConfiguration {
+@@ -36,7 +37,9 @@ pub struct RealtimeAcceptedConfiguration {
      pub input_format: Option<RealtimeAudioFormat>,
      pub output_format: Option<RealtimeAudioFormat>,
      contract: Arc<Value>,
 +    caller_managed_functions: Option<Arc<BTreeSet<String>>>,
      response_tool_scope: Option<Vec<bool>>,
++    detached_functions: Option<Arc<BTreeSet<String>>>,
  }
  
-@@ -56,17 +58,28 @@ impl RealtimeAcceptedConfiguration {
+ impl RealtimeAcceptedConfiguration {
+@@ -56,17 +59,53 @@ impl RealtimeAcceptedConfiguration {
      }
  
      pub fn allows_response_function(&self, name: &str) -> bool {
@@ -60,13 +89,37 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
 +            && self.allows_response_function(name)
 +    }
 +
++    pub fn allows_detached_function(&self, name: &str) -> bool {
++        self.detached_functions
++            .as_ref()
++            .is_some_and(|functions| functions.contains(name))
++    }
++
 +    fn for_response(&self, response: &Value, out_of_band: bool) -> Option<Self> {
 +        let output_format = accepted_format(response, "output");
          let tools = response.get("tools").and_then(Value::as_array);
          let choice = response.get("tool_choice");
--        if tools.is_none() && choice.is_none() {
++        if out_of_band {
++            let functions = tools
++                .into_iter()
++                .flatten()
++                .filter_map(|tool| {
++                    let name = tool["name"].as_str()?;
++                    (tool["type"] == "function"
++                        && choice.is_none_or(|choice| {
++                            choice != "none" && (!choice.is_object() || choice["name"] == name)
++                        }))
++                    .then(|| name.to_owned())
++                })
++                .collect::<BTreeSet<_>>();
++            return Some(Self {
++                output_format: output_format.or(self.output_format),
++                detached_functions: (!functions.is_empty()).then(|| Arc::new(functions)),
++                ..self.clone()
++            });
++        }
+         if tools.is_none() && choice.is_none() {
 -            return None;
-+        if out_of_band || (tools.is_none() && choice.is_none()) {
 +            return output_format.map(|format| Self {
 +                output_format: Some(format),
 +                ..self.clone()
@@ -74,7 +127,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
          }
          let choice = choice.or_else(|| self.contract.get("tool_choice"));
          let response_tool_scope = self
-@@ -81,6 +94,7 @@ impl RealtimeAcceptedConfiguration {
+@@ -81,6 +120,7 @@ impl RealtimeAcceptedConfiguration {
              })
              .collect();
          Some(Self {
@@ -82,7 +135,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
              response_tool_scope: Some(response_tool_scope),
              ..self.clone()
          })
-@@ -167,6 +181,7 @@ enum ReceiptState {
+@@ -167,6 +207,7 @@ enum ReceiptState {
  struct PendingConfiguration {
      hosted_owned: bool,
      native_source: Option<Arc<dyn RealtimeNativeSource>>,
@@ -90,7 +143,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
      id: Option<String>,
      contract: Value,
      phase: PendingPhase,
-@@ -432,7 +447,7 @@ impl RealtimeConfiguration {
+@@ -432,7 +473,7 @@ impl RealtimeConfiguration {
          &self,
          update: &RealtimeSessionUpdate,
      ) -> Result<RealtimeConfigurationReservation, ApiError> {
@@ -99,7 +152,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
      }
  
      pub fn reserve_update_with_event_id(
-@@ -440,7 +455,16 @@ impl RealtimeConfiguration {
+@@ -440,7 +481,16 @@ impl RealtimeConfiguration {
          update: &RealtimeSessionUpdate,
          event_id: Option<String>,
      ) -> Result<RealtimeConfigurationReservation, ApiError> {
@@ -117,7 +170,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
      }
  
      pub fn reserve_update_with_source(
-@@ -448,7 +472,7 @@ impl RealtimeConfiguration {
+@@ -448,7 +498,7 @@ impl RealtimeConfiguration {
          update: &RealtimeSessionUpdate,
          source: Arc<dyn RealtimeNativeSource>,
      ) -> Result<RealtimeConfigurationReservation, ApiError> {
@@ -126,7 +179,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
      }
  
      fn reserve_revision(
-@@ -456,12 +480,20 @@ impl RealtimeConfiguration {
+@@ -456,12 +506,20 @@ impl RealtimeConfiguration {
          update: &RealtimeSessionUpdate,
          source: Option<Arc<dyn RealtimeNativeSource>>,
          event_id: Option<String>,
@@ -148,7 +201,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
              let functions = update
                  .function_tools
                  .clone()
-@@ -471,8 +503,11 @@ impl RealtimeConfiguration {
+@@ -471,8 +529,11 @@ impl RealtimeConfiguration {
                  .hosted_mcp_tools
                  .clone()
                  .unwrap_or_else(|| accepted.hosted_mcp_tools());
@@ -162,7 +215,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
          }
          let mut contract = (*accepted.contract).clone();
          apply_contract_update(&mut contract, &payload["session"]);
-@@ -482,8 +517,17 @@ impl RealtimeConfiguration {
+@@ -482,8 +543,17 @@ impl RealtimeConfiguration {
          payload["event_id"] = Value::String(id.clone());
          let (completion, result) = watch::channel(ReceiptState::Pending);
          state.pending = Some(PendingConfiguration {
@@ -181,15 +234,15 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
              id: Some(id.clone()),
              contract,
              phase: PendingPhase::Reserved,
-@@ -800,6 +844,7 @@ impl RealtimeConfiguration {
+@@ -800,6 +870,7 @@ impl RealtimeConfiguration {
                      .hosted_mcp
                      .native_continuation_available(response_id, call)
              })
-+            && !state.hosted_mcp.caller_pending_for(response_id)
++            && !state.hosted_mcp.caller_owns_continuation(response_id)
              && ((native_call.is_some() && !state.hosted_mcp.has_hosted(response_id))
                  || !state.hosted_mcp.pending_for(response_id));
          if ready {
-@@ -879,12 +924,11 @@ impl RealtimeConfiguration {
+@@ -879,12 +950,11 @@ impl RealtimeConfiguration {
          state.pending_create_guard = Some(state.output_owner.new_response());
          state.response_create_pending = true;
          state.out_of_band_response_pending = out_of_band;
@@ -207,7 +260,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
          Ok(true)
      }
  
-@@ -1248,6 +1292,7 @@ impl SessionReadiness {
+@@ -1248,6 +1318,7 @@ impl SessionReadiness {
                          pending: Some(PendingConfiguration {
                              hosted_owned: wait_for_update,
                              native_source,
@@ -215,7 +268,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
                              id: None,
                              contract,
                              phase: if wait_for_update {
-@@ -1435,6 +1480,7 @@ impl SessionReadiness {
+@@ -1435,10 +1506,12 @@ impl SessionReadiness {
                          let accepted = Arc::new(RealtimeAcceptedConfiguration {
                              hosted_owned: pending.hosted_owned,
                              native_source: pending.native_source,
@@ -223,7 +276,12 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
                              input_format: accepted_format(accepted, "input"),
                              output_format: accepted_format(accepted, "output"),
                              contract: Arc::new(pending.contract),
-@@ -1680,10 +1726,10 @@ impl SessionReadiness {
+                             response_tool_scope: None,
++                            detached_functions: None,
+                         });
+                         state.accepted = Some(Arc::clone(&accepted));
+                         if let Some(completion) = pending.completion {
+@@ -1680,10 +1753,10 @@ impl SessionReadiness {
              }
              _ => {
                  let is_function_item = event["item"]["type"] == "function_call";
@@ -238,7 +296,7 @@ index 7c3307db266182a376acf709ed16594c0f66637b..896ba3e9ab2136a59a9161fa29621863
                  let retained_response_id = if (detached_in_progress || scoped_response.is_some())
                      && response_id.is_none()
                      && is_function_item
-@@ -2048,6 +2094,38 @@ mod tests {
+@@ -2048,6 +2121,38 @@ mod tests {
          assert!(configuration.validate_audio(&frame).is_err());
      }
  
@@ -389,7 +447,7 @@ index 0906f3aa6997d270cc075627c933e67c1a8abd9d..63be224e7b356e2301fbe3f74a0cbe8d
              "tools".into(),
              tools_json(
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b3db7c2d1 100644
+index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008ea9355a50 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -735,6 +735,10 @@ impl SdkRealtimeState {
@@ -513,8 +571,21 @@ index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b
              if sdk
                  .item_deletion
                  .lock()
-@@ -5908,7 +5961,7 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5906,9 +5959,20 @@ async fn handle_realtime_server_event_with_configuration(
+     response_create_queue: &mut RealtimeResponseCreateQueue,
+     configuration: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
  ) -> anyhow::Result<()> {
++    // A detached completion can have an unscoped duplicate conversation event.
++    if let (Some(sdk), RealtimeEvent::FunctionCallRequested(call)) = (&handoff_state.sdk, &event)
++        && call.response_id.is_none()
++        && sdk
++            .history
++            .lock()
++            .unwrap()
++            .is_detached_caller_call(&call.call_id, &call.item_id)
++    {
++        return Ok(());
++    }
      // An echo of a historical call is a history receipt. Only a provider-owned
      // call may enter the live function dispatcher.
 -    let event = match (&handoff_state.sdk, &event) {
@@ -522,7 +593,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b
          (Some(sdk), RealtimeEvent::FunctionCallRequested(call))
              if sdk
                  .history
-@@ -5922,10 +5975,26 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5922,10 +5986,22 @@ async fn handle_realtime_server_event_with_configuration(
          }
          _ => event,
      };
@@ -532,10 +603,6 @@ index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b
 +            RealtimeEvent::ResponseDone(response) => response
 +                .function_call_ids
 +                .retain(|id| !history.is_caller_call(id, response.response_id.as_deref())),
-+            RealtimeEvent::ResponseCancelled(response) => {
-+                history.retire_caller_calls(response.response_id.as_deref());
-+            }
-+            RealtimeEvent::InputAudioSpeechStarted(_) => history.retire_caller_calls(None),
 +            _ => {}
 +        }
 +    }
@@ -550,7 +617,53 @@ index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b
              }
              RealtimeEvent::ConversationItemAdded {
                  item,
-@@ -6251,9 +6320,6 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6111,6 +6187,12 @@ async fn handle_realtime_server_event_with_configuration(
+             {
+                 return Ok(());
+             }
++            if let Some(sdk) = &handoff_state.sdk {
++                sdk.history
++                    .lock()
++                    .unwrap()
++                    .retire_caller_calls(response.response_id.as_deref());
++            }
+             defer_sdk_create_until_handoff(handoff_state, response_create_queue).await;
+             if response.response_id == response_create_queue.sdk_response_id {
+                 response_create_queue.sdk_response_id = None;
+@@ -6246,14 +6328,39 @@ async fn handle_realtime_server_event_with_configuration(
+             }
+             false
+         }
++        RealtimeEvent::DetachedFunctionCall(request) => {
++            let Some(sdk) = &handoff_state.sdk else {
++                return Ok(());
++            };
++            if request.response_id.is_none()
++                || request.response_id != response_create_queue.sdk_response_id
++                || !configuration
++                    .as_ref()
++                    .is_some_and(|accepted| accepted.allows_detached_function(&request.name))
++            {
++                return Ok(());
++            }
++            if serde_json::to_vec(request)?.len() > SDK_FUNCTION_CALL_MAX_BYTES {
++                anyhow::bail!("SDK Realtime function request exceeds capacity");
++            }
++            if sdk.seen.lock().await.contains_key(&request.call_id) {
++                anyhow::bail!("Detached function reused a native call ID");
++            }
++            if !sdk
++                .history
++                .lock()
++                .unwrap()
++                .observe_caller_call(request, true)?
++            {
++                return Ok(());
++            }
++            false
++        }
+         RealtimeEvent::FunctionCallRequested(request) => {
+             let Some(sdk) = &handoff_state.sdk else {
                  return Ok(());
              };
              let mut request = request.clone();
@@ -560,7 +673,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b
              let fingerprint = codex_realtime_control::FunctionCall {
                  namespace: request.namespace.clone(),
                  call_id: request.call_id.clone(),
-@@ -6264,6 +6330,44 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6264,6 +6371,63 @@ async fn handle_realtime_server_event_with_configuration(
              }
              .fingerprint()
              .map_err(anyhow::Error::msg)?;
@@ -570,23 +683,42 @@ index da236689d1f0a07975ca0e0042142441e210a58f..65a263aa168cc31a1d35dd535bd8d12b
 +            {
 +                // The provider tracker retires this response's output guard on
 +                // cancellation, including calls that arrive after retirement.
-+                if !writer
-+                    .configuration()
-+                    .zip(request.response_id.as_deref())
-+                    .is_some_and(|(accepted, id)| accepted.response_tools_pending(id))
++                let Some(accepted) = writer.configuration() else {
++                    return Ok(());
++                };
++                if request.response_id.is_none() {
++                    request.response_id = accepted.tool_response_id(&request.call_id);
++                }
++                if !request
++                    .response_id
++                    .as_deref()
++                    .is_some_and(|id| accepted.response_tools_pending(id))
 +                {
 +                    return Ok(());
 +                }
 +                if sdk.seen.lock().await.contains_key(&request.call_id) {
 +                    anyhow::bail!("Caller-managed function reused a native call ID");
 +                }
-+                sdk.history.lock().unwrap().observe_caller_call(&request)?;
-+                // Preserve the ordinary completed-item notification. Callers can
-+                // retrieve its provider body without acquiring native authority.
++                let first_observation = sdk
++                    .history
++                    .lock()
++                    .unwrap()
++                    .observe_caller_call(&request, false)?;
++                if !first_observation {
++                    return Ok(());
++                }
++                // A provider may deliver the call before its item-added event.
++                // Publish the completed identity directly, using the call proof.
 +                events_tx
-+                    .send(RealtimeEvent::ConversationItemDone {
-+                        item_id: request.item_id.clone(),
-+                    })
++                    .send(RealtimeEvent::ConversationItemObserved(
++                        codex_protocol::protocol::RealtimeConversationItemObservation {
++                            item_id: request.item_id,
++                            kind: "function_call".to_owned(),
++                            status: "done".to_owned(),
++                            role: None,
++                            call_id: Some(request.call_id),
++                        },
++                    ))
 +                    .await
 +                    .context("SDK Realtime event channel closed")?;
 +                return Ok(());
@@ -666,7 +798,7 @@ index d8941ea55b1e89a7ca6fd350ed3dc282b868282a..298f20f0188d91375ee2c5dd21afcfac
          let item = self
              .items
 diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
-index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16db5d0e8bd 100644
+index 9590e663d66e51fee5cd93d36faaefe03625e80a..32dbd3a9d154657267276c15798b29499c3dd451 100644
 --- a/codex-rs/core/src/realtime_conversation/provider_history.rs
 +++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
 @@ -4,6 +4,8 @@ use super::*;
@@ -690,7 +822,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
      Item {
          id: String,
          event_id: Option<String>,
-@@ -63,6 +70,13 @@ struct ReplayedCall {
+@@ -63,6 +70,14 @@ struct ReplayedCall {
      item_id: String,
      output_id: Option<String>,
      confirmed: bool,
@@ -701,10 +833,11 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +    response_id: String,
 +    fingerprint: [u8; 32],
 +    output_confirmed: bool,
++    detached: bool,
  }
  
  #[derive(Debug)]
-@@ -101,7 +115,7 @@ pub(super) fn validate_request_ids(
+@@ -101,7 +116,7 @@ pub(super) fn validate_request_ids(
      deletion: &item_deletion::State,
  ) -> CodexResult<()> {
      let deleted = match request {
@@ -713,7 +846,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
          Request::Create { item, .. } => deletion.is_deleted(item_id(item)?),
          Request::Update { items, .. } => items.iter().any(|item| {
              item["id"].as_str().is_some_and(|id| {
-@@ -575,9 +589,12 @@ impl State {
+@@ -575,9 +590,12 @@ impl State {
          self.pending.is_some()
      }
      pub(super) fn editing(&self) -> bool {
@@ -729,7 +862,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
      }
      pub(super) fn deadline(&self) -> Option<tokio::time::Instant> {
          self.pending.as_ref().and_then(|pending| {
-@@ -751,6 +768,7 @@ impl State {
+@@ -751,11 +769,17 @@ impl State {
                          item_id: id.to_owned(),
                          output_id: None,
                          confirmed: false,
@@ -737,7 +870,18 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
                      },
                  );
              } else {
-@@ -772,10 +790,94 @@ impl State {
+                 let call = self.replayed_calls.get_mut(call_id)
+-                    .filter(|call| call.confirmed && call.output_id.is_none() && self.order.contains(&call.item_id))
++                    .filter(|call| {
++                        call.confirmed
++                            && call.output_id.is_none()
++                            && call.caller.as_ref().is_none_or(|caller| !caller.detached)
++                            && self.order.contains(&call.item_id)
++                    })
+                     .ok_or_else(|| invalid("Historical function output requires an imported call without an output"))?;
+                 call.output_id = Some(id.to_owned());
+             }
+@@ -772,10 +796,104 @@ impl State {
          })
      }
  
@@ -746,7 +890,8 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +    pub(super) fn observe_caller_call(
 +        &mut self,
 +        request: &codex_protocol::protocol::RealtimeFunctionCallRequested,
-+    ) -> CodexResult<()> {
++        detached: bool,
++    ) -> CodexResult<bool> {
 +        let response_id = request
 +            .response_id
 +            .as_deref()
@@ -763,10 +908,12 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +        if let Some(previous) = self.replayed_calls.get(&request.call_id) {
 +            if previous.item_id == request.item_id
 +                && previous.caller.as_ref().is_some_and(|caller| {
-+                    caller.response_id == response_id && caller.fingerprint == fingerprint
++                    caller.response_id == response_id
++                        && caller.fingerprint == fingerprint
++                        && caller.detached == detached
 +                })
 +            {
-+                return Ok(());
++                return Ok(false);
 +            }
 +            return Err(invalid(
 +                "Caller-managed function ID changed ownership or payload",
@@ -787,10 +934,11 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +                    response_id: response_id.to_owned(),
 +                    fingerprint,
 +                    output_confirmed: false,
++                    detached,
 +                }),
 +            },
 +        );
-+        Ok(())
++        Ok(true)
 +    }
 +
 +    pub(super) fn is_caller_call(&self, call_id: &str, response_id: Option<&str>) -> bool {
@@ -801,6 +949,12 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +        })
 +    }
 +
++    pub(super) fn is_detached_caller_call(&self, call_id: &str, item_id: &str) -> bool {
++        self.replayed_calls.get(call_id).is_some_and(|call| {
++            call.item_id == item_id && call.caller.as_ref().is_some_and(|caller| caller.detached)
++        })
++    }
++
 +    pub(super) fn is_live_caller_output(&self, item: &Value) -> bool {
 +        item["type"] == "function_call_output"
 +            && replay_item(item).is_ok()
@@ -808,7 +962,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +                .as_str()
 +                .and_then(|id| self.replayed_calls.get(id))
 +                .is_some_and(|call| {
-+                    call.caller.is_some()
++                    call.caller.as_ref().is_some_and(|caller| !caller.detached)
 +                        && call.confirmed
 +                        && call.output_id.is_none()
 +                        && self.order.contains(&call.item_id)
@@ -833,7 +987,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
      }
  
      pub(super) fn replayed_call_for_item<'a>(&self, item: &'a Value) -> Option<&'a str> {
-@@ -783,8 +885,14 @@ impl State {
+@@ -783,8 +901,14 @@ impl State {
          let id = item["id"].as_str()?;
          let call = self.replayed_calls.get(call_id)?;
          let replayed = match item["type"].as_str() {
@@ -850,7 +1004,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
              _ => false,
          };
          replayed.then_some(call_id)
-@@ -809,7 +917,7 @@ impl State {
+@@ -809,7 +933,7 @@ impl State {
          }
          let mut actions = VecDeque::new();
          let ids = match &request {
@@ -859,7 +1013,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
                  if !valid_id(id) {
                      finish_request(request, Err(invalid("Invalid provider item ID")));
                      return Ok(None);
-@@ -885,6 +993,30 @@ impl State {
+@@ -885,6 +1009,30 @@ impl State {
          });
          self.advance()
      }
@@ -890,7 +1044,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
      pub(super) fn retrieved(&mut self, item: Value) -> CodexResult<Option<Action>> {
          if !self
              .pending
-@@ -922,6 +1054,8 @@ impl State {
+@@ -922,6 +1070,8 @@ impl State {
                  ));
                  return Ok(None);
              }
@@ -899,7 +1053,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
          } else if pending.request.is_some() {
              codex_api::charge_realtime_json_storage(&item, &mut pending.retained_bytes).map_err(
                  |_| invalid("Provider history exceeds its 8 MiB estimated storage limit"),
-@@ -987,11 +1121,18 @@ impl State {
+@@ -987,11 +1137,18 @@ impl State {
              };
              self.order.insert(index, id);
          }
@@ -921,7 +1075,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
          }
          pending.waiting = None;
          self.advance()
-@@ -1005,7 +1146,9 @@ impl State {
+@@ -1005,7 +1162,9 @@ impl State {
              .pending
              .as_ref()
              .is_some_and(|pending| match &pending.request {
@@ -932,7 +1086,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
                  Some(Request::Create { item, previous, .. }) => {
                      item["id"].as_str() == Some(id) || previous.as_deref() == Some(id)
                  }
-@@ -1089,6 +1232,7 @@ impl State {
+@@ -1089,6 +1248,7 @@ impl State {
          }
          let pending = self.pending.take().unwrap();
          match pending.request.unwrap() {
@@ -940,7 +1094,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
              Request::Item { reply, .. } => {
                  let _ = reply.send(
                      pending
-@@ -1136,6 +1280,7 @@ impl State {
+@@ -1136,6 +1296,7 @@ impl State {
  fn finish_request(request: Request, result: CodexResult<()>) {
      let error = result.err().unwrap_or(CodexErr::TurnAborted);
      match request {
@@ -948,7 +1102,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
          Request::Item { reply, .. } => {
              let _ = reply.send(Err(error));
          }
-@@ -1186,6 +1331,120 @@ mod tests {
+@@ -1186,6 +1347,120 @@ mod tests {
      fn message(id: &str, text: &str) -> Value {
          json!({"id":id,"type":"message","role":"user","content":[{"type":"input_text","text":text}]})
      }
@@ -1069,7 +1223,7 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
      fn replay_pair(id: &str) -> (Value, Value) {
          let call_id = format!("call-{id}");
          (
-@@ -1770,6 +2029,71 @@ mod tests {
+@@ -1770,6 +2045,71 @@ mod tests {
          assert!(!state.busy());
      }
  
@@ -1087,15 +1241,15 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +        let call = json!({"id":"caller-item", "type":"function_call",
 +            "call_id":"caller-call", "name":"external", "arguments":"{}"});
 +        state.observe_added(&call, Some(None)).unwrap();
-+        state.observe_caller_call(&request).unwrap();
-+        state.observe_caller_call(&request).unwrap();
++        assert!(state.observe_caller_call(&request, false).unwrap());
++        assert!(!state.observe_caller_call(&request, false).unwrap());
 +        assert!(!state.is_replayed_call("caller-call", "caller-item"));
 +        assert!(state.replayed_call_for_item(&call).is_none());
 +        assert!(state.is_caller_call("caller-call", Some("response")));
 +        assert!(!state.is_caller_call("caller-call", Some("other-response")));
 +        let mut changed = request.clone();
 +        changed.arguments = "{\"changed\":true}".into();
-+        assert!(state.observe_caller_call(&changed).is_err());
++        assert!(state.observe_caller_call(&changed, false).is_err());
 +        let output = json!({"id":"caller-output", "type":"function_call_output",
 +            "call_id":"caller-call", "output":"42"});
 +        assert!(state.is_live_caller_output(&output));
@@ -1130,11 +1284,11 @@ index 9590e663d66e51fee5cd93d36faaefe03625e80a..86c45bd73180eefb5953c35f11fcf16d
 +
 +        let mut state = State::default();
 +        state.observe_added(&call, Some(None)).unwrap();
-+        state.observe_caller_call(&request).unwrap();
++        state.observe_caller_call(&request, false).unwrap();
 +        state.retire_caller_calls(Some("other-response"));
 +        assert!(state.is_live_caller_output(&output));
 +        state.retire_caller_calls(Some("response"));
-+        state.observe_caller_call(&request).unwrap();
++        state.observe_caller_call(&request, false).unwrap();
 +        assert!(!state.is_live_caller_output(&output));
 +    }
 +
@@ -1198,7 +1352,7 @@ index 67df20febdf169d70f46c55c4bbfbec7d8a8d459..5ccb45313777a53e3827dfbc6c3a2c27
          tool_choice: response.tool_choice,
          event_id,
 diff --git a/codex-rs/core/src/realtime_conversation/raw_settings.rs b/codex-rs/core/src/realtime_conversation/raw_settings.rs
-index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..3b2c5e6b81a30fca17b4097991de22096f8586a2 100644
+index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..41ac37b46a8ed5992d8ce803e3e65300a0163489 100644
 --- a/codex-rs/core/src/realtime_conversation/raw_settings.rs
 +++ b/codex-rs/core/src/realtime_conversation/raw_settings.rs
 @@ -1,6 +1,10 @@
@@ -1241,7 +1395,21 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..3b2c5e6b81a30fca17b4097991de2209
  }
  
  // Protocol DTOs intentionally tolerate extra fields on several settings. Raw
-@@ -117,8 +126,28 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
+@@ -95,6 +104,13 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
+         }
+         "prompt" => {
+             let fields = object(value, &["id", "version", "variables"])?;
++            if !fields
++                .get("id")
++                .and_then(Value::as_str)
++                .is_some_and(|id| !id.trim().is_empty())
++            {
++                return Err(invalid());
++            }
+             if let Some(variables) = fields.get("variables").filter(|value| !value.is_null()) {
+                 for value in variables.as_object().ok_or_else(invalid)?.values() {
+                     if value.is_string() {
+@@ -117,8 +133,28 @@ fn nested(name: &str, value: &Value) -> CodexResult<()> {
      Ok(())
  }
  
@@ -1272,7 +1440,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..3b2c5e6b81a30fca17b4097991de2209
  pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate> {
      let fields = object(
          &value,
-@@ -128,6 +157,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+@@ -128,6 +164,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
              "instructions",
              "output_modalities",
              "audio",
@@ -1280,7 +1448,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..3b2c5e6b81a30fca17b4097991de2209
              "tool_choice",
              "prompt",
              "tracing",
-@@ -188,7 +218,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+@@ -188,7 +225,7 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
                          } else {
                              "output_format"
                          },
@@ -1289,7 +1457,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..3b2c5e6b81a30fca17b4097991de2209
                      )
                  } else {
                      nested(name, value)?;
-@@ -205,7 +235,31 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
+@@ -205,7 +242,31 @@ pub(super) fn session_update(value: Value) -> CodexResult<RealtimeSessionUpdate>
              }
          }
      }
@@ -1322,7 +1490,7 @@ index 01a85ce0ff36fd8dd23672ed4e48cf67a2845172..3b2c5e6b81a30fca17b4097991de2209
  }
  
  #[cfg(test)]
-@@ -238,7 +292,8 @@ mod tests {
+@@ -238,7 +299,8 @@ mod tests {
      fn rejects_unknown_nested_fields_and_authority_changes() {
          for value in [
              json!([]),
@@ -1422,6 +1590,19 @@ index 1c059a6a6fd49ab314f01ca395d9c10c7fa23979..a200457597fb34ad481a10c6fa391bd1
  pub(super) fn source_instructions(
      source: &Arc<dyn codex_api::RealtimeNativeSource>,
  ) -> codex_protocol::error::Result<Option<String>> {
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 77762cad7b7bcef9aca4f84b6dfaf76958ae8c04..d61048a0e7364adca09541378af28625673edb2f 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -701,6 +701,8 @@ pub enum RealtimeEvent {
+     HostedMcpToolsListed(RealtimeHostedMcpToolsListed),
+     HostedMcpCallCompleted(RealtimeHostedMcpCallCompleted),
+     FunctionCallRequested(RealtimeFunctionCallRequested),
++    /// Completed application function from an explicitly detached response.
++    DetachedFunctionCall(RealtimeFunctionCallRequested),
+     FunctionCallFinished {
+         call_id: String,
+         succeeded: bool,
 diff --git a/codex-rs/protocol/src/realtime_settings.rs b/codex-rs/protocol/src/realtime_settings.rs
 index df56402f20807cf6021fb359eda7e6d37a77d8f0..3bfb11fab0a001a6ba5af97291667c7d1d27f37d 100644
 --- a/codex-rs/protocol/src/realtime_settings.rs

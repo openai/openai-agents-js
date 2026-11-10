@@ -252,7 +252,12 @@ nativeIt(
         provider,
         instructions: 'Use the application function.',
       }).session();
-      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: {
+          turnDetection: { type: 'server_vad', interruptResponse: false },
+        },
+      });
       const seen: NativeRealtimeEvent[] = [];
       const reading = (async () => {
         for await (const event of voice.events()) seen.push(event);
@@ -305,6 +310,11 @@ nativeIt(
             }),
           ),
         );
+        peer.send({
+          type: 'input_audio_buffer.speech_started',
+          item_id: 'next-user-audio',
+          audio_start_ms: 0,
+        });
         expect(await voice.retrieveConversationItem(call.id)).toEqual(call);
         const item = {
           id: 'application-output-item',
@@ -337,6 +347,14 @@ nativeIt(
         );
         expect(
           peer.frames.filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(1);
+        expect(
+          seen.filter(
+            (event) =>
+              event.type === 'conversation_item' &&
+              event.itemId === call.id &&
+              event.status === 'done',
+          ),
         ).toHaveLength(1);
         expect(model.requests).toEqual([]);
       } finally {
@@ -682,7 +700,7 @@ nativeIt(
 );
 
 nativeIt(
-  'forwards detached raw tool overrides without dispatching a matching native function',
+  'reports one detached application function call without native execution or linked history',
   async () => {
     const model = new ModelServer([]);
     const peer = new HistoryPeer(model);
@@ -730,12 +748,18 @@ nativeIt(
           type: 'function_call',
           name: 'external',
           call_id: 'detached-tool-call',
-          arguments: '{}',
+          arguments: '{"key":"fixture"}',
           status: 'completed',
         };
         peer.send({
           type: 'response.created',
           response: { id: responseId, conversation_id: null },
+        });
+        peer.send({
+          type: 'response.output_item.done',
+          response_id: responseId,
+          output_index: 0,
+          item,
         });
         peer.send({
           type: 'response.output_item.done',
@@ -751,6 +775,25 @@ nativeIt(
         // reader, and the acknowledged update fences earlier writer effects.
         await observe(peer, seen, userItem('after-detached-tool', 'Continue.'));
         await voice.update({ instructions: 'Continue with the native owner.' });
+        expect(
+          seen.filter((entry) => entry.type === 'detached_function_call'),
+        ).toEqual([
+          {
+            type: 'detached_function_call',
+            responseId,
+            itemId: item.id,
+            callId: item.call_id,
+            name: item.name,
+            arguments: '{"key":"fixture"}',
+          },
+        ]);
+        expect(
+          seen.filter(
+            (entry) =>
+              entry.type === 'conversation_item' && entry.itemId === item.id,
+          ),
+        ).toEqual([]);
+        expect(voice.history.some((entry) => entry.id === item.id)).toBe(false);
         expect(execute).not.toHaveBeenCalled();
         expect(seen.filter((entry) => entry.type === 'function_call')).toEqual(
           [],
@@ -765,6 +808,24 @@ nativeIt(
         expect(
           peer.frames.filter((frame) => frame.type === 'response.create'),
         ).toEqual([event]);
+        const continuation: JsonObject = {
+          type: 'response.create',
+          response: {
+            conversation: 'none',
+            input: [
+              {
+                type: 'function_call_output',
+                call_id: item.call_id,
+                output: 'found',
+              },
+            ],
+          },
+        };
+        const after = peer.frames.length;
+        await voice.sendEvent(continuation);
+        expect(await peer.frame('response.create', after)).toEqual(
+          continuation,
+        );
         expect(model.requests).toEqual([]);
       } finally {
         await voice.close();
