@@ -9,6 +9,7 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
   symlink,
   truncate,
   stat,
@@ -216,35 +217,46 @@ describe.skipIf(process.platform === 'win32')(
         async () => {
           const tree = join(root, 'deep-ownership');
           await mkdir(tree);
+          const directories = [tree];
           let deepest = tree;
           for (let depth = 0; depth < 1_050; depth++) {
             deepest = join(deepest, 'd');
             await mkdir(deepest);
+            directories.push(deepest);
           }
           const leaf = join(deepest, 'note.txt');
-          await writeFile(leaf, 'deep\n');
-          const before = await stat(leaf, { bigint: true });
-          const files = new UnixLocalFiles();
           try {
-            await files.run(
-              {
-                operation: 'chownRecursive',
-                uid: process.getuid!(),
-                gid: process.getgid!(),
-              },
-              {
-                input: JSON.stringify([
-                  { path: tree, accessPath: tree, preserveLeaf: true },
-                ]),
-              },
-            );
+            await writeFile(leaf, 'deep\n');
+            const before = await stat(leaf, { bigint: true });
+            const files = new UnixLocalFiles();
+            try {
+              await files.run(
+                {
+                  operation: 'chownRecursive',
+                  uid: process.getuid!(),
+                  gid: process.getgid!(),
+                },
+                {
+                  input: JSON.stringify([
+                    { path: tree, accessPath: tree, preserveLeaf: true },
+                  ]),
+                },
+              );
+            } finally {
+              await files.close();
+            }
+            expect(
+              (await stat(leaf, { bigint: true })).ctimeNs,
+            ).toBeGreaterThan(before.ctimeNs);
+            expect(await readFile(leaf, 'utf8')).toBe('deep\n');
           } finally {
-            await files.close();
+            // This fixture owns a known single-branch tree. Delete it directly
+            // rather than repeat the recursive walk during shared teardown.
+            await rm(leaf, { force: true });
+            for (const directory of directories.reverse()) {
+              await rmdir(directory);
+            }
           }
-          expect((await stat(leaf, { bigint: true })).ctimeNs).toBeGreaterThan(
-            before.ctimeNs,
-          );
-          expect(await readFile(leaf, 'utf8')).toBe('deep\n');
         },
         // Allow the full-depth ownership walk to run with the parallel suite.
         30_000,

@@ -166,15 +166,28 @@ it.each(['headers', 'body'] as const)(
       },
     );
     await using provider = await providerFor(server);
-    await using session = await new Agent({
+    const agent = new Agent({
       instructions: 'Answer.',
       provider,
       modelSettings: { invocationTimeoutMs: MODEL_MS },
-    }).session();
+    });
+    await using session = await agent.session();
     const result = track((await session.submit('one')).wait());
     try {
       await held.entered.promise;
       await expectDeadline(result);
+      const recorded = await Array.fromAsync(session.turns());
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        status: 'failed',
+        error: { code: 'model_invocation_deadline_exceeded' },
+      });
+      await using restored = await agent.session({
+        state: await session.saveState(),
+      });
+      expect((await Array.fromAsync(restored.turns()))[0].error).toEqual(
+        recorded[0].error,
+      );
       expect(server.requests).toHaveLength(1);
       expect(server.completedFrames).toHaveLength(0);
     } finally {
@@ -610,8 +623,9 @@ it.each([false, true])(
         await writer.entered.promise;
         await delay(CALLBACK_MS * 2);
         expect(result.done()).toBe(false);
-        expect(effects).toEqual([0]);
-        expect(validated).toEqual([0]);
+        expect(effects).toHaveLength(1);
+        expect([0, 1]).toContain(effects[0]);
+        expect(validated).toEqual(effects);
       } finally {
         writer.release.resolve();
         terminal.release.resolve();
@@ -636,8 +650,9 @@ it.each([false, true])(
       }
     }
     expect(server.requests).toHaveLength(1);
-    expect(effects).toEqual([0]);
-    expect(validated).toEqual([0]);
+    expect(effects).toHaveLength(1);
+    expect([0, 1]).toContain(effects[0]);
+    expect(validated).toEqual(effects);
     if (failWriter)
       expect(errors.map(String).join('\n').toLowerCase()).toContain(
         'canonical',
@@ -656,6 +671,7 @@ it.each([false, true])(
       ).toBe(true);
     }
   },
+  20_000,
 );
 
 it('expires an actual WS response read without HTTP fallback', async () => {

@@ -1071,12 +1071,12 @@ export async function applyMcpPrePolicy<Context>(
     (tool) =>
       tool.namespace === identity.namespace && tool.name === identity.name,
   );
-  const original = jsonObject.parse(
+  const original = losslessJsonObjectSchema.parse(
     request.route === 'direct'
       ? JSON.parse(request.input as string)
       : request.input,
   );
-  let effective = jsonObject.parse(original);
+  let effective = losslessJsonObjectSchema.parse(original);
   const check = () => {
     signal.throwIfAborted();
     admit();
@@ -1088,8 +1088,12 @@ export async function applyMcpPrePolicy<Context>(
       call: interceptedCallInfo(submission, request),
       serverName: server.name,
       toolName: server.tools[index]!,
-      originalArguments: Object.freeze(jsonObject.parse(original)),
-      effectiveArguments: Object.freeze(jsonObject.parse(effective)),
+      originalArguments: Object.freeze(
+        losslessJsonObjectSchema.parse(original),
+      ),
+      effectiveArguments: Object.freeze(
+        losslessJsonObjectSchema.parse(effective),
+      ),
       signal: callbackSignal,
     });
   check();
@@ -1105,7 +1109,7 @@ export async function applyMcpPrePolicy<Context>(
           return false;
         }
         if (decision?.action === 'replaceArguments') {
-          effective = jsonObject.parse(decision.arguments);
+          effective = losslessJsonObjectSchema.parse(decision.arguments);
           replaced = true;
           return true;
         }

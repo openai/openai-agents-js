@@ -161,6 +161,7 @@ async function createFixture(kind: 'unix' | 'parsed' | 'docker') {
             snapshot,
             resumeAuthority: {
               workspaceRootPath: session.state.workspaceRootPath,
+              remoteSnapshotId: session.state.snapshot!.id,
             },
           })
         : client;

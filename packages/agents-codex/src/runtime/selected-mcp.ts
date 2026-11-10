@@ -3,7 +3,11 @@ import type {
   MCPToolEndObservation,
 } from '@openai/agents-core';
 import type { MCPServer, MCPToolFilterContext } from '@openai/agents-core';
-import { jsonObject, jsonValue, type JsonValue } from './binding';
+import {
+  losslessJsonObjectSchema as jsonObject,
+  losslessJsonValueSchema as jsonValue,
+  type JsonValue,
+} from './binding';
 import {
   createNamespacedFunctionTool,
   ToolOutput,
