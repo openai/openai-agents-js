@@ -1772,7 +1772,7 @@ index 37687bfed91cdf6a6ea27b2df68a57dabf09d95a..3b5f5ddea795c146ae8c686e265f810b
 +    }
 +}
 diff --git a/codex-rs/protocol/src/permission_profile_snapshot.rs b/codex-rs/protocol/src/permission_profile_snapshot.rs
-index 34fe6fdb116e81225558fd6f2860d563879ddfc4..33c136dcbcea6ef651a0ca4b0c7b1211edae5c63 100644
+index 34fe6fdb116e81225558fd6f2860d563879ddfc4..5ec356d4427b691f24501003bdfd9e9293372bf9 100644
 --- a/codex-rs/protocol/src/permission_profile_snapshot.rs
 +++ b/codex-rs/protocol/src/permission_profile_snapshot.rs
 @@ -5,6 +5,9 @@ use codex_utils_path_uri::PathUri;
@@ -1789,7 +1789,7 @@ index 34fe6fdb116e81225558fd6f2860d563879ddfc4..33c136dcbcea6ef651a0ca4b0c7b1211
      permission_profile: PermissionProfile,
      active_permission_profile: Option<ActivePermissionProfile>,
      profile_workspace_roots: Vec<ProfileWorkspaceRoot>,
-+    sdk_private_deny: Option<FileSystemSandboxEntry>,
++    sdk_private_denies: Vec<FileSystemSandboxEntry>,
  }
  
  impl PermissionProfileSnapshot {
@@ -1797,7 +1797,7 @@ index 34fe6fdb116e81225558fd6f2860d563879ddfc4..33c136dcbcea6ef651a0ca4b0c7b1211
              permission_profile,
              active_permission_profile: None,
              profile_workspace_roots: Vec::new(),
-+            sdk_private_deny: None,
++            sdk_private_denies: Vec::new(),
          }
      }
  
@@ -1805,44 +1805,57 @@ index 34fe6fdb116e81225558fd6f2860d563879ddfc4..33c136dcbcea6ef651a0ca4b0c7b1211
              permission_profile,
              active_permission_profile: Some(active_permission_profile),
              profile_workspace_roots,
-+            sdk_private_deny: None,
++            sdk_private_denies: Vec::new(),
          }
      }
  
-@@ -107,6 +113,43 @@ impl PermissionProfileSnapshot {
+@@ -107,6 +113,56 @@ impl PermissionProfileSnapshot {
          }
      }
  
 +    /// Add an SDK-owned host file exclusion to the live sandbox.
 +    pub fn legacy_with_sdk_private_deny(profile: PermissionProfile, path: Option<PathUri>) -> Self {
++        Self::legacy_with_sdk_private_denies(profile, path)
++    }
++
++    /// Add SDK-owned host file exclusions to the live sandbox.
++    pub fn legacy_with_sdk_private_denies(
++        profile: PermissionProfile,
++        paths: impl IntoIterator<Item = PathUri>,
++    ) -> Self {
 +        let mut snapshot = Self::legacy(profile);
-+        let Some(path) = path else {
-+            return snapshot;
-+        };
-+        let entry =
-+            FileSystemSandboxEntry::new(FileSystemPath::Path { path }, FileSystemAccessMode::Deny);
 +        let mut fs = snapshot.permission_profile.file_system_sandbox_policy();
-+        if !fs.entries.contains(&entry) {
-+            fs.entries.push(entry.clone());
++        for path in paths {
++            let entry = FileSystemSandboxEntry::new(
++                FileSystemPath::Path { path },
++                FileSystemAccessMode::Deny,
++            );
++            // An identical entry in the original policy still belongs to its caller.
++            if !fs.entries.contains(&entry) {
++                fs.entries.push(entry.clone());
++                snapshot.sdk_private_denies.push(entry);
++            }
++        }
++        if !snapshot.sdk_private_denies.is_empty() {
 +            snapshot.permission_profile =
 +                PermissionProfile::from_runtime_permissions_with_enforcement(
 +                    snapshot.permission_profile.enforcement(),
 +                    &fs,
 +                    snapshot.permission_profile.network_sandbox_policy(),
 +                );
-+            snapshot.sdk_private_deny = Some(entry);
 +        }
 +        snapshot
 +    }
 +
-+    /// Project the executor policy without the SDK-owned host file exclusion.
++    /// Project the executor policy without the injected SDK-owned exclusions.
 +    pub fn sdk_portable_permission_profile(&self) -> PermissionProfile {
 +        let profile = &self.permission_profile;
-+        let Some(entry) = &self.sdk_private_deny else {
++        if self.sdk_private_denies.is_empty() {
 +            return profile.clone();
-+        };
++        }
 +        let mut fs = profile.file_system_sandbox_policy();
-+        fs.entries.retain(|candidate| candidate != entry);
++        fs.entries
++            .retain(|entry| !self.sdk_private_denies.contains(entry));
 +        PermissionProfile::from_runtime_permissions_with_enforcement(
 +            profile.enforcement(),
 +            &fs,
@@ -1853,3 +1866,52 @@ index 34fe6fdb116e81225558fd6f2860d563879ddfc4..33c136dcbcea6ef651a0ca4b0c7b1211
      /// Borrow the concrete permissions captured in this snapshot.
      pub fn permission_profile(&self) -> &PermissionProfile {
          &self.permission_profile
+diff --git a/codex-rs/protocol/src/permission_profile_snapshot_tests.rs b/codex-rs/protocol/src/permission_profile_snapshot_tests.rs
+index efe6e3ea159a17730ec654701bedf6922a16e21e..aadcdf3ff331d58395270a05bce3b80b0b20d6da 100644
+--- a/codex-rs/protocol/src/permission_profile_snapshot_tests.rs
++++ b/codex-rs/protocol/src/permission_profile_snapshot_tests.rs
+@@ -18,3 +18,44 @@ fn executor_profile_root_case_changes_update_snapshot() {
+         assert_ne!(snapshot(first), snapshot(second));
+     }
+ }
++
++#[test]
++fn portable_profile_omits_only_injected_sdk_private_denies() {
++    let root = std::env::temp_dir();
++    let path = |name: &str| PathUri::from_host_native_path(root.join(name)).unwrap();
++    let deny = |path| {
++        FileSystemSandboxEntry::new(FileSystemPath::Path { path }, FileSystemAccessMode::Deny)
++    };
++    let caller_duplicate = path("caller-duplicate");
++    let caller_unrelated = path("caller-unrelated");
++    let auth = path("auth.json");
++    let mcp = path(".credentials.json");
++    let baseline = PermissionProfile::workspace_write();
++    let mut fs = baseline.file_system_sandbox_policy();
++    fs.entries.extend([
++        deny(caller_duplicate.clone()),
++        deny(caller_unrelated.clone()),
++    ]);
++    let baseline =
++        PermissionProfile::from_runtime_permissions(&fs, baseline.network_sandbox_policy());
++    let snapshot = PermissionProfileSnapshot::legacy_with_sdk_private_denies(
++        baseline.clone(),
++        [
++            caller_duplicate.clone(),
++            auth.clone(),
++            mcp.clone(),
++            mcp.clone(),
++        ],
++    );
++    let live = snapshot.permission_profile().file_system_sandbox_policy();
++    for path in [caller_duplicate, caller_unrelated, auth, mcp] {
++        assert_eq!(
++            live.entries
++                .iter()
++                .filter(|entry| **entry == deny(path.clone()))
++                .count(),
++            1
++        );
++    }
++    assert_eq!(snapshot.sdk_portable_permission_profile(), baseline);
++}

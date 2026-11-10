@@ -1113,7 +1113,7 @@ async fn strict_write_profile(
     // The cwd remains first; equivalent declarations keep the same digest.
     roots[1..].sort_by_key(ToString::to_string);
     let mut filesystem_policy = workspace_profile(&roots).file_system_sandbox_policy();
-    let mut saved_login_deny = None;
+    let mut private_denials = Vec::new();
     let mut read_grants = Vec::new();
     if !environment.is_remote() {
         let local_roots = roots
@@ -1132,7 +1132,7 @@ async fn strict_write_profile(
             trusted_temp.is_some(),
         )? {
             // The platform defaults can also grant reads under system paths.
-            saved_login_deny = Some(
+            private_denials.push(
                 PathUri::from_host_native_path(&file)
                     .context("could not protect the saved Codex login file")?,
             );
@@ -1160,10 +1160,12 @@ async fn strict_write_profile(
                 },
                 FileSystemAccessMode::Read,
             ));
-            for path in trusted_auth_denials(config, &local_roots)? {
-                // The snapshot owns the selected login's exact deny and omits it
-                // from model context and portable policy.
-                if saved_login_deny.as_ref() == Some(&path) {
+            let (denials, selected_denials) =
+                trusted_auth_denials(config, &local_roots, private_paths.saved_login_file)?;
+            private_denials.extend(selected_denials);
+            for path in denials {
+                // Selected credentials are excluded from model context and portable policy.
+                if private_denials.contains(&path) {
                     continue;
                 }
                 filesystem_policy.entries.push(FileSystemSandboxEntry::new(
@@ -1220,7 +1222,7 @@ async fn strict_write_profile(
         profile
     };
     let profile =
-        PermissionProfileSnapshot::legacy_with_sdk_private_deny(profile, saved_login_deny);
+        PermissionProfileSnapshot::legacy_with_sdk_private_denies(profile, private_denials);
     Ok((
         StrictExecutorWrites {
             canonical_cwd: roots[0].clone(),
@@ -1295,7 +1297,11 @@ fn validate_local_read_only_roots(
     Ok(grants)
 }
 
-fn trusted_auth_denials(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<Vec<PathUri>> {
+fn trusted_auth_denials(
+    config: &Config,
+    roots: &LocalWriteRoots<'_>,
+    selected_login: Option<&crate::auth::SavedLoginFile>,
+) -> Result<(Vec<PathUri>, Vec<PathUri>)> {
     const RESOLVE_ERROR: &str =
         "Could not protect the trusted local executor's private authentication files";
     const OVERLAP_ERROR: &str =
@@ -1315,6 +1321,17 @@ fn trusted_auth_denials(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<
         None => resolved_codex_home.to_path_buf(),
     };
     let default_home = std::env::home_dir().context(RESOLVE_ERROR)?.join(".codex");
+    let resolve_credential = |path: &Path| -> Result<PathBuf> {
+        let path = resolve_local_protected_path(roots, path, RESOLVE_ERROR, OVERLAP_ERROR)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        ensure!(
+            linked_local_regular_file(path.clone())
+                .map_err(|_| anyhow::anyhow!(RESOLVE_ERROR))?
+                .is_none(),
+            "{RESOLVE_ERROR}: a credential file has multiple hard links"
+        );
+        Ok(path)
+    };
     let mut denied = vec![runtime_home.clone()];
     // The embedded runtime keeps its private home separate. Core can also
     // find the Codex login and MCP OAuth fallback files in the user's home.
@@ -1324,28 +1341,29 @@ fn trusted_auth_denials(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<
         default_home.as_path(),
     ] {
         for name in ["auth.json", ".credentials.json"] {
-            let path = resolve_local_protected_path(
-                roots,
-                &home.join(name),
-                RESOLVE_ERROR,
-                OVERLAP_ERROR,
-            )?;
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            ensure!(
-                linked_local_regular_file(path.clone())
-                    .map_err(|_| anyhow::anyhow!(RESOLVE_ERROR))?
-                    .is_none(),
-                "{RESOLVE_ERROR}: a credential file has multiple hard links"
-            );
+            let path = resolve_credential(&home.join(name))?;
             if !path.starts_with(&runtime_home) && !denied.contains(&path) {
                 denied.push(path);
             }
         }
     }
-    denied
-        .iter()
-        .map(|path| PathUri::from_host_native_path(path).context(RESOLVE_ERROR))
-        .collect()
+    let mut selected_denied = Vec::new();
+    if let Some(login) = selected_login {
+        // Validate the declared symlink hops and the originally selected home.
+        for auth in [&login.declared, &login.canonical] {
+            let path = resolve_credential(&auth.with_file_name(".credentials.json"))?;
+            if !path.starts_with(&runtime_home) && !selected_denied.contains(&path) {
+                selected_denied.push(path);
+            }
+        }
+    }
+    let to_uris = |paths: Vec<PathBuf>| -> Result<Vec<PathUri>> {
+        paths
+            .iter()
+            .map(|path| PathUri::from_host_native_path(path).context(RESOLVE_ERROR))
+            .collect()
+    };
+    Ok((to_uris(denied)?, to_uris(selected_denied)?))
 }
 
 fn check_local_helper_write_roots(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<()> {

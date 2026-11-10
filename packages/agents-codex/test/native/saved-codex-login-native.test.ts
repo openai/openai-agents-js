@@ -56,7 +56,8 @@ type Mode =
   | 'overlap'
   | 'hosted-media'
   | 'code'
-  | 'local';
+  | 'local'
+  | 'trusted-credentials';
 
 function json(response: ServerResponse, status: number, body: object) {
   response.writeHead(status, { 'content-type': 'application/json' });
@@ -93,6 +94,11 @@ for (const testScenario of [
     closeFailure: 'refresh-cache-save-flush',
   },
   {
+    title: 'keeps selected saved-login credentials private in trusted commands',
+    closeFailure: undefined,
+    trustedCredentials: true,
+  },
+  {
     title:
       'reads saved Codex plan usage and cancels a pending read on Session close',
     closeFailure: undefined,
@@ -104,6 +110,7 @@ for (const testScenario of [
   savedLoginTest(title, { timeout }, async ({ skip }) => {
     const { closeFailure } = testScenario;
     const usage = 'usage' in testScenario;
+    const trustedCredentials = 'trustedCredentials' in testScenario;
     if (
       closeFailure?.startsWith('refresh-cache-save') &&
       process.getuid?.() === 0
@@ -127,6 +134,7 @@ for (const testScenario of [
       | 'overlap'
       | 'code'
       | 'local'
+      | 'trusted-credentials'
       | 'stalled-refresh'
       | 'hosted-media'
       | undefined;
@@ -153,6 +161,17 @@ for (const testScenario of [
       await symlink(codexHome, loginAlias);
       const source = join(sourceHome, 'auth.json');
       const heldSource = join(directory, 'held-auth.json');
+      const mcpStore = join(directory, 'mcp-store');
+      const fallback = join(mcpStore, '.credentials.json');
+      const ordinary = join(codexHome, 'ordinary.txt');
+      if (trustedCredentials) {
+        await mkdir(mcpStore);
+        await Promise.all([
+          writeFile(fallback, 'synthetic-mcp-marker'),
+          symlink(fallback, join(codexHome, '.credentials.json')),
+          writeFile(ordinary, 'ordinary-sibling'),
+        ]);
+      }
       const cache = join(codexHome, 'auth.json');
       const claims = Buffer.from(
         JSON.stringify({
@@ -186,10 +205,11 @@ for (const testScenario of [
         sourceHome,
         loginAlias,
         join(directory, 'relocated-login'),
+        mcpStore,
       ];
       const sourceBytes = JSON.stringify(original);
       await writeFile(source, sourceBytes, { mode: 0o600 });
-      if (closeFailure) {
+      if (closeFailure || trustedCredentials) {
         // An unrelated healthy cache proves the process-wide permit was released.
         await writeFile(
           cache,
@@ -407,7 +427,11 @@ for (const testScenario of [
         }
         if (execution === 'repair')
           return fail('Unsupported repair configuration dispatched a request');
-        if (execution === 'hosted-media' || execution === 'local') {
+        if (
+          execution === 'hosted-media' ||
+          execution === 'local' ||
+          (execution === 'trusted-credentials' && executionRequests === 0)
+        ) {
           // The saved-login provider sends plain JSON on this route.
           try {
             const chunks: Buffer[] = [];
@@ -423,7 +447,7 @@ for (const testScenario of [
             if (credentialMarkers.some((marker) => body.includes(marker))) {
               return fail('Saved-login request contained credential material');
             }
-            if (execution === 'local') {
+            if (execution === 'local' || execution === 'trusted-credentials') {
               if (privateLoginPaths.some((path) => body.includes(path))) {
                 return fail('Configured local request contained a login path');
               }
@@ -520,6 +544,36 @@ for (const testScenario of [
                     "store('savedLoginFixture', 'ran'); text('cell completed');",
                 }
               : message('Accepted Code Mode.');
+        } else if (execution === 'trusted-credentials') {
+          if (++executionRequests > 2)
+            return fail('Unexpected trusted request');
+          const quote = (path: string) =>
+            "'" + path.replaceAll("'", "'\\''") + "'";
+          const paths = [
+            join(loginAlias, 'auth.json'),
+            cache,
+            join(loginAlias, '.credentials.json'),
+            join(codexHome, '.credentials.json'),
+            fallback,
+          ];
+          item =
+            executionRequests === 1
+              ? call(
+                  'exec_command',
+                  {
+                    cmd: [
+                      'set -eu',
+                      ...paths.map(
+                        (path) =>
+                          `if ( : < ${quote(path)} ) 2>/dev/null; then exit 12; fi`,
+                      ),
+                      `test "$(cat ${quote(ordinary)})" = ordinary-sibling`,
+                      'printf verified > credential-boundary',
+                    ].join('; '),
+                  },
+                  { callId: 'trusted-credential-boundary' },
+                )
+              : message('Verified trusted credential boundaries.');
         } else if (execution === 'local') {
           if (++executionRequests > 4) return fail('Unexpected local request');
           item =
@@ -552,7 +606,7 @@ for (const testScenario of [
         home,
         failures,
         onRequest,
-        allowAuth: !usage,
+        allowAuth: !usage && !trustedCredentials,
         onUpgrade: usage ? undefined : onUpgrade,
       });
       const { tunnels } = loopback;
@@ -569,7 +623,9 @@ for (const testScenario of [
           const loginHome =
             mode === 'stalled-refresh' || mode === closeFailure
               ? sourceHome
-              : mode === 'overlap' || mode === 'local'
+              : mode === 'overlap' ||
+                  mode === 'local' ||
+                  mode === 'trusted-credentials'
                 ? loginAlias
                 : codexHome;
           ({ stdout } = await loopback.runChild(
@@ -578,11 +634,16 @@ for (const testScenario of [
               loginHome,
               accountId,
               mode,
-              ...(mode === 'local' && optionalLocalSandbox
+              ...((mode === 'local' || mode === 'trusted-credentials') &&
+              optionalLocalSandbox
                 ? ['optional-sandbox']
                 : []),
             ],
-            mode === 'local' || mode === 'stalled-refresh' ? 25_000 : 15_000,
+            mode === 'local' ||
+              mode === 'stalled-refresh' ||
+              mode === 'trusted-credentials'
+              ? 25_000
+              : 15_000,
           ));
         } catch (error) {
           const { stdout: stage, killed } = error as {
@@ -621,6 +682,17 @@ for (const testScenario of [
           }
           expect((await readFile(source, 'utf8')) === sourceBytes).toBe(true);
         }
+        return;
+      }
+
+      if (trustedCredentials) {
+        execution = 'trusted-credentials';
+        const result = await run('trusted-credentials');
+        if (result === 'local sandbox unavailable') {
+          skip('This host cannot launch a nested platform sandbox');
+        }
+        expect(executionRequests).toBe(2);
+        expect(grantCount).toBe(0);
         return;
       }
 
