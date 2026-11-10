@@ -29,14 +29,14 @@
       }
     },
     "./sandbox": {
-      "import": {
-        "types": "./dist/sandbox/index.d.mts",
-        "default": "./dist/sandbox/index.mjs"
+      "types@*": {
+        "import": {
+          "types": "./dist/sandbox/index.d.mts"
+        }
       },
-      "require": {
-        "types": "./dist/sandbox/index.d.ts",
-        "default": "./dist/sandbox/index.js"
-      }
+      "types": "./dist/sandbox/index.d.ts",
+      "require": "./dist/sandbox/index.js",
+      "import": "./dist/sandbox/index.mjs"
     },
     "./sandbox/local": {
       "types": "./dist/sandbox/local.d.ts",
