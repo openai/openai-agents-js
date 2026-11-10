@@ -551,7 +551,7 @@ nativeIt(
       expect(await session.getActiveAgent()).toBe(b);
       model.assertExhausted();
     } finally {
-      await model.close();
+      await ModelServer.closeAll();
     }
   },
   35_000,
