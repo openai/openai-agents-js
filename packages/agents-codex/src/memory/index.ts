@@ -22,7 +22,7 @@ const valueSchema = boundedTextSchema(65_536);
 
 /**
  * Explicit string facts for one trusted application-selected scope.
- * Requires Node.js 22+ with built-in `node:sqlite` and a private
+ * Runtime: Node.js 22.13+ with unflagged `node:sqlite`; private
  * application-owned SQLite path.
  * Keys/scopes contain 1–256 Unicode code points; values contain at most 65,536
  * code points and may be empty. All text must contain well-formed Unicode;

@@ -24,8 +24,8 @@ use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::{ModelInfo, ModelPreset, ModelsResponse};
 use codex_protocol::protocol::{Event, ThreadSettingsOverrides};
 use codex_thread_store::{
-    DeleteThreadParams, LoadThreadHistoryParams, ReadThreadParams, StoredThread, ThreadStore,
-    ThreadStoreError,
+    DeleteThreadParams, ForkBoundary, LoadThreadHistoryParams, PrepareForkParams, ReadThreadParams,
+    StoredThread, ThreadStore, ThreadStoreError,
 };
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
@@ -1474,6 +1474,27 @@ impl EngineState {
         self: &Arc<Self>,
         source: &Arc<ThreadState>,
     ) -> anyhow::Result<NativeThread> {
+        Box::pin(self.fork_owned(source, None)).await
+    }
+
+    pub(crate) async fn fork_stored(
+        self: &Arc<Self>,
+        source: &Arc<ThreadState>,
+        boundary: ForkBoundary,
+    ) -> anyhow::Result<NativeThread> {
+        ensure!(
+            self.local_checklist_store.is_some(),
+            "stored forks require native LocalStorage"
+        );
+        Box::pin(self.fork_owned(source, Some(boundary))).await
+    }
+
+    async fn fork_owned(
+        self: &Arc<Self>,
+        source: &Arc<ThreadState>,
+        boundary: Option<ForkBoundary>,
+    ) -> anyhow::Result<NativeThread> {
+        let stored = boundary.is_some();
         // Keep read admission through queued locks and every native fork await.
         let _context_operation = self.operation(false)?;
         let _lifecycle = self.lifecycle.lock().await;
@@ -1485,20 +1506,36 @@ impl EngineState {
         if let Some(diagnostic) = source.discard_fork_copy(None).await? {
             anyhow::bail!(diagnostic);
         }
-        let captured = crate::checkpoint::export(source, None).await?;
-        ensure!(
-            captured["descendants"]
-                .as_array()
-                .is_some_and(Vec::is_empty),
-            "fork requires a root without descendants"
-        );
-        ensure!(
-            captured["interrupted_thread_ids"]
-                .as_array()
-                .is_some_and(Vec::is_empty),
-            "fork requires settled native history"
-        );
-        let mut metadata = crate::checkpoint::ForkMetadata::capture(&captured, source.id)?;
+        let mut metadata = if boundary.is_none() {
+            let captured = crate::checkpoint::export(source, None).await?;
+            ensure!(
+                captured["descendants"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty),
+                "fork requires a root without descendants"
+            );
+            ensure!(
+                captured["interrupted_thread_ids"]
+                    .as_array()
+                    .is_some_and(Vec::is_empty),
+                "fork requires settled native history"
+            );
+            Some(crate::checkpoint::ForkMetadata::capture(
+                &captured, source.id,
+            )?)
+        } else {
+            let tools = source
+                .thread
+                .thread_extension_data()
+                .get::<crate::python_tools::PythonTools>()
+                .context("stored fork requires current managed tools")?;
+            tools.check_idle(&source.thread).await?;
+            ensure!(
+                source.thread.export_code_mode_state().await?.is_none(),
+                "stored history forks cannot retain native code-mode state"
+            );
+            None
+        };
         source.check_fork_liveness().await?;
         let specs = if let Some(specs) = crate::agent_profiles::active_specs(&source.thread).await?
         {
@@ -1533,7 +1570,30 @@ impl EngineState {
         startup.config.sdk_tool_choice = settings.tool_choice;
         startup.config.sdk_request_controls = settings.request_controls.clone();
         startup.config.mcp_servers.set(HashMap::new())?;
-        let history = self.history(source.id).await?;
+        let prepared = if let Some(boundary) = boundary {
+            source.thread.ensure_rollout_materialized().await;
+            source.thread.flush_rollout().await?;
+            Some(
+                self.store
+                    .prepare_fork(PrepareForkParams {
+                        thread_id: source.id,
+                        boundary,
+                    })
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let history = if let Some(prepared) = &prepared {
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: prepared.source_thread_id,
+                history: Arc::clone(&prepared.model_context),
+                history_revision: None,
+                rollout_path: None,
+            })
+        } else {
+            self.history(source.id).await?
+        };
         startup.initial_history = history.clone();
         crate::python_tools::PythonTools::install(
             &mut startup,
@@ -1545,13 +1605,17 @@ impl EngineState {
         )?;
         source.check_fork_liveness().await?;
         let extension_events = self.extension_events.subscribe();
-        let new = self
-            .manager
-            .fork_thread_from_history(ForkSnapshot::Interrupted, startup, history)
-            .await?;
+        let new = if let Some(prepared) = prepared {
+            self.manager.fork_prepared_thread(startup, prepared).await?
+        } else {
+            self.manager
+                .fork_thread_from_history(ForkSnapshot::Interrupted, startup, history)
+                .await?
+        };
         // Register the exact Core-created ID and raw owner before wrap can fail.
         *source.fork_copy.lock().await = Some(ForkCopy {
             id: new.thread_id,
+            stored,
             thread: new.thread.clone(),
             wrapper: None,
             shutdown_complete: false,
@@ -1560,10 +1624,12 @@ impl EngineState {
             test_failure: std::sync::atomic::AtomicU8::new(0),
         });
         // The exact raw cleanup receipt owns the copy before metadata changes.
-        metadata.retarget(new.thread_id);
-        if let Some(snapshot) = metadata.code_state() {
-            self.interception
-                .stage_code_state(new.thread_id, snapshot.clone());
+        if let Some(metadata) = &mut metadata {
+            metadata.retarget(new.thread_id);
+            if let Some(snapshot) = metadata.code_state() {
+                self.interception
+                    .stage_code_state(new.thread_id, snapshot.clone());
+            }
         }
         #[cfg(test)]
         if source
@@ -1646,9 +1712,91 @@ impl EngineState {
         ) {
             copied.copy_origins_from(&original);
         }
-        native.current()?.retain_metadata(metadata)?;
+        if let Some(metadata) = metadata {
+            native.current()?.retain_metadata(metadata)?;
+        }
         native.fork_source = Some(Arc::downgrade(source));
         Ok(native)
+    }
+
+    async fn retire_fork_writer(&self, copy: &mut ForkCopy) -> anyhow::Result<()> {
+        if !copy.shutdown_complete {
+            let state = copy
+                .wrapper
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .and_then(|owner| {
+                    owner
+                        .lock()
+                        .expect("native thread owner poisoned")
+                        .live
+                        .clone()
+                });
+            if let Some(state) = state {
+                // Every copy has an empty receipt of its own; the boxed
+                // discard future breaks the recursive close type.
+                copy.diagnostic = state.close_report().await?;
+            } else {
+                copy.thread.shutdown_and_wait().await?;
+                self.manager
+                    .remove_thread_if_matches(&copy.id, &copy.thread)
+                    .await;
+            }
+            copy.shutdown_complete = true;
+            self.interception.clear_code_state(copy.id);
+            if let Some(owner) = copy.wrapper.as_ref().and_then(Weak::upgrade) {
+                owner
+                    .lock()
+                    .expect("native thread owner poisoned")
+                    .release();
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn discard_stored_fork(
+        &self,
+        source: &ThreadState,
+    ) -> anyhow::Result<Option<String>> {
+        let _operation = self.operation(true)?;
+        let _lifecycle = self.lifecycle.lock().await;
+        let _mutation = source.mutations.lock().await;
+        ensure!(
+            source
+                .fork_copy
+                .lock()
+                .await
+                .as_ref()
+                .is_none_or(|copy| copy.stored),
+            "This receipt belongs to a portable fork"
+        );
+        source.discard_fork_copy(None).await
+    }
+
+    pub(crate) async fn publish_stored_fork(
+        &self,
+        source: &ThreadState,
+        expected: ThreadId,
+    ) -> anyhow::Result<String> {
+        let _context_operation = self.operation(false)?;
+        let _lifecycle = self.lifecycle.lock().await;
+        let _mutation = source.mutations.lock().await;
+        drop(self.operation(false)?);
+        let mut slot = source.fork_copy.lock().await;
+        let copy = slot.as_mut().context("No unpublished stored fork")?;
+        ensure!(
+            copy.id == expected && copy.stored,
+            "Stored fork receipt does not match"
+        );
+        self.retire_fork_writer(copy).await?;
+        if let Some(diagnostic) = &copy.diagnostic {
+            anyhow::bail!("{diagnostic}");
+        }
+        let id = copy.id.to_string();
+        // The writer has physically joined. Source/Engine close must not delete
+        // this now-published stored branch through temporary-copy cleanup.
+        slot.take();
+        Ok(id)
     }
 
     fn discard_fork_receipt<'a>(
@@ -1672,37 +1820,7 @@ impl EngineState {
             {
                 anyhow::bail!("injected incomplete fork shutdown");
             }
-            if !copy.shutdown_complete {
-                let state = copy
-                    .wrapper
-                    .as_ref()
-                    .and_then(Weak::upgrade)
-                    .and_then(|owner| {
-                        owner
-                            .lock()
-                            .expect("native thread owner poisoned")
-                            .live
-                            .clone()
-                    });
-                if let Some(state) = state {
-                    // Every copy has an empty receipt of its own; the boxed
-                    // discard future breaks the recursive close type.
-                    copy.diagnostic = state.close_report().await?;
-                } else {
-                    copy.thread.shutdown_and_wait().await?;
-                    self.manager
-                        .remove_thread_if_matches(&copy.id, &copy.thread)
-                        .await;
-                }
-                copy.shutdown_complete = true;
-                self.interception.clear_code_state(copy.id);
-                if let Some(owner) = copy.wrapper.as_ref().and_then(Weak::upgrade) {
-                    owner
-                        .lock()
-                        .expect("native thread owner poisoned")
-                        .release();
-                }
-            }
+            self.retire_fork_writer(copy).await?;
             if let Some(goals) = &self.goals {
                 goals.state_db.delete_threads_strict(&[copy.id]).await?;
             }
@@ -2732,6 +2850,7 @@ struct NativeThreadRegistration {
 // lost wrappers without a strong SDK state cycle; stages preserve cleanup retries.
 struct ForkCopy {
     id: ThreadId,
+    stored: bool,
     thread: Arc<CodexThread>,
     wrapper: Option<Weak<std::sync::Mutex<crate::NativeThreadOwner>>>,
     shutdown_complete: bool,

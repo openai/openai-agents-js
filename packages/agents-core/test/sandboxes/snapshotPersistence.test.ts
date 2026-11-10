@@ -1,5 +1,9 @@
+import {
+  retainManagedWorkspaceSnapshot,
+  persistLocalSnapshot,
+} from '../../src/sandbox/sandboxes/shared/localSnapshots';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -188,3 +192,43 @@ function holdSave(store: InMemoryRemoteSnapshotStore, fail = false) {
   });
   return { entered, release };
 }
+
+it.each(['unix', 'parsed', 'docker'] as const)(
+  'retains a managed predecessor through %s remote publication',
+  async (kind) => {
+    const fixture = await createFixture(kind);
+    const prior = { ...fixture.state.snapshot! };
+    retainManagedWorkspaceSnapshot(fixture.state.snapshot!);
+    const serialized = await fixture.serialize();
+    expect((serialized.snapshot as { id: string }).id).not.toBe(prior.id);
+    expect(await fixture.store.exists({ id: prior.id })).toBe(true);
+    expect(JSON.stringify(serialized)).not.toContain('retainedManagedSnapshot');
+  },
+);
+
+it('retains the prior local filesystem while publishing changed managed contents', async () => {
+  const root = join(base, 'managed-workspace');
+  await mkdir(root);
+  await writeFile(join(root, 'value'), 'A');
+  const state = {
+    workspaceRootPath: root,
+    manifest: new Manifest(),
+    snapshot: null as any,
+  };
+  const a = await persistLocalSnapshot('fixture', state, {
+    type: 'local',
+    baseDir: join(base, 'archives'),
+  });
+  retainManagedWorkspaceSnapshot(a!);
+  await writeFile(join(root, 'value'), 'B');
+  const b = await persistLocalSnapshot('fixture', state, {
+    type: 'local',
+    baseDir: join(base, 'archives'),
+  });
+  expect(
+    await readFile(join((a as { path: string }).path, 'value'), 'utf8'),
+  ).toBe('A');
+  expect(
+    await readFile(join((b as { path: string }).path, 'value'), 'utf8'),
+  ).toBe('B');
+});

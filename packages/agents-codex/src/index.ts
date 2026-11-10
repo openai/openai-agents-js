@@ -194,6 +194,15 @@ export type {
   ApiRateLimitWindow,
 } from './runtime/api-rate-limits';
 export type { CodexPlanLimit, CodexPlanUsage } from './runtime/plan-usage';
+export type {
+  StoredForkOptions,
+  StoredItem,
+  StoredTurn,
+  StoredTurnPage,
+  StoredItemPage,
+  StoredMatch,
+  StoredMatchPage,
+} from './runtime/stored-history';
 export type { Subagent, ChildTurn, ChildCompleted } from './runtime/subagents';
 export type {
   SessionItem,
@@ -228,6 +237,7 @@ export type {
 
 export * as telemetry from './runtime/telemetry';
 export type {
+  ConsoleDiagnostics,
   Exporter,
   OtelTlsConfig,
   TelemetryOptions,
@@ -441,3 +451,5 @@ export type {
   InputGuardrail,
   OutputGuardrail,
 } from './runtime/guardrails';
+
+export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';

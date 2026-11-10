@@ -133,6 +133,27 @@ export async function createLocalSnapshot(
   };
 }
 
+const retainedManagedSnapshot: unique symbol = Symbol(
+  'retainedManagedSnapshot',
+);
+type RetainedSnapshot = LocalSandboxSnapshot & {
+  [retainedManagedSnapshot]?: true;
+};
+
+/** @internal Preserve the already authorized predecessor after managed restore. */
+export function retainManagedWorkspaceSnapshot(
+  snapshot: LocalSandboxSnapshot,
+): void {
+  if (snapshot.type !== 'local' && snapshot.type !== 'remote')
+    throw new UserError(
+      'Managed workspace requires a local or remote snapshot',
+    );
+  Object.defineProperty(snapshot, retainedManagedSnapshot, {
+    value: true,
+    enumerable: true,
+  });
+}
+
 export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
   providerName: string,
   state: TState,
@@ -178,7 +199,11 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
       ),
     }));
     const saved = await spec.store.save({
-      id: spec.id,
+      id: (captureState.snapshot as RetainedSnapshot | null)?.[
+        retainedManagedSnapshot
+      ]
+        ? randomUUID()
+        : spec.id,
       data,
       metadata: spec.metadata,
     });
@@ -287,6 +312,7 @@ export async function replaceLocalSnapshot<TState extends LocalSnapshotState>(
     throw error;
   }
   if (
+    !(previousSnapshot as RetainedSnapshot | null)?.[retainedManagedSnapshot] &&
     previousSnapshot?.type === 'local' &&
     previousSnapshot.path !== publishedSnapshot?.path &&
     previousSnapshot.path !== previousWorkspaceRootPath
@@ -294,6 +320,7 @@ export async function replaceLocalSnapshot<TState extends LocalSnapshotState>(
     await rm(previousSnapshot.path, { recursive: true, force: true });
   }
   if (
+    !(previousSnapshot as RetainedSnapshot | null)?.[retainedManagedSnapshot] &&
     previousSnapshot?.type === 'remote' &&
     previousSnapshot.id !== publishedSnapshot?.id
   ) {

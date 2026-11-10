@@ -15,6 +15,7 @@ mod canonical_rules;
 mod checkpoint;
 mod commands;
 mod config;
+mod console_diagnostics;
 mod context;
 mod custom_storage;
 mod decisions;
@@ -45,6 +46,7 @@ mod recovery_guard;
 mod response_control;
 mod response_integrity;
 mod storage;
+mod stored_history;
 mod subagents;
 mod telemetry;
 mod turn_settlement;
@@ -261,6 +263,31 @@ impl<T> Drop for RuntimeOwned<T> {
     fn drop(&mut self) {
         let _entered = self.runtime.enter();
         drop(self.value.take());
+    }
+}
+
+#[napi(js_name = "_StoredHistoryClose")]
+pub struct StoredHistoryClose {
+    inner: Arc<stored_history::CloseAction>,
+    owner: std::sync::Weak<std::sync::Mutex<NativeThreadOwner>>,
+}
+
+#[napi]
+impl StoredHistoryClose {
+    #[napi]
+    pub async fn apply(&self) -> napi::Result<()> {
+        {
+            let owner = self
+                .owner
+                .upgrade()
+                .ok_or_else(|| native_error("Native thread shutdown cannot be verified"))?;
+            if owner.lock().map_err(native_error)?.live.is_some() {
+                return Err(native_error(
+                    "Stored history mutation requires confirmed native thread shutdown",
+                ));
+            }
+        }
+        self.inner.apply().await.map_err(native_error)
     }
 }
 
@@ -1420,6 +1447,51 @@ impl NativeThread {
             source
                 .engine
                 .fork_settled(&source)
+                .await
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi(js_name = "_fork_stored")]
+    pub async fn _fork_stored(&self, request_json: String) -> napi::Result<NativeThread> {
+        let source = self.current()?;
+        let boundary = stored_history::fork_boundary(&request_json).map_err(native_error)?;
+        retain_writer_operation(async move {
+            source
+                .engine
+                .fork_stored(&source, boundary)
+                .await
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi(js_name = "_discard_stored_fork")]
+    pub async fn _discard_stored_fork(&self) -> napi::Result<Option<String>> {
+        let source = self.current()?;
+        retain_writer_operation(async move {
+            source
+                .engine
+                .discard_stored_fork(&source)
+                .await
+                .map_err(native_error)
+        })
+        .await
+    }
+
+    #[napi(js_name = "_publish_stored_fork")]
+    pub async fn _publish_stored_fork(&self) -> napi::Result<String> {
+        let source = self
+            .fork_source
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| native_error("This thread is not an unpublished stored fork"))?;
+        let id = codex_protocol::ThreadId::from_string(&self.id).map_err(native_error)?;
+        retain_writer_operation(async move {
+            source
+                .engine
+                .publish_stored_fork(&source, id)
                 .await
                 .map_err(native_error)
         })
@@ -4182,6 +4254,30 @@ impl NativeThread {
         serde_json::to_string(&value).map_err(native_error)
     }
 
+    #[napi(js_name = "_stored_history")]
+    pub async fn stored_history(&self, query_json: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let query = serde_json::from_str(&query_json).map_err(native_error)?;
+        let value = stored_history::read(&inner, query)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_stored_history_close_action")]
+    pub fn stored_history_close_action(
+        &self,
+        action_json: String,
+    ) -> napi::Result<StoredHistoryClose> {
+        let inner = self.current()?;
+        Ok(StoredHistoryClose {
+            inner: Arc::new(
+                stored_history::CloseAction::capture(&inner, &action_json).map_err(native_error)?,
+            ),
+            owner: Arc::downgrade(&self.inner),
+        })
+    }
+
     #[napi(js_name = "_transact_history")]
     pub async fn transact_history(
         &self,
@@ -5394,7 +5490,8 @@ mod engine_owner_tests {
 fn telemetry_error(error: anyhow::Error) -> napi::Error {
     let message = error.to_string();
     let safe = match message.as_str() {
-        "Codex telemetry can only be configured once per process"
+        "Invalid console diagnostic options"
+        | "Codex telemetry can only be configured once per process"
         | "Configure telemetry before creating any Codex clients"
         | "A Rust tracing subscriber is already installed; Codex telemetry cannot replace it"
         | "Configure telemetry successfully before shutdown"

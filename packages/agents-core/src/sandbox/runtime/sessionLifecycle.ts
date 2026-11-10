@@ -65,11 +65,13 @@ export async function runSandboxSessionPreStop(
 ): Promise<void> {
   const lifecycleOptions = cleanupLifecycleOptions(options);
   let preStopError: unknown;
+  let failed = false;
   const runPreStop = async (preStop: () => Promise<void>) => {
     try {
       await preStop();
     } catch (error) {
-      preStopError ??= error;
+      if (!failed) preStopError = error;
+      failed = true;
     }
   };
 
@@ -83,7 +85,7 @@ export async function runSandboxSessionPreStop(
       await session.preStop!(lifecycleOptions);
     });
   }
-  if (preStopError) {
+  if (failed) {
     throw preStopError;
   }
 }
@@ -91,15 +93,18 @@ export async function runSandboxSessionPreStop(
 export async function cleanupSandboxSession(
   session: SandboxSessionLike<SandboxSessionState>,
   options?: SandboxSessionLifecycleOptions,
+  afterStop?: () => Promise<void>,
 ): Promise<void> {
   const lifecycleOptions = cleanupLifecycleOptions(options);
   let cleanupError: unknown;
+  let failed = false;
   let usedStandardLifecycle = false;
   const runCleanup = async (cleanup: () => Promise<void>) => {
     try {
       await cleanup();
     } catch (error) {
-      cleanupError ??= error;
+      if (!failed) cleanupError = error;
+      failed = true;
     }
   };
   if (
@@ -117,6 +122,7 @@ export async function cleanupSandboxSession(
     });
     usedStandardLifecycle = true;
   }
+  if (!failed && afterStop) await runCleanup(afterStop);
   if (session.shutdown) {
     await runCleanup(async () => {
       await session.shutdown!(lifecycleOptions);
@@ -134,7 +140,7 @@ export async function cleanupSandboxSession(
       await session.close?.();
     });
   }
-  if (cleanupError) {
+  if (failed) {
     throw cleanupError;
   }
 }
@@ -271,14 +277,16 @@ async function runManagedPreStopHooks(
   }
   state.ran = true;
   let firstError: unknown;
+  let failed = false;
   for (const hook of state.hooks) {
     try {
       await hook();
     } catch (error) {
-      firstError ??= error;
+      if (!failed) firstError = error;
+      failed = true;
     }
   }
-  if (firstError) {
+  if (failed) {
     throw firstError;
   }
 }

@@ -1,4 +1,5 @@
 import { MAX_AUDIO_INPUT_BYTES } from './media';
+import { managedWorkspaceRestore } from './managed-workspace';
 import {
   attachPrivateRuntime,
   privateRuntime,
@@ -154,6 +155,12 @@ export async function openSession(
   let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
+    ...(options.environmentOwner?.workspaceInstructions === undefined
+      ? {}
+      : {
+          user_instructions_appendix:
+            options.environmentOwner.workspaceInstructions,
+        }),
     ...(options.localStorage
       ? {}
       : {
@@ -268,8 +275,21 @@ export async function openSession(
   )
     throw new InteractionRequired();
 
-  const checkpointJson = saved
-    ? encodeReceipt(nativeCheckpoint(saved))
+  const nativeRestore = saved ? nativeCheckpoint(saved) : undefined;
+  if (nativeRestore && options[managedWorkspaceRestore]) {
+    if (
+      !options.managedWorkspace?.authorizedReceipt ||
+      environment?.writePolicy !== 'strict'
+    )
+      throw new TypeError(
+        'Managed restore requires current strict workspace authority',
+      );
+    // Earlier preflight retains strictness, network and readOnly checks. Current
+    // startup supplies authority; the paired workspace can relocate its cwd.
+    delete nativeRestore.executor_policy_digest;
+  }
+  const checkpointJson = nativeRestore
+    ? encodeReceipt(nativeRestore)
     : undefined;
   const freshManual = isManualSessionState(saved);
   const borrow = lease.privateRuntime;

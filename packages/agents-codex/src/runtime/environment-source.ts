@@ -1,3 +1,4 @@
+import type { ManagedWorkspaceBinding } from './managed-workspace';
 import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
 import { Environment } from './environment';
 
@@ -25,6 +26,8 @@ export type DisposeGuard = (
 ) => Promise<void>;
 interface LeaseState {
   claimed: boolean;
+  readonly managedWorkspace?: ManagedWorkspaceBinding;
+  readonly workspaceInstructions?: string;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -40,6 +43,8 @@ export function createEnvironmentLease<Context>(
   environment: Environment<Context>,
   dispose: (guard: DisposeGuard) => void | Promise<void>,
   sourceSignal?: AbortSignal,
+  managedWorkspace?: ManagedWorkspaceBinding,
+  workspaceInstructions?: string,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -48,6 +53,8 @@ export function createEnvironmentLease<Context>(
     scope: AsyncLocalStorage.snapshot(),
     dispose,
     signal: sourceSignal,
+    managedWorkspace,
+    workspaceInstructions,
   };
   const close = () => {
     if (state.claimed)
@@ -93,6 +100,16 @@ export class EnvironmentAcquisition {
     this.signal = state?.signal
       ? AbortSignal.any([openingController.signal, state.signal])
       : openingController.signal;
+  }
+
+  /** @internal Mutable capture state belongs to this exact acquired resource. */
+  get managedWorkspace(): ManagedWorkspaceBinding | undefined {
+    return this.state?.managedWorkspace;
+  }
+
+  /** @internal Immutable current resource text from this exact acquisition. */
+  get workspaceInstructions(): string | undefined {
+    return this.state?.workspaceInstructions;
   }
 
   attachSession(session: { close(): Promise<void> }): void {
