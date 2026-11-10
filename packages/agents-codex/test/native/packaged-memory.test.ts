@@ -43,6 +43,47 @@ async function databasePath(): Promise<string> {
 }
 
 describe('packaged scoped memory', () => {
+  it('applies scope, key, and value limits in Unicode code points', async () => {
+    const path = await databasePath();
+    const scope = '🚀'.repeat(256);
+    const key = '😀'.repeat(256);
+    const value = '🎉'.repeat(65_536);
+    {
+      using memory = new SQLiteMemory(path, { scope });
+      memory.set(key, value);
+      expect(memory.get(key)).toBe(value);
+      expect(() => memory.set(key, `${value}x`)).toThrow();
+      expect(memory.get(key)).toBe(value);
+      expect(() => memory.get(`${key}x`)).toThrow();
+      expect(() => memory.set(`${key}x`, 'value')).toThrow();
+      expect(() => memory.delete(`${key}x`)).toThrow();
+    }
+    using reopened = new SQLiteMemory(path, { scope });
+    expect(reopened.scope).toBe(scope);
+    expect(reopened.get(key)).toBe(value);
+    reopened.delete(key);
+    expect(reopened.get(key)).toBeNull();
+    const unopened = join(path, '..', 'unopened.sqlite');
+    expect(() => new SQLiteMemory(unopened, { scope: `${scope}x` })).toThrow();
+    expect(existsSync(unopened)).toBe(false);
+  });
+
+  it('publishes the same numeric code-point limits in every tool schema', async () => {
+    using memory = new SQLiteMemory(await databasePath(), { scope: 'alice' });
+    for (const declaration of memory.tools()) {
+      expect(declaration.parameters).toMatchObject({
+        type: 'object',
+        additionalProperties: false,
+        properties: { key: { type: 'string', minLength: 1, maxLength: 256 } },
+      });
+      if (declaration.name === 'memory_set') {
+        expect(declaration.parameters).toMatchObject({
+          properties: { value: { type: 'string', maxLength: 65_536 } },
+        });
+      }
+    }
+  });
+
   it.each([
     ['high surrogate', '\ud800', '\ufffd'],
     ['low surrogate', '\udfff', '\ufffd'],
@@ -222,6 +263,27 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       );
       using reopened = new SQLiteMemory(path, { scope: 'alice' });
       expect(reopened.get('preference')).toBeNull();
+    }, 20_000);
+
+    it('accepts code-point limits through native tool argument validation', async () => {
+      using memory = new SQLiteMemory(await databasePath(), { scope: 'alice' });
+      const key = '😀'.repeat(256);
+      const value = '🎉'.repeat(65_536);
+      await withScriptedResponses(
+        [
+          [toolCall('memory_set', { key, value }, { callId: 'save' })],
+          [text('Saved')],
+        ],
+        async (peer) => {
+          await new Agent({
+            instructions: 'Save.',
+            provider: peer.provider,
+            tools: memory.tools(),
+          }).run('Save');
+          peer.assertExhausted();
+        },
+      );
+      expect(memory.get(key)).toBe(value);
     }, 20_000);
 
     it('preserves distinct keys written by a parallel native tool batch', async () => {

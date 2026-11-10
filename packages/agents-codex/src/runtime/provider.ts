@@ -216,12 +216,13 @@ export class NativeProvider {
       pendingIdle.idle = undefined;
     }
     const options = this.#options;
+    const realtimeApiKey = captured
+      ? captured.apiKey
+      : (options.apiKey ?? process.env.OPENAI_API_KEY);
     const apiKey =
       options.modelBackend !== undefined
         ? 'native-model-producer'
-        : captured
-          ? captured.apiKey
-          : (options.apiKey ?? process.env.OPENAI_API_KEY);
+        : realtimeApiKey;
     const privateCandidate =
       privateRun &&
       this.constructor === NativeProvider &&
@@ -352,6 +353,7 @@ export class NativeProvider {
       },
       chatGPT: options.chatGPT,
       apiKey,
+      realtimeApiKey,
       privateRuntime: borrow,
       config: {
         model_provider: 'native_agent',
@@ -462,6 +464,7 @@ export interface ProviderLease {
     engine: Engine,
   ): _ProviderHttpTransports | undefined;
   apiKey: string | undefined;
+  readonly realtimeApiKey?: string;
   config: NativeConfig;
   open(): Promise<{ codex_home: string; cwd: string }>;
   release(): Promise<void>;

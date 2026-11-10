@@ -1339,6 +1339,7 @@ export class Agent<Context = undefined, Output = string> {
       };
       const session: CoreSessionOptions = {
         modelBackend: provider.modelBackend,
+        realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
@@ -1397,7 +1398,10 @@ export class Agent<Context = undefined, Output = string> {
           });
           const correctionOptions: OwnedSessionOptions<undefined> = {
             parentTrace,
-            [correctionOpening]: { apiKey, retainOpening },
+            [correctionOpening]: {
+              apiKey: lease.realtimeApiKey,
+              retainOpening,
+            },
           };
           return (await correction.session(
             correctionOptions,
@@ -1422,7 +1426,7 @@ export class Agent<Context = undefined, Output = string> {
             output,
             outputType,
             provider,
-            apiKey: lease.apiKey,
+            apiKey: lease.realtimeApiKey,
             context,
             onInteraction: options.onInteraction,
             maxFunctionConcurrency,
@@ -1431,8 +1435,8 @@ export class Agent<Context = undefined, Output = string> {
             beforeCompact,
             transformContext,
           });
-      // Without a captured key, native reopening would reread ambient auth.
-      if (captured.apiKey !== undefined) {
+      // HTTP reopening needs captured auth; custom producers use text admission.
+      if (lease.apiKey !== undefined) {
         session.deferredReopen = async (
           state,
           active,

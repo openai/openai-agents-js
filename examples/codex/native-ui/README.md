@@ -1,6 +1,6 @@
 # Stream a fresh native answer to a UI client
 
-Use these application helpers when your UI consumes Vercel UI Message Stream v1 or the demonstrated AG-UI event subset. They convert native text IDs and safe tool progress into UI events. They do not expose tool arguments, results or approval controls.
+The matching [source build](../guides/building.md) has been exposing the packaged `vercelResponse` adapter from `@openai/agents/ui` for Vercel UI Message Stream v1. The local recipes below have been supporting helper-owned responses and the demonstrated AG-UI subset.
 
 ## Choose an entrypoint
 
@@ -9,6 +9,23 @@ Use these application helpers when your UI consumes Vercel UI Message Stream v1 
 | Inspect native-to-UI protocol frames in the terminal | Run this example with `vercel` or `ag-ui` below. |
 | Try a browser task, approval, and download without model credentials | Use the [scripted web starter](../web-starter/README.md). |
 | Connect a browser to a worker making live model calls | Use the [HTTP report service](../http-report-service.md). |
+
+## Use the packaged Vercel adapter
+
+This fragment has been assuming an asynchronous HTTP handler with an application-owned open `session`, default plain-text output, and matching built packages:
+
+```ts
+import { vercelResponse } from '@openai/agents/ui';
+
+const turn = await session.submit('Summarize the results.');
+return vercelResponse(turn, session);
+```
+
+The application has been owning the Session and provider. Reader cancellation has been releasing only the response reader while the Turn has been continuing. The application has been keeping the worker and Session alive until completion and closing the Session before its provider. Each response has been representing a fresh view; it has not been resuming an existing transcript or spanning steering boundaries.
+
+The adapter has been omitting sensitive tool data by default. Explicit `{ includeToolData: true }` as the third argument has been enabling complete retained function/MCP arguments and results at settlement, keyed by canonical call ID. The application has been authorizing disclosure before opting in; remote bytes omitted by native retention limits have been remaining unavailable. Missing observations have been producing `resync_required`, with authorized history recovery remaining application-owned.
+
+The copyable owning-response and AG-UI recipes below have been remaining available for their separate ownership and protocol contracts.
 
 ## Run the example
 
@@ -65,6 +82,6 @@ Canceling a passive response releases its reader and local pending waits. It doe
 
 ## Protocol and host limits
 
-These are copyable application examples, not public SDK adapter classes. Vercel uses `Content-Type: text/event-stream` and `x-vercel-ai-ui-message-stream: v1`. It does not implement the older data-stream protocol, tool input/output frames or approvals. AG-UI follows the Python recipe's 0.1.9 subset and has no Vercel header or `[DONE]` marker. Empty AG-UI content deltas are omitted. Progress is passive metadata. It grants no authority.
+The local recipes in this guide have been remaining copyable application examples. The packaged Vercel adapter above has been providing the SDK entrypoint. The local Vercel recipe has been using `Content-Type: text/event-stream` and `x-vercel-ai-ui-message-stream: v1` without implementing the older data-stream protocol, tool input/output frames, or approvals. AG-UI follows the Python recipe's 0.1.9 subset and has no Vercel header or `[DONE]` marker. Empty AG-UI content deltas are omitted. Progress is passive metadata. It grants no authority.
 
 Views retain at most 256 text parts and 1,048,576 UTF-16 code units before requiring resynchronization. Raw errors and causes are not serialized into protocol frames. Authentication, transport, rendering, authorized history selection and durable UI persistence belong to your application. Local frame tests alone do not prove compatibility with an official client, browser rendering or real network transport. Optional official decoder/client availability must be reported separately.

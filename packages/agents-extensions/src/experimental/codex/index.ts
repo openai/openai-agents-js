@@ -1,7 +1,5 @@
-import {
-  tool as nativeTool,
-  _nativeToolSessionOwner,
-} from '@openai/agents-codex';
+import { tool as nativeTool } from '@openai/agents-codex';
+import { _nativeToolSessionOwner } from '@openai/agents-codex/internal';
 import {
   RunContext,
   Usage,
@@ -2063,12 +2061,12 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
         let usage: CodexUsage | null = null;
         let completed = false;
         for await (const event of stream.events) {
-          context.signal.throwIfAborted();
+          signal.throwIfAborted();
           if (onEvent)
             await Promise.allSettled([
               Promise.resolve().then(() => onEvent(event)),
             ]);
-          context.signal.throwIfAborted();
+          signal.throwIfAborted();
           if (
             event.type === 'item.completed' &&
             event.item.type === 'agent_message'

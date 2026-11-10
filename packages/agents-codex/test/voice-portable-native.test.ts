@@ -68,6 +68,27 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
+  it('rejects startup after close without leaving a readiness timer', async () => {
+    vi.useFakeTimers();
+    const owner = control();
+    const apply = vi.spyOn(owner, 'apply');
+    const send = vi.fn();
+    const session = new PortableVoiceSession(
+      owner,
+      { send, close: vi.fn() },
+      {
+        model: 'test-realtime',
+        instructions: 'Help.',
+      },
+    );
+    await session.close();
+    apply.mockClear();
+    await expect(session.start()).rejects.toThrow(/closed/);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it.each([
     undefined,
     null,

@@ -144,6 +144,63 @@ async function providerFor(model: ModelServer) {
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 
+nativeIt.each(['provider', 'environment', 'override', 'missing'] as const)(
+  'keeps custom text backend credentials separate from %s Realtime credentials',
+  async (kind) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const complete = vi.fn(() => ({
+      output: [message('custom text response')],
+    }));
+    const config = await model.config();
+    vi.stubEnv(
+      'OPENAI_API_KEY',
+      kind === 'environment' ? 'synthetic-captured-voice' : undefined,
+    );
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey:
+          kind === 'provider' || kind === 'override'
+            ? 'synthetic-captured-voice'
+            : undefined,
+        modelBackend: { complete },
+      });
+      await using session = await new Agent({
+        instructions: 'Help.',
+        provider,
+      }).session();
+      vi.stubEnv('OPENAI_API_KEY', 'synthetic-later-environment');
+      if (kind === 'missing') {
+        await expect(
+          session.realtime({ model: 'fixture-realtime' }),
+        ).rejects.toThrow('requires a provider or voice API key');
+        expect(peer.authorization).toEqual([]);
+      } else {
+        const voice = await session.realtime({
+          model: 'fixture-realtime',
+          ...(kind === 'override'
+            ? { apiKey: 'synthetic-voice-override' }
+            : {}),
+        });
+        await voice.close();
+        expect(peer.authorization).toEqual([
+          `Bearer ${kind === 'override' ? 'synthetic-voice-override' : 'synthetic-captured-voice'}`,
+        ]);
+      }
+      const result = await (await session.submit('continue')).wait();
+      expect(result.finalOutput).toBe('custom text response');
+      expect(complete).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
 nativeIt.each([false, true])(
   'snapshots admitted speech usage in tool context without changing caller context (managed=%s)',
   async (managed) => {

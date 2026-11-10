@@ -661,3 +661,39 @@ it.skipIf(process.platform === 'win32')(
     expect(await calls()).toHaveLength(1);
   },
 );
+
+it.skipIf(process.platform === 'win32')(
+  'stops buffered observer callbacks after the configured signal aborts',
+  async () => {
+    const { cli } = await recordingCli();
+    const configured = new AbortController();
+    const reason = new Error('configured observer cancellation');
+    const observed: string[] = [];
+    const tool = nativeCodexTool({
+      codex: new Codex({ codexPathOverride: cli }),
+      defaultTurnOptions: { signal: configured.signal },
+      onEvent(event) {
+        observed.push(event.type);
+        configured.abort(reason);
+      },
+    });
+    const context: ToolCallContext = {
+      context: undefined,
+      submission: { sessionId: 'configured-observer' },
+      threadId: 'configured-observer',
+      turnId: 'turn',
+      callId: 'call',
+      signal: new AbortController().signal,
+    } as ToolCallContext;
+    registerToolSessionOwner(context, {});
+    await expect(
+      invokeFunctionTool(
+        tool,
+        { prompt: 'Run', threadId: null },
+        context,
+        () => {},
+      ),
+    ).rejects.toBe(reason);
+    expect(observed).toEqual(['thread.started']);
+  },
+);

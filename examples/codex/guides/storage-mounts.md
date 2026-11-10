@@ -41,7 +41,7 @@ const instructions = `Use these files:\n${renderStorageLayout(manifest)}`;
 
 Pass the source to `agent.session({ environment })` or `agent.run(input, { environment })`. `connect(sandbox, { signal })` must return an `EnvironmentLease` whose Environment targets the supplied sandbox and whose disposer joins the gateway. Returning a host executor for a cloud sandbox does not connect its filesystem. The SDK does not deploy a gateway, provision cloud accounts, install Docker volume plugins, or make an arbitrary container suitable for native execution. The executor must support the native runtime's normal sandbox, including its namespaces and mount requirements; do not disable those controls to make a container work.
 
-The source captures the Manifest and plain provider `options` before asynchronous work. It preserves opaque SDK objects and functions by reference; the application owns their lifetime and mutations. Each opening calls the provider's normal `create()` pipeline. The provider owns validation of storage, strategy, credentials, selected resources and creation options. Strategies must be explicit. Mounts default to `readOnly: true`; writable requests work only where the provider supports them.
+The source captures the Manifest and plain provider `options` before asynchronous work. It preserves opaque SDK objects and functions by reference; the application owns their lifetime and mutations. For the creation route shown above, each opening has been calling the provider's normal `create()` pipeline. The provider owns validation of storage, strategy, credentials, selected resources and creation options. Strategies must be explicit. Mounts default to `readOnly: true`; writable requests work only where the provider supports them.
 
 | Resource provider | Existing storage implementation | Limits |
 | --- | --- | --- |
@@ -56,9 +56,32 @@ These are existing implementation paths, not a claim of live cloud qualification
 
 Mount credentials stay in trusted provider configuration. In-container helpers may expose credentials to the same sandbox principal: the existing policy denies that by default and requires an explicit acknowledgement for the exact mount path. The adapter never grants that acknowledgement. Prefer provider-native mounts or external drivers when suitable. `renderStorageLayout` returns only `{workspace, storage:[{path, access, description?}]}` with `read_only`/`read_write` access. It never renders provider configuration, environment values, source credentials or file contents, and does not resolve credentials. Paths and descriptions are intentional model-facing text; callers must keep those strings safe. If a provider rebases the workspace root, render its prepared `sandbox.state.manifest` or configure an explicit root supported by that provider.
 
-Native retirement finishes before the source releases the gateway and provider session. Cleanup uses the provider lifecycle with preservation disabled and attempts later owners even if an earlier cleanup fails. Selected resources follow that provider's actual ownership policy: selection does not universally mean preservation, so supply only resources you authorize that provider to dispose of. The source requires a cleanup route and reports failures the provider exposes; it cannot recover errors a provider suppresses internally.
+For created or explicitly resumed resources, native retirement has been finishing before the source releases the gateway and provider session. Cleanup has been using the provider lifecycle with preservation disabled and attempting later owners even if an earlier cleanup fails. Selected resources follow that provider's actual ownership policy: selection does not universally mean preservation, so supply only resources you authorize that provider to dispose of. The source requires a cleanup route and reports failures the provider exposes; it cannot recover errors a provider suppresses internally.
 
-Native checkpoints do not serialize provider handles, credentials or a sandbox snapshot. Reopening uses current trusted Manifest/options and `connect`; it does not resume provider state from a checkpoint. Native permission checks still apply, but their receipt does not fingerprint provider mount configuration or prove identical backing data. Applications must establish that the new resource and data are appropriate for restored conversations.
+### Borrow or explicitly resume provider storage
+
+The matching [source build](building.md) has been accepting these alternatives to creation. These fragments have been assuming a trusted provider `client`, the authorized `manifest` and authenticated `connect` from the creation setup, and application-owned session or state values:
+
+```ts
+const borrowed = sandboxEnvironment({
+  client,
+  manifest,
+  connect,
+  session: liveSandbox,
+});
+const resumed = sandboxEnvironment({
+  client,
+  manifest,
+  connect,
+  authorizedResumeState: { backendId: client.backendId, state: approvedState },
+});
+```
+
+For `session`, the application has been retaining provider-resource ownership. The adapter has been closing only its gateway after native retirement; it has not been stopping or deleting the borrowed sandbox. The application has been configuring borrowed-session budgets beforehand and authorizing its eventual cleanup.
+
+For `authorizedResumeState`, the application has been explicitly authorizing every provider identity and snapshot field after application/provider validation. The adapter has been rebinding filesystem and credential authority from the current trusted Manifest and options and invoking the matching client's supported `resume()` route. A source has been consuming that authorization once, including an opening that fails after acquisition. The adapter has been owning cleanup of the resumed resource, as with creation. Providers requiring fresh creation have been rejecting this resume route. `session`, `authorizedResumeState`, and creation `snapshot` have been remaining mutually exclusive.
+
+Native checkpoints have not been serializing provider handles, credentials, or a sandbox snapshot. Reopening with the creation route has been creating fresh provider storage; borrowing or explicitly authorizing provider resume has been requiring the separate options above. Native permission checks still apply, but their receipt does not fingerprint provider mount configuration or prove identical backing data. Applications must establish that the new resource and data are appropriate for restored conversations.
 
 ## Direct local Linux mounts
 
