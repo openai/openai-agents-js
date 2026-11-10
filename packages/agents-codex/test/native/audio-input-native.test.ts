@@ -245,3 +245,147 @@ it('composes native audio and named selection through the real Chat library', as
     expect(body).not.toHaveProperty('input_modalities');
   }
 });
+
+it.each([true, false])(
+  'preserves public audio history with audioOnly=%s',
+  async (audioOnly) => {
+    const message: UserMessage = {
+      role: 'user',
+      content: audioOnly
+        ? [{ type: 'input_audio', audio_url: 'data:audio/wav;base64,UklGRg==' }]
+        : [
+            { type: 'input_text', text: 'before' },
+            {
+              type: 'input_audio',
+              audio_url: 'data:audio/wav;base64,UklGRg==',
+            },
+            { type: 'input_text', text: 'after' },
+          ],
+    };
+    await using provider = new NativeProvider({
+      baseUrl: 'https://example.invalid/v1',
+      modelBackend: {
+        complete() {
+          return {
+            output: [
+              {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'ok' }],
+              },
+            ],
+          };
+        },
+      },
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider,
+      modelSettings: { inputModalities: ['text', 'audio'] },
+    });
+    let state: SessionState;
+    {
+      await using session = await agent.session();
+      await (await session.submit(message)).wait();
+      const items = [];
+      for await (const item of session.items()) items.push(item);
+      expect(
+        items.find((item) => item.type === 'message' && item.role === 'user'),
+      ).toMatchObject({ content: message.content });
+      state = await session.saveState();
+    }
+    await using restored = await agent.session({ state });
+    const items = [];
+    for await (const item of restored.items()) items.push(item);
+    expect(
+      items.find((item) => item.type === 'message' && item.role === 'user'),
+    ).toMatchObject({ content: message.content });
+  },
+);
+
+it.each([true, false])(
+  'captures seeded audio source and order with audioOnly=%s',
+  async (audioOnly) => {
+    const message: UserMessage = {
+      role: 'user',
+      content: audioOnly
+        ? [{ type: 'input_audio', audio_url: 'opaque:audio-source' }]
+        : [
+            { type: 'input_text', text: 'before' },
+            { type: 'input_audio', audio_url: 'opaque:audio-source' },
+            { type: 'input_text', text: 'after' },
+          ],
+    };
+    const seen: ModelRequest[] = [];
+    await using provider = new NativeProvider({
+      baseUrl: 'https://example.invalid/v1',
+      modelBackend: {
+        complete(request) {
+          seen.push(request);
+          return {
+            output: [
+              {
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: 'ok' }],
+              },
+            ],
+          };
+        },
+      },
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider,
+      modelSettings: { inputModalities: ['text', 'audio'] },
+    });
+    let state: SessionState;
+    {
+      await using session = await agent.session({ initialMessages: [message] });
+      const seeded = (await session.modelContext()).items.find(
+        (item: any) => item.type === 'message' && item.role === 'user',
+      ) as any;
+      expect(seeded.content).toEqual(message.content);
+      expect(seen).toHaveLength(0);
+      state = await session.saveState();
+    }
+    await using restored = await agent.session({ state });
+    await (await restored.submit('continue')).wait();
+    const seeded = (seen[0].body.input as any[]).find(
+      (item) => item.role === 'user',
+    );
+    expect(seeded.content).toEqual(message.content);
+  },
+);
+
+it.each([
+  { type: 'input_audio' },
+  { type: 'input_audio', audio_url: '' },
+  { type: 'input_audio', audio_url: null },
+  { type: 'input_audio', audio_url: 42 },
+  { type: 'input_audio', audio_url: 'source', file_id: 'other' },
+])('rejects malformed seeded audio before model effects: %j', async (part) => {
+  let calls = 0;
+  await using provider = new NativeProvider({
+    baseUrl: 'https://example.invalid/v1',
+    modelBackend: {
+      complete() {
+        calls++;
+        throw new Error('unexpected model effect');
+      },
+    },
+  });
+  const agent = new Agent({
+    provider,
+    instructions: 'Answer.',
+    modelSettings: { inputModalities: ['text', 'audio'] },
+  });
+  await expect(
+    agent.session({
+      initialMessages: [
+        { role: 'user', content: [part] } as unknown as UserMessage,
+      ],
+    }),
+  ).rejects.toThrow();
+  expect(calls).toBe(0);
+});
