@@ -1,0 +1,114 @@
+diff --git a/codex-rs/thread-store/src/local/mod.rs b/codex-rs/thread-store/src/local/mod.rs
+index fe88afa..7ffba7e 100644
+--- a/codex-rs/thread-store/src/local/mod.rs
++++ b/codex-rs/thread-store/src/local/mod.rs
+@@ -322,6 +322,46 @@ impl LocalThreadStore {
+         .await
+     }
+
++    /// Load model context from the exact local rollout selected for SDK recovery.
++    pub async fn load_model_context_for_rollout(
++        &self,
++        thread_id: ThreadId,
++        rollout_path: &std::path::Path,
++    ) -> ThreadStoreResult<StoredModelContext> {
++        model_context::load_from_rollout_path(self, thread_id, rollout_path).await
++    }
++
++    /// Resolve an authorized cold rollout route to the file used for history.
++    pub async fn resolve_cold_rollout_path(
++        &self,
++        rollout_path: &std::path::Path,
++    ) -> ThreadStoreResult<PathBuf> {
++        let route = self.config.codex_home.join(rollout_path);
++        let missing = |message: &str| ThreadStoreError::InvalidRequest {
++            message: message.to_string(),
++        };
++        let canonicalize = |path: PathBuf| async move {
++            tokio::fs::canonicalize(path)
++                .await
++                .map_err(|err| ThreadStoreError::Internal {
++                    message: err.to_string(),
++                })
++        };
++        let path = codex_rollout::existing_rollout_path(&route)
++            .await
++            .ok_or_else(|| missing("missing recorded rollout"))?;
++        let path = canonicalize(path).await?;
++        // An alias can hide the plain sibling beside its canonical target.
++        let selected = codex_rollout::existing_rollout_path(&path)
++            .await
++            .ok_or_else(|| missing("missing canonical rollout"))?;
++        if selected == path {
++            Ok(path)
++        } else {
++            canonicalize(selected).await
++        }
++    }
++
+     /// Return the live local rollout path for legacy local-only code paths.
+     pub async fn live_rollout_path(&self, thread_id: ThreadId) -> ThreadStoreResult<PathBuf> {
+         live_writer::rollout_path(self, thread_id).await
+diff --git a/codex-rs/thread-store/src/local/read_thread.rs b/codex-rs/thread-store/src/local/read_thread.rs
+index 3401702..e7ba642 100644
+--- a/codex-rs/thread-store/src/local/read_thread.rs
++++ b/codex-rs/thread-store/src/local/read_thread.rs
+@@ -85,7 +85,7 @@ pub(super) async fn read_thread(
+             thread = rollout_thread;
+         }
+         reject_paginated_history(&thread, params.include_history)?;
+-        attach_history_if_requested(&mut thread, params.include_history).await?;
++        attach_history_if_requested(&mut thread, params.include_history, Some(store)).await?;
+         return Ok(thread);
+     }
+
+@@ -113,7 +113,7 @@ pub(super) async fn read_thread(
+         });
+     }
+     reject_paginated_history(&thread, params.include_history)?;
+-    attach_history_if_requested(&mut thread, params.include_history).await?;
++    attach_history_if_requested(&mut thread, params.include_history, Some(store)).await?;
+     Ok(thread)
+ }
+
+@@ -188,7 +188,7 @@ pub(super) async fn read_thread_by_rollout_path(
+         }
+     }
+     reject_paginated_history(&thread, include_history)?;
+-    attach_history_if_requested(&mut thread, include_history).await?;
++    attach_history_if_requested(&mut thread, include_history, /*cold_store*/ None).await?;
+     Ok(thread)
+ }
+
+@@ -243,16 +243,30 @@ pub(super) async fn resolve_requested_rollout_path(
+ async fn attach_history_if_requested(
+     thread: &mut StoredThread,
+     include_history: bool,
++    cold_store: Option<&LocalThreadStore>,
+ ) -> ThreadStoreResult<()> {
+     if !include_history {
+         return Ok(());
+     }
+     let thread_id = thread.thread_id;
+-    let Some(path) = thread.rollout_path.clone() else {
++    let Some(mut path) = thread.rollout_path.clone() else {
+         return Err(ThreadStoreError::Internal {
+             message: format!("failed to load thread history for thread {thread_id}"),
+         });
+     };
++    if let Some(store) = cold_store
++        && store.live_rollout_path(thread_id).await.is_err()
++    {
++        path = store.resolve_cold_rollout_path(&path).await?;
++        if !read_session_meta_line(&path)
++            .await
++            .is_ok_and(|metadata| metadata.meta.id == thread_id)
++        {
++            return Err(ThreadStoreError::InvalidRequest {
++                message: format!("selected rollout does not belong to thread {thread_id}"),
++            });
++        }
++    }
+     let before = super::history_revision::read(&path).await;
+     let items = load_history_items(&path).await?;
+     let after = super::history_revision::read(&path).await;

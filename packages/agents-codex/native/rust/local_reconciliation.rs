@@ -6,10 +6,12 @@ use std::fmt;
 use anyhow::{Context, Result, ensure};
 use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::ThreadId;
+use codex_protocol::items::{CollabAgentTool, CollabAgentToolCallStatus, TurnItem};
 use codex_protocol::models::{
     ContentItemKind, FunctionCallOutputBody, FunctionCallOutputPayload,
     InternalChatMessageMetadataPassthrough, ResponseItem,
 };
+use codex_protocol::protocol::{EventMsg, SubAgentActivityKind};
 use serde::{Deserialize, Serialize};
 
 const APPLIED: &str = "sdk_reconciliation.applied";
@@ -180,7 +182,7 @@ impl Outcome {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct Receipt {
-    thread_id: ThreadId,
+    pub(crate) thread_id: ThreadId,
     turn_id: String,
     call_id: String,
     outcome: Outcome,
@@ -191,7 +193,7 @@ pub(crate) struct Receipt {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UncertainCall {
     thread_id: ThreadId,
-    turn_id: String,
+    pub(crate) turn_id: String,
     call_id: String,
     name: String,
     namespace: Option<String>,
@@ -201,6 +203,7 @@ pub(crate) struct UncertainCall {
 pub(crate) struct RecoveryRequired {
     pub(crate) calls: Vec<UncertainCall>,
     pub(crate) history: Vec<RolloutItem>,
+    pub(crate) descendants: Vec<(ThreadId, Vec<RolloutItem>)>,
 }
 
 impl fmt::Display for RecoveryRequired {
@@ -347,6 +350,66 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
     Ok(calls)
 }
 
+pub(crate) fn completed_spawn_turns(
+    parent: ThreadId,
+    child: ThreadId,
+    history: &[RolloutItem],
+) -> Result<HashSet<String>> {
+    let calls = calls(history)?;
+    let mut turns = HashSet::new();
+    let mut active = None;
+    for row in history {
+        crate::local_storage::observe_turn(&mut active, row);
+        let (turn, call) = match row {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) if event.thread_id == parent => {
+                match &event.item {
+                    TurnItem::SubAgentActivity(item)
+                        if item.kind == SubAgentActivityKind::Started
+                            && item.agent_thread_id == child =>
+                    {
+                        (&event.turn_id, &item.id)
+                    }
+                    TurnItem::CollabAgentToolCall(item)
+                        if item.tool == CollabAgentTool::SpawnAgent
+                            && item.status == CollabAgentToolCallStatus::Completed
+                            && item.sender_thread_id == parent
+                            && item.receiver_thread_ids == [child] =>
+                    {
+                        (&event.turn_id, &item.id)
+                    }
+                    _ => continue,
+                }
+            }
+            // Legacy V2 rollouts persist the completed item's legacy activity
+            // in the emitting turn instead of persisting the canonical item.
+            RolloutItem::EventMsg(EventMsg::SubAgentActivity(event))
+                if event.kind == SubAgentActivityKind::Started
+                    && event.agent_thread_id == child =>
+            {
+                let Some(turn) = active.as_ref() else {
+                    continue;
+                };
+                (turn, &event.event_id)
+            }
+            _ => continue,
+        };
+        if calls.get(&(Some(turn.clone()), call.clone())).is_some_and(|entry|
+            matches!(entry.invocation, ResponseItem::FunctionCall { name, namespace, .. }
+                if name == "spawn_agent" && matches!(namespace.as_deref(), None | Some("collaboration" | "multi_agent_v1")))
+                && matches!(entry.output, Some(ResponseItem::FunctionCallOutput { output, .. })
+                    if output.success != Some(false))
+                && entry.output.is_some_and(|output| tag(output).is_none())
+        ) {
+            turns.insert(turn.clone());
+        }
+    }
+    ensure!(
+        turns.len() <= 1,
+        "descendant has ambiguous completed spawn history"
+    );
+    Ok(turns)
+}
+
 pub(crate) fn validate_settled(history: &[RolloutItem]) -> Result<()> {
     ensure!(
         calls(history)?.values().all(|call| call.output.is_some()),
@@ -443,6 +506,7 @@ pub(crate) fn plan(
                 })
                 .collect::<Result<Vec<_>>>()?,
             history: Vec::new(),
+            descendants: Vec::new(),
         }
         .into());
     }

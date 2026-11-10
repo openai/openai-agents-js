@@ -445,6 +445,67 @@ describe.runIf(enabled)('portable Rust control', () => {
     },
   );
 
+  it('retains unfinished callbacks while older terminal identities leave the window', async () => {
+    const definition = agent();
+    const result = Promise.withResolvers<string>();
+    const execute = vi.fn(() => result.promise);
+    const onError = vi.fn();
+    const frames: { type: string; item?: { type: string } }[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      {
+        ...definition.options,
+        tools: [{ ...definition.options.tools[0], execute }],
+        onError,
+      },
+    );
+    try {
+      await session.start();
+      session.receive({ type: 'response.created', response: { id: 'first' } });
+      session.receive({
+        type: 'response.done',
+        response: { id: 'first', status: 'completed', output: [item] },
+      });
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      for (let index = 0; index < 288; index++) {
+        const id = `newer-${index}`;
+        session.receive({ type: 'response.created', response: { id } });
+        session.receive({
+          type: 'response.done',
+          response: { id, status: 'completed', output: [] },
+        });
+      }
+      result.resolve('Still authorized.');
+      await vi.waitFor(() =>
+        expect(
+          frames.filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(1),
+      );
+      expect(
+        frames.filter((frame) => frame.item?.type === 'function_call_output'),
+      ).toHaveLength(1);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      result.resolve('Cleanup.');
+      await session.close();
+    }
+  });
+
   it('keeps a healthy session beyond the response identity window', () => {
     const native = control();
     const started = native.apply({

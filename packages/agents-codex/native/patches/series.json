@@ -241,6 +241,10 @@
       "sha256": "cda109edea1cb5a669e8be466c49b44259f7e1b0e6c79f0598005a1e4c176ca8"
     },
     {
+      "path": "sdk-local-recovery-rollout-context.patch",
+      "sha256": "3988b69144d3426502a660be2bfe31b6171a98d55cdc7a507702db3f7e558c4c"
+    },
+    {
       "path": "0055-native-history-write-reconciliation.patch",
       "sha256": "b37fa326977162283daf992214bc54bf13c19d6bd00221e77ea4c4c0933528ab"
     },
@@ -493,5 +497,5 @@
       "sha256": "359e73a3b6f3c636bb54932b0818e5d9239fc6cd1cb83e691c34a56d18f9669f"
     }
   ],
-  "result_tree": "b023af72269767c58bdf46429d8402a1239a6963"
+  "result_tree": "ccc82e5d963384a6a9cbceb4a08e8c23698c8937"
 }
