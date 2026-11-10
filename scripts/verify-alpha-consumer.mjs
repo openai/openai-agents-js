@@ -405,7 +405,7 @@ if (receipt.platform === 'linux-arm64') {
             call_id: callId,
             name: 'exec_command',
             arguments: JSON.stringify({
-              cmd: 'if (printf overwritten > ../sentinel) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt',
+              cmd: 'command -v dd >/dev/null || exit 1; if (printf overwritten | dd of=../sentinel conv=nocreat status=none) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt',
               workdir: cwd,
             }),
           },
