@@ -83,6 +83,188 @@ const tool = {
 };
 
 describe.runIf(enabled)('direct client Rust authority', () => {
+  it('isolates nested source history for approval predicates, approval UI, executions and sibling calls', async () => {
+    const observations: any[] = [];
+    function mutate(
+      phase: string,
+      history: readonly Readonly<Record<string, unknown>>[],
+    ) {
+      const source = history.find((item) => item.id === 'source') as any;
+      observations.push({
+        phase,
+        text: source.content[0].text,
+        length: history.length,
+      });
+      source.content[0].text = phase;
+      (history as any[]).push({ id: phase });
+    }
+    const execute = vi.fn((_args, _signal, context) => {
+      mutate('execute', context.history);
+      return 'ok';
+    });
+    const { session, frames } = fixture({
+      model: 'test',
+      instructions: 'Test',
+      tools: [
+        {
+          ...tool,
+          needsApproval: (_args, context) => {
+            mutate('predicate', context.history);
+            return true;
+          },
+          execute,
+        },
+      ],
+      onApproval: (_request, _signal, context) => {
+        mutate('approval', context.history);
+        return true;
+      },
+    });
+    await session.start();
+    session.receive({
+      type: 'conversation.item.created',
+      item: {
+        id: 'source',
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'original' }],
+      },
+    });
+    response(session, 'siblings');
+    session.receive({
+      type: 'response.done',
+      response: {
+        id: 'siblings',
+        status: 'completed',
+        output: ['first', 'second'].map((id) => ({
+          type: 'function_call',
+          id,
+          call_id: id,
+          name: 'lookup',
+          arguments: '{}',
+        })),
+      },
+    });
+    await vi.waitFor(() =>
+      expect(
+        frames.filter((frame) => frame.item?.type === 'function_call_output'),
+      ).toHaveLength(2),
+    );
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(observations).toHaveLength(6);
+    expect(
+      observations.every(
+        (entry) => entry.text === 'original' && entry.length === 3,
+      ),
+    ).toBe(true);
+    expect((session.history[0].content as any[])[0].text).toBe('original');
+    await session.close();
+  });
+
+  it.each([
+    ['audio/pcmu', 'audio/pcmu'],
+    ['audio/pcma', 'audio/pcma'],
+    ['audio/pcm', 'audio/pcmu'],
+    ['audio/pcmu', 'audio/pcm'],
+  ])(
+    'truncates retained %s session audio using accepted %s response format',
+    async (sessionFormat, responseFormat) => {
+      const { session } = fixture({
+        model: 'test',
+        instructions: 'Test',
+        storeAudio: true,
+        settings: { audio: { output: { format: { type: sessionFormat } } } },
+      });
+      await session.start();
+      session.receive({
+        type: 'response.created',
+        response: {
+          id: 'audio',
+          audio: { output: { format: { type: responseFormat } } },
+        },
+      });
+      const bytesPerMillisecond = responseFormat === 'audio/pcm' ? 48 : 8;
+      const bytes = Buffer.from(
+        Uint8Array.from(
+          { length: bytesPerMillisecond * 10 },
+          (_, i) => i % 256,
+        ),
+      );
+      session.receive({
+        type: 'response.output_item.added',
+        response_id: 'audio',
+        item: {
+          id: 'audio-item',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_audio' }],
+        },
+      });
+      session.receive({
+        type: 'response.output_audio.delta',
+        response_id: 'audio',
+        item_id: 'audio-item',
+        content_index: 0,
+        delta: bytes.toString('base64'),
+      });
+      session.receive({
+        type: 'conversation.item.truncated',
+        item_id: 'audio-item',
+        content_index: 0,
+        audio_end_ms: 5,
+      });
+      expect(
+        Buffer.from((session.history[0].content as any[])[0].audio, 'base64'),
+      ).toEqual(bytes.subarray(0, bytesPerMillisecond * 5));
+      await session.close();
+    },
+  );
+
+  it('preserves an active response accepted audio format across live session format updates', async () => {
+    const { session } = fixture({
+      model: 'test',
+      instructions: 'Test',
+      storeAudio: true,
+      settings: { audio: { output: { format: { type: 'audio/pcma' } } } },
+    });
+    await session.start();
+    response(session, 'audio');
+    await session.updateAgent({
+      model: 'test',
+      instructions: 'Updated',
+      settings: {
+        audio: { output: { format: { type: 'audio/pcm', rate: 24000 } } },
+      },
+    });
+    session.receive({
+      type: 'response.output_item.added',
+      response_id: 'audio',
+      item: {
+        id: 'audio-item',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_audio' }],
+      },
+    });
+    session.receive({
+      type: 'response.output_audio.delta',
+      response_id: 'audio',
+      item_id: 'audio-item',
+      content_index: 0,
+      delta: Buffer.alloc(80, 7).toString('base64'),
+    });
+    session.receive({
+      type: 'conversation.item.truncated',
+      item_id: 'audio-item',
+      content_index: 0,
+      audio_end_ms: 5,
+    });
+    expect(
+      Buffer.from((session.history[0].content as any[])[0].audio, 'base64'),
+    ).toEqual(Buffer.alloc(40, 7));
+    await session.close();
+  });
+
   it('resolves instructions and preserves response-owned tools across live updates', async () => {
     const old = vi.fn(() => 'old');
     const replacement = vi.fn(() => 'new');

@@ -168,6 +168,101 @@ const defaultResponseCreate = {
 const generatedResponseMetadata = { codex_response_id: expect.any(String) };
 
 nativeIt(
+  'binds connection policies to an updated voice agent without widening its tools or changing the Session',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    const application = { marker: 'connection-policy-context' };
+    const instructionsSeen: unknown[] = [];
+    const connectionToolsSeen: { agent: unknown; name: string }[] = [];
+    const agentToolsSeen: unknown[] = [];
+    try {
+      await using provider = await providerFor(model);
+      const first = new Agent<typeof application>({
+        name: 'Opening',
+        provider,
+        instructions: 'Opening backend instructions',
+      });
+      const second = new Agent<typeof application>({
+        name: 'Accepted',
+        provider,
+        instructions: 'Accepted backend instructions',
+        tools: ['allowed', 'agent_hidden', 'connection_hidden'].map((name) =>
+          tool({
+            name,
+            parameters: z.object({}).strict(),
+            execute: () => name,
+          }),
+        ),
+        realtime: {
+          instructions: 'Agent voice defaults',
+          toolEnabled: async (run, declaration) => {
+            expect(run.context).toBe(application);
+            agentToolsSeen.push(run.agent);
+            return declaration.name !== 'agent_hidden';
+          },
+        },
+      });
+      await using session = await first.session({ context: application });
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        instructions: async (run) => {
+          expect(run.context).toBe(application);
+          instructionsSeen.push(run.agent);
+          return `Connection voice for ${run.agent.name}`;
+        },
+        isToolEnabled: async (run, declaration) => {
+          expect(run.context).toBe(application);
+          connectionToolsSeen.push({
+            agent: run.agent,
+            name: declaration.name,
+          });
+          return declaration.name !== 'connection_hidden';
+        },
+      });
+      try {
+        const initial = await peer.frame('session.update');
+        expect(initial.session.instructions).toBe(
+          'Connection voice for Opening',
+        );
+        const after = peer.frames.length;
+        await voice.updateAgent(second);
+        const update = await peer.frame('session.update', after);
+        expect(update.session.instructions).toBe(
+          'Connection voice for Accepted',
+        );
+        expect(update.session.tools.map((entry: Frame) => entry.name)).toEqual([
+          'background_agent',
+          'remain_silent',
+          'allowed',
+        ]);
+        expect(instructionsSeen).toHaveLength(2);
+        expect(instructionsSeen[0]).toBe(first);
+        expect(instructionsSeen[1]).toBe(second);
+        expect(agentToolsSeen).toHaveLength(3);
+        for (const agent of agentToolsSeen) expect(agent).toBe(second);
+        expect(
+          connectionToolsSeen
+            .filter(({ agent }) => agent === second)
+            .map(({ name }) => name)
+            .sort(),
+        ).toEqual(['agent_hidden', 'allowed', 'connection_hidden']);
+        await expect(voice.getActiveAgent()).resolves.toBe(second);
+        await expect(session.getActiveAgent()).resolves.toBe(first);
+        expect(first.instructions).toBe('Opening backend instructions');
+      } finally {
+        await voice.close();
+      }
+      await expect(session.getActiveAgent()).resolves.toBe(first);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
   'switches a live voice agent while preserving the opening Session agent',
   async () => {
     const model = new ModelServer([]);

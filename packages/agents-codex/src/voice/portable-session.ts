@@ -167,6 +167,8 @@ export class PortableVoiceSession {
   readonly #detachedProfiles = new Map<string, Profile>();
   readonly #reportedResponses = new Set<string>();
   #usageTotals?: ReturnType<typeof reportedRealtimeUsage>;
+  #outputAudioBytesPerMillisecond = 48;
+  readonly #responseAudioBytesPerMillisecond = new Map<string, number>();
   readonly #responseHistories = new Map<
     string,
     readonly Readonly<Record<string, unknown>>[]
@@ -312,6 +314,7 @@ export class PortableVoiceSession {
     this.#detachedProfiles.clear();
     this.#reportedResponses.clear();
     this.#responseHistories.clear();
+    this.#responseAudioBytesPerMillisecond.clear();
     this.#observers.close();
     try {
       this.control.apply({ type: 'close' });
@@ -494,7 +497,10 @@ export class PortableVoiceSession {
           additionalProperties: false,
         },
         execute: async (arguments_, signal, context) => {
-          await handoff.onHandoff?.(arguments_, signal, context);
+          await handoff.onHandoff?.(arguments_, signal, {
+            ...context,
+            history: detachVoiceObservation(context.history),
+          });
           if (signal.aborted) throw new Error('Voice handoff was cancelled.');
           const target =
             typeof handoff.agent === 'function'
@@ -577,13 +583,14 @@ export class PortableVoiceSession {
 
   #context(
     profile: Profile,
-    history = this.history,
+    history?: PortableVoiceContext['history'],
     signal = this.#abort.signal,
   ): PortableVoiceContext {
     return {
       agent: profile.options,
       context: profile.options.context,
-      history,
+      history:
+        history === undefined ? this.history : detachVoiceObservation(history),
       signal,
     };
   }
@@ -692,12 +699,28 @@ export class PortableVoiceSession {
   #observe(value: unknown): void {
     const event = value as Record<string, any>;
     const responseId = event.response_id ?? event.response?.id;
+    if (event.type === 'session.updated')
+      this.#outputAudioBytesPerMillisecond = outputAudioBytesPerMillisecond(
+        event.session,
+        this.#outputAudioBytesPerMillisecond,
+      );
     if (
       typeof responseId === 'string' &&
       !this.#responses.has(responseId) &&
       !this.#detachedProfiles.has(responseId)
     )
       return;
+    if (
+      event.type === 'response.created' &&
+      !this.#responseAudioBytesPerMillisecond.has(responseId)
+    )
+      this.#responseAudioBytesPerMillisecond.set(
+        responseId,
+        outputAudioBytesPerMillisecond(
+          event.response,
+          this.#outputAudioBytesPerMillisecond,
+        ),
+      );
     if (
       event.type === 'response.done' &&
       typeof responseId === 'string' &&
@@ -727,6 +750,8 @@ export class PortableVoiceSession {
         event.item_id,
         event.content_index ?? 0,
         decodeBase64(event.delta),
+        this.#responseAudioBytesPerMillisecond.get(responseId) ??
+          this.#outputAudioBytesPerMillisecond,
       );
     }
     const outputKind = event.type?.startsWith(
@@ -789,6 +814,7 @@ export class PortableVoiceSession {
           target.delete(oldest);
           this.#responseHistories.delete(oldest);
           this.#reportedResponses.delete(oldest);
+          this.#responseAudioBytesPerMillisecond.delete(oldest);
           if (effect.out_of_band) this.#detachedResponses.delete(oldest);
         }
         target.set(effect.response_id, profile);
@@ -939,7 +965,7 @@ export class PortableVoiceSession {
                     arguments: detachVoiceObservation(arguments_),
                   },
                   call.abort.signal,
-                  context,
+                  this.#toolContext(effect.call_id),
                 ));
               if (!this.#closed && !call.abort.signal.aborted)
                 this.#dispatch({
@@ -992,5 +1018,22 @@ export class PortableVoiceSession {
         if (!signal?.aborted) this.fail(error);
       })
       .finally(() => this.#tasks.delete(task));
+  }
+}
+
+/** Realtime output is mono: 24kHz PCM16 or 8kHz G.711. */
+function outputAudioBytesPerMillisecond(value: any, fallback: number): number {
+  const format = value?.audio?.output?.format ?? value?.output_audio_format;
+  switch (typeof format === 'string' ? format : format?.type) {
+    case 'audio/pcmu':
+    case 'audio/pcma':
+    case 'g711_ulaw':
+    case 'g711_alaw':
+      return 8;
+    case 'audio/pcm':
+    case 'pcm16':
+      return 48;
+    default:
+      return fallback;
   }
 }

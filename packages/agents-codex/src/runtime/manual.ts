@@ -105,6 +105,7 @@ export interface ApprovedArguments {
 }
 
 export interface ApprovalDecision {
+  useDefaultReason?: boolean;
   approve: boolean;
   always: boolean;
   reason: string;
@@ -292,18 +293,26 @@ export function createManualRequest<Input, Result>(
   let cachedRequest: ManualToolRequest<Input, Result> | undefined;
   const approvalReply = (
     approve: boolean,
-    reason: string,
+    reason: string | undefined,
     always: boolean,
   ): ManualToolReply => {
     checkCurrent();
-    if (typeof reason !== 'string' || typeof always !== 'boolean')
+    if (
+      (reason !== undefined && typeof reason !== 'string') ||
+      typeof always !== 'boolean'
+    )
       throw new TypeError(
         'Approval reason must be a string and always a boolean',
       );
     const reply = Object.freeze({}) as ManualToolReply;
     replies.set(reply, {
       identity: replyIdentity,
-      approval: { approve, reason, always },
+      approval: {
+        approve,
+        reason: reason ?? 'Tool execution was rejected',
+        always,
+        useDefaultReason: reason === undefined,
+      },
     });
     return reply;
   };
@@ -352,10 +361,8 @@ export function createManualRequest<Input, Result>(
                   'Tool execution was rejected',
                   options.always ?? false,
                 ),
-              reject: (
-                reason = 'Tool execution was rejected',
-                options: { always?: boolean } = {},
-              ) => approvalReply(false, reason, options.always ?? false),
+              reject: (reason?: string, options: { always?: boolean } = {}) =>
+                approvalReply(false, reason, options.always ?? false),
             }
           : {}),
         sessionId: identity.sessionId,

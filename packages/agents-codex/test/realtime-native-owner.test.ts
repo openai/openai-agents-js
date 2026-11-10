@@ -785,6 +785,7 @@ it('admits one exact response batch for parallel functions and reports only auth
     'response',
     ['one', 'two'],
     expect.any(AbortSignal),
+    expect.any(Function),
   );
   expect(peer.session.submit).not.toHaveBeenCalled();
   expect((await events.next()).value).toMatchObject({
@@ -1102,7 +1103,7 @@ it('inherits native tools atomically by default and preserves an explicit empty 
   await selected.owner._start();
   expect(
     selected.session._realtimeFunctionTools,
-  ).toHaveBeenCalledExactlyOnceWith([]);
+  ).toHaveBeenCalledExactlyOnceWith([], { snapshot: undefined });
   expect(selected.call.mock.calls[0][1].function_tools).toEqual([]);
   await selected.owner.close();
 });
@@ -1380,7 +1381,9 @@ it('keeps the reader moving during a bound ACK and joins its rejection on close'
       ),
     ).toBe(true),
   );
-  peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } });
+  expect(
+    peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } }),
+  ).toBe(true);
   let closed = false;
   const closing = peer.owner.close().then(() => {
     closed = true;
@@ -2080,7 +2083,9 @@ it.each([false, true])(
     const peer = fixture({ tools });
     await peer.owner._start();
     expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
-    expect(peer.session._realtimeFunctionTools).toHaveBeenCalledWith(tools);
+    expect(peer.session._realtimeFunctionTools).toHaveBeenCalledWith(tools, {
+      snapshot: undefined,
+    });
     expect(peer.call.mock.calls[0][0]).toBe(
       'realtime_conversation_prepare_sdk',
     );

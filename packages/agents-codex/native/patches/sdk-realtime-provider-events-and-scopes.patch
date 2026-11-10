@@ -132,7 +132,7 @@ index 8e674c19cde5ce4bde6298bdcd527811c5f1981a..6a26811e8acf24f13acf044425fa9411
  }
  
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
-index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e2842a757982 100644
+index c45d7b5e23b9ab27db257eb718f6a484f894429c..185d140d4413c2d135a7d033b6beaf37b3f8f639 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
 +++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
 @@ -33,6 +33,7 @@ use codex_http_client::NetworkPolicyDenied;
@@ -469,7 +469,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
                          debug!(?event, "realtime websocket parsed event");
                          return Ok(Some((event, configuration)));
                      }
-@@ -1606,6 +1727,9 @@ impl RealtimeWebsocketEvents {
+@@ -1607,6 +1728,9 @@ impl RealtimeWebsocketEvents {
              | RealtimeEvent::FunctionBatchFinished { .. }
              | RealtimeEvent::ConversationItemAdded { .. }
              | RealtimeEvent::ConversationItemRetrieved(_)
@@ -479,7 +479,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
              | RealtimeEvent::Error(_)
              | RealtimeEvent::HistoryItemStarted(_)
              | RealtimeEvent::HistoryTranscriptDelta { .. }
-@@ -2520,12 +2644,203 @@ mod tests {
+@@ -2521,12 +2645,203 @@ mod tests {
          );
      }
  
@@ -683,7 +683,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: RealtimeTranscriptState::default(),
              event_parser: RealtimeEventParser::V1,
-@@ -2595,6 +2910,7 @@ mod tests {
+@@ -2596,6 +2911,7 @@ mod tests {
          let first_events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message: first_rx,
@@ -691,7 +691,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: transcript_state.clone(),
              event_parser: RealtimeEventParser::FramelessBidi,
-@@ -2616,6 +2932,7 @@ mod tests {
+@@ -2617,6 +2933,7 @@ mod tests {
          let second_events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message: second_rx,
@@ -699,7 +699,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state,
              event_parser: RealtimeEventParser::FramelessBidi,
-@@ -2649,6 +2966,7 @@ mod tests {
+@@ -2650,6 +2967,7 @@ mod tests {
          let events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message,
@@ -707,7 +707,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: RealtimeTranscriptState::default(),
              event_parser: RealtimeEventParser::FramelessBidi,
-@@ -2699,6 +3017,7 @@ mod tests {
+@@ -2700,6 +3018,7 @@ mod tests {
          let events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(false)),
              rx_message,
@@ -715,7 +715,7 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: RealtimeTranscriptState::default(),
              event_parser,
-@@ -4662,6 +4981,7 @@ mod tests {
+@@ -4663,6 +4982,7 @@ mod tests {
          let events = RealtimeWebsocketEvents {
              ingress_overflow: Arc::new(AtomicBool::new(true)),
              rx_message,
@@ -723,881 +723,6 @@ index ec0a07ce3b33afd6f2edee62cf420ca4ea2dd0db..211a3d8fd2a1346d2d9569a482d3e284
              pending_events: Arc::new(Mutex::new(VecDeque::new())),
              transcript_state: RealtimeTranscriptState::default(),
              event_parser: RealtimeEventParser::RealtimeV2,
-diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
-index 63be224e7b356e2301fbe3f74a0cbe8d9be8c8ac..9adc157c05fee080dd7b71ae795423a6dedc0908 100644
---- a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
-+++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
-@@ -20,7 +20,9 @@ pub(super) fn response_create_json(options: &RealtimeResponseOptions) -> serde_j
-     let mut response = Map::new();
-     put(&mut response, "conversation", &options.conversation)?;
-     put(&mut response, "input", &options.input)?;
--    put(&mut response, "tools", &options.tools)?;
-+    if let Some(tools) = &options.tools {
-+        response.insert("tools".into(), response_tools_json(tools)?);
-+    }
-     put(&mut response, "tool_choice", &options.tool_choice)?;
-     if options.conversation
-         == Some(codex_protocol::realtime_settings::RealtimeResponseConversation::None)
-@@ -162,18 +164,69 @@ pub(super) fn validate_tool_choice_in_tools(
-     };
-     let name = choice.get("name").and_then(Value::as_str);
-     let admitted = tools.and_then(Value::as_array).is_some_and(|tools| {
--        tools.iter().any(|tool| {
--            tool.get("type").and_then(Value::as_str) == Some("function")
--                && tool.get("name").and_then(Value::as_str) == name
--                && name.is_some()
-+        tools.iter().any(|tool| match choice["type"].as_str() {
-+            Some("function") => {
-+                tool["type"] == "function"
-+                    && tool.get("name").and_then(Value::as_str) == name
-+                    && name.is_some()
-+            }
-+            Some("mcp") => {
-+                tool["type"] == "mcp"
-+                    && choice["server_label"]
-+                        .as_str()
-+                        .is_some_and(|label| !label.is_empty())
-+                    && tool["server_label"] == choice["server_label"]
-+                    && name.is_none_or(|name| !name.is_empty() && hosted_tool_allowed(tool, name))
-+            }
-+            _ => false,
-         })
-     });
-     if !admitted {
-+        let message = if choice["type"] == "function" {
-+            "Realtime tool choice is outside the advertised function subset"
-+        } else {
-+            "Realtime tool choice is outside the advertised hosted MCP subset"
-+        };
-+        return Err(serde::ser::Error::custom(message));
-+    }
-+    Ok(())
-+}
-+
-+pub(super) fn hosted_tool_allowed(tool: &Value, name: &str) -> bool {
-+    let allowed = &tool["allowed_tools"];
-+    allowed
-+        .as_array()
-+        .or_else(|| allowed["tool_names"].as_array())
-+        .is_none_or(|names| names.iter().any(|allowed| allowed.as_str() == Some(name)))
-+}
-+
-+pub(super) fn response_tools_json(tools: &[RealtimeResponseTool]) -> serde_json::Result<Value> {
-+    let mut names = std::collections::HashSet::new();
-+    let mut hosted = Vec::new();
-+    for tool in tools {
-+        match tool {
-+            RealtimeResponseTool::Function(tool) => {
-+                if tool.name.is_empty()
-+                    || tool.name.len() > 128
-+                    || !tool.parameters.is_object()
-+                    || !names.insert(tool.name.as_str())
-+                {
-+                    return Err(serde::ser::Error::custom(
-+                        "Invalid Realtime response function declaration",
-+                    ));
-+                }
-+            }
-+            RealtimeResponseTool::Mcp(tool) => hosted.push(tool.clone()),
-+        }
-+    }
-+    tools_json_with_reserved(&[], &hosted, false)?;
-+    let value = serde_json::to_value(tools)?;
-+    if tools.len() > 128 || serde_json::to_vec(&value)?.len() > 1024 * 1024 {
-         return Err(serde::ser::Error::custom(
--            "Realtime tool choice is outside the advertised function subset",
-+            "Realtime response tool declarations exceed capacity",
-         ));
-     }
--    Ok(())
-+    Ok(value)
- }
- 
- fn function_tools_json(
-diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs
-index 63097f0928047002270aba93712bb93707da57f4..cfa82d5ea8303e360d278bfe14d6fe52666e57ae 100644
---- a/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs
-+++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs
-@@ -10,6 +10,7 @@ fn events(transcript_state: RealtimeTranscriptState) -> RealtimeWebsocketEvents
-         ingress_overflow: Arc::new(AtomicBool::new(false)),
-         rx_message,
-         pending_events: Arc::new(Mutex::new(VecDeque::new())),
-+        pending_frame: Arc::default(),
-         transcript_state,
-         event_parser: RealtimeEventParser::FramelessBidi,
-         is_closed: Arc::new(AtomicBool::new(false)),
-diff --git a/codex-rs/core/src/realtime_conversation/item_deletion.rs b/codex-rs/core/src/realtime_conversation/item_deletion.rs
-index 298f20f0188d91375ee2c5dd21afcfac5e292c69..afee936b7813e15c5db9fa06fe31498c5b1462df 100644
---- a/codex-rs/core/src/realtime_conversation/item_deletion.rs
-+++ b/codex-rs/core/src/realtime_conversation/item_deletion.rs
-@@ -33,6 +33,8 @@ struct Item {
-     approval_request_id: Option<String>,
-     done: bool,
-     effect_done: bool,
-+    // A matched retrieval has established provider-only ownership, not native completion.
-+    retrieved_external: bool,
- }
- #[derive(Debug)]
- struct DeletedItem {
-@@ -88,6 +90,7 @@ impl State {
-                     && old.approval_request_id == item.approval_request_id,
-                 "Provider conversation item identity changed"
-             );
-+            old.retrieved_external &= item.retrieved_external;
-             old.done |= item.done;
-             old.effect_done |= item.effect_done;
-         } else {
-@@ -150,6 +153,7 @@ impl State {
-                         call_id: bounded("call_id")?,
-                         approval_request_id: bounded("approval_request_id")?,
-                         done: value["status"].as_str() == Some("completed"),
-+                        retrieved_external: false,
-                         effect_done: kind == "mcp_approval_response"
-                             && value["status"].as_str() == Some("completed"),
-                     },
-@@ -194,6 +198,7 @@ impl State {
-                         call_id: Some(call.call_id.clone()),
-                         approval_request_id: None,
-                         done: true,
-+                        retrieved_external: false,
-                         effect_done: false,
-                     },
-                 )?;
-@@ -210,6 +215,7 @@ impl State {
-                         call_id: Some(call.handoff_id.clone()),
-                         approval_request_id: None,
-                         done: true,
-+                        retrieved_external: false,
-                         effect_done: false,
-                     },
-                 )?;
-@@ -232,6 +238,7 @@ impl State {
-                         call_id: Some(call.call_id.clone()),
-                         approval_request_id: None,
-                         done: true,
-+                        retrieved_external: false,
-                         effect_done: true,
-                     },
-                 )?;
-@@ -302,43 +309,82 @@ impl State {
-         }
-         Ok(true)
-     }
--    pub(super) fn admit_retrieved_message(&mut self, value: &serde_json::Value) -> CodexResult<()> {
--        let id = value["id"].as_str().ok_or_else(|| {
--            CodexErr::InvalidRequest("Provider deletion lookup returned no item ID".into())
--        })?;
--        if !Self::valid_id(id)
-+    pub(super) fn admit_retrieved_item(&mut self, value: &serde_json::Value) -> CodexResult<()> {
-+        let invalid = || {
-+            CodexErr::InvalidRequest(
-+                "Provider deletion lookup has an unsupported or locally owned identity".into(),
-+            )
-+        };
-+        let id = value["id"].as_str().ok_or_else(invalid)?;
-+        let kind = value["type"].as_str().ok_or_else(invalid)?;
-+        let identity = |field: &str| -> CodexResult<Option<String>> {
-+            match value.get(field).filter(|value| !value.is_null()) {
-+                None => Ok(None),
-+                Some(value) => value
-+                    .as_str()
-+                    .filter(|id| Self::valid_id(id))
-+                    .map(|id| Some(id.to_owned()))
-+                    .ok_or_else(invalid),
-+            }
-+        };
-+        let call_id = identity("call_id")?;
-+        let approval_request_id = identity("approval_request_id")?;
-+        let supported = match kind {
-+            "message" => {
-+                value["status"] == "completed"
-+                    && matches!(
-+                        value["role"].as_str(),
-+                        Some("user" | "assistant" | "system")
-+                    )
-+                    && call_id.is_none()
-+                    && approval_request_id.is_none()
-+            }
-+            "function_call" | "function_call_output" => {
-+                call_id.is_some() && approval_request_id.is_none()
-+            }
-+            "mcp_call" | "mcp_tool_call" | "mcp_list_tools" | "mcp_approval_request" => true,
-+            "mcp_approval_response" => approval_request_id.is_some(),
-+            _ => false,
-+        };
-+        if !supported
-+            || !Self::valid_id(id)
-             || id == "root"
-             || !self.can_retrieve(id)
--            || value.get("call_id").is_some_and(|value| !value.is_null())
--            || value
--                .get("approval_request_id")
--                .is_some_and(|value| !value.is_null())
--            || value["type"] != "message"
--            || value["status"] != "completed"
--            || !matches!(
--                value["role"].as_str(),
--                Some("user" | "assistant" | "system")
--            )
-+            || self.items.contains_key(id)
-+            || self.items.iter().any(|(known_id, known)| {
-+                !known.retrieved_external
-+                    && !known.effect_done
-+                    && (call_id
-+                        .as_ref()
-+                        .is_some_and(|call| known.call_id.as_ref() == Some(call))
-+                        || approval_request_id.as_ref() == Some(known_id)
-+                        || known.approval_request_id.as_deref() == Some(id))
-+            })
-         {
--            return Err(CodexErr::InvalidRequest(
--                "Unobserved provider deletion requires a completed message; tool and approval dependencies require native receipts".into(),
--            ));
-+            return Err(invalid());
-         }
-         self.upsert(
-             id,
-             Item {
--                kind: "message".into(),
-+                kind: kind.to_owned(),
-                 present: true,
--                role: value["role"].as_str().map(str::to_owned),
--                call_id: None,
--                approval_request_id: None,
--                done: true,
-+                role: (kind == "message").then(|| value["role"].as_str().unwrap().to_owned()),
-+                call_id,
-+                approval_request_id,
-+                done: value["status"] == "completed",
-                 effect_done: false,
-+                retrieved_external: true,
-             },
-         )
-         .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
-         self.validate(id)
-     }
-+    pub(super) fn external_identity(&self, id: &str) -> Option<(Option<String>, Option<String>)> {
-+        self.items
-+            .get(id)
-+            .filter(|item| item.retrieved_external)
-+            .map(|item| (item.call_id.clone(), item.approval_request_id.clone()))
-+    }
-     pub(super) fn validate(&self, id: &str) -> CodexResult<()> {
-         let item = self
-             .items
-@@ -363,11 +409,12 @@ impl State {
-             }),
-             _ => false,
-         };
--        let live_dependency = self
--            .items
--            .values()
--            .any(|other| other.approval_request_id.as_deref() == Some(id) && !other.effect_done);
--        if !supported || live_dependency {
-+        let live_dependency = self.items.values().any(|other| {
-+            other.approval_request_id.as_deref() == Some(id)
-+                && !other.retrieved_external
-+                && !other.effect_done
-+        });
-+        if (!supported && !item.retrieved_external) || live_dependency {
-             return Err(CodexErr::InvalidRequest(
-                 "Provider item has unresolved work or an unsupported kind".into(),
-             ));
-@@ -484,6 +531,165 @@ mod tests {
-         let (tx, rx) = tokio::sync::oneshot::channel();
-         (DeleteReply::new(tx), rx)
-     }
-+    #[tokio::test]
-+    async fn retrieved_external_tool_records_wait_for_exact_ack_and_audit() {
-+        for value in [
-+            serde_json::json!({"id":"historical","type":"function_call","call_id":"old-call","status":"completed"}),
-+            serde_json::json!({"id":"historical","type":"function_call_output","call_id":"old-call"}),
-+            serde_json::json!({"id":"historical","type":"mcp_call"}),
-+            serde_json::json!({"id":"historical","type":"mcp_tool_call"}),
-+            serde_json::json!({"id":"historical","type":"mcp_list_tools"}),
-+            serde_json::json!({"id":"historical","type":"mcp_approval_request"}),
-+            serde_json::json!({"id":"historical","type":"mcp_approval_response","approval_request_id":"old-approval"}),
-+        ] {
-+            let mut state = State::default();
-+            state.admit_retrieved_item(&value).unwrap();
-+            assert!(!state.items["historical"].effect_done);
-+            let (reply, mut receipt) = reply();
-+            assert!(state.begin("historical".into(), reply));
-+            assert!(!state.acknowledge("different"));
-+            assert!(state.acknowledge("historical"));
-+            assert!(receipt.try_recv().is_err());
-+            state.finish("historical", Ok(()));
-+            assert!(receipt.await.unwrap().is_ok());
-+            assert!(state.is_deleted("historical"));
-+            assert!(state.needs_lookup("historical").is_err());
-+            assert!(!state.can_recreate_message("historical"));
-+        }
-+    }
-+
-+    #[tokio::test]
-+    async fn external_delete_retries_recheck_native_call_ownership() {
-+        let sdk = SdkRealtimeState::new("voice".into());
-+        let item = serde_json::json!({"id":"historical","type":"function_call_output","call_id":"old-call"});
-+        sdk.item_deletion
-+            .lock()
-+            .unwrap()
-+            .admit_retrieved_item(&item)
-+            .unwrap();
-+        assert!(
-+            validate_external_item_deletion(&sdk, "historical")
-+                .await
-+                .is_ok()
-+        );
-+        let (reply, receipt) = reply();
-+        assert!(
-+            sdk.item_deletion
-+                .lock()
-+                .unwrap()
-+                .begin("historical".into(), reply)
-+        );
-+        sdk.item_deletion.lock().unwrap().finish(
-+            "historical",
-+            Err(CodexErr::InvalidRequest("provider denied deletion".into())),
-+        );
-+        assert!(receipt.await.unwrap().is_err());
-+        assert!(
-+            !sdk.item_deletion
-+                .lock()
-+                .unwrap()
-+                .needs_lookup("historical")
-+                .unwrap()
-+        );
-+        sdk.seen.lock().await.insert(
-+            "old-call".into(),
-+            SdkSeenCall {
-+                output_published: false,
-+                response_id: None,
-+                accepted_configuration: None,
-+                function_fingerprint: None,
-+            },
-+        );
-+        assert!(
-+            validate_external_item_deletion(&sdk, "historical")
-+                .await
-+                .is_err()
-+        );
-+        assert!(!sdk.item_deletion.lock().unwrap().is_deleted("historical"));
-+    }
-+
-+    #[tokio::test]
-+    async fn external_output_cannot_alias_an_unsettled_caller_owned_call() {
-+        let sdk = SdkRealtimeState::new("voice".into());
-+        sdk.item_deletion
-+            .lock()
-+            .unwrap()
-+            .admit_retrieved_item(&serde_json::json!({
-+                "id":"historical-output", "type":"function_call_output", "call_id":"caller-call"
-+            }))
-+            .unwrap();
-+        let mut history = sdk.history.lock().unwrap();
-+        history
-+            .observe_added(
-+                &serde_json::json!({
-+                    "id":"live-call-item", "type":"function_call", "call_id":"caller-call",
-+                    "name":"client_tool", "arguments":"{}"
-+                }),
-+                Some(None),
-+            )
-+            .unwrap();
-+        history
-+            .observe_caller_call(
-+                &codex_protocol::protocol::RealtimeFunctionCallRequested {
-+                    namespace: None,
-+                    call_id: "caller-call".into(),
-+                    item_id: "live-call-item".into(),
-+                    name: "client_tool".into(),
-+                    arguments: "{}".into(),
-+                    response_id: Some("response".into()),
-+                },
-+                false,
-+            )
-+            .unwrap();
-+        drop(history);
-+        assert!(
-+            validate_external_item_deletion(&sdk, "historical-output")
-+                .await
-+                .is_err()
-+        );
-+        assert!(
-+            !sdk.item_deletion
-+                .lock()
-+                .unwrap()
-+                .is_deleted("historical-output")
-+        );
-+        sdk.history
-+            .lock()
-+            .unwrap()
-+            .retire_caller_calls(Some("response"));
-+        assert!(
-+            validate_external_item_deletion(&sdk, "historical-output")
-+                .await
-+                .is_ok()
-+        );
-+    }
-+
-+    #[test]
-+    fn ordinary_call_observation_revokes_external_provenance() {
-+        let mut state = State::default();
-+        state
-+            .admit_retrieved_item(
-+                &serde_json::json!({"id":"call-item","type":"function_call","call_id":"call"}),
-+            )
-+            .unwrap();
-+        state
-+            .observe(&RealtimeEvent::FunctionCallRequested(
-+                codex_protocol::protocol::RealtimeFunctionCallRequested {
-+                    namespace: None,
-+                    call_id: "call".into(),
-+                    item_id: "call-item".into(),
-+                    name: "search".into(),
-+                    arguments: "{}".into(),
-+                    response_id: Some("response".into()),
-+                },
-+            ))
-+            .unwrap();
-+        assert!(state.external_identity("call-item").is_none());
-+        assert!(state.validate("call-item").is_err());
-+        assert!(state.admit_retrieved_item(&serde_json::json!({"id":"output","type":"function_call_output","call_id":"call"})).is_err());
-+        assert!(!state.items.contains_key("output"));
-+    }
-+
-     #[tokio::test]
-     async fn delete_requires_exact_ack_and_persistence_completion() {
-         let mut state = State::default();
-diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
-index f913a279625b0b78e4eee388c7a80421a11ae92c..e8661f89f8b871f4aa27ac25534c1c73b026d38b 100644
---- a/codex-rs/core/src/realtime_conversation/provider_history.rs
-+++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
-@@ -916,6 +916,19 @@ impl State {
-         })
-     }
- 
-+    pub(super) fn has_live_caller_item(&self, id: &str, call_id: Option<&str>) -> bool {
-+        self.replayed_calls.iter().any(|(known_call, call)| {
-+            call.confirmed
-+                && call
-+                    .caller
-+                    .as_ref()
-+                    .is_some_and(|caller| !caller.output_confirmed)
-+                && (call.item_id == id
-+                    || call.output_id.as_deref() == Some(id)
-+                    || call_id == Some(known_call.as_str()))
-+        })
-+    }
-+
-     pub(super) fn is_live_caller_output(&self, item: &Value) -> bool {
-         item["type"] == "function_call_output"
-             && replay_item(item).is_ok()
-@@ -955,6 +968,16 @@ impl State {
-         }
-     }
- 
-+    pub(super) fn is_pending_replayed_call_receipt(&self, item: &Value) -> bool {
-+        item["type"] == "function_call"
-+            && item["id"]
-+                .as_str()
-+                .zip(item["call_id"].as_str())
-+                .is_some_and(|(id, call_id)| {
-+                    self.expected_create(id) && self.is_replayed_call(call_id, id)
-+                })
-+    }
-+
-     pub(super) fn is_replayed_call(&self, call_id: &str, item_id: &str) -> bool {
-         self.replayed_calls
-             .get(call_id)
-@@ -1127,9 +1150,9 @@ impl State {
-             && item["id"].as_str() == Some(id.as_str())
-         {
-             self.verify_retrieved_caller_item(id, item)?;
--            // Retrieval confirms identity only. It cannot establish an item's
--            // position or completion of tool/approval effects.
--            deletion.admit_retrieved_message(item)?;
-+            // Retrieval confirms provider identity only, not order or native effect
-+            // completion. The write boundary also checks current SDK owners.
-+            deletion.admit_retrieved_item(item)?;
-         }
-         Ok(())
-     }
-@@ -1498,6 +1521,40 @@ mod tests {
-         assert!(history.order.is_empty());
-     }
- 
-+    #[tokio::test]
-+    async fn historical_function_delete_uses_lookup_without_replaying_or_adopting_history() {
-+        let mut history = State::default();
-+        let mut deletion = item_deletion::State::default();
-+        let (reply, receipt) = tokio::sync::oneshot::channel();
-+        assert!(matches!(
-+            history
-+                .start(Request::Delete {
-+                    id: "old-output".into(),
-+                    event_id: None,
-+                    reply: item_deletion::DeleteReply::new(reply),
-+                })
-+                .unwrap(),
-+            Some(Action::Retrieve { .. })
-+        ));
-+        let item = json!({"id":"old-output","type":"function_call_output","call_id":"old-call","output":"saved reply"});
-+        history
-+            .prepare_retrieved_delete(&item, &mut deletion)
-+            .unwrap();
-+        assert!(
-+            matches!(history.retrieved(item).unwrap(), Some(Action::Delete(id)) if id == "old-output")
-+        );
-+        assert!(history.order.is_empty());
-+        assert!(history.replayed_calls.is_empty());
-+        let (reply, _internal) = tokio::sync::oneshot::channel();
-+        assert!(deletion.begin("old-output".into(), item_deletion::DeleteReply::new(reply)));
-+        assert!(deletion.acknowledge("old-output"));
-+        deletion.finish("old-output", Ok(()));
-+        assert!(history.deleted("old-output").unwrap());
-+        assert!(history.advance().unwrap().is_none());
-+        assert!(receipt.await.unwrap().is_ok());
-+        assert!(deletion.is_deleted("old-output"));
-+    }
-+
-     #[tokio::test]
-     async fn unobserved_delete_persistence_failure_releases_the_history_request() {
-         let sdk = SdkRealtimeState::new("voice".into());
-@@ -1548,17 +1605,17 @@ mod tests {
-     }
- 
-     #[tokio::test]
--    async fn unobserved_delete_rejects_unresolved_or_tool_identity() {
-+    async fn unobserved_delete_rejects_unresolved_messages_or_invalid_identity() {
-         for item in [
-+            json!({"id":"hidden","type":"function_call"}),
-+            json!({"id":"hidden","type":"function_call_output","call_id":false}),
-+            json!({"id":"hidden","type":"mcp_approval_response"}),
-+            json!({"id":"hidden","type":"mcp_approval_request","approval_request_id":42}),
-+            json!({"id":"hidden","type":"unknown"}),
-             json!({"id":"hidden","type":"message","role":"user","status":"in_progress"}),
-             json!({"id":"hidden","type":"message","role":"user"}),
-             json!({"id":"hidden","type":"message","role":"user","status":"completed","call_id":"call"}),
-             json!({"id":"hidden","type":"message","role":"user","status":"completed","approval_request_id":"approval"}),
--            json!({"id":"hidden","type":"function_call","call_id":"call","status":"completed"}),
--            json!({"id":"hidden","type":"function_call_output","call_id":"call","status":"completed"}),
--            json!({"id":"hidden","type":"mcp_call","status":"completed"}),
--            json!({"id":"hidden","type":"mcp_approval_request","status":"completed"}),
--            json!({"id":"hidden","type":"mcp_approval_response","approval_request_id":"approval","status":"completed"}),
-         ] {
-             let mut history = State::default();
-             let mut deletion = item_deletion::State::default();
-@@ -2588,3 +2645,79 @@ mod tests {
-         assert!(!valid_id("root"));
-     }
- }
-+
-+#[cfg(test)]
-+mod detached_replay_receipt_tests {
-+    use super::*;
-+    use codex_api::RealtimeEvent;
-+    use serde_json::json;
-+
-+    #[test]
-+    fn only_exact_pending_historical_receipts_cross_the_detached_envelope() {
-+        let mut history = State::default();
-+        let (reply, _receipt) = tokio::sync::oneshot::channel();
-+        let call = json!({"type":"function_call","id":"past-item","call_id":"past-call","name":"lookup","arguments":"{}"});
-+        let Some(Action::Create { item, .. }) = history
-+            .start(Request::Create {
-+                item: call,
-+                previous: None,
-+                event_id: None,
-+                reply,
-+            })
-+            .unwrap()
-+        else {
-+            panic!("missing replay create");
-+        };
-+        let frame = |item| {
-+            RealtimeEvent::DetachedResponse(Box::new(RealtimeEvent::ConversationItemAdded {
-+                item,
-+                previous_item_id: None,
-+            }))
-+        };
-+        let normalize = |event, detached| {
-+            super::super::normalize_historical_replay_receipt(event, &history, detached)
-+        };
-+        assert!(matches!(
-+            normalize(frame(item.clone()), false),
-+            RealtimeEvent::ConversationItemAdded { .. }
-+        ));
-+        assert!(matches!(
-+            normalize(frame(item.clone()), true),
-+            RealtimeEvent::DetachedResponse(_)
-+        ));
-+        let mut wrong = item.clone();
-+        wrong["id"] = json!("foreign-item");
-+        assert!(matches!(
-+            normalize(frame(wrong), false),
-+            RealtimeEvent::DetachedResponse(_)
-+        ));
-+        let mut wrong = item.clone();
-+        wrong["call_id"] = json!("foreign-call");
-+        assert!(matches!(
-+            normalize(frame(wrong), false),
-+            RealtimeEvent::DetachedResponse(_)
-+        ));
-+        let request = |response_id| {
-+            RealtimeEvent::DetachedResponse(Box::new(RealtimeEvent::FunctionCallRequested(
-+                codex_protocol::protocol::RealtimeFunctionCallRequested {
-+                    namespace: None,
-+                    call_id: "past-call".into(),
-+                    item_id: "past-item".into(),
-+                    name: "lookup".into(),
-+                    arguments: "{}".into(),
-+                    response_id,
-+                },
-+            )))
-+        };
-+        assert!(
-+            matches!(normalize(request(None), false), RealtimeEvent::ConversationItemDone { item_id } if item_id == "past-item")
-+        );
-+        assert!(matches!(
-+            normalize(request(Some("detached".into())), false),
-+            RealtimeEvent::DetachedResponse(_)
-+        ));
-+        history.observe_added(&item, Some(None)).unwrap();
-+        history.created(&item, true).unwrap();
-+        assert!(!history.is_pending_replayed_call_receipt(&item));
-+    }
-+}
-diff --git a/codex-rs/core/src/realtime_conversation/raw_event.rs b/codex-rs/core/src/realtime_conversation/raw_event.rs
-index 5ccb45313777a53e3827dfbc6c3a2c27e0c65167..82ba858344ced1f722463b4baedf9111fd0d63d2 100644
---- a/codex-rs/core/src/realtime_conversation/raw_event.rs
-+++ b/codex-rs/core/src/realtime_conversation/raw_event.rs
-@@ -19,6 +19,7 @@ use serde_json::Value;
- use tokio::sync::oneshot;
- 
- use super::AudioBufferControl;
-+use super::PendingDetachedResponse;
- use super::RealtimeEventParser;
- use super::SdkRealtimeCommand;
- use super::dispatch_interrupt_sdk;
-@@ -139,17 +140,23 @@ fn response_options(
-     }
-     if let Some(tools) = &response.tools {
-         let mut names = BTreeSet::new();
-+        let mut labels = BTreeSet::new();
-         if tools.len() > 128
--            || tools.iter().any(|RealtimeResponseTool::Function(tool)| {
--                tool.name.is_empty()
--                    || tool.name.len() > 128
--                    || !tool.parameters.is_object()
--                    || !names.insert(tool.name.as_str())
-+            || tools.iter().any(|tool| match tool {
-+                RealtimeResponseTool::Function(tool) => {
-+                    tool.name.is_empty()
-+                        || tool.name.len() > 128
-+                        || !tool.parameters.is_object()
-+                        || !names.insert(tool.name.as_str())
-+                }
-+                RealtimeResponseTool::Mcp(tool) => {
-+                    tool.server_label.is_empty()
-+                        || tool.server_label.len() > 512
-+                        || !labels.insert(tool.server_label.as_str())
-+                }
-             })
-         {
--            return Err(invalid(
--                "Invalid raw Realtime response function declarations",
--            ));
-+            return Err(invalid("Invalid raw Realtime response tool declarations"));
-         }
-     }
-     Ok(RealtimeResponseOptions {
-@@ -222,7 +229,7 @@ pub(crate) async fn handle_send_event_sdk(
-     mut value: Value,
-     reply: Reply<Option<Value>>,
- ) {
--    let (event, event_id) = match parse_event(&mut value) {
-+    let (event, event_id, bytes) = match parse_event(&mut value) {
-         Ok(event) => event,
-         Err(error) => {
-             let _ = reply.send(Err(error));
-@@ -236,6 +243,17 @@ pub(crate) async fn handle_send_event_sdk(
-     match event {
-         ClientEvent::ResponseCreate { response } => {
-             let result = match response_options(response, event_id) {
-+                Ok(options) if options.conversation == Some(RealtimeResponseConversation::None) => {
-+                    dispatch_sdk_control(sess, generation, completion(reply, |()| None), |reply| {
-+                        SdkRealtimeCommand::RequestDetachedResponse(PendingDetachedResponse {
-+                            options,
-+                            bytes,
-+                            reply,
-+                        })
-+                    })
-+                    .await;
-+                    return;
-+                }
-                 Ok(options) => {
-                     sess.conversation
-                         .sdk_enqueue(&generation, SdkRealtimeCommand::RequestResponse(options))
-@@ -407,7 +425,7 @@ pub(crate) async fn handle_send_event_sdk(
-     }
- }
- 
--fn parse_event(value: &mut Value) -> CodexResult<(ClientEvent, Option<String>)> {
-+fn parse_event(value: &mut Value) -> CodexResult<(ClientEvent, Option<String>, usize)> {
-     let mut retained_bytes = 0;
-     codex_api::charge_realtime_json_storage(value, &mut retained_bytes)
-         .map_err(|_| invalid("Raw Realtime event exceeds its 8 MiB estimated storage limit"))?;
-@@ -434,7 +452,7 @@ fn parse_event(value: &mut Value) -> CodexResult<(ClientEvent, Option<String>)>
-     {
-         value["event_id"] = original_id;
-     }
--    Ok((event, event_id))
-+    Ok((event, event_id, retained_bytes))
- }
- 
- #[derive(Deserialize)]
-diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
-index daa3ca534d57a5416e386d7e1b42e10a8b62b1ce..f8c3bf6c8d76549c260c280030e4c48102496309 100644
---- a/codex-rs/core/src/realtime_conversation_tests.rs
-+++ b/codex-rs/core/src/realtime_conversation_tests.rs
-@@ -3524,6 +3524,7 @@ async fn prepared_close_with_provider_credential(missing_env: bool) {
-         None,
-         None,
-         true,
-+        codex_protocol::protocol::RealtimeProviderEventObservation::None,
-         None,
-     )
-     .await
-@@ -3577,6 +3578,7 @@ async fn sdk_malformed_credential_fails_before_native_mcp_or_transport_preparati
-         None,
-         None,
-         true,
-+        codex_protocol::protocol::RealtimeProviderEventObservation::None,
-         None,
-     )
-     .await
-@@ -5051,6 +5053,7 @@ async fn sdk_sip_config_uses_native_source_and_serializer_without_reserving_voic
-         None,
-         None,
-         true,
-+        codex_protocol::protocol::RealtimeProviderEventObservation::None,
-         None,
-     )
-     .await
-diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
-index 5fccc9024e1c63a8b9227dbe5c7ae9fb18462acf..27d04697d9e24c882cfa2a7d3cfd2d848a70a815 100644
---- a/codex-rs/core/src/session/handlers.rs
-+++ b/codex-rs/core/src/session/handlers.rs
-@@ -534,6 +534,7 @@ pub(super) async fn submission_loop(
-                     function_tools,
-                     expected_selection_id,
-                     hosted_mcp_auto_response,
-+                    provider_event_observation,
-                     reply,
-                 } => {
-                     let _ = reply.send(
-@@ -545,6 +546,7 @@ pub(super) async fn submission_loop(
-                             function_tools,
-                             expected_selection_id,
-                             hosted_mcp_auto_response,
-+                            provider_event_observation,
-                             sub.turn_extension_init,
-                         )
-                         .await,
-diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index 2887081ac27986ee1875c1f08b8e88386970b68a..dc162fcd884ed98904642a95c616f46447f262df 100644
---- a/codex-rs/protocol/src/protocol.rs
-+++ b/codex-rs/protocol/src/protocol.rs
-@@ -657,8 +657,44 @@ where
-     Option::<String>::deserialize(deserializer).map(Some)
- }
- 
-+/// An opt-in observation of a provider frame, independent of SDK control events.
-+#[derive(Debug, Clone, Copy, Default)]
-+pub enum RealtimeProviderEventObservation {
-+    #[default]
-+    None,
-+    History,
-+    All,
-+}
-+
-+/// An observed provider frame, independent of SDK control events.
-+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-+pub struct RealtimeRawProviderEvent {
-+    pub event: Value,
-+    /// Native ownership classification for consumers maintaining linked history.
-+    pub history_observation: bool,
-+}
-+
-+impl std::fmt::Debug for RealtimeRawProviderEvent {
-+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-+        f.debug_struct("RealtimeRawProviderEvent")
-+            .finish_non_exhaustive()
-+    }
-+}
-+
-+/// A provider request rejection that leaves the Realtime connection usable.
-+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
-+pub struct RealtimeProviderRequestError {
-+    pub code: Option<String>,
-+    pub event_id: Option<String>,
-+    pub rejected_default_response_create: bool,
-+}
-+
- #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
- pub enum RealtimeEvent {
-+    RawProviderEvent(RealtimeRawProviderEvent),
-+    ProviderRequestError(RealtimeProviderRequestError),
-+    /// Observed output from a response outside the default conversation.
-+    DetachedResponse(Box<RealtimeEvent>),
-     SessionUpdated {
-         realtime_session_id: String,
-         instructions: Option<String>,
-@@ -718,6 +754,7 @@ pub enum RealtimeEvent {
- impl RealtimeEvent {
-     pub fn is_output_retired(&self) -> bool {
-         match self {
-+            Self::DetachedResponse(event) => event.is_output_retired(),
-             Self::HostedMcpApprovalRequested(request) => request.output_guard.is_retired(),
-             Self::AudioOut(frame) => frame.output_guard.is_retired(),
-             Self::OutputTranscriptDelta(delta) => delta.output_guard.is_retired(),
-@@ -912,6 +949,7 @@ pub enum Op {
-         function_tools: Option<Vec<crate::realtime_settings::RealtimeFunctionTool>>,
-         expected_selection_id: Option<String>,
-         hosted_mcp_auto_response: bool,
-+        provider_event_observation: RealtimeProviderEventObservation,
-         reply: oneshot::Sender<CodexResult<RealtimeConversationPrepareResult>>,
-     },
-     /// Consume one prepared generation and start its owned, cancellable connection job.
-diff --git a/codex-rs/protocol/src/realtime_settings.rs b/codex-rs/protocol/src/realtime_settings.rs
-index 3bfb11fab0a001a6ba5af97291667c7d1d27f37d..8eaa05c0f2985dd0cf49ef02ef9a9915c05bebed 100644
---- a/codex-rs/protocol/src/realtime_settings.rs
-+++ b/codex-rs/protocol/src/realtime_settings.rs
-@@ -154,7 +154,14 @@ pub enum RealtimeToolChoice {
- #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
- #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
- pub enum RealtimeFunctionToolChoice {
--    Function { name: String },
-+    Function {
-+        name: String,
-+    },
-+    Mcp {
-+        server_label: String,
-+        #[serde(default, skip_serializing_if = "Option::is_none")]
-+        name: Option<String>,
-+    },
- }
- 
- // Omission preserves state; JSON null is not the string mode "none".
-@@ -289,6 +296,7 @@ pub struct RealtimeResponseAudioOutput {
- #[serde(tag = "type", rename_all = "snake_case")]
- pub enum RealtimeResponseTool {
-     Function(RealtimeFunctionTool),
-+    Mcp(RealtimeHostedMcpTool),
- }
- 
- #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
 index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..75268744973f730f90b30cf998be3e47cd5b545c 100644
 --- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
@@ -3114,11 +2239,114 @@ index 0126b721d0dfbaa12a9a462690b8e99b4b83dc61..75268744973f730f90b30cf998be3e47
      fn hosted_event(
          observer: &SessionReadiness,
          kind: &str,
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
+index 63be224e7b356e2301fbe3f74a0cbe8d9be8c8ac..9adc157c05fee080dd7b71ae795423a6dedc0908 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
+@@ -20,7 +20,9 @@ pub(super) fn response_create_json(options: &RealtimeResponseOptions) -> serde_j
+     let mut response = Map::new();
+     put(&mut response, "conversation", &options.conversation)?;
+     put(&mut response, "input", &options.input)?;
+-    put(&mut response, "tools", &options.tools)?;
++    if let Some(tools) = &options.tools {
++        response.insert("tools".into(), response_tools_json(tools)?);
++    }
+     put(&mut response, "tool_choice", &options.tool_choice)?;
+     if options.conversation
+         == Some(codex_protocol::realtime_settings::RealtimeResponseConversation::None)
+@@ -162,18 +164,69 @@ pub(super) fn validate_tool_choice_in_tools(
+     };
+     let name = choice.get("name").and_then(Value::as_str);
+     let admitted = tools.and_then(Value::as_array).is_some_and(|tools| {
+-        tools.iter().any(|tool| {
+-            tool.get("type").and_then(Value::as_str) == Some("function")
+-                && tool.get("name").and_then(Value::as_str) == name
+-                && name.is_some()
++        tools.iter().any(|tool| match choice["type"].as_str() {
++            Some("function") => {
++                tool["type"] == "function"
++                    && tool.get("name").and_then(Value::as_str) == name
++                    && name.is_some()
++            }
++            Some("mcp") => {
++                tool["type"] == "mcp"
++                    && choice["server_label"]
++                        .as_str()
++                        .is_some_and(|label| !label.is_empty())
++                    && tool["server_label"] == choice["server_label"]
++                    && name.is_none_or(|name| !name.is_empty() && hosted_tool_allowed(tool, name))
++            }
++            _ => false,
+         })
+     });
+     if !admitted {
++        let message = if choice["type"] == "function" {
++            "Realtime tool choice is outside the advertised function subset"
++        } else {
++            "Realtime tool choice is outside the advertised hosted MCP subset"
++        };
++        return Err(serde::ser::Error::custom(message));
++    }
++    Ok(())
++}
++
++pub(super) fn hosted_tool_allowed(tool: &Value, name: &str) -> bool {
++    let allowed = &tool["allowed_tools"];
++    allowed
++        .as_array()
++        .or_else(|| allowed["tool_names"].as_array())
++        .is_none_or(|names| names.iter().any(|allowed| allowed.as_str() == Some(name)))
++}
++
++pub(super) fn response_tools_json(tools: &[RealtimeResponseTool]) -> serde_json::Result<Value> {
++    let mut names = std::collections::HashSet::new();
++    let mut hosted = Vec::new();
++    for tool in tools {
++        match tool {
++            RealtimeResponseTool::Function(tool) => {
++                if tool.name.is_empty()
++                    || tool.name.len() > 128
++                    || !tool.parameters.is_object()
++                    || !names.insert(tool.name.as_str())
++                {
++                    return Err(serde::ser::Error::custom(
++                        "Invalid Realtime response function declaration",
++                    ));
++                }
++            }
++            RealtimeResponseTool::Mcp(tool) => hosted.push(tool.clone()),
++        }
++    }
++    tools_json_with_reserved(&[], &hosted, false)?;
++    let value = serde_json::to_value(tools)?;
++    if tools.len() > 128 || serde_json::to_vec(&value)?.len() > 1024 * 1024 {
+         return Err(serde::ser::Error::custom(
+-            "Realtime tool choice is outside the advertised function subset",
++            "Realtime response tool declarations exceed capacity",
+         ));
+     }
+-    Ok(())
++    Ok(value)
+ }
+ 
+ fn function_tools_json(
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs
+index 63097f0928047002270aba93712bb93707da57f4..cfa82d5ea8303e360d278bfe14d6fe52666e57ae 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/transcript_tests.rs
+@@ -10,6 +10,7 @@ fn events(transcript_state: RealtimeTranscriptState) -> RealtimeWebsocketEvents
+         ingress_overflow: Arc::new(AtomicBool::new(false)),
+         rx_message,
+         pending_events: Arc::new(Mutex::new(VecDeque::new())),
++        pending_frame: Arc::default(),
+         transcript_state,
+         event_parser: RealtimeEventParser::FramelessBidi,
+         is_closed: Arc::new(AtomicBool::new(false)),
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index 2d48454aafa299a9d13d8fa19af01baa6f810c43..4aff417145afe6579f806958b17dbe231b5861d8 100644
+index 6b07b97758fa44758304fbb94e3c8b8d08f1ac27..42fb138ca4957eda4c4ccf0417832899085a3415 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
-@@ -1229,6 +1229,39 @@ impl CodexThread {
+@@ -1271,6 +1271,39 @@ impl CodexThread {
          self.session.captured_agent_profile().await
      }
  
@@ -3159,7 +2387,7 @@ index 2d48454aafa299a9d13d8fa19af01baa6f810c43..4aff417145afe6579f806958b17dbe23
      pub async fn prepare_agent_profile_mcp(
          &self,
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26cb9ddb88 100644
+index b7f9248e539883bdd256fe13f9e1243adb902fac..6ea9658f0b0666a0c482db1db63211686e068b45 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
 @@ -95,6 +95,7 @@ use serde_json::json;
@@ -3362,7 +2590,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
      native_source: Option<Arc<dyn codex_api::RealtimeNativeSource>>,
      sdk_generation: Option<String>,
      api_provider: ApiProvider,
-@@ -1613,6 +1715,7 @@ impl RealtimeConversationManager {
+@@ -1622,6 +1724,7 @@ impl RealtimeConversationManager {
              SdkRealtimeCommand::AudioControl { .. }
                  | SdkRealtimeCommand::Input(_)
                  | SdkRealtimeCommand::RequestResponse(_)
@@ -3370,7 +2598,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          ) {
              if state.handoff.event_parser != RealtimeEventParser::RealtimeV2 {
                  return Err(CodexErr::InvalidRequest(
-@@ -1626,7 +1729,12 @@ impl RealtimeConversationManager {
+@@ -1635,7 +1738,12 @@ impl RealtimeConversationManager {
              configuration
                  .accepted()
                  .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
@@ -3384,7 +2612,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
                  if options
                      .instructions
                      .as_ref()
-@@ -1913,13 +2021,47 @@ impl RealtimeConversationManager {
+@@ -1923,6 +2031,38 @@ impl RealtimeConversationManager {
                          } else {
                              None
                          };
@@ -3423,17 +2651,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
                          if update.function_tools.is_some() {
                              return Err(CodexErr::InvalidRequest(
                                  "Profile update functions must use the captured profile subset"
-                                     .into(),
-                             ));
-                         }
--                        update.instructions = tool_task::source_instructions(&profile.source)?;
-+                        if update.instructions.is_none() {
-+                            update.instructions = tool_task::source_instructions(&profile.source)?;
-+                        }
-                         update.function_tools = Some(tool_task::select_source_tools(
-                             &profile.source,
-                             profile.request.function_tools,
-@@ -2210,6 +2352,7 @@ impl RealtimeConversationManager {
+@@ -2226,6 +2366,7 @@ impl RealtimeConversationManager {
              adapter,
              connection_auth,
              hosted_mcp_auto_response,
@@ -3441,7 +2659,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
              native_source,
              sdk_generation,
              api_provider,
-@@ -2269,6 +2412,7 @@ impl RealtimeConversationManager {
+@@ -2285,6 +2426,7 @@ impl RealtimeConversationManager {
                      .unwrap()
                      .set_boundary(existing_call_id.is_none());
                  sdk.hosted_mcp_auto_response = hosted_mcp_auto_response;
@@ -3449,7 +2667,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
                  sdk.function_tools = session_config.function_tools.clone();
                  Arc::new(sdk)
              }),
-@@ -3187,6 +3331,55 @@ pub(crate) async fn handle_history_sdk(
+@@ -3203,6 +3345,55 @@ pub(crate) async fn handle_history_sdk(
      }
  }
  
@@ -3505,7 +2723,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
  async fn run_history_action(
      sdk: &SdkRealtimeState,
      writer: &RealtimeWebsocketWriter,
-@@ -3219,6 +3412,10 @@ async fn run_history_action(
+@@ -3235,6 +3426,10 @@ async fn run_history_action(
                  .await
          }
          Some(provider_history::Action::Delete(id)) => {
@@ -3516,7 +2734,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
              // Validate the complete pending deletion plan before its first remote edit.
              let validation = {
                  let history = sdk.history.lock().unwrap();
-@@ -3437,6 +3634,7 @@ async fn cancel_sdk_tool_work(
+@@ -3456,6 +3651,7 @@ async fn cancel_sdk_tool_work(
  struct PreparedRealtimeConversationStart {
      connection_auth: Option<crate::client::RealtimeConnectionAuth>,
      hosted_mcp_auto_response: bool,
@@ -3524,7 +2742,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
      api_provider: ApiProvider,
      http_client_factory: HttpClientFactory,
      realtime_sideband_base_url: Option<String>,
-@@ -3683,6 +3881,7 @@ async fn prepare_realtime_start_with_source(
+@@ -3702,6 +3898,7 @@ async fn prepare_realtime_start_with_source(
      Ok(PreparedRealtimeConversationStart {
          connection_auth,
          hosted_mcp_auto_response: true,
@@ -3532,7 +2750,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          api_provider,
          http_client_factory,
          realtime_sideband_base_url,
-@@ -3932,6 +4131,7 @@ async fn handle_start_inner_with_adapter(
+@@ -3951,6 +4148,7 @@ async fn handle_start_inner_with_adapter(
      let PreparedRealtimeConversationStart {
          connection_auth,
          hosted_mcp_auto_response,
@@ -3540,7 +2758,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          api_provider,
          http_client_factory,
          realtime_sideband_base_url,
-@@ -3966,6 +4166,7 @@ async fn handle_start_inner_with_adapter(
+@@ -3985,6 +4183,7 @@ async fn handle_start_inner_with_adapter(
          adapter,
          connection_auth,
          hosted_mcp_auto_response,
@@ -3548,7 +2766,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          native_source,
          sdk_generation,
          api_provider,
-@@ -4571,7 +4772,9 @@ async fn run_realtime_input_task(
+@@ -4590,7 +4789,9 @@ async fn run_realtime_input_task(
      loop {
          let result = tokio::select! {
              _ = stop_token.cancelled() => Err(RealtimeInputTaskExit::Terminal),
@@ -3559,7 +2777,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
                  match realtime_event {
                      Ok(Some((event, configuration))) => {
                          let handling = handle_realtime_server_event_with_configuration(
-@@ -5190,7 +5393,7 @@ async fn request_sdk_native_response(
+@@ -5209,7 +5410,7 @@ async fn request_sdk_native_response(
          configuration.response_has_hosted_mcp(&request.response_id)
              && configuration.response_tools_pending(&request.response_id)
      });
@@ -3568,7 +2786,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          responses.pending_create = true;
          if responses.pending_native_create.is_none() {
              responses.pending_native_create = Some(request);
-@@ -5358,6 +5561,10 @@ async fn handle_sdk_realtime_command(
+@@ -5377,6 +5578,10 @@ async fn handle_sdk_realtime_command(
                  }
                  Ok(false) => {}
              }
@@ -3579,7 +2797,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
              if sdk
                  .item_deletion
                  .lock()
-@@ -5515,7 +5722,12 @@ async fn handle_sdk_realtime_command(
+@@ -5534,7 +5739,12 @@ async fn handle_sdk_realtime_command(
                  reply.finish(Ok(()));
              }
          }
@@ -3593,7 +2811,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
              let target = batch.committed_target.lock().unwrap().clone();
              if target.is_none() {
                  // A denied/failed requested handoff never changes the source. Release siblings
-@@ -5585,6 +5797,9 @@ async fn handle_sdk_realtime_command(
+@@ -5604,6 +5814,9 @@ async fn handle_sdk_realtime_command(
              request_sdk_response_create(sdk, writer, responses, "SDK response request", request)
                  .await?;
          }
@@ -3603,7 +2821,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          SdkRealtimeCommand::Text(params) => {
              writer
                  .send_conversation_item_create(params.text, params.role)
-@@ -5803,6 +6018,7 @@ async fn handle_sdk_realtime_command(
+@@ -5822,6 +6035,7 @@ async fn handle_sdk_realtime_command(
                  responses.retain_user_request(None);
                  responses.pending_native_create = None;
                  responses.pending_guardrail_response = None;
@@ -3611,7 +2829,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
              }
              let calls = sdk.function_calls.lock().await;
              let seen = sdk.seen.lock().await;
-@@ -5957,7 +6173,15 @@ async fn maybe_continue_hosted_mcp(
+@@ -5976,7 +6190,15 @@ async fn maybe_continue_hosted_mcp(
      responses: &mut RealtimeResponseCreateQueue,
      response_id: &str,
  ) -> anyhow::Result<()> {
@@ -3628,7 +2846,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          return Ok(());
      }
      if let Some(options) = responses.take_user_request() {
-@@ -5983,6 +6207,37 @@ async fn maybe_continue_hosted_mcp(
+@@ -6002,6 +6224,37 @@ async fn maybe_continue_hosted_mcp(
      Ok(())
  }
  
@@ -3666,7 +2884,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
  async fn handle_realtime_server_event_with_configuration(
      event: RealtimeEvent,
      writer: &RealtimeWebsocketWriter,
-@@ -5993,6 +6248,42 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6012,6 +6265,42 @@ async fn handle_realtime_server_event_with_configuration(
      response_create_queue: &mut RealtimeResponseCreateQueue,
      configuration: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
  ) -> anyhow::Result<()> {
@@ -3709,7 +2927,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
      // A detached completion can have an unscoped duplicate conversation event.
      if let (Some(sdk), RealtimeEvent::FunctionCallRequested(call)) = (&handoff_state.sdk, &event)
          && call.response_id.is_none()
-@@ -6369,10 +6660,10 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6399,10 +6688,10 @@ async fn handle_realtime_server_event_with_configuration(
                  return Ok(());
              };
              if request.response_id.is_none()
@@ -3724,7 +2942,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
              {
                  return Ok(());
              }
-@@ -6603,6 +6894,34 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6695,6 +6984,34 @@ async fn handle_realtime_server_event_with_configuration(
              }
              false
          }
@@ -3759,7 +2977,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          RealtimeEvent::Error(_) => true,
          RealtimeEvent::SessionUpdated {
              realtime_session_id,
-@@ -6611,7 +6930,8 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6703,7 +7020,8 @@ async fn handle_realtime_server_event_with_configuration(
              info!(realtime_session_id = %realtime_session_id, "realtime session updated");
              false
          }
@@ -3769,7 +2987,7 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
          | RealtimeEvent::HostedMcpToolsListed(_)
          | RealtimeEvent::InputTranscriptDelta(_)
          | RealtimeEvent::InputTranscriptDone(_)
-@@ -6636,6 +6956,20 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6729,6 +7047,20 @@ async fn handle_realtime_server_event_with_configuration(
          error!("realtime stream error event received");
          anyhow::bail!("realtime stream error event received");
      }
@@ -3790,43 +3008,386 @@ index 4ef486124c3ec891e70bf8e3a97ac300c9f989cb..f4e198de86da5a5a8cc5cdb9dd66eb26
      Ok(())
  }
  
+diff --git a/codex-rs/core/src/realtime_conversation/item_deletion.rs b/codex-rs/core/src/realtime_conversation/item_deletion.rs
+index 298f20f0188d91375ee2c5dd21afcfac5e292c69..afee936b7813e15c5db9fa06fe31498c5b1462df 100644
+--- a/codex-rs/core/src/realtime_conversation/item_deletion.rs
++++ b/codex-rs/core/src/realtime_conversation/item_deletion.rs
+@@ -33,6 +33,8 @@ struct Item {
+     approval_request_id: Option<String>,
+     done: bool,
+     effect_done: bool,
++    // A matched retrieval has established provider-only ownership, not native completion.
++    retrieved_external: bool,
+ }
+ #[derive(Debug)]
+ struct DeletedItem {
+@@ -88,6 +90,7 @@ impl State {
+                     && old.approval_request_id == item.approval_request_id,
+                 "Provider conversation item identity changed"
+             );
++            old.retrieved_external &= item.retrieved_external;
+             old.done |= item.done;
+             old.effect_done |= item.effect_done;
+         } else {
+@@ -150,6 +153,7 @@ impl State {
+                         call_id: bounded("call_id")?,
+                         approval_request_id: bounded("approval_request_id")?,
+                         done: value["status"].as_str() == Some("completed"),
++                        retrieved_external: false,
+                         effect_done: kind == "mcp_approval_response"
+                             && value["status"].as_str() == Some("completed"),
+                     },
+@@ -194,6 +198,7 @@ impl State {
+                         call_id: Some(call.call_id.clone()),
+                         approval_request_id: None,
+                         done: true,
++                        retrieved_external: false,
+                         effect_done: false,
+                     },
+                 )?;
+@@ -210,6 +215,7 @@ impl State {
+                         call_id: Some(call.handoff_id.clone()),
+                         approval_request_id: None,
+                         done: true,
++                        retrieved_external: false,
+                         effect_done: false,
+                     },
+                 )?;
+@@ -232,6 +238,7 @@ impl State {
+                         call_id: Some(call.call_id.clone()),
+                         approval_request_id: None,
+                         done: true,
++                        retrieved_external: false,
+                         effect_done: true,
+                     },
+                 )?;
+@@ -302,43 +309,82 @@ impl State {
+         }
+         Ok(true)
+     }
+-    pub(super) fn admit_retrieved_message(&mut self, value: &serde_json::Value) -> CodexResult<()> {
+-        let id = value["id"].as_str().ok_or_else(|| {
+-            CodexErr::InvalidRequest("Provider deletion lookup returned no item ID".into())
+-        })?;
+-        if !Self::valid_id(id)
++    pub(super) fn admit_retrieved_item(&mut self, value: &serde_json::Value) -> CodexResult<()> {
++        let invalid = || {
++            CodexErr::InvalidRequest(
++                "Provider deletion lookup has an unsupported or locally owned identity".into(),
++            )
++        };
++        let id = value["id"].as_str().ok_or_else(invalid)?;
++        let kind = value["type"].as_str().ok_or_else(invalid)?;
++        let identity = |field: &str| -> CodexResult<Option<String>> {
++            match value.get(field).filter(|value| !value.is_null()) {
++                None => Ok(None),
++                Some(value) => value
++                    .as_str()
++                    .filter(|id| Self::valid_id(id))
++                    .map(|id| Some(id.to_owned()))
++                    .ok_or_else(invalid),
++            }
++        };
++        let call_id = identity("call_id")?;
++        let approval_request_id = identity("approval_request_id")?;
++        let supported = match kind {
++            "message" => {
++                value["status"] == "completed"
++                    && matches!(
++                        value["role"].as_str(),
++                        Some("user" | "assistant" | "system")
++                    )
++                    && call_id.is_none()
++                    && approval_request_id.is_none()
++            }
++            "function_call" | "function_call_output" => {
++                call_id.is_some() && approval_request_id.is_none()
++            }
++            "mcp_call" | "mcp_tool_call" | "mcp_list_tools" | "mcp_approval_request" => true,
++            "mcp_approval_response" => approval_request_id.is_some(),
++            _ => false,
++        };
++        if !supported
++            || !Self::valid_id(id)
+             || id == "root"
+             || !self.can_retrieve(id)
+-            || value.get("call_id").is_some_and(|value| !value.is_null())
+-            || value
+-                .get("approval_request_id")
+-                .is_some_and(|value| !value.is_null())
+-            || value["type"] != "message"
+-            || value["status"] != "completed"
+-            || !matches!(
+-                value["role"].as_str(),
+-                Some("user" | "assistant" | "system")
+-            )
++            || self.items.contains_key(id)
++            || self.items.iter().any(|(known_id, known)| {
++                !known.retrieved_external
++                    && !known.effect_done
++                    && (call_id
++                        .as_ref()
++                        .is_some_and(|call| known.call_id.as_ref() == Some(call))
++                        || approval_request_id.as_ref() == Some(known_id)
++                        || known.approval_request_id.as_deref() == Some(id))
++            })
+         {
+-            return Err(CodexErr::InvalidRequest(
+-                "Unobserved provider deletion requires a completed message; tool and approval dependencies require native receipts".into(),
+-            ));
++            return Err(invalid());
+         }
+         self.upsert(
+             id,
+             Item {
+-                kind: "message".into(),
++                kind: kind.to_owned(),
+                 present: true,
+-                role: value["role"].as_str().map(str::to_owned),
+-                call_id: None,
+-                approval_request_id: None,
+-                done: true,
++                role: (kind == "message").then(|| value["role"].as_str().unwrap().to_owned()),
++                call_id,
++                approval_request_id,
++                done: value["status"] == "completed",
+                 effect_done: false,
++                retrieved_external: true,
+             },
+         )
+         .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+         self.validate(id)
+     }
++    pub(super) fn external_identity(&self, id: &str) -> Option<(Option<String>, Option<String>)> {
++        self.items
++            .get(id)
++            .filter(|item| item.retrieved_external)
++            .map(|item| (item.call_id.clone(), item.approval_request_id.clone()))
++    }
+     pub(super) fn validate(&self, id: &str) -> CodexResult<()> {
+         let item = self
+             .items
+@@ -363,11 +409,12 @@ impl State {
+             }),
+             _ => false,
+         };
+-        let live_dependency = self
+-            .items
+-            .values()
+-            .any(|other| other.approval_request_id.as_deref() == Some(id) && !other.effect_done);
+-        if !supported || live_dependency {
++        let live_dependency = self.items.values().any(|other| {
++            other.approval_request_id.as_deref() == Some(id)
++                && !other.retrieved_external
++                && !other.effect_done
++        });
++        if (!supported && !item.retrieved_external) || live_dependency {
+             return Err(CodexErr::InvalidRequest(
+                 "Provider item has unresolved work or an unsupported kind".into(),
+             ));
+@@ -484,6 +531,165 @@ mod tests {
+         let (tx, rx) = tokio::sync::oneshot::channel();
+         (DeleteReply::new(tx), rx)
+     }
++    #[tokio::test]
++    async fn retrieved_external_tool_records_wait_for_exact_ack_and_audit() {
++        for value in [
++            serde_json::json!({"id":"historical","type":"function_call","call_id":"old-call","status":"completed"}),
++            serde_json::json!({"id":"historical","type":"function_call_output","call_id":"old-call"}),
++            serde_json::json!({"id":"historical","type":"mcp_call"}),
++            serde_json::json!({"id":"historical","type":"mcp_tool_call"}),
++            serde_json::json!({"id":"historical","type":"mcp_list_tools"}),
++            serde_json::json!({"id":"historical","type":"mcp_approval_request"}),
++            serde_json::json!({"id":"historical","type":"mcp_approval_response","approval_request_id":"old-approval"}),
++        ] {
++            let mut state = State::default();
++            state.admit_retrieved_item(&value).unwrap();
++            assert!(!state.items["historical"].effect_done);
++            let (reply, mut receipt) = reply();
++            assert!(state.begin("historical".into(), reply));
++            assert!(!state.acknowledge("different"));
++            assert!(state.acknowledge("historical"));
++            assert!(receipt.try_recv().is_err());
++            state.finish("historical", Ok(()));
++            assert!(receipt.await.unwrap().is_ok());
++            assert!(state.is_deleted("historical"));
++            assert!(state.needs_lookup("historical").is_err());
++            assert!(!state.can_recreate_message("historical"));
++        }
++    }
++
++    #[tokio::test]
++    async fn external_delete_retries_recheck_native_call_ownership() {
++        let sdk = SdkRealtimeState::new("voice".into());
++        let item = serde_json::json!({"id":"historical","type":"function_call_output","call_id":"old-call"});
++        sdk.item_deletion
++            .lock()
++            .unwrap()
++            .admit_retrieved_item(&item)
++            .unwrap();
++        assert!(
++            validate_external_item_deletion(&sdk, "historical")
++                .await
++                .is_ok()
++        );
++        let (reply, receipt) = reply();
++        assert!(
++            sdk.item_deletion
++                .lock()
++                .unwrap()
++                .begin("historical".into(), reply)
++        );
++        sdk.item_deletion.lock().unwrap().finish(
++            "historical",
++            Err(CodexErr::InvalidRequest("provider denied deletion".into())),
++        );
++        assert!(receipt.await.unwrap().is_err());
++        assert!(
++            !sdk.item_deletion
++                .lock()
++                .unwrap()
++                .needs_lookup("historical")
++                .unwrap()
++        );
++        sdk.seen.lock().await.insert(
++            "old-call".into(),
++            SdkSeenCall {
++                output_published: false,
++                response_id: None,
++                accepted_configuration: None,
++                function_fingerprint: None,
++            },
++        );
++        assert!(
++            validate_external_item_deletion(&sdk, "historical")
++                .await
++                .is_err()
++        );
++        assert!(!sdk.item_deletion.lock().unwrap().is_deleted("historical"));
++    }
++
++    #[tokio::test]
++    async fn external_output_cannot_alias_an_unsettled_caller_owned_call() {
++        let sdk = SdkRealtimeState::new("voice".into());
++        sdk.item_deletion
++            .lock()
++            .unwrap()
++            .admit_retrieved_item(&serde_json::json!({
++                "id":"historical-output", "type":"function_call_output", "call_id":"caller-call"
++            }))
++            .unwrap();
++        let mut history = sdk.history.lock().unwrap();
++        history
++            .observe_added(
++                &serde_json::json!({
++                    "id":"live-call-item", "type":"function_call", "call_id":"caller-call",
++                    "name":"client_tool", "arguments":"{}"
++                }),
++                Some(None),
++            )
++            .unwrap();
++        history
++            .observe_caller_call(
++                &codex_protocol::protocol::RealtimeFunctionCallRequested {
++                    namespace: None,
++                    call_id: "caller-call".into(),
++                    item_id: "live-call-item".into(),
++                    name: "client_tool".into(),
++                    arguments: "{}".into(),
++                    response_id: Some("response".into()),
++                },
++                false,
++            )
++            .unwrap();
++        drop(history);
++        assert!(
++            validate_external_item_deletion(&sdk, "historical-output")
++                .await
++                .is_err()
++        );
++        assert!(
++            !sdk.item_deletion
++                .lock()
++                .unwrap()
++                .is_deleted("historical-output")
++        );
++        sdk.history
++            .lock()
++            .unwrap()
++            .retire_caller_calls(Some("response"));
++        assert!(
++            validate_external_item_deletion(&sdk, "historical-output")
++                .await
++                .is_ok()
++        );
++    }
++
++    #[test]
++    fn ordinary_call_observation_revokes_external_provenance() {
++        let mut state = State::default();
++        state
++            .admit_retrieved_item(
++                &serde_json::json!({"id":"call-item","type":"function_call","call_id":"call"}),
++            )
++            .unwrap();
++        state
++            .observe(&RealtimeEvent::FunctionCallRequested(
++                codex_protocol::protocol::RealtimeFunctionCallRequested {
++                    namespace: None,
++                    call_id: "call".into(),
++                    item_id: "call-item".into(),
++                    name: "search".into(),
++                    arguments: "{}".into(),
++                    response_id: Some("response".into()),
++                },
++            ))
++            .unwrap();
++        assert!(state.external_identity("call-item").is_none());
++        assert!(state.validate("call-item").is_err());
++        assert!(state.admit_retrieved_item(&serde_json::json!({"id":"output","type":"function_call_output","call_id":"call"})).is_err());
++        assert!(!state.items.contains_key("output"));
++    }
++
+     #[tokio::test]
+     async fn delete_requires_exact_ack_and_persistence_completion() {
+         let mut state = State::default();
 diff --git a/codex-rs/core/src/realtime_conversation/preparation.rs b/codex-rs/core/src/realtime_conversation/preparation.rs
-index 18745d7085bc062474c8616d88d49849c4de567c..211d8edf77b4ebb689e7d5114d122548ee3178ed 100644
+index 279f3ccbf8207f5009bff4997441cd0d613b8624..bba5d83d17c3b6181a58bf0e5e3fb4f7fcd7e9dc 100644
 --- a/codex-rs/core/src/realtime_conversation/preparation.rs
 +++ b/codex-rs/core/src/realtime_conversation/preparation.rs
-@@ -21,6 +21,7 @@ pub(super) struct SdkPreparedInput {
-     function_tools: Option<Vec<codex_protocol::realtime_settings::RealtimeFunctionTool>>,
+@@ -22,6 +22,7 @@ pub(super) struct SdkPreparedInput {
      expected_selection_id: Option<String>,
+     disabled_tool_names: Option<Vec<String>>,
      hosted_mcp_auto_response: bool,
 +    provider_event_observation: codex_protocol::protocol::RealtimeProviderEventObservation,
      provider: ModelProviderInfo,
      adapter: Option<Arc<dyn codex_api::RealtimeAdapter>>,
  }
-@@ -200,6 +201,7 @@ pub(crate) async fn handle_prepare_sdk(
-     function_tools: Option<Vec<codex_protocol::realtime_settings::RealtimeFunctionTool>>,
+@@ -204,6 +205,7 @@ pub(crate) async fn handle_prepare_sdk(
      expected_selection_id: Option<String>,
+     disabled_tool_names: Option<Vec<String>>,
      hosted_mcp_auto_response: bool,
 +    provider_event_observation: codex_protocol::protocol::RealtimeProviderEventObservation,
      init: Option<codex_extension_api::ExtensionDataInit>,
  ) -> CodexResult<RealtimeConversationPrepareResult> {
      if generation.is_empty() {
-@@ -248,6 +250,7 @@ pub(crate) async fn handle_prepare_sdk(
-             function_tools,
+@@ -253,6 +255,7 @@ pub(crate) async fn handle_prepare_sdk(
              expected_selection_id,
+             disabled_tool_names,
              hosted_mcp_auto_response,
 +            provider_event_observation,
              provider,
              adapter,
          });
-@@ -372,6 +375,7 @@ async fn run_prepared_start(
-         function_tools,
+@@ -378,6 +381,7 @@ async fn run_prepared_start(
          expected_selection_id,
+         disabled_tool_names,
          hosted_mcp_auto_response,
 +        provider_event_observation,
          provider,
          adapter,
      } = input;
-@@ -413,6 +417,7 @@ async fn run_prepared_start(
+@@ -419,6 +423,7 @@ async fn run_prepared_start(
          let source = tool_task::finish_realtime_native_source(sess, draft).await?;
          prepared.session_config.v2 = settings;
          prepared.hosted_mcp_auto_response = hosted_mcp_auto_response;
@@ -3834,15 +3395,15 @@ index 18745d7085bc062474c8616d88d49849c4de567c..211d8edf77b4ebb689e7d5114d122548
          prepared.session_config.function_tools = tool_task::select_source_tools(
              &source,
              function_tools,
-@@ -451,6 +456,7 @@ pub(crate) async fn dispatch_start_sdk(
-         function_tools,
+@@ -463,6 +468,7 @@ pub(crate) async fn dispatch_start_sdk(
          expected_selection_id,
+         disabled_tool_names,
          hosted_mcp_auto_response,
 +        codex_protocol::protocol::RealtimeProviderEventObservation::None,
          None,
      )
      .await
-@@ -682,26 +688,35 @@ pub(crate) async fn dispatch_update_sdk(
+@@ -699,26 +705,35 @@ pub(crate) async fn dispatch_update_sdk(
          )));
          return;
      };
@@ -3894,7 +3455,7 @@ index 18745d7085bc062474c8616d88d49849c4de567c..211d8edf77b4ebb689e7d5114d122548
      let state = sess.conversation.state.lock().await;
      if !state
          .conversation
-@@ -726,7 +741,7 @@ pub(crate) async fn dispatch_update_sdk(
+@@ -743,7 +758,7 @@ pub(crate) async fn dispatch_update_sdk(
      let session = Arc::clone(sess);
      let stop = preparation.stop.clone();
      let task=tokio::spawn(async move {
@@ -3903,8 +3464,296 @@ index 18745d7085bc062474c8616d88d49849c4de567c..211d8edf77b4ebb689e7d5114d122548
          match source {
              Ok(source)=>{let _=session.conversation.sdk_enqueue(&generation,SdkRealtimeCommand::OwnedUpdate {update,event_id,profile:Some(SdkProfileUpdate {request,source}),reply}).await;}
              Err(error)=>reply.finish(Err(error)),
+diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
+index 7b32ce9e2924b2d73b935c9e3c56e4de9acb96b8..22551a76fd086227c31442d70146027c594931d0 100644
+--- a/codex-rs/core/src/realtime_conversation/provider_history.rs
++++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
+@@ -918,6 +918,19 @@ impl State {
+         })
+     }
+ 
++    pub(super) fn has_live_caller_item(&self, id: &str, call_id: Option<&str>) -> bool {
++        self.replayed_calls.iter().any(|(known_call, call)| {
++            call.confirmed
++                && call
++                    .caller
++                    .as_ref()
++                    .is_some_and(|caller| !caller.output_confirmed)
++                && (call.item_id == id
++                    || call.output_id.as_deref() == Some(id)
++                    || call_id == Some(known_call.as_str()))
++        })
++    }
++
+     pub(super) fn is_live_caller_output(&self, item: &Value) -> bool {
+         item["type"] == "function_call_output"
+             && replay_item(item).is_ok()
+@@ -957,6 +970,16 @@ impl State {
+         }
+     }
+ 
++    pub(super) fn is_pending_replayed_call_receipt(&self, item: &Value) -> bool {
++        item["type"] == "function_call"
++            && item["id"]
++                .as_str()
++                .zip(item["call_id"].as_str())
++                .is_some_and(|(id, call_id)| {
++                    self.expected_create(id) && self.is_replayed_call(call_id, id)
++                })
++    }
++
+     pub(super) fn is_replayed_call(&self, call_id: &str, item_id: &str) -> bool {
+         self.replayed_calls
+             .get(call_id)
+@@ -1130,9 +1153,9 @@ impl State {
+             && item["id"].as_str() == Some(id.as_str())
+         {
+             self.verify_retrieved_caller_item(id, item)?;
+-            // Retrieval confirms identity only. It cannot establish an item's
+-            // position or completion of tool/approval effects.
+-            deletion.admit_retrieved_message(item)?;
++            // Retrieval confirms provider identity only, not order or native effect
++            // completion. The write boundary also checks current SDK owners.
++            deletion.admit_retrieved_item(item)?;
+         }
+         Ok(())
+     }
+@@ -1501,6 +1524,40 @@ mod tests {
+         assert!(history.order.is_empty());
+     }
+ 
++    #[tokio::test]
++    async fn historical_function_delete_uses_lookup_without_replaying_or_adopting_history() {
++        let mut history = State::default();
++        let mut deletion = item_deletion::State::default();
++        let (reply, receipt) = tokio::sync::oneshot::channel();
++        assert!(matches!(
++            history
++                .start(Request::Delete {
++                    id: "old-output".into(),
++                    event_id: None,
++                    reply: item_deletion::DeleteReply::new(reply),
++                })
++                .unwrap(),
++            Some(Action::Retrieve { .. })
++        ));
++        let item = json!({"id":"old-output","type":"function_call_output","call_id":"old-call","output":"saved reply"});
++        history
++            .prepare_retrieved_delete(&item, &mut deletion)
++            .unwrap();
++        assert!(
++            matches!(history.retrieved(item).unwrap(), Some(Action::Delete(id)) if id == "old-output")
++        );
++        assert!(history.order.is_empty());
++        assert!(history.replayed_calls.is_empty());
++        let (reply, _internal) = tokio::sync::oneshot::channel();
++        assert!(deletion.begin("old-output".into(), item_deletion::DeleteReply::new(reply)));
++        assert!(deletion.acknowledge("old-output"));
++        deletion.finish("old-output", Ok(()));
++        assert!(history.deleted("old-output").unwrap());
++        assert!(history.advance().unwrap().is_none());
++        assert!(receipt.await.unwrap().is_ok());
++        assert!(deletion.is_deleted("old-output"));
++    }
++
+     #[tokio::test]
+     async fn unobserved_delete_persistence_failure_releases_the_history_request() {
+         let sdk = SdkRealtimeState::new("voice".into());
+@@ -1551,17 +1608,17 @@ mod tests {
+     }
+ 
+     #[tokio::test]
+-    async fn unobserved_delete_rejects_unresolved_or_tool_identity() {
++    async fn unobserved_delete_rejects_unresolved_messages_or_invalid_identity() {
+         for item in [
++            json!({"id":"hidden","type":"function_call"}),
++            json!({"id":"hidden","type":"function_call_output","call_id":false}),
++            json!({"id":"hidden","type":"mcp_approval_response"}),
++            json!({"id":"hidden","type":"mcp_approval_request","approval_request_id":42}),
++            json!({"id":"hidden","type":"unknown"}),
+             json!({"id":"hidden","type":"message","role":"user","status":"in_progress"}),
+             json!({"id":"hidden","type":"message","role":"user"}),
+             json!({"id":"hidden","type":"message","role":"user","status":"completed","call_id":"call"}),
+             json!({"id":"hidden","type":"message","role":"user","status":"completed","approval_request_id":"approval"}),
+-            json!({"id":"hidden","type":"function_call","call_id":"call","status":"completed"}),
+-            json!({"id":"hidden","type":"function_call_output","call_id":"call","status":"completed"}),
+-            json!({"id":"hidden","type":"mcp_call","status":"completed"}),
+-            json!({"id":"hidden","type":"mcp_approval_request","status":"completed"}),
+-            json!({"id":"hidden","type":"mcp_approval_response","approval_request_id":"approval","status":"completed"}),
+         ] {
+             let mut history = State::default();
+             let mut deletion = item_deletion::State::default();
+@@ -2594,3 +2651,79 @@ mod tests {
+         assert!(!valid_id("root"));
+     }
+ }
++
++#[cfg(test)]
++mod detached_replay_receipt_tests {
++    use super::*;
++    use codex_api::RealtimeEvent;
++    use serde_json::json;
++
++    #[test]
++    fn only_exact_pending_historical_receipts_cross_the_detached_envelope() {
++        let mut history = State::default();
++        let (reply, _receipt) = tokio::sync::oneshot::channel();
++        let call = json!({"type":"function_call","id":"past-item","call_id":"past-call","name":"lookup","arguments":"{}"});
++        let Some(Action::Create { item, .. }) = history
++            .start(Request::Create {
++                item: call,
++                previous: None,
++                event_id: None,
++                reply,
++            })
++            .unwrap()
++        else {
++            panic!("missing replay create");
++        };
++        let frame = |item| {
++            RealtimeEvent::DetachedResponse(Box::new(RealtimeEvent::ConversationItemAdded {
++                item,
++                previous_item_id: None,
++            }))
++        };
++        let normalize = |event, detached| {
++            super::super::normalize_historical_replay_receipt(event, &history, detached)
++        };
++        assert!(matches!(
++            normalize(frame(item.clone()), false),
++            RealtimeEvent::ConversationItemAdded { .. }
++        ));
++        assert!(matches!(
++            normalize(frame(item.clone()), true),
++            RealtimeEvent::DetachedResponse(_)
++        ));
++        let mut wrong = item.clone();
++        wrong["id"] = json!("foreign-item");
++        assert!(matches!(
++            normalize(frame(wrong), false),
++            RealtimeEvent::DetachedResponse(_)
++        ));
++        let mut wrong = item.clone();
++        wrong["call_id"] = json!("foreign-call");
++        assert!(matches!(
++            normalize(frame(wrong), false),
++            RealtimeEvent::DetachedResponse(_)
++        ));
++        let request = |response_id| {
++            RealtimeEvent::DetachedResponse(Box::new(RealtimeEvent::FunctionCallRequested(
++                codex_protocol::protocol::RealtimeFunctionCallRequested {
++                    namespace: None,
++                    call_id: "past-call".into(),
++                    item_id: "past-item".into(),
++                    name: "lookup".into(),
++                    arguments: "{}".into(),
++                    response_id,
++                },
++            )))
++        };
++        assert!(
++            matches!(normalize(request(None), false), RealtimeEvent::ConversationItemDone { item_id } if item_id == "past-item")
++        );
++        assert!(matches!(
++            normalize(request(Some("detached".into())), false),
++            RealtimeEvent::DetachedResponse(_)
++        ));
++        history.observe_added(&item, Some(None)).unwrap();
++        history.created(&item, true).unwrap();
++        assert!(!history.is_pending_replayed_call_receipt(&item));
++    }
++}
+diff --git a/codex-rs/core/src/realtime_conversation/raw_event.rs b/codex-rs/core/src/realtime_conversation/raw_event.rs
+index 5ccb45313777a53e3827dfbc6c3a2c27e0c65167..82ba858344ced1f722463b4baedf9111fd0d63d2 100644
+--- a/codex-rs/core/src/realtime_conversation/raw_event.rs
++++ b/codex-rs/core/src/realtime_conversation/raw_event.rs
+@@ -19,6 +19,7 @@ use serde_json::Value;
+ use tokio::sync::oneshot;
+ 
+ use super::AudioBufferControl;
++use super::PendingDetachedResponse;
+ use super::RealtimeEventParser;
+ use super::SdkRealtimeCommand;
+ use super::dispatch_interrupt_sdk;
+@@ -139,17 +140,23 @@ fn response_options(
+     }
+     if let Some(tools) = &response.tools {
+         let mut names = BTreeSet::new();
++        let mut labels = BTreeSet::new();
+         if tools.len() > 128
+-            || tools.iter().any(|RealtimeResponseTool::Function(tool)| {
+-                tool.name.is_empty()
+-                    || tool.name.len() > 128
+-                    || !tool.parameters.is_object()
+-                    || !names.insert(tool.name.as_str())
++            || tools.iter().any(|tool| match tool {
++                RealtimeResponseTool::Function(tool) => {
++                    tool.name.is_empty()
++                        || tool.name.len() > 128
++                        || !tool.parameters.is_object()
++                        || !names.insert(tool.name.as_str())
++                }
++                RealtimeResponseTool::Mcp(tool) => {
++                    tool.server_label.is_empty()
++                        || tool.server_label.len() > 512
++                        || !labels.insert(tool.server_label.as_str())
++                }
+             })
+         {
+-            return Err(invalid(
+-                "Invalid raw Realtime response function declarations",
+-            ));
++            return Err(invalid("Invalid raw Realtime response tool declarations"));
+         }
+     }
+     Ok(RealtimeResponseOptions {
+@@ -222,7 +229,7 @@ pub(crate) async fn handle_send_event_sdk(
+     mut value: Value,
+     reply: Reply<Option<Value>>,
+ ) {
+-    let (event, event_id) = match parse_event(&mut value) {
++    let (event, event_id, bytes) = match parse_event(&mut value) {
+         Ok(event) => event,
+         Err(error) => {
+             let _ = reply.send(Err(error));
+@@ -236,6 +243,17 @@ pub(crate) async fn handle_send_event_sdk(
+     match event {
+         ClientEvent::ResponseCreate { response } => {
+             let result = match response_options(response, event_id) {
++                Ok(options) if options.conversation == Some(RealtimeResponseConversation::None) => {
++                    dispatch_sdk_control(sess, generation, completion(reply, |()| None), |reply| {
++                        SdkRealtimeCommand::RequestDetachedResponse(PendingDetachedResponse {
++                            options,
++                            bytes,
++                            reply,
++                        })
++                    })
++                    .await;
++                    return;
++                }
+                 Ok(options) => {
+                     sess.conversation
+                         .sdk_enqueue(&generation, SdkRealtimeCommand::RequestResponse(options))
+@@ -407,7 +425,7 @@ pub(crate) async fn handle_send_event_sdk(
+     }
+ }
+ 
+-fn parse_event(value: &mut Value) -> CodexResult<(ClientEvent, Option<String>)> {
++fn parse_event(value: &mut Value) -> CodexResult<(ClientEvent, Option<String>, usize)> {
+     let mut retained_bytes = 0;
+     codex_api::charge_realtime_json_storage(value, &mut retained_bytes)
+         .map_err(|_| invalid("Raw Realtime event exceeds its 8 MiB estimated storage limit"))?;
+@@ -434,7 +452,7 @@ fn parse_event(value: &mut Value) -> CodexResult<(ClientEvent, Option<String>)>
+     {
+         value["event_id"] = original_id;
+     }
+-    Ok((event, event_id))
++    Ok((event, event_id, retained_bytes))
+ }
+ 
+ #[derive(Deserialize)]
 diff --git a/codex-rs/core/src/realtime_conversation/tool_task.rs b/codex-rs/core/src/realtime_conversation/tool_task.rs
-index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164834db8ce 100644
+index 5774c1c180d754a9a147b2eb002361fe536069a5..cf6203e42857201ffb7ce80b6de232648a4244b8 100644
 --- a/codex-rs/core/src/realtime_conversation/tool_task.rs
 +++ b/codex-rs/core/src/realtime_conversation/tool_task.rs
 @@ -30,6 +30,201 @@ use tokio::sync::Mutex;
@@ -4133,15 +3982,6 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
  }
  
  impl RealtimeSourceDraft {
-@@ -88,7 +286,7 @@ impl RealtimeSourceDraft {
-         tools: Option<&[RealtimeFunctionTool]>,
-         expected: Option<&str>,
-     ) -> codex_protocol::error::Result<()> {
--        if tools.is_some_and(|tools| !tools.is_empty())
-+        if (expected.is_some() || tools.is_some_and(|tools| !tools.is_empty()))
-             && (self.captured.as_ref().is_none_or(|source| {
-                 source.selection_id.is_empty() || Some(source.selection_id.as_str()) != expected
-             }))
 @@ -148,6 +346,7 @@ pub(super) async fn capture_realtime_source_draft(
          inputs,
          settings,
@@ -4186,16 +4026,7 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
  fn wire_definition(
      declaration: &codex_extension_api::RealtimeToolDeclaration,
  ) -> codex_protocol::error::Result<RealtimeFunctionTool> {
-@@ -265,7 +478,7 @@ pub(super) fn select_source_tools(
-     let Some(requested) = requested else {
-         return Ok(admitted);
-     };
--    if !requested.is_empty()
-+    if (expected_selection_id.is_some() || !requested.is_empty())
-         && (source.selection_id.is_empty()
-             || expected_selection_id != Some(source.selection_id.as_str()))
-     {
-@@ -820,13 +1033,28 @@ impl RealtimeToolTask {
+@@ -845,13 +1058,28 @@ impl RealtimeToolTask {
          dispatch
      }
  
@@ -4228,7 +4059,7 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
      }
  
      async fn execute_work(
-@@ -951,7 +1179,10 @@ impl RealtimeToolTask {
+@@ -976,7 +1204,10 @@ impl RealtimeToolTask {
                      .expect("nonempty batch")
                      .sdk
                      .commands_tx
@@ -4240,7 +4071,7 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
                      .is_err()
              {
                  // This wake also owns any held explicit user input and cannot be lost.
-@@ -1035,7 +1266,11 @@ impl RealtimeToolTask {
+@@ -1060,7 +1291,11 @@ impl RealtimeToolTask {
          cancellation: CancellationToken,
      ) -> SessionTaskResult {
          let step = session
@@ -4253,7 +4084,7 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
              .await?;
          let runtime = ToolCallRuntime::new(
              Arc::clone(&session),
-@@ -1089,7 +1324,16 @@ impl RealtimeToolTask {
+@@ -1115,7 +1350,16 @@ impl RealtimeToolTask {
              if let Some(accepted) = &accepted {
                  let target = session
                      .activate_agent_at_tool_boundary(&root, &cancellation, Some(accepted))
@@ -4271,7 +4102,7 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
                      .filter(|target| target.profile_id == accepted.target_profile_id)
                      .ok_or_else(|| {
                          CodexErr::InvalidRequest(
-@@ -1109,7 +1353,10 @@ impl RealtimeToolTask {
+@@ -1135,7 +1379,10 @@ impl RealtimeToolTask {
                  }
                  if sdk
                      .commands_tx
@@ -4283,7 +4114,7 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
                      .is_err()
                  {
                      return Err(self.terminal_queue_error(&session).await);
-@@ -1275,7 +1522,10 @@ impl SessionTask for RealtimeToolTask {
+@@ -1301,7 +1548,10 @@ impl SessionTask for RealtimeToolTask {
                  if !committed
                      && sdk
                          .commands_tx
@@ -4295,11 +4126,39 @@ index a200457597fb34ad481a10c6fa391bd14d2fa809..207c71a00388e6de0052c5f053a39164
                          .is_err()
                  {
                      let _ = self.terminal_queue_error(&session).await;
+diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
+index d99266b0583f86064ef00d406ada86c560918d46..727074db35d4d2f49e4a144c65faa9d2f8ffc048 100644
+--- a/codex-rs/core/src/realtime_conversation_tests.rs
++++ b/codex-rs/core/src/realtime_conversation_tests.rs
+@@ -3548,6 +3548,7 @@ async fn prepared_close_with_provider_credential(missing_env: bool) {
+         None,
+         None,
+         true,
++        codex_protocol::protocol::RealtimeProviderEventObservation::None,
+         None,
+     )
+     .await
+@@ -3602,6 +3603,7 @@ async fn sdk_malformed_credential_fails_before_native_mcp_or_transport_preparati
+         None,
+         None,
+         true,
++        codex_protocol::protocol::RealtimeProviderEventObservation::None,
+         None,
+     )
+     .await
+@@ -5085,6 +5087,7 @@ async fn sdk_sip_config_uses_native_source_and_serializer_without_reserving_voic
+         None,
+         None,
+         true,
++        codex_protocol::protocol::RealtimeProviderEventObservation::None,
+         None,
+     )
+     .await
 diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
-index 478f3b8bcc342e0cd1b8cd4e2d99a9564edea062..4f8e7a9d146559d37bb20d9e1cd836d8cc3e6092 100644
+index 52b638346ae2323f13562cc9eaf2ff506c2bf45d..5f1e132fafdec775071d9d1036abbbca85174b9a 100644
 --- a/codex-rs/core/src/session/agent_profile.rs
 +++ b/codex-rs/core/src/session/agent_profile.rs
-@@ -98,6 +98,10 @@ fn persisted_profile(
+@@ -100,6 +100,10 @@ fn persisted_profile(
  }
  
  impl Session {
@@ -4310,7 +4169,7 @@ index 478f3b8bcc342e0cd1b8cd4e2d99a9564edea062..4f8e7a9d146559d37bb20d9e1cd836d8
      fn revoke_agent_profile_admission(&self) {
          self.services.local_agent_runtime.request_shutdown();
          for contributor in self.services.extensions.thread_lifecycle_contributors() {
-@@ -152,7 +156,7 @@ impl Session {
+@@ -154,7 +158,7 @@ impl Session {
  
      /// A real sampling/tools-only boundary consumes the accepted first handoff.
      pub(crate) async fn activate_agent_at_tool_boundary(
@@ -4319,7 +4178,7 @@ index 478f3b8bcc342e0cd1b8cd4e2d99a9564edea062..4f8e7a9d146559d37bb20d9e1cd836d8
          context: &Arc<TurnContext>,
          cancellation: &CancellationToken,
          accepted_handoff: Option<&codex_protocol::agent_profile::AgentProfileHandoff>,
-@@ -211,6 +215,23 @@ impl Session {
+@@ -213,6 +217,23 @@ impl Session {
          let Some(candidate) = candidate else {
              return Ok(None);
          };
@@ -4343,6 +4202,26 @@ index 478f3b8bcc342e0cd1b8cd4e2d99a9564edea062..4f8e7a9d146559d37bb20d9e1cd836d8
          let receipt = self
              .commit_agent_profile(
                  Some(fence),
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index 5c6bdb22cf66832715c87767e17a5d59d305cf14..9befb608431c4b7330f3dea1d825dd14b6e02cd1 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -529,6 +529,7 @@ pub(super) async fn submission_loop(
+                     expected_selection_id,
+                     disabled_tool_names,
+                     hosted_mcp_auto_response,
++                    provider_event_observation,
+                     reply,
+                 } => {
+                     let _ = reply.send(
+@@ -541,6 +542,7 @@ pub(super) async fn submission_loop(
+                             expected_selection_id,
+                             disabled_tool_names,
+                             hosted_mcp_auto_response,
++                            provider_event_observation,
+                             sub.turn_extension_init,
+                         )
+                         .await,
 diff --git a/codex-rs/core/src/session/mcp_runtime.rs b/codex-rs/core/src/session/mcp_runtime.rs
 index bf2825467ccaf9fc52366d905ced71aff2774c7e..a4fedb2018970930a394b24b33acd6e111ab5d4a 100644
 --- a/codex-rs/core/src/session/mcp_runtime.rs
@@ -4463,3 +4342,96 @@ index e525a105dbaff52b1b30291145ed1928315a085f..b52f6d89728bcc292dc0e49a94a93624
  pub use model_request::ToolsOnlyCallInput;
  pub use model_request::ToolsOnlyWorkCancellation;
  pub use model_request::TurnSamplingStop;
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 0519b605a91a691215757860295f67a3f79a04f8..e329bfde48a7802857819a5fa0f76914fac10845 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -665,8 +665,44 @@ where
+     Option::<String>::deserialize(deserializer).map(Some)
+ }
+ 
++/// An opt-in observation of a provider frame, independent of SDK control events.
++#[derive(Debug, Clone, Copy, Default)]
++pub enum RealtimeProviderEventObservation {
++    #[default]
++    None,
++    History,
++    All,
++}
++
++/// An observed provider frame, independent of SDK control events.
++#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
++pub struct RealtimeRawProviderEvent {
++    pub event: Value,
++    /// Native ownership classification for consumers maintaining linked history.
++    pub history_observation: bool,
++}
++
++impl std::fmt::Debug for RealtimeRawProviderEvent {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("RealtimeRawProviderEvent")
++            .finish_non_exhaustive()
++    }
++}
++
++/// A provider request rejection that leaves the Realtime connection usable.
++#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
++pub struct RealtimeProviderRequestError {
++    pub code: Option<String>,
++    pub event_id: Option<String>,
++    pub rejected_default_response_create: bool,
++}
++
+ #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+ pub enum RealtimeEvent {
++    RawProviderEvent(RealtimeRawProviderEvent),
++    ProviderRequestError(RealtimeProviderRequestError),
++    /// Observed output from a response outside the default conversation.
++    DetachedResponse(Box<RealtimeEvent>),
+     SessionUpdated {
+         realtime_session_id: String,
+         instructions: Option<String>,
+@@ -731,6 +767,7 @@ pub enum RealtimeEvent {
+ impl RealtimeEvent {
+     pub fn is_output_retired(&self) -> bool {
+         match self {
++            Self::DetachedResponse(event) => event.is_output_retired(),
+             Self::HostedMcpApprovalRequested(request) => request.output_guard.is_retired(),
+             Self::AudioOut(frame) => frame.output_guard.is_retired(),
+             Self::OutputTranscriptDelta(delta) => delta.output_guard.is_retired(),
+@@ -927,6 +964,7 @@ pub enum Op {
+         expected_selection_id: Option<String>,
+         disabled_tool_names: Option<Vec<String>>,
+         hosted_mcp_auto_response: bool,
++        provider_event_observation: RealtimeProviderEventObservation,
+         reply: oneshot::Sender<CodexResult<RealtimeConversationPrepareResult>>,
+     },
+     /// Consume one prepared generation and start its owned, cancellable connection job.
+diff --git a/codex-rs/protocol/src/realtime_settings.rs b/codex-rs/protocol/src/realtime_settings.rs
+index b1eb3609d70a4966490830c8498f2514ed1cc0b9..ac3a851c22736f21c34d7bea8f6738c4fbf16d0a 100644
+--- a/codex-rs/protocol/src/realtime_settings.rs
++++ b/codex-rs/protocol/src/realtime_settings.rs
+@@ -154,7 +154,14 @@ pub enum RealtimeToolChoice {
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+ pub enum RealtimeFunctionToolChoice {
+-    Function { name: String },
++    Function {
++        name: String,
++    },
++    Mcp {
++        server_label: String,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        name: Option<String>,
++    },
+ }
+ 
+ // Omission preserves state; JSON null is not the string mode "none".
+@@ -289,6 +296,7 @@ pub struct RealtimeResponseAudioOutput {
+ #[serde(tag = "type", rename_all = "snake_case")]
+ pub enum RealtimeResponseTool {
+     Function(RealtimeFunctionTool),
++    Mcp(RealtimeHostedMcpTool),
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
