@@ -1,0 +1,92 @@
+name: Exact trusted workspace macOS qualifier
+
+on:
+  push:
+    branches: [mark/nov9-js-macos-trusted-qualifier-478777b4]
+    paths: [.github/workflows/macos-trusted-qualifier.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  qualify:
+    name: Exact Darwin native transfer and public Session cases
+    if: github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/mark/nov9-js-macos-trusted-qualifier-478777b4'
+    runs-on: macos-15
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_HEAD: 478777b49c59617a84ba6ebf37b7ae40b7ebe83b
+      EXPECTED_TREE: b529aa071ee899139d9f2dfb35110df22563c016
+      NATIVE_INPUTS: 05206f90e7903f239ab8ffb62afc4a25d63629eda7dbbd08d6b8bd84627b2c92
+      RUSTUP_TOOLCHAIN: '1.95.0'
+      OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+      CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
+      EXECUTOR_SUITE: packages/agents-codex/test/native/local-executor-policy-native.test.ts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 478777b49c59617a84ba6ebf37b7ae40b7ebe83b
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify stock runner and exact checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git diff --exit-code
+          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "darwin-arm64")'
+          printf 'SDK %s tree %s macOS %s UID %s\n' "$EXPECTED_HEAD" "$EXPECTED_TREE" "$(sw_vers -productVersion)" "$(id -u)"
+      - name: Restore the verified Darwin native transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_ARTIFACT: '{"artifact-id":"13765000375","artifact-digest":"266db2f0a4a086f0e2b835362e756ddebdb5dfb12c0bfda69984232b5c90418d"}'
+        run: |
+          node scripts/restore-native-bundle.mjs
+          test -x "$CODEX_EXEC_SERVER_TEST_BINARY"
+          shasum -a 256 -c <<'CHECKSUMS'
+          92d95b3966c76b5aaa6a09b4db85736998810d4ad39a68d5c164fb02ce5a3407  packages/agents-codex/native/codex.node
+          c9f765c307795032ed504c47ee42ae098972292d5120366b2a143a1c8d4cdc73  packages/agents-codex/native/test-bin/exec-server-fixture
+          CHECKSUMS
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Build the exact SDK with the restored addon
+        id: build_sdk
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          git diff --exit-code
+          shasum -a 256 -c <<'CHECKSUMS'
+          92d95b3966c76b5aaa6a09b4db85736998810d4ad39a68d5c164fb02ce5a3407  packages/agents-codex/native/codex.node
+          CHECKSUMS
+      - name: Trusted identity, offline SSH, toolchain, TLS and writes
+        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
+        run: >-
+          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
+          -t 'allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants'
+          --maxWorkers=1 --reporter=verbose
+      - name: Trusted Git and SSH settings and socket consent
+        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
+        run: >-
+          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
+          -t 'scopes Git and SSH settings for local commands'
+          --maxWorkers=1 --reporter=verbose
+      - name: Strict launch authority
+        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
+        run: >-
+          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
+          -t 'blocks delegation from a local command to launchd'
+          --maxWorkers=1 --reporter=verbose
+      - name: Strict detached child cleanup
+        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
+        run: >-
+          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
+          -t 'joins a detached local child at'
+          --maxWorkers=1 --reporter=verbose
