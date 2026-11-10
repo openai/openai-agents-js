@@ -34,6 +34,7 @@ mod native_interception;
 mod node_runtime;
 mod ops;
 mod options;
+mod plan_usage;
 mod project_search;
 mod provider_error;
 mod provider_transports;
@@ -325,7 +326,7 @@ struct EngineOwner {
     remote_drain:
         Option<tokio::sync::watch::Receiver<codex_exec_server::EnvironmentConnectionState>>,
     // Completion diagnostics survive a cancelled or timed-out remote drain.
-    close_diagnostic: Option<String>,
+    close_report: engine::EngineCloseReport,
 }
 
 impl Engine {
@@ -344,7 +345,7 @@ impl Engine {
             inner: Arc::new(std::sync::Mutex::new(EngineOwner {
                 live: Some(RuntimeOwned::new(state)),
                 remote_drain: None,
-                close_diagnostic: None,
+                close_report: engine::EngineCloseReport::default(),
             })),
             startup_warnings,
         }
@@ -408,6 +409,9 @@ impl Engine {
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let _permit = inner.operation(false).map_err(native_error)?;
+        if inner.manager.auth_manager().is_saved_chatgpt() {
+            return Err(native_error("Saved Codex login uses native HTTP transport"));
+        }
         let mut binding = inner.sentinel.write().expect("sentinel poisoned");
         if binding.is_some() || grant.is_empty() {
             return Err(native_error("Sentinel already bound or empty"));
@@ -627,7 +631,18 @@ impl Engine {
             Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
                 Ok(hold) => {
                     let history = usage::history_to_wire(&hold.history).map_err(native_error)?;
-                    let snapshot = serde_json::json!({ "calls": hold.calls, "history": history });
+                    let descendants = hold
+                        .descendants
+                        .iter()
+                        .map(|(id, items)| {
+                            let history = usage::history_to_wire(items)?;
+                            Ok(serde_json::json!({ "threadId": id, "history": history }))
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()
+                        .map_err(native_error)?;
+                    let snapshot = serde_json::json!({
+                        "calls": hold.calls, "history": history, "descendants": descendants
+                    });
                     Ok(Either::B(snapshot.to_string()))
                 }
                 Err(error) => Err(native_error(error)),
@@ -679,27 +694,33 @@ impl Engine {
     pub async fn _close_report(&self) -> napi::Result<Option<String>> {
         self.close_owned().await
     }
+
+    #[napi(js_name = "_close_report_defer_saved_login")]
+    pub async fn _close_report_defer_saved_login(&self) -> napi::Result<Option<String>> {
+        Self::close_owner(Arc::clone(&self.inner), true).await
+    }
 }
 
 impl Engine {
     async fn close_owned(&self) -> napi::Result<Option<String>> {
-        Self::close_owner(Arc::clone(&self.inner)).await
+        Self::close_owner(Arc::clone(&self.inner), false).await
     }
 
     async fn close_owner(
         owner: Arc<std::sync::Mutex<EngineOwner>>,
+        defer_saved_login_refresh: bool,
     ) -> napi::Result<Option<String>> {
         (async move {
             let deadline = tokio::time::Instant::now() + engine::CLOSE_TIMEOUT;
             let current = owner.lock().map_err(native_error)?.live.as_ref().cloned();
             if let Some(inner) = current {
                 let _context_operation = inner.operation(true).map_err(native_error)?;
-                let diagnostic = inner.close_report().await.map_err(native_error)?;
+                let report = inner.close_report().await.map_err(native_error)?;
                 // Shutdown has completed; release retained native thread slots before draining.
                 inner.release_native_threads();
                 let mut state = owner.lock().map_err(native_error)?;
                 if state.live.is_some() {
-                    state.close_diagnostic = diagnostic;
+                    state.close_report = report;
                     state.remote_drain = inner
                         .manager
                         .environment_manager()
@@ -719,7 +740,11 @@ impl Engine {
                 .map_err(|_| native_error("Codex environment shutdown timed out"))?;
                 owner.lock().map_err(native_error)?.remote_drain.take();
             }
-            Ok(owner.lock().map_err(native_error)?.close_diagnostic.clone())
+            Ok(owner
+                .lock()
+                .map_err(native_error)?
+                .close_report
+                .message(defer_saved_login_refresh))
         })
         .await
     }
@@ -749,7 +774,21 @@ struct NativeThreadOwner {
     live: Option<RuntimeOwned<engine::ThreadState>>,
     interception_reader: tokio_util::sync::CancellationToken,
     mcp_result_reader: tokio_util::sync::CancellationToken,
-    resource_requests_stop: tokio_util::sync::CancellationToken,
+    resources: ResourceRequests,
+    plan_usage_reader: Option<plan_usage::PlanUsageReader>,
+}
+
+#[derive(Clone, Default)]
+struct ResourceRequests {
+    stop: tokio_util::sync::CancellationToken,
+    plan_usage: tokio_util::task::TaskTracker,
+}
+
+impl ResourceRequests {
+    fn cancel(&self) {
+        self.stop.cancel();
+        self.plan_usage.close();
+    }
 }
 
 /// A private single-use bridge receipt. Keep the reservation through native
@@ -836,7 +875,8 @@ impl NativeThreadOwner {
     fn release(&mut self) {
         self.interception_reader.cancel();
         self.mcp_result_reader.cancel();
-        self.resource_requests_stop.cancel();
+        self.resources.cancel();
+        self.plan_usage_reader = None;
         // Engine shutdown need not join the JS event reader. Settle this
         // owner's receipts while the slot still identifies the right state;
         // the reader's later finally may find the slot already empty.
@@ -860,7 +900,8 @@ impl NativeThread {
             live: Some(RuntimeOwned::new(Arc::clone(&state))),
             interception_reader: tokio_util::sync::CancellationToken::new(),
             mcp_result_reader: tokio_util::sync::CancellationToken::new(),
-            resource_requests_stop: tokio_util::sync::CancellationToken::new(),
+            resources: ResourceRequests::default(),
+            plan_usage_reader: None,
         }));
         state.engine.register_native_thread(&inner);
         Self {
@@ -932,11 +973,12 @@ impl NativeThread {
         selected_environment: bool,
         retire_private: bool,
     ) -> napi::Result<Option<String>> {
-        self.inner
-            .lock()
-            .map_err(native_error)?
-            .resource_requests_stop
-            .cancel();
+        let resources = {
+            let owner = self.inner.lock().map_err(native_error)?;
+            owner.resources.cancel();
+            owner.resources.clone()
+        };
+        resources.plan_usage.wait().await;
         let Some(inner) = self.live()? else {
             return Ok(None);
         };
@@ -968,6 +1010,7 @@ impl NativeThread {
 #[napi(js_name = "_ContextChange")]
 pub struct ContextChange {
     change: tokio::sync::Mutex<Option<RuntimeOwned<context::Change>>>,
+    source_resources: ResourceRequests,
     candidate: std::sync::Mutex<Option<Arc<std::sync::Mutex<EngineOwner>>>>,
     prospective: std::sync::Mutex<Option<RuntimeOwned<codex_core_api::EnvironmentManager>>>,
     remote_drain: std::sync::Mutex<
@@ -1073,13 +1116,27 @@ impl ContextChange {
         )
         .await
         .map_err(native_error)?;
-        let mut state = engine::EngineState::new_owned(
+        let source = &change.state.engine;
+        let plan = source.plan_authorization.clone().map(|authorization| {
+            (
+                authorization,
+                source.service_config.model_provider_id.clone(),
+            )
+        });
+        let inherited_saved_login = source
+            .saved_login_file
+            .clone()
+            .map(|file| (source.manager.auth_manager(), file));
+        let mut state = engine::EngineState::new_owned_with_store(
             serde_json::to_string(&config).map_err(native_error)?,
             runtime,
             true,
             api_key,
             Some(&self.prospective),
             initial_models,
+            None,
+            plan,
+            inherited_saved_login,
         )
         .await
         .map_err(native_error)?;
@@ -1115,20 +1172,21 @@ impl ContextChange {
 
     #[napi]
     pub async fn retire(&self) -> napi::Result<Option<String>> {
-        self.change
-            .lock()
-            .await
+        let change = self.change.lock().await;
+        let change = change
             .as_ref()
-            .ok_or_else(|| native_error("context change is released"))?
-            .retire()
-            .await
-            .map_err(native_error)
+            .ok_or_else(|| native_error("context change is released"))?;
+        self.source_resources.cancel();
+        self.source_resources.plan_usage.wait().await;
+        change.retire().await.map_err(native_error)
     }
 
     #[napi]
     pub async fn fence(&self) {
         if let Some(change) = self.change.lock().await.as_ref() {
             change.fence();
+            self.source_resources.cancel();
+            self.source_resources.plan_usage.wait().await;
         }
     }
 
@@ -1249,7 +1307,8 @@ impl ContextChange {
         let _change = self.change.lock().await;
         let candidate = self.candidate.lock().map_err(native_error)?.clone();
         let diagnostic = if let Some(candidate) = candidate {
-            let diagnostic = Engine::close_owner(candidate).await?;
+            // The source retains the shared saved login and its refresh outcome.
+            let diagnostic = Engine::close_owner(candidate, true).await?;
             self.candidate.lock().map_err(native_error)?.take();
             diagnostic
         } else {
@@ -1341,6 +1400,42 @@ impl NativeThread {
         serde_json::to_string(&snapshot).map_err(native_error)
     }
 
+    #[napi(js_name = "_read_plan_usage")]
+    pub async fn _read_plan_usage(
+        &self,
+        request: &ModelHttpRequest,
+    ) -> napi::Result<Option<String>> {
+        let state = self.current()?;
+        let manager = state.engine.manager.auth_manager();
+        let (reader, stopped, _tracked) = {
+            // Fence admission against retirement without holding the gate during I/O.
+            let _admission = state.engine.operation(false).map_err(native_error)?;
+            if !manager.is_saved_chatgpt() {
+                return Ok(None);
+            }
+            let mut owner = self.inner.lock().map_err(native_error)?;
+            if owner.resources.stop.is_cancelled() || request.cancelled.is_cancelled() {
+                return Err(native_error("Codex plan usage read cancelled"));
+            }
+            let reader = owner
+                .plan_usage_reader
+                .get_or_insert_with(|| plan_usage::PlanUsageReader::new(&manager))
+                .clone();
+            (
+                reader,
+                owner.resources.stop.clone(),
+                owner.resources.plan_usage.token(),
+            )
+        };
+        drop(state);
+        tokio::select! {
+            biased;
+            _ = request.cancelled.cancelled() => Err(native_error("Codex plan usage read cancelled")),
+            _ = stopped.cancelled() => Err(native_error("Session closed during plan usage read")),
+            value = reader.read(&manager) => value.map(Some).map_err(native_error),
+        }
+    }
+
     #[napi(js_name = "_begin_context_change")]
     pub async fn _begin_context_change(&self) -> napi::Result<ContextChange> {
         let state = self.current()?;
@@ -1349,6 +1444,7 @@ impl NativeThread {
             .map_err(native_error)?;
         Ok(ContextChange {
             change: tokio::sync::Mutex::new(Some(RuntimeOwned::new(Arc::new(change)))),
+            source_resources: self.inner.lock().map_err(native_error)?.resources.clone(),
             candidate: std::sync::Mutex::new(None),
             prospective: std::sync::Mutex::new(None),
             remote_drain: std::sync::Mutex::new(None),
@@ -2110,7 +2206,8 @@ impl NativeThread {
                     .inner
                     .lock()
                     .map_err(native_error)?
-                    .resource_requests_stop
+                    .resources
+                    .stop
                     .clone();
                 let request = async {
                     match operation.as_str() {
@@ -3128,7 +3225,8 @@ impl NativeThread {
                 .inner
                 .lock()
                 .map_err(native_error)?
-                .resource_requests_stop
+                .resources
+                .stop
                 .clone();
             tokio::select! {
                 biased;
@@ -3176,17 +3274,20 @@ impl NativeThread {
         {
             return Ok(false);
         }
-        // The callback has ended even when queued input prevents an interrupt.
-        // Retire only its own sender so the native executor can finish, without
-        // cancelling work Core already accepted for this child or another turn.
-        drop(
-            owner
-                .take_reply(&key.reply.thread, &key)
-                .map_err(native_error)?,
-        );
-        ops::interrupt_if_no_pending_input(&thread, key.turn.clone())
+        // Releasing the reply before the decision can send a tool failure to the model.
+        let reply = owner
+            .take_reply(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        let interrupted = thread
+            .interrupt_if_no_pending_input(&key.turn)
             .await
-            .map_err(native_error)
+            .map_err(native_error)?;
+        // Core acknowledges the decision before cancelling the task. Keep the sender
+        // until cancellation closes the receiver. On refusal, release it for queued input.
+        if interrupted && let Some(mut sender) = reply {
+            sender.closed().await;
+        }
+        Ok(interrupted)
     }
 
     #[napi(js_name = "_respond_python_tool")]
@@ -4171,12 +4272,8 @@ impl NativeThread {
 
     #[napi(js_name = "_stop_sampling_for_close")]
     pub fn _stop_sampling_for_close(&self) -> napi::Result<()> {
-        // Wake idle resource requests before JS joins the owned mutation.
-        self.inner
-            .lock()
-            .map_err(native_error)?
-            .resource_requests_stop
-            .cancel();
+        // Wake passive resource requests before JS joins the owned mutation.
+        self.inner.lock().map_err(native_error)?.resources.cancel();
         if let Some(inner) = self.live()?
             && let Some(root) = inner
                 .thread
@@ -4340,10 +4437,15 @@ impl SessionStoreReconciliation {
 pub fn reconcile_thread_store(
     callback: custom_storage::Callback,
     result_json: String,
+    plan_identity: Option<String>,
 ) -> napi::Result<SessionStoreReconciliation> {
     let result: ReconciliationInput = serde_json::from_str(&result_json).map_err(input_error)?;
+    let mut store = custom_storage::CustomThreadStore::new(callback);
+    if let Some(identity) = plan_identity {
+        store = store.with_plan_provider(plan_provider_id(&identity)?);
+    }
     Ok(SessionStoreReconciliation {
-        store: Arc::new(custom_storage::CustomThreadStore::new(callback)),
+        store: Arc::new(store),
         thread_id: result.thread_id,
         input: std::sync::Mutex::new(Some(result)),
     })
@@ -4368,6 +4470,8 @@ pub async fn create_store_engine(
         None,
         Default::default(),
         Some(store),
+        None,
+        None,
     )
     .await
     .map_err(native_error)?;
@@ -4427,23 +4531,12 @@ pub async fn create_checkpoint_engine(
 
     let config_json = config_json.to_owned();
     let runtime_json = runtime_json.to_owned();
-    let specs: Option<Vec<codex_protocol::dynamic_tools::DynamicToolSpec>> = initial_specs_json
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(input_error)?;
-    let initial_models = initial_checkpoint
-        .as_deref()
-        .map(|encoded| {
-            let raw = checkpoint_wire_value(encoded).map_err(input_error)?;
-            let checkpoint: checkpoint::Checkpoint =
-                serde_json::from_value(raw).map_err(input_error)?;
-            checkpoint
-                .initial_models(specs.as_deref(), fresh_manual.unwrap_or(false))
-                .map_err(input_error)
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let initial_models = checkpoint_initial_models(
+        initial_checkpoint.as_deref(),
+        initial_specs_json.as_deref(),
+        fresh_manual.unwrap_or(false),
+        None,
+    )?;
     (async move {
         let inner = engine::EngineState::new_owned_with_application(
             config_json,
@@ -4459,6 +4552,93 @@ pub async fn create_checkpoint_engine(
         Ok(Engine::new(inner))
     })
     .await
+}
+
+fn checkpoint_initial_models(
+    initial_checkpoint: Option<&str>,
+    initial_specs_json: Option<&str>,
+    fresh_manual: bool,
+    plan_provider: Option<&str>,
+) -> napi::Result<checkpoint::InitialModels> {
+    let specs: Option<Vec<codex_protocol::dynamic_tools::DynamicToolSpec>> = initial_specs_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(input_error)?;
+    Ok(initial_checkpoint
+        .map(|encoded| {
+            let raw = checkpoint_wire_value(encoded).map_err(input_error)?;
+            let checkpoint: checkpoint::Checkpoint =
+                serde_json::from_value(raw).map_err(input_error)?;
+            checkpoint
+                .validate_plan_binding(plan_provider)
+                .map_err(input_error)?;
+            checkpoint
+                .initial_models(specs.as_deref(), fresh_manual)
+                .map_err(input_error)
+        })
+        .transpose()?
+        .unwrap_or_default())
+}
+
+#[napi(js_name = "_create_plan_engine")]
+pub async fn _create_plan_engine(
+    config_json: String,
+    runtime_json: String,
+    bearer: String,
+    identity: String,
+    initial_checkpoint: Option<String>,
+    initial_specs_json: Option<String>,
+    store: Option<custom_storage::Callback>,
+) -> napi::Result<Engine> {
+    let plan_provider = plan_provider_id(&identity)?;
+    if bearer.is_empty() {
+        return Err(input_error("Invalid Sign in with ChatGPT access token"));
+    }
+    let mut authorization = http::HeaderValue::from_str(&format!("Bearer {bearer}"))
+        .map_err(|_| input_error("Invalid Sign in with ChatGPT access token"))?;
+    authorization.set_sensitive(true);
+    let checkpoint = initial_checkpoint.is_some();
+    let initial_models = checkpoint_initial_models(
+        initial_checkpoint.as_deref(),
+        initial_specs_json.as_deref(),
+        false,
+        Some(&plan_provider),
+    )?;
+    let inner = engine::EngineState::new_owned_with_store(
+        config_json,
+        runtime_json,
+        checkpoint,
+        None,
+        None,
+        initial_models,
+        store.map(|callback| {
+            Arc::new(
+                custom_storage::CustomThreadStore::new(callback)
+                    .with_plan_provider(plan_provider.clone()),
+            )
+        }),
+        Some((authorization, plan_provider)),
+        None,
+    )
+    .await
+    .map_err(native_error)?;
+    Ok(Engine::new(inner))
+}
+
+fn plan_provider_id(identity: &str) -> napi::Result<String> {
+    if identity.len() != 64
+        || !identity
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(input_error(
+            "Invalid Sign in with ChatGPT registration binding",
+        ));
+    }
+    Ok(format!(
+        "{}{identity}",
+        codex_thread_store::CHATGPT_PLAN_PROVIDER_PREFIX
+    ))
 }
 
 // Only the exact trusted private HTTP route reaches this function. EndpointSession
@@ -4721,8 +4901,31 @@ async fn sentinel_stream_dispatch(
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let mut request = provider
         .build_request("POST".parse().map_err(native_error)?, "responses")
-        .with_raw_body(body);
+        .with_raw_body(body.clone());
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
+    if let Some(authorization) = &inner.plan_authorization {
+        let body: serde_json::Value = serde_json::from_slice(&body)
+            .map_err(|_| input_error("Invalid Sign in with ChatGPT request body"))?;
+        if provider_id != inner.service_config.model_provider_id
+            || request.url != "https://api.openai.com/v1/responses"
+            || request.method != http::Method::POST
+            || request
+                .headers
+                .get("x-openai-internal-codex-responses-lite")
+                != Some(&http::HeaderValue::from_static("true"))
+            || body.get("stream").and_then(serde_json::Value::as_bool) != Some(true)
+            || body.get("store").and_then(serde_json::Value::as_bool) != Some(false)
+            || !body.get("input").is_some_and(serde_json::Value::is_array)
+            || body.get("previous_response_id").is_some()
+        {
+            return Err(input_error(
+                "Invalid Sign in with ChatGPT Responses Lite request",
+            ));
+        }
+        request
+            .headers
+            .insert(http::header::AUTHORIZATION, authorization.clone());
+    }
     // Reuse the physical transport's existing streaming and error-body bounds.
     request.response_body_limit_bytes = response_body_limit_bytes;
     let result = match request.into_prepared() {
@@ -4750,6 +4953,11 @@ async fn sentinel_stream_dispatch(
             .await
         }
         Err(error) => Err(TransportError::Build(error)),
+    };
+    let result = if let Some(authorization) = &inner.plan_authorization {
+        sanitize_plan_transport(result, authorization)
+    } else {
+        result
     };
     let (status, headers, body) = match result {
         Ok(response) => (
@@ -4782,6 +4990,67 @@ async fn sentinel_stream_dispatch(
         }
     };
     Ok((status, headers, body))
+}
+
+fn sanitize_plan_transport(
+    result: Result<codex_client::StreamResponse, TransportError>,
+    authorization: &http::HeaderValue,
+) -> Result<codex_client::StreamResponse, TransportError> {
+    // The physical request is the sole bearer consumer. Keep only bounded
+    // recovery details and remove echoed credentials before Core sees them.
+    let bearer = &authorization.as_bytes()[b"Bearer ".len()..];
+    let clean_headers = |headers: &mut http::HeaderMap| {
+        let echoed: Vec<_> = headers
+            .iter()
+            .filter(|(_, value)| {
+                value
+                    .as_bytes()
+                    .windows(bearer.len())
+                    .any(|part| part == bearer)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in echoed {
+            headers.remove(name);
+        }
+    };
+    match result {
+        Ok(mut response) => {
+            clean_headers(&mut response.headers);
+            if response
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                != Some("text/event-stream")
+            {
+                return Err(TransportError::Network(
+                    "Sign in with ChatGPT requires an SSE response".into(),
+                ));
+            }
+            Ok(response)
+        }
+        Err(TransportError::Http {
+            status,
+            headers,
+            body,
+            ..
+        }) => {
+            let mut headers = headers.unwrap_or_default();
+            clean_headers(&mut headers);
+            let body = body
+                .as_deref()
+                .and_then(|body| provider_error::sanitize_plan_http_body(body, bearer));
+            Err(TransportError::Http {
+                status,
+                url: None,
+                retry_after: codex_client::RetryAfter::from_headers(&headers),
+                headers: Some(headers),
+                body,
+            })
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn model_transport_error(error: TransportError) -> TransportError {

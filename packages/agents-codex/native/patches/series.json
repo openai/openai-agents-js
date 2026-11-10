@@ -241,6 +241,10 @@
       "sha256": "cda109edea1cb5a669e8be466c49b44259f7e1b0e6c79f0598005a1e4c176ca8"
     },
     {
+      "path": "sdk-local-recovery-rollout-context.patch",
+      "sha256": "3988b69144d3426502a660be2bfe31b6171a98d55cdc7a507702db3f7e558c4c"
+    },
+    {
       "path": "0055-native-history-write-reconciliation.patch",
       "sha256": "b37fa326977162283daf992214bc54bf13c19d6bd00221e77ea4c4c0933528ab"
     },
@@ -474,8 +478,20 @@
     },
     {
       "path": "sdk-realtime-raw-settings-and-item-deletion.patch",
-      "sha256": "0ab7da8b87a0bcfe84d3e60b6d2850953c781880efbb82b196f8c8a123559f18"
+      "sha256": "d29d1837c691d4f4fc4942c7f6f721fe61ddfa5febacfded10ccf1e43461f69e"
+    },
+    {
+      "path": "sdk-chatgpt-plan-responses-and-storage.patch",
+      "sha256": "e994ea870e8243269cc6cddaa1b523921cfe0aa898143b0ee533da3caac6833d"
+    },
+    {
+      "path": "sdk-saved-codex-login.patch",
+      "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
+    },
+    {
+      "path": "0153-sdk-codex-login-terminal-rate-limits.patch",
+      "sha256": "27ffb695fffd05cea70165710d3d0fd93039f22d76fde67fa96c827188fe5339"
     }
   ],
-  "result_tree": "c0176d345adff21330d88fec57f20dfeca58e16e"
+  "result_tree": "f6d7d4ef0ef2ad011c4308d8b84b0c6764edb902"
 }

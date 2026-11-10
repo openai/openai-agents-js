@@ -90,6 +90,120 @@ async fn complete(owner: &LocalChecklistStore, id: ThreadId) -> Vec<RolloutItem>
         .items
 }
 
+#[tokio::test]
+async fn local_writer_rechecks_plan_binding_after_preflight() {
+    use codex_protocol::protocol::{AskForApproval, SandboxPolicy};
+
+    let home = tempfile::tempdir().unwrap();
+    let store = Arc::new(tests::store(home.path()).await);
+    let id = ThreadId::new();
+    let model = "synthetic-model";
+    let binding = format!("{CHATGPT_PLAN_PROVIDER_PREFIX}{}", "a".repeat(64));
+    let changed_binding = format!("{CHATGPT_PLAN_PROVIDER_PREFIX}{}", "b".repeat(64));
+    let mut create = tests::create_params(id, home.path());
+    create.metadata.model_provider.clone_from(&binding);
+    store.create_thread(create).await.unwrap();
+    store
+        .persist_thread(id, PersistContext::Standard)
+        .await
+        .unwrap();
+    append(
+        &store,
+        id,
+        vec![
+            RolloutItem::EventMsg(
+                serde_json::from_value(json!({
+                    "type": "task_started", "turn_id": "root-turn", "root_turn_id": "root-turn"
+                }))
+                .unwrap(),
+            ),
+            serde_json::from_value(json!({
+                "type": "turn_context",
+                "payload": {
+                    "turn_id": "root-turn",
+                    "cwd": home.path(),
+                    "approval_policy": AskForApproval::Never,
+                    "sandbox_policy": SandboxPolicy::new_read_only_policy(),
+                    "model": model,
+                    "summary": "auto",
+                }
+            }))
+            .unwrap(),
+            row(serde_json::from_value(json!({
+                "type": "function_call", "name": "managed", "call_id": "effect", "arguments": "{}"
+            }))
+            .unwrap()),
+        ],
+    )
+    .await;
+    store.shutdown_thread(id).await.unwrap();
+
+    let saved = store
+        .read_thread(ReadThreadParams {
+            thread_id: id,
+            include_archived: true,
+            include_history: false,
+        })
+        .await
+        .unwrap();
+    store
+        .validate_resume_binding(&saved, &binding)
+        .await
+        .unwrap();
+    let (_, mut resume) = replay(&store, id, home.path()).await;
+    let path = saved.rollout_path.unwrap();
+    resume.rollout_path = Some(path.clone());
+    resume.metadata.model_provider = binding.clone();
+
+    let prepare = || {
+        store.prepare_resume(
+            resume.clone(),
+            Some(model.to_owned()),
+            Arc::new(ThreadInstructions::for_test(None, false)),
+            Default::default(),
+            Vec::new(),
+        )
+    };
+    let hold = prepare()
+        .await
+        .err()
+        .expect("the matching registered root has an unresolved effect")
+        .downcast::<local_reconciliation::RecoveryRequired>()
+        .unwrap();
+    assert_eq!(hold.calls.len(), 1);
+
+    let original = std::fs::read_to_string(&path).unwrap();
+    let changed = original.replacen(&binding, &changed_binding, 1);
+    assert_ne!(changed, original);
+    std::fs::write(&path, &changed).unwrap();
+    let locator = store.state.find_rollout_path_by_id(id, None).await.unwrap();
+    assert_eq!(locator.as_ref(), Some(&path));
+    let error = prepare()
+        .await
+        .err()
+        .expect("fresh native admission must reject the changed binding");
+    assert_eq!(
+        error.to_string(),
+        concat!(
+            "thread-store internal error: native local storage: ",
+            "Session requires matching Sign in with ChatGPT registration and account",
+        )
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), changed.as_bytes());
+    assert_eq!(
+        store.state.find_rollout_path_by_id(id, None).await.unwrap(),
+        locator
+    );
+
+    let error = store.inner.resume_thread(resume.clone()).await.unwrap_err();
+    assert!(error.to_string().contains("matching Sign in with ChatGPT"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+
+    std::fs::write(&path, original).unwrap();
+    store.inner.resume_thread(resume).await.unwrap();
+    store.inner.shutdown_thread(id).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn constructor_model_expectation_survives_drop_and_acquisition_failure() {
     let home = tempfile::tempdir().unwrap();

@@ -29,6 +29,7 @@ pretty_assertions = "=1.4.1"
 strum = "=0.27.2"
 strum_macros = "=0.28.0"
 codex-api = { path = ".upstream/reviewed-codex/codex-rs/codex-api" }
+codex-backend-client = { path = ".upstream/reviewed-codex/codex-rs/backend-client" }
 codex-client = { path = ".upstream/reviewed-codex/codex-rs/codex-client" }
 codex-http-client = { path = ".upstream/reviewed-codex/codex-rs/http-client" }
 codex-websocket-client = { path = ".upstream/reviewed-codex/codex-rs/websocket-client" }
@@ -96,6 +97,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 toml = "0.9.5"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
+zstd = "=0.13.3"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
 native-tls = "=0.2.14"

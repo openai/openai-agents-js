@@ -69,17 +69,20 @@ describe('real browser native acceptance', () => {
   browserIt(
     'captures a fake microphone and plays actual browser peer audio through native WebRTC ownership',
     async () => {
-      const [client, browserModule, webrtcModule] = await Promise.all([
-        readFile(
-          resolve('examples/codex/browser-acceptance/realtime-client.mjs'),
-        ),
-        readFile(resolve('packages/agents-codex/dist/voice/browser.mjs')),
-        readFile(resolve('packages/agents-codex/dist/voice/webrtc.mjs')),
-      ]);
+      const [client, browserModule, webrtcModule, portableModule] =
+        await Promise.all([
+          readFile(
+            resolve('examples/codex/browser-acceptance/realtime-client.mjs'),
+          ),
+          readFile(resolve('packages/agents-codex/dist/voice/browser.mjs')),
+          readFile(resolve('packages/agents-codex/dist/voice/webrtc.mjs')),
+          readFile(resolve('packages/agents-codex/dist/voice/portable.mjs')),
+        ]);
       const scripts = new Map([
         ['/client.mjs', client],
         ['/voice-browser.mjs', browserModule],
         ['/webrtc.mjs', webrtcModule],
+        ['/portable.mjs', portableModule],
       ]);
       const offers: string[] = [];
       const hangups: string[] = [];

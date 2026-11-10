@@ -69,6 +69,7 @@ import { decodeRequestMetadata } from './request-metadata';
 import { projectResponseFactRecord } from './response-facts';
 import { networkPolicyDigest } from './network-policy';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
+import { parsePlanUsage, type CodexPlanUsage } from './plan-usage';
 import {
   parseEmbeddedCommand,
   nativeReviewOutput,
@@ -127,6 +128,7 @@ import { z } from 'zod';
 import type { WebSearch } from './web-search';
 import { hostedToolSpecs, type HostedTool } from './hosted-tools';
 import {
+  assertOutputRepairSupported,
   OutputValidationError,
   prepareOutput,
   parseToolCompletion,
@@ -135,6 +137,7 @@ import {
 } from './output';
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { addAbortListener } from 'node:events';
 import type { EnvironmentAcquisition } from './environment-source';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -200,6 +203,7 @@ import {
   type ManualToolRequest,
 } from './manual';
 import {
+  binding,
   decode,
   encode,
   encodeReceipt,
@@ -265,6 +269,7 @@ import {
 import {
   managedApproval,
   captureTools,
+  isDirectFunctionTool,
   toolIdentity,
   toolNamespace,
   toolDeclarationIdentity,
@@ -313,6 +318,8 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   modelBackend?: NativeModel | ModelProvider;
+  /** @internal The Session uses the registered ChatGPT plan inference route. */
+  chatGPTPlan?: boolean;
   /** @internal Captured provider credential, independent of text producer admission. */
   realtimeApiKey?: string;
   decisions?: DecisionProvider;
@@ -898,6 +905,34 @@ function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
   );
 }
 
+async function engineCloseFailure(
+  engine: Engine,
+  failure: NativeError | undefined,
+  deferSavedLoginRefresh = false,
+): Promise<NativeError | undefined> {
+  const report = deferSavedLoginRefresh
+    ? await engine._close_report_defer_saved_login()
+    : await engine._close_report();
+  if (!report) return failure;
+  if (!failure) return new NativeError(report);
+  if (deferSavedLoginRefresh) return failure;
+  // The full native report appends the refresh diagnostic to the same ordinary
+  // report. Keep the ordinary diagnostic once and retain the refresh on its own.
+  const ordinaryReport = await engine._close_report_defer_saved_login();
+  if (report === ordinaryReport) return failure;
+  const refreshReport =
+    ordinaryReport === null
+      ? report
+      : report.slice(`${ordinaryReport}; `.length);
+  return new NativeError(failure.message, {
+    cause: new AggregateError(
+      [failure, new NativeError(refreshReport)],
+      'Native thread and engine cleanup failed',
+      { cause: failure },
+    ),
+  });
+}
+
 interface CompletionInspection {
   readonly candidate: (text: string) => Promise<CompletionDecision | undefined>;
   readonly signal: AbortSignal;
@@ -1139,6 +1174,8 @@ export class Session<OutputT = string, Context = unknown> {
   async buildRealtimeSipConfig(
     options: NativeRealtimeSipConfigOptions = {},
   ): Promise<JsonObject> {
+    if (this.options.chatGPTPlan)
+      throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('build Realtime SIP configuration on');
     if (
       !this.isOpen ||
@@ -1212,6 +1249,8 @@ export class Session<OutputT = string, Context = unknown> {
   async realtime(
     options: NativeRealtimeOptions = {},
   ): Promise<NativeRealtimeSession> {
+    if (this.options.chatGPTPlan)
+      throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('open Realtime on');
     // A rejected startup cannot return its owner as a cleanup retry handle.
     // Keep it installed until this explicit retry joins its retained cleanup.
@@ -1747,9 +1786,45 @@ export class Session<OutputT = string, Context = unknown> {
     snapshot: Object.freeze({}),
   };
 
-  /** Latest usable API-key limits observed in this live session. */
+  /** Latest usable provider limits and retry advice observed in this live session. */
   rateLimits(): ApiRateLimits {
     return this.apiRateLimitState.snapshot;
+  }
+
+  /**
+   * Read current account usage for this Session's saved Codex login.
+   * Other authentication modes return `null`. A read can be cancelled with
+   * `signal`, and it rejects if the Session closes or replaces its engine.
+   * Treat unverified snapshots as display data. Use `observedAt` to decide
+   * whether a snapshot is fresh enough for your application.
+   */
+  async planUsage({
+    signal,
+  }: { signal?: AbortSignal } = {}): Promise<CodexPlanUsage | null> {
+    this.checkCallbackOperation('read plan usage for');
+    const thread = this.#native;
+    const check = () => {
+      signal?.throwIfAborted();
+      if (!this.isOpen) throw new NativeError('Session is closed');
+      if (this.replacingNative === thread || this.#native !== thread)
+        throw new NativeError('Session changed during plan usage read');
+    };
+    check();
+    const native = await binding();
+    check();
+    const request = new native._ModelHttpRequest();
+    const abort = signal && addAbortListener(signal, () => request.cancel());
+    let wire: string | null;
+    try {
+      wire = await thread._read_plan_usage(request);
+    } catch {
+      check();
+      throw new NativeError('Unable to read Codex plan usage');
+    } finally {
+      abort?.[Symbol.dispose]();
+    }
+    check();
+    return wire === null ? null : parsePlanUsage(wire);
   }
 
   private readonly turnHandles = new WeakMap<
@@ -2083,7 +2158,10 @@ export class Session<OutputT = string, Context = unknown> {
             id === this.id ? undefined : id,
           );
           recorded.set(id, projected);
+          // Native LocalStorage has already checked the original owners.
+          // A Legacy descendant's audit can still contain a copied call.
           if (
+            this.options.customStore &&
             projected.items.some(
               (item) =>
                 item.type === 'function_call' &&
@@ -3952,6 +4030,14 @@ export class Session<OutputT = string, Context = unknown> {
     output = this.defaultOutput,
     budget = RunBudgetTracker.capture(options?.budget),
   ): OperationSelection | undefined {
+    if (!this.options.openCorrection) assertOutputRepairSupported(output);
+    if (
+      this.options.chatGPTPlan &&
+      (output.repair || options?.prepareRequest !== undefined)
+    )
+      throw new TypeError(
+        'Sign in with ChatGPT does not support output repair or prepareRequest',
+      );
     if (
       !this.options.agentGraph &&
       options?.tools === undefined &&
@@ -9615,6 +9701,13 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (options.tools !== undefined) {
       const next = splitToolDeclarations(options.tools);
+      if (
+        this.options.chatGPTPlan &&
+        next.tools.some((tool) => !isDirectFunctionTool(tool))
+      )
+        throw new TypeError(
+          'Sign in with ChatGPT requires direct local function tools',
+        );
       const registration = this.options.mcpTools?.find(isHostedRegistration);
       if (
         next.mcp.some(
@@ -10748,6 +10841,10 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   async compact(options?: SuppliedCompactionOptions): Promise<void> {
+    if (this.options.chatGPTPlan && options === undefined)
+      throw new TypeError(
+        'Sign in with ChatGPT does not support model-backed compaction',
+      );
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
       throw new TypeError(
@@ -11232,7 +11329,7 @@ export class Session<OutputT = string, Context = unknown> {
       const report = await owner.change.retire();
       owner.fenced = true;
       if (report) owner.completedFailure = new NativeError(report);
-      await this.releaseContextSource(owner);
+      await this.releaseContextSource(owner, true);
       if (owner.completedFailure) throw owner.completedFailure;
       // Retirement is irreversible: finish publication even if close or abort arrived.
       this.#native = owner.thread;
@@ -11350,17 +11447,29 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
-  private async releaseContextSource(owner: ContextReplacement): Promise<void> {
-    if (owner.sourceReleased) return;
-    // Never retain a mutation guard while native close acquires its own guard.
-    await this.releaseContextChange(owner);
-    const threadReport = await owner.source._close_report();
-    if (threadReport) owner.completedFailure ??= new NativeError(threadReport);
-    await Promise.allSettled(owner.sourceReaders);
-    const engineReport = await owner.sourceEngine._close_report();
-    if (engineReport) owner.completedFailure ??= new NativeError(engineReport);
-    this.carrier?.unbindEngine(owner.sourceEngine);
-    owner.sourceReleased = true;
+  private async releaseContextSource(
+    owner: ContextReplacement,
+    deferSavedLoginRefresh = false,
+  ): Promise<void> {
+    if (!owner.sourceReleased) {
+      // Never retain a mutation guard while native close acquires its own guard.
+      await this.releaseContextChange(owner);
+      const threadReport = await owner.source._close_report();
+      if (threadReport)
+        owner.completedFailure ??= new NativeError(threadReport);
+      await Promise.allSettled(owner.sourceReaders);
+    }
+    // The candidate shares the saved login. If both engines retire, read the
+    // final report even when the source already finished native shutdown.
+    owner.completedFailure = await engineCloseFailure(
+      owner.sourceEngine,
+      owner.completedFailure,
+      deferSavedLoginRefresh,
+    );
+    if (!owner.sourceReleased) {
+      this.carrier?.unbindEngine(owner.sourceEngine);
+      owner.sourceReleased = true;
+    }
   }
 
   private cleanupContextReplacement(owner: ContextReplacement): Promise<void> {
@@ -11424,6 +11533,8 @@ export class Session<OutputT = string, Context = unknown> {
     return snapshot;
   }
   async suspend(): Promise<SessionState> {
+    if (this.options.chatGPTPlan)
+      throw new TypeError('Sign in with ChatGPT requires settled state');
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before suspend');
     if (this.nativeQuestions.size)
@@ -12593,7 +12704,7 @@ export class Session<OutputT = string, Context = unknown> {
       // Completed persistent cleanup retains the engine's durability report.
       // Release-only diagnostics have already been consumed by native close.
       return this.options.localStorage
-        ? this.#engine._close_report().then((message) => {
+        ? this.#engine._close_report_defer_saved_login().then((message) => {
             if (message) throw new NativeError(message);
           })
         : Promise.resolve();
@@ -12788,8 +12899,10 @@ export class Session<OutputT = string, Context = unknown> {
         phase = 'native';
       }
       if (phase === 'native' && this.starting) {
-        const message = await this.#engine._close_report();
-        if (message) acknowledgmentFailure ??= new NativeError(message);
+        acknowledgmentFailure = await engineCloseFailure(
+          this.#engine,
+          acknowledgmentFailure,
+        );
         // The post-Thread engine shutdown must finish before joining a held publication.
         const startup = this.starting;
         const settled = await Promise.allSettled([
@@ -12834,8 +12947,10 @@ export class Session<OutputT = string, Context = unknown> {
       await Promise.allSettled([...this.childContinuations]);
       if (phase === 'engine') {
         if (!privateRuntime(this)) {
-          const message = await this.#engine._close_report();
-          if (message) acknowledgmentFailure ??= new NativeError(message);
+          acknowledgmentFailure = await engineCloseFailure(
+            this.#engine,
+            acknowledgmentFailure,
+          );
         }
         phase = 'carrier';
       }

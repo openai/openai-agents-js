@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
@@ -15,10 +15,12 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createServer as createUnixServer } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   Agent,
@@ -268,6 +270,175 @@ it.skipIf(!supported)(
     }
   },
   45_000,
+);
+
+it.skipIf(!supported)(
+  'scopes Git and SSH settings for local commands',
+  async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'sdk-git-'));
+    try {
+      const base = await realpath(temporary);
+      const home = join(base, 'home');
+      const cwd = join(base, 'work');
+      const globalConfig = join(base, 'git-config');
+      const socketPath = join(base, 'agent.sock');
+      await Promise.all([mkdir(home), mkdir(cwd)]);
+      await Promise.all([
+        writeFile(join(home, '.gitconfig'), '[sdkfixture]\n\tcontext = home\n'),
+        writeFile(globalConfig, '[sdkfixture]\n\tcontext = override\n'),
+      ]);
+
+      const markers: string[] = [];
+      await using listener = createUnixServer((socket) => {
+        let marker = '';
+        socket.setEncoding('utf8');
+        socket.on('data', (chunk) => (marker += chunk));
+        socket.on('end', () => markers.push(marker));
+      });
+      await new Promise<void>((resolve, reject) => {
+        listener.once('error', reject);
+        listener.listen(socketPath, resolve);
+      });
+
+      const hostGit = (...args: string[]) =>
+        execFileSync('/usr/bin/git', ['config', ...args], {
+          cwd,
+          encoding: 'utf8',
+        }).trim();
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('GIT_CONFIG_GLOBAL', undefined);
+      expect(hostGit('--global', '--get', 'sdkfixture.context')).toBe('home');
+
+      vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig);
+      vi.stubEnv('GIT_CONFIG_COUNT', '1');
+      vi.stubEnv('GIT_CONFIG_KEY_0', 'sdkfixture.command');
+      vi.stubEnv('GIT_CONFIG_VALUE_0', 'synthetic-git-value');
+      vi.stubEnv('SSH_AUTH_SOCK', socketPath);
+      vi.stubEnv('OPENAI_API_KEY', 'synthetic-ambient-key');
+      vi.stubEnv('GH_TOKEN', 'synthetic-git-token');
+      vi.stubEnv('LD_LIBRARY_PATH', home);
+      vi.stubEnv('DYLD_LIBRARY_PATH', home);
+      vi.stubEnv('NO_PROXY', '127.0.0.1');
+      expect(hostGit('--global', '--get', 'sdkfixture.context')).toBe(
+        'override',
+      );
+      expect(hostGit('--get', 'sdkfixture.command')).toBe(
+        'synthetic-git-value',
+      );
+
+      const connect = [
+        'const socket = require("node:net").createConnection(process.argv[1]);',
+        'socket.setTimeout(2000, () => socket.destroy(new Error("timeout")));',
+        'socket.on("connect", () => socket.end(process.argv[2]));',
+        'socket.on("end", () => console.log("ipc=connected"));',
+        'socket.on("error", (error) => console.log("ipc=" + error.code));',
+      ].join('\n');
+      const control = await promisify(execFile)(process.execPath, [
+        '-e',
+        connect,
+        socketPath,
+        'driver',
+      ]);
+      expect(control.stdout.trim()).toBe('ipc=connected');
+      expect(markers).toEqual(['driver']);
+
+      const modes = [
+        { name: 'strict-default', trusted: false, allowSockets: false },
+        { name: 'trusted-default', trusted: true, allowSockets: false },
+        { name: 'trusted-explicit-unix', trusted: true, allowSockets: true },
+      ];
+      const server = new ModelServer(
+        modes.flatMap(({ name, trusted, allowSockets }) => {
+          const command = [
+            'set -eu',
+            'printf "git-global=%s\\n" "$(/usr/bin/git config --global --get sdkfixture.context 2>/dev/null || true)"',
+            'printf "git-value=%s\\n" "$(/usr/bin/git config --get sdkfixture.command || true)"',
+            'printf "ssh-setting=%s\\n" "${SSH_AUTH_SOCK-}"',
+            'test -z "${GIT_CONFIG_COUNT+x}${GIT_CONFIG_KEY_0+x}${GIT_CONFIG_VALUE_0+x}${OPENAI_API_KEY+x}${GH_TOKEN+x}${LD_LIBRARY_PATH+x}${DYLD_LIBRARY_PATH+x}"',
+          ];
+          if (trusted) {
+            const socket = allowSockets
+              ? '"$SSH_AUTH_SOCK"'
+              : shellQuote(socketPath);
+            command.push(
+              `test -S ${socket}`,
+              `${shellQuote(process.execPath)} -e ${shellQuote(connect)} ${socket} ${shellQuote(name)}`,
+            );
+          } else {
+            command.push('test -z "${GIT_CONFIG_GLOBAL+x}"');
+          }
+          if (!allowSockets) {
+            command.push('test -z "${SSH_AUTH_SOCK+x}"');
+          }
+          return [
+            [
+              call(
+                'exec_command',
+                { cmd: command.join('; '), yield_time_ms: 10_000 },
+                { callId: name },
+              ),
+            ],
+            [message(name)],
+          ];
+        }),
+      );
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      if (process.platform === 'linux') {
+        await expect(
+          agent.session({
+            environment: Environment.local({
+              cwd,
+              writePolicy: 'trusted_workspace_write',
+              tools: ['exec_command'],
+              network: { allowedDomains: ['sdk-fixture.invalid'] },
+            }),
+          }),
+        ).rejects.toThrow('Linux requires explicit access to all Unix sockets');
+        expect(server.requests).toHaveLength(0);
+      }
+      for (const { name, trusted, allowSockets } of modes) {
+        await using session = await agent.session({
+          environment: Environment.local({
+            cwd,
+            tools: ['exec_command'],
+            writePolicy: trusted ? 'trusted_workspace_write' : undefined,
+            network: allowSockets ? { allowAllUnixSockets: true } : undefined,
+          }),
+        });
+        expect((await (await session.submit(name)).wait()).finalOutput).toBe(
+          name,
+        );
+        const item = (await Array.fromAsync(session.items())).find(
+          (item) => item.type === 'command_execution' && item.callId === name,
+        );
+        expect(item).toMatchObject({ exitCode: 0, status: 'completed' });
+        if (item?.type !== 'command_execution')
+          throw new Error(`Missing command for ${name}`);
+        expect(item.output).toMatch(
+          trusted ? /^git-global=override$/m : /^git-global=$/m,
+        );
+        expect(item.output).toMatch(/^git-value=$/m);
+        expect(item.output?.split('\n')).toContain(
+          `ssh-setting=${allowSockets ? socketPath : ''}`,
+        );
+        if (trusted) {
+          expect(item.output).toMatch(
+            allowSockets ? /^ipc=connected$/m : /^ipc=(EPERM|EACCES)$/m,
+          );
+        }
+        expect(markers).toEqual(allowSockets ? ['driver', name] : ['driver']);
+      }
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  120_000,
 );
 
 it.skipIf(process.platform !== 'darwin')(

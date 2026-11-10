@@ -181,6 +181,13 @@ export interface ToolDeclaration {
 
 const prepareInvocation = Symbol('function tool binding');
 const computerDeclaration = Symbol('native computer declaration');
+
+/** @internal The plan route admits only direct local function declarations. */
+export function isDirectFunctionTool(tool: SessionTool): boolean {
+  return (
+    tool.kind !== 'manual' && !tool.deferLoading && !tool[computerDeclaration]
+  );
+}
 type Invocation<Context> = (
   args: JsonValue,
   context: ToolCallContext<Context>,

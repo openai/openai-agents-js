@@ -1670,6 +1670,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-async-utils",
+ "codex-backend-client",
  "codex-client",
  "codex-code-mode",
  "codex-code-mode-host",
@@ -1735,6 +1736,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zstd",
 ]
 
 [[package]]
@@ -2680,6 +2682,7 @@ version = "0.0.0"
 dependencies = [
  "codex-extension-api",
  "codex-utils-absolute-path",
+ "same-file",
  "tokio",
  "tracing",
 ]

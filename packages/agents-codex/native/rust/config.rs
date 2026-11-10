@@ -46,6 +46,8 @@ struct RuntimeOptions {
     sdk_native_config: bool,
     #[serde(rename = "_sdk_discover_agents_md")]
     discover_agents_md: bool,
+    #[serde(rename = "_sdk_codex_login")]
+    saved_codex_login: Option<crate::auth::SavedCodexLogin>,
     #[serde(rename = "_sdk_project_search")]
     project_search: Option<crate::project_search::Options>,
     environment: Option<crate::environment::EnvironmentOptions>,
@@ -164,6 +166,12 @@ pub fn sdk_native_config(runtime_json: &str) -> Result<bool> {
 pub fn discover_agents_md(runtime_json: &str) -> Result<bool> {
     let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
     Ok(options.discover_agents_md)
+}
+
+pub(crate) fn saved_codex_login(
+    runtime_json: &str,
+) -> Result<Option<crate::auth::SavedCodexLogin>> {
+    Ok(decode::<RuntimeOptions>(serde_json::from_str(runtime_json)?)?.saved_codex_login)
 }
 
 pub fn native_thread_store(runtime_json: &str) -> Result<Option<AbsolutePathBuf>> {
@@ -486,6 +494,20 @@ pub async fn load(
             .enabled(codex_core_api::Feature::UnboundedConnectionRetries),
         "Native SDK configuration requires finite connection retries"
     );
+    if options.saved_codex_login.is_some() {
+        // Saved inference auth does not authorize the CLI's ambient Apps or
+        // remote plugin discovery. Explicit application Apps bind separately.
+        for feature in [
+            codex_core_api::Feature::Apps,
+            codex_core_api::Feature::RemotePlugin,
+        ] {
+            config.features.disable(feature)?;
+            anyhow::ensure!(
+                !config.features.enabled(feature),
+                "Saved Codex login requires disabled ambient Apps and remote plugins"
+            );
+        }
+    }
     // Only current application runtime configuration authorizes native storage.
     // Config and checkpoint sqlite_home values cannot choose its location.
     if let (Some(goals), Some(threads)) = (&options.native_goal_store, &options.native_thread_store)
