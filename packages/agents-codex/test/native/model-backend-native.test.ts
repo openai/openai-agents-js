@@ -667,8 +667,8 @@ it.each([
   ['function_call', true],
   [undefined, false],
   [undefined, true],
-  ['vendor-custom', false],
-  ['vendor-custom', true],
+  ['N01_SYNTHETIC_PRIVATE_FINISH_REASON', false],
+  ['N01_SYNTHETIC_PRIVATE_FINISH_REASON', true],
 ] as const)(
   'fails Chat finish_reason=%s with refusal=%s before any tool effect',
   async (finishReason, refusal) => {
@@ -755,6 +755,9 @@ it.each([
       expect(effects).toEqual([]);
       expect(requests).toHaveLength(1);
       expect(String(error)).not.toContain('private-partial-answer');
+      expect(String(error)).not.toContain(
+        'N01_SYNTHETIC_PRIVATE_FINISH_REASON',
+      );
       const recorded = [];
       for await (const row of session.turns()) recorded.push(row);
       expect(['failed', 'cancelled']).toContain(recorded[0].status);
@@ -767,7 +770,13 @@ it.each([
               row.fact.kind === 'refusal' && row.fact.text === privateRefusal,
           ),
         ).toBe(true);
-      } else expect(String(error)).toContain(`finish_reason=${finishReason}`);
+      } else {
+        const reason =
+          finishReason === 'length' || finishReason === 'content_filter'
+            ? finishReason
+            : 'unsupported';
+        expect(String(error)).toContain(`finish_reason=${reason}`);
+      }
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) =>

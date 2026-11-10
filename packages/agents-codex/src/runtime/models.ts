@@ -294,10 +294,17 @@ export class ChatCompletionsModel implements NativeModel {
     if (
       !['stop', 'tool_calls'].includes(choice.finish_reason) &&
       message.refusal == null
-    )
+    ) {
+      const reason =
+        choice.finish_reason === 'length'
+          ? 'length'
+          : choice.finish_reason === 'content_filter'
+            ? 'content_filter'
+            : 'unsupported';
       throw new TypeError(
-        `ChatCompletionsModel cannot complete finish_reason=${choice.finish_reason}`,
+        `ChatCompletionsModel cannot complete finish_reason=${reason}`,
       );
+    }
     const output: JsonObject[] = [];
     const content: JsonObject[] = [];
     if (message.content != null) {
