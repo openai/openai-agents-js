@@ -7,6 +7,7 @@ import {
   toolRef,
   type ModelRequest,
   type UserMessage,
+  type SessionState,
 } from '../../src';
 
 it('preserves admitted mixed audio content through one native tool continuation', async () => {
@@ -61,7 +62,10 @@ it('preserves admitted mixed audio content through one native tool continuation'
     instructions: 'Use lookup once.',
     tools: [lookup],
     provider,
-    modelSettings: { toolChoice: toolRef('lookup') },
+    modelSettings: {
+      toolChoice: toolRef('lookup'),
+      inputModalities: ['text', 'audio'],
+    },
   }).run(message);
   expect(result.finalOutput).toBe('ok');
   expect(effects).toEqual(['lookup']);
@@ -77,4 +81,72 @@ it('preserves admitted mixed audio content through one native tool continuation'
       (item) => item.type === 'function_call_output',
     ),
   ).toBe(true);
+});
+
+it('keeps modality replacement, clear and restore scoped to the selected Agent', async () => {
+  const seen: ModelRequest[] = [];
+  const message: UserMessage = {
+    role: 'user',
+    content: [
+      { type: 'input_audio', audio_url: 'data:audio/wav;base64,UklGRg==' },
+    ],
+  };
+  await using provider = new NativeProvider({
+    baseUrl: 'https://example.invalid/v1',
+    modelBackend: {
+      complete(request) {
+        seen.push(request);
+        expect(request.body).not.toHaveProperty('input_modalities');
+        expect(request.body).not.toHaveProperty('request_controls');
+        return {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'ok' }],
+            },
+          ],
+        };
+      },
+    },
+  });
+  const hasAudio = () =>
+    (seen.at(-1)!.body.input as any[]).some((item) =>
+      item.content?.some((part: any) => part.type === 'input_audio'),
+    );
+  const declared = new Agent({
+    model: 'custom-model',
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { inputModalities: ['text', 'audio'] },
+  });
+  const states: { state: SessionState; expected: boolean }[] = [];
+  {
+    await using session = await declared.session();
+    await (await session.submit(message)).wait();
+    expect(hasAudio()).toBe(true);
+    states.push({ state: await session.saveState(), expected: true });
+    await session.update({ modelSettings: { temperature: 0.5 } });
+    await (await session.submit('sparse update preserves audio')).wait();
+    expect(hasAudio()).toBe(true);
+    await session.update({ modelSettings: { inputModalities: ['text'] } });
+    await (await session.submit(message)).wait();
+    expect(hasAudio()).toBe(false);
+    states.push({ state: await session.saveState(), expected: false });
+    await session.update({ modelSettings: { inputModalities: null } });
+    await (await session.submit(message)).wait();
+    expect(hasAudio()).toBe(false);
+    states.push({ state: await session.saveState(), expected: false });
+  }
+  for (const { state, expected } of states) {
+    await using restored = await declared.session({ state });
+    await (await restored.submit(message)).wait();
+    expect(hasAudio()).toBe(expected);
+  }
+  await new Agent({
+    model: 'custom-model',
+    instructions: 'Answer.',
+    provider,
+  }).run(message);
+  expect(hasAudio()).toBe(false);
 });

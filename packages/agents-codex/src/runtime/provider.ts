@@ -556,6 +556,8 @@ export interface ModelSettings {
    * the current admitted catalog; null clears it to auto. */
   toolChoice?: 'auto' | 'none' | 'required' | ToolRef | null;
   /** Nonnegative safe integer for ordinary sampling; null clears the SDK override. */
+  /** Full input-capability declaration for the selected model; null restores its catalogue. */
+  inputModalities?: readonly ('text' | 'image' | 'audio')[] | null;
   maxOutputTokens?: number | null;
   temperature?: number | null;
   topP?: number | null;
@@ -587,6 +589,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'serviceTier',
     'toolChoice',
     'invocationTimeoutMs',
+    'inputModalities',
     'maxOutputTokens',
     'temperature',
     'topP',
@@ -618,6 +621,17 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           throw new TypeError(
             'invocationTimeoutMs must be an integer in the range 1..4294967295 or null',
           );
+      } else if (key === 'inputModalities') {
+        if (
+          !Array.isArray(value) ||
+          !value.length ||
+          value.some((item) => !['text', 'image', 'audio'].includes(item)) ||
+          new Set(value).size !== value.length
+        )
+          throw new TypeError(
+            'inputModalities must be a nonempty array of distinct text/image/audio values',
+          );
+        value = Object.freeze([...value]);
       } else if (key === 'maxOutputTokens') {
         if (!Number.isSafeInteger(value) || (value as number) < 0)
           throw new TypeError(
@@ -675,6 +689,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
               'input',
               'instructions',
               'tools',
+              'input_modalities',
               'tool_choice',
               'parallel_tool_calls',
               'reasoning',
@@ -739,6 +754,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     } else if (
       ![
         'serviceTier',
+        'inputModalities',
         'toolChoice',
         'invocationTimeoutMs',
         'maxOutputTokens',
@@ -971,6 +987,7 @@ export function modelOverrides(
   if (selected.serviceTier !== undefined)
     overrides.service_tier = selected.serviceTier;
   const names = {
+    inputModalities: 'input_modalities',
     maxOutputTokens: 'max_output_tokens',
     temperature: 'temperature',
     topP: 'top_p',

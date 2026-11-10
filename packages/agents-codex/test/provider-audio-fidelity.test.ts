@@ -239,3 +239,30 @@ it('preserves inline audio through actual Google file conversion', async () => {
     allowedFunctionNames: ['lookup'],
   });
 });
+
+it('captures complete modality declarations and sparse clears', async () => {
+  const { captureModelSettings, modelOverrides } =
+    await import('../src/runtime/provider');
+  const values: ('text' | 'image' | 'audio')[] = ['text', 'audio'];
+  const captured = captureModelSettings({ inputModalities: values });
+  values.push('image');
+  expect(captured.inputModalities).toEqual(['text', 'audio']);
+  expect(modelOverrides(undefined, captured)).toEqual({
+    request_controls: { input_modalities: ['text', 'audio'] },
+  });
+  expect(modelOverrides()).toEqual({});
+  expect(modelOverrides(undefined, { inputModalities: null })).toEqual({
+    request_controls: { input_modalities: null },
+  });
+});
+it.each(
+  [[], ['audio', 'audio'], ['video'], 'audio', [1]].map((value) => ({ value })),
+)(
+  'rejects an invalid modality declaration: %j',
+  async ({ value: inputModalities }) => {
+    const { captureModelSettings } = await import('../src/runtime/provider');
+    expect(() => captureModelSettings({ inputModalities } as any)).toThrow(
+      /inputModalities/,
+    );
+  },
+);
