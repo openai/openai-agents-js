@@ -499,7 +499,23 @@
     {
       "path": "sdk-rpc-json-fidelity.patch",
       "sha256": "627e429ded864fb3388b6562c22460e604ca9ba6ad25ec72e38480c1ba61e6ed"
+    },
+    {
+      "path": "0172-linear-original-history-checkpoints.patch",
+      "sha256": "c5e73f497228483f88c78123702b6daeb348de0e4a9cadc7f4e538f43e6fd2c1"
+    },
+    {
+      "path": "sdk-linux-bootstrap-environment.patch",
+      "sha256": "4f453674465f30d922f2bfc0016d3bf47cd6f9016fe3e679abe0bfa9c780fd5e"
+    },
+    {
+      "path": "sdk-environment-name-validation.patch",
+      "sha256": "117f2da7c540d33ba72cfe8eac6601c6d534fa89e5c920a2be7b19d7431c7590"
+    },
+    {
+      "path": "0173-bounded-live-original-history.patch",
+      "sha256": "fd40ddfd3b81694bc8c86b43f1fd62162e6c8c0144f904c1265d477453d1cc88"
     }
   ],
-  "result_tree": "d4b9f8066cf86f4300124f049e06a8158a639e77"
+  "result_tree": "a2bd4db6c0cbb5ffeb1b834b27f5096d869e3c19"
 }

@@ -35,7 +35,7 @@ pub async fn snapshot(state: &ThreadState, limit: Option<usize>) -> anyhow::Resu
         .try_lock()
         .context("native mutation is in progress")?;
     idle(&state).await?;
-    let (revision, total, items) = state.thread.sdk_history_snapshot(limit).await;
+    let (revision, total, items) = state.thread.sdk_history_snapshot(limit).await?;
     Ok(json!({"revision": revision, "total": total, "items": items}))
 }
 
@@ -87,14 +87,14 @@ pub async fn replace(
     // Validate before durability: neither retained nor appended history may split
     // a client tool call/result pair. Provider-hosted records keep their existing
     // context-validator treatment, including server-side tool-search output.
-    let (current_revision, total, _) = state.thread.sdk_history_snapshot(Some(0)).await;
+    let (current_revision, total, _) = state.thread.sdk_history_snapshot(Some(0)).await?;
     ensure!(
         current_revision == expected,
         "canonical history revision conflict"
     );
     ensure!(keep <= total, "history keep exceeds snapshot length");
-    let originals = state.thread.sdk_history_projection(None).await;
-    let retained = state.thread.sdk_history_projection(Some(keep)).await.len();
+    let originals = state.thread.sdk_history_projection(None).await?;
+    let retained = state.thread.sdk_history_projection(Some(keep)).await?.len();
     let mut appended = Vec::with_capacity(items.len());
     for item in &items {
         if let Some(projection) =

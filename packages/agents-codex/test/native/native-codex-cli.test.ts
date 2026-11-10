@@ -21,6 +21,134 @@ afterEach(async () => {
 });
 
 it.skipIf(process.platform === 'win32')(
+  'forwards structured native CLI text and local images through the real subprocess',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'native-codex-input-'));
+    roots.push(root);
+    const cli = join(root, 'codex');
+    const record = join(root, 'record.json');
+    const image = join(root, 'diagram.png');
+    await writeFile(
+      cli,
+      `#!${process.execPath}\nlet input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { require('node:fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify({args:process.argv, input})); for (const event of [{type:'thread.started',thread_id:'structured-cli'},{type:'item.completed',item:{id:'item',type:'agent_message',text:'CLI completed'}},{type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}]) console.log(JSON.stringify(event)); });\n`,
+    );
+    await chmod(cli, 0o700);
+    const server = new ModelServer([
+      [
+        call(
+          'codex',
+          {
+            prompt: [
+              { type: 'text', text: 'First' },
+              { type: 'local_image', path: image },
+              { type: 'text', text: 'Second' },
+            ],
+            threadId: null,
+          },
+          { callId: 'structured-cli' },
+        ),
+      ],
+      [message('done')],
+    ]);
+    const config = await server.config();
+    const selected = config['model_providers.fixture'] as { base_url: string };
+    await using provider = new NativeProvider({
+      baseUrl: selected.base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      model: 'gpt-5',
+      instructions: 'Use codex.',
+      provider,
+      tools: [nativeCodexTool({ codexOptions: { codexPathOverride: cli } })],
+    }).session();
+    expect(
+      (await (await session.submit('Inspect the diagram')).wait()).finalOutput,
+    ).toBe('done');
+    const captured = JSON.parse(await readFile(record, 'utf8'));
+    expect(captured.args[captured.args.indexOf('--image') + 1]).toBe(image);
+    expect(captured.input).toBe('First\n\nSecond');
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'preserves captured native CLI environment, thread options and output schema',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'native-codex-options-'));
+    roots.push(root);
+    const cli = join(root, 'codex');
+    const record = join(root, 'record.json');
+    await writeFile(
+      cli,
+      `#!${process.execPath}\nconst fs=require('node:fs'); process.stdin.resume(); process.stdin.on('end', () => { const path=process.argv[process.argv.indexOf('--output-schema')+1]; fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({args:process.argv,path,schema:JSON.parse(fs.readFileSync(path,'utf8')),visible:process.env.CLI_ONLY,private:process.env.CLI_NOT_INHERITED})); for (const event of [{type:'thread.started',thread_id:'options-cli'},{type:'item.completed',item:{id:'item',type:'agent_message',text:'CLI completed'}},{type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}]) console.log(JSON.stringify(event)); });\n`,
+    );
+    await chmod(cli, 0o700);
+    const schema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+    };
+    const environment = { CLI_ONLY: 'configured' };
+    const declaration = nativeCodexTool({
+      codexOptions: { codexPathOverride: cli, env: environment },
+      defaultThreadOptions: {
+        workingDirectory: root,
+        sandboxMode: 'read-only',
+        skipGitRepoCheck: true,
+      },
+      defaultTurnOptions: { outputSchema: schema },
+    });
+    schema.properties.value.type = 'number';
+    environment.CLI_ONLY = 'mutated';
+    const server = new ModelServer([
+      [
+        call(
+          'codex',
+          { prompt: 'Run', threadId: null },
+          { callId: 'options-cli' },
+        ),
+      ],
+      [message('done')],
+    ]);
+    const config = await server.config();
+    const selected = config['model_providers.fixture'] as { base_url: string };
+    await using provider = new NativeProvider({
+      baseUrl: selected.base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const previous = process.env.CLI_NOT_INHERITED;
+    process.env.CLI_NOT_INHERITED = 'synthetic-private';
+    try {
+      await using session = await new Agent({
+        model: 'gpt-5',
+        instructions: 'Use codex.',
+        provider,
+        tools: [declaration],
+      }).session();
+      expect((await (await session.submit('Run')).wait()).finalOutput).toBe(
+        'done',
+      );
+    } finally {
+      if (previous === undefined) delete process.env.CLI_NOT_INHERITED;
+      else process.env.CLI_NOT_INHERITED = previous;
+    }
+    const captured = JSON.parse(await readFile(record, 'utf8'));
+    expect(captured.visible).toBe('configured');
+    expect(captured.private).toBeUndefined();
+    expect(captured.schema.properties.value.type).toBe('string');
+    expect(captured.args[captured.args.indexOf('--cd') + 1]).toBe(root);
+    expect(captured.args[captured.args.indexOf('--sandbox') + 1]).toBe(
+      'read-only',
+    );
+    expect(captured.args).toContain('--skip-git-repo-check');
+    await expect(readFile(captured.path)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
   'delegates a native function call to a real synthetic CLI and returns its usage',
   async () => {
     const root = await mkdtemp(join(tmpdir(), 'native-codex-cli-'));

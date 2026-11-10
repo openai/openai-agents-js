@@ -1936,6 +1936,10 @@ export type NativeCodexToolOptions = Pick<
 
 /**
  * Delegate through a native function tool to the external Codex CLI.
+ * Prompts: a string or ordered text/local_image inputs, for example
+ * [{type:'text',text:'Inspect this image'},
+ *  {type:'local_image',path:'/workspace/diagram.png'}].
+ * Local image paths: forwarded to the application-selected CLI.
  * The application authorizes executable, credentials and workspace in the
  * options. Native Environment grants do not constrain this application tool.
  * Cancellation has been joining the CLI stream.
@@ -2004,7 +2008,10 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
       options.description ??
       'Run an external Codex CLI task in the configured workspace.',
     parameters: z.object({
-      prompt: z.string().min(1),
+      prompt: z.union([
+        z.string().min(1),
+        z.array(CodexToolInputItemSchema).min(1),
+      ]),
       threadId: threadIdSchema
         .nullable()
         .default(null)
