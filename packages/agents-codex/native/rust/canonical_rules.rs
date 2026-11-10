@@ -1108,7 +1108,10 @@ async fn load_rules(
     let windows = root.infer_path_convention() == Some(PathConvention::Windows);
     let relative: Vec<_> = paths
         .iter()
-        .filter_map(|p| p.relative_path_from(root))
+        .filter_map(|path| {
+            path.relative_path_from(root)
+                .or_else(|| path.relative_path_from(canonical_root))
+        })
         .map(|s| if windows { s.replace('\\', "/") } else { s })
         .collect();
     let mut result = RuleSnapshot::default();
