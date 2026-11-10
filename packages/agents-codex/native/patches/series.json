@@ -530,8 +530,8 @@
     },
     {
       "path": "portable-realtime-session-parity.patch",
-      "sha256": "00c2a1ecbee470b05f6124baf3adc84e47b3b15e9983d61b37c1a390ef974036"
+      "sha256": "f151215897dae2423e3cb59eaf710107b12b07c70f978cc5fd17a24581bcad74"
     }
   ],
-  "result_tree": "e38ab8daf28cdff7dd72ddde7c00b0adddb64f85"
+  "result_tree": "1d384b7d3fbdc5c60df784c2d8514055afe7c843"
 }

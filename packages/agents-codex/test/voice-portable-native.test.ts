@@ -561,6 +561,289 @@ describe.runIf(enabled)('portable Rust control', () => {
     ).toThrow('already retired');
   });
 
+  it.each(['idle', 'pending', 'queued-created', 'queued-terminal'])(
+    'binds automatic speech interruption to arrival ownership: %s',
+    async (owner) => {
+      const gate = Promise.withResolvers<void>();
+      const definition = agent();
+      const frames: { type: string }[] = [];
+      const terminals: string[] = [];
+      const onError = vi.fn();
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+            if (event.type === 'input_audio_buffer.append') return gate.promise;
+          },
+          close() {},
+        },
+        {
+          ...definition.options,
+          sessionSettings: {
+            audio: {
+              input: {
+                turn_detection: {
+                  type: 'server_vad',
+                  interrupt_response: true,
+                },
+              },
+            },
+          },
+          onError,
+          onEvent(event) {
+            const value = event as { type: string; response?: { id: string } };
+            if (value.type === 'response.done')
+              terminals.push(value.response!.id);
+          },
+        },
+      );
+      try {
+        await session.start();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        session.sendAudio(new Uint8Array([1]).buffer);
+        await vi.waitFor(() =>
+          expect(frames.at(-1)?.type).toBe('input_audio_buffer.append'),
+        );
+        if (owner === 'queued-created')
+          session.receive({
+            type: 'response.created',
+            response: { id: 'target' },
+          });
+        if (owner === 'queued-terminal') {
+          session.receive({
+            type: 'response.created',
+            response: { id: 'old' },
+          });
+          session.receive({
+            type: 'response.done',
+            response: { id: 'old', status: 'completed', output: [] },
+          });
+        }
+        if (owner === 'pending' || owner === 'queued-terminal')
+          session.requestResponse();
+        session.receive({ type: 'input_audio_buffer.speech_started' });
+        if (owner === 'idle') session.requestResponse();
+        gate.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (owner !== 'queued-created')
+          session.receive({
+            type: 'response.created',
+            response: { id: 'target' },
+          });
+        session.receive({
+          type: 'response.output_item.done',
+          response_id: 'target',
+          item,
+        });
+        session.receive({
+          type: 'response.done',
+          response: { id: 'target', status: 'completed', output: [item] },
+        });
+        await vi.waitFor(() => expect(terminals).toContain('target'));
+        if (owner === 'idle')
+          await vi.waitFor(() =>
+            expect(definition.execute).toHaveBeenCalledTimes(1),
+          );
+        else {
+          expect(definition.onApproval).not.toHaveBeenCalled();
+          expect(definition.execute).not.toHaveBeenCalled();
+          const fresh = { ...item, id: 'fresh-item', call_id: 'fresh-call' };
+          session.receive({
+            type: 'response.created',
+            response: { id: 'fresh' },
+          });
+          session.receive({
+            type: 'response.done',
+            response: { id: 'fresh', status: 'completed', output: [fresh] },
+          });
+          await vi.waitFor(() =>
+            expect(definition.execute).toHaveBeenCalledTimes(1),
+          );
+        }
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        gate.resolve();
+        await session.close();
+      }
+    },
+  );
+
+  it.each(
+    ['cancelled', 'failed', 'incomplete', 'interrupt', 'automatic'].flatMap(
+      (kind) => ['', '{"value":'].map((arguments_) => ({ kind, arguments_ })),
+    ),
+  )(
+    'discards unadmitted partial arguments for $kind: $arguments_',
+    async ({ kind, arguments_ }) => {
+      const gate = Promise.withResolvers<string>();
+      const definition = agent();
+      const onError = vi.fn();
+      let admittedSignal: AbortSignal | undefined;
+      const execute = vi.fn(
+        async (_args: Record<string, unknown>, signal: AbortSignal) => {
+          admittedSignal = signal;
+          return await gate.promise;
+        },
+      );
+      const frames: {
+        type: string;
+        item?: { call_id: string; output: string };
+      }[] = [];
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+          },
+          close() {},
+        },
+        {
+          ...definition.options,
+          tools: [{ ...definition.options.tools[0], execute }],
+          sessionSettings: {
+            audio: {
+              input: {
+                turn_detection: {
+                  type: 'server_vad',
+                  interrupt_response: true,
+                },
+              },
+            },
+          },
+          onError,
+        },
+      );
+      try {
+        await session.start();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        session.receive({
+          type: 'response.created',
+          response: { id: 'admitted' },
+        });
+        session.receive({
+          type: 'response.done',
+          response: { id: 'admitted', status: 'completed', output: [item] },
+        });
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+        session.receive({
+          type: 'response.created',
+          response: { id: 'partial' },
+        });
+        if (kind === 'interrupt') session.interrupt();
+        if (kind === 'automatic')
+          session.receive({ type: 'input_audio_buffer.speech_started' });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const partial = {
+          ...item,
+          id: 'partial-item',
+          call_id: 'partial-call',
+          arguments: arguments_,
+        };
+        session.receive({
+          type: 'response.output_item.done',
+          response_id: 'partial',
+          item: partial,
+        });
+        expect(onError).not.toHaveBeenCalled();
+        session.receive({
+          type: 'response.done',
+          response: {
+            id: 'partial',
+            status: ['interrupt', 'automatic'].includes(kind)
+              ? 'completed'
+              : kind,
+            output: [partial],
+          },
+        });
+        expect(onError).not.toHaveBeenCalled();
+        expect(admittedSignal?.aborted).toBe(false);
+        expect(definition.onApproval).toHaveBeenCalledTimes(1);
+        expect(execute).toHaveBeenCalledTimes(1);
+        gate.resolve('preserved');
+        await vi.waitFor(() =>
+          expect(
+            frames.filter(
+              (frame) =>
+                frame.item?.call_id === 'call-1' &&
+                frame.item.output === 'preserved',
+            ),
+          ).toHaveLength(1),
+        );
+        session.sendText('Still usable');
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        gate.resolve('cleanup');
+        await session.close();
+      }
+    },
+  );
+
+  it.each(['', '{"value":'])(
+    'validates malformed arguments only at successful admission: %s',
+    async (arguments_) => {
+      const definition = agent();
+      const onError = vi.fn();
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+          },
+          close() {},
+        },
+        { ...definition.options, onError },
+      );
+      try {
+        await session.start();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const partial = { ...item, arguments: arguments_ };
+        session.receive({
+          type: 'response.created',
+          response: { id: 'partial' },
+        });
+        session.receive({
+          type: 'response.output_item.done',
+          response_id: 'partial',
+          item: partial,
+        });
+        expect(onError).not.toHaveBeenCalled();
+        session.receive({
+          type: 'response.done',
+          response: { id: 'partial', status: 'completed', output: [partial] },
+        });
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(definition.onApproval).not.toHaveBeenCalled();
+        expect(definition.execute).not.toHaveBeenCalled();
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
   it.each([false, true])(
     'enforces audio capacity through transport with commit %s',
     async (commit) => {
