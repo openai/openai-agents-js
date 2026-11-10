@@ -73,144 +73,73 @@ jobs:
           pnpm build
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
-      - name: Test the extracted bundles
-        id: installed_verify
+      - name: Test both extracted bundles with the existing-file fixture
         run: |
-          date --iso-8601=seconds > "$RUNNER_TEMP/agents-alpha-verify-start"
-          node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
-      - name: Read matching kernel audit for the exact verifier
-        if: failure() && steps.installed_verify.outcome == 'failure'
-        run: |
-          started=$(cat "$RUNNER_TEMP/agents-alpha-verify-start")
-          echo "Reading kernel audit since $started for the original verifier"
-          journal_status=0
-          sudo journalctl --kernel --no-pager --quiet --output=short-iso --since "$started" \
-            --grep='apparmor="DENIED".*(unprivileged_userns|comm="bwrap"|codex-linux-sandbox)' \
-            || journal_status=$?
-          echo "Kernel audit query status $journal_status"
-      - name: Capture the existing synthetic command result privately
-        if: failure() && steps.installed_verify.outcome == 'failure'
-        run: |
-          umask 077
-          export ARM64_DIAGNOSTIC_FILE="$RUNNER_TEMP/arm64-synthetic-result.json"
-          probe="$RUNNER_TEMP/agents-alpha-sandbox-probe"
-          cp -a "$RUNNER_TEMP/agents-alpha" "$probe"
+          echo "AppArmor unprivileged user namespace restriction"
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          dd --version | sed -n '1p'
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { readFileSync, writeFileSync } from 'node:fs';
-          let consumer = readFileSync('scripts/verify-alpha-consumer.mjs', 'utf8');
-          const exactOpening = [
-            "          const session = await agent.session({",
-            "            environment: Environment.local({",
-            "              cwd,",
-            "              tools: ['exec_command'],",
-            "              writableRoots: [writable],",
-            "            }),",
-            "          });",
-          ].join('\n');
-          assert.equal(consumer.split(exactOpening).length, 2);
-          consumer = consumer.replace(exactOpening, [
-            "          const environment = Environment.local({",
-            "            cwd,",
-            "            tools: ['exec_command'],",
-            "            writableRoots: [writable],",
-            "          });",
-            "          const session = await agent.session({ environment });",
-          ].join('\n'));
-          const marker = "            assert.equal(\n              command?.status,";
-          assert.equal(consumer.split(marker).length, 2);
-          const diagnostic = [
-            '            if (command?.status !== "completed") {',
-            '              await writeFile(process.env.ARM64_DIAGNOSTIC_FILE, JSON.stringify({',
-            '                diagnostic: "synthetic sandbox command",',
-            '                status: command?.status,',
-            '                exitCode: command?.exitCode,',
-            '                output: command?.output?.slice(0, 2048),',
-            '                sentinelProtected: (await readFile(sentinel)).equals(Buffer.from("protected")),',
-            '                grantWritten: await readFile(join(writable, "proof.txt")).then(',
-            '                  (value) => value.equals(Buffer.from("granted")),',
-            '                  (error) => { if (error.code === "ENOENT") return false; throw error; },',
-            '                ),',
-            '                localConfinementRequired: environment.kind === "local" && environment.writePolicy === "strict",',
-            '                nativeTestFlag: process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX === "1",',
-            '                underSystemTemp: root.startsWith("/tmp/"),',
-            '              }), { mode: 0o600, flag: "wx" });',
-            '            }',
-            '',
-          ].join('\n');
+          const consumer = readFileSync('scripts/verify-alpha-consumer.mjs', 'utf8');
+          const original = 'if (printf overwritten > ../sentinel) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt';
+          const existing = 'command -v dd >/dev/null || exit 1; if (printf overwritten | dd of=../sentinel conv=nocreat status=none) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt';
+          assert.equal(consumer.split(original).length, 2);
           writeFileSync(
-            'scripts/.verify-alpha-consumer-diagnostic.mjs',
-            consumer.replace(marker, diagnostic + marker),
+            'scripts/.verify-alpha-consumer-existing-file.mjs',
+            consumer.replace(original, existing),
             { flag: 'wx' },
           );
           const verifier = readFileSync('scripts/verify-alpha-package.mjs', 'utf8');
           const fixture = './verify-alpha-consumer.mjs';
           assert.equal(verifier.split(fixture).length, 2);
           writeFileSync(
-            'scripts/.verify-alpha-package-diagnostic.mjs',
-            verifier.replace(fixture, './.verify-alpha-consumer-diagnostic.mjs'),
+            'scripts/.verify-alpha-package-existing-file.mjs',
+            verifier.replace(fixture, './.verify-alpha-consumer-existing-file.mjs'),
             { flag: 'wx' },
           );
           NODE
-          started=$(date --iso-8601=seconds)
-          probe_status=0
-          node scripts/.verify-alpha-package-diagnostic.mjs --directory "$probe" || probe_status=$?
-          echo "Reading kernel audit since $started for the disposable replay"
-          journal_status=0
-          sudo journalctl --kernel --no-pager --quiet --output=short-iso --since "$started" \
-            --grep='apparmor="DENIED".*(unprivileged_userns|comm="bwrap"|codex-linux-sandbox)' \
-            || journal_status=$?
-          echo "Kernel audit query status $journal_status"
-          if [[ -s "$ARM64_DIAGNOSTIC_FILE" ]]; then
-            cat > "$RUNNER_TEMP/arm64-diagnostic-recipient.pem" <<'CERT'
-          -----BEGIN CERTIFICATE-----
-          MIIDKzCCAhOgAwIBAgIUTAhV86TAQci2VCanHw+iValgtFkwDQYJKoZIhvcNAQEL
-          BQAwJTEjMCEGA1UEAwwaQVJNNjQgaW5zdGFsbGVkIGRpYWdub3N0aWMwHhcNMjYx
-          MTEwMDg0MDM2WhcNMjYxMTEyMDg0MDM2WjAlMSMwIQYDVQQDDBpBUk02NCBpbnN0
-          YWxsZWQgZGlhZ25vc3RpYzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
-          AJgtXMoPIuvKSTdJqq8SLZ93Wpaaxf3PXdm0s0JNtmOYqg8bXkRXCEaO1VXDaYMf
-          uozd2nHM08O7QoLQFbYyc/cu+gKhfgDOoKOC5m7/OWT8M3iuYzupPg4OcTsqpI9m
-          az2kyC2TYxGHZkF+Xl4UhySznHIVZyQvUETLuz9OzwKVUZRwYX9J0spulask7YQk
-          X+OS2zUCiWb3HyXM7kexkyevGBYspM3hZ1QFZrs1j24AwpHphF4+WtNTgzVjS45m
-          972B7M83lSdlo6uiYvPQUrQDIVcyUHm4KaPyoseb9AfxPArsDpi+EX84JNxFzW58
-          jMYobQ493feWpHArcM+hSY0CAwEAAaNTMFEwHQYDVR0OBBYEFL4C82joAOgoCwAg
-          MjZpcCp2c7FtMB8GA1UdIwQYMBaAFL4C82joAOgoCwAgMjZpcCp2c7FtMA8GA1Ud
-          EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAFv6lJlm3whm1JhO0y5Y2VWC
-          Y+6V2SEzr/x7YjbDWOm4f1vlNlYuQvCJHCbmyYrCrsgnpPlc8lzEjrh4ZrEGU2Rm
-          c68ioVHdT8EcpWgTl2Li1b4XDJlQNVb7wS7RrG8kQ77uAF4bQhahl9VZDrg4tYrh
-          lZ4XCYmDGA/X0Y+yA5TKyNBHqVJEkdz+XqQrPV9o7rySpjq7j1dNyDwjZJ/0kdxu
-          WtVfz/5jahBShCA9NBbw7GPRjmWJpJg+vdcXLZfpSM1Ru5NK1fEvOk0EsuSYaGFA
-          sux2nDDWGd7jWETDhkFqvYesUuzUd2hbwsHMRQTaJcRixbU2WXkDKAz+ESXqnho=
-          -----END CERTIFICATE-----
-          CERT
-            openssl cms -encrypt -binary -aes-256-gcm -outform DER \
-              -in "$ARM64_DIAGNOSTIC_FILE" -out "$RUNNER_TEMP/arm64-synthetic-result.cms" \
-              "$RUNNER_TEMP/arm64-diagnostic-recipient.pem"
-            rm "$ARM64_DIAGNOSTIC_FILE"
-          fi
-          exit "$probe_status"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: always() && steps.installed_verify.outcome == 'failure'
-        with:
-          name: arm64-installed-sandbox-diagnostic-5c2dca1dfec9
-          path: ${{ runner.temp }}/arm64-synthetic-result.cms
-          if-no-files-found: ignore
-          retention-days: 7
+          directory="$RUNNER_TEMP/agents-alpha"
+          diff_status=0
+          diff -u --label verify-alpha-consumer.mjs --label verify-alpha-consumer-existing-file.mjs \
+            scripts/verify-alpha-consumer.mjs scripts/.verify-alpha-consumer-existing-file.mjs \
+            > "$directory/FIXTURE.diff" || diff_status=$?
+          test "$diff_status" -eq 1
+          sha256sum scripts/{verify-alpha-consumer,.verify-alpha-consumer-existing-file,verify-alpha-package,.verify-alpha-package-existing-file}.mjs \
+            > "$directory/FIXTURE-SHA256SUMS"
+          printf '%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" > "$directory/EXACT-SDK"
+          node scripts/.verify-alpha-package-existing-file.mjs --directory "$directory"
+          git diff --exit-code
       - name: Check both installed receipts and record evidence checksums
         run: |
           cd "$RUNNER_TEMP/agents-alpha"
           test -s installed-starter-linux-arm64.json
           test -s installed-app-linux-arm64.json
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          for (const profile of ['starter', 'app']) {
+            const receipt = JSON.parse(readFileSync(`installed-${profile}-linux-arm64.json`, 'utf8'));
+            assert.equal(receipt.sourceCommit, '5c2dca1dfec9c58e4f357acc9c43f7139b184140');
+            assert.equal(receipt.profile, profile);
+            assert.equal(receipt.platform, 'linux-arm64');
+            assert.equal(receipt.arch, 'arm64');
+            assert(receipt.verified.includes('local-sandbox'));
+          }
+          NODE
           sha256sum -c SHA256SUMS-linux-arm64
-          sha256sum installed-starter-linux-arm64.json installed-app-linux-arm64.json SHA256SUMS-linux-arm64 > DIAGNOSTIC-SHA256SUMS
+          sha256sum installed-starter-linux-arm64.json installed-app-linux-arm64.json SHA256SUMS-linux-arm64 EXACT-SDK FIXTURE.diff FIXTURE-SHA256SUMS > DIAGNOSTIC-SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: arm64-installed-receipts-5c2dca1dfec9
+          name: arm64-installed-receipts-existing-file-5c2dca1dfec9
           path: |
             ${{ runner.temp }}/agents-alpha/installed-starter-linux-arm64.json
             ${{ runner.temp }}/agents-alpha/installed-app-linux-arm64.json
             ${{ runner.temp }}/agents-alpha/SHA256SUMS-linux-arm64
             ${{ runner.temp }}/agents-alpha/DIAGNOSTIC-SHA256SUMS
+            ${{ runner.temp }}/agents-alpha/EXACT-SDK
+            ${{ runner.temp }}/agents-alpha/FIXTURE.diff
+            ${{ runner.temp }}/agents-alpha/FIXTURE-SHA256SUMS
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
