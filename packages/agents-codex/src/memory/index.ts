@@ -5,21 +5,29 @@ import { tool, type FunctionTool } from '../runtime/tools';
 const textSchema = z.string().refine((value) => value.isWellFormed(), {
   message: 'Memory text must contain well-formed Unicode.',
 });
-const keySchema = textSchema
+function boundedTextSchema(maxLength: number) {
+  // Zod's built-in maximum counts UTF-16 code units; JSON Schema counts code points.
+  return textSchema
+    .refine((value) => [...value].length <= maxLength, {
+      message: `Memory text must contain at most ${maxLength} Unicode code points.`,
+    })
+    .meta({ maxLength });
+}
+const keySchema = boundedTextSchema(256)
   .min(1)
-  .max(256)
   .refine((value) => value.trim().length > 0, {
     message: 'Scope and key cannot be blank.',
   });
-const valueSchema = textSchema.max(65_536);
+const valueSchema = boundedTextSchema(65_536);
 
 /**
  * Explicit string facts for one trusted application-selected scope.
  * Requires Node.js 22+ with built-in `node:sqlite` and a private
  * application-owned SQLite path.
- * Keys/scopes contain 1–256 characters; values contain at most 65,536 and may
- * be empty. All text must contain well-formed Unicode; lone surrogates fail
- * before database access. Applications authorize writes and treat recalled text as data.
+ * Keys/scopes contain 1–256 Unicode code points; values contain at most 65,536
+ * code points and may be empty. All text must contain well-formed Unicode;
+ * lone surrogates fail before database access. Applications authorize writes
+ * and treat recalled text as data.
  * No extraction, expiry, encryption, or identity provider is included.
  * Deletion does not erase model history, checkpoints, or exported telemetry.
  * Close only after native Sessions using this store have joined.
