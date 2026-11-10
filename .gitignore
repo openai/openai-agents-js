@@ -161,3 +161,7 @@ bundled/
 # Generated portable native control facade artifacts.
 packages/agents/native/*.wasm
 packages/agents/native/portable-build-receipt.json
+
+# Generated Hermes lowering of reviewed Rust control.
+packages/*/native/codex-realtime-control.mjs
+packages/*/native/codex-realtime-control.cjs

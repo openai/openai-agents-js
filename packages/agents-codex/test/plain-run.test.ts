@@ -6,6 +6,10 @@ import { NativeProviderRoutes } from '../src/runtime/http-model';
 import { NativeError, RunCleanupError } from '../src/runtime/native-error';
 import { tryOpenPlainRun } from '../src/runtime/plain-run';
 import type { ProviderLease } from '../src/runtime/provider';
+import type {
+  PrivateKernel,
+  PrivateRuntimeBorrow,
+} from '../src/runtime/private-engine-reuse';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -267,5 +271,119 @@ describe('plain owned-run cleanup', () => {
     expect(p.request.close).not.toHaveBeenCalled();
     expect(p.closeCarrier).toHaveBeenCalledTimes(1);
     expect(p.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+function retained() {
+  const p = prepared();
+  p.engine._private_reuse_ready = true;
+  const transports = {} as never;
+  const carrier = new NativeProviderRoutes();
+  vi.spyOn(carrier, 'reuseBinding').mockReturnValue({
+    origin: 'http://fixture',
+    grant: 'fixture',
+  });
+  const fresh = (): PrivateKernel => ({
+    engine: p.engine as never,
+    carrier,
+    transports,
+    home: { codex_home: '/fixture', cwd: '/fixture/workspace' },
+    apiKey: 'fixture-key',
+    phase: 'engine',
+  });
+  let entry: PrivateKernel | undefined = fresh();
+  const finish = vi.fn(async (keep: boolean) => {
+    if (!keep) entry = undefined;
+  });
+  const borrow: PrivateRuntimeBorrow = {
+    get done() {
+      return entry === undefined;
+    },
+    peek: () => entry,
+    bind: () => {
+      entry = fresh();
+    },
+    reset: vi.fn(),
+    finish,
+  };
+  const lease: ProviderLease = {
+    ...p.lease,
+    privateRuntime: borrow,
+    httpTransports: () => transports,
+  };
+  const run = async (setup = p.setup) => {
+    const owner = await tryOpenPlainRun(setup, {}, lease, 'input');
+    lease.openingSucceeded();
+    return owner!.run();
+  };
+  return {
+    ...p,
+    lease,
+    run,
+    finish,
+    replaceEntry: () => {
+      entry = fresh();
+    },
+  };
+}
+
+// This fixture isolates native admission; the native suite uses a real Provider.
+describe('plain entry admission', () => {
+  it('admits identical retained calls once and readmits a replacement entry', async () => {
+    const p = retained();
+    expect((await p.run()).finalOutput).toBe('answer');
+    expect((await p.run()).finalOutput).toBe('answer');
+    expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(1);
+    expect(p.engine._plain_run).toHaveBeenCalledTimes(2);
+    p.replaceEntry();
+    await p.run();
+    expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['config', 'runtime', 'model'] as const)(
+    'readmits a changed %s key without caching rejection',
+    async (field) => {
+      const p = retained();
+      await p.run();
+      const changed = {
+        ...p.setup,
+        ...(field === 'model'
+          ? { model: 'gpt-5' }
+          : field === 'config'
+            ? { config: { model_reasoning_summary: 'auto' } }
+            : { runtime: { strict_config: true } }),
+      };
+      p.engine._plain_run_supported.mockResolvedValueOnce(false);
+      expect(
+        await tryOpenPlainRun(changed, {}, p.lease, 'input'),
+      ).toBeUndefined();
+      expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
+      await p.run();
+      expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('checks current readiness before a cached hit and readmits after invalidation', async () => {
+    const p = retained();
+    await p.run();
+    p.engine._private_reuse_ready = false;
+    expect(
+      await tryOpenPlainRun(p.setup, {}, p.lease, 'input'),
+    ).toBeUndefined();
+    expect(p.engine._plain_run).toHaveBeenCalledTimes(1);
+    p.engine._private_reuse_ready = true;
+    await p.run();
+    expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
+  });
+
+  it('evicts a failed entry and admits again on the next opening', async () => {
+    const p = retained();
+    await p.run();
+    const failure = new NativeError('request validation failed');
+    p.request.wait.mockRejectedValueOnce(failure);
+    await expect(p.run()).rejects.toBe(failure);
+    expect(p.finish).toHaveBeenLastCalledWith(false);
+    await p.run();
+    expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
   });
 });

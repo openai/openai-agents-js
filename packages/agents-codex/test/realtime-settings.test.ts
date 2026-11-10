@@ -328,10 +328,29 @@ describe('native Realtime tool choice', () => {
     },
   );
   it.each([
+    [
+      { type: 'mcp', serverLabel: 'docs' },
+      { type: 'mcp', server_label: 'docs' },
+    ],
+    [
+      { type: 'mcp', serverLabel: 'docs', name: 'weather' },
+      { type: 'mcp', server_label: 'docs', name: 'weather' },
+    ],
+  ] as const)('serializes a hosted MCP choice %j', (toolChoice, expected) => {
+    expect(serializeRealtimeSettings({ toolChoice })).toEqual({
+      tool_choice: expected,
+    });
+    expect(serializeRealtimeSessionUpdate({ toolChoice })).toEqual({
+      tool_choice: expected,
+    });
+  });
+  it.each([
     null,
     'weather',
     [],
     { type: 'mcp', name: 'weather' },
+    { type: 'mcp', serverLabel: 'docs', name: null },
+    { type: 'mcp', serverLabel: 'docs', unexpected: 'field' },
     { type: 'function' },
   ])('rejects unsupported choice %j before native I/O', (toolChoice) => {
     expect(() => serializeRealtimeSettings({ toolChoice } as never)).toThrow();

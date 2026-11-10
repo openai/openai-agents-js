@@ -501,6 +501,14 @@
       "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
     },
     {
+      "path": "sdk-linux-protected-metadata-mount-race.patch",
+      "sha256": "22137e6318edf060270e1fd558005d6fadb4c04297bdad1ba46dad141ddc2b7b"
+    },
+    {
+      "path": "sdk-linux-protected-metadata-bootstrap.patch",
+      "sha256": "76ced00372b6b83f300b3ddc798517b632c92eee5d4e78445d76bb7206bf1130"
+    },
+    {
       "path": "0171-original-history-catalog.patch",
       "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
     },
@@ -549,9 +557,33 @@
       "sha256": "3ad6dcf410800d6314a9930ffac558a57eba21c8cfbb6ea6294706df4196c5db"
     },
     {
+      "path": "0175-portable-realtime-agent-control.patch",
+      "sha256": "65b82aacfe62c2c33d9123ce5db61994efd2e3fe5b239a884095d295637cc9fe"
+    },
+    {
+      "path": "sdk-realtime-provider-events-and-scopes.patch",
+      "sha256": "75499f3213bb235e1724d95d8adbe53b19e192b0bd01b42afa19023dd6a8630b"
+    },
+    {
+      "path": "sdk-realtime-tool-context-history.patch",
+      "sha256": "93617a4dd22929b78760ccbdac152b6af3ffd143acb1cfb755c1bb3606bfe7ca"
+    },
+    {
+      "path": "0176-portable-realtime-response-scopes.patch",
+      "sha256": "edb99414fa1228281a69a3125e8c1e2ce67c1a8c42d235e05c3739fba4e519d0"
+    },
+    {
+      "path": "sdk-realtime-application-update-rejections.patch",
+      "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
+    },
+    {
+      "path": "sdk-bounded-original-history-reads.patch",
+      "sha256": "3b5b1fbab18a6d0aef5416f82c4765871e1835bf2544b3a346168430a9f2f2cf"
+    },
+    {
       "path": "0212-native-mcp-routing.patch",
       "sha256": "659493afa37831cd18d5ef88e826a81e434c7cd6a4132f08c615884bbde7fe0e"
     }
   ],
-  "result_tree": "31044b87d555291ca24b52dcaaec32e0e7b7690a"
+  "result_tree": "58e2cbc40d78b66b98cb612207a822e73e62883a"
 }

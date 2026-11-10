@@ -88,6 +88,15 @@ function sourcePathForExport(
   ) {
     return resolve(workspacePackage.root, 'native/codex-realtime-control.wasm');
   }
+  if (
+    ['@openai/agents', '@openai/agents-codex'].includes(
+      workspacePackage.name,
+    ) &&
+    exportPath === './voice/control.hermes' &&
+    distTarget === './native/codex-realtime-control.mjs'
+  ) {
+    return resolve(workspacePackage.root, 'native/codex-realtime-control.mjs');
+  }
   if (!distTarget.startsWith('./dist/')) {
     throw new Error(
       `Package export ${workspacePackage.name}${exportPath.slice(1)} does not point into dist: ${distTarget}`,
