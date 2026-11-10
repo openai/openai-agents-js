@@ -94,6 +94,7 @@ pub struct EngineState {
     extension_events: Arc<extensions::Events>,
     cloud_config: codex_config::CloudConfigBundleLoader,
     pub(crate) service_config: Config,
+    pub(crate) installation_id: String,
     pub(crate) application_apps: Option<codex_mcp::ApplicationApps>,
     pub(crate) plan_authorization: Option<http::HeaderValue>,
     pub(crate) sentinel: Arc<RwLock<Option<(String, String, Option<String>)>>>,
@@ -287,6 +288,49 @@ impl EngineState {
             && self.service_config.config_layer_stack.cloud_config_binding().is_none()
     }
 
+    /// Compare captured inputs using only the Engine's existing absent isolation paths.
+    pub(crate) fn matches_private_configuration(
+        &self,
+        config_json: &str,
+        runtime_json: &str,
+    ) -> anyhow::Result<bool> {
+        let mut requested: serde_json::Value = serde_json::from_str(runtime_json)?;
+        let source: serde_json::Value = serde_json::from_str(config_json)?;
+        if source != serde_json::from_str::<serde_json::Value>(&self.config_json)? {
+            return Ok(false);
+        }
+        let retained: serde_json::Value = serde_json::from_str(&self.runtime_json)?;
+        let loader = requested
+            .as_object_mut()
+            .context("runtime must be an object")?
+            .entry("loader")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .context("loader must be an object")?;
+        for key in [
+            "managed_config_path",
+            "system_config_path",
+            "system_requirements_path",
+        ] {
+            if loader.contains_key(key) {
+                return Ok(false);
+            }
+            let path = retained["loader"][key]
+                .as_str()
+                .context("missing private isolation path")?;
+            loader.insert(key.to_owned(), serde_json::Value::String(path.to_owned()));
+        }
+        let keyed_runtime = config::prepare_runtime(&requested.to_string())?;
+        if serde_json::from_str::<serde_json::Value>(&keyed_runtime)? != retained {
+            return Ok(false);
+        }
+        Ok(["managed_config_path", "system_config_path", "system_requirements_path"].iter().all(|key| {
+            retained["loader"][key].as_str().is_some_and(|path| matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
+        }) && self.private_system_origin.as_ref().is_none_or(|path| {
+            path.parent().is_some_and(|parent| matches!(std::fs::symlink_metadata(parent), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
+        }))
+    }
+
     pub(crate) async fn private_start_with_tools(
         self: &Arc<Self>,
         config_json: &str,
@@ -326,40 +370,27 @@ impl EngineState {
             return Ok(None);
         };
         transports.check_open()?;
-        let mut requested: serde_json::Value = serde_json::from_str(runtime_json)?;
+        let requested: serde_json::Value = serde_json::from_str(runtime_json)?;
         let source: serde_json::Value = serde_json::from_str(config_json)?;
-        if source != serde_json::from_str::<serde_json::Value>(&self.config_json)?
-            || !options.matches_private_inputs(&source, &requested)
+        if !options.matches_private_inputs(&source, &requested)
+            || !self.matches_private_configuration(config_json, runtime_json)?
         {
             return Ok(None);
         }
         let retained: serde_json::Value = serde_json::from_str(&self.runtime_json)?;
-        let loader = requested
-            .as_object_mut()
-            .context("runtime must be an object")?
-            .entry("loader")
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut()
-            .context("loader must be an object")?;
-        let mut isolation = Vec::new();
-        for key in [
+        let mut isolation = [
             "managed_config_path",
             "system_config_path",
             "system_requirements_path",
-        ] {
-            if loader.contains_key(key) {
-                return Ok(None);
-            }
-            let path = retained["loader"][key]
+        ]
+        .iter()
+        .map(|key| {
+            retained["loader"][key]
                 .as_str()
-                .context("missing private isolation path")?;
-            isolation.push(path.to_owned());
-            loader.insert(key.to_owned(), serde_json::Value::String(path.to_owned()));
-        }
-        let keyed_runtime = config::prepare_runtime(&requested.to_string())?;
-        if serde_json::from_str::<serde_json::Value>(&keyed_runtime)? != retained {
-            return Ok(None);
-        }
+                .expect("matched private isolation")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
         // Keep only the SDK-owned, absent System origin stable in the actual load.
         let mut fresh: serde_json::Value =
             serde_json::from_str(&config::prepare_runtime(runtime_json)?)?;
@@ -922,7 +953,7 @@ impl EngineState {
                 passthrough_image_store(),
                 store.clone(),
                 Some(agent_graph.clone()),
-                installation_id,
+                installation_id.clone(),
                 None,
                 None,
             );
@@ -964,6 +995,7 @@ impl EngineState {
             extension_events,
             cloud_config,
             service_config: config,
+            installation_id,
             application_apps: None,
             plan_authorization,
             sentinel,
@@ -2337,6 +2369,53 @@ impl EngineState {
         headers.insert("x-sdk-sentinel-grant".to_owned(), grant.to_owned().into());
     }
 
+    /// The same immutable Provider pool and redirect recipe as the sentinel route.
+    pub(crate) fn responses_transport(
+        &self,
+        no_redirects: bool,
+    ) -> napi::Result<(
+        codex_http_client::ReqwestTransport,
+        crate::model_websocket::ConnectorCache,
+    )> {
+        let mut builder = codex_http_client::HttpClientBuilder::new().without_request_logging();
+        if no_redirects {
+            builder = builder.without_redirects();
+        }
+        if self.plan_authorization.is_some() {
+            builder = builder.without_retries();
+        }
+        let factory = self.service_config.http_client_factory().clone();
+        let mut transports = self
+            .sentinel_transports
+            .lock()
+            .expect("sentinel transports poisoned");
+        let (transport, websocket) = if let Some(cached) = transports.get(&no_redirects) {
+            cached.clone()
+        } else {
+            let shared = self.provider_http_transports.get().filter(|_| {
+                self.manager.auth_manager().auth_mode()
+                    == Some(codex_protocol::auth::AuthMode::ApiKey)
+                    && !factory.has_chatgpt_cookies()
+            });
+            let transport = if let Some(shared) = shared {
+                shared
+                    .transport(&factory, no_redirects, builder)
+                    .map_err(crate::native_error)?
+            } else {
+                let pool = codex_http_client::RouteAwareClientPool::with_builder(
+                    factory.clone(),
+                    codex_http_client::ClientRouteClass::Api,
+                    builder,
+                );
+                codex_http_client::ReqwestTransport::from_route_aware_client_pool(pool)
+            };
+            let cached = (transport, crate::model_websocket::ConnectorCache::default());
+            transports.insert(no_redirects, cached.clone());
+            cached
+        };
+        Ok((transport, websocket))
+    }
+
     pub(crate) fn sentinel_route(
         &self,
         id: &str,
@@ -2370,19 +2449,12 @@ impl EngineState {
         let original = info
             .to_api_provider(self.manager.auth_manager().auth_mode())
             .map_err(crate::native_error)?;
-        let mut builder = codex_http_client::HttpClientBuilder::new().without_request_logging();
         // Resolve redirect policy before narrowing original header declarations.
         let no_redirects = self.plan_authorization.is_some()
             || info.has_request_routing_overrides()
             || original
                 .headers
                 .contains_key(codex_model_provider::ACCOUNT_ROUTING_HEADER);
-        if no_redirects {
-            builder = builder.without_redirects();
-        }
-        if self.plan_authorization.is_some() {
-            builder = builder.without_retries();
-        }
         let mut info = info.clone();
         info.base_url = Some(original.base_url);
         info.auth = None;
@@ -2406,34 +2478,7 @@ impl EngineState {
             });
         }
         let factory = self.service_config.http_client_factory().clone();
-        let mut transports = self
-            .sentinel_transports
-            .lock()
-            .expect("sentinel transports poisoned");
-        let (transport, websocket) = if let Some(cached) = transports.get(&no_redirects) {
-            cached.clone()
-        } else {
-            let shared = self.provider_http_transports.get().filter(|_| {
-                self.manager.auth_manager().auth_mode()
-                    == Some(codex_protocol::auth::AuthMode::ApiKey)
-                    && !factory.has_chatgpt_cookies()
-            });
-            let transport = if let Some(shared) = shared {
-                shared
-                    .transport(&factory, no_redirects, builder)
-                    .map_err(crate::native_error)?
-            } else {
-                let pool = codex_http_client::RouteAwareClientPool::with_builder(
-                    factory.clone(),
-                    codex_http_client::ClientRouteClass::Api,
-                    builder,
-                );
-                codex_http_client::ReqwestTransport::from_route_aware_client_pool(pool)
-            };
-            let cached = (transport, crate::model_websocket::ConnectorCache::default());
-            transports.insert(no_redirects, cached.clone());
-            cached
-        };
+        let (transport, websocket) = self.responses_transport(no_redirects)?;
         Ok(Arc::new(crate::NativeModelRoute {
             provider: codex_model_provider::create_model_provider(info, None),
             transport,
