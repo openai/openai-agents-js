@@ -22,7 +22,7 @@ use codex_models_manager::manager::{ModelsManager, ModelsManagerFuture};
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::{ModelInfo, ModelPreset, ModelsResponse};
-use codex_protocol::protocol::Event;
+use codex_protocol::protocol::{Event, ThreadSettingsOverrides};
 use codex_thread_store::{
     DeleteThreadParams, LoadThreadHistoryParams, ReadThreadParams, StoredThread, ThreadStore,
     ThreadStoreError,
@@ -1331,6 +1331,7 @@ impl EngineState {
             instructions.confirm(accepted)?;
         }
         let settings = source.thread.thread_settings_snapshot().await;
+        let invocation_timeout_ms = settings.invocation_timeout_ms;
         startup.config.model = Some(settings.model);
         startup.config.model_reasoning_effort = settings.reasoning_effort;
         startup.config.model_reasoning_summary = settings.reasoning_summary;
@@ -1382,13 +1383,33 @@ impl EngineState {
                 new.thread_id
             );
         }
-        let mut native = match self.wrap(new, instructions, extension_events).await {
+        let initialized = async {
+            // Fork startup publishes a new thread identity. Carry the accepted
+            // deadline into that thread's settings before checkpoint export.
+            if new
+                .thread
+                .thread_settings_snapshot()
+                .await
+                .invocation_timeout_ms
+                != invocation_timeout_ms
+            {
+                new.thread
+                    .update_thread_settings(ThreadSettingsOverrides {
+                        invocation_timeout_ms: Some(invocation_timeout_ms),
+                        ..Default::default()
+                    })
+                    .await?;
+            }
+            self.wrap(new, instructions, extension_events).await
+        }
+        .await;
+        let mut native = match initialized {
             Ok(native) => native,
             Err(error) => {
                 return match source.discard_fork_copy(None).await {
                     Ok(_) => Err(error),
                     Err(cleanup) => {
-                        Err(error.context(format!("fork wrapper cleanup failed: {cleanup}")))
+                        Err(error.context(format!("fork initialization cleanup failed: {cleanup}")))
                     }
                 };
             }

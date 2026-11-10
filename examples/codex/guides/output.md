@@ -33,7 +33,7 @@ Set `outputType: { mode: 'prompted', schema: answerSchema, maxRetries: 1 }` to a
 
 #### Repair resources and effects
 
-Each repair opens a fresh plain Session with fixed formatting instructions, the captured schema, and the latest invalid text. It uses the original provider connection and credentials plus the current accepted model settings. Configure the API key before opening the original Session. Without a captured key, repair fails before opening another Session.
+Each repair has been opening a fresh plain Session with fixed formatting instructions, the captured schema, and the latest invalid text. It has been borrowing the original provider connection and credentials and forwarding only the accepted model, reasoning effort, reasoning summary, service tier, and invocation deadline. Each correction has been starting its own invocation clock with the full accepted deadline. The formatter has been using its defaults for output caps, sampling, tool choice, cache, metadata, and storage. Configure the API key before opening the original Session. Without a captured key, repair fails before opening another Session.
 
 The repair Session receives no original task instructions, history, application context, tools, Environment, MCP, child-agent, goal, or storage grants. The original task and its effects run once. Compaction and provider, tool, policy, callback, or cleanup failures do not trigger repair.
 
