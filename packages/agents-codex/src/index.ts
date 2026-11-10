@@ -1,4 +1,4 @@
-export { applyDiff } from '@openai/agents-core';
+export { applyDiff } from '@openai/agents-core/utils';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
 export { Agent, Runner } from './runtime/public-agent';
@@ -384,9 +384,15 @@ export type {
   ContextTransform,
 } from './runtime/model-callbacks';
 
-export { ChatCompletionsModel } from './runtime/models';
+export {
+  ChatCompletionsModel,
+  ResponsesModel,
+  AiSdkModel,
+} from './runtime/models';
 export type {
   NativeModel,
+  AiSdkLanguageModel,
+  ModelAdapterOptions,
   ModelProvider,
   ModelRequest,
   ModelResponse,

@@ -126,7 +126,7 @@ Use `HostedVerificationMCP` for your configured verification service, with its `
 
 ### Personal Apps credentials
 
-`NativeProviderOptions.chatGPT` supplies an explicit `accessToken` and `accountId` for the personal Apps connection. These credentials are separate from model credentials and saved conversation configuration. Provision them explicitly before running the application. The SDK does not discover or refresh an existing ChatGPT login from the surrounding environment. Keep credentials out of checkpoints, logs and examples committed to source control.
+`NativeProviderOptions.chatGPT` supplies an explicit `accessToken` and `accountId` for the personal Apps connection. Your application supplies and renews these Apps credentials. Keep them out of checkpoints, logs and examples committed to source control. For model requests, see [Use a saved Codex login on a headless host](session-configuration.md#use-a-saved-codex-login-on-a-headless-host).
 
 ### Reply to a verification challenge
 

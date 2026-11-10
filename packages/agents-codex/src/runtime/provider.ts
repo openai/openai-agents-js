@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { NativeConfig } from './config';
 import type { NativeModel, ModelProvider } from './models';
 import { copyJsonValue, type JsonObject } from './binding';
@@ -25,6 +25,13 @@ export interface NativeProviderOptions {
   websocketConnectTimeoutMs?: number;
   baseUrl?: string;
   apiKey?: string;
+  /** Use the file-backed ChatGPT login saved by the Codex CLI for Responses. */
+  codexLogin?: {
+    /** Defaults to CODEX_HOME or the CLI's default home. */
+    readonly codexHome?: string;
+    /** Require this ChatGPT account or workspace. */
+    readonly accountId?: string;
+  };
   /**
    * Set true to allow WebSockets on every streaming call. When omitted, eligible
    * stateless Agent.run calls use HTTP; other calls allow WebSockets only when
@@ -97,6 +104,8 @@ export class NativeProvider {
   constructor(options: NativeProviderOptions = {}) {
     const signIn = options.signInWithChatGPT;
     if (signIn !== undefined) {
+      if (options.codexLogin !== undefined)
+        throw new TypeError('Choose either codexLogin or signInWithChatGPT');
       const callback = signIn?.getCredential;
       if (typeof callback !== 'function')
         throw new TypeError('signInWithChatGPT requires getCredential');
@@ -113,8 +122,7 @@ export class NativeProvider {
         options.supportsWebsockets === true ||
         options.responseMode === 'buffered' ||
         (options.requestMaxRetries ?? 0) !== 0 ||
-        (options.streamMaxRetries ?? 0) !== 0 ||
-        ('codexLogin' in options && options.codexLogin !== undefined)
+        (options.streamMaxRetries ?? 0) !== 0
       )
         throw new TypeError(
           'signInWithChatGPT requires the default streaming HTTP route without other credentials or retries',
@@ -171,12 +179,14 @@ export class NativeProvider {
       throw new TypeError(
         'buffered Responses requires HTTP without WebSockets',
       );
+    const codexLogin = captureCodexLogin(options);
     const routing = captureProviderRouting(options);
     this.#routing = routing.config;
     const captured = { ...options, ...routing.options };
     this.#options = Object.freeze({
       ...captured,
       chatGPT: captureChatGPTAuth(captured.chatGPT),
+      codexLogin,
     });
   }
 
@@ -254,7 +264,9 @@ export class NativeProvider {
     }
     const options = this.#options;
     const getPlanCredential = this.#getPlanCredential;
-    const realtimeApiKey = getPlanCredential
+    const nativeChatGPTInference =
+      getPlanCredential !== undefined || options.codexLogin !== undefined;
+    const realtimeApiKey = nativeChatGPTInference
       ? undefined
       : captured
         ? captured.apiKey
@@ -274,7 +286,7 @@ export class NativeProvider {
         apiKey === options.apiKey) &&
       options.responseMode !== 'buffered';
     const websocketsAllowed =
-      !getPlanCredential &&
+      !nativeChatGPTInference &&
       options.modelBackend === undefined &&
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ??
@@ -386,7 +398,7 @@ export class NativeProvider {
       },
       websocketsAllowed,
       httpTransports: (create, engine) => {
-        if (options.chatGPT || getPlanCredential) return undefined;
+        if (options.chatGPT || nativeChatGPTInference) return undefined;
         if (released || this.#closed)
           throw new Error('NativeProvider lease is closed');
         // Synchronous empty allocation: no first-opening signal or pending task.
@@ -396,6 +408,7 @@ export class NativeProvider {
       capturePlan: getPlanCredential
         ? (signal) => capturePlanCredential(getPlanCredential, signal)
         : undefined,
+      codexLogin: options.codexLogin,
       apiKey,
       realtimeApiKey,
       privateRuntime: borrow,
@@ -403,7 +416,9 @@ export class NativeProvider {
         model_provider: 'native_agent',
         'model_providers.native_agent': {
           name: 'Native agent provider',
-          base_url: options.baseUrl ?? 'https://api.openai.com/v1',
+          base_url: options.codexLogin
+            ? 'https://chatgpt.com/backend-api/codex'
+            : (options.baseUrl ?? 'https://api.openai.com/v1'),
           wire_api: 'responses',
           requires_openai_auth: !getPlanCredential,
           supports_websockets: websocketsAllowed,
@@ -508,6 +523,7 @@ export interface ProviderLease {
   readonly capturePlan?: (
     signal: AbortSignal,
   ) => ReturnType<typeof capturePlanCredential>;
+  readonly codexLogin?: NativeProviderOptions['codexLogin'];
   readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
   readonly websocketsAllowed: boolean;
   httpTransports(
@@ -746,6 +762,49 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     result[key] = value;
   }
   return result as ModelSettings;
+}
+
+function captureCodexLogin(options: NativeProviderOptions) {
+  const login = options.codexLogin;
+  if (login === undefined) return undefined;
+  if (
+    login === null ||
+    typeof login !== 'object' ||
+    Array.isArray(login) ||
+    Object.keys(login).some((key) => key !== 'codexHome' && key !== 'accountId')
+  ) {
+    throw new TypeError('codexLogin must contain only codexHome and accountId');
+  }
+  for (const key of ['codexHome', 'accountId'] as const) {
+    const value = login[key];
+    if (
+      value !== undefined &&
+      (typeof value !== 'string' || !value.trim() || value.includes('\0'))
+    ) {
+      throw new TypeError(`codexLogin.${key} must be a non-empty string`);
+    }
+  }
+  if (
+    options.apiKey !== undefined ||
+    options.modelBackend !== undefined ||
+    options.baseUrl !== undefined ||
+    options.supportsWebsockets === true ||
+    options.responseMode === 'buffered' ||
+    options.headers !== undefined ||
+    options.envHeaders !== undefined ||
+    options.queryParams !== undefined ||
+    options.organization !== undefined ||
+    options.project !== undefined
+  ) {
+    throw new TypeError(
+      'codexLogin requires native streaming HTTP with default ChatGPT routing',
+    );
+  }
+  const { codexHome, accountId } = login;
+  return Object.freeze({
+    ...(codexHome === undefined ? {} : { codexHome: resolve(codexHome) }),
+    ...(accountId === undefined ? {} : { accountId }),
+  });
 }
 
 /** Capture routing values, never environment names, into the native descriptor. */

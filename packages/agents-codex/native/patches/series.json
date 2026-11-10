@@ -481,6 +481,10 @@
       "sha256": "e994ea870e8243269cc6cddaa1b523921cfe0aa898143b0ee533da3caac6833d"
     },
     {
+      "path": "sdk-saved-codex-login.patch",
+      "sha256": "fb52b6ec75d87eea403b2a768df3836eaee4d6b9bd771ddf1ab6b8f1e11bc22e"
+    },
+    {
       "path": "sdk-bwrap-search-path.patch",
       "sha256": "1b1f87bda8fca4a75ca687ae5662bf28ad6eb7538af8b882576daea23c8b01fa"
     },
@@ -497,5 +501,5 @@
       "sha256": "627e429ded864fb3388b6562c22460e604ca9ba6ad25ec72e38480c1ba61e6ed"
     }
   ],
-  "result_tree": "9b290ed875106181c196e0800b5226668c7e04ef"
+  "result_tree": "43e7a3f23e50ebfb99f2855062dc4210a4f43378"
 }

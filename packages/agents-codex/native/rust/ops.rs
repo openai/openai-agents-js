@@ -435,7 +435,9 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
         .map_err(pre_admission)?;
     let mut p: TurnParams = decode(value).map_err(pre_admission)?;
     let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
-    if (strict.is_some() || state.engine.local_checklist_store.is_some())
+    if (strict.is_some()
+        || state.engine.local_checklist_store.is_some()
+        || state.engine.saved_login_file.is_some())
         && p.thread_settings
             .environments
             .as_ref()
@@ -609,7 +611,7 @@ async fn prepare_write_selection(
         &state.engine.manager.environment_manager(),
         strict,
         roots,
-        state.engine.local_storage_home(),
+        state.engine.local_private_paths(),
     )
     .await?;
     if selection.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID
