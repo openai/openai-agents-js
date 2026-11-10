@@ -408,6 +408,9 @@ impl Engine {
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let _permit = inner.operation(false).map_err(native_error)?;
+        if inner.manager.auth_manager().is_saved_chatgpt() {
+            return Err(native_error("Saved Codex login uses native HTTP transport"));
+        }
         let mut binding = inner.sentinel.write().expect("sentinel poisoned");
         if binding.is_some() || grant.is_empty() {
             return Err(native_error("Sentinel already bound or empty"));
@@ -1073,13 +1076,21 @@ impl ContextChange {
         )
         .await
         .map_err(native_error)?;
-        let mut state = engine::EngineState::new_owned(
+        let inherited_saved_login = change
+            .state
+            .engine
+            .saved_login_file
+            .clone()
+            .map(|file| (change.state.engine.manager.auth_manager(), file));
+        let mut state = engine::EngineState::new_owned_with_store(
             serde_json::to_string(&config).map_err(native_error)?,
             runtime,
             true,
             api_key,
             Some(&self.prospective),
             initial_models,
+            None,
+            inherited_saved_login,
         )
         .await
         .map_err(native_error)?;
@@ -4368,6 +4379,7 @@ pub async fn create_store_engine(
         None,
         Default::default(),
         Some(store),
+        None,
     )
     .await
     .map_err(native_error)?;

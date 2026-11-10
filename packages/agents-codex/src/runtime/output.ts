@@ -117,6 +117,16 @@ export interface PreparedOutput<Output = unknown> {
   };
 }
 
+/** @internal Check output admission when the Session has no correction owner. */
+export function assertOutputRepairSupported(
+  ...outputs: PreparedOutput[]
+): void {
+  if (outputs.some((output) => output.repair))
+    throw new TypeError(
+      'This Session does not support output repair; use native output or prompted maxRetries: 0',
+    );
+}
+
 /** Capture generation guidance and one local parser before opening resources. */
 export function prepareOutput<Output>(
   output: OutputSpec<Output> | undefined,

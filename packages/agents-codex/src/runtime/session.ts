@@ -127,6 +127,7 @@ import { z } from 'zod';
 import type { WebSearch } from './web-search';
 import { hostedToolSpecs, type HostedTool } from './hosted-tools';
 import {
+  assertOutputRepairSupported,
   OutputValidationError,
   prepareOutput,
   parseToolCompletion,
@@ -3952,6 +3953,7 @@ export class Session<OutputT = string, Context = unknown> {
     output = this.defaultOutput,
     budget = RunBudgetTracker.capture(options?.budget),
   ): OperationSelection | undefined {
+    if (!this.options.openCorrection) assertOutputRepairSupported(output);
     if (
       !this.options.agentGraph &&
       options?.tools === undefined &&

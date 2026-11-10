@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { NativeConfig } from './config';
 import type { NativeModel, ModelProvider } from './models';
 import { copyJsonValue, type JsonObject } from './binding';
@@ -21,6 +21,13 @@ export interface NativeProviderOptions {
   websocketConnectTimeoutMs?: number;
   baseUrl?: string;
   apiKey?: string;
+  /** Use the file-backed ChatGPT login saved by the Codex CLI for Responses. */
+  codexLogin?: {
+    /** Defaults to CODEX_HOME or the CLI's default home. */
+    readonly codexHome?: string;
+    /** Require this ChatGPT account or workspace. */
+    readonly accountId?: string;
+  };
   /**
    * Set true to allow WebSockets on every streaming call. When omitted, eligible
    * stateless Agent.run calls use HTTP; other calls allow WebSockets only when
@@ -138,12 +145,14 @@ export class NativeProvider {
       throw new TypeError(
         'buffered Responses requires HTTP without WebSockets',
       );
+    const codexLogin = captureCodexLogin(options);
     const routing = captureProviderRouting(options);
     this.#routing = routing.config;
     const captured = { ...options, ...routing.options };
     this.#options = Object.freeze({
       ...captured,
       chatGPT: captureChatGPTAuth(captured.chatGPT),
+      codexLogin,
     });
   }
 
@@ -216,9 +225,12 @@ export class NativeProvider {
       pendingIdle.idle = undefined;
     }
     const options = this.#options;
-    const realtimeApiKey = captured
-      ? captured.apiKey
-      : (options.apiKey ?? process.env.OPENAI_API_KEY);
+    const realtimeApiKey =
+      options.codexLogin !== undefined
+        ? undefined
+        : captured
+          ? captured.apiKey
+          : (options.apiKey ?? process.env.OPENAI_API_KEY);
     const apiKey =
       options.modelBackend !== undefined
         ? 'native-model-producer'
@@ -234,6 +246,7 @@ export class NativeProvider {
         apiKey === options.apiKey) &&
       options.responseMode !== 'buffered';
     const websocketsAllowed =
+      options.codexLogin === undefined &&
       options.modelBackend === undefined &&
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ??
@@ -345,13 +358,14 @@ export class NativeProvider {
       },
       websocketsAllowed,
       httpTransports: (create, engine) => {
-        if (options.chatGPT) return undefined;
+        if (options.chatGPT || options.codexLogin) return undefined;
         if (released || this.#closed)
           throw new Error('NativeProvider lease is closed');
         // Synchronous empty allocation: no first-opening signal or pending task.
         return (this.#httpTransports ??= create(engine));
       },
       chatGPT: options.chatGPT,
+      codexLogin: options.codexLogin,
       apiKey,
       realtimeApiKey,
       privateRuntime: borrow,
@@ -359,7 +373,9 @@ export class NativeProvider {
         model_provider: 'native_agent',
         'model_providers.native_agent': {
           name: 'Native agent provider',
-          base_url: options.baseUrl ?? 'https://api.openai.com/v1',
+          base_url: options.codexLogin
+            ? 'https://chatgpt.com/backend-api/codex'
+            : (options.baseUrl ?? 'https://api.openai.com/v1'),
           wire_api: 'responses',
           requires_openai_auth: true,
           supports_websockets: websocketsAllowed,
@@ -457,6 +473,7 @@ export class NativeProvider {
 export interface ProviderLease {
   readonly privateRuntime?: PrivateRuntimeBorrow;
   readonly chatGPT?: Readonly<ChatGPTAuth>;
+  readonly codexLogin?: NativeProviderOptions['codexLogin'];
   readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
   readonly websocketsAllowed: boolean;
   httpTransports(
@@ -695,6 +712,49 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     result[key] = value;
   }
   return result as ModelSettings;
+}
+
+function captureCodexLogin(options: NativeProviderOptions) {
+  const login = options.codexLogin;
+  if (login === undefined) return undefined;
+  if (
+    login === null ||
+    typeof login !== 'object' ||
+    Array.isArray(login) ||
+    Object.keys(login).some((key) => key !== 'codexHome' && key !== 'accountId')
+  ) {
+    throw new TypeError('codexLogin must contain only codexHome and accountId');
+  }
+  for (const key of ['codexHome', 'accountId'] as const) {
+    const value = login[key];
+    if (
+      value !== undefined &&
+      (typeof value !== 'string' || !value.trim() || value.includes('\0'))
+    ) {
+      throw new TypeError(`codexLogin.${key} must be a non-empty string`);
+    }
+  }
+  if (
+    options.apiKey !== undefined ||
+    options.modelBackend !== undefined ||
+    options.baseUrl !== undefined ||
+    options.supportsWebsockets === true ||
+    options.responseMode === 'buffered' ||
+    options.headers !== undefined ||
+    options.envHeaders !== undefined ||
+    options.queryParams !== undefined ||
+    options.organization !== undefined ||
+    options.project !== undefined
+  ) {
+    throw new TypeError(
+      'codexLogin requires native streaming HTTP with default ChatGPT routing',
+    );
+  }
+  const { codexHome, accountId } = login;
+  return Object.freeze({
+    ...(codexHome === undefined ? {} : { codexHome: resolve(codexHome) }),
+    ...(accountId === undefined ? {} : { accountId }),
+  });
 }
 
 /** Capture routing values, never environment names, into the native descriptor. */

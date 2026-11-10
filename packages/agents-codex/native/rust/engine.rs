@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::{Future, poll_fn};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{
     Arc, OnceLock, RwLock, Weak,
@@ -29,6 +30,7 @@ use codex_thread_store::{
 };
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
+use crate::environment::LocalPrivatePaths;
 use crate::{NativeThread, config, extensions, goals, options};
 
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -41,6 +43,7 @@ struct ProcessCleanupHold {
 
 pub struct EngineState {
     pub manager: Arc<ThreadManager>,
+    pub(crate) saved_login_file: Option<PathBuf>,
     pub store: Arc<dyn ThreadStore>,
     pub(crate) custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     pub(crate) local_checklist_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
@@ -95,6 +98,13 @@ impl EngineState {
     pub(crate) fn local_storage_home(&self) -> Option<&std::path::Path> {
         (self.local_checklist_store.is_some() || self.goals.is_some())
             .then(|| self.service_config.sqlite_config().home())
+    }
+
+    pub(crate) fn local_private_paths(&self) -> LocalPrivatePaths<'_> {
+        LocalPrivatePaths {
+            storage: self.local_storage_home(),
+            saved_login_file: self.saved_login_file.as_deref(),
+        }
     }
 
     pub(crate) fn validate_hosted_search(config: &Config, info: &ModelInfo) -> anyhow::Result<()> {
@@ -467,6 +477,7 @@ impl EngineState {
             prospective,
             initial_models,
             None,
+            None,
         )
         .await
     }
@@ -479,6 +490,7 @@ impl EngineState {
         prospective: Option<&std::sync::Mutex<Option<crate::RuntimeOwned<EnvironmentManager>>>>,
         initial_models: crate::checkpoint::InitialModels,
         custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
+        inherited_saved_login: Option<(Arc<AuthManager>, PathBuf)>,
     ) -> anyhow::Result<Self> {
         ensure!(
             custom_store.is_none()
@@ -515,15 +527,11 @@ impl EngineState {
         drop(original);
         drop(prepared);
         let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
-        let user_instructions: Arc<dyn UserInstructionsProvider> =
-            if config::discover_agents_md(&runtime_json)? {
-                Arc::new(CodexHomeUserInstructionsProvider::new(
-                    find_codex_home()
-                        .context("Unable to locate the Codex home for AGENTS.md discovery")?,
-                ))
-            } else {
-                Arc::new(options::EmptyUserInstructions)
-            };
+        let instructions_home = config::discover_agents_md(&runtime_json)?
+            .then(|| {
+                find_codex_home().context("Unable to locate the Codex home for AGENTS.md discovery")
+            })
+            .transpose()?;
         ensure!(
             custom_store.is_none() || !config.update_plan_enabled,
             "custom canonical storage does not support Checklist"
@@ -566,15 +574,41 @@ impl EngineState {
             );
         }
         let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
+        let services = &config;
+        let saved_login = match config::saved_codex_login(&runtime_json)? {
+            Some(login) => {
+                ensure!(api_key.is_none(), "Saved Codex login cannot use an API key");
+                crate::auth::SavedCodexLogin::check_provider(services)?;
+                Some(match inherited_saved_login {
+                    Some(binding) => binding,
+                    None => login.open(services).await?,
+                })
+            }
+            None => None,
+        };
+        let user_instructions: Arc<dyn UserInstructionsProvider> =
+            if let Some(home) = instructions_home {
+                let provider = CodexHomeUserInstructionsProvider::new(home);
+                Arc::new(match &saved_login {
+                    Some((_, file)) => provider.with_protected_file(file.clone()),
+                    None => provider,
+                })
+            } else {
+                Arc::new(options::EmptyUserInstructions)
+            };
+        let private_paths = LocalPrivatePaths {
+            storage: (goals_enabled || local_home.is_some()).then(|| config.sqlite.home()),
+            saved_login_file: saved_login.as_ref().map(|(_, file)| file.as_path()),
+        };
         // Check before opening SQLite or launching the executor.
         if let Some(environment) = &environment_options {
-            let storage =
-                (goals_enabled || local_home.is_some()).then(|| config.sqlite_config().home());
-            environment.check_local_session_paths(&config, storage)?;
+            environment.check_local_session_paths(&config, private_paths)?;
         }
         let responses = Arc::new(crate::response_control::ResponseContributor::default());
-        let services = &config;
-        let auth = crate::auth::manager(services, api_key).await?;
+        let auth = match &saved_login {
+            Some((auth, _)) => auth.clone(),
+            None => crate::auth::manager(services, api_key).await?,
+        };
         let bundled_catalog = bundled_model_catalog(services, &auth);
         let injected_bundle = bundled_catalog.is_some();
         let models = codex_model_provider::create_model_provider(
@@ -757,7 +791,9 @@ impl EngineState {
                 Some(crate::RuntimeOwned::new(environment.clone()));
         }
         if let Some(options) = &environment_options {
-            options.check_ready(&config, &environment).await?;
+            options
+                .check_ready(&config, &environment, private_paths)
+                .await?;
         }
         let project_search = config::project_search(&runtime_json)?;
         let manager = Arc::new_cyclic(|weak| {
@@ -803,6 +839,7 @@ impl EngineState {
         });
         Ok(Self {
             manager,
+            saved_login_file: saved_login.map(|(_, file)| file),
             store,
             local_checklist_store,
             custom_store,
@@ -1717,6 +1754,12 @@ impl EngineState {
         {
             fork_diagnostics.push(diagnostic);
         }
+        let auth_manager = self.manager.auth_manager();
+        if auth_manager.is_saved_chatgpt() {
+            tokio::time::timeout(CLOSE_TIMEOUT, auth_manager.wait_for_saved_chatgpt_refresh())
+                .await
+                .context("Saved Codex login refresh cleanup timed out")?;
+        }
         if let Some(store) = &self.custom_store {
             if let Some(diagnostic) = store.close_all().await? {
                 fork_diagnostics.push(diagnostic);
@@ -2028,6 +2071,10 @@ impl EngineState {
         if let Some(settings) = &self.telemetry {
             settings.apply(&mut startup.config);
         }
+        ensure!(
+            self.saved_login_file.is_none() || startup.environments.is_none(),
+            "Saved Codex login requires configured executor selection"
+        );
         // Thread options reload the original config. Keep the proxy ceiling on
         // the final configuration as well as the engine's initial admission.
         if let Some(environment) = config::environment(&self.runtime_json)? {
@@ -2038,7 +2085,7 @@ impl EngineState {
                     .selection(
                         &startup.config,
                         &self.manager.environment_manager(),
-                        self.local_storage_home(),
+                        self.local_private_paths(),
                     )
                     .await?;
                 environment.configure_local_proxy(&mut startup.config, &selection)?;
@@ -2083,6 +2130,9 @@ impl EngineState {
             config::code_mode_host_enabled(config) == config::code_mode_host_enabled(original),
             "Code Mode host selection belongs to the Codex client; create a separate client to change it"
         );
+        if self.manager.auth_manager().is_saved_chatgpt() {
+            crate::auth::SavedCodexLogin::check_provider(config)?;
+        }
         // Only the SDK-owned API-key Responses profile receives reference forwarding.
         // Actual model metadata still decides Lite/modality admission. Apps cookies are separate.
         if config.model_provider_id == "native_agent"

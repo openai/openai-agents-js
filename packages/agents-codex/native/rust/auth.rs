@@ -1,14 +1,85 @@
-//! API-key authentication owned by the SDK, without Codex login discovery.
+//! SDK-owned authentication for model requests and Apps.
 
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use codex_core_api::Config;
 use codex_login::{
     AuthManager, CodexAuth, ExternalAuth, ExternalAuthFuture, ExternalAuthRefreshContext,
 };
 use codex_protocol::config_types::ModelProviderAuthInfo;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SavedCodexLogin {
+    codex_home: Option<PathBuf>,
+    account_id: Option<String>,
+}
+
+impl SavedCodexLogin {
+    pub(crate) async fn open(self, config: &Config) -> Result<(Arc<AuthManager>, PathBuf)> {
+        let codex_home = match self.codex_home {
+            Some(path) => path,
+            None => codex_core::config::find_codex_home()
+                .context("Cannot locate the Codex login directory")?
+                .to_path_buf(),
+        }
+        .canonicalize()
+        .context("Cannot open the Codex login directory")?;
+        let auth_file = codex_home.join("auth.json");
+        ensure!(
+            auth_file
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.is_file()),
+            "No file-backed Codex login. Sign in with ChatGPT using codex login first."
+        );
+        let manager = AuthManager::shared_saved_chatgpt(codex_home, config.auth_route_config())
+            .await
+            .map_err(|_| anyhow::anyhow!(
+                "No usable saved Codex OAuth login. Sign in with ChatGPT using codex login first."
+            ))?;
+        let account = manager
+            .auth_cached()
+            .context("Saved Codex OAuth login is unavailable")?
+            .get_account_id();
+        ensure!(
+            self.account_id
+                .as_ref()
+                .is_none_or(|expected| account.as_ref() == Some(expected)),
+            "Saved Codex login does not match the expected account"
+        );
+        Ok((manager, auth_file))
+    }
+
+    pub(crate) fn check_provider(config: &Config) -> Result<()> {
+        let provider = &config.model_provider;
+        ensure!(
+            config.model_provider_id == "native_agent"
+                && provider.base_url.as_deref() == Some("https://chatgpt.com/backend-api/codex")
+                && config.chatgpt_base_url.trim_end_matches('/')
+                    == "https://chatgpt.com/backend-api"
+                && provider.requires_openai_auth
+                && !provider.supports_websockets
+                && !provider.has_request_routing_overrides()
+                && provider.model_catalog_url.is_none()
+                && provider.auth.is_none()
+                && provider.gateway_oauth.is_none()
+                && provider.env_key.is_none()
+                && provider.experimental_bearer_token.is_none()
+                && !provider.is_amazon_bedrock(),
+            "Saved Codex login requires native streaming HTTP with default ChatGPT routing"
+        );
+        ensure!(
+            !crate::config::web_search_tool(config)
+                .is_some_and(|name| !name.is_default_namespace()),
+            "Saved Codex login does not support standalone web search. Use webSearch({{ route: 'hosted' }}) with a model that supports hosted web search."
+        );
+        Ok(())
+    }
+}
 
 struct ApiKey {
     auth: CodexAuth,

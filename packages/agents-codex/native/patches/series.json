@@ -475,7 +475,11 @@
     {
       "path": "sdk-realtime-raw-settings-and-item-deletion.patch",
       "sha256": "0ab7da8b87a0bcfe84d3e60b6d2850953c781880efbb82b196f8c8a123559f18"
+    },
+    {
+      "path": "sdk-saved-codex-login.patch",
+      "sha256": "0305bfd06c7970254db7405bddf3e2be9bab5670f0e2f45e1a05764690da4dff"
     }
   ],
-  "result_tree": "c0176d345adff21330d88fec57f20dfeca58e16e"
+  "result_tree": "6d80269661aa8f2f250b84637e692d84e53594d1"
 }

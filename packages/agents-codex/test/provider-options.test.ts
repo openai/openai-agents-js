@@ -84,6 +84,40 @@ describe('NativeProvider option capture', () => {
     },
   );
 
+  it.each([
+    { apiKey: 'synthetic-key' },
+    { baseUrl: 'http://127.0.0.1:1/v1' },
+    { supportsWebsockets: true },
+    { responseMode: 'buffered' as const },
+    { headers: { 'x-custom-route': 'synthetic' } },
+  ])('rejects conflicting saved-login routing', (options) => {
+    expect(() => new NativeProvider({ ...options, codexLogin: {} })).toThrow(
+      'codexLogin requires native streaming HTTP with default ChatGPT routing',
+    );
+  });
+
+  it('captures saved-login options and skips ambient API-key selection', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'synthetic-api-key');
+    const login = { accountId: 'synthetic-workspace' };
+    const provider = new NativeProvider({ codexLogin: login });
+    login.accountId = 'replaced';
+    const lease = provider._acquire(undefined, true);
+    try {
+      expect(lease.codexLogin).toEqual({ accountId: 'synthetic-workspace' });
+      expect(lease.apiKey).toBeUndefined();
+      expect(lease.realtimeApiKey).toBeUndefined();
+      expect(lease.privateRuntime).toBeUndefined();
+      expect(lease.config['model_providers.native_agent']).toMatchObject({
+        base_url: 'https://chatgpt.com/backend-api/codex',
+        supports_websockets: false,
+      });
+    } finally {
+      await lease.release();
+      await provider.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('keeps the default WS choice when private candidacy is excluded', async () => {
     vi.stubEnv('OPENAI_API_KEY', undefined);
     class DerivedProvider extends NativeProvider {}
