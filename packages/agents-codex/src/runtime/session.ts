@@ -10332,7 +10332,7 @@ export class Session<OutputT = string, Context = unknown> {
           tool,
         ]),
       );
-      const candidate = captureTools(
+      let candidate = captureTools(
         this.catalog.tools.map(
           (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
         ),
@@ -10414,30 +10414,27 @@ export class Session<OutputT = string, Context = unknown> {
                 undefined,
                 this.terminalSlots(candidate),
                 encode(slots),
+                true,
               ),
             );
             // The combined ingress owns function and MCP publication. Any
             // uncertain failure is retired below, rather than retried as old state.
             published = true;
-            if (
+            candidate = this.publishedCatalog(
+              candidate,
               losslessJsonObjectSchema.parse(jsonObject.parse(receipt).result)
-                .tools_generation !== candidate.generation.toString()
-            )
-              throw new NativeError(
-                'Native tool publication was not confirmed',
-              );
+                .tools_generation,
+            );
           } else {
             const accepted = await this.#native._replace_tools(
               candidate.generation.toString(),
               candidate.specsJson,
               encode(slots),
               this.terminalSlots(candidate),
+              true,
             );
-            if (accepted !== candidate.generation.toString())
-              throw new NativeError(
-                'Native tool publication was not confirmed',
-              );
             published = true;
+            candidate = this.publishedCatalog(candidate, accepted);
             receipt = parseNative(
               await this.#native._replace_mcp_servers(
                 encode(
@@ -10536,26 +10533,40 @@ export class Session<OutputT = string, Context = unknown> {
       admitted.add(toolDeclarationIdentity(tool));
     }
   }
+  private publishedCatalog(
+    candidate: ToolCatalog,
+    accepted: unknown,
+  ): ToolCatalog {
+    const generation = BigInt(profileInteger(accepted));
+    if (generation <= this.catalog.generation)
+      throw new NativeError('Native tool publication was not confirmed');
+    return { ...candidate, generation };
+  }
+
   private async publishCatalog(
     create: () => Promise<ToolCatalog>,
     defaults: readonly SessionTool[],
   ): Promise<void> {
     let confirmed = false;
     await this.mutate(async () => {
-      const candidate = await create();
+      let candidate = await create();
       const slots = this.catalogSlots(candidate, defaults);
       const accepted = await this.#native._replace_tools(
         candidate.generation.toString(),
         candidate.specsJson,
         encode(slots),
         this.terminalSlots(candidate),
+        true,
       );
-      confirmed = accepted === candidate.generation.toString();
-      if (confirmed) {
-        this.acceptCatalog(candidate, defaults, slots);
-        await this.configureManualTools();
-        await this.acknowledgeProfilePublication();
+      try {
+        candidate = this.publishedCatalog(candidate, accepted);
+      } catch {
+        return;
       }
+      confirmed = true;
+      this.acceptCatalog(candidate, defaults, slots);
+      await this.configureManualTools();
+      await this.acknowledgeProfilePublication();
     });
     if (!confirmed) {
       await this.close();

@@ -146,9 +146,9 @@ it('MCP fixture accepts JSON-RPC requests and notifications', async () => {
   }
 });
 
-nativeIt(
-  'keeps retained response callbacks separate from accepted replacement callbacks',
-  async () => {
+nativeIt.each([false, true])(
+  'keeps retained response callbacks separate from accepted replacement callbacks (voice graph=%s)',
+  async (voiceGraph) => {
     const remote = await peer();
     const model = new ModelServer([
       [
@@ -214,13 +214,24 @@ nativeIt(
         name: 'A',
         instructions: 'Read records.',
         tools: [descriptor(false)],
-        handoffs: [new Agent({ name: 'B', instructions: 'Answer.' })],
+        handoffs: voiceGraph
+          ? []
+          : [new Agent({ name: 'B', instructions: 'Answer.' })],
         provider,
       }).session();
       await using voice = await session.realtime({
         model: 'fixture-realtime',
         automaticallyTriggerResponseForMcpToolCalls: false,
       });
+      if (voiceGraph)
+        await voice.updateAgent(
+          new Agent({
+            name: 'Voice source',
+            instructions: 'Read retained records.',
+            tools: [descriptor(false)],
+            provider,
+          }),
+        );
       const name = accepted.tools.find((item: { name?: string }) =>
         item.name?.includes('lookup'),
       ).name;
