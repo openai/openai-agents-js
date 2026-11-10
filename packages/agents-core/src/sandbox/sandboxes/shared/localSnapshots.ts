@@ -140,7 +140,7 @@ type RetainedSnapshot = LocalSandboxSnapshot & {
   [retainedManagedSnapshot]?: true;
 };
 
-/** @internal Preserve the already authorized predecessor after managed restore. */
+/** Managed restore predecessor retention. */
 export function retainManagedWorkspaceSnapshot(
   snapshot: LocalSandboxSnapshot,
 ): void {
