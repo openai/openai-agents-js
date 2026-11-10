@@ -572,7 +572,7 @@ impl Engine {
             .map_err(native_error)?;
         let specs = checkpoint::restore_specs(&raw, &mut options, specs).map_err(input_error)?;
         let payload = serde_json::from_value(raw).map_err(native_error)?;
-        (async move {
+        Box::pin(async move {
             let _context_operation = inner.operation(false).map_err(native_error)?;
             checkpoint::restore(
                 &inner,

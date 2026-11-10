@@ -452,6 +452,11 @@ it('joins registered MCP and interception readers across replacement and manual 
         return retire.call(this, producer, notify, matches);
       }),
   ];
+  const restoreSpies = () => {
+    releaseAll();
+    for (const spy of spies) spy.mockRestore();
+  };
+  onTestFinished(restoreSpies);
   const collect = async (stream: AsyncIterable<Observation>) => {
     const events: Observation[] = [];
     for await (const event of stream) events.push(event);
@@ -501,9 +506,9 @@ it('joins registered MCP and interception readers across replacement and manual 
         replaced = true;
       });
     void replacing.catch(() => {});
-    await Promise.all([
-      source.mcpNull.promise,
-      source.interceptionNull.promise,
+    await Promise.race([
+      Promise.all([source.mcpNull.promise, source.interceptionNull.promise]),
+      replacing,
     ]);
     expect(groups).toHaveLength(0);
     source.releaseInterception.resolve();
@@ -551,11 +556,10 @@ it('joins registered MCP and interception readers across replacement and manual 
     // This verifies Session reader registration and shutdown wiring, not a
     // public reproduction of a child notice queued beyond child-stream EOF.
   } finally {
-    releaseAll();
+    restoreSpies();
     await Promise.allSettled(
       [replacing, suspending].filter((work) => work !== undefined),
     );
-    for (const spy of spies) spy.mockRestore();
   }
 }, 30_000);
 
