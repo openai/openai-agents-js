@@ -164,14 +164,14 @@ it.skipIf(process.platform === 'win32')(
   },
 );
 
-async function recordingCli() {
+async function recordingCli(complete = true) {
   const root = await mkdtemp(join(tmpdir(), 'native-codex-isolation-'));
   roots.push(root);
   const cli = join(root, 'codex');
   const callsPath = join(root, 'calls.jsonl');
   await writeFile(
     cli,
-    `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv) + '\\n');\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'synthetic-owned-thread'}));\nconsole.log(JSON.stringify({type:'item.completed',item:{id:'item',type:'agent_message',text:'CLI completed'}}));\nconsole.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}));\n`,
+    `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv) + '\\n');\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'synthetic-owned-thread'}));\nconsole.log(JSON.stringify({type:'item.completed',item:{id:'item',type:'agent_message',text:'CLI completed'}}));\n${complete ? "console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}));" : ''}\n`,
   );
   await chmod(cli, 0o700);
   const calls = async () =>
@@ -232,6 +232,187 @@ it.skipIf(process.platform === 'win32')(
     expect(argv[0]).not.toContain('resume');
     expect(argv[1]).toContain('resume');
     expect(argv[2]).not.toContain('resume');
+    server.assertExhausted();
+  },
+);
+
+it.skipIf(process.platform === 'win32').each([false, true])(
+  'binds model-supplied CLI thread IDs to the invoking Session (persistSession=%s)',
+  async (persistSession) => {
+    const { cli, calls } = await recordingCli();
+    const server = new ModelServer([
+      [call('codex', { prompt: 'Start', threadId: null }, { callId: 'start' })],
+      [message('started')],
+      [
+        call(
+          'codex',
+          { prompt: 'Continue', threadId: 'synthetic-owned-thread' },
+          { callId: 'continue' },
+        ),
+      ],
+      [message('continued')],
+      [
+        call(
+          'codex',
+          { prompt: 'Read another user', threadId: 'synthetic-owned-thread' },
+          { callId: 'foreign' },
+        ),
+      ],
+      [message('unexpected foreign continuation')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Use codex.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        nativeCodexTool({
+          codex: new Codex({ codexPathOverride: cli }),
+          persistSession,
+        }),
+      ],
+    });
+    await using first = await agent.session();
+    expect((await (await first.submit('Start')).wait()).finalOutput).toBe(
+      'started',
+    );
+    expect((await (await first.submit('Continue')).wait()).finalOutput).toBe(
+      'continued',
+    );
+    await using second = await agent.session();
+    await expect((await second.submit('Foreign')).wait()).rejects.toThrow(
+      'not authorized for this Session',
+    );
+    const argv = await calls();
+    expect(argv).toHaveLength(2);
+    expect(argv[0]).not.toContain('resume');
+    expect(argv[1]).toContain('resume');
+    expect(argv[1]).toContain('synthetic-owned-thread');
+    expect(server.requests).toHaveLength(5);
+  },
+);
+
+it.skipIf(process.platform === 'win32').each([false, true])(
+  'captures application-authorized thread IDs while preserving native persistence (persistSession=%s)',
+  async (persistSession) => {
+    const { cli, calls } = await recordingCli();
+    const server = new ModelServer(
+      [
+        null,
+        'synthetic-owned-thread',
+        null,
+        'application-approved-thread',
+      ].flatMap((threadId, index) => [
+        [
+          call(
+            'codex',
+            { prompt: 'Task', threadId },
+            { callId: `trusted-${index}` },
+          ),
+        ],
+        [message('done')],
+      ]),
+    );
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const options = {
+      codex: new Codex({ codexPathOverride: cli }),
+      persistSession,
+      threadId: 'application-approved-thread',
+    };
+    const tool = nativeCodexTool(options);
+    options.threadId = 'later-configuration-mutation';
+    const agent = new Agent({
+      instructions: 'Use codex.',
+      model: 'gpt-5',
+      provider,
+      tools: [tool],
+    });
+    await using first = await agent.session();
+    for (const prompt of ['Initial', 'Select returned thread', 'Continue']) {
+      expect((await (await first.submit(prompt)).wait()).finalOutput).toBe(
+        'done',
+      );
+    }
+    await using second = await agent.session();
+    expect(
+      (await (await second.submit('Authorized shared thread')).wait())
+        .finalOutput,
+    ).toBe('done');
+    const argv = await calls();
+    expect(argv).toHaveLength(4);
+    const expectedIds = [
+      'application-approved-thread',
+      'synthetic-owned-thread',
+      persistSession ? 'synthetic-owned-thread' : 'application-approved-thread',
+      'application-approved-thread',
+    ];
+    for (const [index, expectedId] of expectedIds.entries()) {
+      expect(argv[index]).toContain('resume');
+      expect(argv[index]).toContain(expectedId);
+      expect(argv[index]).not.toContain('later-configuration-mutation');
+    }
+    server.assertExhausted();
+  },
+);
+
+it.skipIf(process.platform === 'win32').each([false, true])(
+  'rejects incomplete CLI streams without authorizing their thread IDs (persistSession=%s)',
+  async (persistSession) => {
+    const { cli, calls } = await recordingCli(false);
+    const server = new ModelServer([
+      [
+        call(
+          'codex',
+          { prompt: 'Incomplete', threadId: null },
+          { callId: 'incomplete' },
+        ),
+      ],
+      [
+        call(
+          'codex',
+          { prompt: 'Resume', threadId: 'synthetic-owned-thread' },
+          { callId: 'resume-incomplete' },
+        ),
+      ],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Use codex.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        nativeCodexTool({
+          codex: new Codex({ codexPathOverride: cli }),
+          persistSession,
+        }),
+      ],
+    });
+    await using session = await agent.session();
+    await expect((await session.submit('Incomplete')).wait()).rejects.toThrow(
+      'before successful completion',
+    );
+    await expect(
+      (await session.submit('Resume incomplete')).wait(),
+    ).rejects.toThrow('not authorized for this Session');
+    expect(await calls()).toHaveLength(1);
     server.assertExhausted();
   },
 );

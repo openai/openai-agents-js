@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Codex, type CodexOptions } from '@openai/codex-sdk';
 import {
   invokeFunctionTool,
+  registerToolSessionOwner,
   type ToolCallContext,
 } from '../../src/runtime/tools';
 import { nativeCodexTool } from '../../../agents-extensions/src/experimental/codex';
@@ -63,17 +64,19 @@ it
         ? { codex: new Codex(options) }
         : { codexOptions: options },
     );
+    const context = {
+      context: undefined,
+      submission: { sessionId: 'session' },
+      threadId: 'session',
+      turnId: 'turn',
+      callId: 'call',
+      signal: new AbortController().signal,
+    } as ToolCallContext;
+    registerToolSessionOwner(context, {});
     const result = await invokeFunctionTool(
       tool,
       { prompt: 'Inspect the selected test variables', threadId: null },
-      {
-        context: undefined,
-        submission: { sessionId: 'session' },
-        threadId: 'session',
-        turnId: 'turn',
-        callId: 'call',
-        signal: new AbortController().signal,
-      } as ToolCallContext,
+      context,
       () => {},
     );
     const content = result.contentItems?.[0];
