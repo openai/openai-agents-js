@@ -1,11 +1,12 @@
-name: Compare stock macOS PEM verification through one CONNECT listener
+name: Compare stock macOS Go system and PEM trust through one SDK listener
 
 on:
   push:
     branches: [mark/nov9-js-macos-read-roots-receipt]
     paths:
       - '.github/workflows/macos-read-roots-receipt.yml'
-      - '.github/diagnostics/macos-stock-pem-connect.test.ts'
+      - '.github/diagnostics/macos-go-trust.mjs'
+      - '.github/diagnostics/github-trust.go'
 
 permissions:
   contents: read
@@ -23,12 +24,34 @@ jobs:
       SDK_COMMIT: 3a04fcda5e74b11bc5668bd07d0715fb38bc3f8e
       SDK_TREE: 2a023a8af4539af69cadb89213834d0e2fb11dd3
       NATIVE_INPUTS: 0e8037e90a550263d510f2ef54da1642b5234ef9168c087810638c04ff2857a9
-      PEM_CASE: compares stock Darwin PEM verification through the same CONNECT listener
+      ALPHA_VERSION: 0.22.0-alpha.2
+      GO_VERSION: '1.26.10'
+      GO_SOURCE_SHA256: ab88e2580dd1d489ade900ce6a4310c2bd3d4c73aba5939e3f8bd66fb3fdfc99
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.SDK_COMMIT }}
           persist-credentials: false
+      - name: Check out the diagnostics from the triggering commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: .macos-receipt
+          sparse-checkout: |
+            /.github/diagnostics/macos-go-trust.mjs
+            /.github/diagnostics/github-trust.go
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Stage the exact diagnostic blobs
+        run: |
+          scratch="$RUNNER_TEMP/agents-go-trust"
+          mkdir "$scratch"
+          test "$(git -C .macos-receipt rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C .macos-receipt show "$GITHUB_SHA:.github/diagnostics/macos-go-trust.mjs" > "$scratch/macos-go-trust.mjs"
+          git -C .macos-receipt show "$GITHUB_SHA:.github/diagnostics/github-trust.go" > "$scratch/github-trust.go"
+          rm -rf .macos-receipt
+          source_digest=$(/usr/bin/shasum -a 256 < "$scratch/github-trust.go")
+          test "${source_digest%% *}" = "$GO_SOURCE_SHA256"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
         with:
           run_install: false
@@ -44,69 +67,101 @@ jobs:
           import { nativeInputs } from './scripts/native-bundle-inputs.mjs';
 
           const { SDK_COMMIT, SDK_TREE, NATIVE_INPUTS } = process.env;
-          const git = (...args) => execFileSync('git', args, {encoding: 'utf8'}).trim();
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
           assert.equal(git('rev-parse', 'HEAD'), SDK_COMMIT);
           assert.equal(git('rev-parse', 'HEAD^{tree}'), SDK_TREE);
           assert.equal(nativeInputs(), NATIVE_INPUTS);
-          assert.equal(process.platform + '-' + process.arch, 'darwin-arm64');
-          assert.ok(process.getuid() > 0);
-          console.log('Verified checkout, tree and native inputs', SDK_COMMIT, SDK_TREE, NATIVE_INPUTS);
+          assert.equal(`${process.platform}-${process.arch}`, 'darwin-arm64');
+          assert(process.getuid() > 0);
+          assert.equal(process.versions.node.split('.')[0], '24');
+          console.log('Verified SDK commit, tree and native inputs', SDK_COMMIT, SDK_TREE, NATIVE_INPUTS);
           JS
+          printf 'Runner image %s %s, architecture %s\n' "${ImageOS:?}" "${ImageVersion:?}" "$(/usr/bin/uname -m)"
+          /usr/bin/sw_vers
+          printf 'Node %s, npm %s, pnpm %s\n' "$(node --version)" "$(npm --version)" "$(pnpm --version)"
+      - name: Build the retained probe with cached Go and record stock gh versions
+        run: |
+          scratch="$RUNNER_TEMP/agents-go-trust"
+          go_bin="$RUNNER_TOOL_CACHE/go/$GO_VERSION/arm64/bin/go"
+          gh_bin=$(command -v gh)
+          test -x "$go_bin"
+          test -x "$gh_bin"
+          mkdir "$scratch/go-cache" "$scratch/go-home" "$scratch/gh-config"
+
+          stock_go() {
+            /usr/bin/env -i HOME="$scratch/go-home" GOCACHE="$scratch/go-cache" \
+              GOPROXY=off GOENV=off GOTOOLCHAIN=local GO111MODULE=off GOSUMDB=off CGO_ENABLED=0 \
+              "$go_bin" "$@"
+          }
+          go_version=$(stock_go version)
+          test "$go_version" = "go version go$GO_VERSION darwin/arm64"
+          gh_version=$(
+            /usr/bin/env -i GH_CONFIG_DIR="$scratch/gh-config" GH_NO_UPDATE_NOTIFIER=1 \
+              GH_NO_EXTENSION_UPDATE_NOTIFIER=1 GH_NO_TELEMETRY=1 DO_NOT_TRACK=1 \
+              "$gh_bin" --version 2>/dev/null |
+              /usr/bin/sed -nE '1s/^gh version ([0-9]+\.[0-9]+\.[0-9]+)([[:space:]].*)?$/\1/p'
+          )
+          gh_go=$(
+            stock_go version "$gh_bin" 2>/dev/null |
+              /usr/bin/awk '$NF ~ /^go[0-9]+\.[0-9]+(\.[0-9]+)?([a-z]+[0-9]+)?$/ { print $NF }'
+          )
+          test -n "$gh_version"
+          test -n "$gh_go"
+          stock_go build -trimpath -buildvcs=false -o "$scratch/github-trust" "$scratch/github-trust.go"
+          binary_digest=$(/usr/bin/shasum -a 256 < "$scratch/github-trust")
+          printf '%s\n' "${binary_digest%% *}" > "$scratch/github-trust.sha256"
+          printf '%s; gh %s (built with %s); probe SHA-256 %s\n' \
+            "$go_version" "$gh_version" "$gh_go" "${binary_digest%% *}"
       - name: Restore the pinned transfer from Alpha run 42890383494
         env:
           GH_TOKEN: ${{ github.token }}
           NATIVE_ARTIFACT: '{"artifact-id":"13799113376","artifact-digest":"f8d683937ec01c14ab03d0b4504f9c598baf644dea526dbd27d9a7d1e882bc5e"}'
         run: node scripts/restore-native-bundle.mjs
-      - name: Verify the release receipt and build the exact JavaScript SDK
+      - name: Verify native products and assemble the local diagnostic starter
         run: |
+          scratch="$RUNNER_TEMP/agents-go-trust"
           pnpm install --frozen-lockfile
           node --input-type=module <<'JS'
           import { verifyNativeReceipt } from './scripts/alpha-package.mjs';
           await verifyNativeReceipt(process.cwd(), 'darwin-arm64');
-          console.log('Release receipt inputs and products match.');
           JS
           node scripts/build-packages.mjs
-      - name: Check out the focused fixture from the diagnostic commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          path: .macos-receipt
-          sparse-checkout: .github/diagnostics/macos-stock-pem-connect.test.ts
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - name: Compare stock PEM in host and strict Session
-        env:
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: |
-          probe=packages/agents-codex/test/native/macos-stock-pem-connect.test.ts
-          result="$RUNNER_TEMP/strict-darwin-pem-test.json"
-          export SDK_DARWIN_PEM_RECEIPT="$RUNNER_TEMP/strict-darwin-pem-receipt.json"
-          test ! -e "$probe"
-          test ! -e "$SDK_DARWIN_PEM_RECEIPT"
-          cp ".macos-receipt/.github/diagnostics/macos-stock-pem-connect.test.ts" "$probe"
-          trap 'rm -f "$probe"' EXIT
-          status=0
-          env -u OPENAI_API_KEY -u CODEX_API_KEY pnpm test:native "$probe" \
-            -t "$PEM_CASE$" --maxWorkers=1 --reporter=verbose --reporter=json \
-            --outputFile.json="$result" || status=$?
-          if test -s "$SDK_DARWIN_PEM_RECEIPT"; then
-            node --input-type=module <<'JS'
-          import { readFileSync } from 'node:fs';
-          const receipt = JSON.parse(readFileSync(process.env.SDK_DARWIN_PEM_RECEIPT, 'utf8'));
-          console.log('Stock Darwin PEM CONNECT comparison', JSON.stringify(receipt));
-          JS
-          fi
-          test "$status" -eq 0
-          test -s "$SDK_DARWIN_PEM_RECEIPT"
-          node --input-type=module - "$result" <<'JS'
+          node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$scratch/alpha"
+          node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const result = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-          const tests = result.testResults.flatMap((file) => file.assertionResults);
-          assert.equal(tests.length, 1);
-          assert.equal(tests[0].title, process.env.PEM_CASE);
-          assert.equal(tests[0].status, 'passed');
-          assert.equal(result.numPassedTests, 1);
-          assert.equal(result.numFailedTests, 0);
-          console.log('Both peer comparisons completed through CONNECT, with zero selected skips.');
+          import { execFileSync } from 'node:child_process';
+          import { copyFile, readFile, writeFile } from 'node:fs/promises';
+          import { join } from 'node:path';
+          import { verifyStarterLock } from './scripts/alpha-package.mjs';
+          import { verifyArtifactDirectory } from './scripts/verify-alpha-package.mjs';
+
+          const scratch = join(process.env.RUNNER_TEMP, 'agents-go-trust');
+          const artifacts = join(scratch, 'alpha');
+          const build = await verifyArtifactDirectory(artifacts, 'darwin-arm64');
+          assert.equal(build.sourceCommit, process.env.SDK_COMMIT);
+          assert.equal(build.version, process.env.ALPHA_VERSION);
+          execFileSync('/usr/bin/tar', ['-xzf', join(artifacts, build.starter.archive), '-C', scratch]);
+          const starter = join(scratch, 'agents-starter');
+          verifyStarterLock(JSON.parse(await readFile(join(starter, 'package-lock.json'), 'utf8')), build.packages);
+          await writeFile(join(starter, 'verification-build.json'), JSON.stringify(build));
+          await copyFile(
+            'packages/agents-codex/native/build-receipt.json',
+            join(starter, 'release-native-receipt.json'),
+          );
+          console.log('Verified the local starter assembly using the official Darwin native transfer.');
           JS
+          cp "$scratch/macos-go-trust.mjs" "$scratch/agents-starter/macos-go-trust.mjs"
+          node_bin=$(command -v node)
+          npm_cli="$(dirname "$node_bin")/../lib/node_modules/npm/bin/npm-cli.js"
+          cd "$scratch/agents-starter"
+          PATH='' "$node_bin" "$npm_cli" ci --ignore-scripts --no-audit --no-fund
+      - name: Compare Go system and PEM trust in the host and strict Session
+        run: |
+          scratch="$RUNNER_TEMP/agents-go-trust"
+          node_bin=$(command -v node)
+          mkdir "$scratch/codex-home" "$scratch/session-tmp"
+          cd "$scratch/agents-starter"
+          /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            SHELL="${SHELL:-/bin/bash}" CODEX_HOME="$scratch/codex-home" TMPDIR="$scratch/session-tmp" \
+            OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1 \
+            "$node_bin" macos-go-trust.mjs "$scratch/github-trust" "$(cat "$scratch/github-trust.sha256")" 2>/dev/null
