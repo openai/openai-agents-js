@@ -226,6 +226,23 @@ pub(crate) fn validate_root_header(id: ThreadId, history: &[RolloutItem]) -> Thr
     Ok(())
 }
 
+fn validate_resume_provider(history: &[RolloutItem], expected: &str) -> ThreadStoreResult<()> {
+    let Some(RolloutItem::SessionMeta(header)) = history.first() else {
+        return Err(checklist_error(
+            "local resume requires its root header identity",
+        ));
+    };
+    if !codex_thread_store::chatgpt_plan_binding_matches(
+        Some(expected),
+        header.meta.model_provider.as_deref(),
+    ) {
+        return Err(checklist_error(
+            "Session requires matching Sign in with ChatGPT registration and account",
+        ));
+    }
+    Ok(())
+}
+
 fn recorded_turns(history: &[RolloutItem]) -> HashMap<String, bool> {
     let mut turns = HashMap::new();
     for item in history {
@@ -387,6 +404,20 @@ impl LocalChecklistStore {
             .get_or_insert((id, model));
     }
 
+    pub(crate) async fn validate_resume_binding(
+        &self,
+        saved: &StoredThread,
+        expected: &str,
+    ) -> ThreadStoreResult<()> {
+        let path = saved
+            .rollout_path
+            .clone()
+            .ok_or_else(|| checklist_error("local resume requires a rollout path"))?;
+        self.inner
+            .check_chatgpt_plan_binding(saved.thread_id, path, expected)
+            .await
+    }
+
     pub(crate) fn admit_resume(
         &self,
         id: ThreadId,
@@ -438,6 +469,7 @@ impl LocalChecklistStore {
             .clone()
             .ok_or_else(|| checklist_error("local preparation requires stored history"))?;
         validate_root_header(params.thread_id, &history)?;
+        validate_resume_provider(&history, &params.metadata.model_provider)?;
         let admission = self.admit_resume(params.thread_id, model, history, instructions)?;
         let expected = admission.expected.clone();
         let store = self.clone();
@@ -516,6 +548,8 @@ impl LocalChecklistStore {
             }
             validate_root_header(id, &complete)?;
             validate_root_header(id, &history)?;
+            validate_resume_provider(&complete, &params.metadata.model_provider)?;
+            validate_resume_provider(&history, &params.metadata.model_provider)?;
             executor_policy
                 .validate(&complete, id)
                 .map_err(checklist_error)?;

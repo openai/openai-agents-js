@@ -59,7 +59,7 @@ pub(crate) fn metadata(details: &CodexErrorDetails) -> Option<Value> {
     }))
 }
 
-fn provider_code(body: &str) -> Option<String> {
+pub(super) fn provider_code(body: &str) -> Option<String> {
     if body.len() > 128 * 1024 {
         return None;
     }

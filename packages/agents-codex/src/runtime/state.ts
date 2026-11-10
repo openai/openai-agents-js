@@ -363,11 +363,38 @@ const sdkOutputState = {
   repair_items: z.array(repairItemWireSchema).default([]),
 };
 const checkpointTreeSchema = z.object({ ...rootState, ...treeState });
+const planProviderPrefix = 'native_agent_siwc_v1_';
+const planProviderPattern = /^native_agent_siwc_v1_[a-f0-9]{64}$/;
+
+function validatePlanCheckpointFormat(
+  provider: unknown,
+  planFormat: boolean,
+  ctx: z.RefinementCtx,
+): void {
+  if (
+    planFormat
+      ? typeof provider !== 'string' || !planProviderPattern.test(provider)
+      : typeof provider === 'string' && provider.startsWith(planProviderPrefix)
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Invalid Sign in with ChatGPT checkpoint format',
+    });
+  }
+}
+
 const nativeCheckpointSchema = checkpointTreeSchema
-  .extend({ format_version: z.union([z.literal(2), z.literal(4)]) })
+  .extend({
+    format_version: z.union([z.literal(2), z.literal(4), z.literal(5)]),
+  })
   .catchall(jsonValue)
   .superRefine((state, ctx) => {
     validateCheckpointTree(state, ctx);
+    validatePlanCheckpointFormat(
+      state.root_metadata.model_provider,
+      state.format_version === 5,
+      ctx,
+    );
     if (
       [
         'output_context',
@@ -406,6 +433,15 @@ export function parseNativeCheckpoint(source: unknown): NativeCheckpoint {
 
 export const sessionStateSchema = z
   .discriminatedUnion('format_version', [
+    z
+      .object({
+        format_version: z.literal(16),
+        ...rootState,
+        ...treeState,
+        ...sdkOutputState,
+        ...checkpointSelectionFields,
+      })
+      .catchall(jsonValue),
     z
       .object({
         format_version: z.literal(12),
@@ -545,13 +581,30 @@ export const sessionStateSchema = z
   ])
   .superRefine((state, ctx) => {
     const aware = state.format_version !== 2 && state.format_version !== 3;
-    const network = state.format_version >= 12;
+    const plan = state.format_version === 16;
+    const network = state.format_version >= 12 && !plan;
+    validatePlanCheckpointFormat(state.root_metadata.model_provider, plan, ctx);
+    if (
+      plan &&
+      (state.descendants.length ||
+        state.interrupted_thread_ids.length ||
+        state.repair_turns.length ||
+        state.repair_items.length ||
+        'manual_continuation' in state ||
+        'manual_context' in state)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Sign in with ChatGPT requires a settled single-agent checkpoint',
+      });
+    }
     const selected = state.format_version >= 8 && state.format_version <= 11;
     const hasSelection =
       'operation_tools' in state ||
       'default_tools' in state ||
       'default_resource_servers' in state;
-    if (!network && selected !== hasSelection)
+    if (!network && !plan && selected !== hasSelection)
       ctx.addIssue({
         code: 'custom',
         message: 'Selection metadata requires a selected checkpoint format',
@@ -565,7 +618,8 @@ export const sessionStateSchema = z
       (state.format_version === 8 ||
         state.format_version === 10 ||
         state.format_version === 12 ||
-        state.format_version === 14) &&
+        state.format_version === 14 ||
+        state.format_version === 16) &&
       'operation_tools' in state
     )
       ctx.addIssue({
@@ -786,7 +840,7 @@ export function isOutputAwareState(
   state: SessionState | null | undefined,
 ): state is Extract<
   SessionState,
-  { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 }
+  { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 }
 > {
   return (
     state?.format_version === 4 ||
@@ -800,7 +854,8 @@ export function isOutputAwareState(
     state?.format_version === 12 ||
     state?.format_version === 13 ||
     state?.format_version === 14 ||
-    state?.format_version === 15
+    state?.format_version === 15 ||
+    state?.format_version === 16
   );
 }
 /** @internal Read static SDK overlays only after the versioned state validator. */
@@ -815,7 +870,8 @@ export function readCheckpointSelections(
     state?.format_version === 12 ||
     state?.format_version === 13 ||
     state?.format_version === 14 ||
-    state?.format_version === 15
+    state?.format_version === 15 ||
+    state?.format_version === 16
   )
     return {
       ...(state.default_resource_servers === undefined
@@ -887,7 +943,10 @@ function outputStateFields(
   receipts:
     | Extract<
         SessionState,
-        { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 }
+        {
+          format_version:
+            4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+        }
       >
     | undefined,
   repairs: OutputRepairs | undefined,
@@ -920,15 +979,17 @@ export function fromNativeCheckpoint(
     ...selection,
     ...(executorReadOnly ? { executor_read_only: true } : {}),
     format_version:
-      networkPolicy === undefined
-        ? (state.format_version === 4 ? 6 : 4) +
-          (manual ? 1 : 0) +
-          (selection.operation_tools !== undefined ||
-          selection.default_tools !== undefined ||
-          selection.default_resource_servers !== undefined
-            ? 4
-            : 0)
-        : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
+      state.format_version === 5
+        ? 16
+        : networkPolicy === undefined
+          ? (state.format_version === 4 ? 6 : 4) +
+            (manual ? 1 : 0) +
+            (selection.operation_tools !== undefined ||
+            selection.default_tools !== undefined ||
+            selection.default_resource_servers !== undefined
+              ? 4
+              : 0)
+          : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
     ...(networkPolicy === undefined
       ? {}
       : { network_policy_digest: networkPolicy }),
@@ -958,14 +1019,16 @@ export function nativeCheckpoint(state: SessionState) {
   return {
     ...checkpoint,
     format_version:
-      state.format_version === 6 ||
-      state.format_version === 7 ||
-      state.format_version === 10 ||
-      state.format_version === 11 ||
-      state.format_version === 14 ||
-      state.format_version === 15
-        ? 4
-        : 2,
+      state.format_version === 16
+        ? 5
+        : state.format_version === 6 ||
+            state.format_version === 7 ||
+            state.format_version === 10 ||
+            state.format_version === 11 ||
+            state.format_version === 14 ||
+            state.format_version === 15
+          ? 4
+          : 2,
   };
 }
 

@@ -265,6 +265,7 @@ import {
 import {
   managedApproval,
   captureTools,
+  isDirectFunctionTool,
   toolIdentity,
   toolNamespace,
   toolDeclarationIdentity,
@@ -313,6 +314,8 @@ export type AcceptedSubmission = Exclude<
 
 export interface SessionOptions {
   modelBackend?: NativeModel | ModelProvider;
+  /** @internal The Session uses the registered ChatGPT plan inference route. */
+  chatGPTPlan?: boolean;
   /** @internal Captured provider credential, independent of text producer admission. */
   realtimeApiKey?: string;
   decisions?: DecisionProvider;
@@ -1139,6 +1142,8 @@ export class Session<OutputT = string, Context = unknown> {
   async buildRealtimeSipConfig(
     options: NativeRealtimeSipConfigOptions = {},
   ): Promise<JsonObject> {
+    if (this.options.chatGPTPlan)
+      throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('build Realtime SIP configuration on');
     if (
       !this.isOpen ||
@@ -1212,6 +1217,8 @@ export class Session<OutputT = string, Context = unknown> {
   async realtime(
     options: NativeRealtimeOptions = {},
   ): Promise<NativeRealtimeSession> {
+    if (this.options.chatGPTPlan)
+      throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('open Realtime on');
     // A rejected startup cannot return its owner as a cleanup retry handle.
     // Keep it installed until this explicit retry joins its retained cleanup.
@@ -3952,6 +3959,13 @@ export class Session<OutputT = string, Context = unknown> {
     output = this.defaultOutput,
     budget = RunBudgetTracker.capture(options?.budget),
   ): OperationSelection | undefined {
+    if (
+      this.options.chatGPTPlan &&
+      (output.repair || options?.prepareRequest !== undefined)
+    )
+      throw new TypeError(
+        'Sign in with ChatGPT does not support output repair or prepareRequest',
+      );
     if (
       !this.options.agentGraph &&
       options?.tools === undefined &&
@@ -9615,6 +9629,13 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (options.tools !== undefined) {
       const next = splitToolDeclarations(options.tools);
+      if (
+        this.options.chatGPTPlan &&
+        next.tools.some((tool) => !isDirectFunctionTool(tool))
+      )
+        throw new TypeError(
+          'Sign in with ChatGPT requires direct local function tools',
+        );
       const registration = this.options.mcpTools?.find(isHostedRegistration);
       if (
         next.mcp.some(
@@ -10748,6 +10769,10 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   async compact(options?: SuppliedCompactionOptions): Promise<void> {
+    if (this.options.chatGPTPlan && options === undefined)
+      throw new TypeError(
+        'Sign in with ChatGPT does not support model-backed compaction',
+      );
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
       throw new TypeError(
@@ -11424,6 +11449,8 @@ export class Session<OutputT = string, Context = unknown> {
     return snapshot;
   }
   async suspend(): Promise<SessionState> {
+    if (this.options.chatGPTPlan)
+      throw new TypeError('Sign in with ChatGPT requires settled state');
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before suspend');
     if (this.nativeQuestions.size)

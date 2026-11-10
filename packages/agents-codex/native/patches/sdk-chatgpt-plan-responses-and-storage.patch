@@ -1,0 +1,561 @@
+diff --git a/codex-rs/codex-api/src/api_bridge.rs b/codex-rs/codex-api/src/api_bridge.rs
+index f3b9b05..0b91bc3 100644
+--- a/codex-rs/codex-api/src/api_bridge.rs
++++ b/codex-rs/codex-api/src/api_bridge.rs
+@@ -58,6 +58,36 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
+     error
+ }
+
++/// Preserve the SDK's bounded diagnostic body and actual HTTP metadata.
++pub fn map_chatgpt_plan_http_error(err: ApiError) -> CodexErr {
++    let ApiError::Transport(TransportError::Http {
++        status,
++        headers,
++        body,
++        retry_after,
++        ..
++    }) = err
++    else {
++        return map_api_error(err);
++    };
++    let mut error = CodexErr::UnexpectedStatus(UnexpectedResponseError {
++        status,
++        body: body.unwrap_or_default(),
++        user_message: None,
++        url: None,
++        cf_ray: None,
++        request_id: extract_request_tracking_id(headers.as_ref()).filter(|id| {
++            !id.is_empty() && id.len() <= 256 && id.bytes().all(|byte| byte.is_ascii_graphic())
++        }),
++        identity_authorization_error: None,
++        identity_error_code: None,
++    });
++    if let Some(retry_after) = retry_after {
++        error = error.with_retry_after(retry_after);
++    }
++    error
++}
++
+ fn map_api_error_details(err: ApiError) -> CodexErr {
+     match err {
+         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
+diff --git a/codex-rs/codex-api/src/endpoint/responses.rs b/codex-rs/codex-api/src/endpoint/responses.rs
+index 40ff370..d2b277a 100644
+--- a/codex-rs/codex-api/src/endpoint/responses.rs
++++ b/codex-rs/codex-api/src/endpoint/responses.rs
+@@ -8,6 +8,7 @@ use crate::requests::Compression;
+ use crate::requests::headers::build_session_headers;
+ use crate::requests::headers::insert_header;
+ use crate::requests::headers::subagent_header;
++use crate::sse::responses::spawn_response_stream_with_terminal_policy;
+ use crate::sse::spawn_response_stream;
+ use crate::telemetry::SseTelemetry;
+ use codex_client::EncodedJsonBody;
+@@ -28,6 +29,7 @@ const MAX_JSON_RESPONSE_BODY_BYTES: usize = 64 * 1024 * 1024;
+ pub struct ResponsesClient<T: HttpTransport> {
+     session: EndpointSession<T>,
+     sse_telemetry: Option<Arc<dyn SseTelemetry>>,
++    strict_terminal: bool,
+ }
+
+ #[derive(Default)]
+@@ -45,6 +47,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
+         Self {
+             session: EndpointSession::new(transport, provider, auth),
+             sse_telemetry: None,
++            strict_terminal: false,
+         }
+     }
+
+@@ -56,9 +59,15 @@ impl<T: HttpTransport> ResponsesClient<T> {
+         Self {
+             session: self.session.with_request_telemetry(request),
+             sse_telemetry: sse,
++            strict_terminal: self.strict_terminal,
+         }
+     }
+
++    pub fn with_strict_terminal(mut self, strict_terminal: bool) -> Self {
++        self.strict_terminal = strict_terminal;
++        self
++    }
++
+     #[instrument(
+         name = "responses.stream_request",
+         level = "info",
+@@ -181,12 +190,19 @@ impl<T: HttpTransport> ResponsesClient<T> {
+             .send_encoded(body, extra_headers, compression, "text/event-stream", None)
+             .await?;
+
+-        Ok(spawn_response_stream(
+-            stream_response,
+-            self.session.provider().stream_idle_timeout,
+-            self.sse_telemetry.clone(),
+-            turn_state,
+-        ))
++        let idle_timeout = self.session.provider().stream_idle_timeout;
++        let telemetry = self.sse_telemetry.clone();
++        Ok(if self.strict_terminal {
++            spawn_response_stream_with_terminal_policy(
++                stream_response,
++                idle_timeout,
++                telemetry,
++                turn_state,
++                true,
++            )
++        } else {
++            spawn_response_stream(stream_response, idle_timeout, telemetry, turn_state)
++        })
+     }
+     async fn send_encoded(
+         &self,
+diff --git a/codex-rs/codex-api/src/lib.rs b/codex-rs/codex-api/src/lib.rs
+index 625475f..3f51e65 100644
+--- a/codex-rs/codex-api/src/lib.rs
++++ b/codex-rs/codex-api/src/lib.rs
+@@ -23,6 +23,7 @@ pub use codex_client::ReqwestTransport;
+ pub use codex_client::TransportError;
+
+ pub use crate::api_bridge::map_api_error;
++pub use crate::api_bridge::map_chatgpt_plan_http_error;
+ pub use crate::auth::AgentIdentityTelemetry;
+ pub use crate::auth::AuthError;
+ pub use crate::auth::AuthHeaderTelemetry;
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index 87d8f1b..f4610f6 100644
+--- a/codex-rs/codex-api/src/sse/responses.rs
++++ b/codex-rs/codex-api/src/sse/responses.rs
+@@ -43,6 +43,34 @@ pub fn spawn_response_stream(
+     telemetry: Option<Arc<dyn SseTelemetry>>,
+     turn_state: Option<Arc<OnceLock<String>>>,
+ ) -> ResponseStream {
++    spawn_response_stream_with_terminal_policy(
++        stream_response,
++        idle_timeout,
++        telemetry,
++        turn_state,
++        false,
++    )
++}
++
++pub(crate) fn spawn_response_stream_with_terminal_policy(
++    stream_response: StreamResponse,
++    idle_timeout: Duration,
++    telemetry: Option<Arc<dyn SseTelemetry>>,
++    turn_state: Option<Arc<OnceLock<String>>>,
++    strict_terminal: bool,
++) -> ResponseStream {
++    let plan_response = strict_terminal.then(|| {
++        let headers = ["x-request-id", "oai-request-id", "cf-ray", "retry-after"]
++            .into_iter()
++            .filter_map(|name| {
++                Some((
++                    http::HeaderName::from_static(name),
++                    stream_response.headers.get(name)?.clone(),
++                ))
++            })
++            .collect();
++        (stream_response.status, headers)
++    });
+     let rate_limit_snapshots = parse_all_rate_limits(&stream_response.headers);
+     let api_rate_limits = parse_api_rate_limits(&stream_response.headers);
+     let models_etag = stream_response
+@@ -106,6 +134,7 @@ pub fn spawn_response_stream(
+             idle_timeout,
+             telemetry,
+             safety_buffering_treatment,
++            plan_response,
+         )
+         .await;
+             } => {},
+@@ -707,19 +736,43 @@ pub async fn process_sse(
+         idle_timeout,
+         telemetry,
+         SafetyBufferingTreatment::default(),
++        None,
+     )
+     .await;
+ }
+
++fn plan_stream_error(
++    status: http::StatusCode,
++    headers: &http::HeaderMap,
++    message: &str,
++    code: Option<&str>,
++    retry_after: Option<codex_http_client::RetryAfter>,
++) -> ApiError {
++    let body = serde_json::json!({"error":{"code":code,"message":message}}).to_string();
++    ApiError::Transport(codex_client::TransportError::Http {
++        status,
++        url: None,
++        headers: Some(headers.clone()),
++        body: Some(body),
++        retry_after: retry_after.or_else(|| codex_http_client::RetryAfter::from_headers(headers)),
++    })
++}
++
+ async fn process_sse_with_treatment(
+     stream: ByteStream,
+     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
+     idle_timeout: Duration,
+     telemetry: Option<Arc<dyn SseTelemetry>>,
+     safety_buffering_treatment: SafetyBufferingTreatment,
++    plan_response: Option<(http::StatusCode, http::HeaderMap)>,
+ ) {
++    let stream_failure = |message: &str| match &plan_response {
++        Some((status, headers)) => plan_stream_error(*status, headers, message, None, None),
++        None => ApiError::Stream(message.to_owned()),
++    };
+     let mut stream = stream.eventsource();
+     let mut response_error: Option<ApiError> = None;
++    let mut pending_tool_output = Vec::new();
+     let mut last_server_model: Option<String> = None;
+
+     loop {
+@@ -729,11 +782,19 @@ async fn process_sse_with_treatment(
+             _ = tx_event.closed() => return,
+             response = timeout(idle_timeout, stream.next()) => response,
+         };
+-        if let Some(t) = telemetry.as_ref() {
++        if plan_response.is_none()
++            && let Some(t) = telemetry.as_ref()
++        {
+             t.on_sse_poll(&response, start.elapsed());
+         }
+         let sse = match response {
+             Ok(Some(Ok(sse))) => sse,
++            Ok(Some(Err(_))) if plan_response.is_some() => {
++                let _ = tx_event
++                    .send(Err(stream_failure("Sign in with ChatGPT stream failed")))
++                    .await;
++                return;
++            }
+             Ok(Some(Err(e))) => {
+                 debug!("SSE Error: {e:#}");
+                 let error = match e {
+@@ -746,21 +807,22 @@ async fn process_sse_with_treatment(
+                 return;
+             }
+             Ok(None) => {
+-                let error = response_error.unwrap_or(ApiError::Stream(
+-                    "stream closed before response.completed".into(),
+-                ));
++                let error = response_error
++                    .unwrap_or_else(|| stream_failure("stream closed before response.completed"));
+                 let _ = tx_event.send(Err(error)).await;
+                 return;
+             }
+             Err(_) => {
+                 let _ = tx_event
+-                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
++                    .send(Err(stream_failure("idle timeout waiting for SSE")))
+                     .await;
+                 return;
+             }
+         };
+
+-        trace!("SSE event: {}", &sse.data);
++        if plan_response.is_none() {
++            trace!("SSE event: {}", &sse.data);
++        }
+
+         let event: ResponsesStreamEvent = match serde_json::from_str(&sse.data) {
+             Ok(event) => event,
+@@ -775,6 +837,49 @@ async fn process_sse_with_treatment(
+                 continue;
+             }
+         };
++        if let Some((status, headers)) = &plan_response
++            && matches!(
++                event.kind(),
++                "response.failed" | "response.incomplete" | "error"
++            )
++        {
++            let provider_error = event
++                .response
++                .as_ref()
++                .and_then(|response| response.get("error"))
++                .or_else(|| event.raw.get("error"))
++                .unwrap_or(&event.raw);
++            let code = match provider_error.get("code").and_then(Value::as_str) {
++                Some(
++                    code @ ("subscription_sharing_usage_limit_exceeded"
++                    | "subscription_sharing_usage_unavailable"),
++                ) => Some(code),
++                _ => None,
++            };
++            let retry_after = provider_error
++                .get("headers")
++                .and_then(Value::as_object)
++                .and_then(|headers| {
++                    codex_http_client::RetryAfter::from_headers(&json_headers_to_http_headers(
++                        headers,
++                    ))
++                });
++            let message = if event.kind() == "response.incomplete" {
++                "Sign in with ChatGPT response was incomplete"
++            } else {
++                "Sign in with ChatGPT response failed"
++            };
++            let _ = tx_event
++                .send(Err(plan_stream_error(
++                    *status,
++                    headers,
++                    message,
++                    code,
++                    retry_after,
++                )))
++                .await;
++            return;
++        }
+         if let Some(snapshot) = event.api_rate_limits()
+             && tx_event
+                 .send(Ok(ResponseEvent::ApiRateLimits(snapshot)))
+@@ -844,6 +949,25 @@ async fn process_sse_with_treatment(
+         match process_responses_event(event) {
+             Ok(Some(event)) => {
+                 let is_completed = matches!(event, ResponseEvent::Completed { .. });
++                if is_completed {
++                    for pending in pending_tool_output.drain(..) {
++                        if tx_event.send(Ok(pending)).await.is_err() {
++                            return;
++                        }
++                    }
++                } else if plan_response.is_some()
++                    && (!pending_tool_output.is_empty()
++                        || matches!(
++                            event,
++                            ResponseEvent::OutputItemAdded(ResponseItem::FunctionCall { .. })
++                                | ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { .. })
++                        ))
++                {
++                    // Preserve output order and keep eager tools from running on an
++                    // interrupted response. Ordinary Responses streams still dispatch eagerly.
++                    pending_tool_output.push(event);
++                    continue;
++                }
+                 if tx_event.send(Ok(event)).await.is_err() {
+                     return;
+                 }
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index e7c33c2..87316e6 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -2026,6 +2026,16 @@ impl ModelClientSession {
+                 .iter()
+                 .filter_map(|contributor| contributor.http_stream(&url));
+             let direct = selected.next();
++            let chatgpt_plan = self
++                .client
++                .request_contributors
++                .iter()
++                .any(|c| c.uses_chatgpt_plan());
++            if chatgpt_plan && direct.is_none() {
++                return Err(CodexErr::Fatal(
++                    "Sign in with ChatGPT requires native model dispatch".into(),
++                ));
++            }
+             if selected.next().is_some() {
+                 return Err(CodexErr::Fatal(
+                     "Multiple model HTTP dispatchers claimed the route".into(),
+@@ -2151,7 +2161,8 @@ impl ModelClientSession {
+                 client_setup.api_provider,
+                 client_setup.api_auth,
+             )
+-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
++            .with_telemetry(Some(request_telemetry), Some(sse_telemetry))
++            .with_strict_terminal(chatgpt_plan);
+             crate::model_request::wait_if_sampling_stopped(prompt.sampling_stop.as_deref()).await;
+             if let Some(admission) = &prompt.prepared_request_admission {
+                 admission.admit_request().map_err(CodexErr::Fatal)?;
+@@ -2177,7 +2188,8 @@ impl ModelClientSession {
+                 )
+             };
+             let produced = crate::model_request::produce_response(&interceptors, &request)
+-                .await.map_err(CodexErr::Fatal)?;
++                .await
++                .map_err(CodexErr::Fatal)?;
+             let stream_result = if let Some(events) = produced {
+                 Ok((None, None, events, None, None))
+             } else if prompt.prefer_buffered_response {
+@@ -2229,11 +2241,12 @@ impl ModelClientSession {
+                     return Ok(stream);
+                 }
+                 Err(ApiError::Transport(unauthorized_transport))
+-                    if self
+-                        .client
+-                        .state
+-                        .provider
+-                        .is_recoverable_auth_error(&unauthorized_transport) =>
++                    if !chatgpt_plan
++                        && self
++                            .client
++                            .state
++                            .provider
++                            .is_recoverable_auth_error(&unauthorized_transport) =>
+                 {
+                     let response_debug_context =
+                         extract_response_debug_context(&unauthorized_transport);
+@@ -2259,7 +2272,11 @@ impl ModelClientSession {
+                 Err(err) => {
+                     let response_debug_context =
+                         extract_response_debug_context_from_api_error(&err);
+-                    let err = self.client.state.provider.map_api_error(err);
++                    let err = if chatgpt_plan {
++                        codex_api::map_chatgpt_plan_http_error(err)
++                    } else {
++                        self.client.state.provider.map_api_error(err)
++                    };
+                     inference_trace_attempt.record_failed(
+                         &err,
+                         response_debug_context.request_id.as_deref(),
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 903ebbb..ba3ffa1 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -163,6 +163,11 @@ pub struct ToolsOnlyCallInput {
+ /// Contributes request-scoped preparation and response interception.
+ /// Return None for requests this host does not manage.
+ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
++    /// Identifies an SDK-owned Responses route that requires a genuine completion.
++    fn uses_chatgpt_plan(&self) -> bool {
++        false
++    }
++
+     fn customizes_compaction(&self, _thread_id: &str) -> bool {
+         false
+     }
+diff --git a/codex-rs/http-client/src/client_builder.rs b/codex-rs/http-client/src/client_builder.rs
+index d3b8054..819a1da 100644
+--- a/codex-rs/http-client/src/client_builder.rs
++++ b/codex-rs/http-client/src/client_builder.rs
+@@ -37,6 +37,7 @@ pub struct HttpClientBuilder {
+     http2_prior_knowledge: bool,
+     pub(crate) default_headers: Option<HeaderMap>,
+     follow_redirects: bool,
++    disable_retries: bool,
+     pub(crate) redirect_observed: Option<Arc<AtomicBool>>,
+     connect_timeout: Option<Duration>,
+     chatgpt_cloudflare_cookie_store: bool,
+@@ -121,6 +122,12 @@ impl HttpClientBuilder {
+         self
+     }
+
++    /// Disable implicit protocol-level HTTP retries.
++    pub fn without_retries(mut self) -> Self {
++        self.disable_retries = true;
++        self
++    }
++
+     /// Marks the supplied flag when a redirect is encountered, preserving the default policy.
+     /// Use a fresh flag for each operation whose retry safety depends on its redirect history.
+     pub fn with_redirect_tracking(mut self, redirect_observed: Arc<AtomicBool>) -> Self {
+@@ -358,6 +365,9 @@ impl HttpClientBuilder {
+
+     fn base_reqwest_builder(self) -> reqwest::ClientBuilder {
+         let mut builder = reqwest::Client::builder();
++        if self.disable_retries {
++            builder = builder.retry(reqwest::retry::never());
++        }
+         if self.http2_prior_knowledge {
+             builder = builder.http2_prior_knowledge();
+         }
+@@ -400,6 +410,7 @@ impl Default for HttpClientBuilder {
+             http2_prior_knowledge: false,
+             default_headers: None,
+             follow_redirects: true,
++            disable_retries: false,
+             redirect_observed: None,
+             connect_timeout: None,
+             chatgpt_cloudflare_cookie_store: false,
+diff --git a/codex-rs/thread-store/src/lib.rs b/codex-rs/thread-store/src/lib.rs
+index 9cf1267..c593963 100644
+--- a/codex-rs/thread-store/src/lib.rs
++++ b/codex-rs/thread-store/src/lib.rs
+@@ -117,3 +117,18 @@ pub use types::ThreadSortKey;
+ pub use types::TimelinePage;
+ pub use types::TurnPage;
+ pub use types::UpdateThreadMetadataParams;
++
++/// Namespace for SDK-owned registered ChatGPT plan identities in model_provider.
++pub const CHATGPT_PLAN_PROVIDER_PREFIX: &str = "native_agent_siwc_v1_";
++
++pub fn is_chatgpt_plan_provider(provider: &str) -> bool {
++    provider.starts_with(CHATGPT_PLAN_PROVIDER_PREFIX)
++}
++
++/// Ordinary providers remain interchangeable for storage admission. A plan
++/// thread requires the exact same account and registration, in both directions.
++pub fn chatgpt_plan_binding_matches(expected: Option<&str>, stored: Option<&str>) -> bool {
++    expected == stored
++        || !(expected.is_some_and(is_chatgpt_plan_provider)
++            || stored.is_some_and(is_chatgpt_plan_provider))
++}
+diff --git a/codex-rs/thread-store/src/local/live_writer.rs b/codex-rs/thread-store/src/local/live_writer.rs
+index e1b49e8..9ff38de 100644
+--- a/codex-rs/thread-store/src/local/live_writer.rs
++++ b/codex-rs/thread-store/src/local/live_writer.rs
+@@ -72,6 +72,12 @@ pub(super) async fn resume_thread(
+             message: format!("thread {} is archived", params.thread_id),
+         });
+     }
++    check_plan_binding(
++        params.thread_id,
++        &rollout_path,
++        &params.metadata.model_provider,
++    )
++    .await?;
+     let history = match params.history {
+         Some(history)
+             if !matches!(
+@@ -135,6 +141,28 @@ pub(super) async fn resume_thread(
+     Ok(history)
+ }
+
++pub(super) async fn check_plan_binding(
++    id: ThreadId,
++    rollout_path: &std::path::Path,
++    expected: &str,
++) -> ThreadStoreResult<()> {
++    let header = codex_rollout::read_session_meta_line(rollout_path)
++        .await
++        .map_err(thread_store_io_error)?;
++    if header.meta.id != id
++        || !crate::chatgpt_plan_binding_matches(
++            Some(expected),
++            header.meta.model_provider.as_deref(),
++        )
++    {
++        return Err(ThreadStoreError::InvalidRequest {
++            message: "Session requires matching Sign in with ChatGPT registration and account"
++                .to_owned(),
++        });
++    }
++    Ok(())
++}
++
+ #[tracing::instrument(
+     level = "trace",
+     skip_all,
+diff --git a/codex-rs/thread-store/src/local/mod.rs b/codex-rs/thread-store/src/local/mod.rs
+index f0edcaa..f6f91d5 100644
+--- a/codex-rs/thread-store/src/local/mod.rs
++++ b/codex-rs/thread-store/src/local/mod.rs
+@@ -258,6 +258,17 @@ impl std::fmt::Debug for LocalThreadStore {
+ }
+
+ impl LocalThreadStore {
++    /// Read the resolved rollout header before the SDK loads recovery details.
++    pub async fn check_chatgpt_plan_binding(
++        &self,
++        id: ThreadId,
++        path: PathBuf,
++        expected: &str,
++    ) -> ThreadStoreResult<()> {
++        let path = read_thread::resolve_requested_rollout_path(self, path).await?;
++        live_writer::check_plan_binding(id, &path, expected).await
++    }
++
+     /// Create a local store using an already initialized state DB handle.
+     pub fn new(config: LocalThreadStoreConfig, state_db: Option<StateDbHandle>) -> Self {
+         let writer_lock_coordinator = Arc::new(WriterLockCoordinator::new(&config.codex_home));

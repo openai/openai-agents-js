@@ -33,6 +33,7 @@ export type {
   CheckpointStatus,
 } from './runtime/capabilities';
 export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
+export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
 export type {
   NativeErrorOptions,
   ResponseIntegrityReason,

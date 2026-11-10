@@ -4,7 +4,14 @@ import {
   createServer,
   type IncomingHttpHeaders,
   type IncomingMessage,
+  type ServerResponse,
+  type Server,
 } from 'node:http';
+import {
+  createServer as createTlsServer,
+  type Server as TlsServer,
+  type ServerOptions as TlsOptions,
+} from 'node:https';
 import type { Duplex } from 'node:stream';
 import type { JsonObject, JsonValue } from '../../../src/runtime/binding';
 import type { NativeConfig } from '../../../src/runtime/config';
@@ -53,7 +60,11 @@ export class ModelServer {
   private readonly rawUsage: readonly (
     string | ((request: JsonObject) => string | undefined)
   )[];
-  private readonly server = createServer(async (request, response) => {
+  private readonly server: Server | TlsServer;
+  private readonly respond = async (
+    request: IncomingMessage,
+    response: ServerResponse,
+  ) => {
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -119,7 +130,7 @@ export class ModelServer {
       this.onRecord?.('MODEL_REQUEST_ERROR', error);
       response.writeHead(500).end('Provider fixture failed');
     }
-  });
+  };
   private readonly ready: Promise<void>;
 
   constructor(
@@ -136,10 +147,14 @@ export class ModelServer {
     ) => void | Promise<void>,
     private readonly terminalFrames?: readonly string[],
     private readonly beforeBody?: (request: JsonObject) => void | Promise<void>,
+    tls?: TlsOptions,
   ) {
     this.rawUsage = Array.isArray(usage)
       ? usage
       : responses.map(() => JSON.stringify(usage));
+    this.server = tls
+      ? createTlsServer(tls, this.respond)
+      : createServer(this.respond);
     this.ready = new Promise((resolve, reject) => {
       this.server.once('error', reject);
       this.server.listen(0, '127.0.0.1', resolve);
@@ -154,15 +169,19 @@ export class ModelServer {
     this.server.on('upgrade', listener);
   }
 
-  async config(): Promise<NativeConfig> {
+  async port(): Promise<number> {
     await this.ready;
     const address = this.server.address();
     assert(address && typeof address !== 'string');
+    return address.port;
+  }
+
+  async config(): Promise<NativeConfig> {
     return {
       model_provider: 'fixture',
       'model_providers.fixture': {
         name: 'Scripted native provider',
-        base_url: `http://127.0.0.1:${address.port}/v1`,
+        base_url: `http://127.0.0.1:${await this.port()}/v1`,
         wire_api: 'responses',
         requires_openai_auth: false,
         supports_websockets: false,

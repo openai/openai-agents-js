@@ -46,6 +46,7 @@ struct Writer {
 }
 pub struct CustomThreadStore {
     callback: Arc<Callback>,
+    plan_provider: Option<String>,
     projection: crate::storage::MemoryThreadStore,
     writers: Mutex<HashMap<ThreadId, Writer>>,
     failures: Mutex<HashMap<ThreadId, String>>,
@@ -108,10 +109,47 @@ impl CustomThreadStore {
     pub fn new(callback: Callback) -> Self {
         Self {
             callback: Arc::new(callback),
+            plan_provider: None,
             projection: Default::default(),
             writers: Default::default(),
             failures: Default::default(),
             release_failures: Default::default(),
+        }
+    }
+
+    pub(crate) fn with_plan_provider(mut self, provider: String) -> Self {
+        self.plan_provider = Some(provider);
+        self
+    }
+
+    fn check_provider(&self, stored: Option<&str>) -> ThreadStoreResult<()> {
+        if !chatgpt_plan_binding_matches(self.plan_provider.as_deref(), stored) {
+            return Err(error(
+                "Session requires matching Sign in with ChatGPT registration and account",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_mutation(&self, mutation: &Mutation) -> ThreadStoreResult<()> {
+        match mutation {
+            Mutation::Create { params, .. } => {
+                self.check_provider(Some(&params.metadata.model_provider))
+            }
+            Mutation::Metadata { params } => {
+                if let Some(provider) = &params.patch.model_provider {
+                    self.check_provider(Some(provider))?;
+                }
+                Ok(())
+            }
+            Mutation::Append { items } => {
+                for item in items {
+                    if let RolloutItem::SessionMeta(header) = item {
+                        self.check_provider(header.meta.model_provider.as_deref())?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
     async fn call(&self, op: Value) -> ThreadStoreResult<Value> {
@@ -190,8 +228,11 @@ impl CustomThreadStore {
         recovery: bool,
     ) -> ThreadStoreResult<()> {
         let mut writers = self.writers.lock().await;
-        if writers.contains_key(&id) {
-            return Ok(());
+        if let Some(writer) = writers.get(&id) {
+            return writer
+                .failure
+                .as_ref()
+                .map_or(Ok(()), |failure| Err(error(failure)));
         }
         let fence = self
             .call(json!({"operation":"acquire","threadId":id}))
@@ -229,6 +270,9 @@ impl CustomThreadStore {
                 {
                     return Err(error("unsupported canonical snapshot version or identity"));
                 }
+                if !matches!(snapshot.mutations.first(), Some(Mutation::Create { .. })) {
+                    return Err(error("canonical snapshot requires root creation metadata"));
+                }
                 for (index, mutation) in snapshot.mutations.iter().enumerate() {
                     match mutation {
                         Mutation::Create { params, .. }
@@ -244,6 +288,9 @@ impl CustomThreadStore {
                             ));
                         }
                     }
+                    self.check_mutation(mutation)?;
+                }
+                for mutation in &snapshot.mutations {
                     self.apply(id, mutation.clone()).await?;
                 }
                 let history = self
@@ -317,6 +364,7 @@ impl CustomThreadStore {
         mut mutation: Mutation,
         real_receipt: bool,
     ) -> ThreadStoreResult<()> {
+        self.check_mutation(&mutation)?;
         let mut writers = self.writers.lock().await;
         let writer = writers
             .get_mut(&id)
@@ -614,6 +662,7 @@ impl ThreadStore for CustomThreadStore {
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
             let id = params.thread_id;
+            self.check_provider(Some(&params.metadata.model_provider))?;
             if params.parent_thread_id.is_some() || params.forked_from_id.is_some() {
                 return Err(error(
                     "custom canonical storage does not support child agents or forks",
@@ -635,6 +684,7 @@ impl ThreadStore for CustomThreadStore {
         mut params: ResumeThreadParams,
     ) -> ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>> {
         Box::pin(async move {
+            self.check_provider(Some(&params.metadata.model_provider))?;
             self.open(params.thread_id, true).await?;
             params.history = None;
             self.projection.resume_thread(params).await
