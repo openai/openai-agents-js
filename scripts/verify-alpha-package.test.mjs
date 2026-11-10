@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import process from 'node:process';
 import test from 'node:test';
 import {
   hashes,
@@ -10,9 +9,10 @@ import {
   verifyArtifactDirectory,
 } from './verify-alpha-package.mjs';
 
-test('accepts a matching archive set and rejects tampering and receipt substitution', async () => {
+test('accepts the ARM64 archive set and rejects tampering and receipt substitution', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'alpha-artifact-hashes-'));
-  const platform = `${process.platform}-${process.arch}`;
+  const platform = 'linux-arm64';
+  const verify = () => verifyArtifactDirectory(directory, platform);
   const receiptFile = join(directory, `build-${platform}.json`);
   const makeArchive = async (archive, content) => {
     await writeFile(join(directory, archive), content);
@@ -43,52 +43,44 @@ test('accepts a matching archive set and rejects tampering and receipt substitut
         .join('\n') + '\n';
     await writeFile(checksumFile, checksumText);
     await save();
-    assert.deepEqual(await verifyArtifactDirectory(directory), receipt);
+    assert.deepEqual(await verify(), receipt);
+    receipt.platform = 'linux-x64';
+    await save();
+    await assert.rejects(verify(), /linux-arm64/);
+    receipt.platform = platform;
     const runtime = receipt.packages['@openai/agents-codex'];
     delete receipt.packages['@openai/agents-codex'];
     await save();
-    await assert.rejects(verifyArtifactDirectory(directory));
+    await assert.rejects(verify());
     receipt.packages['@openai/agents-codex'] = runtime;
     await save();
     await writeFile(
       checksumFile,
       checksumText.replace(receipt.starter.sha256, '0'.repeat(64)),
     );
-    await assert.rejects(
-      verifyArtifactDirectory(directory),
-      /checksum list mismatch/,
-    );
+    await assert.rejects(verify(), /checksum list mismatch/);
     await writeFile(
       checksumFile,
       checksumText + checksumText.split('\n')[0] + '\n',
     );
-    await assert.rejects(
-      verifyArtifactDirectory(directory),
-      /checksum list mismatch/,
-    );
+    await assert.rejects(verify(), /checksum list mismatch/);
     await writeFile(checksumFile, checksumText);
     const file = join(directory, packages[sdkNames[0]].archive);
     const original = await readFile(file);
     await writeFile(file, 'tampered');
-    await assert.rejects(verifyArtifactDirectory(directory), /SHA256 mismatch/);
+    await assert.rejects(verify(), /SHA256 mismatch/);
     await writeFile(file, original);
     receipt.packages[sdkNames[0]].integrity = 'sha512-substituted';
     await save();
-    await assert.rejects(
-      verifyArtifactDirectory(directory),
-      /integrity mismatch/,
-    );
+    await assert.rejects(verify(), /integrity mismatch/);
     receipt.packages[sdkNames[0]].integrity = (await hashes(file)).integrity;
     receipt.packages[sdkNames[0]].version = '0.22.0-alpha.2';
     await save();
-    await assert.rejects(
-      verifyArtifactDirectory(directory),
-      /version mismatch/,
-    );
+    await assert.rejects(verify(), /version mismatch/);
     receipt.packages[sdkNames[0]].version = receipt.version;
     receipt.starter.archive = '../starter.tar.gz';
     await save();
-    await assert.rejects(verifyArtifactDirectory(directory));
+    await assert.rejects(verify());
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
