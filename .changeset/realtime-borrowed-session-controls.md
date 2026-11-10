@@ -1,4 +1,5 @@
 ---
 '@openai/agents-codex': patch
 ---
-fix: Preserve borrowed Session controls and tool generations after voice Agent updates.
+
+fix: Preserve borrowed Session controls and catalogs after voice Agent updates.
