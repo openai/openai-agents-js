@@ -439,7 +439,11 @@
     {
       "path": "0098-retained-trace-root-descriptors.patch",
       "sha256": "e1b504271356e706a1c6510b548b94669a4d7a444ccdbe2ab667b8fe0c03b750"
+    },
+    {
+      "path": "0170-canonical-history-transactions.patch",
+      "sha256": "e88a2db32ae35587399c2eeae49284f96ef83383399b26f60961f9748d74e779"
     }
   ],
-  "result_tree": "6d5b47506ff328423d34a9f00a3ad57c9007533c"
+  "result_tree": "76065eef554bcf0524957ff96283c4cf0c8f0234"
 }

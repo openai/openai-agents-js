@@ -17,7 +17,7 @@ Each process closes its Session before the next process resumes it.
 
 ## Check supported tools and snapshots
 
-Custom storage supports root conversations with application-managed function tools. It rejects environments, native search, checklists, goals, child agents, manual tools, MCP, Code Mode, forks, and portable SessionState before effects. Supply current application tool bindings when reopening; saved data never supplies credentials or callback implementations.
+Custom storage supports root conversations with application-managed function tools and provider-hosted search, file search, code interpreter, and image generation. It rejects environments, standalone native search, checklists, goals, child agents, manual tools, MCP, Code Mode, forks, and portable SessionState before effects. Supply current application tool bindings when reopening; saved data never supplies credentials or callback implementations.
 
 Snapshots contain canonical native creation metadata, ordered rollout changes, tool calls, and recorded tool results. Native memory holds only a disposable projection of these records. Indexes and telemetry do not establish tool completion.
 

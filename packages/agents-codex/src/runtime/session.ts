@@ -231,6 +231,7 @@ import {
   type RepairTurnWire,
   type RepairItemWire,
   type RecordedTurn,
+  type CanonicalHistorySnapshot,
 } from './history';
 import type { ThreadOptions } from './options';
 import {
@@ -10179,6 +10180,60 @@ export class Session<OutputT = string, Context = unknown> {
   /** @internal Read the root rollout, including records omitted from Model input. */
   _rootHistory() {
     return this.#readHistory();
+  }
+
+  /** Read canonical input from an idle Session. A limit returns its latest items.
+   * Zero returns only the content revision and full count. Raw audit records
+   * and projected items() are separate views. Core truncation is not reversed. */
+  async historySnapshot(
+    options: { limit?: number } = {},
+  ): Promise<CanonicalHistorySnapshot> {
+    this.checkCallbackOperation('read canonical history from');
+    this.idle('historySnapshot');
+    const { limit } = options;
+    if (
+      limit !== undefined &&
+      (!Number.isSafeInteger(limit) || limit < 0 || limit > 0xffffffff)
+    )
+      throw new RangeError('limit must be a nonnegative 32-bit integer');
+    return this.mutate(async () =>
+      JSON.parse(await this.#native._canonical_history(limit ?? null)),
+    );
+  }
+
+  /** Atomically retain a prefix and replace its suffix with native response items.
+   * Use the entire snapshot revision, keep=total to append, or keep=0 to replace.
+   * Core rejects conflicts and invalid batches before committing. Acknowledged
+   * changes survive canonical restore; old raw audit records remain stored.
+   * An uncertain persistence outcome retires this Session; close and restore
+   * from storage before continuing. Pending work, child graphs and goals require
+   * their dedicated APIs. */
+  async transactHistory(options: {
+    expectedRevision: string;
+    keep: number;
+    items?: readonly Record<string, unknown>[];
+  }): Promise<string> {
+    this.checkCallbackOperation('edit canonical history in');
+    this.idle('transactHistory');
+    const { expectedRevision, keep } = options;
+    if (typeof expectedRevision !== 'string' || !expectedRevision)
+      throw new TypeError('expectedRevision must be nonempty text');
+    if (!Number.isSafeInteger(keep) || keep < 0 || keep > 0xffffffff)
+      throw new RangeError('keep must be a nonnegative 32-bit integer');
+    const captured = JSON.stringify(options.items ?? []);
+    return this.mutate(async () => {
+      const value = JSON.parse(
+        await this.#native._transact_history(expectedRevision, keep, captured),
+      );
+      if (value.outcome === 'uncertain') {
+        const error = new NativeError(
+          'Canonical history commit outcome is uncertain; close and restore the Session',
+        );
+        this.retire(error);
+        throw error;
+      }
+      return value.revision;
+    });
   }
 
   /** Read the settled root model context for use with supplied compaction. */
