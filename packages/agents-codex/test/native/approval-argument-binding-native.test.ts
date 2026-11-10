@@ -23,6 +23,74 @@ const raw = (value: number | boolean) => ({
   order: { a: 1, b: 2 },
   when: iso,
 });
+it('reuses captured validation after approval while retaining the execution input guard', async () => {
+  let validations = 0;
+  let validationClosed = false;
+  let rechecks = 0;
+  const effects: number[] = [];
+  const selected = tool({
+    name: 'one_time_validation',
+    parameters: z
+      .object({ value: z.number() })
+      .superRefine((_value, context) => {
+        validations++;
+        if (validationClosed)
+          context.addIssue({
+            code: 'custom',
+            message: 'Synthetic one-time input validation already consumed',
+          });
+      }),
+    needsApproval: true,
+    before(context) {
+      rechecks++;
+      expect(context.effectiveArguments.value).toBe(7);
+      return { action: 'allow' };
+    },
+    execute({ value }, context) {
+      expect(context.effectiveArguments.value).toBe(value);
+      effects.push(value);
+      return 'accepted';
+    },
+  });
+  const server = new ModelServer([
+    [
+      call(
+        'one_time_validation',
+        { value: 7 },
+        { callId: 'one-time-validation' },
+      ),
+    ],
+    [message('done')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-approved-validation',
+    supportsWebsockets: false,
+  });
+  await using session = await new Agent({
+    instructions: 'Use one_time_validation.',
+    model: 'gpt-5',
+    provider,
+    tools: [selected],
+  }).session();
+  const turn = await session.submit('begin');
+  const request = await nextApproval(session);
+  const capturedValidations = validations;
+  expect(capturedValidations).toBeGreaterThan(0);
+  expect(rechecks).toBe(0);
+  expect(effects).toEqual([]);
+  validationClosed = true;
+  const done = turn.wait();
+  await session.respond(request.approve());
+  expect((await done).finalOutput).toBe('done');
+  expect(validations).toBe(capturedValidations);
+  expect(rechecks).toBe(1);
+  expect(effects).toEqual([7]);
+  expect(server.requests).toHaveLength(2);
+  server.assertExhausted();
+});
 it.each([false, true])(
   'binds approved values across all execution input guards (restored=%s)',
   async (restored) => {
