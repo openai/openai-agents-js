@@ -8125,8 +8125,8 @@ export class Session<OutputT = string, Context = unknown> {
             run.controller.signal,
           ))
         ) {
-          if (this.current(run) && this.manualCurrent(event))
-            await this.#native._respond_python_tool(
+          if (this.current(run) && this.manualCurrent(event)) {
+            const accepted = await this.#native._respond_python_tool(
               encodeReceipt({
                 request: msg,
                 response: {
@@ -8138,6 +8138,8 @@ export class Session<OutputT = string, Context = unknown> {
                 start_response: false,
               }),
             );
+            if (accepted) this.observeToolEnd(run, identity, 'failed');
+          }
           return;
         }
         if (!this.current(run) || !this.manualCurrent(event)) return;
@@ -8277,7 +8279,12 @@ export class Session<OutputT = string, Context = unknown> {
             await this.submitManualResult(
               remembered.approve && decision.denial === undefined
                 ? action.approve()
-                : action.reject(decision.denial ?? remembered.reason),
+                : action.reject(
+                    decision.denial ??
+                      (cached?.useDefaultReason
+                        ? undefined
+                        : remembered.reason),
+                  ),
               key,
             );
           } else if (!decision.required) {

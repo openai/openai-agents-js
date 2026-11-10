@@ -557,14 +557,90 @@ nativeIt.each([false, true])(
 );
 
 nativeIt.each([false, true])(
-  'formats only implicit native approval rejection (explicit=%s)',
-  async (explicit) => {
+  'finishes unavailable native tool observations (approval=%s)',
+  async (needsApproval) => {
+    let enabled = true;
+    const execute = vi.fn(() => 'forbidden');
+    const selected = tool({
+      name: 'revoked',
+      parameters: z.object({}),
+      needsApproval,
+      execute,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use revoked.',
+        tools: [selected],
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        isToolEnabled: () => enabled,
+      });
+      const observations = session.events();
+      const seen: { type: string; callId?: string; status?: string }[] = [];
+      const completed = (async () => {
+        for await (const event of observations) {
+          seen.push(event);
+          if (event.type === 'turn_finished') return;
+        }
+      })();
+      void completed.catch(() => {});
+      try {
+        enabled = false;
+        peer.call('revoked', {}, 'revoked-call');
+        expect(await peer.output('revoked-call')).toBe(
+          'Tool revoked not found',
+        );
+        await completed;
+        expect(
+          seen
+            .filter(
+              (event) =>
+                event.type === 'tool_started' || event.type === 'tool_finished',
+            )
+            .map(({ type, status }) => ({ type, status })),
+        ).toEqual([
+          { type: 'tool_started', status: undefined },
+          { type: 'tool_finished', status: 'failed' },
+        ]);
+        expect(execute).not.toHaveBeenCalled();
+        expect(await session.pendingInteractions()).toEqual([]);
+      } finally {
+        await voice.close();
+        await observations.return?.();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt.each([
+  { explicit: false, remembered: false },
+  { explicit: true, remembered: false },
+  { explicit: false, remembered: true },
+  { explicit: true, remembered: true },
+])(
+  'formats only implicit native approval rejection (explicit=$explicit, remembered=$remembered)',
+  async ({ explicit, remembered }) => {
+    let denyInput = false;
     const execute = vi.fn(() => 'forbidden');
     const formatter = vi.fn(async () => 'Application declined');
     const selected = tool({
       name: 'risky',
       parameters: z.object({}),
       needsApproval: true,
+      runBeforeApproval: true,
+      before: () =>
+        denyInput
+          ? { action: 'deny' as const, reason: 'Input denied' }
+          : { action: 'allow' as const },
       execute,
     });
     const model = new ModelServer([]);
@@ -587,12 +663,25 @@ nativeIt.each([false, true])(
         if (!isFunctionApprovalRequest(request))
           throw new Error('Native approval missing');
         await session.respond(
-          request.reject(explicit ? 'Explicit denial' : undefined),
+          request.reject(explicit ? 'Explicit denial' : undefined, {
+            always: remembered,
+          }),
         );
         expect(await peer.output('approval-call')).toBe(
           explicit ? 'Explicit denial' : 'Application declined',
         );
         expect(formatter).toHaveBeenCalledTimes(explicit ? 0 : 1);
+        if (remembered) {
+          peer.call('risky', {}, 'remembered-call');
+          expect(await peer.output('remembered-call')).toBe(
+            explicit ? 'Explicit denial' : 'Application declined',
+          );
+          expect(formatter).toHaveBeenCalledTimes(explicit ? 0 : 2);
+          denyInput = true;
+          peer.call('risky', {}, 'policy-denied-call');
+          expect(await peer.output('policy-denied-call')).toBe('Input denied');
+          expect(formatter).toHaveBeenCalledTimes(explicit ? 0 : 2);
+        }
         expect(execute).not.toHaveBeenCalled();
         expect(await session.pendingInteractions()).toEqual([]);
         expect(model.requests).toHaveLength(0);
