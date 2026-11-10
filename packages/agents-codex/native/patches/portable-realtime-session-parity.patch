@@ -1,5 +1,5 @@
 diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
-index f8690a24f8..11475705ee 100644
+index f8690a24f8..122ae87d60 100644
 --- a/codex-rs/realtime-control/src/lib.rs
 +++ b/codex-rs/realtime-control/src/lib.rs
 @@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -16,7 +16,7 @@ index f8690a24f8..11475705ee 100644
      pub tools: Vec<Tool>,
 +    #[serde(default)]
 +    pub session_settings: serde_json::Map<String, Value>,
-+}
+ }
 +
 +#[derive(Deserialize, Serialize)]
 +#[serde(tag = "type", rename_all = "snake_case")]
@@ -33,7 +33,7 @@ index f8690a24f8..11475705ee 100644
 +
 +fn default_trigger_response() -> bool {
 +    true
- }
++}
 +
  #[derive(Deserialize)]
  #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -89,7 +89,13 @@ index f8690a24f8..11475705ee 100644
  }
  /// All mutation is synchronous and serialized by the host's Wasm instance.
  /// No OS, executor, socket, callback, filesystem, or ambient credential access.
-@@ -302,6 +352,8 @@ pub struct Control {
+@@ -297,11 +347,13 @@ pub struct Control {
+     responses: ResponseCreateState<()>,
+     next_send: u64,
+     pending_send: BTreeSet<u64>,
+-    incoming: VecDeque<(Value, usize)>,
++    incoming: VecDeque<(Value, usize, bool)>,
+     incoming_bytes: usize,
      startup_send: Option<u64>,
      startup_sent: bool,
      startup_accepted: bool,
@@ -144,7 +150,31 @@ index f8690a24f8..11475705ee 100644
                  self.expected_session = session.clone();
                  self.startup_send = Some(self.send(
                      json!({"type":"session.update","session":session}),
-@@ -458,6 +526,46 @@ impl Control {
+@@ -401,10 +469,13 @@ impl Control {
+                     }
+                 }
+                 while self.pending_send.is_empty() {
+-                    let Some((event, bytes)) = self.incoming.pop_front() else {
++                    let Some((event, bytes, interrupted)) = self.incoming.pop_front() else {
+                         break;
+                     };
+                     self.incoming_bytes -= bytes;
++                    if interrupted {
++                        self.cancel_on_created = Some(true);
++                    }
+                     // Each queued event remains a canonical transition, including readiness.
+                     effects.extend(self.transition(Command::Provider { event })?);
+                 }
+@@ -421,7 +492,7 @@ impl Control {
+                     {
+                         return Err("Portable voice ingress exceeds capacity".into());
+                     }
+-                    self.incoming.push_back((event, bytes));
++                    self.incoming.push_back((event, bytes, false));
+                     self.incoming_bytes += bytes;
+                 }
+             }
+@@ -458,6 +529,56 @@ impl Control {
                  self.send(json!({"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}), &mut effects);
                  self.request_response(&mut effects);
              }
@@ -186,12 +216,22 @@ index f8690a24f8..11475705ee 100644
 +            }
 +            Command::Interrupt => {
 +                self.require_ready()?;
-+                self.interrupt_response(true, &mut effects);
++                if let Some((_, _, interrupted)) = self
++                    .incoming
++                    .iter_mut()
++                    .rev()
++                    .find(|(event, _, _)| event["type"] == "response.created")
++                {
++                    // Bind intent to the received identity, not whichever response drains first.
++                    *interrupted = true;
++                } else {
++                    self.interrupt_response(true, &mut effects);
++                }
 +            }
              Command::Close => {
                  self.retire();
                  effects.push(Effect::Closed);
-@@ -498,20 +606,21 @@ impl Control {
+@@ -498,20 +619,21 @@ impl Control {
              }
              "response.cancelled" => return Err("Portable voice generation was cancelled".into()),
              "response.done" if event["response"]["status"].as_str() != Some("completed") => {
@@ -210,7 +250,7 @@ index f8690a24f8..11475705ee 100644
 +                let id = event["response"]["id"].as_str();
 +                let known = id.is_some_and(|id| {
 +                    self.responses.sdk_response_id.as_deref() == Some(id)
-+                        || self.incoming.iter().any(|(event, _)| {
++                        || self.incoming.iter().any(|(event, _, _)| {
 +                            event["type"] == "response.created"
 +                                && event["response"]["id"].as_str() == Some(id)
 +                        })
@@ -226,7 +266,7 @@ index f8690a24f8..11475705ee 100644
                  }
              }
              "error" => return Err("Realtime provider rejected the operation".into()),
-@@ -527,6 +636,18 @@ impl Control {
+@@ -527,6 +649,18 @@ impl Control {
              self.send(json!({"type":"response.create"}), effects);
          }
      }
@@ -245,7 +285,7 @@ index f8690a24f8..11475705ee 100644
      fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
          let kind = event
              .get("type")
-@@ -536,11 +657,23 @@ impl Control {
+@@ -536,11 +670,23 @@ impl Control {
              "session.updated" => {
                  if self.phase == Phase::Configuring || self.phase == Phase::Ready {
                      self.startup_accepted = true;
@@ -269,7 +309,7 @@ index f8690a24f8..11475705ee 100644
                  if self
                      .responses
                      .sdk_response_id
-@@ -551,6 +684,9 @@ impl Control {
+@@ -551,6 +697,9 @@ impl Control {
                  }
                  self.responses.sdk_response_id = Some(id);
                  self.responses.mark_started();
@@ -279,7 +319,7 @@ index f8690a24f8..11475705ee 100644
              }
              "response.output_item.done" => {
                  self.require_ready()?;
-@@ -576,6 +712,25 @@ impl Control {
+@@ -576,6 +725,25 @@ impl Control {
                  if self.responses.sdk_response_id.as_ref() != Some(&id) {
                      return Err("Completed response does not own the active response".into());
                  }
@@ -305,7 +345,7 @@ index f8690a24f8..11475705ee 100644
                  let output = response
                      .get("output")
                      .and_then(Value::as_array)
-@@ -609,17 +764,8 @@ impl Control {
+@@ -609,17 +777,8 @@ impl Control {
                  }
                  self.responses.sdk_response_id = None;
                  let deferred_create = self.responses.mark_finished().is_some();
@@ -324,7 +364,7 @@ index f8690a24f8..11475705ee 100644
                      for call_id in ids {
                          let call = self.calls.get_mut(&call_id).ok_or("Missing function")?;
                          if !call.claim.claim() {
-@@ -645,6 +791,7 @@ impl Control {
+@@ -645,6 +804,7 @@ impl Control {
                  if deferred_create {
                      self.request_response(effects);
                  }
@@ -332,7 +372,7 @@ index f8690a24f8..11475705ee 100644
              }
              _ => {}
          }
-@@ -690,6 +837,43 @@ impl Control {
+@@ -690,6 +850,43 @@ impl Control {
          self.calls.get_mut(call_id).ok_or("Unknown function")?.phase = CallPhase::Publishing(id);
          Ok(())
      }
@@ -376,7 +416,7 @@ index f8690a24f8..11475705ee 100644
      fn continue_batches(&mut self, effects: &mut Vec<Effect>) {
          if self.responses.active_default_response {
              return;
-@@ -714,6 +898,7 @@ impl Control {
+@@ -714,6 +911,7 @@ impl Control {
              }
              self.responses.mark_started();
              self.batches.get_mut(&id).unwrap().continued = true;
@@ -384,7 +424,7 @@ index f8690a24f8..11475705ee 100644
              self.send(json!({"type":"response.create"}), effects);
          }
      }
-@@ -808,6 +993,72 @@ mod tests {
+@@ -808,6 +1006,72 @@ mod tests {
              json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
          )
      }
@@ -457,7 +497,7 @@ index f8690a24f8..11475705ee 100644
      #[test]
      fn queued_text_waits_for_batch_approval_and_physical_output() {
          for before_completion in [true, false] {
-@@ -866,7 +1117,6 @@ mod tests {
+@@ -866,7 +1130,6 @@ mod tests {
              json!({"type":"response.done","response":{"id":"response-1","status":"cancelled","output":[]}}),
              json!({"type":"response.done","response":{"id":"response-1","status":"failed","output":[]}}),
              json!({"type":"response.done","response":{"id":"response-1","status":"incomplete","output":[]}}),
@@ -465,7 +505,7 @@ index f8690a24f8..11475705ee 100644
              json!({"type":"error"}),
              json!({"type":"session.updated","session":{}}),
          ] {
-@@ -1076,14 +1326,31 @@ mod tests {
+@@ -1076,14 +1339,31 @@ mod tests {
          );
      }
      #[test]
@@ -505,7 +545,7 @@ index f8690a24f8..11475705ee 100644
              let mut control = ready();
              request(&mut control);
              let response = command(
-@@ -1142,29 +1409,189 @@ mod tests {
+@@ -1142,29 +1422,251 @@ mod tests {
          }
      }
      #[test]
@@ -515,20 +555,13 @@ index f8690a24f8..11475705ee 100644
 -        let mut idle = ready();
 -        assert!(command(&mut idle, speech.clone()).get("error").is_none());
 -        for stage in 0..3 {
--            let mut control = ready();
--            request(&mut control);
--            if stage >= 1 {
--                batch(&mut control);
--            }
--            if stage >= 2 {
 +        for automatic in [false, true] {
 +            for stage in 0..3 {
 +                let mut control = ready();
 +                let mut session = control.expected_session.clone();
 +                session["audio"] = json!({"input":{"turn_detection":{"type":"server_vad","interrupt_response":automatic}}});
-                 command(
-                     &mut control,
--                    json!({"type":"approve","call_id":"call-1","approved":true}),
++                command(
++                    &mut control,
 +                    json!({"type":"provider","event":{"type":"session.updated","session":session}}),
 +                );
 +                request(&mut control);
@@ -550,8 +583,8 @@ index f8690a24f8..11475705ee 100644
 +                assert_eq!(
 +                    control.responses.sdk_cancelled_response.is_some(),
 +                    automatic && stage == 0
-                 );
-             }
++                );
++            }
 +        }
 +    }
 +
@@ -579,8 +612,12 @@ index f8690a24f8..11475705ee 100644
 +    #[test]
 +    fn terminal_receipt_rechecks_already_published_callbacks() {
 +        for status in ["completed", "cancelled", "failed", "incomplete"] {
-+            let mut control = ready();
-+            request(&mut control);
+             let mut control = ready();
+             request(&mut control);
+-            if stage >= 1 {
+-                batch(&mut control);
+-            }
+-            if stage >= 2 {
 +            batch(&mut control);
 +            command(
 +                &mut control,
@@ -642,6 +679,69 @@ index f8690a24f8..11475705ee 100644
 +            json!({"type":"provider","event":{"type":"response.created","response":{"id":"response-287"}}}),
 +        );
 +        assert_eq!(recent["error"], "Response identity already retired");
++    }
++
++    #[test]
++    fn queued_provider_responses_retain_interruption_intent() {
++        for requested in [false, true] {
++            for older in [false, true] {
++                let mut control = ready();
++                assert!(
++                    command(&mut control, json!({"type":"interrupt"}))["effects"]
++                        .as_array()
++                        .unwrap()
++                        .is_empty()
++                );
++                let audio = command(
++                    &mut control,
++                    json!({"type":"audio","audio":"AA==","commit":false}),
++                );
++                let mut receipts = VecDeque::from([audio["effects"][0]["id"].as_u64().unwrap()]);
++                if requested {
++                    let created = command(&mut control, json!({"type":"respond"}));
++                    receipts.push_back(created["effects"][0]["id"].as_u64().unwrap());
++                }
++                if older {
++                    command(
++                        &mut control,
++                        json!({"type":"provider","event":{"type":"response.created","response":{"id":"older"}}}),
++                    );
++                    command(
++                        &mut control,
++                        json!({"type":"provider","event":{"type":"response.done","response":{"id":"older","status":"completed","output":[]}}}),
++                    );
++                }
+                 command(
+                     &mut control,
+-                    json!({"type":"approve","call_id":"call-1","approved":true}),
++                    json!({"type":"provider","event":{"type":"response.created","response":{"id":"queued"}}}),
++                );
++                command(&mut control, json!({"type":"interrupt"}));
++                command(
++                    &mut control,
++                    json!({"type":"provider","event":{"type":"response.done","response":{"id":"queued","status":"completed","output":[item()]}}}),
+                 );
++                let mut cancelled = 0;
++                while let Some(id) = receipts.pop_front() {
++                    let result = command(&mut control, json!({"type":"sent","id":id}));
++                    assert!(result.get("error").is_none());
++                    for effect in result["effects"].as_array().unwrap() {
++                        assert!(effect["type"] != "approve" && effect["type"] != "execute");
++                        if effect["type"] == "send" {
++                            receipts.push_back(effect["id"].as_u64().unwrap());
++                            if effect["event"]["type"] == "response.cancel"
++                                && effect["event"]["response_id"] == "queued"
++                            {
++                                cancelled += 1;
++                            }
++                        }
++                    }
++                }
++                assert_eq!(cancelled, 1);
++                assert!(control.calls.is_empty());
++                assert!(control.phase == Phase::Ready);
+             }
++        }
 +    }
 +
 +    #[test]
@@ -709,7 +809,7 @@ index f8690a24f8..11475705ee 100644
      #[test]
      fn duplicate_accepted_names_cannot_replace_a_declared_tool() {
          let mut control = Control::default();
-@@ -1188,6 +1615,95 @@ mod tests {
+@@ -1188,6 +1690,95 @@ mod tests {
          );
      }
      #[test]

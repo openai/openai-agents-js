@@ -561,6 +561,150 @@ describe.runIf(enabled)('portable Rust control', () => {
     ).toThrow('already retired');
   });
 
+  it.each([false, true])(
+    'rejects oversized audio before encoding with commit %s',
+    async (commit) => {
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+          },
+          close() {},
+        },
+        { model: 'test-realtime', instructions: 'Help.' },
+      );
+      await session.start();
+      const encode = vi.spyOn(String, 'fromCharCode').mockImplementation(() => {
+        throw new Error('Encoding started.');
+      });
+      try {
+        // 8 MiB command limit, at most42 ASCII header bytes,4 base64 bytes per3 raw bytes.
+        const largestSegment = 6_291_423;
+        expect(() =>
+          session.sendAudio(new ArrayBuffer(largestSegment), { commit }),
+        ).toThrow('Encoding started.');
+        encode.mockClear();
+        expect(() =>
+          session.sendAudio(new ArrayBuffer(largestSegment + 1), { commit }),
+        ).toThrow('Audio input exceeds capacity');
+        expect(encode).not.toHaveBeenCalled();
+      } finally {
+        encode.mockRestore();
+        await session.close();
+      }
+    },
+  );
+
+  it.each(
+    [false, true].flatMap((requested) =>
+      [false, true].map((older) => ({ requested, older })),
+    ),
+  )(
+    'remembers interruption for queued provider creation with requested $requested and older $older',
+    async ({ requested, older }) => {
+      const definition = agent();
+      const audio = Promise.withResolvers<void>();
+      const frames: {
+        type: string;
+        response_id?: string;
+        item?: { type: string };
+      }[] = [];
+      const events: { type?: string; response?: { id?: string } }[] = [];
+      const onError = vi.fn();
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+            if (event.type === 'input_audio_buffer.append')
+              return audio.promise;
+          },
+          close() {},
+        },
+        {
+          ...definition.options,
+          onError,
+          onEvent(event) {
+            events.push(event as (typeof events)[number]);
+          },
+        },
+      );
+      try {
+        await session.start();
+        session.interrupt();
+        expect(frames).toHaveLength(1);
+        session.sendAudio(new Uint8Array([1, 2]).buffer);
+        await vi.waitFor(() =>
+          expect(
+            frames.some((frame) => frame.type === 'input_audio_buffer.append'),
+          ).toBe(true),
+        );
+        if (requested) session.requestResponse();
+        if (older) {
+          session.receive({
+            type: 'response.created',
+            response: { id: 'older' },
+          });
+          session.receive({
+            type: 'response.done',
+            response: { id: 'older', status: 'completed', output: [] },
+          });
+        }
+        session.receive({
+          type: 'response.created',
+          response: { id: 'queued' },
+        });
+        session.interrupt();
+        session.receive({
+          type: 'response.done',
+          response: { id: 'queued', status: 'completed', output: [item] },
+        });
+        audio.resolve();
+        await vi.waitFor(() =>
+          expect(
+            events.some(
+              (event) =>
+                event.type === 'response.done' &&
+                event.response?.id === 'queued',
+            ),
+          ).toBe(true),
+        );
+        expect(
+          frames.filter(
+            (frame) =>
+              frame.type === 'response.cancel' &&
+              frame.response_id === 'queued',
+          ),
+        ).toHaveLength(1);
+        expect(definition.onApproval).not.toHaveBeenCalled();
+        expect(definition.execute).not.toHaveBeenCalled();
+        expect(
+          frames.some((frame) => frame.item?.type === 'function_call_output'),
+        ).toBe(false);
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        audio.resolve();
+        await session.close();
+      }
+    },
+  );
+
   it('waits for the response identity when interrupting a pending creation', async () => {
     const frames: { type: string; response_id?: string }[] = [];
     const onError = vi.fn();

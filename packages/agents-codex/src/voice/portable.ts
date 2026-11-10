@@ -215,6 +215,16 @@ export class PortableVoiceSession {
   ): void {
     if (!(audio instanceof ArrayBuffer))
       throw new TypeError('Portable voice audio must be an ArrayBuffer.');
+    if (typeof commit !== 'boolean')
+      throw new TypeError('Portable voice audio commit must be a boolean.');
+    // Match the native command limit before allocating the binary/base64 strings.
+    const headerBytes = JSON.stringify({
+      type: 'audio',
+      audio: '',
+      commit,
+    }).length;
+    if (Math.ceil(audio.byteLength / 3) * 4 > 8 * 1024 * 1024 - headerBytes)
+      throw new RangeError('Audio input exceeds capacity.');
     const bytes = new Uint8Array(audio);
     const chunks: string[] = [];
     for (let offset = 0; offset < bytes.length; offset += 8192)

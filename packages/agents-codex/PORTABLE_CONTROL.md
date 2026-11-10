@@ -80,6 +80,8 @@ export function submitInputs(
 
 Audio input has been following the format in the accepted provider configuration. `commitAudio()` and `clearAudio()` have been controlling buffered input independently; committing audio has not been starting a response automatically.
 
+`sendAudio()` has been rejecting segments above 6,291,423 raw bytes before encoding, within the existing 8 MiB command limit. Larger audio inputs: application-owned segments, followed by `commitAudio()`.
+
 `interrupt()` has been cancelling the active provider response while keeping the session available for more input. Previously admitted tool callbacks from completed responses have been retaining their authority to finish. Local audio playback and playback-position truncation have been remaining application responsibilities.
 
 The `usage` getter has been accumulating reported counters from terminal provider responses, including cancelled responses, and retaining them after close. Missing counters have been remaining unknown. Vendor-specific fields have been remaining available in the original `onEvent` payload. Each getter call has been returning a separate snapshot.
