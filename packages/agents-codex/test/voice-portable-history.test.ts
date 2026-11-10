@@ -38,6 +38,12 @@ function fixture(items: Record<string, unknown>[] = [], autoAck = true) {
         if (rejectPreflight) throw rejectPreflight;
         return;
       }
+      editor.trackSend(
+        command.type === 'delete'
+          ? { type: 'conversation.item.delete', item_id: command.item_id }
+          : { type: 'conversation.item.create', item: command.item },
+        Promise.resolve(),
+      );
       if (autoAck)
         queueMicrotask(() =>
           ack(
@@ -264,6 +270,7 @@ async function nativeFixture(
   provider: {
     lookupItem?: Record<string, unknown>;
     rejectDelete?: boolean;
+    waitForSend?: (event: Record<string, unknown>) => Promise<void> | undefined;
   } = {},
 ) {
   const control = new NativeVoiceControl(
@@ -320,6 +327,7 @@ async function nativeFixture(
                   : event.previous_item_id,
             });
         });
+        return provider.waitForSend?.(event);
       },
       close() {},
     },
@@ -347,6 +355,79 @@ it.runIf(native)(
 );
 
 it.runIf(native)(
+  'sends conversation commands after the preceding lookup and deletion',
+  async () => {
+    const { session, frames } = await nativeFixture(
+      {},
+      { lookupItem: message('external') },
+    );
+    try {
+      const next = message('next');
+      session.deleteItem('external');
+      session.truncateItem('audio', 0, 100);
+      session.sendMessage(next);
+      session.createResponse();
+      next.content[0].text = 'changed after sending';
+
+      await vi.waitFor(() => expect(frames).toHaveLength(6));
+      expect(frames.slice(1).map((frame) => frame.type)).toEqual([
+        'conversation.item.retrieve',
+        'conversation.item.delete',
+        'conversation.item.truncate',
+        'conversation.item.create',
+        'response.create',
+      ]);
+      expect(frames[4].item.content[0].text).toBe('next');
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+it.runIf(native)(
+  'starts the deletion acknowledgement deadline after its transport send',
+  async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const stalled = Promise.withResolvers<void>();
+    const onError = vi.fn();
+    const { session, frames } = await nativeFixture(
+      { onError },
+      {
+        waitForSend: (event) =>
+          event.type === 'input_audio_buffer.append'
+            ? stalled.promise
+            : undefined,
+      },
+    );
+    try {
+      session.sendAudio('AAAA');
+      session.deleteItem('unanswered');
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(frames.map((frame) => frame.type)).toEqual([
+        'session.update',
+        'input_audio_buffer.append',
+      ]);
+      expect(onError).not.toHaveBeenCalled();
+
+      stalled.resolve();
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(frames.at(-1)?.type).toBe('conversation.item.retrieve');
+      expect(onError).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: 'Provider history acknowledgement timed out.',
+        }),
+      );
+      expect(onError).toHaveBeenCalledOnce();
+    } finally {
+      stalled.resolve();
+      await session.close();
+    }
+  },
+);
+
+it.runIf(native)(
   'expires an unanswered direct lookup through the shared edit timeout and reports once',
   async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -361,6 +442,46 @@ it.runIf(native)(
     expect(onError).toHaveBeenCalledOnce();
     expect(() => session.sendMessage(message('closed'))).toThrow('closed');
     await session.close();
+  },
+);
+
+it.runIf(native)(
+  'pauses the acknowledgement deadline while a retrieved item waits to be deleted',
+  async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const stalled = Promise.withResolvers<void>();
+    const onError = vi.fn();
+    const { session, frames } = await nativeFixture(
+      { onError },
+      {
+        waitForSend: (event) =>
+          event.type === 'input_audio_buffer.append'
+            ? stalled.promise
+            : undefined,
+      },
+    );
+    try {
+      session.deleteItem('external');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(frames.at(-1)?.type).toBe('conversation.item.retrieve');
+
+      session.sendAudio('AAAA');
+      session.receive({
+        type: 'conversation.item.retrieved',
+        item: message('external'),
+      });
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(frames.at(-1)?.type).toBe('input_audio_buffer.append');
+      expect(onError).not.toHaveBeenCalled();
+
+      stalled.resolve();
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(frames.at(-1)?.type).toBe('conversation.item.delete');
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      stalled.resolve();
+      await session.close();
+    }
   },
 );
 
