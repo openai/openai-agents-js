@@ -531,7 +531,11 @@
     {
       "path": "0098-private-plain-modelclient-bridge.patch",
       "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
+    },
+    {
+      "path": "0175-portable-realtime-agent-control.patch",
+      "sha256": "65b82aacfe62c2c33d9123ce5db61994efd2e3fe5b239a884095d295637cc9fe"
     }
   ],
-  "result_tree": "b5517d0bea4170348c5362f780e9cac2eca1f3b6"
+  "result_tree": "bb52b37ba9b9c145e3c68116621aa1cfe2184257"
 }
