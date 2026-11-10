@@ -36,6 +36,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
             'portable-history',
             'conversation-history',
             'event-observers',
+            'webrtc',
             'base64',
             '../runtime/realtime-guardrails',
             '../runtime/realtime-usage',
@@ -70,23 +71,6 @@ it('bundles actual public voice platform subpaths for browsers without native or
         await writeFile(path, emitted);
       }
     }
-    const shared = await readFile(
-      resolve('packages/agents-codex/src/voice/webrtc.ts'),
-      'utf8',
-    );
-    const sharedOutput = join(
-      directory,
-      'node_modules/@openai/agents-codex/dist/voice/webrtc.mjs',
-    );
-    await writeFile(
-      sharedOutput,
-      ts.transpileModule(shared, {
-        compilerOptions: {
-          target: ts.ScriptTarget.ES2022,
-          module: ts.ModuleKind.ESNext,
-        },
-      }).outputText,
-    );
     // tsx is a direct workspace dev dependency and declares esbuild itself.
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
