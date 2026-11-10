@@ -74,7 +74,49 @@ jobs:
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles
+        id: installed_verify
         run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
+      - name: Capture the synthetic sandbox error on failure
+        if: failure() && steps.installed_verify.outcome == 'failure'
+        run: |
+          cat /proc/self/attr/current
+          if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          fi
+          probe="$RUNNER_TEMP/agents-alpha-sandbox-probe"
+          cp -a "$RUNNER_TEMP/agents-alpha" "$probe"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const consumer = readFileSync('scripts/verify-alpha-consumer.mjs', 'utf8');
+          const marker = "            assert.equal(\n              command?.status,";
+          assert.equal(consumer.split(marker).length, 2);
+          const diagnostic = [
+            '            if (command?.status !== "completed") {',
+            '              console.error(JSON.stringify({',
+            '                diagnostic: "synthetic sandbox command",',
+            '                status: command?.status,',
+            '                exitCode: command?.exitCode,',
+            '                output: command?.output?.slice(0, 2048),',
+            '              }));',
+            '            }',
+            '',
+          ].join('\n');
+          writeFileSync(
+            'scripts/.verify-alpha-consumer-diagnostic.mjs',
+            consumer.replace(marker, diagnostic + marker),
+            { flag: 'wx' },
+          );
+          const verifier = readFileSync('scripts/verify-alpha-package.mjs', 'utf8');
+          const fixture = './verify-alpha-consumer.mjs';
+          assert.equal(verifier.split(fixture).length, 2);
+          writeFileSync(
+            'scripts/.verify-alpha-package-diagnostic.mjs',
+            verifier.replace(fixture, './.verify-alpha-consumer-diagnostic.mjs'),
+            { flag: 'wx' },
+          );
+          NODE
+          node scripts/.verify-alpha-package-diagnostic.mjs --directory "$probe"
       - name: Check both installed receipts and record evidence checksums
         run: |
           cd "$RUNNER_TEMP/agents-alpha"
