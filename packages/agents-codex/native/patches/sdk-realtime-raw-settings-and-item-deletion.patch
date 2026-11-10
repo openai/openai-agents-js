@@ -447,10 +447,32 @@ index 0906f3aa6997d270cc075627c933e67c1a8abd9d..63be224e7b356e2301fbe3f74a0cbe8d
              "tools".into(),
              tools_json(
 diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
-index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008ea9355a50 100644
+index da236689d1f0a07975ca0e0042142441e210a58f..f2e9c239d998c88fe2643bb624dac1b21357073b 100644
 --- a/codex-rs/core/src/realtime_conversation.rs
 +++ b/codex-rs/core/src/realtime_conversation.rs
-@@ -735,6 +735,10 @@ impl SdkRealtimeState {
+@@ -375,6 +375,21 @@ enum RealtimeSessionKind {
+ const SDK_HANDOFF_LIMIT: usize = 1024;
+ const SDK_FUNCTION_CALL_LIMIT: usize = 256;
+ 
++fn sdk_function_fingerprint(
++    request: &codex_protocol::protocol::RealtimeFunctionCallRequested,
++) -> anyhow::Result<[u8; 32]> {
++    codex_realtime_control::FunctionCall {
++        namespace: request.namespace.clone(),
++        call_id: request.call_id.clone(),
++        item_id: request.item_id.clone(),
++        name: request.name.clone(),
++        arguments: request.arguments.clone(),
++        response_id: request.response_id.clone(),
++    }
++    .fingerprint()
++    .map_err(anyhow::Error::msg)
++}
++
+ type SdkControlReply = Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<CodexResult<()>>>>>;
+ 
+ pub(crate) type SdkInterruptReply = Arc<
+@@ -735,6 +750,10 @@ impl SdkRealtimeState {
          if retire_generation {
              self.active.store(false, Ordering::Release);
          }
@@ -461,7 +483,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
          let mut calls = self.function_calls.lock().await;
          let mut pending = self.pending.lock().await;
          let mut work = SdkToolRetirement {
-@@ -1636,7 +1640,7 @@ impl RealtimeConversationManager {
+@@ -1636,7 +1655,7 @@ impl RealtimeConversationManager {
                      "Item deletion requires RealtimeV2".into(),
                  ));
              }
@@ -470,7 +492,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
          }
          let is_update = matches!(&command, SdkRealtimeCommand::OwnedUpdate { .. });
          #[cfg(test)]
-@@ -1909,6 +1913,16 @@ impl RealtimeConversationManager {
+@@ -1909,6 +1928,16 @@ impl RealtimeConversationManager {
                                  source: profile.source,
                              }),
                          )))
@@ -487,7 +509,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
                      } else {
                          if let Some(tools) = update.function_tools.take() {
                              let accepted = configuration
-@@ -3190,19 +3204,26 @@ async fn run_history_action(
+@@ -3190,19 +3219,26 @@ async fn run_history_action(
                  sdk.history.lock().unwrap().fail(error);
                  return Ok(());
              }
@@ -521,7 +543,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
          }
          None => return Ok(()),
      };
-@@ -5232,8 +5253,10 @@ async fn handle_sdk_realtime_command(
+@@ -5232,8 +5268,10 @@ async fn handle_sdk_realtime_command(
                      request,
                      CodexErr::InvalidRequest("Provider item deletion is pending".into()),
                  );
@@ -534,7 +556,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
                      if provider_history::is_tool_replay(item)))
                  && (responses.active_default_response || !sdk.pending.lock().await.is_empty())
              {
-@@ -5271,6 +5294,36 @@ async fn handle_sdk_realtime_command(
+@@ -5271,6 +5309,36 @@ async fn handle_sdk_realtime_command(
                  )));
                  return Ok(());
              }
@@ -571,7 +593,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
              if sdk
                  .item_deletion
                  .lock()
-@@ -5906,9 +5959,20 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5906,9 +5974,20 @@ async fn handle_realtime_server_event_with_configuration(
      response_create_queue: &mut RealtimeResponseCreateQueue,
      configuration: Option<Arc<codex_api::RealtimeAcceptedConfiguration>>,
  ) -> anyhow::Result<()> {
@@ -593,7 +615,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
          (Some(sdk), RealtimeEvent::FunctionCallRequested(call))
              if sdk
                  .history
-@@ -5922,10 +5986,22 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -5922,10 +6001,22 @@ async fn handle_realtime_server_event_with_configuration(
          }
          _ => event,
      };
@@ -617,7 +639,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
              }
              RealtimeEvent::ConversationItemAdded {
                  item,
-@@ -6111,6 +6187,12 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6111,6 +6202,12 @@ async fn handle_realtime_server_event_with_configuration(
              {
                  return Ok(());
              }
@@ -630,7 +652,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
              defer_sdk_create_until_handoff(handoff_state, response_create_queue).await;
              if response.response_id == response_create_queue.sdk_response_id {
                  response_create_queue.sdk_response_id = None;
-@@ -6246,14 +6328,39 @@ async fn handle_realtime_server_event_with_configuration(
+@@ -6246,24 +6343,95 @@ async fn handle_realtime_server_event_with_configuration(
              }
              false
          }
@@ -646,9 +668,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
 +            {
 +                return Ok(());
 +            }
-+            if serde_json::to_vec(request)?.len() > SDK_FUNCTION_CALL_MAX_BYTES {
-+                anyhow::bail!("SDK Realtime function request exceeds capacity");
-+            }
++            sdk_function_fingerprint(request)?;
 +            if sdk.seen.lock().await.contains_key(&request.call_id) {
 +                anyhow::bail!("Detached function reused a native call ID");
 +            }
@@ -667,16 +687,7 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
                  return Ok(());
              };
              let mut request = request.clone();
--            if let Some(configuration) = &configuration {
--                tool_task::captured_definition(configuration, &request.name)?;
--            }
-             let fingerprint = codex_realtime_control::FunctionCall {
-                 namespace: request.namespace.clone(),
-                 call_id: request.call_id.clone(),
-@@ -6264,6 +6371,63 @@ async fn handle_realtime_server_event_with_configuration(
-             }
-             .fingerprint()
-             .map_err(anyhow::Error::msg)?;
++            let fingerprint = sdk_function_fingerprint(&request)?;
 +            if configuration
 +                .as_ref()
 +                .is_some_and(|accepted| accepted.caller_manages_function(&request.name))
@@ -731,9 +742,19 @@ index da236689d1f0a07975ca0e0042142441e210a58f..41b157feeced6db2f62c5cb4e8f8008e
 +            {
 +                anyhow::bail!("Native function reused a caller-managed call ID");
 +            }
-+            if let Some(configuration) = &configuration {
-+                tool_task::captured_definition(configuration, &request.name)?;
-+            }
+             if let Some(configuration) = &configuration {
+                 tool_task::captured_definition(configuration, &request.name)?;
+             }
+-            let fingerprint = codex_realtime_control::FunctionCall {
+-                namespace: request.namespace.clone(),
+-                call_id: request.call_id.clone(),
+-                item_id: request.item_id.clone(),
+-                name: request.name.clone(),
+-                arguments: request.arguments.clone(),
+-                response_id: request.response_id.clone(),
+-            }
+-            .fingerprint()
+-            .map_err(anyhow::Error::msg)?;
              sdk.reclaim_terminal_calls(&request.call_id).await;
              let mut calls = sdk.function_calls.lock().await;
              if let Some(previous) = calls.get_mut(&request.call_id) {
