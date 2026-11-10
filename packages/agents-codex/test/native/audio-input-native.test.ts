@@ -1,7 +1,9 @@
+import OpenAI from 'openai';
 import { expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  ChatCompletionsModel,
   NativeProvider,
   tool,
   toolRef,
@@ -149,4 +151,88 @@ it('keeps modality replacement, clear and restore scoped to the selected Agent',
     provider,
   }).run(message);
   expect(hasAudio()).toBe(false);
+});
+
+it('composes native audio and named selection through the real Chat library', async () => {
+  const seen: any[] = [];
+  const effects: string[] = [];
+  const client = new OpenAI({
+    apiKey: 'fixture',
+    fetch: async (_url, init) => {
+      seen.push(JSON.parse(init?.body as string));
+      const message =
+        seen.length > 1
+          ? { role: 'assistant', content: 'ok' }
+          : {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call_audio_client',
+                  type: 'function',
+                  function: { name: 'lookup', arguments: '{}' },
+                },
+              ],
+            };
+      return new Response(
+        JSON.stringify({
+          id: 'chat_audio',
+          object: 'chat.completion',
+          created: 0,
+          model: 'fixture',
+          choices: [
+            {
+              index: 0,
+              finish_reason: seen.length > 1 ? 'stop' : 'tool_calls',
+              message,
+            },
+          ],
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+  const lookup = tool({
+    name: 'lookup',
+    description: 'Lookup.',
+    parameters: z.object({}),
+    execute() {
+      effects.push('lookup');
+      return 'found';
+    },
+  });
+  await using provider = new NativeProvider({
+    baseUrl: 'https://example.invalid/v1',
+    modelBackend: new ChatCompletionsModel(client),
+  });
+  const result = await new Agent({
+    model: 'custom-model',
+    instructions: 'Use lookup once.',
+    tools: [lookup],
+    provider,
+    modelSettings: {
+      inputModalities: ['text', 'audio'],
+      toolChoice: toolRef('lookup'),
+    },
+  }).run({
+    role: 'user',
+    content: [
+      { type: 'input_audio', audio_url: 'data:audio/wav;base64,UklGRg==' },
+    ],
+  });
+  expect(result.finalOutput).toBe('ok');
+  expect(effects).toEqual(['lookup']);
+  expect(seen).toHaveLength(2);
+  expect(seen[0].tool_choice).toEqual({
+    type: 'function',
+    function: { name: 'lookup' },
+  });
+  for (const body of seen) {
+    expect(
+      body.messages.find((item: any) => item.role === 'user').content,
+    ).toEqual([
+      { type: 'input_audio', input_audio: { data: 'UklGRg==', format: 'wav' } },
+    ]);
+    expect(body).not.toHaveProperty('input_modalities');
+  }
 });
