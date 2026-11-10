@@ -1299,7 +1299,7 @@ impl ContextChange {
         tokio::select! {
             biased;
             _ = self.candidate_publication_stop.cancelled() => Err(native_error("candidate MCP publication cancelled")),
-            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None, None, None) => receipt,
+            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None, None, None, None) => receipt,
         }
     }
 
@@ -3147,6 +3147,7 @@ impl NativeThread {
         specs_json: String,
         default_slots_json: Option<String>,
         terminal_slots_json: Option<String>,
+        allocate_generation: Option<bool>,
     ) -> napi::Result<String> {
         let generation = crate::native_id(&generation)?;
         let specs_json = specs_json.as_str();
@@ -3171,7 +3172,14 @@ impl NativeThread {
                 .get::<python_tools::PythonTools>()
                 .ok_or_else(|| native_error("replace_tools requires a replaceable tool session"))?;
             tools
-                .replace(&inner.thread, generation, specs, defaults, terminal)
+                .replace(
+                    &inner.thread,
+                    generation,
+                    specs,
+                    defaults,
+                    terminal,
+                    allocate_generation.unwrap_or(false),
+                )
                 .await
                 .map(|generation| generation.to_string())
                 .map_err(native_error)
@@ -3192,6 +3200,7 @@ impl NativeThread {
         cancel_on_resource_close: Option<bool>,
         terminal_slots_json: Option<String>,
         default_slots_json: Option<String>,
+        allocate_generation: Option<bool>,
     ) -> napi::Result<String> {
         let servers_json = servers_json.as_str();
         if startup_boundary
@@ -3358,7 +3367,14 @@ impl NativeThread {
                 }
                 // An uncertain function publication cannot reopen the old policy.
                 let published = tools
-                    .replace(&inner.thread, generation, specs, defaults, terminal)
+                    .replace(
+                        &inner.thread,
+                        generation,
+                        specs,
+                        defaults,
+                        terminal,
+                        allocate_generation.unwrap_or(false),
+                    )
                     .await
                     .map_err(native_error)?;
                 function_generation = Some(published.to_string());

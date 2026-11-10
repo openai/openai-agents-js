@@ -1,10 +1,18 @@
 import { crc32, deflateSync } from 'node:zlib';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
-import { Agent, NativeProvider, tool, type NativeRealtimeEvent } from '../src';
+import {
+  Agent,
+  HttpMCP,
+  NativeProvider,
+  tool,
+  type NativeRealtimeEvent,
+} from '../src';
 import type { JsonObject } from '../src/runtime/binding';
-import { ModelServer } from './native/fixtures/model-server';
+import { ModelServer, call, message } from './native/fixtures/model-server';
 
 type Frame = Record<string, any>;
 
@@ -165,6 +173,237 @@ async function observe(
   );
 }
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
+
+nativeIt.each(['model', 'instructions', 'tools'] as const)(
+  'preserves borrowed backend %s controls after an accepted voice Agent graph',
+  async (control) => {
+    const calls: string[] = [];
+    const original = tool({
+      name: 'backend',
+      parameters: z.object({}),
+      execute: () => {
+        calls.push('original');
+        return 'original';
+      },
+    });
+    const replacement = tool({
+      name: 'backend',
+      parameters: z.object({}),
+      execute: () => {
+        calls.push('replacement');
+        return 'replacement';
+      },
+    });
+    const model = new ModelServer(
+      control === 'tools'
+        ? [
+            [call('backend', {}, { callId: 'backend-call' })],
+            [message('backend complete')],
+          ]
+        : [[message('backend complete')]],
+    );
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      const opening = new Agent({
+        provider,
+        instructions: 'Backend source',
+        tools: [original],
+      });
+      await using session = await opening.session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const voiceExecute = vi.fn(() => 'retained voice result');
+      const target = new Agent({
+        provider,
+        tools: [
+          tool({
+            name: 'voice_lookup',
+            parameters: z.object({}),
+            execute: voiceExecute,
+          }),
+        ],
+        name: 'Voice target',
+        instructions: 'Voice base',
+        realtime: { instructions: 'Voice-only instructions' },
+      });
+      await voice.updateAgent(target);
+      if (control === 'model')
+        await session.update({ model: 'fixture-backend-updated' });
+      if (control === 'instructions')
+        await session.update({ instructions: 'Updated backend source' });
+      if (control === 'tools') {
+        await session.update({ tools: [replacement] });
+        await session.update({ tools: [replacement] });
+      }
+      expect(await voice.getActiveAgent()).toBe(target);
+      expect(await session.getActiveAgent()).toBe(opening);
+      expect(
+        peer.frames.filter((frame) => frame.type === 'session.update').at(-1)
+          ?.session.instructions,
+      ).toBe('Voice-only instructions');
+      peer.send({
+        type: 'response.created',
+        response: { id: 'retained-voice' },
+      });
+      const retainedCall = {
+        type: 'function_call',
+        id: 'retained-voice-item',
+        call_id: 'retained-voice-call',
+        name: 'voice_lookup',
+        arguments: '{}',
+        status: 'completed',
+      };
+      peer.send({
+        type: 'response.output_item.done',
+        response_id: 'retained-voice',
+        output_index: 0,
+        item: retainedCall,
+      });
+      peer.send({
+        type: 'response.done',
+        response: {
+          id: 'retained-voice',
+          status: 'completed',
+          output: [retainedCall],
+        },
+      });
+      await vi.waitFor(() => expect(voiceExecute).toHaveBeenCalledOnce(), {
+        timeout: 10000,
+      });
+      await peer.frame('conversation.item.create');
+      await voice.close();
+      expect(
+        (await (await session.submit('Continue the backend')).wait())
+          .finalOutput,
+      ).toBe('backend complete');
+      if (control === 'model')
+        expect(model.requests[0]?.model).toBe('fixture-backend-updated');
+      if (control === 'instructions')
+        expect(JSON.stringify(model.requests[0]?.input)).toContain(
+          'Updated backend source',
+        );
+      if (control === 'tools') expect(calls).toEqual(['replacement']);
+      model.assertExhausted();
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  35_000,
+);
+
+nativeIt.each([
+  'callback',
+  'MCP initialization',
+  'concurrent MCP initialization',
+] as const)(
+  'preserves backend tool replacement after rejected voice Agent graphs (%s)',
+  async (rejection) => {
+    const original = tool({
+      name: 'backend',
+      parameters: z.object({}),
+      execute: () => 'original',
+    });
+    const execute = vi.fn(() => 'replacement');
+    const replacement = tool({
+      name: 'backend',
+      parameters: z.object({}),
+      execute,
+    });
+    const model = new ModelServer([
+      [call('backend', {}, { callId: 'backend-after-rejections' })],
+      [message('done')],
+    ]);
+    const peer = new HistoryPeer(model);
+    let requests = 0;
+    const initializing = Promise.withResolvers<void>();
+    const releaseInitialization = Promise.withResolvers<void>();
+    const unauthorized = createServer(async (_, response) => {
+      requests++;
+      initializing.resolve();
+      if (rejection === 'concurrent MCP initialization')
+        await releaseInitialization.promise;
+      response.writeHead(401).end();
+    });
+    unauthorized.listen(0, '127.0.0.1');
+    await once(unauthorized, 'listening');
+    const address = unauthorized.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Expected a TCP fixture');
+    try {
+      await using provider = await providerFor(model);
+      const opening = new Agent({
+        provider,
+        instructions: 'Backend source',
+        tools: [original],
+      });
+      await using session = await opening.session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const rejected = new Agent({
+        provider,
+        instructions: 'Rejected voice',
+        realtime: {
+          instructions: () => {
+            throw new Error('voice callback rejected');
+          },
+        },
+      });
+      const failed =
+        rejection === 'callback'
+          ? rejected
+          : new Agent({
+              provider,
+              instructions: 'Failed native preparation',
+              tools: [
+                new HttpMCP({
+                  name: 'unauthorized',
+                  url: `http://127.0.0.1:${address.port}/mcp`,
+                  tools: ['lookup'],
+                  approvalMode: 'preapproved',
+                }),
+              ],
+            });
+      if (rejection === 'concurrent MCP initialization') {
+        const admission = expect(voice.updateAgent(failed)).rejects.toThrow();
+        await initializing.promise;
+        let settled = false;
+        const backend = session.update({ tools: [replacement] }).finally(() => {
+          settled = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        releaseInitialization.resolve();
+        await admission;
+        await backend;
+      } else {
+        for (let attempt = 0; attempt < 3; attempt++)
+          await expect(voice.updateAgent(failed)).rejects.toThrow(
+            rejection === 'callback' ? 'voice callback rejected' : undefined,
+          );
+      }
+      if (rejection !== 'callback') expect(requests).toBeGreaterThan(0);
+      await session.update({ tools: [replacement] });
+      await session.update({ tools: [replacement] });
+      expect(await session.getActiveAgent()).toBe(opening);
+      await voice.close();
+      expect(
+        (await (await session.submit('Continue the backend')).wait())
+          .finalOutput,
+      ).toBe('done');
+      expect(execute).toHaveBeenCalledOnce();
+      model.assertExhausted();
+    } finally {
+      releaseInitialization.resolve();
+      unauthorized.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        unauthorized.close((error) => (error ? reject(error) : resolve())),
+      );
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  35_000,
+);
 
 nativeIt(
   'reclaims unpublished Agent graphs after repeated callback failures while preserving accepted response sources',

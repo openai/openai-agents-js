@@ -625,6 +625,10 @@
       "sha256": "53ae1b894604c1e9e658564f44f983d31a7527b26bc5d99eeb3eb64d94683365"
     },
     {
+      "path": "sdk-owned-retirement-persistence-error.patch",
+      "sha256": "0a661f972c1bc0b2a797652186b5c68af73ebb5f4a6d47e61787a39ca3d1ffc6"
+    },
+    {
       "path": "sdk-bounded-original-history-reads.patch",
       "sha256": "3b5b1fbab18a6d0aef5416f82c4765871e1835bf2544b3a346168430a9f2f2cf"
     },
@@ -649,5 +653,5 @@
       "sha256": "a3ea35cfd3f2eaeed66dc6ad6b06e7f651a7126ebfc66032636dc5bfe9ae31d9"
     }
   ],
-  "result_tree": "f6b35d62e84d96a608e6cba3f488123672650d3c"
+  "result_tree": "e99f7b7c4a21cd5e7a83518efd21e1b03ced2fee"
 }

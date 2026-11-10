@@ -1,0 +1,180 @@
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index b8c5f3bd95d45a85b3992ba1239fd1513a9239f9..87e9b8f01d41cfdf556e613c4fd6762cbaff7093 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -652,6 +652,7 @@ impl Session {
+                     reason.clone(),
+                     &active_turn.turn_state,
+                     /*error*/ None,
++                    /*retirement_persistence_failed*/ false,
+                     None,
+                 )
+                 .await;
+@@ -725,8 +726,15 @@ impl Session {
+     ) {
+         let task = active_turn.task.take();
+         if let Some(task) = task {
+-            self.handle_task_abort(task, reason.clone(), &active_turn.turn_state, error, None)
+-                .await;
++            self.handle_task_abort(
++                task,
++                reason.clone(),
++                &active_turn.turn_state,
++                error,
++                /*retirement_persistence_failed*/ false,
++                None,
++            )
++            .await;
+         }
+         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
+         // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+@@ -768,29 +776,30 @@ impl Session {
+             PersistContext::Standard,
+         )
+         .await;
+-        if let Err(error) = self
++        let materialized = self
+             .try_ensure_rollout_materialized(PersistContext::Standard)
+-            .await
+-        {
+-            errors.push(error.to_string());
+-        }
+-        if let Err(error) = self.flush_rollout().await {
+-            errors.push(error.to_string());
+-        }
++            .await;
++        let flushed = self.flush_rollout().await;
++        let retirement_persistence_failed = materialized.is_err() || flushed.is_err();
+         drop(recording);
+-        self.handle_task_abort(
+-            task,
+-            TurnAbortReason::Interrupted,
+-            &state,
+-            None,
+-            Some(&mut errors),
+-        )
+-        .await;
++        let retirement_error_reported = self
++            .handle_task_abort(
++                task,
++                TurnAbortReason::Interrupted,
++                &state,
++                None,
++                retirement_persistence_failed,
++                Some(&mut errors),
++            )
++            .await;
+         if let Err(error) = owner.join().await {
+             errors.push(error.to_string());
+         }
+-        if let Err(error) = self.flush_rollout().await {
+-            errors.push(error.to_string());
++        let final_flush_failed = self.flush_rollout().await.is_err();
++        // The canonical writer retains a failure. Once this retirement published
++        // it on the turn, repeating it through the join would fail host cleanup.
++        if !retirement_error_reported && (retirement_persistence_failed || final_flush_failed) {
++            errors.push(persistence_completion_fatal().to_string());
+         }
+         {
+             let mut active = self.active_turn.lock().await;
+@@ -1297,14 +1306,24 @@ impl Session {
+             .await
+     }
+
++    async fn emit_abort_fatal(&self, turn: &TurnContext, fatal: CodexErr) -> ErrorEvent {
++        self.emit_turn_error_lifecycle(turn, fatal.to_codex_protocol_error(), &fatal)
++            .await;
++        self.track_turn_codex_error(turn, &fatal);
++        let event = fatal.to_error_event(None);
++        self.send_event(turn, EventMsg::Error(event.clone())).await;
++        event
++    }
++
+     async fn handle_task_abort(
+         self: &Arc<Self>,
+         task: RunningTask,
+         reason: TurnAbortReason,
+         turn_state: &Mutex<TurnState>,
+         error: Option<ErrorEvent>,
++        retirement_persistence_failed: bool,
+         mut cleanup_errors: Option<&mut Vec<String>>,
+-    ) {
++    ) -> bool {
+         // Cancel this exact task promptly, even if an earlier finalizer holds the gate.
+         // Preserve the old already-cancelled branch's decision.
+         let was_cancelled = task.cancellation_token.is_cancelled();
+@@ -1346,19 +1365,7 @@ impl Session {
+                 .or_else(|| owned_fatal.map(CodexErr::Fatal));
+             match (primary, fatal) {
+                 (Some(primary), _) => Some(primary),
+-                (None, Some(fatal)) => {
+-                    self.emit_turn_error_lifecycle(
+-                        task.turn_context.as_ref(),
+-                        fatal.to_codex_protocol_error(),
+-                        &fatal,
+-                    )
+-                    .await;
+-                    self.track_turn_codex_error(task.turn_context.as_ref(), &fatal);
+-                    let event = fatal.to_error_event(None);
+-                    self.send_event(task.turn_context.as_ref(), EventMsg::Error(event.clone()))
+-                        .await;
+-                    Some(event)
+-                }
++                (None, Some(fatal)) => Some(self.emit_abort_fatal(&task.turn_context, fatal).await),
+                 (None, None) => None,
+             }
+         };
+@@ -1435,7 +1442,7 @@ impl Session {
+             if let Some(dispatch) = realtime_dispatch {
+                 dispatch.mark_settled();
+             }
+-            return;
++            return false;
+         }
+
+         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
+@@ -1532,8 +1539,10 @@ impl Session {
+             // synchronously re-read the rollout on receipt of the abort event.
+             if let Err(err) = self.flush_rollout().await {
+                 warn!("failed to flush interrupted-turn marker before emitting TurnAborted: {err}");
+-                if let Some(errors) = cleanup_errors.as_deref_mut() {
+-                    errors.push(err.to_string());
++                if !retirement_persistence_failed
++                    && let Some(errors) = cleanup_errors.as_deref_mut()
++                {
++                    errors.push(persistence_completion_fatal().to_string());
+                 }
+             }
+         }
+@@ -1558,6 +1567,14 @@ impl Session {
+                 turn_id: task.turn_context.sub_id.clone(),
+                 profile,
+             });
++        // Keep any earlier turn or request-cleanup error primary.
++        let retirement_error_reported = retirement_persistence_failed && error.is_none();
++        if retirement_error_reported {
++            error = Some(
++                self.emit_abort_fatal(&task.turn_context, persistence_completion_fatal())
++                    .await,
++            );
++        }
+         self.emit_turn_abort_lifecycle(reason.clone(), task.turn_context.extension_data.as_ref())
+             .await;
+         let event = EventMsg::TurnAborted(TurnAbortedEvent {
+@@ -1573,13 +1590,14 @@ impl Session {
+         // thread writers may not flush it without another explicit barrier.
+         if let Err(err) = self.flush_rollout().await {
+             warn!("failed to flush rollout after emitting terminal turn event: {err}");
+-            if let Some(errors) = cleanup_errors.as_deref_mut() {
+-                errors.push(err.to_string());
++            if !retirement_persistence_failed && let Some(errors) = cleanup_errors.as_deref_mut() {
++                errors.push(persistence_completion_fatal().to_string());
+             }
+         }
+         if let Some(dispatch) = realtime_dispatch {
+             dispatch.mark_settled();
+         }
++        retirement_error_reported
+     }
+
+     // Enabled only when this turn captured a deadline-owned invocation.
