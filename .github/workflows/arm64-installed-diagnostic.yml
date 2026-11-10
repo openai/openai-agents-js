@@ -1,0 +1,97 @@
+name: ARM64 registered-plan fixture diagnostic
+
+on:
+  push:
+    branches: [mark/nov9-js-arm64-credential-scan-diagnostic]
+    paths: [.github/workflows/arm64-installed-diagnostic.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  registered-plan-fixture:
+    name: Exact ARM64 registered-plan fixture
+    if: github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/mark/nov9-js-arm64-credential-scan-diagnostic'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      NATIVE_INPUTS: a22ce0556587982ac0a522b046060a8f49b8b756b7b4d0758534a22c235c6b4f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 9beeabe12a095116f16e0a511af9b2640d5543bc
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = 9beeabe12a095116f16e0a511af9b2640d5543bc
+          test "$(git rev-parse 'HEAD^{tree}')" = 0ae265a58031b3b4e6a6d91c5d234630c730ec04
+          test "$(id -u)" -ne 0
+          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "linux-arm64")'
+          printf 'SDK %s tree %s\n' "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')"
+          uname -sm
+          node --version
+          getconf GNU_LIBC_VERSION
+      - name: Restore the pinned native transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_ARTIFACT: '{"artifact-id":"13762542999","artifact-digest":"07ab0543dfe4fe760b7161b5fbb70e7af7fe95b5fb3d0390e029bf07796eb098"}'
+        run: node scripts/restore-native-bundle.mjs
+      - name: Install Linux worker prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends apparmor-profiles bubblewrap
+          if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
+            sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+              /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          fi
+          bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Build the SDK from the exact candidate
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Verify the restored native receipt and products
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { verifyNativeReceipt } from './scripts/alpha-package.mjs';
+          await verifyNativeReceipt(process.cwd(), 'linux-arm64');
+          const receipt = JSON.parse(readFileSync('packages/agents-codex/native/build-receipt.json', 'utf8'));
+          assert.equal(receipt.sources.codex.result_tree, 'f6d7d4ef0ef2ad011c4308d8b84b0c6764edb902');
+          assert.equal(Object.keys(receipt.inputs).length, 284);
+          console.log(JSON.stringify({ host: receipt.host, core: receipt.sources.codex.result_tree, products: receipt.products }));
+          NODE
+          sha256sum packages/agents-codex/native/{build-receipt.json,test-bin/exec-server-fixture}
+      - name: Run the registered-plan fixture in strict mode
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          env -u OPENAI_API_KEY -u GH_TOKEN -u GITHUB_TOKEN \
+            pnpm test:native packages/agents-codex/test/native/sign-in-with-chatgpt-native.test.ts \
+            --mode full --maxWorkers=1 --reporter=verbose --reporter=json \
+            --outputFile.json="$RUNNER_TEMP/registered-plan-fixture.json"
+          node --input-type=module - "$RUNNER_TEMP/registered-plan-fixture.json" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const result = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          assert.equal(result.testResults.length, 1);
+          assert.deepEqual(
+            [result.numTotalTests, result.numPassedTests, result.numFailedTests, result.numPendingTests, result.numTodoTests],
+            [11, 11, 0, 0, 0],
+          );
+          console.log('Registered-plan fixture: 11 selected, 11 passed, zero failed or skipped');
+          NODE
+          git diff --exit-code HEAD
