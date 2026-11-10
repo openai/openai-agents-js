@@ -66,6 +66,34 @@ describe('managed executor network declaration', () => {
     },
   );
 
+  it.each([
+    [
+      'allowedDomains',
+      () =>
+        new Environment({ ...executor, network: { allowedDomains: ['*'] } }),
+    ],
+    [
+      'deniedDomains',
+      () => new Environment({ ...executor, network: { deniedDomains: ['*'] } }),
+    ],
+    [
+      'allowAll options',
+      () => NetworkPolicy.allowAll({ deniedDomains: ['*'] }),
+    ],
+  ] as const)(
+    'rejects a lone wildcard in %s at declaration',
+    (_path, declare) => {
+      expect(declare).toThrow(
+        expect.objectContaining({
+          constructor: TypeError,
+          message: expect.stringContaining(
+            'Use NetworkPolicy.allowAll() or "**" to allow public hosts, and exact hosts or scoped host patterns to deny them.',
+          ),
+        }),
+      );
+    },
+  );
+
   it('distinguishes the default from an explicit empty managed policy', () => {
     const omitted = new Environment(executor);
     const empty = new Environment({ ...executor, network: {} });
