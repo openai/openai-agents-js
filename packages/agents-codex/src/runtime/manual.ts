@@ -98,7 +98,7 @@ export function isFunctionApprovalRequest(
   );
 }
 
-/** @internal Data bound to a consumed grant, never an additional execution capability. */
+/** Data bound to a consumed grant, never an additional execution capability. */
 export interface ApprovedArguments {
   readonly value: unknown;
   matches(value: unknown): boolean;
