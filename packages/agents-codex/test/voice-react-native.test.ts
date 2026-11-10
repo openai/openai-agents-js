@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NativeVoiceWebRTC } from '@openai/agents/voice/react-native';
+import { connectReactNativeVoice } from '../../../examples/codex/react-native-voice';
 
 function microphone() {
   const track = Object.assign(new EventTarget(), {
@@ -56,6 +57,52 @@ function setup() {
 }
 describe('app-owned React Native media', () => {
   afterEach(() => vi.unstubAllGlobals());
+  it.each(['close', 'setup failure', 'media error'])(
+    'releases the example-owned microphone once after %s',
+    async (ending) => {
+      const mic = microphone();
+      const release = vi.fn();
+      const stream = Object.assign(mic.stream, { release });
+      const peers: MobilePeer[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response('answer', {
+              status: ending === 'setup failure' ? 500 : 200,
+            }),
+        ),
+      );
+      const opening = connectReactNativeVoice({
+        webRTC: {
+          RTCPeerConnection: class extends MobilePeer {
+            constructor() {
+              super();
+              peers.push(this);
+            }
+          },
+          mediaDevices: { getUserMedia: async () => stream },
+        },
+        endpoint: 'https://application.example/voice/sdp',
+        appToken: 'synthetic-application-token',
+        onRemoteStream: () => {},
+      });
+      if (ending === 'setup failure') {
+        await expect(opening).rejects.toThrow('500');
+      } else {
+        const call = await opening;
+        if (ending === 'media error') {
+          peers[0]!.channel.onerror!();
+          expect(release).toHaveBeenCalledOnce();
+        }
+        call.close();
+        call.close();
+      }
+      expect(release).toHaveBeenCalledOnce();
+      expect(peers).toHaveLength(1);
+      expect(peers[0]!.close).toHaveBeenCalledOnce();
+    },
+  );
   it('uses injected WebRTC without DOM globals and waits for the server exchange', async () => {
     const { mic, peer, media, remote, events } = setup();
     let ready!: (sdp: string) => void;

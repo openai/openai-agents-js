@@ -577,7 +577,11 @@ function attentionReason(
   error: NativeError,
 ): TurnNeedsAttention['reason'] | undefined {
   if (error instanceof TurnAborted) return 'interrupted';
-  if (error.code === 'run_budget_exceeded') return 'budget_exceeded';
+  if (
+    error.code === 'run_budget_exceeded' ||
+    error.code === 'run_budget_usage_unavailable'
+  )
+    return 'budget_exceeded';
   if (error.category === 'connection_failed') return 'connection_lost';
   if (error.category === 'rate_limit_exceeded') return 'rate_limited';
   if (error.category && quotaCategories.has(error.category))
@@ -4931,6 +4935,9 @@ export class Session<OutputT = string, Context = unknown> {
       );
     const captured = accepted.data;
     const settings: ModelSettings = {};
+    if (captured.invocation_timeout_ms !== undefined)
+      settings.invocationTimeoutMs =
+        captured.invocation_timeout_ms as ModelSettings['invocationTimeoutMs'];
     if (captured.reasoning_effort != null)
       settings.reasoningEffort =
         captured.reasoning_effort as ModelSettings['reasoningEffort'];

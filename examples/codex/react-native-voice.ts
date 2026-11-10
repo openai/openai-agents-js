@@ -22,7 +22,7 @@ import {
 } from '@openai/agents/voice/react-native';
 
 export async function connectReactNativeVoice<
-  Stream extends NativeVoiceMediaStream,
+  Stream extends NativeVoiceMediaStream & { release(): void },
 >(options: {
   webRTC: {
     RTCPeerConnection: new () => NativeVoicePeerConnection;
@@ -38,19 +38,23 @@ export async function connectReactNativeVoice<
     audio: true,
     video: false,
   });
+  let released = false;
+  const releaseMicrophone = () => {
+    if (released) return;
+    released = true;
+    microphone.release();
+  };
   const media = new NativeVoiceWebRTC({
     mediaStream: microphone,
     createPeerConnection: () => new options.webRTC.RTCPeerConnection(),
     onRemoteStream: options.onRemoteStream,
-    onError: () => {
-      for (const track of microphone.getTracks()) track.stop();
-    },
+    onError: releaseMicrophone,
   });
   const close = () => {
     try {
       media.close();
     } finally {
-      for (const track of microphone.getTracks()) track.stop();
+      releaseMicrophone();
     }
   };
   try {
