@@ -1105,7 +1105,7 @@ async fn load_rules(
     };
     let mut directory = None;
     for relative in [".agents/rules", ".claude/rules"] {
-        let candidate = root.join(relative)?;
+        let candidate = canonical_root.join(relative)?;
         match fs.get_metadata(&candidate, no_follow, None).await {
             Ok(m) if m.is_symlink => return Ok(RuleSnapshot::default()),
             Ok(m) => ensure!(m.is_directory, "{relative} is not a directory"),
@@ -1159,13 +1159,16 @@ async fn load_rules(
     let windows = root.infer_path_convention() == Some(PathConvention::Windows);
     let relative: Vec<_> = paths
         .iter()
-        .filter_map(|p| p.relative_path_from(root))
+        .filter_map(|path| {
+            path.relative_path_from(root)
+                .or_else(|| path.relative_path_from(canonical_root))
+        })
         .map(|s| if windows { s.replace('\\', "/") } else { s })
         .collect();
     let mut result = RuleSnapshot::default();
     for path in files {
         let label = path
-            .relative_path_from(root)
+            .relative_path_from(canonical_root)
             .context("rule outside project")?;
         ensure!(
             contained(fs, canonical_root, &path).await,

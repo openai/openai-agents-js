@@ -1,5 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import {
@@ -307,6 +314,88 @@ it('uses successful native image reads, not image arguments, as path-access evid
   );
   server.assertExhausted();
 }, 30_000);
+
+it.skipIf(process.platform === 'win32').each([
+  ['view_image', 'src/pixel.png', 'relative'],
+  ['view_image', 'src/pixel.png', 'absolute'],
+  ['read_text_file', 'src/source.txt', 'absolute'],
+] as const)(
+  'publishes scoped guidance through a cwd symlink when %s reads %s via a %s path',
+  async (toolName, file, pathKind) => {
+    await using executor = await startProjectExecutor();
+    const root = join(executor.cwd, 'project');
+    const cwd = join(executor.cwd, 'project-alias');
+    await seedProject(root, 'ALIAS_JADE');
+    await writeRule(executor.cwd, 'ancestor', 'ANCESTOR_RUBY');
+    await symlink(root, cwd, 'dir');
+    const absolute = pathKind === 'absolute';
+    const target = join(absolute ? await realpath(root) : cwd, file);
+    const path = absolute ? target : file;
+    const png =
+      toolName === 'view_image' ? await readFile(join(root, file)) : undefined;
+    const server = new ModelServer([
+      () => {
+        expect(executor.readRequested(target)).toBe(false);
+        return [call(toolName, { path }, { callId: 'read' })];
+      },
+      [message('read succeeded')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      provider,
+      instructions: 'Answer.',
+      model: 'gpt-5',
+    }).session({
+      environment: new Environment({
+        url: executor.url,
+        cwd,
+        headers: executor.headers,
+        writePolicy: 'strict',
+        tools: [],
+      }),
+      projectGuidance: true,
+    });
+    expect((await (await session.submit('Go.')).wait()).finalOutput).toBe(
+      'read succeeded',
+    );
+    server.assertExhausted();
+    const [before, after] = server.requests;
+    expect(JSON.stringify(before!.tools ?? [])).toContain(
+      `"name":"${toolName}"`,
+    );
+    expect(executor.readRequested(target)).toBe(true);
+    const output = functionOutput(after!, 'read');
+    if (png) {
+      expect(output).toMatchObject({
+        output: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'input_image',
+            image_url: `data:image/png;base64,${png.toString('base64')}`,
+          }),
+        ]),
+      });
+    } else {
+      expect(output).toMatchObject({
+        output: JSON.stringify('executor text content'),
+      });
+    }
+    expect(
+      executor.requests.filter((rpc) => rpc.method === 'process/start'),
+    ).toHaveLength(0);
+    for (const request of server.requests) {
+      expect(JSON.stringify(request.tools ?? [])).not.toMatch(
+        /"name":"(?:exec_command|write_stdin)"/,
+      );
+      expect(modelInput(request)).not.toMatch(
+        /ALIAS_JADE_UNRELATED|ANCESTOR_RUBY/,
+      );
+    }
+    expect(currentCanonicalGuidance(before!)).toContain('ALIAS_JADE_GENERAL');
+    expect(modelInput(before!)).not.toContain('ALIAS_JADE_SCOPED');
+    expect(currentCanonicalGuidance(after!)).toContain('ALIAS_JADE_SCOPED');
+  },
+  30_000,
+);
 
 it.each([
   ['read_text_file', 'src/missing', false],
