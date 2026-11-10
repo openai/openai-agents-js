@@ -1516,7 +1516,6 @@ impl PythonTools {
         if let Some(outcomes) = &frame.tool_outcomes {
             outcomes.validate(
                 &serde_json::from_value::<Vec<RolloutItem>>(raw.clone())?,
-                &state.id.to_string(),
                 &frame.turn_id,
             )?;
         }
