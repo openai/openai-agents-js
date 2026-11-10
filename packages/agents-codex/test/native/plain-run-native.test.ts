@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeError, NativeProvider } from '../../src';
-import { binding } from '../../src/runtime/binding';
+import { binding, type JsonObject } from '../../src/runtime/binding';
 import { ModelServer, message } from './fixtures/model-server';
 
 function response(
@@ -165,8 +165,14 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         ' \ufeff\n',
         'final_answer',
       ],
+      [
+        'citation text with original deltas',
+        'a<oai-mem-citation>one</oai-mem-citation>b',
+        'ab',
+        undefined,
+      ],
     ] as const)(
-      'blank-answer parity: %s',
+      'single-message output parity: %s',
       async (_name, text, expected, phase) => {
         const server = new ModelServer([
           response(1, [text], phase),
@@ -202,6 +208,157 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             .map((event) => event.delta)
             .join(''),
         ).toBe(text);
+        expect(server.requests).toHaveLength(2);
+        server.assertExhausted();
+      },
+      30_000,
+    );
+
+    it.each([
+      [
+        'unphased blank tail',
+        [message('kept answer'), message('\u0085\u2003')],
+        'kept answer',
+      ],
+      [
+        'unphased empty tail',
+        [message('kept answer'), message('')],
+        'kept answer',
+      ],
+      [
+        'explicit blank final tail',
+        [
+          message('kept answer'),
+          { ...message('\u0085\u2003'), phase: 'final_answer' },
+        ],
+        '',
+      ],
+      [
+        'citation text',
+        [message('a<oai-mem-citation>one</oai-mem-citation>b')],
+        'ab',
+      ],
+      [
+        'citation-only tail',
+        [
+          message('kept answer'),
+          message('<oai-mem-citation>one</oai-mem-citation>'),
+        ],
+        'kept answer',
+      ],
+      [
+        'citation only',
+        [message('<oai-mem-citation>one</oai-mem-citation>')],
+        '',
+      ],
+      [
+        'commentary tail',
+        [
+          message('kept answer'),
+          { ...message('later commentary'), phase: 'commentary' },
+        ],
+        'later commentary',
+      ],
+      [
+        'commentary only',
+        [{ ...message('commentary'), phase: 'commentary' }],
+        'commentary',
+      ],
+      [
+        'blank final then citation-only',
+        [
+          message('kept answer'),
+          { ...message('\u0085\u2003'), phase: 'final_answer' },
+          message('<oai-mem-citation>one</oai-mem-citation>'),
+        ],
+        'kept answer',
+      ],
+      [
+        'blank final then empty content',
+        [
+          message('kept answer'),
+          { ...message('\u0085\u2003'), phase: 'final_answer' },
+          { ...message(''), content: [] },
+          message(''),
+        ],
+        'kept answer',
+      ],
+      [
+        'blank final then empty text',
+        [
+          message('kept answer'),
+          { ...message('\u0085\u2003'), phase: 'final_answer' },
+          message(''),
+        ],
+        '',
+      ],
+      [
+        'mixed text parts',
+        [
+          {
+            ...message(''),
+            content: [
+              { type: 'input_text', text: 'one' },
+              { type: 'output_text', text: 'two' },
+            ],
+          },
+        ],
+        'onetwo',
+      ],
+      [
+        'citation split between content parts',
+        [
+          {
+            ...message(''),
+            content: [
+              { type: 'input_text', text: 'a<oai-mem-' },
+              {
+                type: 'output_text',
+                text: 'citation>one</oai-mem-citation>b',
+              },
+            ],
+          },
+        ],
+        'ab',
+      ],
+      [
+        'empty content followed by empty text',
+        [{ ...message(''), content: [] }, message('')],
+        '',
+      ],
+      [
+        'literal proposed plan outside plan mode',
+        [message('a<proposed_plan>one</proposed_plan>b')],
+        'a<proposed_plan>one</proposed_plan>b',
+      ],
+      ['BOM tail', [message('earlier answer'), message('\ufeff')], '\ufeff'],
+    ] as [string, JsonObject[], string][])(
+      'visible-output parity: %s',
+      async (_name, items, expected) => {
+        const server = new ModelServer([items, items]);
+        await using provider = await providerFor(server);
+        const agent = new Agent({
+          instructions: 'Answer the request.',
+          model: 'gpt-5',
+          modelSettings: { reasoningEffort: 'low' },
+          provider,
+        });
+        const native = await binding();
+        const run = vi.spyOn(native.Engine.prototype, '_plain_run');
+        const open = vi.spyOn(
+          native.Engine.prototype,
+          'start_replaceable_thread',
+        );
+        const direct = await agent.run('same input');
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(open).not.toHaveBeenCalled();
+
+        await using session = await agent.session();
+        const ordinary = await (await session.submit('same input')).wait();
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(open).toHaveBeenCalledTimes(1);
+        expect(ordinary.finalOutput).toBe(expected);
+        expect(direct.finalOutput).toBe(ordinary.finalOutput);
         expect(server.requests).toHaveLength(2);
         server.assertExhausted();
       },
@@ -483,22 +640,29 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       server.assertExhausted();
     }, 30_000);
 
-    it('preserves response-integrity failures without a second model request', async () => {
-      const server = new ModelServer([[]]);
-      await using provider = await providerFor(server, 1);
-      const failure: unknown = await new Agent({
-        instructions: 'Answer.',
-        model: 'gpt-5',
-        provider,
-      })
-        .run('start')
-        .catch((error: unknown) => error);
-      expect(failure).toBeInstanceOf(NativeError);
-      expect(failure).toMatchObject({
-        responseIntegrityReason: 'missing_supported_terminal_output',
-      });
-      server.assertExhausted();
-    }, 30_000);
+    it.each([
+      ['missing assistant output', []],
+      ['empty assistant content', [{ ...message(''), content: [] }]],
+    ] as [string, JsonObject[]][])(
+      'preserves response-integrity failures without a second model request: %s',
+      async (_name, items) => {
+        const server = new ModelServer([items]);
+        await using provider = await providerFor(server, 1);
+        const failure: unknown = await new Agent({
+          instructions: 'Answer.',
+          model: 'gpt-5',
+          provider,
+        })
+          .run('start')
+          .catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(NativeError);
+        expect(failure).toMatchObject({
+          responseIntegrityReason: 'missing_supported_terminal_output',
+        });
+        server.assertExhausted();
+      },
+      30_000,
+    );
 
     it('reuses native guidance when retrying a content-filter response', async () => {
       const terminal = JSON.stringify({
@@ -683,13 +847,15 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
     }, 30_000);
 
     it.each([
-      [undefined, false],
-      [0, false],
-      [1, false],
-      [1, true],
+      [undefined, false, false],
+      [0, false, false],
+      [1, false, false],
+      [1, true, false],
+      [1, true, true],
     ] as const)(
-      'preserves dropped-stream recovery with retry budget %s and completed item %s',
-      async (streamMaxRetries, completedItem) => {
+      'preserves dropped-stream recovery with retry budget %s, completed item %s and blank success %s',
+      async (streamMaxRetries, completedItem, blankSuccess) => {
+        const finalChunks = blankSuccess ? ['\u0085\u2003'] : ['answer ', '2'];
         const dropped = {
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
@@ -733,7 +899,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         };
         const server = new ModelServer([
           dropped,
-          ...(streamMaxRetries === 0 ? [] : [response(2)]),
+          ...(streamMaxRetries === 0 ? [] : [response(2, finalChunks)]),
         ]);
         const config = await server.config();
         await using provider = new NativeProvider({
@@ -754,7 +920,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           await expect(running).rejects.toBeInstanceOf(NativeError);
         } else {
           const completed = await running;
-          expect(completed.finalOutput).toBe('answer 2');
+          expect(completed.finalOutput).toBe(blankSuccess ? '' : 'answer 2');
           const originalInput = server.requests[0]!.input as unknown[];
           const recoveredInput = server.requests[1]!.input as unknown[];
           expect(recoveredInput.slice(0, originalInput.length)).toEqual(
@@ -774,7 +940,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             observations
               .filter((event) => event.type === 'output_text_delta')
               .map((event) => event.delta),
-          ).toEqual(['partial output', 'answer ', '2']);
+          ).toEqual(['partial output', ...finalChunks]);
           const dispatched = observations.filter(
             (event) => event.type === 'model_request_dispatching',
           );

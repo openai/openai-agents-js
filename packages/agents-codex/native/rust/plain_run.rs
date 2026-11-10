@@ -26,6 +26,7 @@ use codex_protocol::{
     openai_models::ReasoningEffort,
     protocol::SessionSource,
 };
+use codex_utils_stream_parser::strip_citations;
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -333,6 +334,7 @@ struct Settlement {
     submission_id: String,
     journal: Arc<Journal>,
     final_output: Option<String>,
+    blank_final: bool,
     response_id: Option<String>,
     request_id: Option<String>,
     usage: Value,
@@ -356,6 +358,7 @@ impl Settlement {
                 state: StdMutex::new(JournalState::default()),
             }),
             final_output: None,
+            blank_final: false,
             response_id: None,
             request_id: None,
             usage: Value::Null,
@@ -441,7 +444,8 @@ async fn execute(
     let dto = json!({
         "sessionId":state.session_id.to_string(), "turnId":state.turn_id, "submissionId":state.submission_id,
         "events":journal.entries, "eventsGap":journal.gap,
-        "finalOutput":state.final_output, "usage":state.usage, "usageMetadata":state.usage_metadata,
+        "finalOutput":if state.blank_final { Some("") } else { state.final_output.as_deref() },
+        "usage":state.usage, "usageMetadata":state.usage_metadata,
         "responseId":state.response_id, "requestId":state.request_id, "dispatchRequestId":journal.request_id,
         "modelContextWindow":state.context_window, "rateLimits":state.rate_limits, "apiRateLimits":state.api_rate_limits,
         "error":error,
@@ -673,6 +677,7 @@ async fn prepare_and_collect(
         }
         state.active_item = None;
         state.final_output = None;
+        state.blank_final = false;
         state.response_id = None;
         state.request_id = None;
         state.usage = Value::Null;
@@ -809,8 +814,15 @@ async fn collect(
                                 }
                             }
                         }
-                        if !matches!(phase, Some(MessagePhase::Commentary)) {
-                            state.final_output = Some(text);
+                        // Separate Session blank-answer and Core visible-message projections.
+                        let blank = !content.is_empty() && text.trim().is_empty();
+                        if !blank || matches!(phase, Some(MessagePhase::FinalAnswer)) {
+                            state.blank_final = blank;
+                        }
+                        state.final_output.get_or_insert_with(String::new);
+                        let (visible, _) = strip_citations(&text);
+                        if !visible.trim().is_empty() {
+                            state.final_output = Some(visible);
                         }
                         state.active_item = None;
                     }

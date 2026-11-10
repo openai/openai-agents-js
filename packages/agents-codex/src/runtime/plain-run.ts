@@ -195,7 +195,7 @@ async function completedPlainRun(
   );
   const completed: Completed<string> = Object.freeze({
     turn,
-    finalOutput: /^\p{White_Space}*$/u.test(finalOutput) ? '' : finalOutput,
+    finalOutput,
     threadUsage: tokenUsageInfo(dto.usage),
     repairAttempts: Object.freeze([]),
   });
