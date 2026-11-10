@@ -43,7 +43,7 @@ impl ModelResponseInterceptor for Interceptor {
 }
 
 #[derive(Default)]
-struct SupportedOutput {
+pub(crate) struct SupportedOutput {
     pending_assistant: bool,
     last_assistant_has_text: bool,
     completed_native_item: bool,
@@ -55,7 +55,10 @@ impl SupportedOutput {
         self.rejection_reason(event).is_some()
     }
 
-    fn rejection_reason(&mut self, event: &ResponseEvent) -> Option<ResponseIntegrityReason> {
+    pub(crate) fn rejection_reason(
+        &mut self,
+        event: &ResponseEvent,
+    ) -> Option<ResponseIntegrityReason> {
         match event {
             ResponseEvent::OutputItemAdded(item) | ResponseEvent::OutputItemDone(item)
                 if matches!(

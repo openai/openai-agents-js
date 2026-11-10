@@ -113,8 +113,9 @@ it.skipIf(!supported).for([
       await mkdir(join(scratch, '.git'));
       await symlink(root, alias, 'dir');
 
-      const denied = pathKind === 'outside symlink';
-      if (denied) {
+      const outsideSymlink = pathKind === 'outside symlink';
+      const denied = outsideSymlink || pathKind === 'alias absolute';
+      if (outsideSymlink) {
         const outside = join(scratch, 'outside.txt');
         await writeFile(outside, outsideText);
         await symlink(outside, join(root, file));
@@ -167,7 +168,9 @@ it.skipIf(!supported).for([
         expect(output).toMatchObject({
           call_id: callId,
           output: expect.stringMatching(
-            /^read_text_file: .*\b(?:not permitted|Permission denied|No such file or directory)\b/i,
+            operation === 'view_image'
+              ? /^unable to locate image at .*\b(?:not permitted|Permission denied|No such file or directory)\b/i
+              : /^read_text_file: .*\b(?:not permitted|Permission denied|No such file or directory)\b/i,
           ),
         });
         expect(modelInput(after!)).not.toContain(outsideText);

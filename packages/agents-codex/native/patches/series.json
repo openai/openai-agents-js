@@ -529,9 +529,13 @@
       "sha256": "4a6d3118ac0f5512fabe53aa80f8e82bc6fca1274ffba2731bde2ecca89d6532"
     },
     {
+      "path": "0098-private-plain-modelclient-bridge.patch",
+      "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
+    },
+    {
       "path": "sdk-local-project-guidance-cwd.patch",
-      "sha256": "c8d8479a0e2aa5ceb02170843c9b309cd981df1f8de22b8fba73548202004284"
+      "sha256": "5ba8abea56c5abcd70d371bd4fb8d7c1f626dc890ce73451850a8cf3dc82f2e6"
     }
   ],
-  "result_tree": "a23dabfeca830a099a2ae582b0715a3935937c6f"
+  "result_tree": "bef39c3bb919c3d10b047989c6e59d1ed6db601c"
 }

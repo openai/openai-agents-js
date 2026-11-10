@@ -13,10 +13,10 @@ index 72087d77606165c210a0d4719b3f740bb5160edb..dcf240a59eda613abc43b57f280d63ab
  mod mcp_openai_file;
 diff --git a/codex-rs/core/src/project_read_path.rs b/codex-rs/core/src/project_read_path.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..1ebfbce4d306668d222256b4a3ed910cd2c00206
+index 0000000000000000000000000000000000000000..d30918721840da3b3d9a15a50b6ab99c100d8145
 --- /dev/null
 +++ b/codex-rs/core/src/project_read_path.rs
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,55 @@
 +use codex_utils_path_uri::PathUri;
 +use codex_utils_path_uri::PathUriParseError;
 +
@@ -46,6 +46,7 @@ index 0000000000000000000000000000000000000000..1ebfbce4d306668d222256b4a3ed910c
 +        let rebased = if let Some(mapping) = mapping
 +            && mapping.environment_id == environment_id
 +            && &mapping.declared_cwd == cwd
++            && cwd.join_descendant(path).is_ok()
 +            && let Some(relative) = logical.relative_path_from(&mapping.declared_cwd)
 +        {
 +            Some(mapping.canonical_cwd.join(&relative)?)

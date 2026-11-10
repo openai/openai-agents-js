@@ -1,6 +1,6 @@
 # Agents and sessions
 
-Use `Agent.run()` when the SDK should own a task's Session. Open a Session yourself when your application needs follow-up turns or direct control over observation and cleanup.
+`Agent.run()` has been providing a result after completing the task and its owned cleanup. Open a Session yourself when your application needs follow-up turns or direct control over observation and cleanup.
 
 ## Open and run a session
 
@@ -8,7 +8,7 @@ Use `Agent.run()` when the SDK should own a task's Session. Open a Session yours
 
 Choose the lifetime before submitting work:
 
-| API | Who closes the Session | Result |
+| API | Cleanup owner | Result |
 | --- | --- | --- |
 | `agent.run(input)` or `Runner.run(agent, input)` | SDK, before returning | `Completed`; set `returnState: true` to capture successful state before close. |
 | `agent.session(options)` | Application, in `finally` or an async disposal scope | A Session that can accept follow-up submissions. |

@@ -1,0 +1,134 @@
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -9,6 +9,8 @@
+ mod apply_patch;
+ mod apps;
+ mod client;
++#[doc(hidden)]
++pub mod sdk_plain_run;
+ mod client_common;
+ mod model_request;
+ mod prepared_request;
+diff --git a/codex-rs/core/src/sdk_plain_run.rs b/codex-rs/core/src/sdk_plain_run.rs
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/core/src/sdk_plain_run.rs
+@@ -0,0 +1,117 @@
++//! Narrow SDK-owned helpers for the private plain-run owner.
++
++use crate::config::Config;
++use crate::turn_metadata::{ExecutionMetadata, TurnMetadataState};
++use crate::windows_sandbox::WindowsSandboxLevelExt;
++use codex_extension_api::{ModelToolAdmission, TurnSamplingStop};
++use codex_protocol::config_types::WindowsSandboxLevel;
++use codex_protocol::model_request_controls::ModelRequestControls;
++use codex_protocol::models::{BaseInstructions, ResponseItem};
++use codex_protocol::openai_models::{ModelInfo, ReasoningEffort};
++use codex_protocol::protocol::SessionSource;
++pub use codex_rollout_trace::InferenceTraceContext;
++use codex_utils_path_uri::PathUri;
++use std::sync::Arc;
++use tokio::sync::oneshot;
++use tokio::task::JoinHandle;
++
++pub fn prompt(
++    input: Vec<ResponseItem>,
++    base_instructions: BaseInstructions,
++    request_controls: ModelRequestControls,
++    sampling_stop: Arc<TurnSamplingStop>,
++    admission: Arc<dyn ModelToolAdmission>,
++    prefer_buffered_response: bool,
++) -> crate::Prompt {
++    crate::Prompt {
++        input,
++        base_instructions,
++        request_controls,
++        sampling_stop: Some(sampling_stop),
++        tool_admission: Some(admission),
++        parallel_tool_calls: true,
++        prefer_buffered_response,
++        ..Default::default()
++    }
++}
++
++pub fn metadata(
++    config: &Config,
++    model: &ModelInfo,
++    selected_effort: Option<ReasoningEffort>,
++    installation_id: String,
++    session_id: String,
++    turn_id: String,
++) -> crate::CodexResponsesMetadata {
++    let auto_review_enabled = crate::guardian::routes_approval_policy_to_guardian(
++        config.permissions.approval_policy.value(),
++        config.approvals_reviewer,
++    );
++    let windows_sandbox = crate::tools::sandboxing::configured_windows_sandbox_selection(
++        config.effective_local_windows_sandbox_type(),
++        WindowsSandboxLevel::from_config(config),
++        &PathUri::from_abs_path(&config.cwd),
++    );
++    let state = TurnMetadataState::new(
++        session_id.clone(),
++        session_id.clone(),
++        None,
++        None,
++        &SessionSource::Exec,
++        None,
++        turn_id.clone(),
++        config.cwd.clone(),
++        &config.permissions.effective_permission_profile(),
++        windows_sandbox,
++        false, // Private plain-run admission requires an unmanaged network.
++        auto_review_enabled,
++        model,
++    );
++    state.set_root_turn_id(turn_id);
++    state.set_turn_started_at_unix_ms(chrono::Utc::now().timestamp_millis());
++    state.set_responses_api_metadata(config.responses_api_metadata.clone());
++    let mut metadata = state.to_responses_metadata(
++        installation_id,
++        format!("{session_id}:0"),
++        crate::responses_metadata::CodexResponsesRequestKind::Turn,
++    );
++    ExecutionMetadata {
++        model: &model.slug,
++        reasoning_effort: selected_effort.or_else(|| model.default_reasoning_level.clone()),
++        node_repl_disabled: model.node_repl_disabled,
++        auto_review_enabled,
++        node_repl_auto_review_required: model.computer_use_review_required(),
++    }
++    .apply_to(&mut metadata);
++    metadata.window_number = Some(0);
++    metadata.context_window_id = Some(uuid::Uuid::new_v4());
++    // This owner has no Session analytics client or workspace enrichment task.
++    // Their optional metadata remains absent rather than inventing context.
++    metadata
++}
++
++/// Taking handles preserves ResponseStream's consumer-dropped cancellation.
++/// Signal this attempt's producer stop, drop its stream, and join both handles.
++/// Keep the separate run-wide sampling stop open only when retrying.
++pub fn take_tasks(
++    stream: &mut crate::ResponseStream,
++) -> (
++    Option<JoinHandle<()>>,
++    Option<JoinHandle<()>>,
++    Option<oneshot::Sender<()>>,
++) {
++    (
++        stream.mapper_task.take(),
++        stream.producer_task.take(),
++        stream.producer_stop.take(),
++    )
++}
++
++/// Reuse the same model-specific guidance as the ordinary sampling retry owner.
++pub fn content_filter_guidance(model: &codex_protocol::openai_models::ModelInfo) -> ResponseItem {
++    crate::context::ContextualUserFragment::into(crate::context::ContentFilterGuidance {
++        text: codex_prompts::ResolvedModelMessages::from_model(model)
++            .content_filter_guidance()
++            .to_string(),
++    })
++}
