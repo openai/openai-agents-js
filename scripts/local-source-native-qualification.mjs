@@ -6,14 +6,23 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import process from 'node:process';
-import { clearInterval, setInterval } from 'node:timers';
+import { clearInterval, setInterval, setTimeout } from 'node:timers';
 
 // Vitest's Rolldown dependency does not support Windows ia32. Run the real
 // reader in that runtime without relying on the test runner's native binding.
-const [modulePath, target] = process.argv.slice(2);
+const [modulePath, target, nativeCallPath] = process.argv.slice(2);
 assert.equal(`${process.platform}/${process.arch}`, target);
 assert.ok(modulePath, 'Provide the bundled source reader module');
-const reader = createRequire(import.meta.url)(resolve(modulePath));
+assert.ok(nativeCallPath, 'Provide the bundled native call module');
+assert.equal(
+  typeof globalThis.gc,
+  'function',
+  'Run qualification with --expose-gc',
+);
+const require = createRequire(import.meta.url);
+const reader = require(resolve(modulePath));
+const { callLocalSourceNative } = require(resolve(nativeCallPath));
+const koffi = require('koffi');
 const root = await fs.mkdtemp(join(tmpdir(), 'agents-native-source-'));
 
 try {
@@ -137,6 +146,80 @@ try {
   } finally {
     await directory.close();
   }
+
+  // A real blocked native call must not delay the app's timer. Throughput on a
+  // fast filesystem alone cannot establish this property for slow storage.
+  const windows = process.platform === 'win32';
+  const library = koffi.load(
+    windows
+      ? 'kernel32.dll'
+      : process.platform === 'darwin'
+        ? '/usr/lib/libSystem.B.dylib'
+        : null,
+  );
+  const delay = library.func(
+    windows
+      ? 'void __stdcall Sleep(uint32_t milliseconds)'
+      : 'int usleep(unsigned int microseconds)',
+  );
+  let completed = false;
+  const delayed = callLocalSourceNative(delay, [windows ? 500 : 500_000]).then(
+    () => {
+      completed = true;
+    },
+  );
+  void delayed.catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const completedBeforeTimer = completed;
+  await delayed;
+  assert.equal(completedBeforeTimer, false);
+
+  const size = 64 * 1024 * 1024;
+  const large = join(root, 'known-size');
+  const file = await fs.open(large, 'wx');
+  await file.truncate(size);
+  await file.close();
+  globalThis.gc();
+  globalThis.gc();
+  const before = process.memoryUsage().arrayBuffers;
+  const data = await reader.readLocalSourceFile(large);
+  const allocated = process.memoryUsage().arrayBuffers - before;
+  assert.equal(data.length, size);
+  assert.equal(data[0], 0);
+  assert.equal(data[size - 1], 0);
+  assert.ok(
+    allocated <= size + 4 * 1024 * 1024,
+    `Static file allocated ${allocated} bytes`,
+  );
+
+  const deep = join(root, 'deep');
+  await fs.mkdir(deep);
+  let leaf = deep;
+  for (let level = 0; level < 64; level++) {
+    leaf = join(leaf, 'd');
+    await fs.mkdir(leaf);
+  }
+  await fs.writeFile(join(leaf, 'leaf'), 'SAFE');
+  let directories = 0;
+  let files = 0;
+  for await (const entry of reader.readLocalSourceDirectory(deep)) {
+    if (entry.type === 'dir') directories++;
+    else {
+      assert.equal(Buffer.from(entry.content).toString(), 'SAFE');
+      files++;
+    }
+  }
+  assert.equal(directories, 65);
+  assert.equal(files, 1);
+  console.log(
+    JSON.stringify({
+      target,
+      nativeDelayOffThread: true,
+      knownSizeBytes: size,
+      allocatedBytes: allocated,
+      directoryDepth: 64,
+    }),
+  );
 } finally {
   await fs.rm(root, { recursive: true, force: true });
 }

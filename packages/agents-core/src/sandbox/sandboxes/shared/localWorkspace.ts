@@ -3,8 +3,10 @@ import {
   openLocalSourceDirectory,
   readLocalSourceDirectory,
   readLocalSourceFile,
+  readLocalSourceFileAt,
+  readLocalSourceEntriesAt,
 } from '../../shared/localSourceReader';
-import type { NativeSourceDirectory } from '../../shared/localSourceTypes';
+import type { NativeSourceEntry } from '../../shared/localSourceTypes';
 import { SandboxUnsupportedFeatureError } from '../../errors';
 import type { SandboxConcurrencyLimits } from '../../client';
 import type {
@@ -31,7 +33,7 @@ import {
   mkdir,
   mkdtemp,
   open,
-  opendir,
+  readdir,
   readFile,
   readlink,
   realpath,
@@ -874,7 +876,7 @@ async function* readClonedGitContent(
     }
   } else if (info.isDirectory()) {
     yield { type: 'dir', path, permissions };
-    for await (const child of await opendir(source)) {
+    for (const child of await readdir(source, { withFileTypes: true })) {
       yield* readClonedGitContent(
         join(source, child.name),
         posix.join(path, child.name),
@@ -918,64 +920,72 @@ async function copyLocalDirectory(
   logicalPath: string,
 ): Promise<void> {
   const directory = await openLocalSourceDirectory(sourceDir);
+  const queue: { parent: readonly string[]; entry: NativeSourceEntry }[] = [
+    { parent: [], entry: { name: '', type: 'directory' } },
+  ];
+  let failed = false;
+  let failure: unknown;
   try {
-    await copyOpenedLocalDirectory(
-      directory,
-      destination,
-      options,
-      workspaceRootPath,
-      logicalPath,
-    );
-  } finally {
-    await directory.close();
-  }
-}
-
-async function copyOpenedLocalDirectory(
-  directory: NativeSourceDirectory,
-  destination: string,
-  options: MaterializeLocalWorkspaceOptions,
-  workspaceRootPath: string,
-  logicalPath: string,
-): Promise<void> {
-  await createMaterializationDirectory(
-    workspaceRootPath,
-    destination,
-    logicalPath,
-  );
-  await runLimited(
-    await directory.entries(),
-    resolveLocalDirEntryConcurrency(options.concurrencyLimits),
-    async (child) => {
-      const destinationPath = join(destination, child.name);
-      const childLogicalPath = joinLogicalPath(logicalPath, child.name);
-      if (child.type === 'directory') {
-        const childDirectory = await directory.openDirectory(child.name);
-        try {
-          await copyOpenedLocalDirectory(
-            childDirectory,
-            destinationPath,
-            options,
-            workspaceRootPath,
-            childLogicalPath,
-          );
-        } finally {
-          await childDirectory.close();
+    const limit = resolveLocalDirEntryConcurrency(options.concurrencyLimits);
+    const work = async ({ parent, entry }: (typeof queue)[number]) => {
+      const components = entry.name ? [...parent, entry.name] : parent;
+      const destinationPath = join(destination, ...components);
+      const childLogicalPath = components.reduce(joinLogicalPath, logicalPath);
+      if (entry.type === 'directory') {
+        await createMaterializationDirectory(
+          workspaceRootPath,
+          destinationPath,
+          childLogicalPath,
+        );
+        if (failed) return;
+        const children = await readLocalSourceEntriesAt(directory, components);
+        if (failed) return;
+        for (let index = children.length - 1; index >= 0; index--) {
+          queue.push({ parent: components, entry: children[index] });
         }
-      } else if (child.type === 'file') {
+      } else if (entry.type === 'file') {
         await writeMaterializationFile(
           workspaceRootPath,
           destinationPath,
           childLogicalPath,
-          await directory.readFile(child.name),
+          await readLocalSourceFileAt(directory, components),
         );
-      } else if (child.type === 'symlink') {
+      } else if (entry.type === 'symlink') {
         throw new UserError(
-          `local_dir entries do not support symbolic links: ${child.name}`,
+          `local_dir entries do not support symbolic links: ${entry.name}`,
         );
       }
-    },
-  );
+    };
+    await new Promise<void>((resolve, reject) => {
+      let active = 0;
+      const finish = () => {
+        active--;
+        pump();
+      };
+      const pump = () => {
+        while (!failed && active < limit && queue.length > 0) {
+          const item = queue.pop()!;
+          active++;
+          void work(item).then(finish, (error) => {
+            if (!failed) {
+              failed = true;
+              failure = error;
+            }
+            finish();
+          });
+        }
+        // Workers publish children only after their parent destination exists.
+        // Failure stops dequeues, but every started directory/file still joins.
+        if (active === 0) {
+          if (failed) reject(failure);
+          else resolve();
+        }
+      };
+      pump();
+    });
+  } finally {
+    await directory.close();
+  }
 }
 
 async function writeMaterializationFile(

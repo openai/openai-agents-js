@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
-import { setImmediate } from 'node:timers/promises';
 import koffi from 'koffi';
+import { readLocalSourceBuffer } from './localSourceBuffer';
+import { callLocalSourceNative } from './localSourceNativeCall';
 import type {
   NativeSourceDirectory,
   NativeSourceEntry,
@@ -107,7 +108,8 @@ function createBindings() {
     koffi.offsetof(objectAttributes, 'ObjectName') !== pointerBytes * 2 ||
     koffi.offsetof(objectAttributes, 'SecurityDescriptor') !==
       pointerBytes * 4 ||
-    koffi.sizeof(ioStatusBlock) !== pointerBytes * 2
+    koffi.sizeof(ioStatusBlock) !== pointerBytes * 2 ||
+    koffi.offsetof(ioStatusBlock, 'Information') !== pointerBytes
   ) {
     throw sourceError('ENOTSUP', 'Windows local source ABI');
   }
@@ -128,17 +130,70 @@ function createBindings() {
   const statusToError = nt.func(
     'uint32_t __stdcall RtlNtStatusToDosError(int32_t status)',
   );
-  const getInfo = kernel.func(
-    'int __stdcall GetFileInformationByHandleEx(void *handle, int infoClass, _Out_ void *buffer, uint32_t size)',
+  const queryInfo = nt.func('__stdcall', 'NtQueryInformationFile', 'int32_t', [
+    'void *',
+    koffi.out(koffi.pointer(ioStatusBlock)),
+    koffi.out('void *'),
+    'uint32_t',
+    'int32_t',
+  ]);
+  const queryDirectory = nt.func(
+    '__stdcall',
+    'NtQueryDirectoryFile',
+    'int32_t',
+    [
+      'void *',
+      'void *',
+      'void *',
+      'void *',
+      koffi.out(koffi.pointer(ioStatusBlock)),
+      koffi.out('void *'),
+      'uint32_t',
+      'int32_t',
+      'uint8_t',
+      'void *',
+      'uint8_t',
+    ],
   );
   const getFileType = kernel.func(
     'uint32_t __stdcall GetFileType(void *handle)',
   );
-  const readFile = kernel.func(
-    'int __stdcall ReadFile(void *handle, _Out_ void *buffer, uint32_t size, _Out_ uint32_t *read, void *overlapped)',
-  );
-  const closeHandle = kernel.func('int __stdcall CloseHandle(void *handle)');
-  const getLastError = kernel.func('uint32_t __stdcall GetLastError()');
+  const readFile = nt.func('__stdcall', 'NtReadFile', 'int32_t', [
+    'void *',
+    'void *',
+    'void *',
+    'void *',
+    koffi.out(koffi.pointer(ioStatusBlock)),
+    koffi.out('void *'),
+    'uint32_t',
+    'void *',
+    'void *',
+  ]);
+  const closeHandle = nt.func('int32_t __stdcall NtClose(void *handle)');
+
+  async function call(fn: typeof closeHandle, args: unknown[]) {
+    const { value } = await callLocalSourceNative<number>(fn, args);
+    // Every acquired handle uses FILE_SYNCHRONOUS_IO_NONALERT. The I/O manager
+    // completes the operation before the worker returns, including its outputs.
+    if (value === 0x103)
+      throw sourceError('EIO', 'unexpected pending source I/O');
+    return value;
+  }
+
+  function checkStatus(status: number, operation: string): void {
+    if (status < 0) throw windowsError(statusToError(status), operation);
+  }
+
+  function bytesWritten(
+    status: { Information?: number | bigint },
+    size: number,
+  ) {
+    const bytes = Number(status.Information);
+    if (!Number.isInteger(bytes) || bytes < 0 || bytes > size) {
+      throw sourceError('EIO', 'invalid Windows I/O length');
+    }
+    return bytes;
+  }
 
   async function open(
     parent: unknown,
@@ -164,50 +219,49 @@ function createBindings() {
     // FILE_OPEN_REPARSE_POINT opens the reparse object itself; reject it below.
     // No DIRECTORY/NON_DIRECTORY option: inspect reparse attributes before type.
     // https://learn.microsoft.com/windows/win32/api/winternl/nf-winternl-ntcreatefile
-    const status = await new Promise<number>((resolve, reject) => {
-      ntCreateFile.async(
-        out,
-        // Ancestors only need traversal, not permission to list their contents.
-        // Source directories explicitly request LIST_DIRECTORY; files request READ_DATA.
-        0x100080 | (directory ? 0x20 | (enumerate ? 1 : 0) : 1),
-        attributes,
-        {},
-        null,
-        0,
-        7, // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
-        1, // FILE_OPEN: never create or truncate.
-        0x200020, // FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT
-        null,
-        0,
-        (error: Error | null, result: number) => {
-          if (error) reject(error);
-          else resolve(result);
-        },
-      );
-    });
-    if (status < 0) throw windowsError(statusToError(status), 'NtCreateFile');
+    const status = await call(ntCreateFile, [
+      out,
+      // Ancestors only need traversal, not permission to list their contents.
+      // Source directories explicitly request LIST_DIRECTORY; files request READ_DATA.
+      0x100080 | (directory ? 0x20 | (enumerate ? 1 : 0) : 1),
+      attributes,
+      {},
+      null,
+      0,
+      7, // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+      1, // FILE_OPEN: never create or truncate.
+      0x200020, // FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT
+      null,
+      0,
+    ]);
+    checkStatus(status, 'NtCreateFile');
     const handle = out[0];
     try {
-      checkType(handle, directory);
+      await checkType(handle, directory);
       return handle;
     } catch (error) {
-      closeHandle(handle);
+      await close(handle).catch(() => {});
       throw error;
     }
   }
 
-  function checkType(handle: unknown, directory: boolean): void {
-    const info = Buffer.alloc(8); // FILE_ATTRIBUTE_TAG_INFO: two DWORDs.
-    if (!getInfo(handle, 9, info, info.length)) {
-      throw windowsError(getLastError(), 'GetFileInformationByHandleEx');
-    }
+  async function checkType(handle: unknown, directory: boolean): Promise<void> {
+    const info = Buffer.alloc(8); // FILE_ATTRIBUTE_TAG_INFORMATION: two DWORDs.
+    checkStatus(
+      await call(queryInfo, [handle, {}, info, info.length, 35]),
+      'NtQueryInformationFile attributes',
+    );
     const attributes = info.readUInt32LE(0);
     if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) {
       throw sourceError('ELOOP', 'open local source reparse point');
     }
-    const type = getFileType(handle);
+    const { value: type } = await callLocalSourceNative<number>(getFileType, [
+      handle,
+    ]);
     if (type === 0) {
-      throw windowsError(getLastError(), 'GetFileType');
+      // GetLastError is thread-local and cannot be retrieved after this worker
+      // call. Unknown type and query failure both reject the source safely.
+      throw sourceError('EIO', 'GetFileType');
     }
     if (type !== 1 || attributes & FILE_ATTRIBUTE_DEVICE) {
       throw sourceError('EINVAL', 'open non-disk local source');
@@ -217,42 +271,73 @@ function createBindings() {
     }
   }
 
-  function close(handle: unknown): void {
-    if (!closeHandle(handle)) {
-      throw windowsError(getLastError(), 'CloseHandle');
-    }
+  async function close(handle: unknown): Promise<void> {
+    checkStatus(await call(closeHandle, [handle]), 'NtClose');
   }
 
   async function read(handle: unknown): Promise<Uint8Array> {
-    checkType(handle, false);
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for (;;) {
-      const buffer = Buffer.alloc(CHUNK_BYTES);
-      const count = [0];
-      // These Win32 calls remain synchronous so GetLastError is read on the
-      // calling thread. Koffi's async workers do not return Windows last-error.
-      // Yield between bounded reads so concurrent sources can make progress.
-      if (!readFile(handle, buffer, buffer.length, count, null)) {
-        throw windowsError(getLastError(), 'ReadFile');
-      }
-      if (count[0] === 0) return Buffer.concat(chunks, total);
-      chunks.push(buffer.subarray(0, count[0]));
-      total += count[0];
-      await setImmediate();
-    }
+    await checkType(handle, false);
+    const info = Buffer.alloc(24); // FILE_STANDARD_INFORMATION; EndOfFile at 8.
+    checkStatus(
+      await call(queryInfo, [handle, {}, info, info.length, 5]),
+      'NtQueryInformationFile size',
+    );
+    return readLocalSourceBuffer(info.readBigInt64LE(8), async (buffer) => {
+      const output: { Information?: number | bigint } = {};
+      const status = await call(readFile, [
+        handle,
+        null,
+        null,
+        null,
+        output,
+        buffer,
+        buffer.length,
+        null,
+        null,
+      ]);
+      if (status >>> 0 === 0xc0000011) return 0; // STATUS_END_OF_FILE
+      checkStatus(status, 'NtReadFile');
+      return bytesWritten(output, buffer.length);
+    });
   }
 
   async function entries(handle: unknown): Promise<NativeSourceEntry[]> {
-    checkType(handle, true);
+    await checkType(handle, true);
     const result: NativeSourceEntry[] = [];
     let restart = true;
+    let capacity = CHUNK_BYTES;
     for (;;) {
-      const buffer = Buffer.alloc(CHUNK_BYTES);
-      if (!getInfo(handle, restart ? 11 : 10, buffer, buffer.length)) {
-        const code = getLastError();
-        if (code === 18) return result; // ERROR_NO_MORE_FILES
-        throw windowsError(code, 'GetFileInformationByHandleEx directory');
+      const buffer = Buffer.alloc(capacity);
+      const output: { Information?: number | bigint } = {};
+      const status = await call(queryDirectory, [
+        handle,
+        null,
+        null,
+        null,
+        output,
+        buffer,
+        buffer.length,
+        37,
+        0,
+        null,
+        restart ? 1 : 0,
+      ]);
+      if (status >>> 0 === 0x80000006) return result; // STATUS_NO_MORE_FILES
+      const overflow = status >>> 0 === 0x80000005;
+      if (!overflow) checkStatus(status, 'NtQueryDirectoryFile');
+      const bytes = overflow ? 0 : bytesWritten(output, buffer.length);
+      if (overflow || bytes === 0) {
+        if (capacity >= CHUNK_BYTES * 2) {
+          throw sourceError('EIO', 'Windows directory record exceeds buffer');
+        }
+        capacity *= 2;
+        if (overflow) {
+          // A first-call overflow can contain a truncated record. Restart with
+          // room for the complete record, never parse or silently skip it.
+          restart = true;
+          result.length = 0;
+        }
+        continue;
       }
       restart = false;
       // FILE_ID_BOTH_DIR_INFO has no pointers. Windows SDK's 8-byte alignment
@@ -261,7 +346,7 @@ function createBindings() {
       // https://learn.microsoft.com/windows/win32/api/winbase/ns-winbase-file_id_both_dir_info
       let offset = 0;
       for (;;) {
-        if (offset + 104 > buffer.length) {
+        if (offset + 104 > bytes) {
           throw sourceError('EIO', 'invalid Windows directory record');
         }
         const next = buffer.readUInt32LE(offset);
@@ -270,11 +355,9 @@ function createBindings() {
         const end = offset + 104 + length;
         if (
           length % 2 !== 0 ||
-          end > buffer.length ||
+          end > bytes ||
           (next !== 0 &&
-            (next % 8 !== 0 ||
-              next < 104 + length ||
-              offset + next >= buffer.length))
+            (next % 8 !== 0 || next < 104 + length || offset + next >= bytes))
         ) {
           throw sourceError('EIO', 'invalid Windows directory record');
         }
@@ -296,7 +379,6 @@ function createBindings() {
         if (next === 0) break;
         offset += next;
       }
-      await setImmediate();
     }
   }
 
@@ -342,13 +424,13 @@ function directoryHandle(
         bytes = await native.read(file);
       } catch (error) {
         try {
-          native.close(file);
+          await native.close(file);
         } catch {
           // Preserve the read error if cleanup also fails.
         }
         throw error;
       }
-      native.close(file);
+      await native.close(file);
       return bytes;
     },
     entries() {

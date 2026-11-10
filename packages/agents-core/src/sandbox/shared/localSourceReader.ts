@@ -2,7 +2,10 @@ import { Buffer } from 'node:buffer';
 import { readlink } from 'node:fs/promises';
 import { parse, resolve, sep } from 'node:path';
 import { UserError } from '../../errors';
-import type { NativeSourceDirectory } from './localSourceTypes';
+import type {
+  NativeSourceDirectory,
+  NativeSourceEntry,
+} from './localSourceTypes';
 
 export type LocalSourceContent =
   | { type: 'dir'; path: string }
@@ -159,7 +162,22 @@ export async function* readLocalSourceDirectory(
 ): AsyncGenerator<LocalSourceContent> {
   const directory = await openLocalSourceDirectory(path);
   try {
-    yield* walk(directory, '', path);
+    for await (const entry of walkLocalSourceDirectoryEntries(directory)) {
+      const relative = entry.components.join('/');
+      if (entry.type === 'directory') {
+        yield { type: 'dir', path: relative };
+      } else if (entry.type === 'file') {
+        yield {
+          type: 'file',
+          path: relative,
+          content: await readLocalSourceFileAt(directory, entry.components),
+        };
+      } else {
+        throw new UserError(
+          `local_dir entries do not support ${entry.type === 'symlink' ? 'symbolic links' : 'this file type'}: ${path}/${relative}`,
+        );
+      }
+    }
   } finally {
     await directory.close();
   }
@@ -228,40 +246,73 @@ function bindDirectory(
   };
 }
 
-async function* walk(
-  directory: NativeSourceDirectory,
-  relative: string,
-  sourcePath: string,
-): AsyncGenerator<LocalSourceContent> {
-  yield { type: 'dir', path: relative };
-  for (const entry of await directory.entries()) {
-    const path = relative ? `${relative}/${entry.name}` : entry.name;
-    if (entry.type === 'symlink') {
-      throw new UserError(
-        `local_dir entries do not support symbolic links: ${sourcePath}/${path}`,
-      );
-    }
-    try {
-      if (entry.type === 'directory') {
-        const child = await directory.openDirectory(entry.name);
+async function withSourceDirectory<T>(
+  root: NativeSourceDirectory,
+  components: readonly string[],
+  operation: (directory: NativeSourceDirectory) => Promise<T>,
+): Promise<T> {
+  let directory = root;
+  try {
+    for (const component of components) {
+      const child = await directory.openDirectory(component, true);
+      if (directory !== root) {
         try {
-          yield* walk(child, path, sourcePath);
-        } finally {
-          await child.close();
+          await directory.close();
+        } catch (error) {
+          await child.close().catch(() => {});
+          throw error;
         }
-      } else if (entry.type === 'file') {
-        yield {
-          type: 'file',
-          path,
-          content: await directory.readFile(entry.name),
-        };
-      } else {
-        throw new UserError(
-          `local_dir entries do not support this file type: ${sourcePath}/${path}`,
-        );
       }
-    } catch (error) {
-      sourceError(error, 'local_dir', `${sourcePath}/${path}`);
+      directory = child;
+    }
+    return await operation(directory);
+  } finally {
+    if (directory !== root) await directory.close();
+  }
+}
+
+/** Reacquire one component at a time from the retained root, closing ancestors. */
+export async function readLocalSourceFileAt(
+  root: NativeSourceDirectory,
+  components: readonly string[],
+): Promise<Uint8Array> {
+  if (components.length === 0) {
+    throw new UserError('Local source file needs a relative component.');
+  }
+  return withSourceDirectory(root, components.slice(0, -1), (directory) =>
+    directory.readFile(components[components.length - 1]),
+  );
+}
+
+export async function readLocalSourceEntriesAt(
+  root: NativeSourceDirectory,
+  components: readonly string[],
+): Promise<NativeSourceEntry[]> {
+  return withSourceDirectory(root, components, (directory) =>
+    directory.entries(),
+  );
+}
+
+/** Walk with entry lists and relative names, retaining no directory per depth. */
+export async function* walkLocalSourceDirectoryEntries(
+  root: NativeSourceDirectory,
+): AsyncGenerator<{ components: string[]; type: NativeSourceEntry['type'] }> {
+  yield { components: [], type: 'directory' };
+  const stack = [
+    { components: [] as string[], entries: await root.entries(), index: 0 },
+  ];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const entry = frame.entries[frame.index++];
+    if (!entry) {
+      stack.pop();
+      continue;
+    }
+    const components = [...frame.components, entry.name];
+    yield { components, type: entry.type };
+    if (entry.type === 'directory') {
+      const entries = await readLocalSourceEntriesAt(root, components);
+      stack.push({ components, entries, index: 0 });
     }
   }
 }

@@ -4,6 +4,8 @@ import {
   isHostPathStrictlyWithinRoot,
   openLocalSourceDirectory,
   readLocalSourceFile,
+  readLocalSourceFileAt,
+  walkLocalSourceDirectoryEntries,
   isHostPathWithinRoot,
   sandboxPathGrantHostPath,
 } from '@openai/agents-core/sandbox/internal';
@@ -235,24 +237,17 @@ async function* walkOpenedLocalDirectory(
   const pendingReads = new Set<Promise<Uint8Array>>();
   try {
     await writer.mkdir(absolutePath);
-    for (const entry of await source.entries()) {
-      const destinationPath = `${absolutePath}/${entry.name}`;
+    for await (const entry of walkLocalSourceDirectoryEntries(source)) {
+      const relative = entry.components.join('/');
+      const destinationPath = relative
+        ? `${absolutePath}/${relative}`
+        : absolutePath;
       if (entry.type === 'directory') {
-        const child = await source.openDirectory(entry.name);
-        try {
-          yield* walkOpenedLocalDirectory(
-            writer,
-            destinationPath,
-            child,
-            join(sourcePath, entry.name),
-          );
-        } finally {
-          await child.close();
-        }
+        if (relative) await writer.mkdir(destinationPath);
       } else if (entry.type === 'file') {
         // Begin acquisition while the directory is retained. The backend queues
         // close after acquisitions and owns each opened file until its read ends.
-        const content = source.readFile(entry.name);
+        const content = readLocalSourceFileAt(source, entry.components);
         pendingReads.add(content);
         // A sibling failure can make runLimited discard an awaited iterator
         // result. Observe every read here, including results no worker accepts.
@@ -263,7 +258,7 @@ async function* walkOpenedLocalDirectory(
         yield { content, destinationPath };
       } else if (entry.type === 'symlink') {
         throw new UserError(
-          `local_dir entries do not support symbolic links: ${join(sourcePath, entry.name)}`,
+          `local_dir entries do not support symbolic links: ${join(sourcePath, ...entry.components)}`,
         );
       }
     }

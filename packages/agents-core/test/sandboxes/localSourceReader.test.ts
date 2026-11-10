@@ -38,6 +38,41 @@ async function fixture() {
   return { root, parent, source, outside };
 }
 
+test('enumerates every name across multiple native directory pages', async () => {
+  const { source } = await fixture();
+  const names = Array.from(
+    { length: 600 },
+    (_, index) => `${String(index).padStart(4, '0')}-${'x'.repeat(123)}`,
+  );
+  for (let offset = 0; offset < names.length; offset += 16) {
+    await Promise.all(
+      names
+        .slice(offset, offset + 16)
+        .map((name) => writeFile(join(source, name), '')),
+    );
+  }
+  const directory = await openLocalSourceDirectory(source);
+  try {
+    expect(
+      (await directory.entries()).map((entry) => entry.name).sort(),
+    ).toEqual([...names, 'input.txt'].sort());
+    expect(
+      (await directory.entries()).map((entry) => entry.name).sort(),
+    ).toEqual([...names, 'input.txt'].sort());
+  } finally {
+    await directory.close();
+  }
+}, 30_000);
+
+test.skipIf(process.platform !== 'linux')(
+  'reads a regular pseudo-file that rejects SEEK_END',
+  async () => {
+    expect(
+      Buffer.from(await readLocalSourceFile('/proc/cpuinfo')).toString(),
+    ).toContain('processor');
+  },
+);
+
 test('reads ordinary files and nested directories through the host tmpdir', async () => {
   const { source } = await fixture();
   await mkdir(join(source, 'nested'));

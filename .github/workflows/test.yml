@@ -256,7 +256,7 @@ jobs:
       - name: Verify native local source containment on Windows
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
-        run: pnpm exec vitest run packages/agents-core/test/sandboxes/localSourceReader.test.ts packages/agents-extensions/test/sandbox/localSourceContainment.test.ts
+        run: pnpm exec vitest run packages/agents-core/test/sandboxes/localSourceReader.test.ts packages/agents-core/test/sandboxes/localSourceNativeCall.test.ts packages/agents-core/test/sandboxes/localSourceBuffer.test.ts packages/agents-core/test/sandboxes/localSourceDepth.test.ts packages/agents-extensions/test/sandbox/localSourceContainment.test.ts packages/agents-extensions/test/sandbox/localSourceDepth.test.ts
       - name: Run Windows remote path tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
@@ -322,13 +322,13 @@ jobs:
         run: pnpm exec node -e "require('node:assert/strict').equal(process.platform + '/' + process.arch, '${{ matrix.target }}')"
       - name: Verify native local source containment
         if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch != 'ia32' }}
-        run: pnpm exec vitest run packages/agents-core/test/sandboxes/localSourceReader.test.ts packages/agents-extensions/test/sandbox/localSourceContainment.test.ts
+        run: pnpm exec vitest run packages/agents-core/test/sandboxes/localSourceReader.test.ts packages/agents-core/test/sandboxes/localSourceNativeCall.test.ts packages/agents-core/test/sandboxes/localSourceBuffer.test.ts packages/agents-core/test/sandboxes/localSourceDepth.test.ts packages/agents-extensions/test/sandbox/localSourceContainment.test.ts packages/agents-extensions/test/sandbox/localSourceDepth.test.ts
       - name: Bundle source reader for Windows ia32 qualification
         if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch == 'ia32' }}
-        run: pnpm exec esbuild packages/agents-core/src/sandbox/shared/localSourceReader.ts --bundle --platform=node --format=cjs --packages=external --outfile=packages/agents-core/node_modules/.cache/local-source-qualification.cjs
+        run: pnpm exec esbuild packages/agents-core/src/sandbox/shared/localSourceReader.ts packages/agents-core/src/sandbox/shared/localSourceNativeCall.ts --bundle --platform=node --format=cjs --packages=external --out-extension:.js=.cjs --outdir=packages/agents-core/node_modules/.cache/local-source-qualification
       - name: Verify Windows ia32 source containment without Vitest
         if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch == 'ia32' }}
-        run: node scripts/local-source-native-qualification.mjs packages/agents-core/node_modules/.cache/local-source-qualification.cjs ${{ matrix.target }}
+        run: node --expose-gc scripts/local-source-native-qualification.mjs packages/agents-core/node_modules/.cache/local-source-qualification/localSourceReader.cjs ${{ matrix.target }} packages/agents-core/node_modules/.cache/local-source-qualification/localSourceNativeCall.cjs
 
   coverage:
     needs: changes

@@ -1,5 +1,7 @@
 import { Buffer } from 'node:buffer';
 import koffi from 'koffi';
+import { readLocalSourceBuffer } from './localSourceBuffer';
+import { callLocalSourceNative } from './localSourceNativeCall';
 import type {
   NativeSourceDirectory,
   NativeSourceEntry,
@@ -53,19 +55,19 @@ const read = libc.func(
 // Darwin x64 retains legacy inode32 symbols. The stream constructor, reader and
 // metadata functions must all select the current inode64 ABI.
 const inodeSuffix = darwin && process.arch === 'x64' ? '$INODE64' : '';
-const fdopendir = libc.func(`fdopendir${inodeSuffix}`, 'void *', ['int']);
-const closedir = libc.func('int closedir(void *directory)');
+const fdopendir = darwin
+  ? libc.func(`fdopendir${inodeSuffix}`, 'void *', ['int'])
+  : undefined;
+const closedir = darwin
+  ? libc.func('int closedir(void *directory)')
+  : undefined;
 const readdir = darwin
-  ? libc.func(`readdir${inodeSuffix}`, 'void *', ['void *'])
-  : (() => {
-      try {
-        // glibc's large-file ABI preserves inode/offset widths on 32-bit CPUs.
-        return libc.func('void *readdir64(void *directory)');
-      } catch {
-        // musl already uses 64-bit inode/offset fields and removed this alias.
-        return libc.func('void *readdir(void *directory)');
-      }
-    })();
+  ? libc.func(`readdir_r${inodeSuffix}`, 'int', [
+      'void *',
+      koffi.out('void *'),
+      koffi.out(koffi.pointer('void *')),
+    ])
+  : undefined;
 
 const timespec = koffi.struct({ seconds: 'int64_t', nanoseconds: 'int64_t' });
 // Darwin's inode64 layout is shared by both supported CPUs.
@@ -103,6 +105,7 @@ function bindMetadata(statName: string, statAtName: string, version?: number) {
       'int',
     ]),
     version,
+    statName,
   };
 }
 
@@ -141,6 +144,23 @@ const metadata = (() => {
   throw new Error('Native local sources require POSIX stat functions');
 })();
 
+const seek = (() => {
+  if (!darwin) {
+    try {
+      return libc.func('int64_t lseek64(int fd, int64_t offset, int whence)');
+    } catch {
+      // musl 1.2.4 removed this alias; its off_t is still 64-bit on every CPU.
+      // A bare 32-bit glibc lseek would have a different ABI.
+      if (
+        (process.arch === 'arm' || process.arch === 'ia32') &&
+        metadata.statName !== '__fstat_time64'
+      )
+        throw new Error('No native 64-bit seek ABI');
+    }
+  }
+  return libc.func('int64_t lseek(int fd, int64_t offset, int whence)');
+})();
+
 const statx = (() => {
   if (darwin) return undefined;
   try {
@@ -163,6 +183,26 @@ const statxSyscalls: Partial<Record<NodeJS.Architecture, number>> = {
   loong64: 291,
 };
 let syscall: ReturnType<typeof libc.func> | undefined;
+const getdentsSyscalls: Partial<Record<NodeJS.Architecture, number>> = {
+  x64: 217,
+  arm64: 61,
+  arm: 217,
+  ia32: 220,
+  ppc64: 202,
+  riscv64: 61,
+  loong64: 61,
+};
+const getdents = darwin
+  ? undefined
+  : libc.func('syscall', 'long', [
+      'long',
+      'long',
+      koffi.out('void *'),
+      'unsigned long',
+      'long',
+      'long',
+      'long',
+    ]);
 
 async function statxMode(
   fd: number,
@@ -176,29 +216,24 @@ async function statxMode(
   if (!raw && statx) {
     await invoke(statx, [fd, name ?? '', flags, 1, output], 'statx');
   } else {
-    // Legacy 32-bit libc can overflow on timestamps beyond 2038 even when the
-    // kernel supports statx. Koffi variadic calls are synchronous, so this
-    // bounded metadata recovery is used only after that overflow, not reads.
+    // All arguments use native-width integer/pointer registers; fixed signatures
+    // allow Koffi workers without its synchronous-only variadic-call path.
     const number = statxSyscalls[process.arch];
     if (number === undefined) throw new Error('Unknown Linux statx syscall');
-    syscall ??= libc.func('long syscall(long number, ...)');
-    const result = syscall(
-      number,
+    syscall ??= libc.func('syscall', 'long', [
       'long',
-      fd,
+      'long',
       'str',
-      name ?? '',
       'long',
-      flags,
       'unsigned long',
-      1,
-      'void *',
-      output,
+      koffi.out('void *'),
       'long',
-      0,
+    ]);
+    await invoke(
+      syscall,
+      [number, fd, name ?? '', flags, 1, output, 0],
+      'statx',
     );
-    const errno = koffi.errno();
-    if (result < 0) throw nativeError('statx', errno);
   }
   if (((koffi.decode(output, 0, 'uint32_t') as number) & 1) === 0) {
     throw nativeError('statx mode', koffi.os.errno.EIO);
@@ -274,20 +309,14 @@ function nativeError(operation: string, errno: number): NodeJS.ErrnoException {
 
 type NativeFunction = ReturnType<typeof libc.func>;
 
-function invoke(
+async function invoke<T extends number | bigint = number>(
   fn: NativeFunction,
   args: unknown[],
   operation: string,
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    fn.async(...args, (error: Error | null, result: number) => {
-      // Koffi restores the worker's errno only for the duration of this callback.
-      const errno = koffi.errno();
-      if (error) reject(error);
-      else if (result < 0) reject(nativeError(operation, errno));
-      else resolve(result);
-    });
-  });
+): Promise<T> {
+  const { value, errno } = await callLocalSourceNative<T>(fn, args);
+  if (value < 0) throw nativeError(operation, errno);
+  return value;
 }
 
 function validateName(name: string): void {
@@ -369,22 +398,23 @@ class PosixSourceDirectory implements NativeSourceDirectory {
           code: 'EINVAL',
         });
       }
-      const chunks: Buffer[] = [];
-      let total = 0;
-      for (;;) {
-        const buffer = Buffer.allocUnsafe(64 * 1024);
-        let length: number;
-        try {
-          length = await invoke(read, [fd, buffer, buffer.length], 'read');
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EINTR') continue;
-          throw error;
-        }
-        if (length === 0) break;
-        chunks.push(buffer.subarray(0, length));
-        total += length;
+      let size: number | bigint | undefined;
+      try {
+        size = await invoke<number | bigint>(seek, [fd, 0, 2], 'lseek size');
+      } catch {
+        // Regular pseudo-files may reject SEEK_END. Their acquired handle can
+        // still be read to EOF without inventing a size or changing authority.
       }
-      contents = Buffer.concat(chunks, total);
+      if (size !== undefined) await invoke(seek, [fd, 0, 0], 'lseek rewind');
+      contents = await readLocalSourceBuffer(size, async (buffer) => {
+        for (;;) {
+          try {
+            return await invoke(read, [fd, buffer, buffer.length], 'read');
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EINTR') throw error;
+          }
+        }
+      });
     } catch (error) {
       await invoke(close, [fd], 'close').catch(() => {});
       throw error;
@@ -403,71 +433,119 @@ class PosixSourceDirectory implements NativeSourceDirectory {
         [this.fd, '.', directoryFlags],
         'openat enumeration',
       );
-      const directory = fdopendir(duplicate);
-      if (!directory) {
-        const error = nativeError('fdopendir', koffi.errno());
+      const result: NativeSourceEntry[] = [];
+      const append = async (bytes: Buffer, offset: number) => {
+        const recordLength = koffi.decode(
+          bytes,
+          offset + 16,
+          'uint16_t',
+        ) as number;
+        const nameOffset = offset + (darwin ? 21 : 19);
+        if (
+          recordLength <= nameOffset - offset ||
+          offset + recordLength > bytes.length
+        ) {
+          throw nativeError('directory record', koffi.os.errno.EIO);
+        }
+        const inode = koffi.decode(bytes, offset, 'uint64_t');
+        if (inode === 0 || inode === 0n) return recordLength;
+        const end = bytes.indexOf(0, nameOffset);
+        if (end < 0 || end >= offset + recordLength) {
+          throw nativeError('directory name', koffi.os.errno.EIO);
+        }
+        const name = bytes.toString('utf8', nameOffset, end);
+        if (name === '.' || name === '..') return recordLength;
+        validateName(name);
+        let type = bytes[offset + (darwin ? 20 : 18)];
+        if (type === 0) {
+          // d_type may be unavailable. This lookup never follows a symlink;
+          // actual acquisition separately uses the retained handle + nofollow.
+          const mode = (await statMode(this.fd, name)) & 0xf000;
+          type =
+            mode === 0x4000
+              ? 4
+              : mode === 0x8000
+                ? 8
+                : mode === 0xa000
+                  ? 10
+                  : 0;
+        }
+        result.push({
+          name,
+          type:
+            type === 4
+              ? 'directory'
+              : type === 8
+                ? 'file'
+                : type === 10
+                  ? 'symlink'
+                  : 'other',
+        });
+        return recordLength;
+      };
+      if (fdopendir && readdir && closedir) {
+        const { value: directory, errno } =
+          await callLocalSourceNative<unknown>(fdopendir, [duplicate]);
+        if (!directory) {
+          await invoke(close, [duplicate], 'close').catch(() => {});
+          throw nativeError('fdopendir', errno);
+        }
+        try {
+          // Apple's public readdir_r handles errno and libc's union/whiteout
+          // filtering on the worker. Its copy length uses uint16 d_namlen:
+          // align4(21 + 65535 + 1) = 65560, independent of NAME_MAX.
+          const buffer = Buffer.alloc(65560);
+          for (;;) {
+            const output: unknown[] = [null];
+            const { value: status } = await callLocalSourceNative<number>(
+              readdir,
+              [directory, buffer, output],
+            );
+            if (status !== 0) throw nativeError('readdir_r', status);
+            if (!output[0]) break;
+            await append(buffer, 0);
+          }
+        } catch (error) {
+          await invoke(closedir, [directory], 'closedir').catch(() => {});
+          throw error;
+        }
+        await invoke(closedir, [directory], 'closedir');
+        return result;
+      }
+      try {
+        const number = getdentsSyscalls[process.arch];
+        if (!getdents || number === undefined)
+          throw nativeError('getdents64 ABI', koffi.os.errno.ENOSYS);
+        const buffer = Buffer.alloc(64 * 1024);
+        for (;;) {
+          let length: number;
+          try {
+            length = Number(
+              await invoke(
+                getdents,
+                [number, duplicate, buffer, buffer.length, 0, 0, 0],
+                'getdents64',
+              ),
+            );
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'EINTR') continue;
+            throw error;
+          }
+          if (length === 0) break;
+          if (!Number.isInteger(length) || length < 0 || length > buffer.length)
+            throw nativeError('getdents64 length', koffi.os.errno.EIO);
+          const bytes = buffer.subarray(0, length);
+          for (let offset = 0; offset < length;) {
+            if (offset + 19 >= length)
+              throw nativeError('getdents64 record', koffi.os.errno.EIO);
+            offset += await append(bytes, offset);
+          }
+        }
+      } catch (error) {
         await invoke(close, [duplicate], 'close').catch(() => {});
         throw error;
       }
-      const result: NativeSourceEntry[] = [];
-      try {
-        for (;;) {
-          // Decode before another call on this DIR can invalidate its storage.
-          // Clearing errno synchronously distinguishes end-of-stream from error.
-          koffi.errno(0);
-          const entry = readdir(directory);
-          const errno = koffi.errno();
-          if (!entry) {
-            if (errno) throw nativeError('readdir', errno);
-            break;
-          }
-          const recordLength = koffi.decode(entry, 16, 'uint16_t') as number;
-          const nameOffset = darwin ? 21 : 19;
-          if (
-            recordLength <= nameOffset ||
-            recordLength > (darwin ? 1048 : 280)
-          ) {
-            throw nativeError('readdir record', koffi.os.errno.EIO);
-          }
-          const bytes = Buffer.from(
-            koffi.decode(entry, 'uint8_t', recordLength),
-          );
-          const end = bytes.indexOf(0, nameOffset);
-          if (end === -1) throw nativeError('readdir name', koffi.os.errno.EIO);
-          const name = bytes.toString('utf8', nameOffset, end);
-          if (name === '.' || name === '..') continue;
-          validateName(name);
-          let type = bytes[darwin ? 20 : 18];
-          if (type === 0) {
-            // Some filesystems do not supply d_type. This metadata lookup does
-            // not follow symlinks, and actual reads still reopen with O_NOFOLLOW.
-            const mode = (await statMode(this.fd, name)) & 0xf000;
-            type =
-              mode === 0x4000
-                ? 4
-                : mode === 0x8000
-                  ? 8
-                  : mode === 0xa000
-                    ? 10
-                    : 0;
-          }
-          result.push({
-            name,
-            type:
-              type === 4
-                ? 'directory'
-                : type === 8
-                  ? 'file'
-                  : type === 10
-                    ? 'symlink'
-                    : 'other',
-          });
-        }
-      } catch (error) {
-        closedir(directory);
-        throw error;
-      }
-      if (closedir(directory) < 0) throw nativeError('closedir', koffi.errno());
+      await invoke(close, [duplicate], 'close');
       return result;
     });
   }
