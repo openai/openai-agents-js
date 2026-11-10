@@ -229,6 +229,8 @@ export type NativeRealtimeEvent =
       status: 'created' | 'done' | 'cancelled';
       responseId?: string;
       usage?: NativeRealtimeUsage;
+      /** Detached connection total at this event, including this accepted response. */
+      cumulativeUsage?: NativeRealtimeUsage;
     }
   | {
       type: 'delegation';
@@ -1374,8 +1376,15 @@ class NativeRealtimeOwner {
       );
     if (event.type === 'hosted_mcp_call_completed' && event.error !== undefined)
       bytes += jsonAllocationBytes(event.error, AUDIO_LIMIT - bytes);
-    if (event.type === 'response' && event.usage !== undefined)
-      bytes += jsonAllocationBytes(event.usage, AUDIO_LIMIT - bytes);
+    if (event.type === 'response') {
+      if (event.usage !== undefined)
+        bytes += jsonAllocationBytes(event.usage, AUDIO_LIMIT - bytes);
+      if (event.cumulativeUsage !== undefined)
+        bytes += jsonAllocationBytes(
+          event.cumulativeUsage,
+          AUDIO_LIMIT - bytes,
+        );
+    }
     for (const value of Object.values(fields))
       if (typeof value === 'string') bytes += value.length * 4;
     return bytes;
@@ -1738,6 +1747,7 @@ class NativeRealtimeOwner {
       this.emit({
         type: 'response',
         usage: reportedUsage,
+        cumulativeUsage: this.usage,
         status:
           name === 'ResponseCreated'
             ? 'created'

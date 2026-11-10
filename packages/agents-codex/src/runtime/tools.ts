@@ -97,6 +97,8 @@ export type ToolTimeoutErrorFunction<Context = unknown> = (
 ) => string | Promise<string>;
 
 export interface ToolCallContext<Context = unknown> {
+  /** Detached speech usage at callback creation; excludes backend thread usage. */
+  readonly realtimeUsage?: import('./realtime-usage').NativeRealtimeUsage;
   readonly decide?: BoundDecide;
   /** @internal */
   readonly [decisionBinding]?: (signal: AbortSignal) => BoundDecide;

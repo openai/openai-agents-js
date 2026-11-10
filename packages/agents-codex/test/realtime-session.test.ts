@@ -81,6 +81,58 @@ function fixture(providerFailure?: Error) {
   };
 }
 
+it('detaches live usage views and event-time totals across connection replacement', async () => {
+  const f = fixture();
+  await f.session._start();
+  expect(f.session.realtimeUsage).toBeUndefined();
+  const voice = await f.session.realtime();
+  const events = voice.events();
+  await events.next(); // Startup lifecycle.
+  for (const [index, count] of [7, 3].entries())
+    f.emit('realtime_conversation_realtime', {
+      payload: {
+        ResponseDone: {
+          response_id: `usage-${index}`,
+          usage: {
+            total_tokens: count,
+            input_token_details: { audio_tokens: count },
+          },
+        },
+      },
+    });
+  await vi.waitFor(() =>
+    expect(f.session.realtimeUsage?.total_tokens).toBe(10),
+  );
+  const first = (await events.next()).value;
+  const second = (await events.next()).value;
+  expect(first).toMatchObject({
+    type: 'response',
+    usage: { total_tokens: 7 },
+    cumulativeUsage: { total_tokens: 7 },
+  });
+  expect(second).toMatchObject({
+    type: 'response',
+    usage: { total_tokens: 3 },
+    cumulativeUsage: { total_tokens: 10 },
+  });
+  if (first?.type !== 'response') throw new Error('Missing first usage event');
+  (
+    first.cumulativeUsage!.input_token_details as { audio_tokens: number }
+  ).audio_tokens = 999;
+  const live = f.session.realtimeUsage!;
+  (live.input_token_details as { audio_tokens: number }).audio_tokens = 888;
+  expect(voice.usage?.input_token_details?.audio_tokens).toBe(10);
+  expect(first.usage?.input_token_details?.audio_tokens).toBe(7);
+  await events.return(undefined);
+  await voice.close();
+  expect(f.session.realtimeUsage).toBeUndefined();
+  expect(voice.usage?.total_tokens).toBe(10);
+  const next = await f.session.realtime();
+  expect(f.session.realtimeUsage).toBeUndefined();
+  await next.close();
+  await f.session.close();
+});
+
 it('routes native Realtime before passive observation and joins its real Session reader on close', async () => {
   const f = fixture();
   await f.session._start();
