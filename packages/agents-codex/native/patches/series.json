@@ -467,7 +467,11 @@
     {
       "path": "sdk-realtime-provider-controls-and-tool-history.patch",
       "sha256": "c322e9722ee12080ed6f0209222c816600127e1b2dbb37b1e3aac371228c3421"
+    },
+    {
+      "path": "sdk-managed-project-instruction-markers.patch",
+      "sha256": "8d243ea5efea735d6d1ac9241df7a04d05d654e4c5ce78070541d58b57ae41ba"
     }
   ],
-  "result_tree": "d39b9c3ad7958a3a2a8000df9e84b4ca5d452267"
+  "result_tree": "a17cd4bef51a9bd6b1a20701da109a7f533095ef"
 }
