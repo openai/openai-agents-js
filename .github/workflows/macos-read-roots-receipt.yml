@@ -18,9 +18,9 @@ jobs:
       run:
         shell: bash
     env:
-      SDK_COMMIT: fc4d4f41f40bc7e0b2ed03e7742c152c303fe658
-      SDK_TREE: 02d3f290377a9ee1db5963d6dbea78407f2789e7
-      NATIVE_INPUTS: 3cd063bf2c6e2415346f960d9cc1a8e3f8113eb2baafea0b4856bea08bcefc4f
+      SDK_COMMIT: c6fb57c2705534f93334af01226bd6265a406d69
+      SDK_TREE: 1537a33554793bb820bb9c0ca588a14a5fc1d833
+      NATIVE_INPUTS: f21c2533bbfd3a0a68d0e2628b0ea508505557b53af2dc4bf666b4340bd573a7
       STRICT_CASE: applies a per-turn write policy with macOS read-only roots and restores a named linked skill
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -50,12 +50,13 @@ jobs:
           assert.ok(process.getuid() > 0);
           console.log('Verified checkout, tree and native inputs', SDK_COMMIT, SDK_TREE, NATIVE_INPUTS);
           JS
-      - name: Restore the pinned transfer from Alpha run 42869411259
+      - name: Restore the pinned transfer from Alpha run 42882200360
         env:
           GH_TOKEN: ${{ github.token }}
-          NATIVE_ARTIFACT: '{"artifact-id":"13791900830","artifact-digest":"c9d06323ed474091df81e893cba23d77453198ee732abcedd7b710212df992cc"}'
+          NATIVE_ARTIFACT: '{"artifact-id":"13795224134","artifact-digest":"e7a4f4ca11b421791e5910f6f4078fbc0297e9f95e718f9a9aeaf821abb11260"}'
         run: node scripts/restore-native-bundle.mjs
       - name: Verify the release receipt and build the exact JavaScript SDK
+        id: sdk-build
         run: |
           pnpm install --frozen-lockfile
           node --input-type=module <<'JS'
@@ -87,4 +88,41 @@ jobs:
           assert.equal(result.numPassedTests, 1);
           assert.equal(result.numFailedTests, 0);
           console.log('Strict read-root case passed with zero selected skips.');
+          JS
+      - name: Check out the scratch fixture from the diagnostic commit
+        if: ${{ !cancelled() && steps.sdk-build.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: .macos-receipt
+          sparse-checkout: .github/diagnostics/macos-read-roots-scratch.test.ts
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify environment, scratch and stock TLS under strict Seatbelt
+        if: ${{ !cancelled() && steps.sdk-build.outcome == 'success' }}
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          probe=packages/agents-codex/test/native/macos-read-roots-scratch.test.ts
+          result="$RUNNER_TEMP/strict-darwin-scratch.json"
+          test ! -e "$probe"
+          cp ".macos-receipt/.github/diagnostics/macos-read-roots-scratch.test.ts" "$probe"
+          trap 'rm -f "$probe"' EXIT
+          env -u OPENAI_API_KEY -u CODEX_API_KEY pnpm test:native "$probe" \
+            --maxWorkers=1 --reporter=verbose --reporter=json --outputFile.json="$result"
+          node --input-type=module - "$result" <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+
+          const result = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          const tests = result.testResults.flatMap((file) => file.assertionResults);
+          const expected = [
+            'honors explicit Darwin environment and writable scratch under strict Seatbelt',
+            'verifies stock Darwin native TLS trust under strict Seatbelt',
+          ];
+          assert.deepEqual(tests.map(({ title }) => title).sort(), expected.sort());
+          assert.ok(tests.every(({ status }) => status === 'passed'));
+          assert.equal(result.numPassedTests, 2);
+          assert.equal(result.numFailedTests, 0);
+          console.log('Both scratch diagnostic cases passed with zero skips.');
           JS
