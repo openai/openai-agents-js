@@ -501,6 +501,14 @@
       "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
     },
     {
+      "path": "sdk-linux-protected-metadata-mount-race.patch",
+      "sha256": "22137e6318edf060270e1fd558005d6fadb4c04297bdad1ba46dad141ddc2b7b"
+    },
+    {
+      "path": "sdk-linux-protected-metadata-bootstrap.patch",
+      "sha256": "76ced00372b6b83f300b3ddc798517b632c92eee5d4e78445d76bb7206bf1130"
+    },
+    {
       "path": "0171-original-history-catalog.patch",
       "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
     },
@@ -563,7 +571,11 @@
     {
       "path": "0176-portable-realtime-response-scopes.patch",
       "sha256": "edb99414fa1228281a69a3125e8c1e2ce67c1a8c42d235e05c3739fba4e519d0"
+    },
+    {
+      "path": "sdk-realtime-application-update-rejections.patch",
+      "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
     }
   ],
-  "result_tree": "d70a2c8fecee33f8df947a73f07a13718867a5cc"
+  "result_tree": "998cbcdce049884d45162f070a849613376e2cdb"
 }
