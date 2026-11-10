@@ -1,5 +1,4 @@
 {
-  "result_tree": "675c0e1114332d196133cbd43ed2c68485e28929",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -558,8 +557,29 @@
       "sha256": "3ad6dcf410800d6314a9930ffac558a57eba21c8cfbb6ea6294706df4196c5db"
     },
     {
+      "path": "0175-portable-realtime-agent-control.patch",
+      "sha256": "65b82aacfe62c2c33d9123ce5db61994efd2e3fe5b239a884095d295637cc9fe"
+    },
+    {
+      "path": "sdk-realtime-provider-events-and-scopes.patch",
+      "sha256": "75499f3213bb235e1724d95d8adbe53b19e192b0bd01b42afa19023dd6a8630b"
+    },
+    {
+      "path": "sdk-realtime-tool-context-history.patch",
+      "sha256": "93617a4dd22929b78760ccbdac152b6af3ffd143acb1cfb755c1bb3606bfe7ca"
+    },
+    {
+      "path": "0176-portable-realtime-response-scopes.patch",
+      "sha256": "edb99414fa1228281a69a3125e8c1e2ce67c1a8c42d235e05c3739fba4e519d0"
+    },
+    {
+      "path": "sdk-realtime-application-update-rejections.patch",
+      "sha256": "7371166d4fd71f8ea0aeb1d15746da37618e8cb5583bceb209ce2c4a1061368b"
+    },
+    {
       "path": "sdk-local-project-guidance-cwd.patch",
       "sha256": "5ba8abea56c5abcd70d371bd4fb8d7c1f626dc890ce73451850a8cf3dc82f2e6"
     }
-  ]
+  ],
+  "result_tree": "0c973e1b8109f30af4a7dbe04ef69d7cf4fb4e8b"
 }

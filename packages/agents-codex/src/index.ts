@@ -415,6 +415,12 @@ export type {
   NativeRealtimeUsageCounters,
 } from './runtime/realtime-usage';
 
+export { realtimeHandoff } from './runtime/realtime-agent-config';
+export type {
+  RealtimeAgentConfig,
+  RealtimeAgentContext,
+  RealtimeHandoff,
+} from './runtime/realtime-agent-config';
 export type {
   NativeRealtimePolicyContext,
   NativeRealtimeTool,

@@ -62,6 +62,7 @@ function fixture(
     _checkVoiceOperation: vi.fn(),
     _checkVoiceAdapterOperation: vi.fn(),
     _runVoiceCallback: vi.fn(async (callback: () => unknown) => callback()),
+    _hasRealtimeAgentConfiguration: vi.fn(() => false),
     _realtimeCurrentProfile: vi.fn(async () => null),
     _realtimeProfileTarget: vi.fn((target: unknown) => target ?? null),
     _realtimeGuardrailSource: vi.fn((_receipt: unknown) => ({
@@ -1102,7 +1103,7 @@ it('inherits native tools atomically by default and preserves an explicit empty 
   await selected.owner._start();
   expect(
     selected.session._realtimeFunctionTools,
-  ).toHaveBeenCalledExactlyOnceWith([]);
+  ).toHaveBeenCalledExactlyOnceWith([], { snapshot: undefined });
   expect(selected.call.mock.calls[0][1].function_tools).toEqual([]);
   await selected.owner.close();
 });
@@ -2039,7 +2040,9 @@ it.each([false, true])(
       await refreshing;
       expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
     } else {
-      expect(peer.session._prepareRealtimeMcp).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(peer.session._prepareRealtimeMcp).toHaveBeenCalledOnce(),
+      );
       expect(peer.call).not.toHaveBeenCalled();
       promoted.resolve();
       await refreshing;
@@ -2080,7 +2083,9 @@ it.each([false, true])(
     const peer = fixture({ tools });
     await peer.owner._start();
     expect(peer.session._prepareRealtimeMcp).not.toHaveBeenCalled();
-    expect(peer.session._realtimeFunctionTools).toHaveBeenCalledWith(tools);
+    expect(peer.session._realtimeFunctionTools).toHaveBeenCalledWith(tools, {
+      snapshot: undefined,
+    });
     expect(peer.call.mock.calls[0][0]).toBe(
       'realtime_conversation_prepare_sdk',
     );
