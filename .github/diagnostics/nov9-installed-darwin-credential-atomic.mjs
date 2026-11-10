@@ -75,8 +75,7 @@ try {
   process.env.CODEX_HOME = codex;
   process.env.OPENAI_API_KEY = 'synthetic-ambient-key';
   process.env.NO_PROXY = process.env.no_proxy = '127.0.0.1,localhost';
-  const { Agent, Environment, telemetry } = await import('@openai/agents');
-  telemetry.setTracingDisabled(true);
+  const { Agent, Environment } = await import('@openai/agents');
   const { text, toolCall, withScriptedResponses } = await import('@openai/agents/testing');
   const checkFiles = [auth, oauth, authAlias].map(
     (path) => `if ( : < ${quote(path)} ) 2>/dev/null; then exit 12; fi`,
