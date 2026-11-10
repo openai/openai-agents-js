@@ -271,16 +271,23 @@ it('records a driver failure before a queued native sibling can enter the device
     await fail.promise;
     throw new Error('device failed');
   };
-  const server = new ModelServer([
+  const server = new ModelServer(
     [
-      computerCall({ action: { type: 'wait' } }),
-      computerCall({
-        id: 'cu_queued',
-        call_id: 'queued-type',
-        action: { type: 'type', text: 'must not enter' },
-      }),
+      [
+        computerCall({ action: { type: 'wait' } }),
+        computerCall({
+          id: 'cu_queued',
+          call_id: 'queued-type',
+          action: { type: 'type', text: 'must not enter' },
+        }),
+      ],
     ],
-  ]);
+    [],
+    async (_item, index) => {
+      // Concurrent native callbacks need not enter the device in item order.
+      if (index === 1) await entered.promise;
+    },
+  );
   const selected = await provider(server),
     agent = new Agent({
       instructions: 'Use computer.',
