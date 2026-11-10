@@ -1796,7 +1796,9 @@ export class Session<OutputT = string, Context = unknown> {
       retained && generation
         ? await this.#native._realtime_agent_source(
             generation,
-            JSON.stringify(target),
+            encodeProfileReceipt(
+              checkProfileReceipt(target, this.callbackProfileGraph(target)!),
+            ),
           )
         : await this.#native.call('realtime_tool_selection_sdk', '{}'),
     );
@@ -1836,7 +1838,14 @@ export class Session<OutputT = string, Context = unknown> {
         generation,
         JSON.stringify(profileRoster(graph, this.options.environment)),
         graph.rootId,
-        JSON.stringify(expected),
+        expected === null
+          ? 'null'
+          : encodeProfileReceipt(
+              checkProfileReceipt(
+                expected,
+                this.callbackProfileGraph(expected)!,
+              ),
+            ),
       ),
     );
     const allocated = allocatedProfileCatalogs(
@@ -1854,6 +1863,30 @@ export class Session<OutputT = string, Context = unknown> {
       this.profileStepMcp.set(key, profile.mcp);
     }
     return realtimeToolSelection(raw, allocated);
+  }
+
+  /** @internal Discard only an admitted graph whose update has never been invoked. */
+  async _discardRealtimeGraph(
+    generation: string,
+    receipt: JsonObject | null,
+  ): Promise<void> {
+    const graph =
+      receipt && this.voiceProfileGraphs.get(receipt.profile_id as string);
+    if (this.voiceGraphGeneration !== generation || !graph)
+      throw new NativeError('Voice has no matching staged Agent graph');
+    const target = checkProfileReceipt(receipt, graph);
+    await this.#native._discard_realtime_agent_graph(
+      generation,
+      encodeProfileReceipt(target),
+    );
+    for (const [id, profile] of graph.profiles) {
+      this.voiceProfileGraphs.delete(id);
+      const key = this.profileKey(id, profile.catalog.generation);
+      this.profileCatalogs.delete(key);
+      this.profileMcp.delete(key);
+      this.profileStepMcp.delete(key);
+    }
+    if (!this.voiceProfileGraphs.size) this.voiceGraphGeneration = undefined;
   }
 
   _hasRetainedRealtimeProfile(receipt: JsonObject | null | undefined): boolean {
@@ -5835,7 +5868,7 @@ export class Session<OutputT = string, Context = unknown> {
     const profile = this.messageProfile(message);
     const provider =
       (profile
-        ? this.profileRuntimes.get(profile.profile_id)!.profile.declaration
+        ? this.callbackProfileRuntime(profile.profile_id)!.profile.declaration
             .decisions
         : undefined) ?? this.options.decisions;
     let active = true;

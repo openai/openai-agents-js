@@ -145,6 +145,7 @@ export type PortableVoiceEffect =
       out_of_band: boolean;
       history?: readonly Readonly<Record<string, unknown>>[];
     }
+  | { type: 'history_rejected'; item_id: string; message: string }
   | { type: 'event'; event: unknown }
   | { type: 'abort'; call_id: string }
   | { type: 'ready' | 'configured' | 'closed' };
@@ -229,10 +230,13 @@ export class PortableVoiceSession {
     this.#historyUpdates = new PortableVoiceHistory(
       () => this.#history.providerSnapshot(),
       (command) =>
-        (command as { type?: string }).type === 'validate_history'
+        command.type === 'validate_history'
           ? this.#apply(command)
           : this.#dispatch(command),
       (error) => this.fail(error),
+      (error) => {
+        if (!this.#closed) this.#notify(this.options.onError, error);
+      },
     );
     this.#profile = this.#makeProfile(options);
     this.options = this.#profile.options;
@@ -268,6 +272,7 @@ export class PortableVoiceSession {
     try {
       this.#notify(this.options.onProviderEvent, event);
       this.#emit('provider_event', event);
+      this.#historyUpdates.receive(event);
       this.#dispatch({ type: 'provider', event });
     } catch (error) {
       this.fail(error);
@@ -275,12 +280,7 @@ export class PortableVoiceSession {
   }
 
   sendText(text: string): void {
-    try {
-      this.#dispatch({ type: 'text', text });
-    } catch (error) {
-      this.fail(error);
-      throw error;
-    }
+    this.#dispatchAfterHistory({ type: 'text', text });
   }
 
   fail(error: unknown): void {
@@ -419,10 +419,9 @@ export class PortableVoiceSession {
   }
 
   createResponse(response?: Record<string, unknown>): void {
-    this.#dispatch({
+    this.#dispatchAfterHistory({
       type: 'create_response',
       ...(response ? { response } : {}),
-      history: this.#history.providerSnapshot(),
     });
   }
 
@@ -433,13 +432,14 @@ export class PortableVoiceSession {
     });
   }
   sendMessage(item: Readonly<Record<string, unknown>>): void {
-    this.#dispatch({ type: 'input', item });
+    this.#dispatchAfterHistory({ type: 'input', item });
   }
   deleteItem(itemId: string): void {
-    this.#dispatch({ type: 'delete', item_id: itemId });
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    void this.#historyUpdates.delete(itemId).catch(() => {});
   }
   truncateItem(itemId: string, contentIndex: number, audioEndMs: number): void {
-    this.#dispatch({
+    this.#dispatchAfterHistory({
       type: 'truncate',
       item_id: itemId,
       content_index: contentIndex,
@@ -789,6 +789,17 @@ export class PortableVoiceSession {
     }
   }
 
+  #dispatchAfterHistory(command: Record<string, unknown>): void {
+    if (this.#closed) throw new Error('Portable voice session is closed.');
+    this.#historyUpdates.dispatchAfterEdits(command, (captured) => {
+      this.#dispatch(
+        captured.type === 'create_response'
+          ? { ...captured, history: this.#history.providerSnapshot() }
+          : captured,
+      );
+    });
+  }
+
   #dispatch(command: unknown): void {
     try {
       this.#apply(command);
@@ -907,6 +918,12 @@ export class PortableVoiceSession {
         }
         case 'abort':
           break;
+        case 'history_rejected': {
+          const error = new Error(effect.message);
+          if (!this.#historyUpdates.rejectDeletion(effect.item_id, error))
+            this.#notify(this.options.onError, error);
+          break;
+        }
         case 'event':
           this.#observe(effect.event);
           this.#capture(effect.event, true);
@@ -936,6 +953,7 @@ export class PortableVoiceSession {
             });
           this.#send = sending.catch(() => {});
           this.#track(sending);
+          this.#historyUpdates.trackSend(effect.event, sending);
           break;
         }
         case 'approve':

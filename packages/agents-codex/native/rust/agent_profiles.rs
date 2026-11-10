@@ -486,9 +486,19 @@ struct AgentProfiles {
     reservation: Mutex<Option<Reservation>>,
 }
 
+#[derive(Clone)]
 struct VoiceProfileRegistry {
     generation: String,
     previous: Option<Arc<AgentProfiles>>,
+}
+
+// Only the last unpublished admission can restore the preceding registry snapshot.
+struct VoiceGraphAdmission {
+    generation: String,
+    receipt: AgentProfileReceipt,
+    profiles: Arc<AgentProfiles>,
+    previous: Option<Arc<AgentProfiles>>,
+    previous_registry: Option<VoiceProfileRegistry>,
 }
 
 async fn prepare_profile(
@@ -562,7 +572,11 @@ pub(crate) async fn admit_realtime_graph(
         .thread_extension_data()
         .get::<Arc<AgentProfiles>>()
         .map(|current| current.as_ref().clone());
-    let original = match thread.thread_extension_data().get::<VoiceProfileRegistry>() {
+    let previous_registry = thread
+        .thread_extension_data()
+        .get::<VoiceProfileRegistry>()
+        .map(|registry| registry.as_ref().clone());
+    let original = match &previous_registry {
         Some(registry) => {
             ensure!(
                 registry.generation == generation,
@@ -652,6 +666,13 @@ pub(crate) async fn admit_realtime_graph(
         generation: generation.to_owned(),
         previous: original,
     });
+    thread.thread_extension_data().insert(VoiceGraphAdmission {
+        generation: generation.to_owned(),
+        receipt: receipt.clone(),
+        profiles: profiles.clone(),
+        previous: current,
+        previous_registry,
+    });
     let catalogs = roster
         .iter()
         .map(|profile| {
@@ -682,6 +703,54 @@ pub(crate) async fn admit_realtime_graph(
     }))
 }
 
+pub(crate) fn discard_realtime_graph(
+    thread: &CodexThread,
+    generation: &str,
+    receipt: &AgentProfileReceipt,
+) -> Result<()> {
+    let admission = thread
+        .thread_extension_data()
+        .get::<VoiceGraphAdmission>()
+        .context("Voice has no staged Agent graph")?;
+    ensure!(
+        admission.generation == generation && &admission.receipt == receipt,
+        "Voice graph discard requires the exact last admission"
+    );
+    let current = thread
+        .thread_extension_data()
+        .get::<Arc<AgentProfiles>>()
+        .context("Voice staged Agent graph is no longer installed")?;
+    ensure!(
+        Arc::ptr_eq(current.as_ref(), &admission.profiles),
+        "Voice staged Agent graph is no longer installed"
+    );
+    thread.release_realtime_agent_profile_source(generation, receipt);
+    match &admission.previous {
+        Some(previous) => {
+            thread.thread_extension_data().insert(previous.clone());
+        }
+        None => {
+            thread
+                .thread_extension_data()
+                .remove::<Arc<AgentProfiles>>();
+        }
+    }
+    match &admission.previous_registry {
+        Some(previous) => {
+            thread.thread_extension_data().insert(previous.clone());
+        }
+        None => {
+            thread
+                .thread_extension_data()
+                .remove::<VoiceProfileRegistry>();
+        }
+    }
+    thread
+        .thread_extension_data()
+        .remove::<VoiceGraphAdmission>();
+    Ok(())
+}
+
 pub(crate) async fn restore_realtime_graph(
     thread: &CodexThread,
     generation: &str,
@@ -702,6 +771,9 @@ pub(crate) async fn restore_realtime_graph(
             }
         }
         thread.release_realtime_agent_profile_sources(generation);
+        thread
+            .thread_extension_data()
+            .remove::<VoiceGraphAdmission>();
         thread
             .thread_extension_data()
             .remove::<VoiceProfileRegistry>();

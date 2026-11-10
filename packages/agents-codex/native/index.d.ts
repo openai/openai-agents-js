@@ -131,6 +131,10 @@ export class NativeThread {
     rootId: string,
     expectedJson: string,
   ): Promise<string>;
+  _discard_realtime_agent_graph(
+    generation: string,
+    receiptJson: string,
+  ): Promise<void>;
   _realtime_agent_source(
     generation: string,
     targetJson: string,

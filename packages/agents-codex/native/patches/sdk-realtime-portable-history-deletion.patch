@@ -1,0 +1,698 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+index d65ee1b..b611f56 100644
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
+ const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+ const MAX_CALL_BYTES: usize = 256 * 1024;
+ const MAX_CALLS: usize = 256;
++const MAX_OBSERVED_ITEMS: usize = 4096;
+ 
+ /// A single-use execution claim shared with the server Core tool lifecycle.
+ #[derive(Debug, Default)]
+@@ -321,6 +322,10 @@ pub enum Effect {
+     Event {
+         event: Value,
+     },
++    HistoryRejected {
++        item_id: String,
++        message: String,
++    },
+     Ready,
+     Configured,
+     Retire {
+@@ -391,6 +396,24 @@ struct DetachedResponse {
+     scope: Option<ResponseScope>,
+     output: Vec<Value>,
+ }
++#[derive(Clone, Copy, PartialEq)]
++enum DeletionProof {
++    Terminal,
++    Active,
++    ApprovalDecided,
++    ApprovalDecisionOnly,
++    ApprovalRequest,
++    Nonterminal,
++}
++struct DeletionEvidence {
++    proof: DeletionProof,
++    call_id: Option<String>,
++    approval_request_id: Option<String>,
++}
++struct PendingDeletion {
++    event_id: String,
++    retrieving: bool,
++}
+ struct Batch {
+     calls: Vec<String>,
+     hosted: Vec<String>,
+@@ -426,6 +449,9 @@ pub struct Control {
+     responses: ResponseCreateState<()>,
+     next_send: u64,
+     pending_send: BTreeSet<u64>,
++    pending_deletions: BTreeMap<String, PendingDeletion>,
++    deletion_proofs: BTreeMap<String, DeletionEvidence>,
++    deletion_order: VecDeque<String>,
+     incoming: VecDeque<(Value, usize)>,
+     incoming_bytes: usize,
+     startup_send: Option<u64>,
+@@ -468,6 +494,9 @@ impl Default for Control {
+             responses: ResponseCreateState::default(),
+             next_send: 0,
+             pending_send: BTreeSet::new(),
++            pending_deletions: BTreeMap::new(),
++            deletion_proofs: BTreeMap::new(),
++            deletion_order: VecDeque::new(),
+             incoming: VecDeque::new(),
+             incoming_bytes: 0,
+             startup_send: None,
+@@ -534,6 +563,9 @@ impl Control {
+         self.last_completed = None;
+         self.batches.clear();
+         self.pending_send.clear();
++        self.pending_deletions.clear();
++        self.deletion_proofs.clear();
++        self.deletion_order.clear();
+         self.incoming.clear();
+         self.incoming_bytes = 0;
+         self.responses = ResponseCreateState::default();
+@@ -713,11 +745,7 @@ impl Control {
+             }
+             Command::Delete { item_id } => {
+                 self.require_ready()?;
+-                self.validate_deletion(&item_id)?;
+-                self.send(
+-                    json!({"type":"conversation.item.delete","item_id":item_id}),
+-                    &mut effects,
+-                );
++                self.begin_deletion(&item_id, &mut effects);
+             }
+             Command::Truncate {
+                 item_id,
+@@ -846,20 +874,205 @@ impl Control {
+         }
+         Ok(())
+     }
+-    fn validate_deletion(&self, item_id: &str) -> Result<(), String> {
++    fn validate_live_deletion(&self, item_id: &str) -> Result<(), String> {
+         if item_id.is_empty() {
+             return Err("Missing conversation item identity".into());
+         }
++        let evidence = self.deletion_proofs.get(item_id);
+         if self.calls.values().any(|call| {
+-            call.request.item_id == item_id
++            (call.request.item_id == item_id
++                || evidence.and_then(|evidence| evidence.call_id.as_deref())
++                    == Some(call.request.call_id.as_str()))
+                 && !matches!(call.phase, CallPhase::Published | CallPhase::Cancelled)
+-        }) || self.approvals.get(item_id).is_some_and(|request| {
+-            !matches!(request.phase, CallPhase::Published | CallPhase::Cancelled)
++        }) || self.approvals.iter().any(|(request_id, request)| {
++            (request_id == item_id
++                || evidence.and_then(|evidence| evidence.approval_request_id.as_deref())
++                    == Some(request_id.as_str()))
++                && !matches!(request.phase, CallPhase::Published | CallPhase::Cancelled)
+         }) {
+             return Err("Conversation deletion conflicts with live tool ownership".into());
+         }
+         Ok(())
+     }
++    fn validate_deletion(&self, item_id: &str) -> Result<(), String> {
++        self.validate_live_deletion(item_id)?;
++        if self.deletion_proof(item_id) == Some(DeletionProof::Nonterminal) {
++            return Err("Conversation deletion requires a settled provider item".into());
++        }
++        let locally_settled = self.calls.values().any(|call| {
++            call.request.item_id == item_id
++                && matches!(call.phase, CallPhase::Published | CallPhase::Cancelled)
++        }) || self.approvals.get(item_id).is_some_and(|approval| {
++            matches!(approval.phase, CallPhase::Published) && approval.decision.is_some()
++        });
++        if locally_settled
++            || matches!(
++                self.deletion_proof(item_id),
++                Some(DeletionProof::Terminal | DeletionProof::ApprovalDecided)
++            )
++        {
++            Ok(())
++        } else {
++            Err("Conversation deletion requires a settled provider item".into())
++        }
++    }
++    fn reject_deletion(item_id: &str, effects: &mut Vec<Effect>) {
++        effects.push(Effect::HistoryRejected {
++            item_id: item_id.into(),
++            message: "Conversation deletion requires a settled provider item".into(),
++        });
++    }
++    fn send_deletion(&mut self, item_id: &str, retrieving: bool, effects: &mut Vec<Effect>) {
++        let event_id = format!("portable-history-{}", self.next_send + 1);
++        self.pending_deletions.insert(
++            item_id.into(),
++            PendingDeletion {
++                event_id: event_id.clone(),
++                retrieving,
++            },
++        );
++        let kind = if retrieving {
++            "conversation.item.retrieve"
++        } else {
++            "conversation.item.delete"
++        };
++        self.send(
++            json!({"type":kind,"item_id":item_id,"event_id":event_id}),
++            effects,
++        );
++    }
++    fn begin_deletion(&mut self, item_id: &str, effects: &mut Vec<Effect>) {
++        if self.pending_deletions.contains_key(item_id) {
++            return;
++        }
++        if self.validate_live_deletion(item_id).is_err()
++            || item_id.len() > 512
++            || self.pending_deletions.len() == MAX_CALLS
++        {
++            Self::reject_deletion(item_id, effects);
++        } else if self.validate_deletion(item_id).is_ok() {
++            self.send_deletion(item_id, false, effects);
++        } else {
++            self.send_deletion(item_id, true, effects);
++        }
++    }
++    fn deletion_proof(&self, id: &str) -> Option<DeletionProof> {
++        self.deletion_proofs.get(id).map(|evidence| evidence.proof)
++    }
++    fn remember_deletion_proof(&mut self, id: &str, proof: DeletionProof) {
++        if id.is_empty() || id.len() > 512 {
++            return;
++        }
++        if !self.deletion_proofs.contains_key(id) {
++            if self.deletion_proofs.len() == MAX_OBSERVED_ITEMS {
++                if let Some(oldest) = self.deletion_order.pop_front() {
++                    self.deletion_proofs.remove(&oldest);
++                }
++            }
++            self.deletion_order.push_back(id.into());
++        }
++        self.deletion_proofs
++            .entry(id.into())
++            .and_modify(|evidence| evidence.proof = proof)
++            .or_insert(DeletionEvidence {
++                proof,
++                call_id: None,
++                approval_request_id: None,
++            });
++    }
++    fn observe_deletion_item(&mut self, item: &Value) {
++        let Some(id) = item["id"].as_str() else {
++            return;
++        };
++        let kind = item["type"].as_str().unwrap_or("");
++        let status = item.get("status");
++        let nonterminal =
++            status.is_some_and(|status| !status.is_null() && status.as_str() != Some("completed"));
++        let terminal = match kind {
++            "message" => true,
++            "function_call" => status.and_then(Value::as_str) == Some("completed"),
++            "function_call_output" => {
++                !nonterminal
++                    && item["call_id"].as_str().is_some_and(|id| !id.is_empty())
++                    && item["output"].is_string()
++            }
++            "mcp_call" => {
++                !nonterminal
++                    && (item["output"].is_string()
++                        || item["error"].is_string()
++                        || item["error"].is_object())
++            }
++            "mcp_list_tools" => !nonterminal && item["tools"].is_array(),
++            "mcp_approval_request" => {
++                !nonterminal
++                    && matches!(
++                        self.deletion_proof(id),
++                        Some(DeletionProof::ApprovalDecided | DeletionProof::ApprovalDecisionOnly)
++                    )
++            }
++            "mcp_approval_response" => {
++                !nonterminal
++                    && item["approve"].is_boolean()
++                    && item["approval_request_id"]
++                        .as_str()
++                        .is_some_and(|id| !id.is_empty())
++            }
++            _ => false,
++        };
++        if kind == "mcp_approval_response" && terminal {
++            let request_id = item["approval_request_id"].as_str().unwrap();
++            let proof = if matches!(
++                self.deletion_proof(request_id),
++                Some(DeletionProof::ApprovalRequest | DeletionProof::ApprovalDecided)
++            ) {
++                DeletionProof::ApprovalDecided
++            } else {
++                DeletionProof::ApprovalDecisionOnly
++            };
++            self.remember_deletion_proof(request_id, proof);
++        }
++        let proof = if nonterminal && kind != "message" {
++            DeletionProof::Nonterminal
++        } else if kind == "mcp_approval_request" && terminal {
++            DeletionProof::ApprovalDecided
++        } else if terminal {
++            DeletionProof::Terminal
++        } else if kind == "mcp_approval_request" {
++            DeletionProof::ApprovalRequest
++        } else {
++            DeletionProof::Active
++        };
++        self.remember_deletion_proof(id, proof);
++        if let Some(evidence) = self.deletion_proofs.get_mut(id) {
++            if ["call_id", "approval_request_id"]
++                .iter()
++                .any(|key| item[*key].as_str().is_some_and(|id| id.len() > 512))
++            {
++                evidence.proof = DeletionProof::Nonterminal;
++            }
++            evidence.call_id = item["call_id"]
++                .as_str()
++                .filter(|id| !id.is_empty() && id.len() <= 512)
++                .map(str::to_owned);
++            evidence.approval_request_id = item["approval_request_id"]
++                .as_str()
++                .filter(|id| !id.is_empty() && id.len() <= 512)
++                .map(str::to_owned);
++        }
++    }
++    fn deletion_error_item(&self, event: &Value) -> Option<String> {
++        if event["type"] != "error"
++            || event["error"]["type"] != "invalid_request_error"
++            || !event["error"]["message"].is_string()
++        {
++            return None;
++        }
++        let id = event["error"]["event_id"].as_str()?;
++        self.pending_deletions
++            .iter()
++            .find(|(_, pending)| pending.event_id == id)
++            .map(|(item_id, _)| item_id.clone())
++    }
+     fn configure(
+         &mut self,
+         config: Config,
+@@ -1322,7 +1535,9 @@ impl Control {
+             {
+                 return Err("Portable voice generation was cancelled".into());
+             }
+-            "error" if !self.is_response_race(event) => {
++            "error"
++                if !self.is_response_race(event) && self.deletion_error_item(event).is_none() =>
++            {
+                 return Err("Realtime provider rejected the operation".into());
+             }
+             _ => {}
+@@ -1403,6 +1618,31 @@ impl Control {
+             .get("type")
+             .and_then(Value::as_str)
+             .ok_or("Provider event has no type")?;
++        if let Some(item_id) = self.deletion_error_item(&event) {
++            self.pending_deletions.remove(&item_id);
++            Self::reject_deletion(&item_id, effects);
++            effects.push(Effect::Event { event });
++            return Ok(());
++        }
++        if kind == "conversation.item.retrieved" {
++            if let Some(item_id) = event["item"]["id"].as_str().map(str::to_owned) {
++                if self
++                    .pending_deletions
++                    .get(&item_id)
++                    .is_some_and(|pending| pending.retrieving)
++                {
++                    self.observe_deletion_item(&event["item"]);
++                    self.pending_deletions.remove(&item_id);
++                    if self.validate_deletion(&item_id).is_ok() {
++                        self.send_deletion(&item_id, false, effects);
++                    } else {
++                        Self::reject_deletion(&item_id, effects);
++                    }
++                    effects.push(Effect::Event { event });
++                    return Ok(());
++                }
++            }
++        }
+         let mut managed_detached = false;
+         if self.is_detached_event(&event) {
+             let response = &event["response"];
+@@ -1502,6 +1742,39 @@ impl Control {
+             effects.push(Effect::Event { event });
+             return Ok(());
+         }
++        if !managed_detached {
++            if matches!(
++                kind,
++                "conversation.item.created"
++                    | "conversation.item.added"
++                    | "conversation.item.done"
++                    | "conversation.item.retrieved"
++                    | "response.output_item.added"
++                    | "response.output_item.done"
++            ) {
++                self.observe_deletion_item(&event["item"]);
++            }
++            if kind == "response.done" {
++                if let Some(items) = event["response"]["output"].as_array() {
++                    for item in items {
++                        self.observe_deletion_item(item);
++                    }
++                }
++            }
++            if kind == "conversation.item.deleted" {
++                if let Some(id) = event["item_id"].as_str() {
++                    if self
++                        .pending_deletions
++                        .get(id)
++                        .is_some_and(|pending| !pending.retrieving)
++                    {
++                        self.pending_deletions.remove(id);
++                    }
++                    self.deletion_proofs.remove(id);
++                    self.deletion_order.retain(|item_id| item_id != id);
++                }
++            }
++        }
+         match kind {
+             "error" if self.is_response_race(&event) => {
+                 let cancelled = self.cancel_before_created;
+@@ -2433,16 +2706,290 @@ mod tests {
+         assert_eq!(executed["effects"][0]["type"], "execute");
+     }
+     #[test]
++    fn external_deletion_requires_exact_terminal_lookup_and_keeps_connection_usable() {
++        for item in [
++            json!({"id":"external","type":"function_call","status":"in_progress"}),
++            json!({"id":"external","type":"function_call"}),
++            json!({"id":"external","type":"mcp_call","status":"in_progress","output":"early"}),
++            json!({"id":"external","type":"mcp_approval_request"}),
++        ] {
++            let mut control = ready();
++            let lookup = command(&mut control, json!({"type":"delete","item_id":"external"}));
++            assert_eq!(
++                lookup["effects"][0]["event"]["type"],
++                "conversation.item.retrieve"
++            );
++            command(
++                &mut control,
++                json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++            );
++            let foreign = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":{"id":"foreign","type":"message"}}}),
++            );
++            assert_eq!(foreign["effects"].as_array().unwrap().len(), 1);
++            assert!(control.pending_deletions.contains_key("external"));
++            let rejected = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":item}}),
++            );
++            assert_eq!(rejected["effects"][0]["type"], "history_rejected");
++            assert_eq!(rejected["effects"][0]["item_id"], "external");
++            assert!(control.pending_deletions.is_empty());
++            assert!(control.phase == Phase::Ready);
++            assert_eq!(
++                command(&mut control, json!({"type":"create_response"}))["effects"][0]["event"]["type"],
++                "response.create"
++            );
++        }
++    }
++    #[test]
++    fn lookup_preserves_external_messages_and_schema_terminal_tool_items() {
++        for item in [
++            json!({"id":"external","type":"message"}),
++            json!({"id":"external","type":"function_call","status":"completed"}),
++            json!({"id":"external","type":"function_call_output","call_id":"call","output":"result"}),
++            json!({"id":"external","type":"mcp_call","output":"result"}),
++            json!({"id":"external","type":"mcp_call","error":{"message":"failed"}}),
++            json!({"id":"external","type":"mcp_list_tools","tools":[]}),
++            json!({"id":"external","type":"mcp_approval_response","approval_request_id":"approval","approve":false}),
++        ] {
++            let mut control = ready();
++            let lookup = command(&mut control, json!({"type":"delete","item_id":"external"}));
++            command(
++                &mut control,
++                json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++            );
++            let deleted = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":item}}),
++            );
++            assert_eq!(
++                deleted["effects"][0]["event"]["type"],
++                "conversation.item.delete"
++            );
++            assert_eq!(deleted["effects"][0]["event"]["item_id"], "external");
++            command(
++                &mut control,
++                json!({"type":"sent","id":deleted["effects"][0]["id"]}),
++            );
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"conversation.item.deleted","item_id":"external"}}),
++            );
++            assert!(control.pending_deletions.is_empty());
++        }
++    }
++    #[test]
++    fn lookup_error_is_exact_recoverable_and_retirement_clears_proofs() {
++        let mut control = ready();
++        let lookup = command(&mut control, json!({"type":"delete","item_id":"external"}));
++        command(
++            &mut control,
++            json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++        );
++        let error = json!({"type":"error","error":{"type":"invalid_request_error","message":"private","event_id":lookup["effects"][0]["event"]["event_id"]}});
++        let rejected = command(&mut control, json!({"type":"provider","event":error}));
++        assert_eq!(rejected["effects"][0]["type"], "history_rejected");
++        assert!(control.phase == Phase::Ready);
++        assert!(control.pending_deletions.is_empty());
++        let unrelated = json!({"type":"provider","event":{"type":"error","error":{"type":"invalid_request_error","message":"private","event_id":"unrelated"}}});
++        assert!(command(&mut control, unrelated)["error"].is_string());
++        assert!(control.phase == Phase::Closed);
++        assert!(control.deletion_proofs.is_empty());
++        assert!(control.deletion_order.is_empty());
++    }
++    #[test]
++    fn observed_authority_status_and_accepted_approval_decision_control_preflight() {
++        let mut control = ready();
++        for item in [
++            json!({"id":"active","type":"function_call","status":"in_progress"}),
++            json!({"id":"approval","type":"mcp_approval_request"}),
++        ] {
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"conversation.item.done","item":item}}),
++            );
++        }
++        let before = control.next_send;
++        for id in ["active", "approval"] {
++            assert!(
++                command(
++                    &mut control,
++                    json!({"type":"validate_history","delete_ids":[id],"items":[]})
++                )["error"]
++                    .is_string()
++            );
++        }
++        assert_eq!(control.next_send, before);
++        assert!(control.phase == Phase::Ready);
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"conversation.item.created","item":{"id":"decision","type":"mcp_approval_response","approval_request_id":"approval","approve":true}}}),
++        );
++        assert_eq!(
++            command(
++                &mut control,
++                json!({"type":"validate_history","delete_ids":["approval"],"items":[]})
++            )["effects"],
++            json!([])
++        );
++        assert_eq!(
++            command(&mut control, json!({"type":"delete","item_id":"approval"}))["effects"][0]["event"]
++                ["type"],
++            "conversation.item.delete"
++        );
++    }
++    #[test]
++    fn lookup_rechecks_live_native_ownership_and_bounded_proof_storage() {
++        let mut control = ready();
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"response-1"}}}),
++        );
++        let lookup = command(&mut control, json!({"type":"delete","item_id":"item-1"}));
++        command(
++            &mut control,
++            json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++        );
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"response-1","item":item()}}),
++        );
++        let rejected = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":{"id":"item-1","type":"function_call","status":"completed"}}}),
++        );
++        assert_eq!(rejected["effects"][0]["type"], "history_rejected");
++        assert!(control.phase == Phase::Ready);
++        for index in 0..MAX_OBSERVED_ITEMS + 1 {
++            control
++                .observe_deletion_item(&json!({"id":format!("history-{index}"),"type":"message"}));
++        }
++        assert_eq!(control.deletion_proofs.len(), MAX_OBSERVED_ITEMS);
++        assert_eq!(control.deletion_order.len(), MAX_OBSERVED_ITEMS);
++        assert!(!control.deletion_proofs.contains_key("history-0"));
++        assert!(
++            control
++                .deletion_proofs
++                .contains_key(&format!("history-{}", MAX_OBSERVED_ITEMS))
++        );
++    }
++    #[test]
++    fn rejected_external_lookup_can_be_retried_after_external_completion() {
++        let mut control = ready();
++        for (status, expected) in [("in_progress", "history_rejected"), ("completed", "send")] {
++            let lookup = command(&mut control, json!({"type":"delete","item_id":"external"}));
++            assert_eq!(
++                lookup["effects"][0]["event"]["type"],
++                "conversation.item.retrieve"
++            );
++            command(
++                &mut control,
++                json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++            );
++            let result = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":{"id":"external","type":"function_call","call_id":"external-call","status":status}}}),
++            );
++            assert_eq!(result["effects"][0]["type"], expected);
++        }
++    }
++    #[test]
++    fn external_aliases_cannot_bypass_live_function_or_mcp_approval_ownership() {
++        for item in [
++            json!({"id":"alias","type":"function_call","call_id":"call-1","status":"completed"}),
++            json!({"id":"alias","type":"function_call_output","call_id":"call-1","output":"done"}),
++            json!({"id":"alias","type":"mcp_call","approval_request_id":"approval-1","output":"done"}),
++            json!({"id":"alias","type":"mcp_approval_response","approval_request_id":"approval-1","approve":false}),
++        ] {
++            let mut control = if item["type"].as_str().unwrap().starts_with("mcp_") {
++                let mut control = hosted_ready();
++                hosted_batch(&mut control);
++                control
++            } else {
++                let mut control = ready();
++                request(&mut control);
++                control
++            };
++            let lookup = command(&mut control, json!({"type":"delete","item_id":"alias"}));
++            command(
++                &mut control,
++                json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++            );
++            let result = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":item}}),
++            );
++            assert_eq!(result["effects"][0]["type"], "history_rejected");
++            assert!(control.phase == Phase::Ready);
++            assert!(
++                command(
++                    &mut control,
++                    json!({"type":"validate_history","delete_ids":["alias"],"items":[]})
++                )["error"]
++                    .is_string()
++            );
++        }
++    }
++    #[test]
++    fn oversized_external_alias_cannot_bypass_live_native_ownership() {
++        let mut control = ready();
++        let call_id = "c".repeat(513);
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.created","response":{"id":"response-1"}}}),
++        );
++        let mut owned = item();
++        owned["call_id"] = json!(call_id);
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"response.output_item.done","response_id":"response-1","item":owned}}),
++        );
++        assert!(control.calls.contains_key(&call_id));
++        let lookup = command(&mut control, json!({"type":"delete","item_id":"alias"}));
++        command(
++            &mut control,
++            json!({"type":"sent","id":lookup["effects"][0]["id"]}),
++        );
++        let result = command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"conversation.item.retrieved","item":{"id":"alias","type":"function_call_output","call_id":call_id,"output":"done"}}}),
++        );
++        assert_eq!(result["effects"][0]["type"], "history_rejected");
++        assert!(
++            result["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .all(|effect| effect["type"] != "send")
++        );
++        assert!(control.phase == Phase::Ready);
++        assert!(
++            command(
++                &mut control,
++                json!({"type":"validate_history","delete_ids":["alias"],"items":[]})
++            )["error"]
++                .is_string()
++        );
++    }
++    #[test]
+     fn message_and_history_commands_emit_provider_mutations() {
+         let mut control = ready();
+         let item = json!({"type":"message","id":"message-1","role":"user","content":[{"type":"input_text","text":"hello"}]});
+         let input = command(&mut control, json!({"type":"input","item":item}));
+         assert_eq!(input["effects"][0]["event"]["item"], item);
+         assert_eq!(input["effects"][1]["event"]["type"], "response.create");
++        command(&mut control, json!({"type":"sent","id":2}));
++        command(&mut control, json!({"type":"sent","id":3}));
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"conversation.item.created","item":item}}),
++        );
+         let deleted = command(&mut control, json!({"type":"delete","item_id":"message-1"}));
+         assert_eq!(
+             deleted["effects"][0]["event"],
+-            json!({"type":"conversation.item.delete","item_id":"message-1"})
++            json!({"type":"conversation.item.delete","item_id":"message-1","event_id":"portable-history-4"})
+         );
+         let truncated = command(
+             &mut control,
+@@ -3057,6 +3604,10 @@ mod tests {
+     #[test]
+     fn inert_history_input_and_preflight_preserve_live_claims_and_recheck_deletes() {
+         let mut control = ready();
++        command(
++            &mut control,
++            json!({"type":"provider","event":{"type":"conversation.item.created","item":{"id":"safe","type":"message"}}}),
++        );
+         request(&mut control);
+         batch(&mut control);
+         let before = control.next_send;
+@@ -3103,8 +3654,8 @@ mod tests {
+             "execute"
+         );
+         assert_eq!(
+-            command(&mut control, json!({"type":"delete","item_id":"item-1"}))["error"],
+-            "Conversation deletion conflicts with live tool ownership"
++            command(&mut control, json!({"type":"delete","item_id":"item-1"}))["effects"][0]["type"],
++            "history_rejected"
+         );
+     }
+     #[test]
