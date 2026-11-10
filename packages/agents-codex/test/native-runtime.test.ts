@@ -360,4 +360,127 @@ describe('NativeRuntime private plain kernel handoff', () => {
     await owner.close();
     expect(k.closeHolder).toHaveBeenCalledTimes(1);
   });
+  it('shares an admitted entry and defers poisoned retirement until every joined run releases', async () => {
+    const owner = new NativeRuntime();
+    const first = provider(owner);
+    const second = provider(owner);
+    const third = provider(owner);
+    const a = first._acquire(undefined, true);
+    const k = kernel();
+    await a.open();
+    a.httpTransports(() => k.holder, k.engine);
+    a.privateRuntime!.bind(k.engine, k.carrier, k.holder);
+    a.privateRuntime!.peek()!.plainAdmission = {
+      configJson: '{}',
+      runtimeJson: '{}',
+      model: null,
+    };
+    const b = second._acquire(undefined, true);
+    const c = third._acquire(undefined, true);
+    b.httpTransports(() => k.holder, k.engine);
+    c.httpTransports(() => k.holder, k.engine);
+    expect(b.privateRuntime!.peek()).toBe(a.privateRuntime!.peek());
+    expect(c.privateRuntime!.peek()).toBe(a.privateRuntime!.peek());
+    a.privateRuntime!.invalidate!();
+    await a.privateRuntime!.finish(false, true);
+    await first.close();
+    await a.privateRuntime!.finish(false);
+    await expect(a.privateRuntime!.reset()).rejects.toThrow('closed');
+    expect(k.closeEngine).not.toHaveBeenCalled();
+    const replacement = provider(owner);
+    const d = replacement._acquire(undefined, true);
+    expect(d.privateRuntime).toBeUndefined();
+    await d.release();
+    await replacement.close();
+    await b.privateRuntime!.finish(true, true);
+    await second.close();
+    await first.close();
+    expect(c.privateRuntime!.peek()?.engine).toBe(k.engine);
+    expect(k.closeEngine).not.toHaveBeenCalled();
+    await c.privateRuntime!.finish(true, true);
+    await third.close();
+    expect(k.closeEngine).toHaveBeenCalledTimes(1);
+    expect(k.closeCarrier).toHaveBeenCalledTimes(1);
+    expect(k.closeHolder).not.toHaveBeenCalled();
+    await owner.close();
+    expect(k.closeHolder).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the last poisoned lease through retryable retirement failure', async () => {
+    await using owner = new NativeRuntime();
+    await using first = provider(owner);
+    await using second = provider(owner);
+    const a = first._acquire(undefined, true);
+    const k = kernel();
+    await a.open();
+    a.httpTransports(() => k.holder, k.engine);
+    a.privateRuntime!.bind(k.engine, k.carrier, k.holder);
+    a.privateRuntime!.peek()!.plainAdmission = {
+      configJson: '{}',
+      runtimeJson: '{}',
+      model: null,
+    };
+    const b = second._acquire(undefined, true);
+    b.httpTransports(() => k.holder, k.engine);
+    a.privateRuntime!.invalidate!();
+    await a.privateRuntime!.finish(false, true);
+    await first.close();
+    k.closeEngine.mockRejectedValueOnce(new Error('last retirement failed'));
+    await expect(b.privateRuntime!.finish(true, true)).rejects.toThrow(
+      'last retirement failed',
+    );
+    expect(b.privateRuntime!.done).toBe(false);
+    await expect(second.close()).rejects.toThrow('open or opening');
+    await expect(owner.close()).rejects.toThrow('borrowing');
+    await b.privateRuntime!.finish(false, true);
+    await second.close();
+    await owner.close();
+    expect(k.closeEngine).toHaveBeenCalledTimes(2);
+    expect(k.closeCarrier).toHaveBeenCalledTimes(1);
+    expect(k.closeHolder).toHaveBeenCalledTimes(1);
+  });
+
+  it('detaches a mismatch without mutating or retiring a sibling entry', async () => {
+    await using owner = new NativeRuntime();
+    await using first = provider(owner);
+    await using second = provider(owner);
+    const a = first._acquire(undefined, true);
+    const k = kernel();
+    const originalHome = await a.open();
+    a.httpTransports(() => k.holder, k.engine);
+    a.privateRuntime!.bind(k.engine, k.carrier, k.holder);
+    a.privateRuntime!.peek()!.plainAdmission = {
+      configJson: '{}',
+      runtimeJson: '{}',
+      model: null,
+    };
+    const originalEntry = a.privateRuntime!.peek();
+    const b = second._acquire(undefined, true);
+    const independentHome = await b.privateRuntime!.reset();
+    expect(independentHome.codex_home).not.toBe(originalHome.codex_home);
+    const independent = kernel();
+    b.httpTransports(() => k.holder, independent.engine);
+    b.privateRuntime!.bind(independent.engine, independent.carrier, k.holder);
+    await b.privateRuntime!.finish(true);
+    await second.close();
+    expect(independent.closeEngine).toHaveBeenCalledTimes(1);
+    expect(k.closeEngine).not.toHaveBeenCalled();
+    expect(a.privateRuntime!.peek()).toBe(originalEntry);
+    await a.privateRuntime!.finish(true, true);
+    await first.close();
+    await owner.close();
+    expect(k.closeEngine).toHaveBeenCalledTimes(1);
+  });
+  it('releases an uncached failed reservation without stranding future reuse', async () => {
+    await using owner = new NativeRuntime();
+    await using first = provider(owner);
+    const a = first._acquire(undefined, true);
+    a.privateRuntime!.invalidate!();
+    await a.privateRuntime!.finish(false, true);
+    await first.close();
+    await using second = provider(owner);
+    const b = second._acquire(undefined, true);
+    expect(b.privateRuntime).toBeDefined();
+    await b.privateRuntime!.finish(false, true);
+  });
 });

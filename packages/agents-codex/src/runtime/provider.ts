@@ -318,16 +318,20 @@ export class NativeProvider {
       (options.supportsWebsockets ??
         (options.baseUrl === undefined && !privateCandidate));
     const eligible = privateCandidate && !websocketsAllowed;
-    const slot = eligible
+    let slot = eligible
       ? this.#nativeRuntimeBorrow
         ? this.#nativeRuntimeBorrow.reserve(token)
         : (this.#runtime ??= {})
       : undefined;
     const reserved =
       slot !== undefined &&
-      (slot.active === undefined || slot.active === token) &&
+      (slot.runs
+        ? slot.runs.has(token)
+        : slot.active === undefined || slot.active === token) &&
       slot.closing === undefined;
-    if (reserved) slot.active = token;
+    if (reserved && !slot!.runs) slot!.active = token;
+    const ownsReservation = () =>
+      slot?.runs ? slot.runs.has(token) : slot?.active === token;
     let home: string | undefined;
     let released = false;
     let privateDone = false;
@@ -345,7 +349,10 @@ export class NativeProvider {
       this.#leases.delete(token);
       token.cleanup = undefined;
       privateDone = true;
-      if (reserved && slot!.active === token) slot!.active = undefined;
+      if (reserved) {
+        slot!.runs?.delete(token);
+        if (slot!.active === token) slot!.active = undefined;
+      }
       this.#schedulePrivateCleanup();
     };
     const release = () =>
@@ -356,6 +363,11 @@ export class NativeProvider {
       ? undefined
       : {
           plainOnly: this.#nativeRuntimeBorrow !== undefined,
+          concurrent: slot!.runs !== undefined,
+          invalidate: () => {
+            if (!privateDone && ownsReservation() && slot!.runs && slot!.entry)
+              slot!.retiring = true;
+          },
           get done() {
             return privateDone;
           },
@@ -363,7 +375,8 @@ export class NativeProvider {
           bind: (engine, carrier, transports) => {
             if (
               privateDone ||
-              slot!.active !== token ||
+              !ownsReservation() ||
+              slot!.entry !== undefined ||
               !home ||
               apiKey === undefined
             )
@@ -378,10 +391,21 @@ export class NativeProvider {
             };
           },
           reset: async () => {
-            if (privateDone || slot!.active !== token)
+            if (privateDone || !ownsReservation())
               throw new Error('Private runtime reservation is closed');
             const entry = slot!.entry;
-            if (entry) {
+            if (slot!.runs) {
+              // A mismatch leaves the immutable shared entry and its siblings alone.
+              if (entry && slot!.retiring && slot!.runs.size === 1) {
+                const diagnostic = await disposePrivateKernel(entry);
+                slot!.entry = undefined;
+                slot!.retiring = false;
+                if (diagnostic) throw new NativeError(diagnostic);
+              }
+              slot!.runs.delete(token);
+              slot = { active: token };
+              home = undefined;
+            } else if (entry) {
               const diagnostic = await disposePrivateKernel(entry);
               slot!.entry = undefined;
               home = undefined;
@@ -393,11 +417,12 @@ export class NativeProvider {
             if (privateDone) return Promise.resolve();
             if (privateFinishing) return privateFinishing;
             privateFinishing = (async () => {
-              if (slot!.active !== token)
+              if (!ownsReservation())
                 throw new Error('Private runtime reservation changed');
               const entry = slot!.entry;
               const canKeep =
                 keep &&
+                !slot!.retiring &&
                 (!this.#nativeRuntimeBorrow || plain) &&
                 !token.failed &&
                 !this.#closed &&
@@ -409,8 +434,12 @@ export class NativeProvider {
                 entry.carrier.reuseBinding(entry.engine) !== undefined;
               let diagnostic: string | null = null;
               if (entry && !canKeep) {
-                diagnostic = await disposePrivateKernel(entry);
-                slot!.entry = undefined;
+                if (slot!.runs) slot!.retiring = true;
+                if (!slot!.runs || slot!.runs.size === 1) {
+                  diagnostic = await disposePrivateKernel(entry);
+                  slot!.entry = undefined;
+                  slot!.retiring = false;
+                }
               }
               if (entry) home = undefined;
               await releaseLease();
