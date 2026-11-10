@@ -8,6 +8,8 @@ import {
   NativeProvider,
   isFunctionApprovalRequest,
   parseSessionState,
+  manualTool,
+  type Session,
   tool,
   type FunctionApprovalRequest,
 } from '../../src';
@@ -1073,3 +1075,73 @@ it('rejects a foreign response observation before restoring approval effects', a
   expect(effects).toEqual([]);
   expect(server.requests).toHaveLength(1);
 });
+
+it.each([false, true])(
+  'settles a pending manual sibling before approved terminal completion (restored=%s)',
+  async (restored) => {
+    const effects: string[] = [];
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: true,
+      finishTurn: true,
+      execute: () => {
+        effects.push('effect');
+        return 'terminal result';
+      },
+    });
+    const review = manualTool({
+      name: 'review',
+      description: 'Review.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    async function nextManual(session: Session) {
+      for await (const event of session.interactions()) {
+        const request = review.match(event);
+        if (request) return request;
+      }
+      throw new Error('Missing pending manual sibling');
+    }
+    const server = new ModelServer([
+      [
+        call('risky', {}, { callId: 'approved-terminal' }),
+        call('review', {}, { callId: 'manual-sibling' }),
+      ],
+      [message('unexpected model continuation')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use both.',
+      model: 'gpt-5',
+      provider,
+      tools: [risky, review],
+    });
+    let state;
+    if (restored) {
+      await using source = await agent.session();
+      await source.submit('begin');
+      await nextApproval(source);
+      await nextManual(source);
+      state = await source.suspend();
+    }
+    await using session = await agent.session({ state });
+    const turn = restored
+      ? session.restoredTurn!
+      : await session.submit('begin');
+    const approval = await nextApproval(session);
+    const manual = await nextManual(session);
+    let settled = false;
+    const completion = turn.wait().finally(() => {
+      settled = true;
+    });
+    await session.respond(approval.approve());
+    expect(settled).toBe(false);
+    await session.respond(manual.reply('accepted manual sibling'));
+    const result = await completion;
+    expect(result.finalOutput).toBe('terminal result');
+    expect(result.toolCall?.callId).toBe('approved-terminal');
+    expect(effects).toEqual(['effect']);
+    expect(server.requests).toHaveLength(1);
+  },
+);
