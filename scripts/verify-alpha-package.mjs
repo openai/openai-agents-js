@@ -278,9 +278,15 @@ export async function verifyTypes(consumer, env) {
   const nodeTypes = require.resolve('@types/node/package.json');
   const source = await readFile(
     new URL('./verify-alpha-types.ts', import.meta.url),
+    'utf8',
   );
   for (const extension of ['mts', 'cts']) {
-    await writeFile(join(consumer, `verify-alpha-types.${extension}`), source);
+    // NodeNext adds a synthetic default when ESM imports a CommonJS namespace.
+    const runtimeExports = extension === 'mts' ? "Omit<T, 'default'>" : 'T';
+    await writeFile(
+      join(consumer, `verify-alpha-types.${extension}`),
+      `type RuntimeExports<T> = ${runtimeExports};\n\n${source}`,
+    );
   }
   await writeFile(
     join(consumer, 'tsconfig.verify.json'),
