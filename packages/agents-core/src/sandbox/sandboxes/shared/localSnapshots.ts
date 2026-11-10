@@ -1,13 +1,21 @@
 import { UserError } from '../../../errors';
 import {
+  copyRemoteSnapshotAuthority,
+  getRemoteSnapshotIdAuthority,
+  getRemoteSnapshotStoreAuthority,
+  setRemoteSnapshotIdAuthority,
+} from '../../internal/sessionStateTrust';
+import {
   resolveSandboxArchiveLimits,
   type SandboxArchiveLimits,
 } from '../../client';
 import { SandboxArchiveError } from '../../errors';
+import { markSandboxSessionStateUnsafe } from '../../mountSecurity';
 import {
   isNoopSnapshotSpec,
   type RemoteSnapshot,
   type RemoteSnapshotSpec,
+  type RemoteSnapshotStore,
   type SnapshotSpec,
 } from '../../snapshot';
 import type {
@@ -49,6 +57,25 @@ const SNAPSHOT_FILE_WRITE_FLAGS =
   constants.O_TRUNC |
   constants.O_NOFOLLOW;
 
+const snapshotPersistenceTails = new WeakMap<object, Promise<unknown>>();
+
+/** Each public state owns a snapshot stream, including its final propagation. */
+export async function withLocalSnapshotPersistence<T>(
+  state: object,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = snapshotPersistenceTails.get(state) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  snapshotPersistenceTails.set(state, current);
+  try {
+    return await current;
+  } finally {
+    if (snapshotPersistenceTails.get(state) === current) {
+      snapshotPersistenceTails.delete(state);
+    }
+  }
+}
+
 export type LocalSnapshotFingerprint = {
   fingerprint: string;
   version: typeof LOCAL_SNAPSHOT_FINGERPRINT_VERSION;
@@ -63,6 +90,31 @@ type LocalSnapshotState = {
   snapshotFingerprint?: string | null;
   snapshotFingerprintVersion?: string | null;
 };
+
+/** Bind only IDs obtained independently of serialized session state. */
+export function authorizeRemoteSnapshot(
+  state: LocalSnapshotState,
+  configuredId?: string,
+  configuredStore?: RemoteSnapshotStore,
+): void {
+  if (state.snapshot?.type !== 'remote') return;
+  const id = getRemoteSnapshotIdAuthority(state) ?? configuredId;
+  if (id === undefined || state.snapshot.id !== id) {
+    throw new UserError(
+      'Remote snapshot requires a matching trusted resumeAuthority.remoteSnapshotId.',
+    );
+  }
+  setRemoteSnapshotIdAuthority(
+    state,
+    id,
+    getRemoteSnapshotStoreAuthority(state) ?? configuredStore,
+  );
+}
+
+function authorizedRemoteSnapshotId(state: LocalSnapshotState): string {
+  authorizeRemoteSnapshot(state);
+  return getRemoteSnapshotIdAuthority(state)!;
+}
 
 export async function createLocalSnapshot(
   state: LocalSnapshotState,
@@ -87,18 +139,42 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
   spec: SnapshotSpec | null,
   capture: <T>(operation: () => Promise<T>) => Promise<T> = (operation) =>
     operation(),
+  onSnapshotPublished?: (
+    snapshot: Readonly<LocalSandboxSnapshot> | null,
+  ) => void,
 ): Promise<LocalSandboxSnapshot | null> {
+  authorizeRemoteSnapshot(state);
+  spec = spec ? { ...spec } : null;
+  const saveStore = isRemoteSnapshotSpec(spec) ? spec.store : undefined;
+  const publish = (snapshot: Readonly<LocalSandboxSnapshot> | null) => {
+    setRemoteSnapshotIdAuthority(
+      state,
+      snapshot?.type === 'remote' ? snapshot.id : undefined,
+      saveStore,
+    );
+    onSnapshotPublished?.(snapshot);
+  };
+  // Pin filesystem inputs and previous cleanup authority before capture can yield.
+  const captureState: LocalSnapshotState = {
+    ...state,
+    workspaceRootPath: state.workspaceRootPath,
+    manifest: state.manifest,
+    snapshotExcludedPaths: state.snapshotExcludedPaths,
+    snapshot: state.snapshot ? { ...state.snapshot } : null,
+    snapshotSpec: state.snapshotSpec ? { ...state.snapshotSpec } : null,
+  };
+  copyRemoteSnapshotAuthority(state, captureState);
   if (isNoopSnapshotSpec(spec)) {
-    await replaceLocalSnapshot(state, null);
+    await replaceLocalSnapshot(state, null, publish, captureState);
     replaceLocalSnapshotFingerprint(state, null);
     return null;
   }
   if (isRemoteSnapshotSpec(spec)) {
     const { fingerprint, data } = await capture(async () => ({
-      fingerprint: await computeLocalSnapshotFingerprint(state),
+      fingerprint: await computeLocalSnapshotFingerprint(captureState),
       data: await createWorkspaceArchive(
-        state.workspaceRootPath,
-        localSnapshotExcludedPaths(state),
+        captureState.workspaceRootPath,
+        localSnapshotExcludedPaths(captureState),
       ),
     }));
     const saved = await spec.store.save({
@@ -111,7 +187,7 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
       type: 'remote',
       ...(saved.metadata ? { metadata: saved.metadata } : {}),
     };
-    await replaceLocalSnapshot(state, snapshot);
+    await replaceLocalSnapshot(state, snapshot, publish, captureState);
     replaceLocalSnapshotFingerprint(state, fingerprint);
     return snapshot;
   }
@@ -122,13 +198,13 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
   }
 
   const { fingerprint, snapshot } = await capture(async () => ({
-    fingerprint: await computeLocalSnapshotFingerprint(state),
+    fingerprint: await computeLocalSnapshotFingerprint(captureState),
     snapshot: await createLocalSnapshot(
-      state,
+      captureState,
       (spec as LocalSnapshotSpec | null) ?? undefined,
     ),
   }));
-  await replaceLocalSnapshot(state, snapshot);
+  await replaceLocalSnapshot(state, snapshot, publish, captureState);
   replaceLocalSnapshotFingerprint(state, fingerprint);
   return snapshot;
 }
@@ -182,22 +258,48 @@ export function rehydrateLocalSnapshotSpec(
 export async function replaceLocalSnapshot<TState extends LocalSnapshotState>(
   state: TState,
   snapshot: LocalSandboxSnapshot | null,
+  onSnapshotPublished?: (
+    snapshot: Readonly<LocalSandboxSnapshot> | null,
+  ) => void,
+  previousState: LocalSnapshotState = state,
 ): Promise<void> {
-  const previousSnapshot = state.snapshot;
+  const previousSnapshot = previousState.snapshot
+    ? { ...previousState.snapshot }
+    : null;
+  const previousWorkspaceRootPath = previousState.workspaceRootPath;
+  if (
+    previousSnapshot?.type === 'remote' &&
+    previousSnapshot.id !== getRemoteSnapshotIdAuthority(previousState)
+  ) {
+    throw new UserError(
+      'Remote snapshot cleanup requires trusted snapshot authority.',
+    );
+  }
+  const previousStore = getRemoteSnapshotStoreAuthority(previousState);
+  // Never expose the observer's capability fields through the public object.
+  const publishedSnapshot = snapshot ? { ...snapshot } : null;
   state.snapshot = snapshot;
+  try {
+    onSnapshotPublished?.(publishedSnapshot);
+  } catch (error) {
+    // Publication happened, but a capability observer may have only partly run.
+    markSandboxSessionStateUnsafe(state);
+    throw error;
+  }
   if (
     previousSnapshot?.type === 'local' &&
-    previousSnapshot.path !== snapshot?.path &&
-    previousSnapshot.path !== state.workspaceRootPath
+    previousSnapshot.path !== publishedSnapshot?.path &&
+    previousSnapshot.path !== previousWorkspaceRootPath
   ) {
     await rm(previousSnapshot.path, { recursive: true, force: true });
   }
   if (
     previousSnapshot?.type === 'remote' &&
-    previousSnapshot.id !== snapshot?.id
+    previousSnapshot.id !== publishedSnapshot?.id
   ) {
-    const store = remoteSnapshotStoreFromSpec(state);
-    await store?.delete?.({ id: previousSnapshot.id }).catch(() => undefined);
+    await previousStore
+      ?.delete?.({ id: previousSnapshot.id })
+      .catch(() => undefined);
   }
 }
 
@@ -232,12 +334,13 @@ export async function localSnapshotIsRestorable(
   state: LocalSnapshotState,
 ): Promise<boolean> {
   if (state.snapshot?.type === 'remote') {
-    const store = remoteSnapshotStoreFromSpec(state);
+    const id = authorizedRemoteSnapshotId(state);
+    const store = getRemoteSnapshotStoreAuthority(state);
     if (!store) {
       return false;
     }
     if (store.exists) {
-      return await store.exists({ id: state.snapshot.id });
+      return await store.exists({ id });
     }
     return true;
   }
@@ -258,11 +361,12 @@ export async function restoreLocalSnapshotToWorkspace<
   }
 
   if (state.snapshot?.type === 'remote') {
-    const store = remoteSnapshotStoreFromSpec(state);
+    const id = authorizedRemoteSnapshotId(state);
+    const store = getRemoteSnapshotStoreAuthority(state);
     if (!store) {
       throw new UserError('No remote snapshot store is available to restore.');
     }
-    const restored = await store.load({ id: state.snapshot.id });
+    const restored = await store.load({ id });
     await restoreWorkspaceArchive(restored.data, workspaceRootPath, options);
   } else {
     await replaceDirectoryContents(state.snapshot!.path, workspaceRootPath);
@@ -670,11 +774,6 @@ export function isRemoteSnapshotSpec(
     typeof (store as { save?: unknown }).save === 'function' &&
     typeof (store as { load?: unknown }).load === 'function'
   );
-}
-
-function remoteSnapshotStoreFromSpec(state: LocalSnapshotState) {
-  const spec = state.snapshotSpec;
-  return isRemoteSnapshotSpec(spec) ? spec.store : undefined;
 }
 
 async function pathExists(path: string): Promise<boolean> {

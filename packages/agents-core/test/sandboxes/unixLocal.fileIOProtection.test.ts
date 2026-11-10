@@ -258,16 +258,25 @@ ${rewritten[3]}`;
         fileIOProtection: 'off',
         fileIOBackend: 'node',
       });
-      const restored = await client.resume(state);
+      const resumeAuthority = {
+        workspaceRootPath: original.state.workspaceRootPath,
+        localSnapshotPath:
+          original.state.snapshot?.type === 'local'
+            ? original.state.snapshot.path
+            : undefined,
+      };
+      const restored = await client.resume(state, {
+        clientOptions: { resumeAuthority },
+      });
       sessions.push(restored);
       expect(restored.fileIOBackend).toBe('python');
       await expect(
         client.resume(state, {
-          clientOptions: { fileIOProtection: 'off' },
+          clientOptions: { fileIOProtection: 'off', resumeAuthority },
         }),
       ).rejects.toThrow(/cannot be disabled/);
       const trusted = markRunStateSessionState(state, {
-        clientOptions: { fileIOProtection: 'required' },
+        clientOptions: { fileIOProtection: 'required', resumeAuthority },
       });
       const resumed = await new UnixLocalSandboxClient({
         fileIOProtection: 'off',

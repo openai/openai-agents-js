@@ -189,6 +189,10 @@ export class NativeThread {
     operation:
       | 'set_instructions'
       | 'realtime_tool_selection_sdk'
+      | 'realtime_conversation_config_sdk'
+      | 'realtime_conversation_update_history_sdk'
+      | 'realtime_conversation_retrieve_item_sdk'
+      | 'realtime_conversation_retrieve_history_sdk'
       | 'realtime_conversation_hosted_mcp_approval_sdk'
       | 'realtime_conversation_prepare_sdk'
       | 'realtime_conversation_activate_sdk'
@@ -209,7 +213,9 @@ export class NativeThread {
       | 'list_mcp_prompts'
       | 'get_mcp_prompt'
       | 'list_mcp_resource_templates'
-      | 'read_mcp_resource',
+      | 'read_mcp_resource'
+      | 'call_mcp_app_tool'
+      | 'mcp_app_tool_metadata',
     params_json: string,
   ): Promise<string>;
   _submit(params_json: string): Promise<string>;
@@ -231,6 +237,7 @@ export class NativeThread {
   _reply_model_context(response_json: string): void;
   _reply_natural_completion(response_json: string): void;
   _check_step(response_json: string): boolean;
+  _stop_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
   _replace_tools(
     generation: NativeId,

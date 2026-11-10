@@ -383,7 +383,13 @@ async function route(
             }
             const routes = new Map<string, TraceEvent[]>();
             for (const event of group) {
-              const snapshot = freezeSnapshot(event);
+              const descriptor =
+                batch.root_descriptors?.[String(event.sequence)];
+              const snapshot = freezeSnapshot(
+                descriptor === undefined
+                  ? event
+                  : { ...event, root_descriptor: descriptor },
+              );
               for (const id of event.processor_ids) {
                 const events = routes.get(id) ?? [];
                 events.push(snapshot);

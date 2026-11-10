@@ -20,8 +20,8 @@ import {
   type TokenCountWire,
 } from './run-events';
 import {
-  jsonObject,
-  jsonValue,
+  losslessJsonObjectSchema as jsonObject,
+  losslessJsonValueSchema as jsonValue,
   type JsonObject,
   type JsonValue,
 } from './binding';
@@ -871,6 +871,7 @@ function failure(raw: JsonObject): Failure {
       other: 'internal_error',
     };
     const known = [
+      'model_invocation_deadline_exceeded',
       'session_budget_exceeded',
       'usage_limit_exceeded',
       'project_spend_limit_exceeded',
@@ -1487,6 +1488,7 @@ export function projectHistory(
               (kind) =>
                 kind === 'user.text' ||
                 kind === 'user.image' ||
+                kind === 'user.file' ||
                 kind === 'images.preparation_error',
             )
           )

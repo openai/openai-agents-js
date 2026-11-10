@@ -788,6 +788,7 @@ describe('UnixLocalSandboxClient', () => {
         await client.deserializeSessionState(serialized),
         session.state.manifest,
       ),
+      trustedResumeOptions(session),
     );
     const initialOutput = await resumed.execCommand({
       cmd: 'cat mounted/external/input.txt',
@@ -1579,6 +1580,7 @@ describe('UnixLocalSandboxClient', () => {
         });
         restored = await client.resume(
           await client.deserializeSessionState(serialized),
+          trustedResumeOptions(session),
         );
         const restoredParent = join(restored.state.workspaceRootPath, 'parent');
         const mode = (await stat(join(restoredParent, 'shared'))).mode & 0o7777;
@@ -1635,6 +1637,7 @@ describe('UnixLocalSandboxClient', () => {
     const serialized = await client.serializeSessionState(session.state);
     const reattached = await client.resume(
       await client.deserializeSessionState(serialized),
+      trustedResumeOptions(session),
     );
     const reattachedOutput = await reattached.execCommand({
       cmd: 'cat notes.txt',
@@ -1653,6 +1656,7 @@ describe('UnixLocalSandboxClient', () => {
     await rm(priorWorkspaceRoot, { recursive: true, force: true });
     const restored = await client.resume(
       await client.deserializeSessionState(serialized),
+      trustedResumeOptions(session),
     );
     const restoredOutput = await restored.execCommand({
       cmd: 'cat notes.txt',
@@ -1714,6 +1718,7 @@ describe('UnixLocalSandboxClient', () => {
 
     const restored = await client.resume(
       await client.deserializeSessionState(serialized),
+      trustedResumeOptions(session),
     );
     const initialRestoredOutput = await restored.execCommand({
       cmd: 'cat notes.txt',
@@ -1808,6 +1813,7 @@ describe('UnixLocalSandboxClient', () => {
     });
     const resumed = await client.resume(
       await client.deserializeSessionState(serialized),
+      trustedResumeOptions(session),
     );
     const output = await resumed.execCommand({
       cmd: 'printf "%s:%s:%s\\n" "$KEEP_ENV" "$RUNTIME_ENV" "$SECRET_ENV"',
@@ -1894,7 +1900,10 @@ describe('UnixLocalSandboxClient', () => {
         TOKEN: 'worker-secret:openai-key',
       });
 
-      const restored = await client.resume(restoredState);
+      const restored = await client.resume(
+        restoredState,
+        trustedResumeOptions(session),
+      );
       const output = await restored.execCommand({
         cmd: 'printf "%s\\n" "$TOKEN"',
         shell: '/bin/sh',
@@ -2149,8 +2158,11 @@ describe('UnixLocalSandboxClient', () => {
       stat(join(firstSnapshot.path, 'notes.txt')),
     ).resolves.toBeTruthy();
 
-    session.state.snapshotSpec = new NoopSnapshotSpec();
-    const serialized = await client.serializeSessionState(session.state);
+    const noopClient = new UnixLocalSandboxClient({
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const resumed = await noopClient.resume(session.state);
+    const serialized = await noopClient.serializeSessionState(resumed.state);
 
     expect(serialized.snapshotSpec).toEqual({ type: 'noop' });
     expect(serialized.snapshot).toBeNull();
@@ -2159,7 +2171,10 @@ describe('UnixLocalSandboxClient', () => {
     const priorWorkspaceRoot = session.state.workspaceRootPath;
     await rm(priorWorkspaceRoot, { recursive: true, force: true });
     await expect(
-      client.resume(await client.deserializeSessionState(serialized)),
+      client.resume(
+        await client.deserializeSessionState(serialized),
+        trustedResumeOptions(session),
+      ),
     ).rejects.toThrow(/no local snapshot could be restored/);
   });
 
@@ -2201,7 +2216,11 @@ describe('UnixLocalSandboxClient', () => {
 
     const deserialized = await client.deserializeSessionState(serialized);
     expect((deserialized.snapshotSpec as any)?.store).toBe(store);
-    const restored = await client.resume(deserialized);
+    const restored = await client.resume(deserialized, {
+      clientOptions: {
+        resumeAuthority: { remoteSnapshotId: 'remote-snapshot' },
+      },
+    });
 
     expect(snapshot).toEqual({ type: 'remote', id: 'remote-snapshot' });
     await expect(
@@ -2244,7 +2263,10 @@ describe('UnixLocalSandboxClient', () => {
     await rm(session.state.workspaceRootPath, { recursive: true, force: true });
 
     await expect(
-      client.resume(await client.deserializeSessionState(serialized)),
+      client.resume(
+        await client.deserializeSessionState(serialized),
+        trustedResumeOptions(session),
+      ),
     ).rejects.toMatchObject({
       details: {
         reason: 'archive extracted size exceeds limit',
@@ -2287,7 +2309,10 @@ describe('UnixLocalSandboxClient', () => {
     await symlink(outsideDir, priorWorkspaceRoot);
 
     await expect(
-      client.resume(await client.deserializeSessionState(serialized)),
+      client.resume(
+        await client.deserializeSessionState(serialized),
+        trustedResumeOptions(session),
+      ),
     ).rejects.toThrow(/snapshot path changed while copying/);
     await expect(
       readFile(join(outsideDir, 'outside.txt'), 'utf8'),
@@ -2423,4 +2448,24 @@ async function collectActiveCommandOutput(
   }
 
   return `${initialOutput}${await writeUntilExit(session, sessionId, '')}`;
+}
+
+function trustedResumeOptions(session: UnixLocalSandboxSession) {
+  return {
+    clientOptions: {
+      snapshot: session.state.snapshotSpec ?? undefined,
+      resumeAuthority: {
+        workspaceRootPath: session.state.workspaceRootPath,
+        workspaceRootOwned: session.state.workspaceRootOwned,
+        localSnapshotPath:
+          session.state.snapshot?.type === 'local'
+            ? session.state.snapshot.path
+            : undefined,
+        remoteSnapshotId:
+          session.state.snapshot?.type === 'remote'
+            ? session.state.snapshot.id
+            : undefined,
+      },
+    },
+  };
 }

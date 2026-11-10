@@ -17,6 +17,7 @@ export interface ChildCallbackOwner {
   readonly calls: Set<string>;
   readonly observationProducer: ChildObservationProducer;
   observationPhase: ObservationPhase;
+  readonly observationAfter: number;
   nativeStartObserved: boolean;
   instanceId?: string;
   failure?: unknown;
@@ -24,6 +25,7 @@ export interface ChildCallbackOwner {
 }
 
 export class ChildCallbacks {
+  constructor(private readonly observationSequence: () => number = () => 0) {}
   private readonly owners = new Map<string, ChildCallbackOwner>();
   private key(childId: string, incarnation: string, turnId: string): string {
     return JSON.stringify([childId, incarnation, turnId]);
@@ -54,6 +56,7 @@ export class ChildCallbacks {
         calls: new Set(),
         observationProducer: producer,
         observationPhase: 'open',
+        observationAfter: this.observationSequence(),
         nativeStartObserved: false,
         terminal: false,
       };

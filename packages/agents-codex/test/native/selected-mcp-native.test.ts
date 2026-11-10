@@ -475,3 +475,81 @@ it.each(['create_goal', 'get_goal', 'update_goal'])(
     model.assertExhausted();
   },
 );
+
+it('preserves literal own JSON keys in borrowed schemas and structured output on the provider wire', async () => {
+  const schema = JSON.parse(
+    '{"type":"object","__proto__":{"annotation":"data"},"properties":{"__proto__":{"type":"string"},"constructor":{"type":"string"},"prototype":{"type":"string"},"ordinary":{"type":"string"}},"required":["__proto__","constructor","prototype","ordinary"],"additionalProperties":false}',
+  );
+  const data = JSON.parse(
+    '{"__proto__":{"retained":"peer-data"},"constructor":"ctor","prototype":"proto","ordinary":"value"}',
+  );
+  const peer = Object.assign(new BorrowedPeer(), {
+    useStructuredContent: true,
+    async callToolResult() {
+      return { content: [], structuredContent: data };
+    },
+  });
+  peer.declarations[0].inputSchema = schema;
+  const selected = await selectMcpTools(
+    { name: 'crm', server: peer },
+    { context: undefined },
+  );
+  const model = new ModelServer([
+    [
+      call(
+        'lookup',
+        JSON.parse(
+          '{"__proto__":"peer","constructor":"ctor","prototype":"proto","ordinary":"value"}',
+        ),
+        { namespace: 'crm', callId: 'own-keys' },
+      ),
+    ],
+    [message('done')],
+  ]);
+  const session = await new Agent({
+    instructions: 'Use the selected tool.',
+    model: 'gpt-5.5',
+    programmaticToolCalling: false,
+    provider: await providerFor(model),
+    tools: selected,
+  }).session();
+  sessions.push(session);
+  let preparations = 0;
+  const turn = await session.submit('run', {
+    prepareRequest({ request }) {
+      const tool = request.tools.find(
+        (entry) => entry.namespace === 'crm' && entry.name === 'lookup',
+      );
+      expect(tool?.parameters).toEqual(schema);
+      expect(Object.hasOwn(tool!.parameters, '__proto__')).toBe(true);
+      preparations++;
+      return request;
+    },
+  });
+  expect((await turn.wait()).finalOutput).toBe('done');
+  expect(preparations).toBe(2);
+  // Inspect raw loopback capture: legacy record helpers could hide the same defect.
+  const namespace = (model.requests[0].tools as JsonObject[]).find(
+    (entry) => entry.name === 'crm',
+  )!;
+  const declaration = (namespace.tools as JsonObject[])[0];
+  expect(declaration.parameters).toEqual(schema);
+  expect(
+    Object.hasOwn(
+      (declaration.parameters as JsonObject).properties as object,
+      '__proto__',
+    ),
+  ).toBe(true);
+  const output = (model.requests[1].input as JsonObject[]).find(
+    (entry) =>
+      entry.type === 'function_call_output' && entry.call_id === 'own-keys',
+  )!.output;
+  const text =
+    typeof output === 'string'
+      ? output
+      : (output as JsonObject[]).map((part) => part.text ?? '').join('');
+  const observed = JSON.parse(text);
+  expect(observed).toEqual(data);
+  expect(Object.hasOwn(observed, '__proto__')).toBe(true);
+  expect(Object.getPrototypeOf(observed)).toBe(Object.prototype);
+});

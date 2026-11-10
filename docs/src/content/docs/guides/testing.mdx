@@ -50,14 +50,14 @@ The SDK provides deterministic, provider-neutral test doubles for Agent workflow
 
 ## Imports
 
-Most applications can use the convenience subpaths:
+For the classic workflows on this page, use the classic testing subpaths:
 
 | Boundary | Recommended import | Canonical package import |
 | --- | --- | --- |
-| Agent, `Model`, and sandbox workflows | `@openai/agents/testing` | `@openai/agents-core/testing` |
-| Realtime transport | `@openai/agents/realtime/testing` | `@openai/agents-realtime/testing` |
+| Agent, `Model`, and sandbox workflows | `@openai/agents/classic/testing` | `@openai/agents-core/testing` |
+| Realtime transport | `@openai/agents/classic/realtime/testing` | `@openai/agents-realtime/testing` |
 
-The convenience subpaths expose the same testing APIs as the canonical packages. The main runtime entry points do not export testing symbols.
+The classic subpaths expose the same testing APIs as the canonical packages. The main runtime entry points do not export testing symbols. `@openai/agents/testing` provides the native runtime's testing helpers and does not export `ScriptedModel`.
 
 ## Agent workflow recipes
 

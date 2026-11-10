@@ -19,7 +19,9 @@ interface TraceState {
   rootEnded: boolean;
   deliveredTo?: number;
 }
-function descriptor(event: TraceEvent): TraceDescriptor {
+function descriptor(
+  event: Pick<TraceEvent, 'trace_id' | 'name' | 'attributes'>,
+): TraceDescriptor {
   const metadata = Object.fromEntries(
     Object.entries(event.attributes)
       .filter(([key]) => key.startsWith('sdk.metadata.'))
@@ -42,6 +44,8 @@ function descriptor(event: TraceEvent): TraceDescriptor {
  * acknowledgement waits for delivery. No Classic runtime or separate queue is used.
  * Up to1024 root descriptors are retained; active roots/descendants prevent
  * eviction. Completed traces retire first; full active capacity rejects new roots.
+ * Retained native contexts have been supplying original closed-root descriptors
+ * after ordinary eviction.
  * Unknown child records never fabricate a root descriptor. Metadata preserves
  * native flattened values; runtime is reserved for the native marker.
  * After native record loss, descriptors are invalidated after a captured native
@@ -140,7 +144,14 @@ export class OpenAITraceExporter implements TraceProcessor {
       const root = event.parent_span_id === null;
       let state = this.#traces.get(traceId);
       if (!state) {
-        if (!root || (this.#requiresRootStart && event.lifecycle !== 'start')) {
+        const retained = !this.#requiresRootStart
+          ? (event.root_descriptor as
+              Pick<TraceEvent, 'name' | 'attributes'> | undefined)
+          : undefined;
+        if (
+          (!root && retained === undefined) ||
+          (this.#requiresRootStart && (!root || event.lifecycle !== 'start'))
+        ) {
           admissionError ??= 'Native trace root descriptor is unavailable';
           continue;
         }
@@ -156,9 +167,11 @@ export class OpenAITraceExporter implements TraceProcessor {
           this.#traces.delete(completed[0]);
         }
         state = {
-          descriptor: descriptor(event),
+          descriptor: descriptor(
+            root ? event : { ...retained!, trace_id: event.trace_id },
+          ),
           activeSpans: 0,
-          rootEnded: false,
+          rootEnded: !root,
         };
       }
       if (event.lifecycle === 'start') state.activeSpans++;

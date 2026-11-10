@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { losslessJsonValueSchema, type JsonValue } from './binding';
+import {
+  losslessJsonValueSchema,
+  losslessJsonObjectSchema,
+  type JsonValue,
+} from './binding';
 
 /** Sampling presentation only; executable declarations keep their original authority. */
 export interface PreparedToolPresentation {
@@ -28,7 +32,7 @@ const toolSchema = z
     strict: z.boolean(),
     deferLoading: z.boolean().nullable(),
     description: z.string(),
-    parameters: z.record(z.string(), z.unknown()),
+    parameters: losslessJsonObjectSchema,
   })
   .strict();
 const requestSchema = z

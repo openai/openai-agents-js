@@ -251,3 +251,21 @@ it.each([[], ['--bytes']])(
   },
   35000,
 );
+
+for (const large of [false, true]) {
+  it(`preserves retained native context after descriptor eviction (large=${large})`, async () => {
+    const result = await execute(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        join(fixtures, 'tracing-retained-eviction-child.ts'),
+        ...(large ? ['--large'] : []),
+      ],
+      { timeout: 40000, maxBuffer: 2097152 },
+    );
+    expect(result.stdout).toContain(
+      'PASS retained native context after descriptor eviction',
+    );
+  }, 45000);
+}

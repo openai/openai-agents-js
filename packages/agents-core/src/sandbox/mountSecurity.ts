@@ -16,6 +16,12 @@ import { stableJsonStringify } from './shared/stableJson';
 import { validateCredentialPair } from './shared/credentials';
 import { isUnderPosixPath, normalizePosixPath } from './shared/posixPath';
 import { typedMountProviderConfig } from './shared/typedMountConfig';
+import {
+  copyLocalSandboxStateAuthority,
+  copyRemoteSnapshotAuthority,
+  getLocalSandboxStateAuthority,
+  getSandboxStateIdentity,
+} from './internal/sessionStateTrust';
 
 export const REDACTED_MOUNT_CREDENTIAL_PATHS_KEY =
   '__openaiAgentsRedactedMountCredentialPaths';
@@ -357,11 +363,11 @@ const sandboxStateAccessTails = new WeakMap<object, Promise<void>>();
 const sandboxStateGenerations = new WeakMap<object, number>();
 
 export function markSandboxSessionStateUnsafe(state: object): void {
-  unsafeManifestTransitionStates.add(state);
+  unsafeManifestTransitionStates.add(getSandboxStateIdentity(state));
 }
 
 export function isSandboxSessionStateUnsafe(state: object): boolean {
-  return unsafeManifestTransitionStates.has(state);
+  return unsafeManifestTransitionStates.has(getSandboxStateIdentity(state));
 }
 
 export function assertSandboxSessionStateUsable(state: object): void {
@@ -378,6 +384,7 @@ export async function withExclusiveSandboxManifestMutation<T>(
   state: object,
   operation: () => Promise<T>,
 ): Promise<T> {
+  state = getSandboxStateIdentity(state);
   const pendingCount = pendingManifestMutationCounts.get(state) ?? 0;
   pendingManifestMutationCounts.set(state, pendingCount + 1);
   sandboxStateGenerations.set(state, sandboxStateGeneration(state) + 1);
@@ -405,6 +412,7 @@ async function withExclusiveSandboxStateAccess<T>(
   state: object,
   operation: () => Promise<T>,
 ): Promise<T> {
+  state = getSandboxStateIdentity(state);
   assertSandboxSessionStateUsable(state);
   const previous = sandboxStateAccessTails.get(state) ?? Promise.resolve();
   let release!: () => void;
@@ -426,6 +434,7 @@ async function withExclusiveSandboxStateAccess<T>(
 }
 
 export function captureSandboxStateGeneration(state: object): number {
+  state = getSandboxStateIdentity(state);
   assertSandboxSessionStateUsable(state);
   if ((pendingManifestMutationCounts.get(state) ?? 0) > 0) {
     throw new UserError(
@@ -439,6 +448,7 @@ export function assertSandboxStateGenerationUnchanged(
   state: object,
   generation: number,
 ): void {
+  state = getSandboxStateIdentity(state);
   assertSandboxSessionStateUsable(state);
   if (
     (pendingManifestMutationCounts.get(state) ?? 0) > 0 ||
@@ -451,7 +461,26 @@ export function assertSandboxStateGenerationUnchanged(
 }
 
 function sandboxStateGeneration(state: object): number {
-  return sandboxStateGenerations.get(state) ?? 0;
+  return sandboxStateGenerations.get(getSandboxStateIdentity(state)) ?? 0;
+}
+
+/** Preserve an existing live host capability through an SDK-owned rebind. */
+export function copySandboxStateRuntimeAuthority(
+  source: object,
+  target: object,
+): void {
+  copyRemoteSnapshotAuthority(source, target);
+  const authority = getLocalSandboxStateAuthority(source);
+  if (!authority) return;
+  const generation = captureSandboxStateGeneration(source);
+  if (authority.generation !== undefined) {
+    assertSandboxStateGenerationUnchanged(source, authority.generation);
+  }
+  copyLocalSandboxStateAuthority(
+    source,
+    target,
+    authority.generation ?? generation,
+  );
 }
 
 export function configuredMountCredentialFields(
@@ -1374,6 +1403,7 @@ export function rebindPersistedMountCredentials<
 
   const rebound = { ...state, manifest: reboundManifest };
   delete rebound[REDACTED_MOUNT_CREDENTIAL_PATHS_KEY];
+  copySandboxStateRuntimeAuthority(state, rebound);
   return rebound as TState;
 }
 

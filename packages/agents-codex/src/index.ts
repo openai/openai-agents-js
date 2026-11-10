@@ -123,7 +123,7 @@ export {
 } from './runtime/executor-decisions';
 export type { ExecutorPolicyDecision } from './runtime/executor-decisions';
 export { Environment } from './runtime/environment';
-export type { NetworkPolicy } from './runtime/network-policy';
+export { NetworkPolicy } from './runtime/network-policy';
 export type {
   EnvironmentSource,
   EnvironmentLease,
@@ -197,6 +197,7 @@ export type {
 export type {
   OperationOptions,
   BeforeStepContext,
+  StepDecision,
   PrepareRequestContext,
 } from './runtime/session';
 
@@ -309,6 +310,7 @@ export type {
 export type {
   NativeRealtimeSession,
   NativeRealtimeOptions,
+  NativeRealtimeSipConfigOptions,
   NativeRealtimeEvent,
   NativeRealtimeHistoryItem,
   NativeRealtimeHostedMcpApprovalRequest,
@@ -361,3 +363,8 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+
+export type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageCounters,
+} from './runtime/realtime-usage';
