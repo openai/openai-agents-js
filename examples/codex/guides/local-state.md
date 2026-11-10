@@ -57,21 +57,19 @@ New Environments default to `writePolicy: 'strict'`. Reopening a local profile i
 
 ### Reopen with descendant history
 
-Reopen through the original root Session ID. A recorded child or grandchild ID cannot open as a root. Before model or callback work, the SDK checks the root and all recorded descendants, including closed branches. An open descendant with an unfinished turn or any descendant with an unknown effect blocks reopening, even when the current Agent declares no NativeAgents.
+Reopen through the original root Session ID. Before model or callback work, the SDK checks the root and all recorded descendants, including closed branches. A live writer or an unrelated unfinished turn on an open descendant branch blocks reopening. An abandoned child or grandchild call with no saved result can require a receipt, even when the current Agent declares no NativeAgents.
 
-Read settled descendant history through `session.subagents()` or the `subagentId` options on `session.items()` and `session.turns()`. These reads start no historical runtime. New work uses the destination's current declarations, credentials, callbacks, and Environment.
-
-Local history supports root recovery and inspection of settled child history. It does not automatically recover an active child graph or reconcile uncertain child effects. Your application owns external-effect reconciliation and decides whether to start new work. Preserve the refusal when a child outcome remains unknown; do not edit saved history to force reopening.
+Read descendant history through `session.subagents()` or the `subagentId` options on `session.items()` and `session.turns()`. Historical descendants stay stopped. New work uses the current Agent's declarations, credentials, callbacks, and Environment.
 
 ### Persistence failures and cleanup
 
-The native store flushes each managed result before the model can use it. If a root call has no saved result after process loss, opening stops before the model runs or the SDK dispatches a tool.
+The native store flushes each managed result before the model can use it. If a root or descendant call has no saved result after process loss, opening stops before the model runs or the SDK dispatches a tool.
 
-The following structured recovery procedure is available in `0.22.0-alpha.2`. The published `0.22.0-alpha.1` supports local storage and resume, but exports neither `LocalRecoveryRequired` nor `reconciledCalls`. That release refuses uncertain profiles and supplies no profile-repair API. Preserve the profile and independently reconcile the effects; do not edit native history to force reopening.
+The `0.22.0-alpha.2` preview supports the following recovery procedure for root calls. The current preview source extends it to child and grandchild calls. The published `0.22.0-alpha.1` supports local storage and resume, but exports neither `LocalRecoveryRequired` nor `reconciledCalls`. That release refuses uncertain profiles and supplies no profile-repair API. Preserve the profile and independently reconcile the effects; do not edit native history to force reopening.
 
 1. Read the original thread, turn, and call IDs from `LocalRecoveryRequired.calls`. Check each effect in your external system.
 2. Keep the reported IDs and supply the confirmed `outcome` (`'applied'` or `'not_applied'`) and a text `result` the model can read. Leave a call unresolved while its outcome is unknown.
-3. Reopen with `storage`, `resume`, and the `reconciledCalls` list. The SDK records the supplied result against the original call without invoking the tool again.
+3. Reopen with `storage`, the original root Session ID in `resume`, and the `reconciledCalls` list. The SDK records each result against its original call without invoking the tool again. Keep the same receipts if you need to retry the opening.
 
 A terminal event or final output reports turn progress. The managed result flush records the tool's outcome. You can still lose data during a power failure.
 

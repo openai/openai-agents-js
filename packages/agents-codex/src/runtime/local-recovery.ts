@@ -22,6 +22,14 @@ const uncertainCallSchema = identitySchema.extend({
 const snapshotSchema = z.strictObject({
   calls: z.array(uncertainCallSchema).nonempty(),
   history: threadHistorySchema,
+  descendants: z
+    .array(
+      z.strictObject({
+        threadId: z.string().min(1),
+        history: threadHistorySchema,
+      }),
+    )
+    .default([]),
 });
 
 /** Original native call whose result did not reach storage. Arguments retain their recorded text. */
@@ -96,13 +104,29 @@ export function captureReconciledCalls(
 /** @internal Project only the stopped native writer's structured snapshot. */
 export function localRecoveryRequired(snapshot: string, threadId: string) {
   const parsed = snapshotSchema.safeParse(parseNative(snapshot));
-  if (
-    !parsed.success ||
-    parsed.data.calls.some((call) => call.threadId !== threadId)
-  )
+  if (!parsed.success)
     throw new NativeError('Invalid native local recovery inspection');
-  const { calls, history } = parsed.data;
+  const { calls, history, descendants } = parsed.data;
+  const sources = new Set([threadId]);
   const { items, turns } = projectHistory(history, threadId);
+  for (const descendant of descendants) {
+    if (sources.has(descendant.threadId))
+      throw new NativeError('Invalid native local recovery inspection');
+    sources.add(descendant.threadId);
+    const projected = projectHistory(
+      descendant.history,
+      threadId,
+      descendant.threadId,
+    );
+    for (const item of projected.items) {
+      items.push(item);
+    }
+    for (const turn of projected.turns) {
+      turns.push(turn);
+    }
+  }
+  if (calls.some((call) => !sources.has(call.threadId)))
+    throw new NativeError('Invalid native local recovery inspection');
   return new LocalRecoveryRequired(
     calls,
     turns.map((turn) => ({
