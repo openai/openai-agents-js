@@ -549,9 +549,17 @@
       "sha256": "3ad6dcf410800d6314a9930ffac558a57eba21c8cfbb6ea6294706df4196c5db"
     },
     {
+      "path": "native-model-input-modalities.patch",
+      "sha256": "5bece16f3599d550006f178f1e903f6b9bfaab18395daad81235ea0fd5587946"
+    },
+    {
+      "path": "native-box-model-deadline-futures.patch",
+      "sha256": "68f27e496efe84385243d8067e9b45aae4948222d810af32cb2399716f15a717"
+    },
+    {
       "path": "portable-realtime-session-parity.patch",
       "sha256": "0ca59e0e8f4a8176cf1f62e987fc901ee68526f9c54b2b8d897a68774e2e253f"
     }
   ],
-  "result_tree": "20364ac1264ee052011cbab2dc334370543b9c96"
+  "result_tree": "d8863476a6fac054f97f33cc69d519427fe52856"
 }

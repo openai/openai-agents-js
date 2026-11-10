@@ -269,3 +269,31 @@ describe('plain owned-run cleanup', () => {
     expect(p.release).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('declared input modalities retain ordinary native session opening', () => {
+  it.each(['audio', 'text', 'clear'] as const)(
+    '%s does not acquire the private plain-run owner',
+    async (selection) => {
+      const p = prepared();
+      const result = await tryOpenPlainRun(
+        p.setup,
+        {
+          initialModelSettings: {
+            inputModalities:
+              selection === 'clear'
+                ? null
+                : selection === 'audio'
+                  ? ['text', 'audio']
+                  : ['text'],
+          },
+        },
+        p.lease,
+        'input',
+      );
+      expect(result).toBeUndefined();
+      expect(nativeBinding.binding).not.toHaveBeenCalled();
+      expect(p.engine._plain_run).not.toHaveBeenCalled();
+      expect(p.release).not.toHaveBeenCalled();
+    },
+  );
+});
