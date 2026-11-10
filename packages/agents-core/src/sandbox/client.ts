@@ -202,6 +202,12 @@ export interface SandboxClient<
     manifest: Manifest,
     options?: TOptions,
   ): Promise<Record<string, string>>;
+  /** Assert current trusted filesystem authority for a borrowed resource without mutation. */
+  assertBorrowedSessionManifestAuthority?(
+    session: SandboxSessionLike<TSessionState>,
+    manifest: Manifest,
+    options?: TOptions,
+  ): Promise<void> | void;
   /** Synchronously validates resume policy before environment materialization. */
   validateSessionStateForResume?(
     input: SandboxSessionResumeValidationInput<TSessionState>,

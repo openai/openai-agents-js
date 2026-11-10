@@ -210,6 +210,16 @@ export function sandboxEnvironment<
             manifest,
             trustedEnvironment,
           );
+          if (client.assertBorrowedSessionManifestAuthority) {
+            await client.assertBorrowedSessionManifestAuthority(
+              borrowed,
+              cloneManifest(manifest),
+              providerOptions === undefined
+                ? undefined
+                : captureOptions(providerOptions),
+            );
+            signal.throwIfAborted();
+          }
         }
         // Providers prepare and mount through their existing create pipeline.
         const currentOptions =

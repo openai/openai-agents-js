@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserError } from '../../src/errors';
 import type { SandboxProcessResult } from '../../src/sandbox/sandboxes/shared/runProcess';
 import { rebindPersistedPathGrants } from '../../src/sandbox/sandboxes/shared/manifestPersistence';
+import { markRunStateSessionState } from '../../src/sandbox/internal/sessionStateTrust';
 import {
   deserializeSandboxSessionStateEntry,
   toSessionStateEnvelope,
@@ -78,6 +79,7 @@ import {
   type DockerSandboxSessionState,
   EnvValueReference,
   inContainerMountStrategy,
+  InMemoryRemoteSnapshotStore,
   Manifest,
   NoopSnapshotSpec,
   registerEnvValueReference,
@@ -277,6 +279,484 @@ describe('DockerSandboxClient unit behavior', () => {
     vi.mocked(mkdir).mockReset();
     vi.mocked(open).mockReset();
     await rm(rootDir, { recursive: true, force: true });
+  });
+
+  describe('remote snapshot authority', () => {
+    let containerRunning: boolean;
+    let store: InMemoryRemoteSnapshotStore;
+
+    beforeEach(() => {
+      containerRunning = true;
+      let runCount = 0;
+      const inspections = new Map<string, DockerContainerInspection>();
+      processMocks.runSandboxProcess.mockImplementation(
+        async (_command: string, args: string[]) => {
+          if (args[0] === 'version') return success('Docker version test');
+          if (args[0] === 'run') {
+            const containerId = `container-${++runCount}`;
+            inspections.set(containerId, dockerRunInspection(args));
+            return success(`${containerId}\n`);
+          }
+          if (args[0] === 'inspect') {
+            return (
+              dockerInspectionResult(inspections, args) ??
+              success(`${containerRunning}\n`)
+            );
+          }
+          if (args[0] === 'rm') return success();
+          return failure('unexpected docker command');
+        },
+      );
+      store = new InMemoryRemoteSnapshotStore();
+      let saveCount = 0;
+      vi.spyOn(store, 'save').mockImplementation((args) =>
+        InMemoryRemoteSnapshotStore.prototype.save.call(store, {
+          ...args,
+          id: `saved-${++saveCount}`,
+        }),
+      );
+      vi.spyOn(store, 'exists');
+      vi.spyOn(store, 'load');
+      vi.spyOn(store, 'delete');
+    });
+
+    it.each(['resume', 'serialize'] as const)(
+      'rejects a forged shared-store ID before %s effects',
+      async (operation) => {
+        const client = new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          snapshot: { type: 'remote', id: 'save-request', store },
+          resumeAuthority: { remoteSnapshotId: 'saved-1' },
+        });
+        const session = await client.create(new Manifest());
+        const serialized = JSON.parse(
+          JSON.stringify(await client.serializeSessionState(session.state)),
+        );
+        await InMemoryRemoteSnapshotStore.prototype.save.call(store, {
+          id: 'other-snapshot',
+          data: new Uint8Array(),
+        });
+        serialized.snapshot.id = 'other-snapshot';
+        const forged = await client.deserializeSessionState(serialized);
+        vi.clearAllMocks();
+
+        await expect(
+          operation === 'resume'
+            ? client.resume(forged)
+            : client.serializeSessionState(forged),
+        ).rejects.toThrow(/resumeAuthority.remoteSnapshotId/u);
+
+        expect(store.save).not.toHaveBeenCalled();
+        expect(store.exists).not.toHaveBeenCalled();
+        expect(store.load).not.toHaveBeenCalled();
+        expect(store.delete).not.toHaveBeenCalled();
+        expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+        expect(
+          await InMemoryRemoteSnapshotStore.prototype.exists.call(store, {
+            id: 'other-snapshot',
+          }),
+        ).toBe(true);
+      },
+    );
+
+    it.each(['resume', 'serialize'] as const)(
+      'rejects older remote checkpoints without a trusted binding during %s',
+      async (operation) => {
+        const client = new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          snapshot: { type: 'remote', id: 'save-request', store },
+        });
+        const session = await client.create(new Manifest());
+        const saved = await client.serializeSessionState(session.state);
+        const restored = await client.deserializeSessionState(
+          JSON.parse(JSON.stringify(saved)),
+        );
+        vi.clearAllMocks();
+
+        await expect(
+          operation === 'resume'
+            ? client.resume(restored)
+            : client.serializeSessionState(restored),
+        ).rejects.toThrow(/resumeAuthority.remoteSnapshotId/u);
+
+        expect(store.save).not.toHaveBeenCalled();
+        expect(store.exists).not.toHaveBeenCalled();
+        expect(store.load).not.toHaveBeenCalled();
+        expect(store.delete).not.toHaveBeenCalled();
+        expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+      },
+    );
+
+    it('ignores forged persisted save IDs when the snapshot ID is legitimately bound', async () => {
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot: { type: 'remote', id: 'trusted-save-request', store },
+        resumeAuthority: { remoteSnapshotId: 'saved-1' },
+      });
+      const session = await client.create(new Manifest());
+      const serialized = JSON.parse(
+        JSON.stringify(await client.serializeSessionState(session.state)),
+      );
+      serialized.snapshotSpec.id = 'other-snapshot';
+      const deserialized = await client.deserializeSessionState(serialized);
+      vi.mocked(store.save).mockClear();
+
+      await client.serializeSessionState(deserialized);
+
+      expect(store.save).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: 'trusted-save-request' }),
+      );
+    });
+
+    it.each(
+      ['serialize', 'resume', 'runState'].flatMap((flow) =>
+        ['local', 'noop'].map((type) => ({ flow, type })),
+      ),
+    )(
+      'keeps constructor remote policy during $flow with a persisted $type policy',
+      async ({ flow, type }) => {
+        const client = new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          snapshot: { type: 'remote', id: 'trusted-save-request', store },
+          resumeAuthority: { remoteSnapshotId: 'saved-1' },
+        });
+        const session = await client.create(new Manifest());
+        const saved = JSON.parse(
+          JSON.stringify(await client.serializeSessionState(session.state)),
+        );
+        const forgedBaseDir = join(rootDir, 'forged-save-target');
+        await mkdir(forgedBaseDir);
+        saved.snapshotSpec =
+          type === 'local'
+            ? { type, baseDir: forgedBaseDir }
+            : { type: 'noop' };
+        let state = await client.deserializeSessionState(saved);
+        if (flow === 'runState') {
+          state = markRunStateSessionState(state, {
+            clientOptions: {
+              workspaceBaseDir: rootDir,
+              resumeAuthority: { remoteSnapshotId: 'saved-1' },
+            },
+          });
+        }
+        if (flow !== 'serialize') state = (await client.resume(state)).state;
+        vi.mocked(store.save).mockClear();
+
+        const serialized = await client.serializeSessionState(state);
+
+        expect(saved.snapshot.id).toBe('saved-1');
+        expect({
+          snapshot: serialized.snapshot,
+          destinationFiles: await readdir(forgedBaseDir),
+          savedIds: vi.mocked(store.save).mock.calls.map(([args]) => args.id),
+          deletedIds: vi
+            .mocked(store.delete)
+            .mock.calls.map(([args]) => args.id),
+        }).toMatchObject({
+          snapshot: { type: 'remote', id: 'saved-2' },
+          destinationFiles: [],
+          savedIds: ['trusted-save-request'],
+          deletedIds: ['saved-1'],
+        });
+      },
+    );
+
+    it.each(['serialize', 'resume', 'sdkCopy'] as const)(
+      'preserves captured default local policy during %s after public policy changes',
+      async (flow) => {
+        const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+        const session = await client.create(new Manifest());
+        const forgedBaseDir = join(rootDir, 'forged-save-target');
+        await mkdir(forgedBaseDir);
+        session.state.snapshotSpec = {
+          type: 'local',
+          baseDir: forgedBaseDir,
+        };
+        const state =
+          flow === 'resume'
+            ? (await client.resume(session.state)).state
+            : flow === 'sdkCopy'
+              ? rebindPersistedPathGrants(session.state, new Manifest())
+              : session.state;
+
+        vi.stubEnv(
+          'OPENAI_AGENTS_SANDBOX_SNAPSHOT_DIR',
+          join(rootDir, 'trusted-default-snapshots'),
+        );
+        try {
+          await client.serializeSessionState(state);
+          expect(state.snapshot?.type).toBe('local');
+          expect(await readdir(forgedBaseDir)).toEqual([]);
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      },
+    );
+
+    it.each(['remote', 'local', 'noop'] as const)(
+      'preserves the trusted per-create %s policy after live state changes',
+      async (type) => {
+        const client = new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          snapshot: { type: 'remote', id: 'constructor-save-request', store },
+        });
+        const session = await client.create({
+          manifest: new Manifest(),
+          snapshot:
+            type === 'remote'
+              ? { type, id: 'create-save-request', store }
+              : type === 'local'
+                ? { type, baseDir: join(rootDir, 'trusted-create-snapshots') }
+                : new NoopSnapshotSpec(),
+        });
+        session.state.snapshotSpec = {
+          type: 'remote',
+          id: 'other-snapshot',
+          store,
+        };
+
+        const serialized = await client.serializeSessionState(session.state);
+
+        if (type === 'remote') {
+          expect(store.save).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ id: 'create-save-request' }),
+          );
+        } else {
+          expect(store.save).not.toHaveBeenCalled();
+          if (type === 'local') {
+            expect(serialized.snapshot).toMatchObject({ type: 'local' });
+            expect(
+              await readdir(join(rootDir, 'trusted-create-snapshots')),
+            ).toHaveLength(1);
+          } else {
+            expect(serialized.snapshot).toBeNull();
+          }
+        }
+      },
+    );
+
+    it.each(['remote', 'local', 'noop'] as const)(
+      'preserves the trusted per-resume %s policy over persisted save fields',
+      async (type) => {
+        const client = new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          snapshot: { type: 'remote', id: 'constructor-save-request', store },
+        });
+        const session = await client.create(new Manifest());
+        const serialized = JSON.parse(
+          JSON.stringify(await client.serializeSessionState(session.state)),
+        );
+        serialized.snapshotSpec.id = 'other-snapshot';
+        const deserialized = await client.deserializeSessionState(serialized);
+        await rm(session.state.workspaceRootPath, {
+          recursive: true,
+          force: true,
+        });
+        containerRunning = false;
+        const resumed = await client.resume(deserialized, {
+          clientOptions: {
+            resumeAuthority: { remoteSnapshotId: 'saved-1' },
+            snapshot:
+              type === 'remote'
+                ? { type, id: 'resume-save-request', store }
+                : type === 'local'
+                  ? { type, baseDir: join(rootDir, 'trusted-resume-snapshots') }
+                  : new NoopSnapshotSpec(),
+          },
+        });
+        vi.mocked(store.save).mockClear();
+
+        const saved = await client.serializeSessionState(resumed.state);
+        expect(store.load).toHaveBeenCalledWith({ id: 'saved-1' });
+
+        if (type === 'remote') {
+          expect(store.save).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ id: 'resume-save-request' }),
+          );
+        } else {
+          expect(store.save).not.toHaveBeenCalled();
+          if (type === 'local') {
+            expect(saved.snapshot).toMatchObject({ type: 'local' });
+            expect(
+              await readdir(join(rootDir, 'trusted-resume-snapshots')),
+            ).toHaveLength(1);
+          } else {
+            expect(saved.snapshot).toBeNull();
+          }
+          expect(store.delete).toHaveBeenCalledWith({ id: 'saved-1' });
+        }
+      },
+    );
+
+    it('restores RunState with a separate trusted snapshot store', async () => {
+      const snapshot = { type: 'remote' as const, id: 'save-request', store };
+      const sourceClient = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot,
+      });
+      const session = await sourceClient.create(
+        new Manifest({
+          entries: {
+            'marker.txt': { type: 'file', content: 'RunState content' },
+          },
+        }),
+      );
+      const saved = JSON.parse(
+        JSON.stringify(await sourceClient.serializeSessionState(session.state)),
+      );
+      await session.close();
+      const client = new DockerSandboxClient();
+      const state = markRunStateSessionState(
+        await client.deserializeSessionState(saved),
+        {
+          clientOptions: {
+            workspaceBaseDir: rootDir,
+            resumeAuthority: { remoteSnapshotId: 'saved-1' },
+          },
+          snapshot,
+        },
+      );
+      const resumed = await client.resume(state);
+      expect(store.load).toHaveBeenCalledWith({ id: 'saved-1' });
+      expect(
+        await readFile(
+          join(resumed.state.workspaceRootPath, 'marker.txt'),
+          'utf8',
+        ),
+      ).toBe('RunState content');
+      await resumed.close();
+    });
+
+    it.each(['pending', 'rejected', 'throws'] as const)(
+      'keeps a rotated snapshot resumable when previous-store cleanup is %s',
+      async (cleanup) => {
+        const client = new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          snapshot: { type: 'remote', id: 'save-request', store },
+        });
+        const session = await client.create(new Manifest());
+        await writeFile(
+          join(session.state.workspaceRootPath, 'note.txt'),
+          'saved',
+        );
+        await client.serializeSessionState(session.state);
+        const nextStore = new InMemoryRemoteSnapshotStore();
+        vi.spyOn(nextStore, 'save').mockImplementation((args) =>
+          InMemoryRemoteSnapshotStore.prototype.save.call(nextStore, {
+            ...args,
+            id: 'rotated-snapshot',
+          }),
+        );
+        vi.spyOn(nextStore, 'load');
+        vi.spyOn(nextStore, 'delete');
+        const live = await client.resume(session.state, {
+          clientOptions: {
+            snapshot: {
+              type: 'remote',
+              id: 'next-save-request',
+              store: nextStore,
+            },
+          },
+        });
+        let finishCleanup!: () => void;
+        const pendingCleanup = new Promise<void>((resolve) => {
+          finishCleanup = resolve;
+        });
+        let cleanupEntered!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          cleanupEntered = resolve;
+        });
+        const cleanupError = new Error('previous snapshot cleanup failed');
+        vi.mocked(store.delete).mockImplementationOnce(() => {
+          cleanupEntered();
+          if (cleanup === 'throws') throw cleanupError;
+          return cleanup === 'rejected'
+            ? Promise.reject(cleanupError)
+            : pendingCleanup;
+        });
+        const serialization = client.serializeSessionState(live.state).then(
+          (value) => ({ value, error: undefined }),
+          (error: unknown) => ({ value: undefined, error }),
+        );
+        await entered;
+
+        expect(live.state.snapshot).toEqual({
+          type: 'remote',
+          id: 'rotated-snapshot',
+        });
+        expect(store.delete).toHaveBeenCalledExactlyOnceWith({ id: 'saved-1' });
+        expect(nextStore.delete).not.toHaveBeenCalled();
+        await rm(live.state.workspaceRootPath, {
+          recursive: true,
+          force: true,
+        });
+        containerRunning = false;
+        const restored = await client.resume(live.state);
+        expect(nextStore.load).toHaveBeenCalledWith({ id: 'rotated-snapshot' });
+        expect(
+          await readFile(
+            join(restored.state.workspaceRootPath, 'note.txt'),
+            'utf8',
+          ),
+        ).toBe('saved');
+        finishCleanup();
+        const outcome = await serialization;
+        if (cleanup === 'throws') {
+          expect(outcome.error).toBe(cleanupError);
+        } else {
+          expect(outcome.error).toBeUndefined();
+          expect(outcome.value?.snapshot).toEqual({
+            type: 'remote',
+            id: 'rotated-snapshot',
+          });
+        }
+        await restored.close();
+      },
+    );
+
+    it('preserves allocated IDs through live copies, trusted restore, and replacement cleanup', async () => {
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot: { type: 'remote', id: 'save-request', store },
+      });
+      const session = await client.create(new Manifest());
+      await writeFile(
+        join(session.state.workspaceRootPath, 'note.txt'),
+        'saved',
+      );
+      const first = await client.serializeSessionState(session.state);
+      expect(first.snapshot).toEqual({ type: 'remote', id: 'saved-1' });
+
+      const copied = rebindPersistedPathGrants(session.state, new Manifest());
+      const live = await client.resume(copied);
+      const second = await client.serializeSessionState(live.state);
+      expect(second.snapshot).toEqual({ type: 'remote', id: 'saved-2' });
+      expect(store.delete).toHaveBeenCalledWith({ id: 'saved-1' });
+      expect(store.save).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: 'save-request' }),
+      );
+
+      await rm(live.state.workspaceRootPath, { recursive: true, force: true });
+      containerRunning = false;
+      const deserialized = await client.deserializeSessionState(
+        JSON.parse(JSON.stringify(second)),
+      );
+      const restored = await client.resume(deserialized, {
+        clientOptions: { resumeAuthority: { remoteSnapshotId: 'saved-2' } },
+      });
+      expect(store.load).toHaveBeenCalledWith({ id: 'saved-2' });
+      expect(
+        await readFile(
+          join(restored.state.workspaceRootPath, 'note.txt'),
+          'utf8',
+        ),
+      ).toBe('saved');
+
+      const third = await client.serializeSessionState(restored.state);
+      expect(third.snapshot).toEqual({ type: 'remote', id: 'saved-3' });
+      expect(store.delete).toHaveBeenLastCalledWith({ id: 'saved-2' });
+      await restored.close();
+    });
   });
 
   it('uses container file I/O without discovering host Python', async () => {

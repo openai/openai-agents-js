@@ -4,6 +4,11 @@ import {
   decodeBoundedFileRead,
 } from '../shared/boundedFileRead';
 import { UserError } from '../../errors';
+import {
+  copyRemoteSnapshotAuthority,
+  getRemoteSnapshotPolicyAuthority,
+  setRemoteSnapshotPolicyAuthority,
+} from '../internal/sessionStateTrust';
 import type {
   ApplyPatchOperation,
   ApplyPatchResult,
@@ -35,6 +40,7 @@ import {
   sep,
 } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { SandboxSessionLike } from '../session';
 import { Header, Pax } from 'tar';
 import {
   type AzureBlobMount,
@@ -137,6 +143,7 @@ import {
 } from '../mountSecurity';
 import { imageOutputFromBytes, MAX_VIEW_IMAGE_BYTES } from '../shared/media';
 import {
+  authorizeRemoteSnapshot,
   canReuseLocalSnapshotWorkspace,
   localSnapshotIsRestorable,
   persistLocalSnapshot,
@@ -212,6 +219,8 @@ export interface DockerSandboxClientOptions extends SandboxClientOptions {
   labels?: Record<string, string>;
   workspaceBaseDir?: string;
   snapshot?: LocalSandboxSnapshotSpec;
+  /** Trusted binding for remote checkpoints; never copy the ID from saved state. */
+  resumeAuthority?: { remoteSnapshotId?: string };
   concurrencyLimits?: SandboxConcurrencyLimits;
   archiveLimits?: SandboxArchiveLimits | null;
 }
@@ -1493,6 +1502,46 @@ export class DockerSandboxClient implements SandboxClient<
     };
   }
 
+  async assertBorrowedSessionManifestAuthority(
+    session: SandboxSessionLike<DockerSandboxSessionState>,
+    manifest: Manifest,
+  ): Promise<void> {
+    let reusable = false;
+    try {
+      const result = await inspectRunningDockerContainerForReuse({
+        ...session.state,
+        manifest: cloneManifest(manifest),
+      });
+      reusable = result.reusable;
+    } catch {
+      // Host paths and provider inspection details are not public error data.
+    }
+    if (!reusable) {
+      throw new UserError(
+        'Borrowed Docker filesystem authority does not match the current trusted manifest. Create a fresh sandbox session.',
+      );
+    }
+  }
+
+  private resolveSnapshotPolicy(
+    state: DockerSandboxSessionState,
+    override?: LocalSandboxSnapshotSpec,
+  ): LocalSandboxSnapshotSpec | null {
+    if (override !== undefined) return override;
+    const captured = getRemoteSnapshotPolicyAuthority(state);
+    if (captured !== undefined) return captured;
+    if (this.options.snapshot !== undefined) return this.options.snapshot;
+    // Only unconfigured explicit local checkpoints retain persisted save policy.
+    if (
+      !isRunStateSessionState(state) &&
+      state.snapshot?.type !== 'remote' &&
+      state.snapshotSpec?.type !== 'remote'
+    ) {
+      return state.snapshotSpec ?? null;
+    }
+    return null;
+  }
+
   async create(
     args?: SandboxClientCreateArgs<DockerSandboxClientOptions> | Manifest,
     manifestOptions?: DockerSandboxClientOptions,
@@ -1589,6 +1638,7 @@ export class DockerSandboxClient implements SandboxClient<
       await provisionDockerAccounts(container.containerId, manifest);
       await applyDockerInContainerMounts(session, manifest);
       captureLiveMountCredentialAuthority(manifest, environment);
+      setRemoteSnapshotPolicyAuthority(session.state, resolvedOptions.snapshot);
       return session;
     } catch (error) {
       try {
@@ -1617,6 +1667,27 @@ export class DockerSandboxClient implements SandboxClient<
     options: SandboxClientResumeOptions<DockerSandboxClientOptions> = {},
   ): Promise<DockerSandboxSession> {
     const trustedConfig = getRunStateSessionTrustedConfig(state);
+    const clientOptions = (trustedConfig?.clientOptions ??
+      options.clientOptions) as DockerSandboxClientOptions | undefined;
+    const configuredSnapshot =
+      (trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined) ??
+      clientOptions?.snapshot ??
+      this.options.snapshot;
+    authorizeRemoteSnapshot(
+      state,
+      (clientOptions?.resumeAuthority ?? this.options.resumeAuthority)
+        ?.remoteSnapshotId,
+      configuredSnapshot?.type === 'remote'
+        ? configuredSnapshot.store
+        : this.options.snapshot?.type === 'remote'
+          ? this.options.snapshot.store
+          : undefined,
+    );
+    const snapshotPolicy = this.resolveSnapshotPolicy(
+      state,
+      (trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined) ??
+        clientOptions?.snapshot,
+    );
     this.validateSessionStateForResume(
       {
         source: trustedConfig ? 'runState' : 'explicit',
@@ -1663,6 +1734,9 @@ export class DockerSandboxClient implements SandboxClient<
       };
     }
     assertMountCredentialsRebound(resumeState);
+    copyRemoteSnapshotAuthority(state, resumeState);
+    resumeState.snapshotSpec = snapshotPolicy ? { ...snapshotPolicy } : null;
+    setRemoteSnapshotPolicyAuthority(resumeState, snapshotPolicy);
     assertHostPathGrantsRebound(resumeState);
     assertDockerManifestSupported(resumeState.manifest);
     validateMountEnvironmentCredentialBoundaries(
@@ -1802,6 +1876,13 @@ export class DockerSandboxClient implements SandboxClient<
     options: SandboxSessionSerializationOptions,
   ): Promise<Record<string, unknown>> {
     assertSandboxSessionStateUsable(state);
+    authorizeRemoteSnapshot(
+      state,
+      this.options.resumeAuthority?.remoteSnapshotId,
+      this.options.snapshot?.type === 'remote'
+        ? this.options.snapshot.store
+        : undefined,
+    );
     const labels = normalizeDockerLabels(
       state.labels,
       'Docker sandbox session state labels',
@@ -1811,7 +1892,7 @@ export class DockerSandboxClient implements SandboxClient<
       state.environment,
     );
     const stateGeneration = captureSandboxStateGeneration(state);
-    const snapshotSpec = state.snapshotSpec ?? this.options.snapshot ?? null;
+    const snapshotSpec = this.resolveSnapshotPolicy(state);
     attachDockerSnapshotExcludedPaths(state);
     const snapshot = await persistLocalSnapshot(
       'DockerSandboxClient',
@@ -1819,6 +1900,7 @@ export class DockerSandboxClient implements SandboxClient<
       snapshotSpec,
     );
     state.snapshotSpec = snapshotSpec;
+    setRemoteSnapshotPolicyAuthority(state, snapshotSpec);
     if (
       options.preserveOwnedSession === true &&
       options.reuseLiveSession === false &&
@@ -1917,10 +1999,7 @@ export class DockerSandboxClient implements SandboxClient<
         materializedEntriesFingerprint: undefined,
         image: resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE,
         environment: await resolveDockerRunStateEnvironment(state),
-        snapshotSpec:
-          (trustedConfig?.snapshot as LocalSandboxSnapshotSpec | undefined) ??
-          resolvedOptions.snapshot ??
-          null,
+        snapshotSpec: state.snapshotSpec,
         defaultUser: getHostDockerUser(),
         configuredExposedPorts,
         networkMode,
@@ -1928,6 +2007,7 @@ export class DockerSandboxClient implements SandboxClient<
         dockerVolumeNames: [],
         exposedPorts: undefined,
       };
+      copyRemoteSnapshotAuthority(state, trustedState);
       attachDockerSnapshotExcludedPaths(trustedState);
       if (!(await localSnapshotIsRestorable(trustedState))) {
         throw new UserError(
@@ -2028,12 +2108,14 @@ export class DockerSandboxClient implements SandboxClient<
       join(workspaceBaseDir ?? tmpdir(), 'openai-agents-docker-sandbox-'),
     );
     try {
+      const snapshotState = {
+        ...state,
+        workspaceRootPath,
+        workspaceRootOwned: true,
+      };
+      copyRemoteSnapshotAuthority(state, snapshotState);
       const restoredState = await restoreLocalSnapshotToWorkspace(
-        {
-          ...state,
-          workspaceRootPath,
-          workspaceRootOwned: true,
-        },
+        snapshotState,
         workspaceRootPath,
         { archiveLimits },
       );
@@ -2115,6 +2197,7 @@ export class DockerSandboxClient implements SandboxClient<
       dockerVolumeNames: container.volumeNames,
       exposedPorts: undefined,
     };
+    copyRemoteSnapshotAuthority(state, nextState);
     const session = new DockerSandboxSession({
       state: nextState,
       archiveLimits,

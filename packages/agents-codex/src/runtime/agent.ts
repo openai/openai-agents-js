@@ -22,8 +22,8 @@ import {
   decode,
   encode,
   encodeReceipt,
-  jsonObject,
-  jsonValue,
+  losslessJsonObjectSchema as jsonObject,
+  losslessJsonValueSchema as jsonValue,
   type JsonValue,
 } from './binding';
 import type { NativeConfig } from './config';
