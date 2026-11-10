@@ -514,7 +514,7 @@ export function captureTools(
       typeof tool[prepareInvocation] !== 'function'
     ) {
       throw new TypeError(
-        'Native function tools must use tool() from @openai/agents; use @openai/agents/classic for Classic tools',
+        'Native function tools must use tool() from @openai/agents in the same loaded SDK instance as the Session. Use @openai/agents/classic for Classic tools.',
       );
     }
     if (

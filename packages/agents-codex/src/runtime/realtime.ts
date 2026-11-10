@@ -2,7 +2,6 @@ import {
   addRealtimeUsage,
   reportedRealtimeUsage,
   type NativeRealtimeUsage,
-  type NativeRealtimeUsageCounters,
 } from './realtime-usage';
 import {
   NativeRealtimeGuardrails,
@@ -632,8 +631,10 @@ class NativeRealtimeOwner {
   get _startupFailed(): boolean {
     return this.startupFailed;
   }
-  private usageTotals?: NativeRealtimeUsageCounters;
-  /** Reported speech-model counters for this owner; excludes backend thread usage. */
+  private usageTotals?: ReturnType<typeof reportedRealtimeUsage>;
+  /** Sum of observed speech-model counts; excludes backend thread usage.
+   * May be partial when responses omit usage or close precedes a terminal event.
+   */
   get usage(): NativeRealtimeUsage | undefined {
     return this.usageTotals === undefined
       ? undefined

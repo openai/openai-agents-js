@@ -85,9 +85,25 @@ The current source build also supports captured Agent handoff graphs. Declare re
 
 ## Observations and interruption
 
-Each `session.events({ after })` reader independently observes retained session events. Closing a reader does not stop work. Sequence numbers support resuming a reader. A `gap` event reports records lost from the bounded buffer. Pending manual requests are also visible to each reader.
+Each `session.events({ after })` reader independently observes retained session events. Closing a reader does not stop work. Sequence numbers support resuming a reader. Pending manual requests are also visible to each reader.
 
-Root native warnings appear only in Session observations. A `warning` contains `message`, `sessionId`, and `sequence`, with no Turn or submission identity. Keep the reader active during work: workspace skill discovery starts on the first submission. Warnings share the bounded buffer and are diagnostics, not proof that a Turn failed.
+The default `observationRetention: 'bounded'` has been retaining a limited suffix and reporting dropped records through `gap` events. The current source build has also been supporting `observationRetention: 'all'` for late readers:
+
+```ts
+await using session = await agent.session({ observationRetention: 'all' });
+const turn = await session.submit('Explain the result.');
+const result = await turn.wait();
+for await (const event of turn.events({ after: 0 })) {
+  console.log(event.type, event.sequence);
+}
+console.log(result.finalOutput);
+```
+
+Full retention has been keeping every emitted observation in memory while Session references remain reachable. Memory use has been growing with emitted payloads, and source gaps have still been appearing when the runtime cannot supply an observation. Full retention has not been reconstructing missing source records.
+
+Reopen and portable restore have been starting fresh observation buffers and sequences. Checkpoints have not been storing the retention setting. Earlier conversation records have been persisting in [history snapshots](state.md#history-and-state); a new opening has been accepting its own retention setting and cursor.
+
+Root native warnings appear only in Session observations. A `warning` contains `message`, `sessionId`, and `sequence`, with no Turn or submission identity. Keep the reader active during work: workspace skill discovery starts on the first submission. Warnings have been sharing the selected observation buffer. Their presence has not been establishing a failed Turn.
 
 ### Read events for one turn
 
@@ -103,7 +119,7 @@ Read `turn.events({ includeExecutionDetails: true })` and select observations wh
 
 Each reader chooses its own projection. Detailed items are detached copies, so changing one reader's data does not change another reader's result or the retained record. This option grants no execution or reply authority. Payloads can contain private arguments, output, or file contents; expose them only to trusted consumers.
 
-Both projections use the same bounded event buffer. A slow or reconnecting reader can receive a `gap`, so concatenated deltas or collected execution items may be incomplete. Read the final result through `turn.wait()` and use [history snapshots](state.md#history-and-state) for retained records. The [HTTP report service](../http-report-service.md) shows how to discard a provisional draft and reset from a snapshot after a gap. Event payloads and a completed command status do not establish the whole Turn's success or an external effect.
+Both projections have been using the selected observation buffer. Under bounded retention, slow or reconnecting readers have been receiving `gap` records after buffer eviction. Full retention has still been receiving source gaps, leaving concatenated deltas or collected execution items incomplete. Read the final result through `turn.wait()` and use [history snapshots](state.md#history-and-state) for retained records. The [HTTP report service](../http-report-service.md) shows how to discard a provisional draft and reset from a snapshot after a gap. Event payloads and a completed command status do not establish the whole Turn's success or an external effect.
 
 ### Steer a logical root or one native step
 

@@ -72,30 +72,28 @@ export async function completeDisplay(
   let fallback: string | undefined;
   const items = session.items({ subagentId: childId ?? undefined });
   try {
-    if (shown.size || (plain && output)) {
-      for (;;) {
-        const next = await localWait(items.next(), signal);
-        if (next.done) break;
-        const item: SessionItem = next.value;
-        if (
-          item.type !== 'message' ||
-          item.role !== 'assistant' ||
-          item.status !== 'completed' ||
-          !turns.has(item.turnId)
-        )
-          continue;
-        const text =
-          item.displayText ??
-          item.content
-            .map((part) => (part.type === 'input_image' ? '' : part.text))
-            .join('');
-        recorded.set(item.id, text);
-        if (item.turnId !== last) continue;
-        if (item.phase === 'final_answer') candidate = item.id;
-        else if (item.phase === null) {
-          fallback = item.id;
-          if (!nativeBlank(text)) candidate = item.id;
-        }
+    for (;;) {
+      const next = await localWait(items.next(), signal);
+      if (next.done) break;
+      const item: SessionItem = next.value;
+      if (
+        item.type !== 'message' ||
+        item.role !== 'assistant' ||
+        item.status !== 'completed' ||
+        !turns.has(item.turnId)
+      )
+        continue;
+      const text =
+        item.displayText ??
+        item.content
+          .map((part) => (part.type === 'input_image' ? '' : part.text))
+          .join('');
+      recorded.set(item.id, text);
+      if (item.turnId !== last) continue;
+      if (item.phase === 'final_answer') candidate = item.id;
+      else if (item.phase === null) {
+        fallback = item.id;
+        if (!nativeBlank(text)) candidate = item.id;
       }
     }
   } catch (error) {
@@ -107,10 +105,14 @@ export async function completeDisplay(
     else await localWait(closing, signal);
   }
   for (const [id, text] of shown) if (recorded.get(id) !== text) return false;
+  const id = candidate ?? fallback;
+  // Typed output may omit only its final JSON item from the display.
+  for (const [recordedId, text] of recorded)
+    if (text && shown.get(recordedId) !== text && (plain || recordedId !== id))
+      return false;
   if (!plain) return true;
   if (output === '' && [...shown.values()].every((text) => text === ''))
     return true;
-  const id = candidate ?? fallback;
   if (!id || !shown.has(id)) return false;
   const text = shown.get(id)!;
   return text === output || (output === '' && nativeBlank(text));

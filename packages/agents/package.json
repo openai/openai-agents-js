@@ -29,6 +29,11 @@
       }
     },
     "./sandbox": {
+      "types@*": {
+        "import": {
+          "types": "./dist/sandbox/index.d.mts"
+        }
+      },
       "types": "./dist/sandbox/index.d.ts",
       "require": "./dist/sandbox/index.js",
       "import": "./dist/sandbox/index.mjs"

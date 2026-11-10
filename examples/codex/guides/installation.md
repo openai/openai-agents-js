@@ -75,6 +75,12 @@ Copy the five tarballs into your application's `vendor/agents/` directory. Merge
 
 The overrides keep transitive SDK dependencies on the same local packages. Run `npm install --ignore-scripts` from your application's directory to update its lockfile. Keep the lockfile and the five tarballs. For later installs, run `npm ci --ignore-scripts`.
 
+### Keep native tool declarations with their SDK instance
+
+Mixing ESM `import` and CommonJS `require` or loading separate installed copies has been creating separate SDK instances, even at the same version. Native Sessions have been accepting function declarations only from their own SDK instance.
+
+Use the same module format and SDK installation for `Agent`, `tool()`, and tool helpers such as `SQLiteMemory`. When a library creates tools for your Session, pass it your application's `tool` factory.
+
 ## Run the classic extensions
 
 The alpha bundle includes the core SDK packages. Run examples that use `@openai/agents-extensions` from a checkout of the `v0.22.0-alpha.2` tag so the SDK and extensions use the same revision.

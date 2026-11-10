@@ -127,6 +127,27 @@ The [remote execution example](../remote-executor.ts) accepts an application-sel
 
 Rules accept ASCII hosts, host patterns, and IP addresses. They cover all ports. Rules cannot contain URLs, ports or IPv6 zone identifiers. The SDK captures an immutable canonical copy, removes duplicates and gives denials precedence. Equivalent case, trailing-dot and IPv4-mapped IPv6 forms share checkpoint identity. DNS can resolve before a request is denied.
 
+### Allow outbound public hosts
+
+In the current source build, `NetworkPolicy.allowAll()` has been selecting the existing `allowedDomains: ['**']` public-host wildcard. Explicit denials have been retaining precedence. The helper has been leaving Unix-socket access and local binding disabled unless supplied separately.
+
+This Linux declaration has been enabling the required Unix-socket grant on a job-private executor:
+
+```ts
+import { Environment, NetworkPolicy } from '@openai/agents';
+
+const environment = Environment.local({
+  cwd: '/workspace',
+  tools: ['exec_command'],
+  network: NetworkPolicy.allowAll({
+    deniedDomains: ['blocked.example.com'],
+    allowAllUnixSockets: true,
+  }),
+});
+```
+
+The wildcard has been permitting uploads and downloads to public hosts through the managed proxy. Linux has been requiring `allowAllUnixSockets: true` for every explicit network policy, including this factory. That grant has been permitting every reachable Unix socket, so the application has been retaining responsibility for executor isolation. On macOS, `NetworkPolicy.allowAll()` has been allowing public hosts without the socket grant. Local binding has been requiring the separate `allowLocalBinding: true` choice.
+
 ### Check platform requirements
 
 Admission uses the remote executor's platform and advertised managed-proxy capability. It requires Linux or macOS and a POSIX workspace. It refuses incompatible controller proxies, legacy sandbox paths and command escalation. The application must still trust its selected executor. An independently managed endpoint firewall does not replace this policy.
