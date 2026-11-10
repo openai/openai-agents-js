@@ -548,14 +548,15 @@ export class AiSdkModel implements NativeModel {
               part.detail != null && openai
                 ? { providerOptions: { openai: { imageDetail: part.detail } } }
                 : {};
-            return this.model.specificationVersion === 'v4'
-              ? {
-                  type: 'file',
-                  mediaType: 'image/*',
-                  data: { type: 'url', url: image },
-                  ...imageOptions,
-                }
-              : { type: 'image', image, ...imageOptions };
+            return {
+              type: 'file',
+              mediaType: 'image/*',
+              data:
+                this.model.specificationVersion === 'v4'
+                  ? { type: 'url', url: image }
+                  : image,
+              ...imageOptions,
+            };
           }
           throw new TypeError(
             'AiSdkModel received unsupported message content',

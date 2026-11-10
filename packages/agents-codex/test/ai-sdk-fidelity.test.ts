@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import { expect, it } from 'vitest';
 import { AiSdkModel, type ModelRequest } from '../src/runtime/models';
 
@@ -164,3 +165,68 @@ it.each(['high', 'low'])(
     expect(calls).toBe(0);
   },
 );
+
+it.each(['v2', 'v3'] as const)(
+  'projects native images into the %s file protocol',
+  async (specificationVersion) => {
+    const model = new AiSdkModel({
+      specificationVersion,
+      provider: 'other.messages',
+      modelId: 'fixture',
+      doGenerate(options) {
+        expect(options.prompt[0].content[0]).toEqual({
+          type: 'file',
+          mediaType: 'image/*',
+          data: new URL('https://example.test/image.png'),
+        });
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          finishReason: 'stop',
+        };
+      },
+    });
+    await model.complete(request());
+  },
+);
+
+it('preserves native image URLs through the actual Anthropic v3 provider', async () => {
+  const seen: any[] = [];
+  const server = createServer(async (incoming, outgoing) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+    seen.push(JSON.parse(Buffer.concat(chunks).toString()));
+    outgoing.writeHead(200, { 'content-type': 'application/json' });
+    outgoing.end(
+      JSON.stringify({
+        id: 'msg_image',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-5',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+    );
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const address = server.address() as { port: number };
+    const provider = createAnthropic({
+      apiKey: 'fixture',
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+    });
+    const real = provider('claude-sonnet-4-5');
+    expect(real.specificationVersion).toBe('v3');
+    await new AiSdkModel(real).complete(request());
+    expect(seen).toHaveLength(1);
+    expect(seen[0].messages[0].content[0]).toEqual({
+      type: 'image',
+      source: { type: 'url', url: 'https://example.test/image.png' },
+    });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
