@@ -623,7 +623,11 @@
     {
       "path": "sdk-chatgpt-plan-sse-rate-limit.patch",
       "sha256": "53ae1b894604c1e9e658564f44f983d31a7527b26bc5d99eeb3eb64d94683365"
+    },
+    {
+      "path": "sdk-owned-retirement-persistence-error.patch",
+      "sha256": "0a661f972c1bc0b2a797652186b5c68af73ebb5f4a6d47e61787a39ca3d1ffc6"
     }
   ],
-  "result_tree": "01e0d9de80133812abe0c5a0d96156c437c80b7d"
+  "result_tree": "ac8db6110ae04ba685aa2fa75c4d9e21a2f0e4eb"
 }

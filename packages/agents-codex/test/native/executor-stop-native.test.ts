@@ -1,10 +1,22 @@
-import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
   Environment,
+  localStorage,
   NativeAgents,
   NativeError,
   NativeProvider,
@@ -104,6 +116,7 @@ async function open(
     children?: boolean;
     tools?: Tool[];
     usage?: JsonObject;
+    storage?: ReturnType<typeof localStorage>;
   } = {},
 ) {
   const executor = await startPublicExecutor();
@@ -148,6 +161,7 @@ async function open(
       ],
     });
     session = await agent.session({
+      storage: options.storage,
       environment: new Environment({
         url: executor.url,
         cwd: await realpath(executor.cwd),
@@ -1271,4 +1285,195 @@ await tools.exec_command({cmd:'printf escaped > steering-continuation.txt'});`),
     }
   },
   45_000,
+);
+
+function isFileSizeLimitError(error: unknown): boolean {
+  return error instanceof AggregateError
+    ? error.errors.length > 0 && error.errors.every(isFileSizeLimitError)
+    : error instanceof Error &&
+        error.message.includes('File too large (os error 27)');
+}
+
+it.runIf(process.platform === 'linux')(
+  'finishes a held executor policy stop after a failed steering write',
+  async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'agents-executor-retirement-'),
+    );
+    const checkpoint = 'durable automatic compaction checkpoint';
+    const prefix = 'first accepted retirement steer';
+    const suffix = 'second accepted retirement steer';
+    const policyReason = 'private executor stop detail';
+    const entered = Promise.withResolvers<ExecutorContext>();
+    const release = Promise.withResolvers<void>();
+    let seedCalls = 0;
+    const run = promisify(execFile);
+    const limit = async (...args: string[]) =>
+      run('prlimit', ['--pid', String(process.pid), ...args]);
+    const ignoreFileLimitSignal = () => {};
+    const thread = (await binding()).NativeThread.prototype;
+    const next = thread._next_session_events;
+    const wire: { id: string; msg: JsonObject }[] = [];
+    const reader = vi
+      .spyOn(thread, '_next_session_events')
+      .mockImplementation(async function (this: NativeThread) {
+        const batch = await next.call(this);
+        wire.push(...batch.map((row) => JSON.parse(row)));
+        return batch;
+      });
+    let fixture: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      fixture = await open(
+        [
+          [call('seed', {}, { callId: 'retirement-seed' })],
+          (request) => {
+            expect(JSON.stringify(request.input)).toContain(
+              'CONTEXT CHECKPOINT COMPACTION',
+            );
+            return [message(checkpoint)];
+          },
+          [
+            call(
+              'exec_command',
+              { cmd: 'printf denied' },
+              { callId: 'retirement-exec' },
+            ),
+          ],
+        ],
+        {
+          async approval(info) {
+            entered.resolve(info);
+            await release.promise;
+            return stopExecutorTurn(policyReason);
+          },
+        },
+        {
+          tools: [
+            tool({
+              name: 'seed',
+              description: 'A tool used before compaction',
+              parameters: z.strictObject({}),
+              execute() {
+                seedCalls++;
+                return 'original tool effect';
+              },
+            }),
+          ],
+          storage: localStorage(directory),
+          usage: [
+            JSON.stringify({
+              input_tokens: 260_000,
+              output_tokens: 1_000,
+              total_tokens: 261_000,
+            }),
+          ],
+        },
+      );
+      const turn = await fixture.session.submit('Start the original turn.');
+      const result = observe(turn.wait());
+      const events = Array.fromAsync(turn.events());
+      const owner = await bounded(entered.promise, 'held retirement approval');
+      const turnId = turn.turnId!;
+      expect(turnId).toBeTruthy();
+      expect(owner).toMatchObject({ toolName: 'exec_command', turnId });
+      const rollouts = (await readdir(directory, { recursive: true })).filter(
+        (path) => /(?:^|[/\\])rollout-.*\.jsonl$/.test(path),
+      );
+      expect(rollouts).toHaveLength(1);
+      const rollout = join(directory, rollouts[0]!);
+      expect(await readFile(rollout, 'utf8')).toContain(checkpoint);
+      const largeInput = suffix + 'x'.repeat(128 * 1024);
+      for (const input of [prefix, largeInput]) {
+        expect(await turn.steerExact(input, turnId)).toMatchObject({ turnId });
+      }
+      const prior = await readFile(rollout, 'utf8');
+      expect(prior).not.toContain(prefix);
+      expect(prior).not.toContain(suffix);
+
+      // Only this forked test worker receives a temporary file size limit.
+      // Leave space for the short steer and force the large steer to fail.
+      const { stdout } = await limit(
+        '--fsize',
+        '--noheadings',
+        '--raw',
+        '--output',
+        'SOFT',
+      );
+      const fileLimit = (await stat(rollout)).size + 32 * 1024;
+      process.on('SIGXFSZ', ignoreFileLimitSignal);
+      let outcome: Awaited<typeof result>;
+      try {
+        await limit(`--fsize=${fileLimit}:`);
+        release.resolve();
+        outcome = await bounded(result, 'retired steering settlement');
+      } finally {
+        try {
+          await limit(`--fsize=${stdout.trim()}:`);
+        } finally {
+          process.off('SIGXFSZ', ignoreFileLimitSignal);
+        }
+      }
+
+      expect(starts(fixture.executor.requests)).toHaveLength(0);
+      expect(seedCalls).toBe(1);
+      fixture.model.assertExhausted();
+      const after = await readFile(rollout, 'utf8');
+      expect((await stat(rollout)).size).toBe(fileLimit);
+      const userText = after
+        .split('\n')
+        .slice(0, -1)
+        .map((line) => JSON.parse(line))
+        .filter(
+          ({ type, payload }) =>
+            type === 'response_item' && payload.role === 'user',
+        )
+        .flatMap(({ payload }) =>
+          payload.content.map(({ text }: { text?: string }) => text),
+        );
+      expect(userText.filter((text) => text === prefix)).toHaveLength(1);
+      expect(userText.filter((text) => text === largeInput)).toHaveLength(0);
+      const terminal = wire
+        .filter(({ id }) => id === turnId)
+        .map(({ msg }) => msg)
+        .filter(({ type }) =>
+          ['error', 'turn_aborted', 'turn_complete'].includes(String(type)),
+        );
+      const error = stopped(outcome);
+      const finished = (
+        await bounded(events, 'retired steering observation')
+      ).filter((event) => event.type === 'turn_finished');
+      expect(finished).toEqual([
+        expect.objectContaining({
+          turnId,
+          status: 'failed',
+          errorType: 'NativeError',
+        }),
+      ]);
+      expect(terminal.map(({ type }) => type)).toEqual([
+        'error',
+        'turn_aborted',
+      ]);
+      expect(terminal[0]?.message).toBe(
+        'Fatal error: Canonical thread persistence failed; turn completion stopped',
+      );
+      expect(terminal[1]).toMatchObject({
+        reason: 'interrupted',
+        error: { message: terminal[0]?.message },
+      });
+      expect(String(error)).not.toContain(policyReason);
+      expect(JSON.stringify({ terminal, finished })).not.toContain(directory);
+    } finally {
+      release.resolve();
+      reader.mockRestore();
+      try {
+        // Closing the deliberately poisoned store can report the writer error.
+        await fixture?.[Symbol.asyncDispose]().catch((error: unknown) => {
+          if (!isFileSizeLimitError(error)) throw error;
+        });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  },
+  35_000,
 );
