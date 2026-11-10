@@ -69,6 +69,7 @@ import { decodeRequestMetadata } from './request-metadata';
 import { projectResponseFactRecord } from './response-facts';
 import { networkPolicyDigest } from './network-policy';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
+import { parsePlanUsage, type CodexPlanUsage } from './plan-usage';
 import {
   parseEmbeddedCommand,
   nativeReviewOutput,
@@ -136,6 +137,7 @@ import {
 } from './output';
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { addAbortListener } from 'node:events';
 import type { EnvironmentAcquisition } from './environment-source';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -201,6 +203,7 @@ import {
   type ManualToolRequest,
 } from './manual';
 import {
+  binding,
   decode,
   encode,
   encodeReceipt,
@@ -1786,6 +1789,42 @@ export class Session<OutputT = string, Context = unknown> {
   /** Latest usable API-key limits observed in this live session. */
   rateLimits(): ApiRateLimits {
     return this.apiRateLimitState.snapshot;
+  }
+
+  /**
+   * Read current account usage for this Session's saved Codex login.
+   * Other authentication modes return `null`. A read can be cancelled with
+   * `signal`, and it rejects if the Session closes or replaces its engine.
+   * Treat unverified snapshots as display data. Use `observedAt` to decide
+   * whether a snapshot is fresh enough for your application.
+   */
+  async planUsage({
+    signal,
+  }: { signal?: AbortSignal } = {}): Promise<CodexPlanUsage | null> {
+    this.checkCallbackOperation('read plan usage for');
+    const thread = this.#native;
+    const check = () => {
+      signal?.throwIfAborted();
+      if (!this.isOpen) throw new NativeError('Session is closed');
+      if (this.replacingNative === thread || this.#native !== thread)
+        throw new NativeError('Session changed during plan usage read');
+    };
+    check();
+    const native = await binding();
+    check();
+    const request = new native._ModelHttpRequest();
+    const abort = signal && addAbortListener(signal, () => request.cancel());
+    let wire: string | null;
+    try {
+      wire = await thread._read_plan_usage(request);
+    } catch {
+      check();
+      throw new NativeError('Unable to read Codex plan usage');
+    } finally {
+      abort?.[Symbol.dispose]();
+    }
+    check();
+    return wire === null ? null : parsePlanUsage(wire);
   }
 
   private readonly turnHandles = new WeakMap<
