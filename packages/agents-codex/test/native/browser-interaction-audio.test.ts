@@ -69,7 +69,7 @@ describe('real browser native acceptance', () => {
   browserIt(
     'captures a fake microphone and plays actual browser peer audio through native WebRTC ownership',
     async () => {
-      const [client, browserModule, webrtcModule, portableModule] =
+      const [client, browserModule, webrtcModule, portableModule, usageModule] =
         await Promise.all([
           readFile(
             resolve('examples/codex/browser-acceptance/realtime-client.mjs'),
@@ -77,13 +77,47 @@ describe('real browser native acceptance', () => {
           readFile(resolve('packages/agents-codex/dist/voice/browser.mjs')),
           readFile(resolve('packages/agents-codex/dist/voice/webrtc.mjs')),
           readFile(resolve('packages/agents-codex/dist/voice/portable.mjs')),
+          readFile(
+            resolve('packages/agents-codex/dist/runtime/realtime-usage.mjs'),
+          ),
         ]);
       const scripts = new Map([
         ['/client.mjs', client],
         ['/voice-browser.mjs', browserModule],
         ['/webrtc.mjs', webrtcModule],
         ['/portable.mjs', portableModule],
+        ['/runtime/realtime-usage.mjs', usageModule],
       ]);
+      const voiceDependencies = [
+        'bounded-voice-json',
+        'portable-binding',
+        'portable-session',
+        'portable-socket',
+        'portable-webrtc',
+        'portable-credentials',
+        'portable-history',
+        'conversation-history',
+        'event-observers',
+        'base64',
+      ];
+      for (const [path, bytes] of await Promise.all(
+        voiceDependencies.map(
+          async (name) =>
+            [
+              `/${name}.mjs`,
+              await readFile(
+                resolve(`packages/agents-codex/dist/voice/${name}.mjs`),
+              ),
+            ] as const,
+        ),
+      ))
+        scripts.set(path, bytes);
+      scripts.set(
+        '/runtime/realtime-guardrails.mjs',
+        await readFile(
+          resolve('packages/agents-codex/dist/runtime/realtime-guardrails.mjs'),
+        ),
+      );
       const offers: string[] = [];
       const hangups: string[] = [];
       const sidebands: string[] = [];

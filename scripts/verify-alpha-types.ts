@@ -43,21 +43,22 @@ const runtimeAgent: runtime.Agent<unknown, { count: number }> = new Agent({
 });
 const facadeAgent: Agent<unknown, { count: number }> = runtimeAgent;
 const testing: typeof facadeTesting = runtimeTesting;
-const reverseTesting: typeof runtimeTesting = facadeTesting;
+const reverseTesting: RuntimeExports<typeof runtimeTesting> = facadeTesting;
 const deferred: typeof facadeDeferred = runtimeDeferred;
-const reverseDeferred: typeof runtimeDeferred = facadeDeferred;
+const reverseDeferred: RuntimeExports<typeof runtimeDeferred> = facadeDeferred;
 const tasks: typeof facadeTasks = runtimeTasks;
-const reverseTasks: typeof runtimeTasks = facadeTasks;
+const reverseTasks: RuntimeExports<typeof runtimeTasks> = facadeTasks;
 const a2a: typeof facadeA2A = runtimeA2A;
-const reverseA2A: typeof runtimeA2A = facadeA2A;
+const reverseA2A: RuntimeExports<typeof runtimeA2A> = facadeA2A;
 const memory: typeof facadeMemory = runtimeMemory;
-const reverseMemory: typeof runtimeMemory = facadeMemory;
+const reverseMemory: RuntimeExports<typeof runtimeMemory> = facadeMemory;
 const artifacts: typeof facadeArtifacts = runtimeArtifacts;
-const reverseArtifacts: typeof runtimeArtifacts = facadeArtifacts;
+const reverseArtifacts: RuntimeExports<typeof runtimeArtifacts> =
+  facadeArtifacts;
 const ui: typeof facadeUI = runtimeUI;
-const reverseUI: typeof runtimeUI = facadeUI;
+const reverseUI: RuntimeExports<typeof runtimeUI> = facadeUI;
 const mcpApps: typeof facadeMcpApps = runtimeMcpApps;
-const reverseMcpApps: typeof runtimeMcpApps = facadeMcpApps;
+const reverseMcpApps: RuntimeExports<typeof runtimeMcpApps> = facadeMcpApps;
 void [
   facadeAgent,
   testing,

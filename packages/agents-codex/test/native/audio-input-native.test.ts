@@ -59,7 +59,7 @@ it('preserves admitted mixed audio content through one native tool continuation'
       },
     },
   });
-  const result = await new Agent({
+  const agent = new Agent({
     model: 'custom-model',
     instructions: 'Use lookup once.',
     tools: [lookup],
@@ -68,7 +68,21 @@ it('preserves admitted mixed audio content through one native tool continuation'
       toolChoice: toolRef('lookup'),
       inputModalities: ['text', 'audio'],
     },
-  }).run(message);
+  });
+  await expect(
+    agent.run({
+      role: 'user',
+      content: [
+        {
+          type: 'input_audio',
+          audio_url: 'https://audio.test/' + 'a'.repeat(64 * 1024 * 1024),
+        },
+      ],
+    }),
+  ).rejects.toThrow(RangeError);
+  expect(seen).toHaveLength(0);
+  expect(effects).toEqual([]);
+  const result = await agent.run(message);
   expect(result.finalOutput).toBe('ok');
   expect(effects).toEqual(['lookup']);
   expect(seen).toHaveLength(2);
@@ -391,4 +405,52 @@ it.each([
     }),
   ).rejects.toThrow();
   expect(calls).toBe(0);
+});
+
+it('rejects a complete oversized audio receipt before native effects and retains the live session', async () => {
+  let calls = 0;
+  await using provider = new NativeProvider({
+    baseUrl: 'https://example.invalid/v1',
+    modelBackend: {
+      complete() {
+        calls++;
+        return {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'ok' }],
+            },
+          ],
+        };
+      },
+    },
+  });
+  const agent = new Agent({
+    model: 'custom-model',
+    instructions: 'Answer.',
+    provider,
+    modelSettings: { inputModalities: ['text', 'audio'] },
+  });
+  await using session = await agent.session();
+  const oversized: UserMessage = {
+    role: 'user',
+    content: [
+      { type: 'input_audio', audio_url: 'a'.repeat(64 * 1024 * 1024 - 33) },
+    ],
+  };
+  await expect(
+    (async () => {
+      await (await session.submit(oversized)).wait();
+    })(),
+  ).rejects.toThrow(RangeError);
+  expect(calls).toBe(0);
+  const valid: UserMessage = {
+    role: 'user',
+    content: [
+      { type: 'input_audio', audio_url: 'data:audio/wav;base64,UklGRg==' },
+    ],
+  };
+  expect((await (await session.submit(valid)).wait()).finalOutput).toBe('ok');
+  expect(calls).toBe(1);
 });

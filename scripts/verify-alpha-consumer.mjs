@@ -96,7 +96,11 @@ for (const esm of [false, true]) {
       : require(`@openai/agents-codex${suffix}`);
     const keys = (module) =>
       Object.keys(module)
-        .filter((key) => key !== 'default')
+        .filter(
+          (key) =>
+            key !== 'default' &&
+            (!esm || (key !== '__esModule' && key !== 'module.exports')),
+        )
         .sort();
     assert.deepEqual(
       keys(facade),

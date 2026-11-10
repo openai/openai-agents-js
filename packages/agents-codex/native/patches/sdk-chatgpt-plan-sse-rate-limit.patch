@@ -1,0 +1,14 @@
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index 5e8d55dac96651355375b08f58d9846184a101f3..bc9da7d9eb2b7dfa6e8507d21719bf41a7428088 100644
+--- a/codex-rs/codex-api/src/sse/responses.rs
++++ b/codex-rs/codex-api/src/sse/responses.rs
+@@ -857,7 +857,8 @@ async fn process_sse_with_treatment(
+             let code = match provider_error.get("code").and_then(Value::as_str) {
+                 Some(
+                     code @ ("subscription_sharing_usage_limit_exceeded"
+-                    | "subscription_sharing_usage_unavailable"),
++                    | "subscription_sharing_usage_unavailable"
++                    | "rate_limit_exceeded"),
+                 ) => Some(code),
+                 _ => None,
+             };

@@ -1,3 +1,4 @@
+import { MAX_AUDIO_INPUT_BYTES } from './media';
 import {
   attachPrivateRuntime,
   privateRuntime,
@@ -74,10 +75,12 @@ export async function openSession(
   catalog: ToolCatalog = captureTools(setup.tools),
 ): Promise<Session> {
   const { initialMessages, ...liveOptions } = options;
+  const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   const capturedInitialMessages = captureInitialMessages(
     initialMessages,
     options.state,
     setup.threadOptions._sdk_resume_thread_id,
+    audioBudget,
   );
   options = liveOptions;
   const { model, config, apiKey } = setup;
@@ -421,7 +424,12 @@ export async function openSession(
           : await engine._start_seeded_replaceable_thread(
               encode({ ...threadOptions, config: initialConfig }),
               catalog.specsJson,
-              encode(capturedInitialMessages),
+              encode(
+                capturedInitialMessages,
+                audioBudget.remaining === MAX_AUDIO_INPUT_BYTES
+                  ? undefined
+                  : MAX_AUDIO_INPUT_BYTES,
+              ),
             );
     }
   }

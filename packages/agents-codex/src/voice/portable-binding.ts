@@ -1,3 +1,4 @@
+import { boundedVoiceJSON } from './bounded-voice-json';
 import type {
   PortableVoiceControl,
   PortableVoiceEffect,
@@ -28,8 +29,8 @@ export class PortableVoiceControlBinding implements PortableVoiceControl {
 
   apply(command: unknown): PortableVoiceEffect[] {
     // URI conversion uses standard ECMAScript globals available in Hermes.
-    // JSON.stringify escapes isolated surrogates before UTF-8 conversion.
-    const json = JSON.stringify(command);
+    // Bounded capture rejects isolated surrogates before UTF-8 conversion.
+    const json = boundedVoiceJSON(command);
     if (json.length > 8 * 1024 * 1024)
       throw new Error('Native voice command exceeds capacity.');
     const bytes = unescape(encodeURIComponent(json));
