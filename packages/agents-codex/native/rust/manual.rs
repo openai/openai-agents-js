@@ -1,3 +1,4 @@
+use super::recovered_completion::{FreshTerminalReceipts, ToolOutcomes};
 use super::*;
 use anyhow::Context;
 use codex_history::{ResponseItemEnvelope, RolloutItem};
@@ -211,6 +212,23 @@ pub(crate) struct Continuation {
     pending_manual: Vec<ManualCall>,
     #[serde(skip)]
     generation: Option<Arc<Generation>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_outcomes: Option<ToolOutcomes>,
+    #[serde(skip)]
+    fresh: Option<FreshTerminalReceipts>,
+}
+
+impl Continuation {
+    pub(crate) fn terminal_seed(&mut self) -> Option<RecoveredToolCompletionSeed> {
+        match (self.tool_outcomes.take(), self.fresh.take()) {
+            (Some(outcomes), Some(fresh)) => Some(RecoveredToolCompletionSeed::new(
+                self.turn_id.clone(),
+                outcomes,
+                fresh,
+            )),
+            _ => None,
+        }
+    }
 }
 
 struct ManualNativeTurn {
@@ -927,6 +945,14 @@ impl PythonTools {
         if let Some((frame, keys)) = manual.restored.as_mut() {
             if keys.remove(key).is_some() {
                 frame.pending_manual.retain(|call| call.call_id != key.call);
+                if let Some(outcomes) = &mut frame.tool_outcomes {
+                    outcomes.record(&key.call, response.success);
+                }
+                if response.success {
+                    if let Some(generation) = self.resolve_generation(key.reply.generation) {
+                        FreshTerminalReceipts::record(&mut frame.fresh, generation, key);
+                    }
+                }
                 frame.accepted_replies.insert(
                     key.call.clone(),
                     Receipt::Native(PythonOutput(response).receipt(key)),
@@ -1263,6 +1289,12 @@ impl PythonTools {
             accepted_replies: history.outputs.clone(),
             pending_manual: Vec::new(),
             generation: Some(generation.clone()),
+            tool_outcomes: ToolOutcomes::capture(
+                &serde_json::from_value::<Vec<RolloutItem>>(raw.clone())?,
+                &validated[0].reply.thread,
+                &history.turn,
+            )?,
+            fresh: None,
         };
         let mut waiting = unique.len() != current.len();
         for call in &history.calls {
@@ -1309,6 +1341,25 @@ impl PythonTools {
                     frame
                         .accepted_replies
                         .insert(call.call_id.clone(), reply.clone());
+                }
+            }
+        }
+        if let Some(outcomes) = &mut frame.tool_outcomes {
+            for (key, receipt) in &manual.receipts {
+                if key.turn != history.turn || key.reply.thread != validated[0].reply.thread {
+                    continue;
+                }
+                let output = match receipt {
+                    Receipt::Native(ResponseItem::FunctionCallOutput { output, .. })
+                    | Receipt::Provisional(ResponseItem::FunctionCallOutput { output, .. })
+                    | Receipt::Native(ResponseItem::CustomToolCallOutput { output, .. })
+                    | Receipt::Provisional(ResponseItem::CustomToolCallOutput { output, .. }) => {
+                        Some(output)
+                    }
+                    _ => None,
+                };
+                if let Some(success) = output.and_then(|output| output.success) {
+                    outcomes.record(&key.call, success);
                 }
             }
         }
@@ -1462,6 +1513,13 @@ impl PythonTools {
         raw: &Value,
     ) -> Result<Value> {
         let history = history(raw)?;
+        if let Some(outcomes) = &frame.tool_outcomes {
+            outcomes.validate(
+                &serde_json::from_value::<Vec<RolloutItem>>(raw.clone())?,
+                &state.id.to_string(),
+                &frame.turn_id,
+            )?;
+        }
         let owner = state.id.to_string();
         let opening = state
             .thread
@@ -1621,6 +1679,9 @@ impl PythonTools {
                         .collect::<Vec<_>>(),
             "manual continuation is not complete"
         );
+        if let Some(fresh) = &frame.fresh {
+            fresh.check(self)?;
+        }
         let mut items = Vec::new();
         for (id, call) in frame.reply_order.iter().zip(&history.calls) {
             let receipt = frame

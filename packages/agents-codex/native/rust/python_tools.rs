@@ -38,8 +38,11 @@ pub(crate) use manual::{Continuation, ManualLedger, ManualSlot};
 #[path = "schema_fidelity.rs"]
 mod schema_fidelity;
 
+#[path = "recovered_completion.rs"]
+mod recovered_completion;
 #[path = "terminal_completion.rs"]
 mod terminal_completion;
+pub(crate) use recovered_completion::RecoveredToolCompletionSeed;
 pub(crate) use terminal_completion::{CompletionReply, TerminalProposal, TerminalSlots};
 
 #[path = "context_callbacks.rs"]
@@ -3324,6 +3327,10 @@ impl TurnLifecycleContributor for PythonContributor {
     }
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if let Some(seed) = input.turn_store.get::<RecoveredToolCompletionSeed>() {
+                seed.consume(&input);
+            }
+
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
                 let deferred = tools
                     .snapshot()

@@ -3827,7 +3827,7 @@ impl NativeThread {
             let saved = checkpoint::export_restored_manual(&inner)
                 .await
                 .map_err(native_error)?;
-            let (frame, items, settings) = tools
+            let (mut frame, items, settings) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
             if !items.is_empty() {
@@ -3839,6 +3839,7 @@ impl NativeThread {
                     .await
                     .map_err(native_error)?;
             }
+            let terminal = frame.terminal_seed();
             let result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
@@ -3848,6 +3849,7 @@ impl NativeThread {
                 selection,
                 trace,
                 observation_submission_id,
+                terminal,
             )
             .await
             .map_err(native_error)?;
