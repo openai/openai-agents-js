@@ -534,8 +534,8 @@
     },
     {
       "path": "portable-realtime-session-parity.patch",
-      "sha256": "f151215897dae2423e3cb59eaf710107b12b07c70f978cc5fd17a24581bcad74"
+      "sha256": "a7e305ec800be79e2aac5d92c39976d116ebdcbab6bca47150edc4385adc21c2"
     }
   ],
-  "result_tree": "9f115088c653b35ad51cad23174d093057825534"
+  "result_tree": "d0ad45dc15fc72cfc95122cd8b0fe88f44247e09"
 }

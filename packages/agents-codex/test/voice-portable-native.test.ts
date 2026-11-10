@@ -561,6 +561,320 @@ describe.runIf(enabled)('portable Rust control', () => {
     ).toThrow('already retired');
   });
 
+  async function queuedResponseSession(
+    automatic = false,
+    execute?: () => Promise<string>,
+  ) {
+    const gate = Promise.withResolvers<void>();
+    const frames: { type: string; item?: { type?: string } }[] = [];
+    const onError = vi.fn();
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+          if (event.type === 'input_audio_buffer.append') return gate.promise;
+        },
+        close() {},
+      },
+      {
+        model: 'test-realtime',
+        instructions: 'Help.',
+        onError,
+        sessionSettings: {
+          audio: {
+            input: {
+              turn_detection: {
+                type: 'server_vad',
+                interrupt_response: automatic,
+              },
+            },
+          },
+        },
+        tools: execute
+          ? [
+              {
+                name: 'lookup',
+                description: 'Lookup',
+                parameters: { type: 'object' },
+                needsApproval: false,
+                execute,
+              },
+            ]
+          : [],
+      },
+    );
+    await session.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { session, frames, onError, gate };
+  }
+  it.each(
+    [false, true].flatMap((automatic) =>
+      [false, true].flatMap((requestBeforeTerminal) =>
+        [false, true].map((newerRequest) => ({
+          automatic,
+          requestBeforeTerminal,
+          newerRequest,
+        })),
+      ),
+    ),
+  )(
+    'cancels the deferred caller request at arrival automatic=$automatic beforeTerminal=$requestBeforeTerminal newer=$newerRequest',
+    async ({ automatic, requestBeforeTerminal, newerRequest }) => {
+      const f = await queuedResponseSession(automatic);
+      try {
+        f.session.requestResponse();
+        await vi.waitFor(() =>
+          expect(
+            f.frames.filter((x) => x.type === 'response.create'),
+          ).toHaveLength(1),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        f.session.receive({
+          type: 'response.created',
+          response: { id: 'old' },
+        });
+        f.session.sendAudio(new ArrayBuffer(2));
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.type).toBe('input_audio_buffer.append'),
+        );
+        if (requestBeforeTerminal) f.session.requestResponse();
+        f.session.receive({
+          type: 'response.done',
+          response: { id: 'old', status: 'completed', output: [] },
+        });
+        if (!requestBeforeTerminal) f.session.requestResponse();
+        if (automatic)
+          f.session.receive({ type: 'input_audio_buffer.speech_started' });
+        else f.session.interrupt();
+        if (newerRequest) f.session.requestResponse();
+        f.gate.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(
+          f.frames.filter((x) => x.type === 'response.create'),
+        ).toHaveLength(newerRequest ? 2 : 1);
+        expect(f.onError).not.toHaveBeenCalled();
+        if (!newerRequest) {
+          f.session.requestResponse();
+          await vi.waitFor(() =>
+            expect(
+              f.frames.filter((x) => x.type === 'response.create'),
+            ).toHaveLength(2),
+          );
+        }
+      } finally {
+        f.gate.resolve();
+        await f.session.close();
+      }
+    },
+  );
+  it.each(
+    [false, true].flatMap((parked) =>
+      ['request', 'text'].map((method) => ({ parked, method })),
+    ),
+  )(
+    'defers caller $method behind an already received creation parked=$parked',
+    async ({ parked, method }) => {
+      const f = await queuedResponseSession();
+      try {
+        if (parked) {
+          f.session.sendAudio(new ArrayBuffer(2));
+          await vi.waitFor(() =>
+            expect(f.frames.at(-1)?.type).toBe('input_audio_buffer.append'),
+          );
+        }
+        f.session.receive({
+          type: 'response.created',
+          response: { id: 'vad' },
+        });
+        if (method === 'request') f.session.requestResponse();
+        else f.session.sendText('Next.');
+        f.gate.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(
+          f.frames.filter((x) => x.type === 'response.create'),
+        ).toHaveLength(0);
+        f.session.receive({
+          type: 'response.done',
+          response: { id: 'vad', status: 'completed', output: [] },
+        });
+        await vi.waitFor(() =>
+          expect(
+            f.frames.filter((x) => x.type === 'response.create'),
+          ).toHaveLength(1),
+        );
+        expect(f.onError).not.toHaveBeenCalled();
+      } finally {
+        f.gate.resolve();
+        await f.session.close();
+      }
+    },
+  );
+  it.each(
+    [false, true].flatMap((automatic) =>
+      [false, true].map((processedCreation) => ({
+        automatic,
+        processedCreation,
+      })),
+    ),
+  )(
+    'retains completed tool continuation across caller cancellation automatic=$automatic processed=$processedCreation',
+    async ({ automatic, processedCreation }) => {
+      const result = Promise.withResolvers<string>();
+      const execute = vi.fn(() => result.promise);
+      const f = await queuedResponseSession(automatic, execute);
+      try {
+        if (processedCreation) {
+          f.session.requestResponse();
+          await vi.waitFor(() =>
+            expect(
+              f.frames.filter((x) => x.type === 'response.create'),
+            ).toHaveLength(1),
+          );
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          f.session.receive({
+            type: 'response.created',
+            response: { id: 'old' },
+          });
+        }
+        f.session.sendAudio(new ArrayBuffer(2));
+        await vi.waitFor(() =>
+          expect(f.frames.at(-1)?.type).toBe('input_audio_buffer.append'),
+        );
+        if (!processedCreation)
+          f.session.receive({
+            type: 'response.created',
+            response: { id: 'old' },
+          });
+        f.session.receive({
+          type: 'response.done',
+          response: { id: 'old', status: 'completed', output: [item] },
+        });
+        f.session.requestResponse();
+        if (automatic)
+          f.session.receive({ type: 'input_audio_buffer.speech_started' });
+        else f.session.interrupt();
+        f.gate.resolve();
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce(), {
+          timeout: 500,
+        });
+        expect(
+          f.frames.filter((x) => x.type === 'response.create'),
+        ).toHaveLength(processedCreation ? 1 : 0);
+        expect(
+          f.frames.filter((x) => x.item?.type === 'function_call_output'),
+        ).toHaveLength(0);
+        result.resolve('Completed.');
+        await vi.waitFor(() =>
+          expect(
+            f.frames.filter((x) => x.type === 'response.create'),
+          ).toHaveLength(processedCreation ? 2 : 1),
+        );
+        expect(
+          f.frames.filter((x) => x.item?.type === 'function_call_output'),
+        ).toHaveLength(1);
+        expect(execute).toHaveBeenCalledOnce();
+        expect(f.onError).not.toHaveBeenCalled();
+      } finally {
+        f.gate.resolve();
+        result.resolve('Cleanup.');
+        await f.session.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'defers admitted continuation behind queued creation with another send=%s',
+    async (extra) => {
+      const output = Promise.withResolvers<void>();
+      const frames: { type: string; item?: { type?: string } }[] = [];
+      const execute = vi.fn(async () => '7');
+      const onError = vi.fn();
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+            if (event.item?.type === 'function_call_output')
+              return output.promise;
+          },
+          close() {},
+        },
+        {
+          model: 'test-realtime',
+          instructions: 'Help.',
+          tools: [
+            {
+              name: 'lookup',
+              description: 'Lookup',
+              parameters: { type: 'object' },
+              needsApproval: false,
+              execute,
+            },
+          ],
+          onError,
+        },
+      );
+      try {
+        await session.start();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        session.receive({ type: 'response.created', response: { id: 'old' } });
+        session.receive({
+          type: 'response.done',
+          response: { id: 'old', status: 'completed', output: [item] },
+        });
+        await vi.waitFor(() =>
+          expect(
+            frames.some((x) => x.item?.type === 'function_call_output'),
+          ).toBe(true),
+        );
+        if (extra) session.sendAudio(new ArrayBuffer(2));
+        session.receive({
+          type: 'response.created',
+          response: { id: 'new-vad' },
+        });
+        output.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(frames.filter((x) => x.type === 'response.create')).toHaveLength(
+          0,
+        );
+        session.receive({
+          type: 'response.done',
+          response: { id: 'new-vad', status: 'completed', output: [] },
+        });
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((x) => x.type === 'response.create'),
+          ).toHaveLength(1),
+        );
+        expect(
+          frames.filter((x) => x.item?.type === 'function_call_output'),
+        ).toHaveLength(1);
+        expect(execute).toHaveBeenCalledOnce();
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        output.resolve();
+        await session.close();
+      }
+    },
+  );
+
   async function inputSession(hold = false) {
     const gate = Promise.withResolvers<void>();
     const frames: {
@@ -953,6 +1267,18 @@ describe.runIf(enabled)('portable Rust control', () => {
         if (owner === 'idle') session.requestResponse();
         gate.resolve();
         await new Promise((resolve) => setTimeout(resolve, 0));
+        if (owner === 'queued-terminal') {
+          // The queued caller intent was cancelled before any physical create.
+          expect(
+            frames.filter((frame) => frame.type === 'response.create'),
+          ).toHaveLength(0);
+          session.requestResponse();
+          await vi.waitFor(() =>
+            expect(
+              frames.filter((frame) => frame.type === 'response.create'),
+            ).toHaveLength(1),
+          );
+        }
         if (owner !== 'queued-created')
           session.receive({
             type: 'response.created',
@@ -968,7 +1294,7 @@ describe.runIf(enabled)('portable Rust control', () => {
           response: { id: 'target', status: 'completed', output: [item] },
         });
         await vi.waitFor(() => expect(terminals).toContain('target'));
-        if (owner === 'idle')
+        if (owner === 'idle' || owner === 'queued-terminal')
           await vi.waitFor(() =>
             expect(definition.execute).toHaveBeenCalledTimes(1),
           );
