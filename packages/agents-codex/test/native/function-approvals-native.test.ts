@@ -7,6 +7,7 @@ import {
   InteractionRequired,
   NativeProvider,
   isFunctionApprovalRequest,
+  parseSessionState,
   tool,
   type FunctionApprovalRequest,
 } from '../../src';
@@ -1019,4 +1020,56 @@ it('keeps portable JSON separate from mutating managed transforms', async () => 
   expect(originals).toEqual([1, 1]);
   expect(effects).toEqual([2]);
   server.assertExhausted();
+});
+
+it('rejects a foreign response observation before restoring approval effects', async () => {
+  const effects: string[] = [];
+  const risky = tool({
+    name: 'risky',
+    parameters: z.object({}),
+    needsApproval: true,
+    finishTurn: true,
+    execute: () => {
+      effects.push('effect');
+      return 'terminal result';
+    },
+  });
+  const server = new ModelServer([
+    [call('risky', {}, { callId: 'foreign-observation' })],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use risky.',
+    model: 'gpt-5',
+    provider,
+    tools: [risky],
+  });
+  let saved;
+  {
+    await using source = await agent.session();
+    await source.submit('begin');
+    await nextApproval(source);
+    saved = await source.suspend();
+  }
+  const forged = JSON.parse(JSON.stringify(saved)) as {
+    history: { type: string; payload: { thread_id?: string } }[];
+  };
+  const observation = forged.history.find(
+    (item) => item.type === 'response_observation_record',
+  );
+  expect(observation).toBeDefined();
+  observation!.payload.thread_id = '00000000-0000-4000-8000-000000000001';
+  const outcome = await agent
+    .session({ state: parseSessionState(JSON.stringify(forged)) })
+    .then(
+      async (session) => {
+        await session.close();
+        return undefined;
+      },
+      (error: unknown) => error,
+    );
+  expect(outcome).toBeInstanceOf(Error);
+  expect(String(outcome)).toMatch(/foreign.*observation/i);
+  expect(effects).toEqual([]);
+  expect(server.requests).toHaveLength(1);
 });
