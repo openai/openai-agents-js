@@ -501,14 +501,6 @@
       "sha256": "2bc2cdb9862742968164511e241dfd68fed7d8b59b6d2a266a9ba919bdb80242"
     },
     {
-      "path": "sdk-linux-protected-metadata-mount-race.patch",
-      "sha256": "22137e6318edf060270e1fd558005d6fadb4c04297bdad1ba46dad141ddc2b7b"
-    },
-    {
-      "path": "sdk-linux-protected-metadata-bootstrap.patch",
-      "sha256": "76ced00372b6b83f300b3ddc798517b632c92eee5d4e78445d76bb7206bf1130"
-    },
-    {
       "path": "0171-original-history-catalog.patch",
       "sha256": "40357b99acbd7a2c7d57e2ecd5dcc3abba1f9cbbf959faf8929c3c1652722992"
     },
@@ -541,5 +533,5 @@
       "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
     }
   ],
-  "result_tree": "6f71a3154fecddcfd2479b5a5a4a96addb409744"
+  "result_tree": "b5517d0bea4170348c5362f780e9cac2eca1f3b6"
 }
