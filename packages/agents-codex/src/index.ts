@@ -373,3 +373,7 @@ export type {
   ComputerEnvironment,
   ComputerToolOptions,
 } from './runtime/computer';
+export type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageCounters,
+} from './runtime/realtime-usage';

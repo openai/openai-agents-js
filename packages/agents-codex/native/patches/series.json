@@ -389,6 +389,14 @@
       "sha256": "8b6badb78293eb00eed5a2147244164a195b4f4dfd9f823689977c7df7af5b9c"
     },
     {
+      "path": "0150-native-realtime-canonical-startup.patch",
+      "sha256": "214aa39eb9e2eed63fee553fff1a425066cbcebc37bd9ac7d3c2bb35c9852ea8"
+    },
+    {
+      "path": "0151-native-realtime-response-usage.patch",
+      "sha256": "cd078f600aafb1078014ec3005198de0637d2f66c7a45c2a3ca35f1d054dd4af"
+    },
+    {
       "path": "0100-native-hosted-option-fidelity.patch",
       "sha256": "c06cdc7449e3767e439c349e2253546e15e2fa1b97b7f2d048fb3e429cd632a6"
     },
@@ -401,5 +409,5 @@
       "sha256": "70a07e4e7e46d5e0ae324fd80d53da0b18a9e944287a7cb59f8bd5e2e05a3887"
     }
   ],
-  "result_tree": "f88c73a4337315ef2ec1724109b029acc9ac60cf"
+  "result_tree": "8d3bc6a8921bf1346a3404cdb8ec7d3990ff6830"
 }
