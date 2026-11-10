@@ -316,6 +316,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'items'
   | 'turns'
   | 'rateLimits'
+  | 'planUsage'
   | 'buildRealtimeSipConfig'
   | 'realtime'
   | 'realtimeUsage'
