@@ -1531,7 +1531,12 @@ impl EngineState {
                 .context("stored fork requires current managed tools")?;
             tools.check_idle(&source.thread).await?;
             ensure!(
-                source.thread.export_code_mode_state().await?.is_none(),
+                source
+                    .thread
+                    .export_code_mode_state()
+                    .await
+                    .map_err(anyhow::Error::msg)?
+                    .is_none(),
                 "stored history forks cannot retain native code-mode state"
             );
             None
