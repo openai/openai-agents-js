@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c77943719f0a1781 100644
+index 435f16c39174e57d1f0e10a08cfca0145617c0c6..551ed2f023f875baf0fd53f3a7801acddd5c9f31 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -54,6 +54,7 @@ use crate::stream_events_utils::record_completed_response_item_with_finalized_fa
@@ -33,7 +33,31 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
          if try_complete_tool_turn(
              &sess,
              &first_step_context,
-@@ -2439,6 +2449,24 @@ fn recovered_tools_from_history(
+@@ -607,6 +617,7 @@ pub(crate) async fn run_turn(
+                 Arc::clone(&turn_diff_tracker),
+                 &mut client_session,
+                 sampling_request_input,
++                completion_continuations,
+                 cancellation_token.child_token(),
+             )
+             .await
+@@ -1889,6 +1900,7 @@ async fn run_sampling_request(
+     turn_diff_tracker: SharedTurnDiffTracker,
+     client_session: &mut ModelClientSession,
+     input: Vec<ResponseItem>,
++    completion_continuations: usize,
+     cancellation_token: CancellationToken,
+ ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
+     if sess.captured_provider_image_reference_policy() == codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses {
+@@ -2079,6 +2091,7 @@ async fn run_sampling_request(
+                 &responses_metadata,
+                 Arc::clone(&turn_diff_tracker),
+                 &sampling_prompt,
++                completion_continuations,
+                 cancellation_token.child_token(),
+                 invocation_deadline.clone(),
+             )
+@@ -2439,6 +2452,24 @@ fn recovered_tools_from_history(
              }
          }
      }
@@ -58,7 +82,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
      let mut ordered_outputs = Vec::with_capacity(calls.len());
      let mut all_succeeded = true;
      for (call, id) in calls.iter().zip(&ids) {
-@@ -2477,6 +2505,60 @@ fn recovered_tools_from_history(
+@@ -2477,6 +2508,60 @@ fn recovered_tools_from_history(
      })
  }
 
@@ -119,7 +143,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
  async fn try_complete_tool_turn(
      sess: &Arc<Session>,
      step_context: &Arc<StepContext>,
-@@ -2485,15 +2567,16 @@ async fn try_complete_tool_turn(
+@@ -2485,15 +2570,16 @@ async fn try_complete_tool_turn(
      stop_hook_active: &mut bool,
      completion_continuations: &mut usize,
  ) -> CodexResult<bool> {
@@ -139,7 +163,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
          let stop = run_turn_stop_hooks(sess, step_context, *stop_hook_active, None).await;
          if stop.should_stop {
              return Err(CodexErr::TurnAborted);
-@@ -2581,6 +2664,7 @@ async fn propose_tool_completion(
+@@ -2581,6 +2667,7 @@ async fn propose_tool_completion(
              match decision {
                  None => continue,
                  Some(codex_extension_api::ToolCompletionDecision::Continue { feedback }) => {
@@ -147,7 +171,15 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
                      if let Some(feedback) = feedback {
                          *completion_continuations =
                              completion_continuations.checked_add(1).ok_or_else(|| {
-@@ -3221,8 +3305,47 @@ async fn drain_in_flight(
+@@ -3208,6 +3295,7 @@ async fn drain_in_flight(
+     sess: Arc<Session>,
+     step_context: &StepContext,
+     settled_tools: &mut SettledDirectTools,
++    completion_continuations: usize,
+ ) -> CodexResult<()> {
+     let turn_context = &step_context.turn;
+     while let Some(res) = in_flight.next().await {
+@@ -3221,8 +3309,48 @@ async fn drain_in_flight(
                      &result.envelope.item,
                  )
                  .await;
@@ -166,6 +198,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
 +                            .any(|contributor| {
 +                                contributor.hold_tool_completion(
 +                                    codex_extension_api::ToolCompletionInput {
++                                        continuation_count: completion_continuations,
 +                                        turn_id: &turn_context.sub_id,
 +                                        model: &step_context.settings.model_info.slug,
 +                                        call,
@@ -196,7 +229,15 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
              }
              Err(err) => return Err(err),
          }
-@@ -4074,7 +4197,7 @@ async fn try_run_sampling_request(
+@@ -3262,6 +3390,7 @@ async fn try_run_sampling_request(
+     responses_metadata: &CodexResponsesMetadata,
+     turn_diff_tracker: SharedTurnDiffTracker,
+     prompt: &Prompt,
++    completion_continuations: usize,
+     cancellation_token: CancellationToken,
+     logical_deadline: Option<Arc<super::model_invocation_deadline::ModelInvocationDeadline>>,
+ ) -> CodexResult<SamplingRequestResult> {
+@@ -4074,7 +4203,7 @@ async fn try_run_sampling_request(
      if timeout_ms.is_some() {
          deadline_cleanup_errors.extend(deadline.retire_tasks().await);
      }
@@ -205,7 +246,14 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
          let _tool_blocking_timing_guard = turn_context.turn_timing_state.begin_tool_blocking();
          let _tool_blocking_span = trace_span!(
              "codex.tool_blocking",
-@@ -4093,23 +4216,29 @@ async fn try_run_sampling_request(
+@@ -4087,29 +4216,37 @@ async fn try_run_sampling_request(
+             sess.clone(),
+             &step_context,
+             &mut settled_tools,
++            completion_continuations,
+         )
+         .await
+     } else {
          Ok(())
      };
 
@@ -217,6 +265,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
 +            sess.clone(),
 +            &step_context,
 +            &mut settled_tools,
++            completion_continuations,
 +        )
 +        .await;
 +        if tool_cleanup.is_ok() {
@@ -248,7 +297,7 @@ index 435f16c39174e57d1f0e10a08cfca0145617c0c6..f065e10e4806832bf1aa3149c7794371
          let durable = sess.ensure_rollout_durable().await;
          if durable.is_ok() && should_emit_token_count {
              sess.send_token_count_event(&turn_context).await;
-@@ -4136,9 +4265,13 @@ async fn try_run_sampling_request(
+@@ -4136,9 +4273,13 @@ async fn try_run_sampling_request(
          // Preserve an earlier provider/tool failure. A successful response must
          // not publish success when its owned request retirement failed.
          if outcome.is_ok() && tool_cleanup.is_ok() {
