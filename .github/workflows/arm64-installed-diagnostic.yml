@@ -1,4 +1,4 @@
-name: ARM64 installed receipts diagnostic
+name: Stock ARM64 focused installed verification
 
 on:
   push:
@@ -8,58 +8,66 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: arm64-installed-receipts-diagnostic
-  cancel-in-progress: true
-
 jobs:
   installed:
-    name: Exact ARM64 installed consumers
+    name: Verify both stock ARM64 installed profiles
     if: github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/mark/nov9-js-arm64-installed-receipts'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 60
+    timeout-minutes: 25
     defaults:
       run:
         shell: bash
     env:
       ALPHA_VERSION: 0.22.0-alpha.2
-      EXPECTED_PLATFORM: linux-arm64
-      RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: '4'
-      CARGO_INCREMENTAL: '0'
-      NATIVE_INPUTS: a14bbf8598f837569deb51ee40406e644d16a295d93223a6c49117d09df80595
+      NATIVE_INPUTS: 'a22ce0556587982ac0a522b046060a8f49b8b756b7b4d0758534a22c235c6b4f'
+      NATIVE_TRANSFER_ID: '13762542999'
+      NATIVE_TRANSFER_SHA256: '07ab0543dfe4fe760b7161b5fbb70e7af7fe95b5fb3d0390e029bf07796eb098'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 5c2dca1dfec9c58e4f357acc9c43f7139b184140
+          ref: '7753f5d02a09287b317ac4e2586f962a8c0d8cc8'
           fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Check runner and exact source
+      - name: Verify exact source and architecture
         run: |
-          test "$(git rev-parse HEAD)" = 5c2dca1dfec9c58e4f357acc9c43f7139b184140
-          git diff --exit-code
-          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
-      - name: Restore the exact verified native transfer
+          test "$(git rev-parse HEAD)" = '7753f5d02a09287b317ac4e2586f962a8c0d8cc8'
+          test "$(git rev-parse 'HEAD^{tree}')" = '44170d30ee75098bd5a1d65e554ac61434143942'
+          test "$(node --input-type=module -e 'import {nativeInputs} from "./scripts/native-bundle-inputs.mjs"; console.log(nativeInputs())')" = "$NATIVE_INPUTS"
+          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "linux-arm64")'
+          git show -s --format='%H %T %P' HEAD
+      - name: Restore and verify matching native products
         env:
           GH_TOKEN: ${{ github.token }}
-          NATIVE_ARTIFACT: '{"artifact-id":"13745601686","artifact-digest":"7e8ab51d76ee9b437a890a40fa40434b93648b9b3e37ebc26be5ff25a6ac3c14"}'
-        run: node scripts/restore-native-bundle.mjs
-      - name: Install Linux worker prerequisites
+          NATIVE_ARTIFACT: '{"artifact-id":"13762542999","artifact-digest":"07ab0543dfe4fe760b7161b5fbb70e7af7fe95b5fb3d0390e029bf07796eb098"}'
+        run: |
+          node scripts/restore-native-bundle.mjs
+          (cd packages/agents-codex && sha256sum -c - <<'SUMS'
+          fa9d51b6678eb0b59060dd7fba07e97b1f1002494a8f8ab597bf203a0a201538  native/build-receipt.json
+          ef0aceaed252afefea9b9ae03bd6e006e0730b537822421f1260788d1434e195  bin/codex-code-mode-host
+          6a3a3ba28e2baf6f14ec6d725796d1c63520d4dc05dd27b08c7fec9244508154  bin/codex-execve-wrapper
+          6a3a3ba28e2baf6f14ec6d725796d1c63520d4dc05dd27b08c7fec9244508154  bin/codex-linux-sandbox
+          6a3a3ba28e2baf6f14ec6d725796d1c63520d4dc05dd27b08c7fec9244508154  bin/codex-sdk-runtime
+          f1eb49e7c941324cea7def5336295f05a8b43c47f965a8ea9acfd78798c5bb65  native/codex.node
+          5add94955ba3ba1388a9dc261ddddd2c1662f167a75d2ec8b5a46d036f37e7d7  native/test-bin/exec-server-fixture
+          SUMS
+          )
+      - name: Install stock Linux worker prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends apparmor-profiles bubblewrap
           if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
-            sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
-              /etc/apparmor.d/bwrap-userns-restrict
+            sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
             sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           fi
-          uname -sr
+          uname -srmo
           bwrap --version
           bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
+          test "$(cat /sys/module/apparmor/parameters/enabled)" = Y
+          test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
         with:
           run_install: false
@@ -71,75 +79,40 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Create the release bundles
-        run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
-      - name: Test both extracted bundles with the existing-file fixture
+      - name: Create the exact release bundles
         run: |
-          echo "AppArmor unprivileged user namespace restriction"
-          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          dd --version | sed -n '1p'
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { readFileSync, writeFileSync } from 'node:fs';
-          const consumer = readFileSync('scripts/verify-alpha-consumer.mjs', 'utf8');
-          const original = 'if (printf overwritten > ../sentinel) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt';
-          const existing = 'command -v dd >/dev/null || exit 1; if (printf overwritten | dd of=../sentinel conv=nocreat status=none) 2>/dev/null; then exit 1; fi; printf granted > ../writable/proof.txt';
-          assert.equal(consumer.split(original).length, 2);
-          writeFileSync(
-            'scripts/.verify-alpha-consumer-existing-file.mjs',
-            consumer.replace(original, existing),
-            { flag: 'wx' },
-          );
-          const verifier = readFileSync('scripts/verify-alpha-package.mjs', 'utf8');
-          const fixture = './verify-alpha-consumer.mjs';
-          assert.equal(verifier.split(fixture).length, 2);
-          writeFileSync(
-            'scripts/.verify-alpha-package-existing-file.mjs',
-            verifier.replace(fixture, './.verify-alpha-consumer-existing-file.mjs'),
-            { flag: 'wx' },
-          );
-          NODE
           directory="$RUNNER_TEMP/agents-alpha"
-          diff_status=0
-          diff -u --label verify-alpha-consumer.mjs --label verify-alpha-consumer-existing-file.mjs \
-            scripts/verify-alpha-consumer.mjs scripts/.verify-alpha-consumer-existing-file.mjs \
-            > "$directory/FIXTURE.diff" || diff_status=$?
-          test "$diff_status" -eq 1
-          sha256sum scripts/{verify-alpha-consumer,.verify-alpha-consumer-existing-file,verify-alpha-package,.verify-alpha-package-existing-file}.mjs \
-            > "$directory/FIXTURE-SHA256SUMS"
-          printf '%s\n' "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" > "$directory/EXACT-SDK"
-          node scripts/.verify-alpha-package-existing-file.mjs --directory "$directory"
+          node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$directory"
           git diff --exit-code
-      - name: Check both installed receipts and record evidence checksums
+          native_package="$directory/openai-agents-codex-$ALPHA_VERSION-linux-arm64.tgz"
+          tar -xOzf "$native_package" package/native/build-receipt.json | cmp - packages/agents-codex/native/build-receipt.json
+          git show -s --format='%H %T %P' HEAD > "$directory/EXACT-SDK"
+          printf '%s %s %s\n' "$NATIVE_TRANSFER_ID" "$NATIVE_TRANSFER_SHA256" "$NATIVE_INPUTS" > "$directory/NATIVE-TRANSFER"
+          printf 'apparmor=%s\nunprivileged_userns_restriction=%s\n' "$(cat /sys/module/apparmor/parameters/enabled)" "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" > "$directory/SANDBOX"
+          sha256sum scripts/{alpha-package,verify-alpha-package,verify-alpha-consumer}.mjs > "$directory/VERIFIER-SHA256SUMS"
+      - name: Test both fresh extracted profiles
         run: |
-          cd "$RUNNER_TEMP/agents-alpha"
+          directory="$RUNNER_TEMP/agents-alpha"
+          node scripts/verify-alpha-package.mjs --directory "$directory" 2>&1 | tee "$directory/installed.log"
+          cd "$directory"
           test -s installed-starter-linux-arm64.json
           test -s installed-app-linux-arm64.json
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          for (const profile of ['starter', 'app']) {
-            const receipt = JSON.parse(readFileSync(`installed-${profile}-linux-arm64.json`, 'utf8'));
-            assert.equal(receipt.sourceCommit, '5c2dca1dfec9c58e4f357acc9c43f7139b184140');
-            assert.equal(receipt.profile, profile);
-            assert.equal(receipt.platform, 'linux-arm64');
-            assert.equal(receipt.arch, 'arm64');
-            assert(receipt.verified.includes('local-sandbox'));
-          }
-          NODE
           sha256sum -c SHA256SUMS-linux-arm64
-          sha256sum installed-starter-linux-arm64.json installed-app-linux-arm64.json SHA256SUMS-linux-arm64 EXACT-SDK FIXTURE.diff FIXTURE-SHA256SUMS > DIAGNOSTIC-SHA256SUMS
+          sha256sum installed-*-linux-arm64.json build-linux-arm64.json SHA256SUMS-linux-arm64 EXACT-SDK NATIVE-TRANSFER SANDBOX VERIFIER-SHA256SUMS installed.log > DIAGNOSTIC-SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
         with:
-          name: arm64-installed-receipts-existing-file-5c2dca1dfec9
+          name: arm64-focused-installed-7753f5d0
           path: |
-            ${{ runner.temp }}/agents-alpha/installed-starter-linux-arm64.json
-            ${{ runner.temp }}/agents-alpha/installed-app-linux-arm64.json
-            ${{ runner.temp }}/agents-alpha/SHA256SUMS-linux-arm64
-            ${{ runner.temp }}/agents-alpha/DIAGNOSTIC-SHA256SUMS
+            ${{ runner.temp }}/agents-alpha/*.tgz
+            ${{ runner.temp }}/agents-alpha/*.tar.gz
+            ${{ runner.temp }}/agents-alpha/installed-*.json
+            ${{ runner.temp }}/agents-alpha/build-*.json
+            ${{ runner.temp }}/agents-alpha/*SHA256SUMS*
             ${{ runner.temp }}/agents-alpha/EXACT-SDK
-            ${{ runner.temp }}/agents-alpha/FIXTURE.diff
-            ${{ runner.temp }}/agents-alpha/FIXTURE-SHA256SUMS
-          if-no-files-found: error
+            ${{ runner.temp }}/agents-alpha/NATIVE-TRANSFER
+            ${{ runner.temp }}/agents-alpha/SANDBOX
+            ${{ runner.temp }}/agents-alpha/installed.log
+          if-no-files-found: warn
           compression-level: 0
           retention-days: 14
