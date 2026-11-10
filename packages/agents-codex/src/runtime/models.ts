@@ -79,12 +79,31 @@ export function captureModelResponse(response: ModelResponse): JsonObject {
     usage,
   }) as JsonObject;
 }
+/** Provider cache affinity for a borrowed model adapter; native key on omission. */
+export interface ModelAdapterOptions {
+  promptCacheKey?: string;
+}
+
+function capturePromptCacheKey(
+  options: ModelAdapterOptions,
+): string | undefined {
+  const key = options.promptCacheKey;
+  if (key !== undefined && typeof key !== 'string')
+    throw new TypeError('promptCacheKey must be a string');
+  return key;
+}
+
 /** An injected async Chat Completions client; Core continues tools and conversation history. */
 export class ChatCompletionsModel implements NativeModel {
+  readonly #promptCacheKey: string | undefined;
+
   constructor(
     readonly client: any,
     readonly model?: string,
-  ) {}
+    options: ModelAdapterOptions = {},
+  ) {
+    this.#promptCacheKey = capturePromptCacheKey(options);
+  }
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const messages: Record<string, unknown>[] = [];
     const nativeTools = [...((request.body.tools ?? []) as JsonObject[])];
@@ -214,6 +233,8 @@ export class ChatCompletionsModel implements NativeModel {
         .filter((key) => key in request.body)
         .map((key) => [key, request.body[key]]),
     );
+    if (this.#promptCacheKey !== undefined)
+      options.prompt_cache_key = this.#promptCacheKey;
     if (
       Object.keys(request.body).some(
         (key) =>
@@ -348,10 +369,15 @@ export class ChatCompletionsModel implements NativeModel {
 
 /** Borrow a Responses client; Core retains the turn, tool and history owners. */
 export class ResponsesModel implements NativeModel {
+  readonly #promptCacheKey: string | undefined;
+
   constructor(
     readonly client: any,
     readonly model?: string,
-  ) {}
+    options: ModelAdapterOptions = {},
+  ) {
+    this.#promptCacheKey = capturePromptCacheKey(options);
+  }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     let response: any;
@@ -360,6 +386,9 @@ export class ResponsesModel implements NativeModel {
         {
           ...request.body,
           model: this.model ?? request.body.model,
+          ...(this.#promptCacheKey !== undefined
+            ? { prompt_cache_key: this.#promptCacheKey }
+            : {}),
           stream: false,
         },
         { signal: request.signal },
@@ -379,8 +408,12 @@ function hasResponsesRefusal(output: readonly JsonObject[]): boolean {
       item?.type === 'message' &&
       Array.isArray(item.content) &&
       item.content.some(
-        (part: JsonObject) =>
-          part?.type === 'refusal' && typeof part.refusal === 'string',
+        (part) =>
+          part !== null &&
+          typeof part === 'object' &&
+          !Array.isArray(part) &&
+          part.type === 'refusal' &&
+          typeof part.refusal === 'string',
       ),
   );
 }
@@ -461,10 +494,12 @@ export class AiSdkModel implements NativeModel {
     const reasoning = (body.reasoning ?? {}) as JsonObject;
     const providerOptions = copyJsonValue(this.#providerOptions) as JsonObject;
     if (this.model.provider.startsWith('openai.')) {
+      const openaiOptions = (providerOptions.openai ?? {}) as JsonObject;
       providerOptions.openai = {
-        ...((providerOptions.openai ?? {}) as JsonObject),
+        ...openaiOptions,
         store: false,
-        ...(body.prompt_cache_key != null
+        ...(body.prompt_cache_key != null &&
+        !Object.hasOwn(openaiOptions, 'promptCacheKey')
           ? { promptCacheKey: body.prompt_cache_key }
           : {}),
         ...(body.parallel_tool_calls != null

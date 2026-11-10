@@ -7,22 +7,50 @@ import { z } from 'zod';
 import {
   Agent,
   AiSdkModel,
+  ChatCompletionsModel,
   NativeProvider,
   NativeError,
   ResponsesModel,
   tool,
 } from '../../src';
 
-it.each(
-  (['responses', 'ai-sdk-chat', 'ai-sdk-responses'] as const).flatMap(
-    (adapter) =>
-      (['complete', 'incomplete', 'refusal', 'cancel'] as const).map(
-        (outcome) => ({ adapter, outcome }),
-      ),
-  ),
-)(
-  'keeps borrowed $adapter $outcome generation inside the native tool loop',
-  async ({ adapter, outcome }) => {
+const ordinaryCases = (
+  ['responses', 'ai-sdk-chat', 'ai-sdk-responses'] as const
+).flatMap((adapter) =>
+  (['complete', 'incomplete', 'refusal', 'cancel'] as const).map((outcome) => ({
+    adapter,
+    outcome,
+    cacheMode: 'ordinary',
+    cacheKey: undefined as string | undefined,
+    penalties: false,
+  })),
+);
+const cacheCases = (
+  ['chat', 'responses', 'ai-sdk-chat', 'ai-sdk-responses'] as const
+).flatMap((adapter) =>
+  (
+    [
+      { cacheMode: 'inherited', cacheKey: undefined },
+      { cacheMode: 'explicit', cacheKey: 'application-cache-key' },
+      { cacheMode: 'empty', cacheKey: '' },
+    ] as const
+  ).map((selection) => ({
+    adapter,
+    outcome: 'complete' as const,
+    penalties: false,
+    ...selection,
+  })),
+);
+const penaltyCases = (['chat', 'ai-sdk-chat'] as const).map((adapter) => ({
+  adapter,
+  outcome: 'complete' as const,
+  cacheMode: 'inherited-with-penalties',
+  cacheKey: undefined,
+  penalties: true,
+}));
+it.each([...ordinaryCases, ...cacheCases, ...penaltyCases])(
+  'keeps borrowed $adapter $outcome $cacheMode cache key inside the native tool loop',
+  async ({ adapter, outcome, cacheMode, cacheKey, penalties }) => {
     const seen: any[] = [];
     let enter!: () => void;
     const entered = new Promise<void>((resolve) => {
@@ -53,7 +81,7 @@ it.each(
       if (final)
         expect(JSON.stringify(body.input ?? body.messages)).toContain('42');
       let result: any;
-      if (adapter !== 'ai-sdk-chat')
+      if (adapter !== 'ai-sdk-chat' && adapter !== 'chat')
         result = {
           id: `resp_${seen.length}`,
           object: 'response',
@@ -161,18 +189,36 @@ it.each(
       },
     });
     try {
+      const client = new OpenAI({
+        apiKey: 'synthetic',
+        baseURL,
+        maxRetries: 0,
+      });
+      const options =
+        cacheKey === undefined ? {} : { promptCacheKey: cacheKey };
+      const openaiOptions: Record<string, string | boolean> = {
+        store: true,
+        parallelToolCalls: false,
+      };
+      if (cacheKey !== undefined) openaiOptions.promptCacheKey = cacheKey;
+      const providerOptions = { openai: openaiOptions };
       const backend =
         adapter === 'responses'
-          ? new ResponsesModel(
-              new OpenAI({ apiKey: 'synthetic', baseURL, maxRetries: 0 }),
-            )
-          : new AiSdkModel(
-              adapter === 'ai-sdk-chat'
-                ? createOpenAI({ apiKey: 'synthetic', baseURL }).chat('gpt-4.1')
-                : createOpenAI({ apiKey: 'synthetic', baseURL }).responses(
-                    'gpt-4.1',
-                  ),
-            );
+          ? new ResponsesModel(client, undefined, options)
+          : adapter === 'chat'
+            ? new ChatCompletionsModel(client, undefined, options)
+            : new AiSdkModel(
+                adapter === 'ai-sdk-chat'
+                  ? createOpenAI({ apiKey: 'synthetic', baseURL }).chat(
+                      'gpt-4.1',
+                    )
+                  : createOpenAI({ apiKey: 'synthetic', baseURL }).responses(
+                      'gpt-4.1',
+                    ),
+                cacheMode === 'ordinary' ? {} : providerOptions,
+              );
+      options.promptCacheKey = 'mutated-after-declaration';
+      providerOptions.openai.promptCacheKey = 'mutated-after-declaration';
       await using provider = new NativeProvider({
         baseUrl: `http://127.0.0.1:${address.port}/fallback/v1`,
         modelBackend: backend,
@@ -180,6 +226,21 @@ it.each(
       await using session = await new Agent({
         model: 'gpt-4.1',
         instructions: 'Use double.',
+        ...(cacheMode !== 'ordinary'
+          ? {
+              modelSettings: {
+                parallelToolCalls: true,
+                ...(penalties
+                  ? {
+                      extraBody: {
+                        frequency_penalty: 0.4,
+                        presence_penalty: 0.2,
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
         tools: [double],
         provider,
       }).session();
@@ -212,6 +273,25 @@ it.each(
       expect(seen).toHaveLength(outcome === 'complete' ? 2 : 1);
       expect(fallback).toEqual([]);
       expect(seen[0].stream ?? false).toBe(false);
+      if (penalties) {
+        for (const body of seen) {
+          expect(body.frequency_penalty).toBe(0.4);
+          expect(body.presence_penalty).toBe(0.2);
+        }
+      }
+      if (cacheMode !== 'ordinary') {
+        for (const body of seen) {
+          if (cacheKey === undefined) {
+            expect(body.prompt_cache_key).toEqual(expect.any(String));
+            expect(body.prompt_cache_key).not.toBe('');
+            expect(body.prompt_cache_key).not.toBe('mutated-after-declaration');
+          } else expect(body.prompt_cache_key).toBe(cacheKey);
+          if (adapter.startsWith('ai-sdk-')) {
+            expect(body.store).toBe(false);
+            expect(body.parallel_tool_calls).toBe(true);
+          }
+        }
+      }
     } finally {
       release();
       server.closeAllConnections();

@@ -118,7 +118,7 @@ it.each([
           : provider.chat('gpt-4.1'),
       );
       const image = 'data:image/png;base64,AA==';
-      const input =
+      const input: ModelRequest['body']['input'] =
         scenario === 'image'
           ? [
               {
