@@ -1169,23 +1169,71 @@ class NativeRealtimeOwner {
    * across surviving rows. A provider failure after some
    * acknowledgements can leave partial edits; retrieve observed history before
    * retrying. Canonical audit history, background work, and retained context for
-   * subsequent Session turns remain intact.
+   * subsequent Session turns remain intact. A synchronous updater receives a fresh
+   * provider snapshot after preceding input. If provider history changes before
+   * replacement, the operation rejects without retrying the updater.
    */
-  async updateHistory(items: readonly JsonObject[]): Promise<void> {
+  async updateHistory(
+    items:
+      | readonly JsonObject[]
+      | ((history: JsonObject[]) => readonly JsonObject[]),
+  ): Promise<void> {
     this.checkLive();
     this.session._checkVoiceAdapterOperation(
       this,
       'update its own conversation history',
     );
-    if (
-      !Array.isArray(items) ||
-      items.some(
-        (item) => !item || typeof item !== 'object' || Array.isArray(item),
+    const checkItems = (value: unknown): void => {
+      if (
+        !Array.isArray(value) ||
+        value.some(
+          (item) => !item || typeof item !== 'object' || Array.isArray(item),
+        )
       )
-    )
-      throw new TypeError(
-        'Realtime history must be an array of provider items',
-      );
+        throw new TypeError(
+          'Realtime history must be an array of provider items',
+        );
+    };
+    if (typeof items === 'function') {
+      this.pendingCommittedAudio++;
+      try {
+        await this.enqueueInput(async () => {
+          let retainedBytes = 0;
+          const charge = (value: readonly JsonObject[]): void => {
+            const bytes = jsonAllocationBytes(
+              value,
+              INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,
+              'Realtime history exceeds the 8 MiB input queue allocation budget',
+              true,
+            );
+            this.inputBytes += bytes;
+            retainedBytes += bytes;
+          };
+          try {
+            const expected = await this.retrieveConversationHistory();
+            this.checkLive();
+            charge(expected);
+            // Retain the comparison snapshot separately from mutable callback input.
+            charge(expected);
+            const updated = items(copyJsonValue(expected) as JsonObject[]);
+            checkItems(updated);
+            charge(updated);
+            const snapshot = copyJsonValue(updated) as JsonObject[];
+            this.checkLive();
+            await this.call('update_history', {
+              items: snapshot,
+              expected_items: expected,
+            });
+          } finally {
+            this.inputBytes -= retainedBytes;
+          }
+        });
+      } finally {
+        this.pendingCommittedAudio--;
+      }
+      return;
+    }
+    checkItems(items);
     const bytes = jsonAllocationBytes(
       items,
       INPUT_QUEUE_BYTES_LIMIT - this.inputBytes,
