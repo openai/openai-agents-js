@@ -784,6 +784,7 @@ it('admits one exact response batch for parallel functions and reports only auth
     'response',
     ['one', 'two'],
     expect.any(AbortSignal),
+    expect.any(Function),
   );
   expect(peer.session.submit).not.toHaveBeenCalled();
   expect((await events.next()).value).toMatchObject({
@@ -1372,7 +1373,16 @@ it('keeps the reader moving during a bound ACK and joins its rejection on close'
       },
     }),
   ).toBe(true);
-  peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } });
+  await vi.waitFor(() =>
+    expect(
+      peer.call.mock.calls.some(
+        ([operation]) => operation === 'realtime_conversation_update_sdk',
+      ),
+    ).toBe(true),
+  );
+  expect(
+    peer.payload({ SessionUpdated: { realtime_session_id: 'still-reading' } }),
+  ).toBe(true);
   let closed = false;
   const closing = peer.owner.close().then(() => {
     closed = true;
