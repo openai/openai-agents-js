@@ -169,6 +169,70 @@ try {
       } finally {
         await session.close();
       }
+    } else if (mode === 'trusted-credentials') {
+      stage = 'resolve selected login fixture paths';
+      const directory = dirname(await realpath(codexHome));
+      const workspace = join(directory, 'workspace');
+      const mcpStore = join(directory, 'mcp-store');
+      const open = (writableRoots = []) =>
+        agent.session({
+          environment: Environment.local({
+            cwd: workspace,
+            writableRoots,
+            writePolicy: 'trusted_workspace_write',
+            tools: ['exec_command'],
+            approval: () => true,
+          }),
+        });
+      const rejectsOpen = (roots, expected) =>
+        assert.rejects(async () => {
+          const session = await open(roots);
+          await session.close();
+        }, expected);
+      stage = 'reject a writable root containing the resolved fallback';
+      await rejectsOpen(
+        [mcpStore],
+        /Keep private authentication files outside/,
+      );
+      stage = 'reject a multiply linked fallback';
+      const hardLink = join(directory, 'fallback-hard-link');
+      await link(join(mcpStore, '.credentials.json'), hardLink);
+      try {
+        await rejectsOpen([], /credential file has multiple hard links/);
+      } finally {
+        await rm(hardLink);
+      }
+
+      stage = 'open a trusted saved login Session';
+      const session = await open().catch((error) => {
+        if (
+          sandboxPolicy === 'optional-sandbox' &&
+          error instanceof Error &&
+          error.message ===
+            'local executor could not establish the platform sandbox'
+        ) {
+          return undefined;
+        }
+        throw error;
+      });
+      if (!session) {
+        process.stdout.write('local sandbox unavailable');
+      } else {
+        try {
+          stage = 'verify private and ordinary file boundaries';
+          const turn = await session.submit('Verify the fixture boundaries.');
+          assert(
+            (await turn.wait()).finalOutput ===
+              'Verified trusted credential boundaries.',
+          );
+          assert(
+            (await readFile(join(workspace, 'credential-boundary'), 'utf8')) ===
+              'verified',
+          );
+        } finally {
+          await session.close();
+        }
+      }
     } else if (mode === 'overlap' || mode === 'local') {
       stage = 'resolve synthetic workspace and login paths';
       const canonicalHome = await realpath(codexHome);
