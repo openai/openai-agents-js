@@ -766,6 +766,15 @@ export class AiSdkModel implements NativeModel {
       return projectResponsesResponse(raw);
     const output: JsonObject[] = [];
     for (const part of result.content ?? []) {
+      if (
+        ['google', 'googleVertex', 'vertex'].some(
+          (provider) =>
+            part.providerMetadata?.[provider]?.thoughtSignature != null,
+        )
+      )
+        throw new TypeError(
+          'AiSdkModel does not support Google thought signatures',
+        );
       if (part.type === 'text')
         output.push({
           type: 'message',
