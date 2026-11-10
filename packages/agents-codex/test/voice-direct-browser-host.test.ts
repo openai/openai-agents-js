@@ -136,6 +136,8 @@ it.skipIf(
 
           return new Response(remote.localDescription!.sdp);
         };
+        let channelOpened = 0;
+        let channelMessages = 0;
         let executions = 0;
         let approvals = 0;
         let credentialResolutions = 0;
@@ -167,7 +169,19 @@ it.skipIf(
             },
           },
           signal: AbortSignal.timeout(18000),
-          media: {},
+          media: {
+            onDataChannel(channel: RTCDataChannel) {
+              channel.onopen = () => {
+                channelOpened++;
+              };
+              channel.onmessage = () => {
+                channelMessages++;
+              };
+            },
+            onTransportEvent: async () => {
+              throw new Error('application analytics unavailable');
+            },
+          },
         });
         try {
           const deadline = Date.now() + 10000;
@@ -181,6 +195,8 @@ it.skipIf(
           )
             await new Promise((resolve) => setTimeout(resolve, 20));
           const result = {
+            channelOpened,
+            channelObserved: channelMessages > 0,
             executions,
             approvals,
             credentialResolutions,
@@ -207,6 +223,8 @@ it.skipIf(
         }
       });
       expect(result).toEqual({
+        channelOpened: 1,
+        channelObserved: true,
         executions: 1,
         approvals: 1,
         credentialResolutions: 1,

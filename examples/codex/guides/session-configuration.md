@@ -78,13 +78,13 @@ For web search with saved login, use `webSearch({ route: 'hosted' })` with a mod
 
 With the current [source build](building.md), provider options accept `headers`, `queryParams`, and `envHeaders` maps, plus `organization` and `project`. `envHeaders` maps header names to environment-variable names. The descriptor copies maps and resolves those environment values at construction; missing or empty values stay omitted. Create a new provider to refresh them. Native authentication, protocol and private-hop headers remain reserved, and configured routing does not follow redirects.
 
-`responseMode: 'buffered'` selects complete Responses JSON over API-key HTTP. Set `supportsWebsockets: false` for this route. The JSON reader enforces a 64 MiB body limit and structural limits through the selected transport. The default `responseMode: 'streaming'` preserves the existing SSE/WebSocket route. Buffered responses still feed the ordinary session, tool and event lifecycle.
+`responseMode: 'buffered'` has been selecting complete Responses JSON over API-key HTTP. The provider has been accepting an omitted or `false` `supportsWebsockets` value and rejecting `true` in buffered mode. The JSON reader enforces a 64 MiB body limit and structural limits through the selected transport. The default `responseMode: 'streaming'` preserves the existing SSE/WebSocket route. Buffered responses still feed the ordinary session, tool and event lifecycle.
 
 ### Provider lifetime
 
 Your application owns the provider, including the default provider created by `new Agent(...)` when you omit `provider`. That default is available as `agent.provider`. Closing a Session or completing `agent.run()` has been releasing that operation's resources. The provider remains available for later Sessions, including its reusable HTTP connections.
 
-With the current [source build](building.md), a shared `NativeProvider` can reuse an idle engine for an eligible `agent.run()` call. Reuse requires an API key and streaming HTTP. Set `supportsWebsockets: false` to use HTTP with the default endpoint.
+With the current [source build](building.md), a shared `NativeProvider` has been reusing idle engines for eligible API-key `agent.run()` calls over streaming or buffered HTTP. Eligible runs have been selecting HTTP by default, including at the default endpoint. With `supportsWebsockets` omitted, other streaming calls have been allowing WebSockets at the default endpoint, including explicit Sessions. For streaming calls, `supportsWebsockets: true` has been allowing WebSockets and disabling idle-engine reuse. Setting it to `false` has been forcing HTTP for other streaming calls, including explicit Sessions.
 
 Reuse is unavailable for runs with tools, structured output, initial messages, restored state, or a custom environment. Each eligible run starts a fresh conversation with its own instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
 

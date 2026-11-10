@@ -82,3 +82,18 @@ export function detachVoiceObservation<T>(
     });
   return copy;
 }
+
+/** Passive callbacks cannot fail control or leave rejected promises unobserved. */
+export function notifyVoiceObserver<Value>(
+  observer: ((event: Value) => unknown) | undefined,
+  event: Value,
+): void {
+  if (!observer) return;
+  try {
+    void Promise.resolve(observer(detachVoiceObservation(event))).catch(
+      () => {},
+    );
+  } catch {
+    // Application observers do not own voice control.
+  }
+}

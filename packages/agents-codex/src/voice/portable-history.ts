@@ -54,11 +54,17 @@ export class PortableVoiceHistory {
 
   async update(update: PortableHistoryUpdate): Promise<void> {
     if (this.closed) throw this.closed;
-    const captured = capture(
-      typeof update === 'function' ? update(this.snapshot()) : update,
-    );
-    return this.enqueue(captured.bytes, async () => {
-      const edits = plan(this.snapshot(), captured.items);
+    const captured = typeof update === 'function' ? undefined : capture(update);
+    return this.enqueue(captured?.bytes ?? 0, async (retain) => {
+      const next =
+        typeof update === 'function'
+          ? capture(update(this.snapshot()))
+          : captured!;
+      if (typeof update === 'function') {
+        if (this.closed) throw this.closed;
+        retain(next.bytes);
+      }
+      const edits = plan(this.snapshot(), next.items);
       if (!edits.length) return;
       // Pure native preflight: every edit must be valid before the first write.
       this.send({
@@ -98,29 +104,40 @@ export class PortableVoiceHistory {
     }).catch(() => {});
   }
 
-  private enqueue(bytes: number, work: () => Promise<void>): Promise<void> {
+  private enqueue(
+    bytes: number,
+    work: (retain: (bytes: number) => void) => Promise<void>,
+  ): Promise<void> {
     if (this.closed) throw this.closed;
     if (this.queued >= 16 || this.queuedBytes + bytes > CAPACITY) {
       const error = new Error('Portable history queue exceeds capacity.');
       this.rejected?.(error);
       throw error;
     }
+    let retainedBytes = bytes;
     this.queued++;
-    this.queuedBytes += bytes;
+    this.queuedBytes += retainedBytes;
     const operation = this.tail.then(async () => {
-      if (this.closed) throw this.closed;
-      await work();
+      try {
+        if (this.closed) throw this.closed;
+        await work((additionalBytes) => {
+          if (this.queuedBytes + additionalBytes > CAPACITY)
+            throw new Error('Portable history queue exceeds capacity.');
+          retainedBytes += additionalBytes;
+          this.queuedBytes += additionalBytes;
+        });
+      } catch (error) {
+        this.rejected?.(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        throw error;
+      } finally {
+        this.queued--;
+        this.queuedBytes -= retainedBytes;
+      }
     });
     this.tail = operation.catch(() => {});
-    return operation
-      .catch((error: Error) => {
-        this.rejected?.(error);
-        throw error;
-      })
-      .finally(() => {
-        this.queued--;
-        this.queuedBytes -= bytes;
-      });
+    return operation;
   }
 
   rejectDeletion(itemId: string, error: Error): boolean {
