@@ -36,6 +36,7 @@ import {
   readCheckpointSelections,
 } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
+import { tryOpenPlainRun, type PreparedPlainRun } from './plain-run';
 import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
@@ -477,9 +478,27 @@ export class Agent<Context = undefined, Output = string> {
   async session(
     ...args: SessionArguments<Context>
   ): Promise<Session<Output, Context>> {
+    return (await this.#open(args[0])).session;
+  }
+
+  #open(
+    suppliedOptions?: SessionOptions<Context>,
+  ): Promise<{ session: CoreSession<Output, Context> }>;
+  #open(
+    suppliedOptions: SessionOptions<Context>,
+    plainInput: string,
+  ): Promise<
+    { session: CoreSession<Output, Context> } | { plainRun: PreparedPlainRun }
+  >;
+  async #open(
+    suppliedOptions?: SessionOptions<Context>,
+    plainInput?: string,
+  ): Promise<
+    { session: CoreSession<Output, Context> } | { plainRun: PreparedPlainRun }
+  > {
     const options = {
-      ...(args[0] ?? {}),
-      parentTrace: captureTraceContext(args[0]?.parentTrace),
+      ...(suppliedOptions ?? {}),
+      parentTrace: captureTraceContext(suppliedOptions?.parentTrace),
     };
     if (
       options.observationRetention !== undefined &&
@@ -512,10 +531,8 @@ export class Agent<Context = undefined, Output = string> {
           (options as OwnedSessionOptions<Context>)[ownedRun]
             ?.privateEngineGrant,
         );
-      const { setup, session, lease, environmentOwner } = await Reflect.apply(
-        prepare,
-        this,
-        [
+      const { setup, session, lease, environmentOwner, privateRun } =
+        await Reflect.apply(prepare, this, [
           options,
           (owner: EnvironmentAcquisition) => {
             acquiredEnvironment = owner;
@@ -523,8 +540,7 @@ export class Agent<Context = undefined, Output = string> {
           () => {
             providerOwnsCleanup = true;
           },
-        ],
-      );
+        ]);
       let openingError: unknown;
       try {
         session.tracingCapture = tracingCapture;
@@ -540,6 +556,24 @@ export class Agent<Context = undefined, Output = string> {
         };
         await tracingCapture?.ready;
         environmentOwner.signal.throwIfAborted();
+        if (
+          plainInput !== undefined &&
+          privateRun &&
+          prepare === Agent.#canonicalPrepare
+        ) {
+          const plainRun = await tryOpenPlainRun(
+            setup,
+            session,
+            lease,
+            plainInput,
+            options.signal,
+          );
+          if (plainRun) {
+            environmentOwner.opened();
+            lease.openingSucceeded();
+            return { plainRun };
+          }
+        }
         const opened = await openSession(
           setup,
           session,
@@ -551,7 +585,7 @@ export class Agent<Context = undefined, Output = string> {
           opened,
         );
         lease.openingSucceeded();
-        return opened as CoreSession<Output, Context>;
+        return { session: opened as CoreSession<Output, Context> };
       } catch (error) {
         openingError = error ?? null;
         return await lease.failOpening(error);
@@ -574,8 +608,8 @@ export class Agent<Context = undefined, Output = string> {
   }
 
   /**
-   * Run once and close the owned Session. When RunCleanupError is thrown,
-   * its cleanup.close() retries only that Session's cleanup.
+   * One-shot execution and owned cleanup.
+   * Cleanup retry after RunCleanupError: cleanup.close(), without another run.
    */
   async run(
     input: UserInput | null,
@@ -657,11 +691,23 @@ export class Agent<Context = undefined, Output = string> {
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
     )
       sessionOptions[ownedRun]!.privateEngineGrant = privateOwnedGrant();
-    const session = await Reflect.apply(factoryApply, factory, [
-      this,
-      [sessionOptions] as SessionArguments<Context>,
-    ]);
-    return runOwnedSession(session as CoreSession<Output>, preparedInput, {
+    let session: CoreSession<Output>;
+    if (
+      sessionOptions[ownedRun]?.privateEngineGrant !== undefined &&
+      beforeStep === undefined &&
+      typeof input === 'string'
+    ) {
+      const opened = await this.#open(sessionOptions, input);
+      if ('plainRun' in opened)
+        return opened.plainRun.run() as Promise<Completed<Output>>;
+      session = opened.session;
+    } else {
+      session = (await Reflect.apply(factoryApply, factory, [
+        this,
+        [sessionOptions] as SessionArguments<Context>,
+      ])) as CoreSession<Output>;
+    }
+    return runOwnedSession(session, preparedInput, {
       maxModelSteps,
       budget,
       returnState: options.returnState,
@@ -1562,7 +1608,7 @@ export class Agent<Context = undefined, Output = string> {
           }
         };
       }
-      return { setup, session, lease, environmentOwner };
+      return { setup, session, lease, environmentOwner, privateRun };
     } catch (error) {
       return lease.failOpening(error);
     }

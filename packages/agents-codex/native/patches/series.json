@@ -529,9 +529,13 @@
       "sha256": "4a6d3118ac0f5512fabe53aa80f8e82bc6fca1274ffba2731bde2ecca89d6532"
     },
     {
+      "path": "0098-private-plain-modelclient-bridge.patch",
+      "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
+    },
+    {
       "path": "portable-realtime-session-parity.patch",
       "sha256": "f151215897dae2423e3cb59eaf710107b12b07c70f978cc5fd17a24581bcad74"
     }
   ],
-  "result_tree": "1d384b7d3fbdc5c60df784c2d8514055afe7c843"
+  "result_tree": "9f115088c653b35ad51cad23174d093057825534"
 }
