@@ -411,6 +411,7 @@ it('reconciles and retrieves provider history without replacing canonical histor
   expect(update[0]).toBe('realtime_conversation_update_history_sdk');
   const params = JSON.parse(update[1]);
   expect(params.items).toEqual(items);
+  expect(params).not.toHaveProperty('expected_items');
   expect(params.generation).toEqual(expect.any(String));
   f.native.call.mockResolvedValueOnce(JSON.stringify(items[0]));
   await expect(voice.retrieveConversationItem('provider-1')).resolves.toEqual(
@@ -1033,3 +1034,192 @@ it('releases raw cancellation dispatch while native waits for a host callback to
   await voice.close();
   await f.session.close();
 }, 3000);
+
+it('runs a history updater once after preceding input and preserves its original provider snapshot', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const applying = Promise.withResolvers<void>();
+  const accepted = Promise.withResolvers<void>();
+  const original = f.native.call.getMockImplementation()!;
+  const provider = [
+    { id: 'provider-first', type: 'message', content: [{ text: 'original' }] },
+  ];
+  const operations: string[] = [];
+  f.native.call.mockImplementation(async (operation, raw) => {
+    operations.push(operation);
+    if (
+      operation === 'realtime_conversation_text_sdk' &&
+      operations.length === 1
+    ) {
+      entered.resolve();
+      await release.promise;
+    }
+    if (operation === 'realtime_conversation_retrieve_history_sdk')
+      return JSON.stringify(provider);
+    if (operation === 'realtime_conversation_update_history_sdk') {
+      applying.resolve();
+      await accepted.promise;
+    }
+    return original(operation, raw);
+  });
+  const prior = voice.sendText('before updater');
+  await entered.promise;
+  const update = vi.fn((history: JsonObject[]) => {
+    expect(history).toEqual(provider);
+    (history[0].content as JsonObject[])[0].text = 'corrected';
+    return history;
+  });
+  const pending = voice.updateHistory(update);
+  const later = voice.sendText('after updater');
+  expect(update).not.toHaveBeenCalled();
+  await expect(
+    f.session._runVoiceCallback(
+      () => voice.sendText('nested queued input'),
+      voice,
+    ),
+  ).rejects.toThrow('Realtime adapter callback cannot');
+  release.resolve();
+  await applying.promise;
+  expect(update).toHaveBeenCalledOnce();
+  expect(operations).toEqual([
+    'realtime_conversation_text_sdk',
+    'realtime_conversation_retrieve_history_sdk',
+    'realtime_conversation_update_history_sdk',
+  ]);
+  const request = f.native.call.mock.calls.find(
+    ([operation]) => operation === 'realtime_conversation_update_history_sdk',
+  )!;
+  expect(JSON.parse(request[1])).toMatchObject({
+    expected_items: provider,
+    items: [{ ...provider[0], content: [{ text: 'corrected' }] }],
+  });
+  accepted.resolve();
+  await Promise.all([prior, pending, later]);
+  expect(operations.at(-1)).toBe('realtime_conversation_text_sdk');
+  await expect(
+    f.session._runVoiceCallback(
+      () => voice.sendText('after acceptance'),
+      voice,
+    ),
+  ).resolves.toBeUndefined();
+  await voice.close();
+  await f.session.close();
+});
+
+it('preserves stale-snapshot rejection without retrying a history updater', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const provider = [{ id: 'known', type: 'message', content: [] }];
+  const failure = new Error('Provider history changed since retrieval');
+  f.native.call.mockResolvedValueOnce(JSON.stringify(provider));
+  f.native.call.mockRejectedValueOnce(failure);
+  const update = vi.fn(() => []);
+  await expect(voice.updateHistory(update)).rejects.toBe(failure);
+  expect(update).toHaveBeenCalledOnce();
+  expect(JSON.parse(f.native.call.mock.calls.at(-1)![1])).toMatchObject({
+    items: [],
+    expected_items: provider,
+  });
+  await expect(voice.updateHistory([])).resolves.toBeUndefined();
+  await voice.close();
+  await f.session.close();
+});
+
+it.each(['throw', 'invalid', 'oversize', 'non-json'] as const)(
+  'releases a history updater reservation after %s before any replacement',
+  async (failure) => {
+    const f = fixture();
+    await f.session._start();
+    const voice = await f.session.realtime();
+    const original = f.native.call.getMockImplementation()!;
+    f.native.call.mockImplementation(async (operation, raw) =>
+      operation === 'realtime_conversation_retrieve_history_sdk'
+        ? JSON.stringify([{ id: 'original', type: 'message', content: [] }])
+        : original(operation, raw),
+    );
+    const update = () => {
+      if (failure === 'throw') throw new Error('updater failed');
+      if (failure === 'invalid') return null as never;
+      return [
+        {
+          id: 'new',
+          text: failure === 'oversize' ? 'A'.repeat(3 * 1024 * 1024) : 'text',
+          ...(failure === 'non-json' ? { invalid: undefined } : {}),
+        },
+      ] as unknown as JsonObject[];
+    };
+    for (let attempt = 0; attempt < 3; attempt++)
+      await expect(voice.updateHistory(update)).rejects.toThrow();
+    expect(
+      f.native.call.mock.calls.filter(
+        ([operation]) =>
+          operation === 'realtime_conversation_update_history_sdk',
+      ),
+    ).toEqual([]);
+    await expect(
+      voice.updateHistory([{ id: 'large-valid', text: 'A'.repeat(1500000) }]),
+    ).resolves.toBeUndefined();
+    await expect(
+      f.session._runVoiceCallback(() => voice.sendText('released'), voice),
+    ).resolves.toBeUndefined();
+    await voice.close();
+    await f.session.close();
+  },
+);
+
+it('charges both the expected history and mutable updater input before invoking the callback', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const original = f.native.call.getMockImplementation()!;
+  f.native.call.mockImplementation(async (operation, raw) =>
+    operation === 'realtime_conversation_retrieve_history_sdk'
+      ? JSON.stringify([{ id: 'large-provider', text: 'A'.repeat(1100000) }])
+      : original(operation, raw),
+  );
+  const update = vi.fn(() => []);
+  await expect(voice.updateHistory(update)).rejects.toThrow(
+    /history.*input queue.*budget/,
+  );
+  expect(update).not.toHaveBeenCalled();
+  await expect(
+    voice.updateHistory([{ id: 'after-failure', text: 'A'.repeat(1500000) }]),
+  ).resolves.toBeUndefined();
+  await voice.close();
+  await f.session.close();
+});
+
+it('does not invoke a history updater when the owner closes during retrieval', async () => {
+  const f = fixture();
+  await f.session._start();
+  const voice = await f.session.realtime();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = f.native.call.getMockImplementation()!;
+  f.native.call.mockImplementation(async (operation, raw) => {
+    if (operation === 'realtime_conversation_retrieve_history_sdk') {
+      entered.resolve();
+      await release.promise;
+      return '[]';
+    }
+    return original(operation, raw);
+  });
+  const update = vi.fn(() => []);
+  const pending = voice.updateHistory(update);
+  const rejection = expect(pending).rejects.toThrow('not open');
+  await entered.promise;
+  await voice.close();
+  release.resolve();
+  await rejection;
+  expect(update).not.toHaveBeenCalled();
+  expect(
+    f.native.call.mock.calls.some(
+      ([operation]) => operation === 'realtime_conversation_update_history_sdk',
+    ),
+  ).toBe(false);
+  await f.session.close();
+});

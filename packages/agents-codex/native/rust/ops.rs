@@ -1262,7 +1262,10 @@ mod native_question_tests {
 }
 
 params!(RealtimeSdkGeneration { generation: String });
-params!(RealtimeSdkEvent { generation: String, event: Value });
+params!(RealtimeSdkEvent {
+    generation: String,
+    event: Value
+});
 params!(RealtimeSdkResponse {
     generation: String,
     #[serde(default)]
@@ -1382,7 +1385,12 @@ params!(RealtimeSdkAudio {
     generation: String,
     frame: RealtimeAudioFrame
 });
-params!(RealtimeSdkHistory { generation: String, items: Vec<Value> });
+params!(RealtimeSdkHistory {
+    generation: String,
+    items: Vec<Value>,
+    #[serde(default)]
+    expected_items: Option<Vec<Value>>,
+});
 params!(RealtimeSdkDeleteItem {
     generation: String,
     item_id: String
@@ -1544,6 +1552,7 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
             .submit(Op::RealtimeConversationUpdateHistorySdk {
                 generation: p.generation,
                 items: p.items,
+                expected_items: p.expected_items,
                 reply,
             })
             .await?;
