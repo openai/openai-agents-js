@@ -586,3 +586,134 @@ it.each(
   },
   30_000,
 );
+
+it.each(
+  ['factory', 'direct'].flatMap((secondSource) =>
+    ['approve', 'onSafetyCheck'].map(
+      (policyKind) => [secondSource, policyKind] as const,
+    ),
+  ),
+)(
+  'binds borrowed factory identity before effects (%s, %s)',
+  async (secondSource, policyKind) => {
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    let screen = 0;
+    const observed = { first: [] as number[], second: [] as number[] },
+      effects: number[] = [];
+    const driver = device([]);
+    driver.wait = async () => {
+      entered.resolve();
+      await release.promise;
+      effects.push(screen++);
+    };
+    const policy = (owner: 'first' | 'second') => () => {
+      observed[owner].push(screen);
+      return screen === 0;
+    };
+    const oneTool = computerTool({
+      computer: { create: () => driver },
+      [policyKind]: policy('first'),
+    });
+    const twoTool = computerTool({
+      computer: secondSource === 'factory' ? { create: () => driver } : driver,
+      [policyKind]: policy('second'),
+    });
+    const checks =
+      policyKind === 'onSafetyCheck'
+        ? [{ id: 'screen', code: 'screen', message: 'Confirm' }]
+        : [];
+    const server = new ModelServer([
+      [
+        computerCall({
+          action: { type: 'wait' },
+          pending_safety_checks: checks,
+        }),
+      ],
+      [
+        computerCall({
+          action: { type: 'wait' },
+          pending_safety_checks: checks,
+        }),
+      ],
+      [message('done')],
+      [message('done')],
+    ]);
+    const selected = await provider(server);
+    const first = await new Agent({
+      instructions: 'Use computer.',
+      provider: selected,
+      tools: [oneTool],
+    }).session();
+    const second = await new Agent({
+      instructions: 'Use computer.',
+      provider: selected,
+      tools: [twoTool],
+    }).session();
+    try {
+      const one = await first.submit('first');
+      await entered.promise;
+      const two = await second.submit('second');
+      for await (const event of two.events())
+        if (event.type === 'tool_started') break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(effects).toEqual([]);
+      release.resolve();
+      await expect(two.wait()).rejects.toThrow(
+        /not approved|require acknowledgment/,
+      );
+      expect((await one.wait()).finalOutput).toBe('done');
+      expect(observed.first).toEqual([0, 0]);
+      expect(observed.second).toEqual(
+        secondSource === 'factory' ? [0, 1] : [1],
+      );
+      expect(effects).toEqual([0]);
+    } finally {
+      release.resolve();
+      await first.close();
+      await second.close();
+      await selected.close();
+    }
+  },
+  30_000,
+);
+
+it.each(
+  ['approve', 'onSafetyCheck'].flatMap((policyKind) =>
+    [false, true].map((firstAllowed) => [policyKind, firstAllowed] as const),
+  ),
+)(
+  'requires both borrowed-factory authorizations (%s, initial=%s)',
+  async (policyKind, firstAllowed) => {
+    const calls: string[] = [],
+      driver = device(calls),
+      create = vi.fn(() => driver);
+    let decisions = 0;
+    const policy = () => firstAllowed && ++decisions === 1;
+    const server = new ModelServer([
+      [
+        computerCall({
+          action: { type: 'wait' },
+          pending_safety_checks:
+            policyKind === 'onSafetyCheck' ? [{ id: 'screen' }] : [],
+        }),
+      ],
+    ]);
+    const selected = await provider(server);
+    try {
+      const agent = new Agent({
+        instructions: 'Use computer.',
+        provider: selected,
+        tools: [computerTool({ computer: { create }, [policyKind]: policy })],
+      });
+      await expect(agent.run('wait')).rejects.toThrow(
+        /not approved|require acknowledgment/,
+      );
+      expect(create).toHaveBeenCalledTimes(firstAllowed ? 1 : 0);
+      expect(calls).toEqual([]);
+    } finally {
+      await selected.close();
+    }
+  },
+  30_000,
+);

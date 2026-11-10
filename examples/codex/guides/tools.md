@@ -237,6 +237,8 @@ Set `approve(context, actions)` to review each call before SDK acquisition or de
 
 The default declaration uses `computer`. For preview, set `toolType: 'computer_use_preview'`, `dimensions: [width, height]`, and `environment: 'browser'`, `'mac'`, `'windows'`, or `'ubuntu'`. A borrowed driver can supply its preview dimensions and environment. Nonempty `actions` take precedence over a legacy single `action`. A call with neither requests a screenshot. Use `toolRef('computer')` to select this declaration by name.
 
+A factory without a disposer returns a borrowed driver. Its first call runs the policies before creation, then runs them again under the resolved device's shared gate before any action or screenshot. Policies must allow both checks. Later calls run them once under that gate. Separate factories and direct declarations that return the same driver share the gate.
+
 These live callbacks do not create a durable approval to resume after a restart. Saved state carries no driver or permission grant; restore with the current trusted declaration. [Unknown effects require explicit reconciliation](recovery.md#reconcile-external-effects). A computer reconciliation result must contain an actual `computer_screenshot` and all full original safety checks approved by your application, for either outcome. Text-only function receipts cannot settle a computer call.
 
 ## Native web search

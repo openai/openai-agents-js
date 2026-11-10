@@ -53,7 +53,10 @@ export interface Computer<Context = unknown> {
   ): MaybePromise<void>;
 }
 
-/** Acquire once per Session. Dispose runs once after entered callbacks join. */
+/** Acquire once per Session. Dispose runs once after entered callbacks join.
+ * Without dispose, policies run before first creation and again under the resolved
+ * shared device gate before any action or screenshot.
+ */
 export interface ComputerProvider<Context = unknown> {
   create(context: ToolCallContext<Context>): MaybePromise<Computer<Context>>;
   dispose?(computer: Computer<Context>): MaybePromise<void>;
@@ -124,6 +127,14 @@ type Lease = {
 };
 const resources = new WeakMap<object, Map<object, Lease>>();
 const borrowedGates = new WeakMap<object, FunctionAdmission>();
+function deviceAdmission(computer: object): FunctionAdmission {
+  let gate = borrowedGates.get(computer);
+  if (!gate) {
+    gate = new FunctionAdmission(1);
+    borrowedGates.set(computer, gate);
+  }
+  return gate;
+}
 
 /** @internal Called only after the Session's callback owners retire. */
 export async function closeComputerResources(owner: object): Promise<void> {
@@ -155,11 +166,7 @@ export function computerTool<Context = unknown>(
   const { computer, onSafetyCheck, approve } = options;
   const provider = 'create' in computer ? computer : undefined;
   const borrowed = provider ? undefined : (computer as Computer<Context>);
-  let borrowedGate = borrowed && borrowedGates.get(borrowed);
-  if (borrowed && !borrowedGate) {
-    borrowedGate = new FunctionAdmission(1);
-    borrowedGates.set(borrowed, borrowedGate);
-  }
+  const borrowedGate = borrowed && deviceAdmission(borrowed);
   const dimensions = options.dimensions ?? borrowed?.dimensions;
   const environment = options.environment ?? borrowed?.environment;
   const toolType = options.toolType ?? 'computer';
@@ -197,8 +204,7 @@ export function computerTool<Context = unknown>(
         };
         leases.set(identity, lease);
       }
-      const release = await lease.gate.acquire(context.signal);
-      try {
+      const authorize = async () => {
         admit();
         if (approve) {
           const allowed = await approve(context, structuredClone(actions));
@@ -215,6 +221,17 @@ export function computerTool<Context = unknown>(
           admit();
           if (acknowledged !== true) throw new ComputerSafetyError();
         }
+      };
+      const release = await lease.gate.acquire(context.signal);
+      let releaseDevice: (() => void) | undefined;
+      try {
+        const borrowedFactory = provider !== undefined && !provider.dispose;
+        const resolving = borrowedFactory && !lease.driver;
+        if (borrowedFactory && lease.driver)
+          releaseDevice = await deviceAdmission(lease.driver).acquire(
+            context.signal,
+          );
+        await authorize();
         if (!lease.driver) {
           // Retain ownership before checking cancellation after acquisition.
           lease.driver = provider ? await provider.create(context) : borrowed;
@@ -226,6 +243,10 @@ export function computerTool<Context = unknown>(
         const driver = lease.driver;
         if (!driver)
           throw new TypeError('ComputerProvider.create must return a driver');
+        if (resolving) {
+          releaseDevice = await deviceAdmission(driver).acquire(context.signal);
+          await authorize();
+        }
         if (lease.initializationFailure)
           throw lease.initializationFailure.error;
         if (!lease.initialized) {
@@ -311,6 +332,7 @@ export function computerTool<Context = unknown>(
           );
         throw error;
       } finally {
+        releaseDevice?.();
         release();
       }
     },
