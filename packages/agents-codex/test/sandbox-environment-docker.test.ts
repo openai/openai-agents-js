@@ -32,7 +32,15 @@ vi.mock('node:child_process', async (original) => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('borrowed Docker native authority', () => {
-  it.each(['unchanged', 'removed', 'source', 'readOnly'] as const)(
+  it.each([
+    'unchanged',
+    'removed',
+    'source',
+    'readOnly',
+    'network-client',
+    'network-call',
+    'network-unchanged',
+  ] as const)(
     'checks actual current host binds before connecting: %s',
     async (change) => {
       const root = await mkdtemp(join(tmpdir(), 'native-docker-authority-'));
@@ -142,6 +150,9 @@ describe('borrowed Docker native authority', () => {
       };
       const session = await client.create({
         manifest: new Manifest({ extraPathGrants: [original] }),
+        ...(change === 'network-unchanged'
+          ? { options: { networkMode: 'none' as const } }
+          : {}),
       });
       try {
         const manifest = new Manifest({
@@ -167,18 +178,24 @@ describe('borrowed Docker native authority', () => {
         );
         const deleted = vi.spyOn(session, 'close');
         const source = sandboxEnvironment({
-          client,
+          client:
+            change === 'network-client'
+              ? new DockerSandboxClient({ networkMode: 'none' })
+              : client,
+          ...(change === 'network-call'
+            ? { options: { networkMode: 'none' as const } }
+            : {}),
           manifest,
           session,
           connect,
         });
-        if (change === 'unchanged') {
+        if (change === 'unchanged' || change === 'network-unchanged') {
           const owner = await acquireEnvironment(source);
           await owner.dispose();
           expect(connect).toHaveBeenCalledOnce();
         } else {
           await expect(acquireEnvironment(source)).rejects.toThrow(
-            'Borrowed Docker filesystem authority',
+            'Borrowed Docker resource authority',
           );
           expect(connect).not.toHaveBeenCalled();
         }

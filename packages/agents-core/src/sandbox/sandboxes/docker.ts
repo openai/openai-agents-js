@@ -1505,11 +1505,18 @@ export class DockerSandboxClient implements SandboxClient<
   async assertBorrowedSessionManifestAuthority(
     session: SandboxSessionLike<DockerSandboxSessionState>,
     manifest: Manifest,
+    options?: DockerSandboxClientOptions,
   ): Promise<void> {
+    const network = resolveDockerNetworkConfiguration(
+      this.options,
+      options,
+      session.state,
+    );
     let reusable = false;
     try {
       const result = await inspectRunningDockerContainerForReuse({
         ...session.state,
+        ...network,
         manifest: cloneManifest(manifest),
       });
       reusable = result.reusable;
@@ -1518,7 +1525,7 @@ export class DockerSandboxClient implements SandboxClient<
     }
     if (!reusable) {
       throw new UserError(
-        'Borrowed Docker filesystem authority does not match the current trusted manifest. Create a fresh sandbox session.',
+        'Borrowed Docker resource authority does not match the current trusted manifest. Create a fresh sandbox session.',
       );
     }
   }

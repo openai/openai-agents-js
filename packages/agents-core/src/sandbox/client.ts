@@ -202,7 +202,7 @@ export interface SandboxClient<
     manifest: Manifest,
     options?: TOptions,
   ): Promise<Record<string, string>>;
-  /** Assert current trusted filesystem authority for a borrowed resource without mutation. */
+  /** Assert current trusted manifest and provider authority for a borrowed resource without mutation. */
   assertBorrowedSessionManifestAuthority?(
     session: SandboxSessionLike<TSessionState>,
     manifest: Manifest,
