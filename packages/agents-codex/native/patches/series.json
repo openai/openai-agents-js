@@ -1,5 +1,5 @@
 {
-  "result_tree": "30015894e3694c6849e0946acec9064815ee199c",
+  "result_tree": "26ac81b4f5c73dc29a4f707361c239875f6066ea",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -720,6 +720,10 @@
     {
       "path": "sdk-sender-communication-privacy.patch",
       "sha256": "ef7d55fb13765fc4d9d441af6d799c5aa0987eda2296597a84aadd57f9f8d36c"
+    },
+    {
+      "path": "sdk-provider-item-references.patch",
+      "sha256": "90ff113feefab6b456b9b0d4d8e0e3dc61741d74d3a5ed7e6b933f60737ce4b9"
     }
   ]
 }

@@ -1157,7 +1157,7 @@ mod provider_error_tests {
         let started = settlement.observe();
         assert!(started.active);
         assert!(Arc::ptr_eq(started.receipt.as_ref().unwrap(), &receipt));
-        terminal(&thread, &store, false);
+        terminal(&thread, &store, false, false);
         assert!(receipt.terminal());
         // Terminal delivery alone cannot settle an unaccepted pending receipt.
         assert!(settlement.observe().active);
@@ -1184,12 +1184,12 @@ mod provider_error_tests {
         let original = {
             let store = ExtensionData::new("original");
             let receipt = start(&thread, &store, "original").await;
-            terminal(&thread, &store, true);
+            terminal(&thread, &store, true, true);
             receipt
         };
         let replacement_store = ExtensionData::new("replacement");
         let replacement = start(&thread, &replacement_store, "replacement").await;
-        terminal(&thread, &replacement_store, false);
+        terminal(&thread, &replacement_store, false, false);
 
         let settlement = thread.get::<Settlement>().unwrap();
         assert!(settlement.is_current(&replacement));
