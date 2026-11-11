@@ -1,6 +1,11 @@
 import type { Observation } from '../runtime/observation';
 import type { SessionItem } from '../runtime/history';
 import {
+  functionApprovalInput,
+  isFunctionApprovalRequest,
+  type FunctionApprovalRequest,
+} from '../runtime/manual';
+import {
   NativeError,
   type Session,
   type Completed,
@@ -11,9 +16,16 @@ type ViewTurn<T> = Pick<
   Turn<T, string | null>,
   'sessionId' | 'submissionId' | 'turnId' | 'childId' | 'events'
 > & { wait(): Promise<Pick<Completed<T>, 'finalOutput'>> };
-type ViewSession = Pick<Session, 'id' | 'items'>;
+type ViewSession = Pick<Session, 'id' | 'items'> &
+  Partial<Pick<Session, 'pendingInteractions'>>;
+type ApprovalObservation = Extract<
+  Observation,
+  { type: 'function_approval_requested' }
+>;
 export type VercelMessageChunk =
-  | { type: 'start' | 'finish' | 'abort' }
+  | { type: 'start' | 'abort' }
+  | { type: 'finish'; finishReason?: 'tool-calls' }
+  | { type: 'tool-approval-request'; approvalId: string; toolCallId: string }
   | {
       type: 'text-start' | 'text-end' | 'reasoning-start' | 'reasoning-end';
       id: string;
@@ -48,6 +60,10 @@ export type VercelMessageChunk =
 export type VercelMessageStreamOptions = {
   includeToolData?: boolean;
   includeReasoningSummaries?: boolean;
+  /** End the reader at the next live managed function approval. */
+  includeToolApprovals?: boolean;
+  /** Already displayed approval IDs from this turn, in display order. */
+  afterApprovals?: readonly string[];
 };
 type ShownText = { text: string; trailingHighSurrogate: boolean };
 const utf8 = new TextEncoder();
@@ -233,6 +249,22 @@ function messageStream<Chunk>({
 
 class ProjectionError extends Error {}
 
+async function pendingApproval(
+  session: ViewSession,
+  event: ApprovalObservation,
+  signal: AbortSignal,
+): Promise<FunctionApprovalRequest | undefined> {
+  const requests = await localWait(session.pendingInteractions!(), signal);
+  return requests.find(
+    (request): request is FunctionApprovalRequest =>
+      isFunctionApprovalRequest(request) &&
+      request.submissionId === event.submissionId &&
+      request.turnId === event.turnId &&
+      request.approvalId === event.approvalId &&
+      request.call?.callId === event.callId,
+  );
+}
+
 async function retainedFrames(
   session: ViewSession,
   childId: string | null,
@@ -240,7 +272,13 @@ async function retainedFrames(
   {
     includeToolData,
     includeReasoningSummaries,
-  }: Required<VercelMessageStreamOptions>,
+  }: Required<
+    Pick<
+      VercelMessageStreamOptions,
+      'includeToolData' | 'includeReasoningSummaries'
+    >
+  >,
+  approvalCalls: ReadonlyMap<string, string>,
   signal: AbortSignal,
 ): Promise<VercelMessageChunk[]> {
   const calls = new Map<
@@ -276,11 +314,12 @@ async function retainedFrames(
         continue;
       }
       if (
-        !includeToolData ||
-        !['function_call', 'function_call_output', 'mcp_call'].includes(
-          item.type,
-        )
+        item.type !== 'function_call' &&
+        item.type !== 'function_call_output' &&
+        item.type !== 'mcp_call'
       )
+        continue;
+      if (!includeToolData && !approvalCalls.has(item.callId ?? item.id))
         continue;
       size += utf8.encode(JSON.stringify(item)).length;
       if (size > 1_048_576) throw new ProjectionError('UI tool payload limit');
@@ -305,48 +344,56 @@ async function retainedFrames(
     else await localWait(closing, signal);
   }
   for (const [id, call] of calls) {
+    const approvalId = approvalCalls.get(id);
+    const toolCallId = approvalId ?? id;
     const output = call.type === 'mcp_call' ? call : outputs.get(id);
     outputs.delete(id);
     if (!output || output.status === 'in_progress')
       throw new ProjectionError('Missing completed tool result');
-    let input = call.arguments;
-    if (typeof input === 'string') {
-      try {
-        input = JSON.parse(input);
-      } catch {
-        /* Custom tool input may be text. */
+    if (approvalId === undefined) {
+      let input = call.arguments;
+      if (typeof input === 'string') {
+        try {
+          input = JSON.parse(input);
+        } catch {
+          /* Custom tool input may be text. */
+        }
       }
+      frames.push({
+        type: 'tool-input-available',
+        toolCallId: id,
+        toolName:
+          call.type === 'mcp_call'
+            ? `${call.serverLabel}.${call.name}`
+            : call.name,
+        input,
+        dynamic: true,
+      });
     }
-    frames.push({
-      type: 'tool-input-available',
-      toolCallId: id,
-      toolName:
-        call.type === 'mcp_call'
-          ? `${call.serverLabel}.${call.name}`
-          : call.name,
-      input,
-      dynamic: true,
-    });
     frames.push(
       output.error !== null || output.status !== 'completed'
         ? {
             type: 'tool-output-error',
-            toolCallId: id,
-            errorText:
-              typeof output.error === 'string'
+            toolCallId,
+            errorText: !includeToolData
+              ? 'Tool did not complete'
+              : typeof output.error === 'string'
                 ? output.error
                 : JSON.stringify(output.error ?? 'Tool did not complete'),
             dynamic: true,
           }
         : {
             type: 'tool-output-available',
-            toolCallId: id,
-            output: output.output,
+            toolCallId,
+            output: includeToolData ? output.output : null,
             dynamic: true,
           },
     );
   }
   if (outputs.size) throw new ProjectionError('Tool result without call');
+  for (const id of approvalCalls.keys())
+    if (!calls.has(id))
+      throw new ProjectionError('Approval without tool result');
   return frames;
 }
 
@@ -356,6 +403,8 @@ function createVercelStream<Chunk>(
   {
     includeToolData = false,
     includeReasoningSummaries = false,
+    includeToolApprovals = false,
+    afterApprovals = [],
   }: VercelMessageStreamOptions,
   encoding: ChunkEncoding<Chunk>,
 ): ReadableStream<Chunk> {
@@ -363,14 +412,32 @@ function createVercelStream<Chunk>(
     throw new TypeError('includeToolData must be a boolean');
   if (typeof includeReasoningSummaries !== 'boolean')
     throw new TypeError('includeReasoningSummaries must be a boolean');
-  if (session.id !== turn.sessionId)
+  if (typeof includeToolApprovals !== 'boolean')
+    throw new TypeError('includeToolApprovals must be a boolean');
+  if (
+    !Array.isArray(afterApprovals) ||
+    afterApprovals.length > 256 ||
+    afterApprovals.some((id) => typeof id !== 'string' || !id) ||
+    new Set(afterApprovals).size !== afterApprovals.length ||
+    (afterApprovals.length && !includeToolApprovals)
+  )
+    throw new TypeError('Pass the displayed approval IDs in order');
+  if (
+    session.id !== turn.sessionId ||
+    (includeToolApprovals && !session.pendingInteractions)
+  )
     throw new TypeError('Pass the owning Session');
+  const approvals = [...afterApprovals];
   const events = turn.events();
   return messageStream({
     events,
     encoding,
     async *project(signal) {
       const shown = new Map<string, ShownText>();
+      const streamedText = new Set<string>();
+      const approvalCalls = new Map<string, string>();
+      let replayedApprovals = 0;
+      let prompt: VercelMessageChunk[] | undefined;
       let shownBytes = 0;
       let started: string | undefined;
       let gap = false;
@@ -401,8 +468,53 @@ function createVercelStream<Chunk>(
             lost = true;
             break;
           }
+          const replaying = replayedApprovals < approvals.length;
+          if (
+            includeToolApprovals &&
+            event.type === 'function_approval_requested'
+          ) {
+            const request = await pendingApproval(session, event, signal);
+            if (replaying) {
+              if (request) {
+                lost = true;
+                break;
+              }
+              if (event.approvalId === approvals[replayedApprovals]) {
+                if (approvalCalls.has(event.callId)) {
+                  lost = true;
+                  break;
+                }
+                approvalCalls.set(event.callId, event.approvalId);
+                replayedApprovals++;
+              }
+              continue;
+            }
+            if (!request) continue;
+            const input = functionApprovalInput(request);
+            if (
+              input === undefined ||
+              utf8.encode(JSON.stringify(input)).length > 1_048_576
+            ) {
+              lost = true;
+              break;
+            }
+            prompt = [
+              {
+                type: 'tool-input-available',
+                toolCallId: request.approvalId,
+                toolName: request.name,
+                input,
+                dynamic: true,
+              },
+              {
+                type: 'tool-approval-request',
+                toolCallId: request.approvalId,
+                approvalId: request.approvalId,
+              },
+            ];
+            break;
+          }
           if (event.type === 'output_text_delta') {
-            const opened = shown.has(event.itemId);
             const nextBytes = remember(
               shown,
               event.itemId,
@@ -414,11 +526,15 @@ function createVercelStream<Chunk>(
               break;
             }
             shownBytes = nextBytes;
-            if (!opened) yield { type: 'text-start', id: event.itemId };
+            if (replaying) continue;
+            if (!streamedText.has(event.itemId)) {
+              streamedText.add(event.itemId);
+              yield { type: 'text-start', id: event.itemId };
+            }
             yield { type: 'text-delta', id: event.itemId, delta: event.delta };
           } else if (
-            event.type === 'tool_started' ||
-            event.type === 'tool_finished'
+            !replaying &&
+            (event.type === 'tool_started' || event.type === 'tool_finished')
           )
             yield {
               type: 'data-tool-progress',
@@ -426,12 +542,22 @@ function createVercelStream<Chunk>(
               transient: true,
             };
         }
-        for (const id of shown.keys()) yield { type: 'text-end', id };
+        for (const id of streamedText) yield { type: 'text-end', id };
+        streamedText.clear();
+        if (prompt) {
+          yield* prompt;
+          yield { type: 'finish', finishReason: 'tool-calls' };
+          return;
+        }
         let terminal: VercelMessageChunk = {
           type: 'error',
           errorText: 'resync_required',
         };
-        if (!lost && !(!started && gap && turn.turnId !== null)) {
+        if (
+          !lost &&
+          replayedApprovals === approvals.length &&
+          !(!started && gap && turn.turnId !== null)
+        ) {
           try {
             const result = await localWait(turn.wait(), signal);
             if (typeof result.finalOutput !== 'string')
@@ -449,12 +575,17 @@ function createVercelStream<Chunk>(
                 signal,
               ))
             ) {
-              if (includeToolData || includeReasoningSummaries)
+              if (
+                includeToolData ||
+                includeReasoningSummaries ||
+                approvalCalls.size
+              )
                 for (const frame of await retainedFrames(
                   session,
                   turn.childId,
                   started,
                   { includeToolData, includeReasoningSummaries },
+                  approvalCalls,
                   signal,
                 ))
                   yield frame;
@@ -476,7 +607,7 @@ function createVercelStream<Chunk>(
         yield terminal;
       } catch {
         signal.throwIfAborted();
-        for (const id of shown.keys()) yield { type: 'text-end', id };
+        for (const id of streamedText) yield { type: 'text-end', id };
         yield { type: 'error', errorText: 'turn_failed' };
       } finally {
         await events.return?.();
@@ -493,6 +624,9 @@ function createVercelStream<Chunk>(
  *
  * Opt in to tool data or provider reasoning summaries at settlement. Tool data
  * is sensitive, and bounded native retention may omit parts of remote output.
+ * Enable tool approvals to display the validated input and end the reader at a
+ * pending decision. Resolve the exact live request with Session.respond, then
+ * continue this turn with its displayed approval IDs in afterApprovals.
  */
 export function vercelMessageStream(
   turn: ViewTurn<string>,
