@@ -260,6 +260,7 @@ it('resolves startup defaults before the first native write and binds the exact 
       profile_receipt: null,
     }),
     _runVoiceCallback: <T>(callback: () => T) => callback(),
+    _realtimeEventSource: () => ({ agent, context: { account: 'account' } }),
     _realtimeGuardrailSource: () => ({
       agent,
       context: { account: 'account-A' },
