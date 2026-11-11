@@ -4,12 +4,77 @@ import {
   Agent,
   InteractionRequired,
   NativeProvider,
+  hostedShell,
   manualTool,
   tool,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
+
+it.each([false, true])(
+  'retains provider-hosted Shell calls and outputs in order (assistant=%s)',
+  async (assistant) => {
+    const callId = 'produced-shell-call';
+    const server = new ModelServer([
+      [
+        {
+          type: 'shell_call',
+          id: 'produced-shell-item',
+          call_id: callId,
+          status: 'completed',
+          action: { commands: ['printf parity'], timeout_ms: 1000 },
+          environment: {
+            type: 'container_reference',
+            container_id: 'cntr_shell',
+          },
+        },
+        {
+          type: 'shell_call_output',
+          id: 'produced-shell-output',
+          call_id: callId,
+          status: 'completed',
+          output: [
+            {
+              stdout: 'parity',
+              stderr: '',
+              outcome: { type: 'exit', exit_code: 0 },
+            },
+          ],
+        },
+        ...(assistant ? [message('finished')] : []),
+      ],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-hosted-shell-produced-items',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Use the provider shell.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [hostedShell({ environment: { type: 'container_auto' } })],
+    });
+
+    const completed = await agent.run('Run the tool.', { returnItems: true });
+
+    expect(completed.items?.map(({ item }) => item.type)).toEqual([
+      'shell_call',
+      'shell_call_output',
+      ...(assistant ? ['message'] : []),
+    ]);
+    expect(completed.items?.slice(0, 2).map(({ item }) => item)).toMatchObject([
+      { call_id: callId, id: 'produced-shell-item' },
+      { call_id: callId, id: 'produced-shell-output' },
+    ]);
+    for (const entry of completed.items ?? []) expect(entry.agent).toBe(agent);
+    expect(server.requests).toHaveLength(1);
+    server.assertExhausted();
+  },
+);
 
 it('retains accepted local shell calls in produced item order', async () => {
   const action = { type: 'exec', command: ['true'] };
