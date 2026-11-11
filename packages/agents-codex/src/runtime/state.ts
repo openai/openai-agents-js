@@ -1,3 +1,4 @@
+import { modelAttemptSnapshotSchema } from './model-attempts';
 import { captureFile, captureImage, mediaRecord } from './media';
 import { z } from 'zod';
 import type { OutputIdentity } from './output';
@@ -329,6 +330,16 @@ const manualContinuationSchema = z.object({
     )
     .min(1),
 });
+const manualUsageSchema = z.object({
+  requests: nonnegativeTokenCountWireSchema.optional(),
+  missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
+  inputTokens: nonnegativeTokenCountWireSchema,
+  cachedInputTokens: nonnegativeTokenCountWireSchema,
+  cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
+  outputTokens: nonnegativeTokenCountWireSchema,
+  reasoningOutputTokens: nonnegativeTokenCountWireSchema,
+  totalTokens: nonnegativeTokenCountWireSchema,
+});
 const manualContextSchema = z.object({
   remaining_model_steps: z.number().int().nonnegative().safe().optional(),
   instructions: z.string().nullable(),
@@ -339,18 +350,9 @@ const manualContextSchema = z.object({
       schema: jsonValue,
     }),
   ),
-  usage: z
-    .object({
-      requests: nonnegativeTokenCountWireSchema.optional(),
-      missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
-      inputTokens: nonnegativeTokenCountWireSchema,
-      cachedInputTokens: nonnegativeTokenCountWireSchema,
-      cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
-      outputTokens: nonnegativeTokenCountWireSchema,
-      reasoningOutputTokens: nonnegativeTokenCountWireSchema,
-      totalTokens: nonnegativeTokenCountWireSchema,
-    })
-    .nullable(),
+  usage: manualUsageSchema.nullable(),
+  model_attempt: modelAttemptSnapshotSchema.optional(),
+  model_usage_offset: manualUsageSchema.optional(),
 });
 const outputContextSchema = z
   .object({

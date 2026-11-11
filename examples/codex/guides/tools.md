@@ -18,6 +18,29 @@ The default `timeoutBehavior: 'raise_exception'` fails the owning turn with `Too
 
 Both modes abort the callback signal at the deadline and wait for entered callback work and cleanup to settle. A callback that ignores cancellation can therefore delay completion. Result mode runs its formatter after cleanup, using the parent tool context. Timeout results bypass the normal `result` schema and `after` hook, as local tool denial does. Formatter errors propagate normally. Parent cancellation or expired invocation authority prevents publication. With no `callbackTimeout`, the policy and formatter are inactive. A timeout never rolls back effects or makes a retry safe. See [the scripted callback timeout example](../tool-timeout-policy.ts).
 
+### Recover invalid original arguments
+
+The matching native source build has been exposing `inputErrorFunction` for initial JSON syntax and Zod validation failures. The formatter has been receiving an unvalidated call context, the error, and the original input. Native syntax failures have been supplying `SyntaxError` and the exact raw JSON string. Zod failures have been supplying detached JSON values, including scalars and arrays.
+
+```ts
+import { tool } from '@openai/agents';
+import { z } from 'zod';
+
+const lookup = tool({
+  name: 'lookup',
+  parameters: z.object({ key: z.string() }),
+  inputErrorFunction(_context, error, _original) {
+    if (error instanceof SyntaxError) {
+      return 'Retry lookup with a complete JSON object containing a string key.';
+    }
+    return error.issues.map((issue) => issue.message).join('; ');
+  },
+  execute: ({ key }) => key,
+});
+```
+
+The returned text has been becoming a failed tool result before approval, input policy, or execution, allowing native continuation. Replacement and restored approval arguments, output validation, and arbitrary application exceptions have been remaining outside this formatter. Without a formatter, schema validation has been failing the owning turn; malformed native JSON has been retaining the default failed response.
+
 ### Finish a turn from a function tool
 
 With the current [source build](building.md), set `finishTurn: true` when declaring an automatic function tool:

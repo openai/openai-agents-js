@@ -43,6 +43,8 @@ pub(crate) struct ProfileSpec {
     manual_slots: Vec<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     terminal_slots: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    input_error_slots: Vec<usize>,
     #[serde(default)]
     step_defaults: Option<Vec<usize>>,
     #[serde(default)]
@@ -524,6 +526,7 @@ async fn prepare_profile(
             descriptor.tools.clone(),
             &descriptor.manual_slots,
             &descriptor.terminal_slots,
+            &descriptor.input_error_slots,
             descriptor.step_defaults.as_deref(),
             flags,
         )?
@@ -532,6 +535,7 @@ async fn prepare_profile(
             descriptor.tools.clone(),
             &descriptor.manual_slots,
             &descriptor.terminal_slots,
+            &descriptor.input_error_slots,
             descriptor.step_defaults.as_deref(),
             flags,
             startup,
@@ -1084,6 +1088,29 @@ pub(crate) async fn update_instructions(thread: &CodexThread, text: &str) -> Res
     update_active(thread, None, Some((text, accepted.files.clone())), None).await
 }
 
+pub(crate) async fn update_instructions_with_settings(
+    thread: &CodexThread,
+    text: &str,
+    settings: Option<&codex_protocol::protocol::ThreadSettingsOverrides>,
+) -> Result<bool> {
+    if thread
+        .thread_extension_data()
+        .get::<Arc<AgentProfiles>>()
+        .is_none()
+    {
+        return Ok(false);
+    }
+    let Some(captured) = thread.captured_agent_profile().await? else {
+        return Ok(false);
+    };
+    let accepted = captured
+        .profile
+        .data
+        .get::<Accepted>()
+        .context("Managed Agent instructions are absent")?;
+    update_active(thread, settings, Some((text, accepted.files.clone())), None).await
+}
+
 pub(crate) async fn update_active(
     thread: &CodexThread,
     settings: Option<&codex_protocol::protocol::ThreadSettingsOverrides>,
@@ -1127,9 +1154,23 @@ async fn update_active_inner(
         catalog
     };
     let mut target = (*captured.profile).clone();
+    if catalog.is_some() && !refresh_mcp {
+        if let Some(Some(prompt)) = &mut target.model.request_controls.hosted_prompt {
+            prompt.omit_tools = false;
+        }
+    }
     if let Some(settings) = settings {
         if let Some(model) = &settings.model {
             target.model.model = model.clone();
+            if settings
+                .request_controls
+                .as_ref()
+                .is_none_or(|controls| controls.hosted_prompt.is_none())
+            {
+                if let Some(Some(prompt)) = &mut target.model.request_controls.hosted_prompt {
+                    prompt.omit_model = false;
+                }
+            }
         }
         if let Some(effort) = &settings.effort {
             target.model.reasoning_effort = effort.clone();
@@ -1244,6 +1285,7 @@ pub(crate) async fn replace_tools(
     specs: Vec<DynamicToolSpec>,
     defaults: Option<Vec<usize>>,
     terminal_slots: &[usize],
+    input_error_slots: &[usize],
 ) -> Result<Option<u64>> {
     let Some(profiles) = thread.thread_extension_data().get::<Arc<AgentProfiles>>() else {
         return Ok(None);
@@ -1262,6 +1304,7 @@ pub(crate) async fn replace_tools(
         specs,
         &[],
         terminal_slots,
+        input_error_slots,
         defaults.as_deref(),
         [
             previous.selecting_steps,
@@ -1427,6 +1470,40 @@ struct HandoffExecutor {
     callback: Option<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>>,
 }
 
+/// A callback failure retires only its own provisional reservation. Accepted or
+/// still-running siblings retain their original native reservation owner.
+struct ProvisionalHandoff<'a> {
+    executor: &'a HandoffExecutor,
+    turn: String,
+    call: String,
+    keep: bool,
+}
+
+impl Drop for ProvisionalHandoff<'_> {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        let mut pending = self
+            .executor
+            .profiles
+            .reservation
+            .lock()
+            .expect("Agent reservation poisoned");
+        if let Some(reservation) = pending.as_mut() {
+            if reservation.turn == self.turn
+                && reservation.expected == self.executor.source
+                && reservation.target == self.executor.target
+            {
+                reservation.calls.remove(&self.call);
+                if reservation.calls.is_empty() && !reservation.accepted {
+                    *pending = None;
+                }
+            }
+        }
+    }
+}
+
 impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
     fn exposure(&self) -> ToolExposure {
         ToolExposure::DirectModelOnly
@@ -1446,6 +1523,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
         call_id: &str,
         result: &dyn ToolOutput,
     ) -> codex_tools::AcceptedToolOutcome {
+        let mut outcome = self
+            .callback
+            .as_ref()
+            .map_or_else(Default::default, |callback| {
+                callback.on_result_accepted(turn_id, call_id, result)
+            });
         let handoff = (|| {
             if !result.success_for_logging() {
                 return None;
@@ -1470,24 +1553,16 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
                 call_id: call_id.into(),
             })
         })();
-        codex_tools::AcceptedToolOutcome {
-            handoff,
-            ..Default::default()
-        }
+        // This wrapper alone owns the transfer receipt; retain other accepted metadata.
+        outcome.handoff = handoff;
+        outcome
     }
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> ToolExecutorFuture<'a>
     where
         ToolCall<'call>: 'a,
     {
         Box::pin(async move {
-            let turn_id = call.turn_id.to_owned();
-            let call_id = call.call_id.clone();
-            if let Some(callback) = &self.callback {
-                let output = callback.handle(call).await?;
-                if !output.success_for_logging() {
-                    return Ok(output);
-                }
-            } else {
+            if self.callback.is_none() {
                 let arguments: Value =
                     serde_json::from_str(call.function_arguments()?).map_err(|_| {
                         FunctionCallError::RespondToModel("Invalid handoff arguments".into())
@@ -1501,43 +1576,57 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
                     ));
                 }
             }
-            let mut pending = self
-                .profiles
-                .reservation
-                .lock()
-                .expect("Agent reservation poisoned");
-            if pending
-                .as_ref()
-                .is_some_and(|previous| previous.turn != turn_id)
             {
-                *pending = None;
-            }
-            if let Some(previous) = pending.as_mut() {
-                if previous.turn != turn_id
-                    || previous.expected != self.source
-                    || previous.target != self.target
+                let mut pending = self
+                    .profiles
+                    .reservation
+                    .lock()
+                    .expect("Agent reservation poisoned");
+                if pending
+                    .as_ref()
+                    .is_some_and(|previous| previous.turn != call.turn_id)
                 {
-                    return Err(FunctionCallError::RespondToModel(
-                        "Conflicting Agent handoffs in one tool batch".into(),
-                    ));
+                    *pending = None;
                 }
-                previous.calls.insert(call_id.clone());
-            } else {
-                *pending = Some(Reservation {
-                    turn: turn_id,
-                    expected: self.source.clone(),
-                    target: self.target.clone(),
-                    calls: HashSet::from([call_id]),
-                    accepted: false,
-                    restored: false,
-                });
+                if let Some(previous) = pending.as_mut() {
+                    if previous.turn != call.turn_id
+                        || previous.expected != self.source
+                        || previous.target != self.target
+                    {
+                        return Err(FunctionCallError::RespondToModel(
+                            "Conflicting Agent handoffs in one tool batch".into(),
+                        ));
+                    }
+                    previous.calls.insert(call.call_id.clone());
+                } else {
+                    *pending = Some(Reservation {
+                        turn: call.turn_id.to_owned(),
+                        expected: self.source.clone(),
+                        target: self.target.clone(),
+                        calls: HashSet::from([call.call_id.clone()]),
+                        accepted: false,
+                        restored: false,
+                    });
+                }
             }
-            Ok(Box::new(crate::python_tools::PythonOutput(
+            let mut reservation = ProvisionalHandoff {
+                executor: self,
+                turn: call.turn_id.to_owned(),
+                call: call.call_id.clone(),
+                keep: false,
+            };
+            let output = if let Some(callback) = &self.callback {
+                callback.handle(call).await?
+            } else {
+                Box::new(crate::python_tools::PythonOutput(
                 codex_protocol::dynamic_tools::DynamicToolResponse {
                     content_items: vec![codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text: "Handoff reserved.".into() }],
                     success: true,
                 },
-            )) as Box<dyn ToolOutput>)
+                )) as Box<dyn ToolOutput>
+            };
+            reservation.keep = output.success_for_logging();
+            Ok(output)
         })
     }
 }
@@ -1546,7 +1635,6 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
 pub(crate) fn wrap_handoff_callback(
     thread: &ExtensionData,
     source: Option<&AgentProfileReceipt>,
-    slot: usize,
     callback: Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>,
 ) -> Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>> {
     let Some(source) = source else {
@@ -1558,11 +1646,14 @@ pub(crate) fn wrap_handoff_callback(
     let Some(profile) = profiles.profiles.get(&source.profile_id) else {
         return callback;
     };
+    let callback_name = callback.tool_name().with_default_namespace();
     let Some((name, _)) = profile
         .declaration
         .handoff_callbacks
         .iter()
-        .find(|(_, candidate)| **candidate == slot)
+        .find(|(name, _)| {
+            ToolName::new(None, name.to_string()).with_default_namespace() == callback_name
+        })
     else {
         return callback;
     };

@@ -38,6 +38,59 @@ The script makes a live model request and prints the reply. `agent.run()` has be
 
 Try the [greeting](../../examples/codex/basic.ts) and [typed-context](../../examples/codex/typed-context.ts) examples.
 
+## Hosted prompts
+
+Native Agents have been using `hostedPrompt` to select a stored Responses prompt. A static reference has been supplying fixed variables. A factory has been deriving variables from each request's application context.
+
+Prerequisites: the matching native v1 build, `OPENAI_API_KEY`, and `OPENAI_PROMPT_ID` for a project prompt with a `topic` variable.
+
+```ts
+import { Agent, NativeProvider } from '@openai/agents';
+
+async function main() {
+  const promptId = process.env.OPENAI_PROMPT_ID;
+  if (!promptId) throw new Error('OPENAI_PROMPT_ID is required');
+  await using provider = new NativeProvider();
+
+  const fixed = new Agent({
+    hostedPrompt: { id: promptId, variables: { topic: 'native' } },
+    provider,
+  });
+  console.log((await fixed.run('Give one example.')).finalOutput);
+
+  const contextual = new Agent<{ topic: string }>({
+    hostedPrompt: ({ context }) => ({
+      id: promptId,
+      variables: { topic: context.topic },
+    }),
+    provider,
+  });
+  const result = await contextual.run('Give one example.', {
+    context: { topic: 'history' },
+  });
+  console.log(result.finalOutput);
+}
+
+main().catch((error: unknown) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+```
+
+An optional `version` string in the reference has been selecting a specific prompt version. An asynchronous factory has been working through the same callback path.
+
+Omitted settings have been inheriting prompt values. Explicit settings have been overriding them:
+
+| Setting | Omitted | Explicit |
+| --- | --- | --- |
+| `model` | Stored prompt's model | The supplied model |
+| `instructions` | Stored prompt's instructions | The supplied text, including `''` |
+| `tools` | Stored prompt's tools | The declared native tools, including `[]` |
+
+Native tool selections and policies have also been overriding inherited prompt tools, including explicit empty selections. Combining `hostedPrompt` with `modelSettings.extraBody.prompt` has been raising a configuration error.
+
+After restoration, the current Agent declaration has been supplying the prompt reference or factory. Before dispatch, the SDK has been rejecting new explicit settings for fields previously inherited from the prompt.
+
 ## SDK guides
 
 - [Architecture](../../examples/codex/guides/architecture.md). Understand the native runtime, how it differs from v0, and which adoption route fits your application.

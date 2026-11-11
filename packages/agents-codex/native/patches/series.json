@@ -683,7 +683,31 @@
     {
       "path": "sdk-trace-credential-destination.patch",
       "sha256": "9179fc33da3c5f1f7bba84de3da43f7a5257bd9a81ebbc108373a851c7288170"
+    },
+    {
+      "path": "sdk-mcp-forced-choice-captured-binding.patch",
+      "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
+    },
+    {
+      "path": "sdk-native-hosted-prompts-request-ownership.patch",
+      "sha256": "8b59e1ee08e56daae315daf79c2ad9ea762d190e4597288031aebfa9fa093ad3"
+    },
+    {
+      "path": "sdk-model-response-omission-admission.patch",
+      "sha256": "0646d01ad045e1959f3c6d8b4708c71c1ada10eda6f848f84d87b8f2eb043c03"
+    },
+    {
+      "path": "sdk-native-model-attempt-retry.patch",
+      "sha256": "09d7801b709c5bd1cdc337a1583b96b2a99195e521f2200a70678db92e62083a"
+    },
+    {
+      "path": "sdk-realtime-incarnation-ownership.patch",
+      "sha256": "4e6c23fd6ccf170546fbd80a2d032b450412fb228c43d22d03b097f30464bf10"
+    },
+    {
+      "path": "sdk-preserved-speech-tool-continuation.patch",
+      "sha256": "0eec334d147caa10bab871eb2caee86e4173791ffae6e19b5e09127ce78074c0"
     }
   ],
-  "result_tree": "ce23418d8f278e388fe87c8371c90167c52e8001"
+  "result_tree": "f7e4172505bad319f39be9c9254ec826d3598956"
 }

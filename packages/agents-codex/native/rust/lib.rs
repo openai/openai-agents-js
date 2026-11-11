@@ -24,6 +24,7 @@ mod environment;
 mod extensions;
 mod goals;
 mod graph_stop;
+mod hosted_prompt;
 mod initial_messages;
 mod local_reconciliation;
 mod local_storage;
@@ -2015,8 +2016,19 @@ impl NativeThread {
         self.python_callback_operation(&receipt_json, "cancelled")
     }
     #[napi(js_name = "_release_python_callback")]
-    pub fn release_python_callback(&self, receipt_json: String) -> bool {
-        self.python_callback_operation(&receipt_json, "release")
+    pub fn release_python_callback(
+        &self,
+        receipt_json: String,
+        cleanup_failed: Option<bool>,
+    ) -> bool {
+        self.python_callback_operation(
+            &receipt_json,
+            if cleanup_failed.unwrap_or(false) {
+                "release_failed"
+            } else {
+                "release"
+            },
+        )
     }
 
     // Recheck after caller-owned checkpoint storage has settled, immediately
@@ -2505,7 +2517,7 @@ impl NativeThread {
                         ));
                     }
                 }
-                application_instructions::publish(
+                application_instructions::publish_explicit(
                     &inner.thread,
                     value.instructions.unwrap_or_default(),
                 )
@@ -3056,6 +3068,63 @@ impl NativeThread {
             .ok_or_else(|| input_error("Expired step selection owner"))?;
         let thread = response.thread.clone();
         owner.reply_step(&thread, response).map_err(input_error)
+    }
+
+    #[napi(js_name = "_report_model_attempt_usage")]
+    pub fn report_model_attempt_usage(
+        &self,
+        owner_json: String,
+        usage_json: String,
+    ) -> napi::Result<bool> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Owner {
+            attempt_id: String,
+            callback: Value,
+        }
+        let owner: Owner = serde_json::from_str(&owner_json)
+            .map_err(|_| input_error("Invalid model usage owner"))?;
+        let usage: codex_protocol::protocol::TokenUsage = serde_json::from_str(&usage_json)
+            .map_err(|_| input_error("Invalid model token usage"))?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+        else {
+            return Ok(false);
+        };
+        tools
+            .report_model_attempt_usage(
+                &inner.id.to_string(),
+                &owner.attempt_id,
+                &owner.callback,
+                usage,
+            )
+            .map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_model_retry")]
+    pub fn reply_model_retry(&self, response_json: String) -> napi::Result<()> {
+        let response: python_tools::context_callbacks::ModelRetryReply =
+            serde_json::from_str(&response_json)
+                .map_err(|_| input_error("Invalid model retry reply"))?;
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner.reply_model_retry(response).map_err(input_error)
     }
 
     #[napi(js_name = "_reply_model_producer")]
@@ -3868,6 +3937,14 @@ impl NativeThread {
             let first = keys
                 .first()
                 .ok_or_else(|| native_error("no pending manual requests"))?;
+            let usage_owner = inner
+                .thread
+                .thread_extension_data()
+                .get::<turn_settlement::Settlement>()
+                .ok_or_else(|| native_error("Manual turn owner missing"))?
+                .admission_ready(&first.turn)
+                .map_err(native_error)?;
+            let usage_turn = first.turn.clone();
             let first = serde_json::to_value(first).map_err(native_error)?;
             let history = checkpoint::capture(&inner.engine, inner.id, &mut Vec::new())
                 .await
@@ -4005,9 +4082,24 @@ impl NativeThread {
                 saved["history"] = serde_json::to_value(history).map_err(native_error)?;
                 saved["agent_options"] = serde_json::json!({});
                 usage::checkpoint_to_wire(&mut saved).map_err(native_error)?;
-                serde_json::to_string(
-                    &serde_json::json!({"checkpoint":saved, "manual_continuation":frame}),
-                )
+                serde_json::to_string(&{
+                    if usage_turn != frame.turn_id {
+                        return Err(native_error("Manual model usage owner changed"));
+                    }
+                    let mut value =
+                        serde_json::json!({"checkpoint":saved, "manual_continuation":frame});
+                    if let Some(owner) = &usage_owner {
+                        if let Some(snapshot) =
+                            owner.model_attempt_snapshot().map_err(native_error)?
+                        {
+                            let mut snapshot =
+                                serde_json::to_value(snapshot).map_err(native_error)?;
+                            usage::model_attempt_to_wire(&mut snapshot).map_err(native_error)?;
+                            value["model_attempt"] = snapshot;
+                        }
+                    }
+                    value
+                })
                 .map_err(native_error)
             }
             .await;
@@ -4990,9 +5082,16 @@ async fn direct_sentinel_stream(
         .await
         .map_err(|_| invalid())?;
     let receipt: serde_json::Value = serde_json::from_str(&receipt).map_err(|_| invalid())?;
-    if receipt.get("model") != body.get("model")
-        || !matches!(receipt["kind"].as_str(), Some("generation" | "warmup"))
+    let model_matches = if receipt
+        .get("model_omitted")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
     {
+        body.get("model").is_none()
+    } else {
+        receipt.get("model") == body.get("model")
+    };
+    if !model_matches || !matches!(receipt["kind"].as_str(), Some("generation" | "warmup")) {
         return Err(invalid());
     }
     let mut metadata = metadata.as_object().cloned().ok_or_else(invalid)?;

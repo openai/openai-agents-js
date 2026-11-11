@@ -1,3 +1,10 @@
+import type { TokenUsage } from './run-events';
+import {
+  modelErrorHeader,
+  modelErrorField,
+  type ModelRetryAdvice,
+  type ModelRetryAdviceRequest,
+} from './model-retry';
 import { randomUUID } from 'node:crypto';
 import { APIUserAbortError } from 'openai';
 import { captureImage, inlineAudioSource } from './media';
@@ -37,6 +44,13 @@ export interface ModelRequest {
   readonly sessionId: string;
   readonly turnId: string;
   readonly signal: AbortSignal;
+  /** Opaque native logical-attempt identity, when the route negotiates attempts. */
+  readonly attemptId?: string;
+  readonly attempt?: number;
+  /** Native replay/budget directive; adapters apply it after request options. */
+  readonly disableProviderRetries?: boolean;
+  /** Measured usage for this admitted attempt; cleanup can report before physical release. */
+  readonly reportUsage?: (usage: TokenUsage) => void;
 }
 /** One completed response; output items use Responses JSON including function calls. */
 export interface ModelResponse {
@@ -58,6 +72,9 @@ export interface ModelResponse {
 }
 /** Application-owned producer. Cancellation joins admitted work and discards late output. */
 export interface NativeModel {
+  getRetryAdvice?(
+    request: ModelRetryAdviceRequest,
+  ): ModelRetryAdvice | undefined | Promise<ModelRetryAdvice | undefined>;
   complete(request: ModelRequest): ModelResponse | Promise<ModelResponse>;
 }
 /** Resolve a native model for each effective request model name. */
@@ -192,6 +209,7 @@ async function clientRequestOptions(
   request: ModelRequest,
 ) {
   request.signal.throwIfAborted();
+  const disableProviderRetries = request.disableProviderRetries === true;
   const pending =
     typeof source === 'function'
       ? source(
@@ -217,6 +235,7 @@ async function clientRequestOptions(
     ...(selected.maxRetries === undefined
       ? {}
       : { maxRetries: selected.maxRetries }),
+    ...(disableProviderRetries ? { maxRetries: 0 } : {}),
     signal: request.signal,
   };
 }
@@ -230,6 +249,32 @@ function capturePromptCacheKey(
   return key;
 }
 
+function openAIRetryAdvice({
+  request,
+  error,
+}: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
+  if (
+    error &&
+    typeof error === 'object' &&
+    modelErrorField(error, 'unsafeToReplay') === true
+  )
+    return { suggested: false, replaySafety: 'unsafe' };
+  const hint = modelErrorHeader(error, 'x-should-retry')?.trim().toLowerCase();
+  if (hint === 'true') return { suggested: true, replaySafety: 'safe' };
+  if (hint === 'false') return { suggested: false };
+  const status =
+    modelErrorField(error, 'statusCode') ?? modelErrorField(error, 'status');
+  if (
+    !request.body.previous_response_id &&
+    !request.body.conversation &&
+    (status === 408 ||
+      status === 409 ||
+      status === 429 ||
+      (typeof status === 'number' && status >= 500))
+  )
+    return { suggested: true };
+  return undefined;
+}
 /** An injected async Chat Completions client; Core continues tools and conversation history. */
 export class ChatCompletionsModel implements NativeModel {
   readonly #promptCacheKey: string | undefined;
@@ -242,6 +287,11 @@ export class ChatCompletionsModel implements NativeModel {
   ) {
     this.#promptCacheKey = capturePromptCacheKey(options);
     this.#requestOptions = captureRequestOptionsSource(options);
+  }
+  getRetryAdvice(
+    request: ModelRetryAdviceRequest,
+  ): ModelRetryAdvice | undefined {
+    return openAIRetryAdvice(request);
   }
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const messages: Record<string, unknown>[] = [];
@@ -554,6 +604,11 @@ export class ResponsesModel implements NativeModel {
     this.#requestOptions = captureRequestOptionsSource(options);
   }
 
+  getRetryAdvice(
+    request: ModelRetryAdviceRequest,
+  ): ModelRetryAdvice | undefined {
+    return openAIRetryAdvice(request);
+  }
   async complete(request: ModelRequest): Promise<ModelResponse> {
     let response: any;
     try {
@@ -685,6 +740,14 @@ export class AiSdkModel implements NativeModel {
     this.#openaiChat = this.#openai && model.provider.endsWith('.chat');
   }
 
+  getRetryAdvice({
+    error,
+  }: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
+    const retryable = modelErrorField(error, 'isRetryable');
+    return typeof retryable === 'boolean'
+      ? { suggested: retryable }
+      : undefined;
+  }
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const body = request.body;
     const admitted = new Set([

@@ -44,6 +44,10 @@ A turn returned by `session.turns()` can include `responses`, an optional list o
 
 The list is not a complete log of provider attempts or charges. Read the Turn outcome for execution success, and use provider billing records for charges.
 
+With retained native attempt records, `RecordedTurn.runUsage` has been exposing token totals and request counts. `requests` has been counting model requests; `missingUsageRequests` has been counting requests without reported token usage. Repeated snapshots from one native execution have been replacing its earlier counts. Separate executions after restore have been contributing separately. Completion records without an attempt ID have also been contributing. The projection has been excluding generation copies already represented by those snapshots.
+
+Older turns without native attempt records have been omitting `runUsage`. Retries inside the borrowed client have been remaining outside these counts. Provider billing records have been remaining the source for charges.
+
 For a live Turn, the result of `await turn.wait()` exposes a separate thread usage snapshot at `result.threadUsage`. `usage_updated` events expose it at `event.usage`. Each is a nullable `TokenUsageInfo` with cumulative `totalTokenUsage` and `lastTokenUsage` for its latest reported response. These snapshots differ from the retained per-response facts in `RecordedResponse.usage`.
 
 `result.threadUsage?.modelContextWindow`, also available as `event.usage?.modelContextWindow`, reports the usable model limit captured with the settings and model metadata behind that response's usage. The `TokenUsageInfo` field has type `number | bigint | null`. Unknown fallback metadata reports `null` unless an explicit context-window override supplies a known value. This field does not measure remaining tokens.

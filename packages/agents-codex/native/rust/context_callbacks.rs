@@ -5,10 +5,25 @@ use crate::native_interception::CapturedTurnStop;
 use codex_extension_api::{CompactionInput, ModelContextInput, TurnCompletionInput};
 use tokio_util::sync::CancellationToken;
 
+pub(super) struct ContextProjection {
+    items: Option<Vec<ResponseItem>>,
+    hosted_prompt: Option<codex_protocol::model_request_controls::HostedPromptReference>,
+    explicit_tools: bool,
+}
+
 pub(super) enum PreparationReply {
     Model(oneshot::Sender<std::result::Result<ModelReply, ()>>),
+    ModelRetry(
+        oneshot::Sender<std::result::Result<codex_protocol::model_retry::ModelRetryResolution, ()>>,
+    ),
+    PreparedRequest {
+        owner: Arc<prepared_requests::Owner>,
+        reply: oneshot::Sender<
+            std::result::Result<Option<codex_extension_api::PreparedRequestData>, ()>,
+        >,
+    },
     Selection(oneshot::Sender<Option<Vec<ToolName>>>),
-    Context(oneshot::Sender<std::result::Result<Option<Vec<ResponseItem>>, ()>>),
+    Context(oneshot::Sender<std::result::Result<ContextProjection, ()>>),
     Compaction(oneshot::Sender<std::result::Result<Option<String>, ()>>),
     Completion {
         reply: oneshot::Sender<std::result::Result<Option<String>, ()>>,
@@ -20,6 +35,8 @@ impl PreparationReply {
     pub(super) fn is_closed(&self) -> bool {
         match self {
             Self::Model(reply) => reply.is_closed(),
+            Self::ModelRetry(reply) => reply.is_closed(),
+            Self::PreparedRequest { reply, .. } => reply.is_closed(),
             Self::Selection(reply) => reply.is_closed(),
             Self::Context(reply) => reply.is_closed(),
             Self::Compaction(reply) => reply.is_closed(),
@@ -36,6 +53,9 @@ impl PreparationReply {
 pub(crate) struct ContextReply {
     pub(crate) owner: StepReply,
     items: Option<Vec<Value>>,
+    hosted_prompt: Option<codex_protocol::model_request_controls::HostedPromptReference>,
+    #[serde(default)]
+    explicit_tools: bool,
     #[serde(default)]
     failed: bool,
 }
@@ -65,7 +85,110 @@ pub(crate) struct CompactionReply {
     failed: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelRetryReply {
+    pub(crate) owner: StepReply,
+    data: Option<codex_protocol::model_retry::ModelRetryResolution>,
+    #[serde(default)]
+    failed: bool,
+}
+
 impl PythonTools {
+    pub(crate) fn publish_model_attempt(
+        &self,
+        input: codex_extension_api::ModelAttemptInput,
+    ) -> Result<()> {
+        let thread = input.admission.thread_id();
+        let turn = input.admission.turn_store().level_id();
+        if let Some(owner) = input
+            .admission
+            .turn_store()
+            .get::<crate::turn_settlement::Turn>()
+        {
+            owner.retain_model_attempt(input.admission.model_attempt());
+        }
+        let mut data = serde_json::to_value(input.snapshot)?;
+        crate::usage::model_attempt_to_wire(&mut data)?;
+        data["attempt_id"] = json!(input.attempt_id);
+        data["phase"] = json!(input.phase);
+        let mut event = json!({"id":turn,"msg":{"type":"_sdk_model_attempt",
+            "thread":thread,"turn_id":turn,"root_turn_id":input.admission.root_turn_id(),"data":data}});
+        if let Some(instance) = &self.instance {
+            event["subagent_id"] = json!(thread);
+            event["subagent_incarnation"] = json!(instance);
+            event["subagent_managed_tools"] = json!(true);
+        }
+        self.family
+            .requests
+            .send(FamilyRequest::Callback(event))
+            .map_err(|_| anyhow::anyhow!("Model attempt reader closed"))
+    }
+
+    pub(crate) async fn decide_model_retry(
+        self: &Arc<Self>,
+        input: codex_extension_api::ModelRetryInput,
+    ) -> Result<codex_protocol::model_retry::ModelRetryResolution> {
+        let mut data = serde_json::to_value(&input.context)?;
+        if let Some(usage) = &input.context.usage {
+            data["usage"] = crate::usage::exact_usage(usage);
+        }
+        self.exchange_context(
+            input.admission.step_store(),
+            input.admission.thread_id(),
+            input.admission.turn_store().level_id(),
+            input.cancellation,
+            None,
+            json!({"type":"_sdk_model_retry", "instance":self.instance,
+                "root_turn_id":input.admission.root_turn_id(),"data":data}),
+            PreparationReply::ModelRetry,
+        )
+        .await
+    }
+
+    pub(crate) fn reply_model_retry(&self, response: ModelRetryReply) -> Result<()> {
+        ensure!(
+            !(response.failed && response.data.is_some()),
+            "Conflicting retry reply"
+        );
+        if let Some(decision) = response
+            .data
+            .as_ref()
+            .and_then(|data| data.decision.as_ref())
+        {
+            decision.validate().map_err(anyhow::Error::msg)?;
+        }
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self.step_replies.lock().expect("Step replies poisoned");
+        let id = crate::native_id(&response.owner.request_id)?;
+        ensure!(
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.owner.thread,
+                &response.owner,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::ModelRetry(_)
+            )),
+            "Expired retry reply"
+        );
+        let pending = take_pending_step(&mut replies, id).expect("checked retry reply");
+        let PreparationReply::ModelRetry(reply) = pending.reply else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                Ok(response.data.unwrap_or_default())
+            })
+            .map_err(|_| anyhow::anyhow!("Expired retry reply"))
+    }
+
     pub(crate) fn transforms_context(&self) -> bool {
         self.context_callbacks.transform_context
     }
@@ -89,7 +212,7 @@ impl PythonTools {
             .context_stop(input.turn_id)?
             .callback_cancellation()
             .context("Expired compaction callback turn")?;
-        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation,
+        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
             json!({"type":"_sdk_before_compact", "model":input.model, "automatic":input.automatic, "items":input.items}),
             PreparationReply::Compaction).await
     }
@@ -148,12 +271,13 @@ impl PythonTools {
     }
 
     // Reuse the same nonce, exact owner, cancellation and physical callback join as beforeStep.
-    async fn exchange_context<T>(
+    pub(super) async fn exchange_context<T>(
         self: &Arc<Self>,
         step: Option<&ExtensionData>,
         thread: &str,
         turn: &str,
         cancellation: CancellationToken,
+        model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
         mut message: Value,
         prepare: impl FnOnce(oneshot::Sender<std::result::Result<T, ()>>) -> PreparationReply,
     ) -> Result<T> {
@@ -180,7 +304,7 @@ impl PythonTools {
         if let Some(instance) = &self.instance {
             receipt["instance"] = json!(instance);
         }
-        let callback = CallbackRelease::new(receipt);
+        let callback = CallbackRelease::with_model_attempt(receipt, model_attempt);
         let (reply, receive) = oneshot::channel();
         {
             let current = self
@@ -274,12 +398,22 @@ impl PythonTools {
             _ = cancellation.cancelled() => { self.retire_step_callback(id); callback.wait().await; },
             _ = callback.wait() => {},
         }
-        self.step_replies
-            .lock()
-            .expect("JavaScript step replies poisoned")
-            .remove(&id);
+        if !callback.retains_failed_attempt() {
+            self.step_replies
+                .lock()
+                .expect("JavaScript step replies poisoned")
+                .remove(&id);
+        }
         ensure!(
-            !cancellation.is_cancelled() && self.admits_generation(&generation),
+            !callback.cleanup_failed.load(Ordering::Acquire),
+            "Model callback cleanup failed"
+        );
+        ensure!(
+            !cancellation.is_cancelled()
+                && self.admits_generation(&generation)
+                && callback.model_attempt.as_ref().is_none_or(|attempt| {
+                    !attempt.cancellation().is_cancelled() && !attempt.sampling_stop().requested()
+                }),
             "Expired model callback owner"
         );
         let current = self
@@ -301,7 +435,7 @@ impl PythonTools {
 
     pub(crate) async fn transform_context(
         self: &Arc<Self>,
-        input: ModelContextInput<'_>,
+        mut input: ModelContextInput<'_>,
     ) -> Result<()> {
         if !self.transforms_context()
             || self
@@ -309,6 +443,23 @@ impl PythonTools {
                 .is_some_and(|catalog| !catalog.transform_context)
         {
             return Ok(());
+        }
+        if let Some(prompt) = input.hosted_prompt.as_deref_mut() {
+            if input
+                .turn_store
+                .and_then(|store| store.get::<Option<crate::python_tools::OperationSelection>>())
+                .as_deref()
+                .and_then(Option::as_ref)
+                .is_some_and(|selection| selection.names.is_some() || selection.slots.is_some())
+            {
+                prompt.omit_tools = false;
+            }
+            if !prompt.omit_instructions {
+                prompt.resolved_instructions = Some(
+                    crate::application_instructions::captured_prompt_text(input.step_store)?,
+                );
+            }
+            crate::application_instructions::remove_prompt_fragments(input.items)?;
         }
         let cancellation = input
             .step_store
@@ -320,10 +471,31 @@ impl PythonTools {
                     .and_then(|stop| stop.callback_cancellation())
             })
             .context("Expired model context turn")?;
-        let result = self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation,
-            json!({"type":"_sdk_transform_context", "model":input.model, "compaction":input.compaction, "items":input.items}),
+        let model_attempt = input
+            .step_store
+            .and_then(|step| step.get::<codex_extension_api::CapturedModelAttempt>())
+            .map(|captured| captured.0.clone());
+        let result = self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, model_attempt,
+            json!({"type":"_sdk_transform_context", "model":input.model, "compaction":input.compaction, "hosted_prompt":input.hosted_prompt.is_some(),
+                "hosted_prompt_omissions":input.hosted_prompt.as_deref().map(|prompt| json!({
+                    "omit_model":prompt.omit_model, "omit_instructions":prompt.omit_instructions,
+                    "omit_tools":prompt.omit_tools,
+                })), "items":input.items}),
             PreparationReply::Context).await?;
-        if let Some(items) = result {
+        if result.explicit_tools {
+            input
+                .hosted_prompt
+                .as_deref_mut()
+                .context("Unexpected hosted tool policy reply")?
+                .omit_tools = false;
+        }
+        if let Some(reference) = result.hosted_prompt {
+            let target = input
+                .hosted_prompt
+                .context("Unexpected hosted prompt reply")?;
+            target.reference = Some(reference);
+        }
+        if let Some(items) = result.items {
             *input.items = items;
         }
         Ok(())
@@ -344,14 +516,17 @@ impl PythonTools {
         let cancellation = stop
             .callback_cancellation()
             .context("Expired completion turn")?;
-        self.exchange_context(input.step_store, input.thread_store.level_id(), input.turn_id, cancellation,
+        self.exchange_context(input.step_store, input.thread_store.level_id(), input.turn_id, cancellation, None,
             json!({"type":"_sdk_before_complete", "model":input.model, "text":input.last_assistant_message, "continuation_count":input.continuation_count}),
             |reply| PreparationReply::Completion { reply, stop }).await
     }
 
     pub(crate) fn reply_model_context(&self, response: ContextReply) -> Result<()> {
         ensure!(
-            !(response.failed && response.items.is_some()),
+            !(response.failed
+                && (response.items.is_some()
+                    || response.hosted_prompt.is_some()
+                    || response.explicit_tools)),
             "Conflicting context reply"
         );
         let items = response
@@ -385,7 +560,15 @@ impl PythonTools {
             unreachable!()
         };
         reply
-            .send(if response.failed { Err(()) } else { Ok(items) })
+            .send(if response.failed {
+                Err(())
+            } else {
+                Ok(ContextProjection {
+                    items,
+                    hosted_prompt: response.hosted_prompt,
+                    explicit_tools: response.explicit_tools,
+                })
+            })
             .map_err(|_| anyhow::anyhow!("Expired model context reply"))
     }
 
@@ -454,7 +637,7 @@ mod tests {
     }
     fn pending(
         tools: &PythonTools,
-    ) -> oneshot::Receiver<std::result::Result<Option<Vec<ResponseItem>>, ()>> {
+    ) -> oneshot::Receiver<std::result::Result<ContextProjection, ()>> {
         let (reply, receive) = oneshot::channel();
         tools.step_replies.lock().unwrap().insert(
             17,
@@ -497,7 +680,7 @@ mod tests {
                 serde_json::from_value(json!({"owner":owner(),"items":[]})).unwrap(),
             )
             .unwrap();
-        assert!(receive.await.unwrap().unwrap().unwrap().is_empty());
+        assert!(receive.await.unwrap().unwrap().items.unwrap().is_empty());
         assert!(!tools.step_replies.lock().unwrap().contains_key(&17));
     }
     #[tokio::test]
@@ -507,7 +690,7 @@ mod tests {
         tools
             .reply_model_context(serde_json::from_value(json!({"owner":owner()})).unwrap())
             .unwrap();
-        assert!(receive.await.unwrap().unwrap().is_none());
+        assert!(receive.await.unwrap().unwrap().items.is_none());
         let receive = pending(&tools);
         tools
             .reply_model_context(
@@ -565,7 +748,7 @@ mod tests {
                         .unwrap(),
                 )
                 .unwrap();
-            assert!(receive.await.unwrap().unwrap().unwrap().is_empty());
+            assert!(receive.await.unwrap().unwrap().items.unwrap().is_empty());
         }
     }
     #[tokio::test]
@@ -632,7 +815,8 @@ pub(super) struct ModelReply {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ModelProducerReply {
     pub(crate) owner: StepReply,
-    data: Option<ModelReply>,
+    data: Option<Value>,
+    failure: Option<codex_protocol::model_retry::ModelProducerFailure>,
     #[serde(default)]
     failed: bool,
 }
@@ -642,6 +826,7 @@ impl PythonTools {
     }
     pub(crate) async fn produce_model_response(
         self: &Arc<Self>,
+        model: &str,
         mut request: Value,
         admission: Arc<dyn codex_extension_api::ModelToolAdmission>,
     ) -> Result<codex_extension_api::ModelResponseStream> {
@@ -649,17 +834,32 @@ impl PythonTools {
         use futures_util::StreamExt;
         self.restore_schema_request(&mut request)?;
         let turn = admission.turn_store().level_id();
-        let cancellation = self
-            .context_stop(turn)?
-            .callback_cancellation()
+        let attempt = admission.model_attempt();
+        let cancellation = attempt
+            .as_ref()
+            .map(|attempt| attempt.cancellation())
+            .or_else(|| {
+                self.context_stop(turn)
+                    .ok()
+                    .and_then(|stop| stop.callback_cancellation())
+            })
             .context("Expired native model producer")?;
+        let mut message = json!({"type":"_sdk_model_produce", "model":model, "data":request,
+            "root_turn_id": admission.root_turn_id()});
+        if let Some(attempt) = &attempt {
+            message["attempt_id"] = json!(attempt.id());
+            message["attempt"] = json!(attempt.attempt());
+            message["retry_configured"] = json!(attempt.retry_configured());
+            message["disable_provider_retries"] = json!(attempt.disable_provider_retries());
+        }
         let reply = self
             .exchange_context(
                 admission.step_store(),
                 admission.thread_id(),
                 turn,
                 cancellation,
-                json!({"type":"_sdk_model_produce", "model":request["model"], "data":request}),
+                attempt.clone(),
+                message,
                 PreparationReply::Model,
             )
             .await?;
@@ -675,10 +875,6 @@ impl PythonTools {
         Ok(futures_util::stream::iter(events).boxed())
     }
     pub(crate) fn reply_model_producer(&self, response: ModelProducerReply) -> Result<()> {
-        ensure!(
-            !(response.failed && response.data.is_some()),
-            "Conflicting model producer reply"
-        );
         let active = self
             .selection
             .lock()
@@ -700,16 +896,53 @@ impl PythonTools {
             )),
             "Expired model producer reply"
         );
+        let attempt = replies
+            .get(&id)
+            .and_then(|pending| pending.callback.as_ref())
+            .and_then(|callback| callback.model_attempt.as_ref())
+            .cloned();
+        let parsed = if response.failed {
+            ensure!(
+                response.data.is_none(),
+                "Failed model reply contains output"
+            );
+            if let Some(failure) = response.failure {
+                attempt
+                    .as_ref()
+                    .context("Missing model attempt for failure")?
+                    .report_failure(failure)
+                    .map_err(anyhow::Error::msg)?;
+            }
+            Err(())
+        } else {
+            ensure!(
+                response.failure.is_none(),
+                "Successful model reply contains failure"
+            );
+            let reply: ModelReply =
+                serde_json::from_value(response.data.context("Missing model response")?)
+                    .map_err(|_| anyhow::anyhow!("Invalid model response"))?;
+            ensure!(
+                !reply.response_id.trim().is_empty(),
+                "Model response requires an identifier"
+            );
+            if let (Some(attempt), Some(usage)) = (&attempt, &reply.usage) {
+                attempt
+                    .report_usage(usage.clone())
+                    .map_err(anyhow::Error::msg)?;
+            }
+            Ok(reply)
+        };
         let pending = take_pending_step(&mut replies, id).expect("checked model producer reply");
         let PreparationReply::Model(reply) = pending.reply else {
             unreachable!()
         };
         reply
-            .send(if response.failed {
-                Err(())
-            } else {
-                response.data.ok_or(())
-            })
+            .send(parsed)
             .map_err(|_| anyhow::anyhow!("Expired model producer reply"))
     }
 }
+
+#[cfg(test)]
+#[path = "model_attempt_tests.rs"]
+mod model_attempt_tests;

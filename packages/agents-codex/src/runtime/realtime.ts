@@ -365,6 +365,7 @@ interface Delegation {
   workflow: NativeSessionVoiceWorkflow;
   retired: boolean;
   responseId?: string;
+  sdkOwnershipId?: string;
   task?: Promise<void>;
 }
 const KINDS = new Set([
@@ -1192,7 +1193,12 @@ class NativeRealtimeOwner {
     snapshot:
       Awaited<ReturnType<Session['_realtimeSourceSnapshot']>> | undefined,
     bound?:
-      | { responseId: string; target: unknown; delegationId?: never }
+      | {
+          responseId: string;
+          target: unknown;
+          delegationId?: never;
+          work?: NativeRealtimeToolBatch;
+        }
       | { delegationId: string; responseId?: never; target?: never },
     resetPrompt = false,
     beforeNativeUpdate?: () => void,
@@ -1262,7 +1268,10 @@ class NativeRealtimeOwner {
     this.checkLive();
     if (
       bound?.responseId !== undefined &&
-      this.retiredResponses.has(bound.responseId)
+      this.retiredResponses.has(bound.responseId) &&
+      (!bound.work ||
+        bound.work.retired ||
+        bound.work.responseId !== bound.responseId)
     )
       return;
     const update: JsonObject = { ...config?.settings };
@@ -1273,7 +1282,10 @@ class NativeRealtimeOwner {
       this.checkLive();
       if (
         bound?.responseId !== undefined &&
-        this.retiredResponses.has(bound.responseId)
+        this.retiredResponses.has(bound.responseId) &&
+        (!bound.work ||
+          bound.work.retired ||
+          bound.work.responseId !== bound.responseId)
       )
         return;
       Object.assign(update, this.profileOverrides);
@@ -1371,7 +1383,12 @@ class NativeRealtimeOwner {
   async _syncProfile(
     includeMono = false,
     bound?:
-      | { responseId: string; target: unknown; delegationId?: never }
+      | {
+          responseId: string;
+          target: unknown;
+          delegationId?: never;
+          work?: NativeRealtimeToolBatch;
+        }
       | { delegationId: string; responseId?: never; target?: never },
   ): Promise<void> {
     this.checkLive();
@@ -2227,9 +2244,15 @@ class NativeRealtimeOwner {
     } else if (name === 'FunctionBatchFinished') {
       if (typeof value.response_id !== 'string' || !value.response_id)
         throw new TypeError('Invalid native function-batch receipt');
+      const sourceWork = [...this.toolBatches].find(
+        (batch) => batch.responseId === value.response_id && !batch.retired,
+      );
       for (const batch of this.toolBatches)
         if (batch.responseId === value.response_id) batch.complete();
-      if (this.retiredResponses.has(value.response_id) || value.target == null)
+      if (
+        (this.retiredResponses.has(value.response_id) && !sourceWork) ||
+        value.target == null
+      )
         return;
       if (this.profileUpdates.size >= PENDING_LIMIT)
         throw new Error('Native Realtime profile update capacity exceeded');
@@ -2238,6 +2261,7 @@ class NativeRealtimeOwner {
           await this._syncProfile(false, {
             responseId: value.response_id,
             target: value.target,
+            ...(sourceWork ? { work: sourceWork } : {}),
           });
         } catch (error) {
           // The owner records live failures. Retirement can reject an in-flight
@@ -2254,6 +2278,7 @@ class NativeRealtimeOwner {
         },
       );
     } else if (name === 'HandoffRequested') {
+      if (this.retiredResponses.has(value.response_id)) return;
       const id = value.handoff_id;
       if (typeof id !== 'string' || !id)
         throw new TypeError('Realtime handoff lacks identity');
@@ -2273,6 +2298,10 @@ class NativeRealtimeOwner {
         retired: false,
         responseId:
           typeof value.response_id === 'string' ? value.response_id : undefined,
+        sdkOwnershipId:
+          typeof value.sdk_ownership_id === 'string'
+            ? value.sdk_ownership_id
+            : undefined,
       };
       this.delegations.set(id, owned);
       this.emit({ type: 'delegation', handoffId: id, status: 'started' });
@@ -2819,6 +2848,9 @@ class NativeRealtimeOwner {
     if (providerFailed) throw primary!.error;
   }
   /** Interrupt exact response output, or current output/backend work when omitted.
+   * cancelTools:false: speech interruption with admitted SDK tool work retained.
+   * Unstarted background requests: ordinary retirement.
+   * Default interruption, accepted interrupting user speech, and close: tool cancellation.
    * Default barge-in may truncate an older playing item while cancelling newer speech.
    * Native interruption failures close the media owner; call close() to join cleanup.
    */
@@ -2827,6 +2859,7 @@ class NativeRealtimeOwner {
     options: {
       playback?: NativeRealtimePlaybackPosition;
       feedback?: string;
+      cancelTools?: boolean;
     } = {},
   ): Promise<void> {
     return this.interruptOwned(responseId, options);
@@ -2836,12 +2869,19 @@ class NativeRealtimeOwner {
     options: {
       playback?: NativeRealtimePlaybackPosition;
       feedback?: string;
+      cancelTools?: boolean;
     } = {},
     excludeWorker?: NativeRealtimeGuardrailWork,
     nativeInterrupt?: () => Promise<unknown>,
   ): Promise<void> {
     this.session._checkVoiceOperation('interrupt Realtime in');
     this.checkLive();
+    if (
+      options.cancelTools !== undefined &&
+      typeof options.cancelTools !== 'boolean'
+    )
+      throw new TypeError('cancelTools must be boolean');
+    const cancelTools = options.cancelTools !== false;
     if (
       responseId !== undefined &&
       (typeof responseId !== 'string' || !responseId)
@@ -2876,10 +2916,13 @@ class NativeRealtimeOwner {
     if (!dispatched && responseId !== undefined)
       this.retireResponse(responseId);
     for (const record of this.functions.values())
-      if (matchesInitial(record.responseId)) record.retired = true;
-    const owned = [...this.delegations.values()].filter((item) =>
+      if (cancelTools && matchesInitial(record.responseId))
+        record.retired = true;
+    const initialOwnedEntries = [...this.delegations].filter(([, item]) =>
       matchesInitial(item.responseId),
     );
+    const initialOwned = initialOwnedEntries.map(([, item]) => item);
+    const owned = cancelTools ? initialOwned.slice() : [];
     owned.forEach((item) => {
       item.retired = true;
     });
@@ -2893,9 +2936,10 @@ class NativeRealtimeOwner {
         this.queuedBytes -= this.eventBytes(this.queue[i]);
         this.queue.splice(i, 1);
       }
-    const batches = [...this.toolBatches].filter((batch) =>
+    const initialBatches = [...this.toolBatches].filter((batch) =>
       matchesInitial(batch.responseId),
     );
+    const batches = cancelTools ? initialBatches.slice() : [];
     // Retire admission immediately. Core owns response-scoped native cancellation.
     const guardWork = this.guardrails.retire(
       dispatched
@@ -2920,10 +2964,25 @@ class NativeRealtimeOwner {
             response_id: responseId ?? null,
             playback: playbackPayload(playback),
             feedback: options.feedback ?? null,
+            ...(cancelTools
+              ? {}
+              : {
+                  cancel_tools: false,
+                  owned_handoffs: initialOwnedEntries.flatMap(([id, item]) =>
+                    !item.retired && item.sdkOwnershipId !== undefined
+                      ? [[id, item.responseId ?? null, item.sdkOwnershipId]]
+                      : [],
+                  ),
+                }),
           });
       const receipt = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const preservedIds = receipt?.preserved_call_ids ?? [];
       if (
         !receipt ||
+        !Array.isArray(preservedIds) ||
+        preservedIds.some((id: unknown) => typeof id !== 'string' || !id) ||
+        new Set(preservedIds).size !== preservedIds.length ||
+        (cancelTools && preservedIds.length !== 0) ||
         !Array.isArray(receipt.retired_response_ids) ||
         receipt.retired_response_ids.some(
           (id: unknown) => typeof id !== 'string' || !id,
@@ -2939,22 +2998,43 @@ class NativeRealtimeOwner {
         throw new Error(
           'Native Realtime interruption lacks an authoritative effect receipt',
         );
+      const preserved = new Set<string>(preservedIds);
+      const keptDelegations = new Set(
+        initialOwnedEntries
+          .filter(([id]) => preserved.has(id))
+          .map(([, item]) => item),
+      );
+      const keptBatches = new Set(
+        initialBatches.filter((batch) =>
+          batch.callIds.some((id) => preserved.has(id)),
+        ),
+      );
+      const keepBatch = (batch: NativeRealtimeToolBatch) =>
+        keptBatches.has(batch);
       joinedRoots = new Set<string>(receipt.joined_root_turn_ids ?? []);
       retired = new Set<string>(receipt.retired_response_ids);
       for (const id of retired) this.retireResponse(id);
       this.retireHostedApprovals(retired);
       this.playback.retire(retired);
       for (const record of this.functions.values())
-        if (record.responseId !== undefined && retired.has(record.responseId))
+        if (
+          record.responseId !== undefined &&
+          retired.has(record.responseId) &&
+          !(record.batch && keepBatch(record.batch))
+        )
           record.retired = true;
       const lateOwned = [...this.delegations.values()].filter(
         (item) =>
-          item.responseId !== undefined &&
-          retired.has(item.responseId) &&
+          !keptDelegations.has(item) &&
+          (initialOwned.includes(item) ||
+            (item.responseId !== undefined && retired.has(item.responseId))) &&
           !owned.includes(item),
       );
       const lateBatches = [...this.toolBatches].filter(
-        (batch) => retired.has(batch.responseId) && !batches.includes(batch),
+        (batch) =>
+          !keepBatch(batch) &&
+          (initialBatches.includes(batch) || retired.has(batch.responseId)) &&
+          !batches.includes(batch),
       );
       for (const item of lateOwned) item.retired = true;
       const lateGuardWork = this.guardrails.retire(retired);

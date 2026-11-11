@@ -1,3 +1,8 @@
+import {
+  captureModelRetrySettings,
+  retrySettingsToNative,
+  type ModelRetrySettings,
+} from './model-retry';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -612,6 +617,10 @@ export interface ProviderLease {
 }
 
 export interface ModelSettings {
+  /** Per logical attempt, excluding retry backoff; null restores the default. */
+  attemptTimeoutMs?: number | null;
+  /** Native generation retry settings; null clears, omission preserves. */
+  retry?: ModelRetrySettings | null;
   /** One local model invocation deadline in positive uint32 milliseconds; null clears.
    * Includes internal request waits and retries. Cleanup can finish after expiry;
    * accepted terminal responses disarm the clock before result settlement.
@@ -658,6 +667,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'serviceTier',
     'toolChoice',
     'invocationTimeoutMs',
+    'attemptTimeoutMs',
+    'retry',
     'inputModalities',
     'maxOutputTokens',
     'temperature',
@@ -680,7 +691,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     let value = (source as unknown as Record<string, unknown>)[key];
     if (value === undefined) continue;
     if (value !== null) {
-      if (key === 'invocationTimeoutMs') {
+      if (key === 'invocationTimeoutMs' || key === 'attemptTimeoutMs') {
         if (
           typeof value !== 'number' ||
           !Number.isInteger(value) ||
@@ -688,8 +699,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           value > 4294967295
         )
           throw new TypeError(
-            'invocationTimeoutMs must be an integer in the range 1..4294967295 or null',
+            `${key} must be an integer in the range 1..4294967295 or null`,
           );
+      } else if (key === 'retry') {
+        value = captureModelRetrySettings(value as ModelRetrySettings);
       } else if (key === 'inputModalities') {
         if (
           !Array.isArray(value) ||
@@ -826,6 +839,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'inputModalities',
         'toolChoice',
         'invocationTimeoutMs',
+        'attemptTimeoutMs',
+        'retry',
         'maxOutputTokens',
         'temperature',
         'topP',
@@ -1038,12 +1053,20 @@ function captureProviderRouting(options: NativeProviderOptions) {
 export function modelOverrides(
   model?: string,
   settings?: ModelSettings,
+  hostedPrompt?: JsonObject | null,
 ): JsonObject {
   const selected = captureModelSettings(settings);
   const overrides: JsonObject = {};
   if (selected.invocationTimeoutMs !== undefined)
     overrides.invocation_timeout_ms = selected.invocationTimeoutMs;
   const controls: JsonObject = {};
+  if (hostedPrompt !== undefined)
+    controls.hosted_prompt = copyJsonValue(hostedPrompt);
+  if (selected.attemptTimeoutMs !== undefined)
+    controls.attempt_timeout_ms = selected.attemptTimeoutMs;
+  if (selected.retry !== undefined)
+    controls.retry =
+      selected.retry === null ? null : retrySettingsToNative(selected.retry);
   if (model !== undefined) {
     if (typeof model !== 'string' || !model.trim())
       throw new TypeError('model must be a nonempty string');

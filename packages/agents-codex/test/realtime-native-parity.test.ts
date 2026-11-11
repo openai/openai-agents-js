@@ -7,6 +7,7 @@ import {
   Agent,
   HttpMCP,
   NativeProvider,
+  realtimeHandoff,
   Turn,
   tool,
   type MCPResultContext,
@@ -2933,6 +2934,399 @@ nativeIt.each([false, true])(
         }
       } finally {
         await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each(['continue', 'interrupt', 'close', 'speech'] as const)(
+  'keeps speech-only tool preservation separate from later %s',
+  async (retirement) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    const audio = Promise.withResolvers<void>();
+    const stoppedAudio = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        signal = context.signal;
+        signal.addEventListener('abort', () => cancelled.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await release.promise;
+        return 'PRESERVED_FUNCTION';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use lookup.',
+        tools: [lookup],
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [lookup],
+        settings: {
+          turnDetection: { type: 'server_vad', interruptResponse: true },
+        },
+      });
+      const reading = (async () => {
+        for await (const event of voice.events()) {
+          if (event.type === 'audio' && event.responseId === 'speech')
+            audio.resolve();
+          if (
+            event.type === 'response' &&
+            event.responseId === 'speech' &&
+            event.status === 'done'
+          )
+            stoppedAudio.resolve();
+        }
+      })();
+      void reading.catch(() => {});
+      let stopping: Promise<void> | undefined;
+      try {
+        peer.call('lookup', {}, 'held');
+        await entered.promise;
+        if (retirement === 'continue') {
+          peer.send({ type: 'response.created', response: { id: 'speech' } });
+          peer.send({
+            type: 'response.output_audio.delta',
+            response_id: 'speech',
+            item_id: 'speech-audio',
+            content_index: 0,
+            output_index: 0,
+            delta: Buffer.alloc(4800).toString('base64'),
+          });
+          await audio.promise;
+        }
+        const start = peer.frames.length;
+        await voice.interrupt(undefined, { cancelTools: false });
+        if (retirement === 'continue') {
+          await peer.frame((frame) => frame.type === 'response.cancel', start);
+          peer.send({
+            type: 'response.done',
+            response: { id: 'speech', status: 'cancelled', output: [] },
+          });
+          await stoppedAudio.promise;
+        } else await voice.interrupt(undefined, { cancelTools: false });
+        expect(signal?.aborted).toBe(false);
+        if (retirement === 'continue') {
+          release.resolve();
+          const output = await peer.frame(
+            (frame) =>
+              frame.type === 'conversation.item.create' &&
+              frame.item?.call_id === 'held',
+            start,
+          );
+          expect(output.item.output).toBe('PRESERVED_FUNCTION');
+          await peer.frame((frame) => frame.type === 'response.create', start);
+          await voice.update({ instructions: 'Keep listening.' });
+          expect(
+            peer.frames
+              .slice(start)
+              .filter((frame) => frame.item?.call_id === 'held'),
+          ).toHaveLength(1);
+          expect(
+            peer.frames
+              .slice(start)
+              .filter((frame) => frame.type === 'response.create'),
+          ).toHaveLength(1);
+        } else {
+          let joined = false;
+          if (retirement === 'speech')
+            peer.send({
+              type: 'input_audio_buffer.speech_started',
+              item_id: 'new-user-speech',
+              audio_start_ms: 0,
+            });
+          else {
+            stopping = (
+              retirement === 'close' ? voice.close() : voice.interrupt()
+            ).then(() => {
+              joined = true;
+            });
+            void stopping.catch(() => {});
+          }
+          await cancelled.promise;
+          if (stopping) expect(joined).toBe(false);
+          release.resolve();
+          if (stopping) await stopping;
+          else await voice.update({ instructions: 'Listen to new input.' });
+          expect(
+            peer.frames.some(
+              (frame) => frame.item?.output === 'PRESERVED_FUNCTION',
+            ),
+          ).toBe(false);
+        }
+        expect(model.requests).toEqual([]);
+      } finally {
+        release.resolve();
+        await stopping?.catch(() => {});
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'keeps an admitted background delegation after speech cancellation acknowledgement',
+  async () => {
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'backend-call' })],
+      [message('Background completed.')],
+    ]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const acknowledged = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        signal = context.signal;
+        entered.resolve();
+        await release.promise;
+        return 'PRESERVED_BACKGROUND_RESULT';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use lookup.',
+        tools: [lookup],
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const reading = (async () => {
+        for await (const event of voice.events())
+          if (
+            event.type === 'response' &&
+            event.status === 'done' &&
+            event.responseId === 'background-response'
+          )
+            acknowledged.resolve();
+      })();
+      void reading.catch(() => {});
+      try {
+        peer.send({
+          type: 'response.created',
+          response: { id: 'background-response' },
+        });
+        peer.send({
+          type: 'conversation.item.done',
+          response_id: 'background-response',
+          item: {
+            id: 'background-item',
+            type: 'function_call',
+            name: 'background_agent',
+            call_id: 'background',
+            arguments: JSON.stringify({ input_transcript: 'Run lookup.' }),
+          },
+        });
+        await entered.promise;
+        const start = peer.frames.length;
+        await voice.interrupt(undefined, { cancelTools: false });
+        await peer.frame((frame) => frame.type === 'response.cancel', start);
+        peer.send({
+          type: 'response.done',
+          response: {
+            id: 'background-response',
+            status: 'cancelled',
+            output: [],
+          },
+        });
+        await acknowledged.promise;
+        expect(signal?.aborted).toBe(false);
+        release.resolve();
+        const output = await peer.frame(
+          (frame) =>
+            frame.type === 'conversation.item.create' &&
+            frame.item?.call_id === 'background',
+          start,
+        );
+        expect(output.item.output).toContain('Background completed.');
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        await voice.update({ instructions: 'Keep listening.' });
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.item?.call_id === 'background'),
+        ).toHaveLength(1);
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(1);
+      } finally {
+        release.resolve();
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'keeps the admitted handoff target ACK after speech-only interruption',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const effects: string[] = [];
+    const target = new Agent({
+      name: 'B',
+      instructions: 'Target B instructions.',
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Source A instructions.',
+        provider,
+        handoffs: [
+          realtimeHandoff(target, {
+            name: 'transfer',
+            onHandoff: async () => {
+              effects.push('entered');
+              entered.resolve();
+              await release.promise;
+              effects.push('accepted');
+            },
+          }),
+        ],
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        peer.call('transfer', {}, 'transfer-call');
+        await entered.promise;
+        const start = peer.frames.length;
+        await voice.interrupt('response-transfer-call', { cancelTools: false });
+        peer.autoAck = false;
+        expect(effects).toEqual(['entered']);
+        release.resolve();
+        await peer.frame(
+          (frame) =>
+            frame.type === 'session.update' &&
+            frame.session.instructions?.includes('Target B instructions.'),
+          start,
+        );
+        expect(
+          peer.frames
+            .slice(start)
+            .some((frame) => frame.type === 'response.create'),
+        ).toBe(false);
+        peer.autoAck = true;
+        peer.acknowledge();
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        expect(await voice.getActiveAgent()).toBe(target);
+        expect(await session.getActiveAgent()).toBe(target);
+        expect(effects).toEqual(['entered', 'accepted']);
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.item?.call_id === 'transfer-call'),
+        ).toHaveLength(1);
+      } finally {
+        release.resolve();
+        peer.autoAck = true;
+        while (peer.pendingUpdates.length) peer.acknowledge();
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'retires a legacy request registered before its host owner',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'No unowned callback.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seam = voice as unknown as {
+        payload(raw: unknown, input: unknown): void;
+        delegations: Map<string, unknown>;
+      };
+      const original = seam.payload.bind(voice);
+      const captured = Promise.withResolvers<void>();
+      const held: [unknown, unknown][] = [];
+      const lag = vi.spyOn(seam, 'payload').mockImplementation((raw, input) => {
+        if (raw && typeof raw === 'object' && 'HandoffRequested' in raw) {
+          held.push([raw, input]);
+          captured.resolve();
+        } else original(raw, input);
+      });
+      try {
+        peer.send({
+          type: 'response.created',
+          response: { id: 'unowned-response' },
+        });
+        peer.send({
+          type: 'conversation.item.done',
+          response_id: 'unowned-response',
+          item: {
+            id: 'unowned-item',
+            type: 'function_call',
+            name: 'background_agent',
+            call_id: 'unowned',
+            arguments: JSON.stringify({
+              input_transcript: 'No host owner yet.',
+            }),
+          },
+        });
+        await captured.promise;
+        expect(seam.delegations.size).toBe(0);
+        const start = peer.frames.length;
+        await voice.interrupt('unowned-response', { cancelTools: false });
+        peer.send({
+          type: 'response.done',
+          response: { id: 'unowned-response', status: 'cancelled', output: [] },
+        });
+        for (const [raw, input] of held) original(raw, input);
+        expect(seam.delegations.size).toBe(0);
+        await voice.sendText('A new user request.');
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        expect(model.requests).toEqual([]);
+        expect(
+          peer.frames
+            .slice(start)
+            .some((frame) => frame.item?.call_id === 'unowned'),
+        ).toBe(false);
+      } finally {
+        lag.mockRestore();
       }
     } finally {
       await peer.close();

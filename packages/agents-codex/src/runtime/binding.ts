@@ -281,7 +281,15 @@ export function parseNative(source: string): unknown {
           key === 'limit' ||
           key === 'next_cell_id' ||
           key === 'profile_epoch' ||
-          key === 'epoch') &&
+          key === 'epoch' ||
+          key === 'requests' ||
+          key === 'requests_without_token_usage' ||
+          key === 'input_tokens' ||
+          key === 'cached_input_tokens' ||
+          key === 'cache_write_input_tokens' ||
+          key === 'output_tokens' ||
+          key === 'reasoning_output_tokens' ||
+          key === 'total_tokens') &&
         typeof value === 'number'
       ) {
         const original = context?.source;
@@ -304,6 +312,22 @@ export function parseNative(source: string): unknown {
       Reflect.set(receipt, key, original);
     }
   }
+  function restoreModelAttempt(value: unknown): void {
+    if (!value || typeof value !== 'object' || !('usage' in value)) return;
+    const usage = value.usage;
+    restore(usage, 'requests');
+    restore(usage, 'requests_without_token_usage');
+    if (usage && typeof usage === 'object' && 'token_usage' in usage)
+      for (const field of [
+        'input_tokens',
+        'cached_input_tokens',
+        'cache_write_input_tokens',
+        'output_tokens',
+        'reasoning_output_tokens',
+        'total_tokens',
+      ])
+        restore(usage.token_usage, field);
+  }
   // These are native envelope fields. Data inside arguments/output is application JSON.
   restore(parsed, 'nonce');
   restore(parsed, 'cancel');
@@ -323,9 +347,26 @@ export function parseNative(source: string): unknown {
   }
   for (const state of checkpointCodeStates(parsed))
     restore(state, 'next_cell_id');
+  if (parsed && typeof parsed === 'object' && 'model_attempt' in parsed)
+    restoreModelAttempt(parsed.model_attempt);
+  for (const candidate of [parsed, checkpoint])
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      'manual_context' in candidate
+    ) {
+      const context = candidate.manual_context;
+      if (context && typeof context === 'object' && 'model_attempt' in context)
+        restoreModelAttempt(context.model_attempt);
+    }
   if (typeof parsed === 'object' && parsed !== null && 'msg' in parsed) {
     const msg = parsed.msg;
     restore(msg, 'profile_epoch');
+    if (msg && typeof msg === 'object') {
+      if ('model_attempt' in msg) restoreModelAttempt(msg.model_attempt);
+      if ('type' in msg && msg.type === '_sdk_model_attempt' && 'data' in msg)
+        restoreModelAttempt(msg.data);
+    }
     if (typeof msg === 'object' && msg !== null && '_sdk_python_tool' in msg) {
       restore(msg._sdk_python_tool, 'generation');
       restore(msg._sdk_python_tool, 'profile_epoch');

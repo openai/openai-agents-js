@@ -1923,6 +1923,7 @@ mod progress_tests {
         tools.observe_manual_event(&Event {
             id: "physical-turn".into(),
             msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                model_attempt_id: None,
                 response_id: "response".into(),
                 token_usage: None,
                 usage_metadata: None,
