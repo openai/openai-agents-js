@@ -483,24 +483,28 @@ it('routes original native snapshots by credential and retires forwarding author
       ...event,
       credential_required: true,
       sequence: 2,
+      processor_ids: ['host-1', 'host-2'],
     });
     const b = Object.freeze({
       ...event,
       credential_required: true,
       sequence: 3,
+      processor_ids: ['host-1'],
       span_id: 'c'.repeat(16),
     });
     const routes = {
       '2': {
         identity: 'native-A',
         headers: { authorization: 'Bearer scope-A' },
+        processor_ids: ['host-1'],
       },
       '3': {
         identity: 'native-B',
         headers: { authorization: 'Bearer scope-B' },
+        processor_ids: ['host-1'],
       },
     };
-    await invokeTraceDelivery([a, b], routes, async () => {
+    await invokeTraceDelivery([a, b], routes, 'host-1', async () => {
       await expect(
         exporter.onEvent({ ...a, name: 'copied foreign root' }),
       ).rejects.toThrow('credential delivery is unavailable');
@@ -509,12 +513,24 @@ it('routes original native snapshots by credential and retires forwarding author
     await expect(exporter.onEvent(a)).rejects.toThrow(
       'credential delivery is unavailable',
     );
-    await invokeTraceDelivery([a], routes, () => exporter.onEvent(a));
+    await invokeTraceDelivery([a], routes, 'host-1', () => exporter.onEvent(a));
+    await invokeTraceDelivery([a], routes, 'host-2', async () => {
+      await expect(exporter.onEvent({ ...a })).rejects.toThrow(
+        'credential delivery is unavailable',
+      );
+      await exporter.onEvent(a);
+    });
+    await invokeTraceDelivery([a], undefined, 'host-2', async () => {
+      await expect(exporter.onEvent(a)).rejects.toThrow(
+        'credential delivery is unavailable',
+      );
+    });
     await exporter.onEvent({ ...event, trace_id: 'd'.repeat(32), sequence: 4 });
     const stopped = new AbortController();
     await invokeTraceDelivery(
       [a],
       routes,
+      'host-1',
       async () => {
         stopped.abort();
         await expect(exporter.onEvent(a)).rejects.toThrow(
@@ -528,6 +544,7 @@ it('routes original native snapshots by credential and retires forwarding author
       'Bearer scope-B',
       'Bearer scope-A',
       'Bearer fallback-key',
+      'Bearer fallback-key',
     ]);
     expect(
       received.every((request) => request.organization === 'fallback-org'),
@@ -538,7 +555,7 @@ it('routes original native snapshots by credential and retires forwarding author
           request.body.data.filter((item: any) => item.object === 'trace')
             .length,
       ),
-    ).toEqual([1, 1, 1, 1]);
+    ).toEqual([1, 1, 1, 1, 1]);
     expect(received[0].body.data[0].workflow_name).toBe('synthetic operation');
     expect(JSON.stringify(received.map((request) => request.body))).not.toMatch(
       /scope-A|scope-B|fallback-key|credential_required|native-A|native-B/,

@@ -7807,53 +7807,80 @@ export class Session<OutputT = string, Context = unknown> {
         throw new NativeError('Expired input guardrail owner');
     };
     const scope = this.decisionScope(message, signal);
+    let observedFailure: { error: unknown } | undefined;
+    const parallel = guards.some((guard) => guard.runInParallel !== false);
     try {
       const settled = await Promise.allSettled(
-        guards.map(async (guard) => {
-          check();
-          const result = captureGuardrailResult(
-            await (childContext
-              ? guard.childCallback!(
-                  Object.freeze({
-                    ...childContext,
-                    decide: scope.decide,
-                    signal,
-                    agent,
-                    input: structuredClone(
-                      (run as ChildCallbackOwner).guardrailInput!,
-                    ),
-                  }),
+        guards
+          .map(async (guard) => {
+            check();
+            const result = captureGuardrailResult(
+              await (childContext
+                ? guard.childCallback!(
+                    Object.freeze({
+                      ...childContext,
+                      decide: scope.decide,
+                      signal,
+                      agent,
+                      input: structuredClone(
+                        (run as ChildCallbackOwner).guardrailInput!,
+                      ),
+                    }),
+                  )
+                : guard.callback(
+                    Object.freeze({
+                      decide: scope.decide,
+                      context: this.options.context,
+                      submission: this.#turnFor(
+                        this.rootRun(run as NativeTurn),
+                      ),
+                      signal,
+                      agent,
+                      input: structuredClone(
+                        (run as NativeTurn).guardrailInput!,
+                      ),
+                    }),
+                  )),
+            );
+            check();
+            return Object.freeze({
+              kind: 'input' as const,
+              name: guard.name,
+              result,
+              agent,
+              sessionId: this.id,
+              turnId: z
+                .string()
+                .parse(run instanceof NativeTurn ? run.id : run.turnId),
+              ...(run instanceof NativeTurn ? {} : { subagentId: run.childId }),
+            });
+          })
+          .map((pending) =>
+            pending.catch((error) => {
+              if (parallel && !observedFailure) {
+                observedFailure = { error };
+                if (
+                  this.current(run) &&
+                  !signal.aborted &&
+                  run.failure === undefined
                 )
-              : guard.callback(
-                  Object.freeze({
-                    decide: scope.decide,
-                    context: this.options.context,
-                    submission: this.#turnFor(this.rootRun(run as NativeTurn)),
-                    signal,
-                    agent,
-                    input: structuredClone((run as NativeTurn).guardrailInput!),
-                  }),
-                )),
-          );
-          check();
-          return Object.freeze({
-            kind: 'input' as const,
-            name: guard.name,
-            result,
-            agent,
-            sessionId: this.id,
-            turnId: z
-              .string()
-              .parse(run instanceof NativeTurn ? run.id : run.turnId),
-            ...(run instanceof NativeTurn ? {} : { subagentId: run.childId }),
-          });
-        }),
+                  toolInvocation.exit(() => {
+                    // Existing owner failure delivery before the pending peer callbacks join.
+                    void this.trackOwnedCallback(run, () =>
+                      Promise.reject(error),
+                    ).catch(() => {});
+                  });
+              }
+              throw error;
+            }),
+          ),
       );
       const records = settled.flatMap((entry) =>
         entry.status === 'fulfilled' ? [entry.value] : [],
       );
       run.guardrailResults.push(...records);
       const failed = settled.find((entry) => entry.status === 'rejected');
+      if (observedFailure) throw observedFailure.error;
       if (failed?.status === 'rejected') throw failed.reason;
       check();
       const tripped = records.find((record) => record.result.tripwireTriggered);

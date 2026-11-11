@@ -679,7 +679,11 @@
     {
       "path": "sdk-native-web-search-images.patch",
       "sha256": "87c4c6eda5d7d3086c434c0227fab9301c847c94c97eae32eabba7598f4e67bf"
+    },
+    {
+      "path": "sdk-trace-credential-destination.patch",
+      "sha256": "9179fc33da3c5f1f7bba84de3da43f7a5257bd9a81ebbc108373a851c7288170"
     }
   ],
-  "result_tree": "5a1838d1962f4b97cb670ac7b735f5e74ac68f0b"
+  "result_tree": "ce23418d8f278e388fe87c8371c90167c52e8001"
 }

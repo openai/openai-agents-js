@@ -50,6 +50,10 @@ OpenAI export has been requiring a known native root descriptor. An externally s
 
 Current source builds: explicit `TraceExportCredentials` for one workflow, independent of model credentials and the exporter's fallback API key. Private headers, excluded from span records and portable Session state.
 
+With built-in OTLP and JavaScript processors active, the SDK has been reserving each newly admitted span credential for built-in OTLP. The host `OpenAITraceExporter` has been using its configured fallback credentials for that span and descendants inheriting the credential, including after built-in OTLP removal through `setTraceProcessors()`. After replacement with host processors, a new explicit `exportCredential` admission has been authorizing host export.
+
+With host-only tracing, the SDK has been binding each explicit `exportCredential` to the active processor registrations when the span starts. Exporters added or re-registered later have been using their configured fallback credentials for events that inherit the earlier scope. Queued events have been retaining their original registrations and credentials.
+
 Fresh process with `OPENAI_API_KEY` for the model, plus explicit trace-only `OPENAI_TRACE_API_KEY` and `WORKFLOW_TRACE_API_KEY`:
 
 ```ts

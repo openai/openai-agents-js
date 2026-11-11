@@ -71,6 +71,9 @@ export class ModelServer {
       this.requests.push(JSON.parse(Buffer.concat(chunks).toString()));
       this.requestHeaders.push({ ...request.headers });
       const requestIndex = this.requests.length - 1;
+      response.once('close', () =>
+        this.onRecord?.('MODEL_RESPONSE_CLOSED', { requestIndex }),
+      );
       const requestBody = this.requests[requestIndex]!;
       this.onRecord?.('MODEL_REQUEST', {
         method: request.method,
