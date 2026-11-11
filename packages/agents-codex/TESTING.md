@@ -53,6 +53,80 @@ For a namespaced function, pass `namespace` beside `callId`, for example `toolCa
 
 `customToolCall('exec', code, { callId: 'aggregate' })` prescribes a raw custom call for the Code Mode host. Use `peer.toolOutput(callId)` to read the submitted output for either form. The scripted server does not supply the MCP peer, executor, or JavaScript host itself.
 
+## Script a computer call
+
+With the current [source build](../../examples/codex/guides/building.md), use `computerCall()` to script the provider's actions for a [computer tool](../../examples/codex/guides/tools.md#computer-tools). Supply a fake driver to check the native tool loop without opening a browser or controlling a device.
+
+Save this example as `scripted-computer.mts` and run `npx tsx scripted-computer.mts` from your application directory.
+
+```ts
+import assert from 'node:assert/strict';
+import { Agent, computerTool, type Computer } from '@openai/agents';
+import {
+  computerCall,
+  text,
+  withScriptedResponses,
+} from '@openai/agents/testing';
+
+// A 1 × 1 PNG for the fake screenshot.
+const pixel =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==';
+let screenshots = 0;
+const unexpected = () => {
+  throw new Error('Unexpected computer action');
+};
+const driver: Computer = {
+  screenshot: () => {
+    screenshots++;
+    return pixel;
+  },
+  click: unexpected,
+  doubleClick: unexpected,
+  scroll: unexpected,
+  type: unexpected,
+  wait: unexpected,
+  move: unexpected,
+  keypress: unexpected,
+  drag: unexpected,
+};
+
+await withScriptedResponses(
+  [
+    [computerCall([{ type: 'screenshot' }], { callId: 'screen-1' })],
+    [text('Done.')],
+  ],
+  async (peer) => {
+    const agent = new Agent({
+      instructions: 'Take a screenshot.',
+      provider: peer.provider,
+      tools: [computerTool({ computer: driver })],
+    });
+    assert.equal((await agent.run('Look at the screen.')).finalOutput, 'Done.');
+    assert.equal(screenshots, 1);
+
+    const input = peer.requests[1]?.input;
+    assert.ok(Array.isArray(input));
+    const receipt = input.find(
+      (item) =>
+        item !== null &&
+        typeof item === 'object' &&
+        'type' in item &&
+        item.type === 'computer_call_output',
+    );
+    assert.ok(
+      receipt && typeof receipt === 'object' && !Array.isArray(receipt),
+    );
+    assert.equal(receipt.call_id, 'screen-1');
+    assert.deepEqual(receipt.output, {
+      type: 'computer_screenshot',
+      image_url: `data:image/png;base64,${pixel}`,
+    });
+  },
+);
+```
+
+The script exits silently after checking the driver call and the screenshot sent to the provider. To test safety handling, supply `pendingSafetyChecks` to `computerCall()`. The SDK still applies the tool's approval and safety policies before it calls the driver.
+
 ## Supply usage and rate-limit metadata
 
 Keep item arrays for ordinary text/tool tests. To test budget or quota handling, use a response envelope:

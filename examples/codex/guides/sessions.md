@@ -57,6 +57,32 @@ console.log((await turn.wait()).finalOutput);
 
 Opening validates and records the entire batch without requesting a model response. User messages can include the [image and file parts](tools.md#input-tools-and-output) accepted by ordinary input; assistant messages contain settled text. Tool history and other roles reject. `agent.run()` accepts the same option. Choose either initial history or `state`/resume; they cannot be combined. Restore retains the recorded items without seeding them again.
 
+### Capture one-shot history for replay
+
+With the current [source build](building.md), pass `returnHistory: true` to `agent.run()` or `Runner.run()` to capture original conversation records. Replay the returned `history` through another Session's `transactHistory()`. Use `returnState: true` to capture a portable checkpoint. You can request both independently.
+
+This fragment assumes a configured `agent` and a trusted earlier conversation. The destination uses its own current instructions and declarations.
+
+```ts
+const result = await agent.run('Load the record.', { returnHistory: true });
+if (!result.history) throw new Error('Requested history is unavailable');
+await using session = await agent.session();
+const before = await session.historySnapshot();
+await session.transactHistory({
+  expectedRevision: before.revision,
+  keep: 0,
+  items: result.history,
+});
+const continued = await (
+  await session.submit('Continue with that record.')
+).wait();
+console.log(continued.finalOutput);
+```
+
+The capture excludes system and developer messages. Replay uses the destination Session's provider credentials and tool grants. Retained tool calls and results provide context without executing those calls again. See [original history reads and edits](state.md#original-history-reads-and-edits) for replay validation and replacement.
+
+One-shot capture allows up to 4,096 original records and 8 MiB of serialized history. The SDK reports a size error after the task finishes, so retrying can repeat tool effects. For larger histories, open a Session and use [bounded history reads](state.md#original-history-reads-and-edits).
+
 ### Choose a cancellation lifetime
 
 Use the signal or control that owns the work you want to stop:

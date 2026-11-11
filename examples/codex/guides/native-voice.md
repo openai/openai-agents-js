@@ -135,7 +135,7 @@ These sends are controls, not a replacement for consuming `voice.events()`. A ra
 
 ### Observe provider events and local history
 
-Pass `includeRawProviderEvents: true` when opening `session.realtime()`. The `raw_provider_event` event contains decoded provider JSON before its typed projection, including events that have no typed projection. A recoverable request rejection emits `provider_request_error` with the provider code and exact `eventId`. Keep consuming events to observe later responses.
+Pass `includeRawProviderEvents: true` when opening `session.realtime()`. The `raw_provider_event` event contains decoded provider JSON before its typed projection, including events that have no typed projection. A recoverable request rejection emits `provider_request_error` with the code and exact `eventId` if the provider supplies them. Keep consuming events to observe later responses.
 
 Use `voice.on('event', listener)` or subscribe to a specific event type. Call the returned function to remove the listener. Use `voice.events()` to consume the media stream and any startup events queued before the listener was registered.
 
@@ -272,6 +272,8 @@ The retained `@openai/agents/realtime` entrypoint has been continuing to expose 
 ## Credentials and custom adapters
 
 `Session.realtime({apiKey})` accepts a string or a synchronous or asynchronous callback. The callback receives an optional `AbortSignal` and resolves once per connection. Omit it to use the Session provider's credentials. This override does not change credentials for the Session's text turns. Honor cancellation during credential lookup and release any resources your callback opens.
+
+With the current [source build](building.md), use `Session.realtime({ url, apiKey })` to select an exact `ws:` or `wss:` endpoint for built-in WebSocket media or SIP sideband control. The URL must omit embedded credentials and fragments. Only the explicit `apiKey` supplies credentials for this connection. WebRTC and custom adapters reject the URL override.
 
 ### Implement a custom adapter
 
