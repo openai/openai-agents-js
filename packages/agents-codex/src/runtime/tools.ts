@@ -92,6 +92,18 @@ export class ToolTimeoutError extends Error {
 
 export type FunctionToolTimeoutBehavior = 'raise_exception' | 'error_as_result';
 
+class FunctionBodyError extends Error {
+  constructor(readonly original: unknown) {
+    super('Function callback failed');
+  }
+}
+
+/** Admitted callback-body exception formatting into a failed model-visible result. */
+export type ToolErrorFunction<Context = unknown> = (
+  context: ToolContext<Context>,
+  error: unknown,
+) => string | Promise<string>;
+
 export type ToolTimeoutErrorFunction<Context = unknown> = (
   context: ToolContext<Context>,
   error: ToolTimeoutError,
@@ -249,6 +261,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly callbackTimeout?: number;
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  readonly errorFunction?: ToolErrorFunction<Context>;
   readonly kind?: 'function';
   readonly [computerDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
@@ -379,6 +392,8 @@ export function tool<
   timeoutBehavior?: FunctionToolTimeoutBehavior;
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  /** Callback-body failures only; cancellation, policy and validation handling unchanged. */
+  errorFunction?: ToolErrorFunction<Context>;
   /**
    * Initial Zod validation failure text, before policy, approval, or execution.
    * Detached original JSON and an unvalidated call context. Default turn failure.
@@ -473,12 +488,15 @@ export function tool<
     timeoutBehavior = 'raise_exception',
     timeoutErrorFunction,
     inputErrorFunction,
+    errorFunction,
   } = options;
   if (
     inputErrorFunction !== undefined &&
     typeof inputErrorFunction !== 'function'
   )
     throw new TypeError('inputErrorFunction must be a function');
+  if (errorFunction !== undefined && typeof errorFunction !== 'function')
+    throw new TypeError('errorFunction must be a function');
   const recoverOriginalInput = async (
     error: unknown,
     original: JsonValue,
@@ -508,6 +526,7 @@ export function tool<
     callbackTimeout,
     timeoutBehavior,
     timeoutErrorFunction,
+    errorFunction,
     deferLoading: options.deferLoading ?? false,
     parameters: decode(
       losslessJsonValueSchema,
@@ -636,16 +655,25 @@ export function tool<
           ? undefined
           : new ToolTimeoutError(name, callbackTimeout);
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
+      const invoke = (signal: AbortSignal) =>
+        execute(
+          parsed,
+          inheritToolSessionOwner(
+            withDecisionSignal(callContext, signal),
+            context,
+          ),
+        );
       try {
         value = await invokeWithTimeout(
-          (signal) =>
-            execute(
-              parsed,
-              inheritToolSessionOwner(
-                withDecisionSignal(callContext, signal),
-                context,
-              ),
-            ),
+          errorFunction
+            ? async (signal) => {
+                try {
+                  return await invoke(signal);
+                } catch (error) {
+                  throw new FunctionBodyError(error);
+                }
+              }
+            : invoke,
           context.signal,
           callbackTimeout,
           name,
@@ -654,6 +682,17 @@ export function tool<
           timeoutBehavior,
         );
       } catch (error) {
+        if (error instanceof FunctionBodyError) {
+          admit();
+          const text = await errorFunction!(callContext, error.original);
+          admit();
+          if (typeof text !== 'string')
+            throw new TypeError('errorFunction must return a string');
+          return {
+            success: false,
+            contentItems: [{ type: 'inputText' as const, text }],
+          };
+        }
         if (
           timeoutBehavior !== 'error_as_result' ||
           !timeoutError ||
