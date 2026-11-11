@@ -1248,11 +1248,11 @@ fn validate_local_read_only_roots(
         let path = declaration.to_abs_path().context(invalid)?;
         let canonical = path.canonicalize().context(invalid)?;
         ensure!(
-            canonical.as_os_str() == path.as_os_str()
-                && canonical.parent().is_some()
-                && canonical.is_dir(),
+            canonical.as_os_str() == path.as_os_str() && canonical.parent().is_some(),
             "{invalid}"
         );
+        let metadata = canonical.as_path().symlink_metadata().context(invalid)?;
+        ensure!(metadata.is_dir(), "{invalid}");
         let root = LocalWriteRoots::new(std::slice::from_ref(&canonical)).context(invalid)?;
         for other in write_paths.iter().chain(&roots) {
             ensure!(
@@ -1273,20 +1273,7 @@ fn validate_local_read_only_roots(
             }
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            let linked = linked_local_protected_files(
-                canonical.as_path(),
-                false,
-                Some(
-                    "read_only_roots supports only regular files, directories, and symlink entries",
-                ),
-                "could not inspect a read_only_roots directory",
-            )?;
-            ensure!(
-                linked.is_empty(),
-                "read_only_roots must not contain hard-linked files"
-            );
-        }
+        validate_local_read_root_links(canonical.as_path(), &metadata)?;
         roots.push(canonical);
     }
     let mut grants = roots
@@ -1689,18 +1676,87 @@ fn linked_relocated_sqlite_files(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+type LocalFileIdentity = (u64, u64);
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn validate_local_read_root_links(root: &Path, root_metadata: &std::fs::Metadata) -> Result<()> {
+    use std::collections::HashSet;
+    use std::os::unix::fs::MetadataExt;
+
+    let error = "read_only_roots must contain every directory entry for each hard-linked file";
+    let root_identity = (root_metadata.dev(), root_metadata.ino());
+    let mut counts = HashMap::new();
+    let mut entries = HashSet::new();
+    visit_local_regular_files(
+        root,
+        false,
+        Some("read_only_roots supports only regular files, directories, and symlink entries"),
+        "could not inspect a read_only_roots directory",
+        |parent, entry, metadata| {
+            let file = (metadata.dev(), metadata.ino());
+            let links = metadata.nlink();
+            // A later singleton observation must agree with its known link group.
+            if links == 1 && !counts.contains_key(&file) {
+                return Ok(());
+            }
+            let (expected, seen) = counts.entry(file).or_insert((links, 0));
+            ensure!(links == *expected, "{error}");
+            // An aliased traversal can visit the same physical directory entry twice.
+            if entries.insert((file, parent.unwrap_or(root_identity), entry.file_name())) {
+                *seen += 1;
+            }
+            Ok(())
+        },
+    )?;
+    ensure!(
+        counts.values().all(|(expected, seen)| expected == seen),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn linked_local_protected_files(
     root: &Path,
     private_runtime_home: bool,
     strict_tree_error: Option<&'static str>,
     resolve_error: &'static str,
 ) -> Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut linked_files = Vec::new();
+    visit_local_regular_files(
+        root,
+        private_runtime_home,
+        strict_tree_error,
+        resolve_error,
+        |_, entry, metadata| {
+            if metadata.nlink() > 1 {
+                linked_files.push(entry.path());
+            }
+            Ok(())
+        },
+    )?;
+    Ok(linked_files)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn visit_local_regular_files(
+    root: &Path,
+    private_runtime_home: bool,
+    strict_tree_error: Option<&'static str>,
+    resolve_error: &'static str,
+    mut visit: impl FnMut(
+        Option<LocalFileIdentity>,
+        &std::fs::DirEntry,
+        &std::fs::Metadata,
+    ) -> Result<()>,
+) -> Result<()> {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
 
-    let mut directories = vec![root.to_owned()];
-    let mut linked_files = Vec::new();
-    while let Some(directory) = directories.pop() {
+    let mut directories = vec![(root.to_owned(), None)];
+    while let Some((directory, directory_identity)) = directories.pop() {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
             Err(error) if strict_tree_error.is_none() && error.kind() == ErrorKind::NotFound => {
@@ -1735,13 +1791,13 @@ fn linked_local_protected_files(
                 );
             }
             if metadata.is_dir() {
-                directories.push(entry.path());
-            } else if metadata.is_file() && metadata.nlink() > 1 {
-                linked_files.push(entry.path());
+                directories.push((entry.path(), Some((metadata.dev(), metadata.ino()))));
+            } else if metadata.is_file() {
+                visit(directory_identity, &entry, &metadata)?;
             }
         }
     }
-    Ok(linked_files)
+    Ok(())
 }
 
 fn resolve_local_path(
@@ -2895,15 +2951,21 @@ mod tests {
         }
         assert!(validate(&[&home], private).is_err());
 
-        let hard_link = source.join("linked");
-        fs::hard_link(&regular, &hard_link).unwrap();
-        assert!(
-            validate(&[&source], private)
-                .unwrap_err()
-                .to_string()
-                .contains("hard-linked")
-        );
-        fs::remove_file(hard_link).unwrap();
+        fs::hard_link(&regular, child.join("linked")).unwrap();
+        assert_eq!(validate(&[&source], private).unwrap(), vec![uri(&source)]);
+        let external_alias = source.join("external-alias");
+        for directory in [&second, &cwd] {
+            let external = directory.join("external");
+            fs::write(&external, b"external fixture").unwrap();
+            fs::hard_link(&external, &external_alias).unwrap();
+            assert!(
+                validate(&[&source], private)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("hard-linked")
+            );
+            fs::remove_file(&external_alias).unwrap();
+        }
         let _socket = UnixListener::bind(source.join("socket")).unwrap();
         assert!(
             validate(&[&source], private)
@@ -2911,6 +2973,7 @@ mod tests {
                 .to_string()
                 .contains("only regular files")
         );
+        fs::remove_file(source.join("socket")).unwrap();
 
         // The durable profile alias resolves into the proposed read grant.
         let storage = base.join("profile");
@@ -2952,6 +3015,14 @@ mod tests {
                     .contains("private SDK state")
             );
         }
+        assert_eq!(validate(&[&source], private).unwrap(), vec![uri(&source)]);
+        fs::hard_link(&login.canonical, source.join("auth-alias")).unwrap();
+        assert!(
+            validate(&[&source], private)
+                .unwrap_err()
+                .to_string()
+                .contains("private SDK state")
+        );
     }
 
     #[test]
