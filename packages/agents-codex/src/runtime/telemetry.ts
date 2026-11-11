@@ -19,6 +19,7 @@ export {
   startSpan,
   withTrace,
   withSpan,
+  withTraceContext,
   getCurrentTrace,
   getCurrentSpan,
   setTraceContextStorage,
