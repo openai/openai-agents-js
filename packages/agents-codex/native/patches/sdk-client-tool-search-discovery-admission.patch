@@ -1,0 +1,81 @@
+diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
+index 75909cec51757a7405e0118ddff2050e28fbe76e..c0dbfeae4a340a02377e682929ce04841f42a699 100644
+--- a/codex-rs/core/src/tools/handlers/extension_tools.rs
++++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
+@@ -51,6 +51,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
+         self.0.exposure()
+     }
+ 
++    fn client_search_source(&self) -> Option<ToolName> {
++        self.0.client_search_source()
++    }
++
+     fn supports_parallel_tool_calls(&self) -> bool {
+         self.0.supports_parallel_tool_calls()
+     }
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index 0191c3d562110d0146c4e535e343735449882c43..ba74b7574bb7f0cf5e2e7a3f02ce01acd93e9ad5 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -431,7 +431,9 @@ impl ToolRegistry {
+         exposure: ToolExposure,
+     ) -> bool {
+         let tool_name = runtime.tool_name().with_default_namespace();
+-        if !self.tool_policy.allows(&tool_name) {
++        if !self.tool_policy.allows(&tool_name)
++            && !self.admits_client_search_function(runtime.as_ref(), exposure)
++        {
+             return false;
+         }
+         if tool_name.is_default_namespace()
+@@ -461,6 +463,34 @@ impl ToolRegistry {
+         }
+     }
+ 
++    fn admits_client_search_function(
++        &self,
++        runtime: &dyn CoreToolRuntime,
++        exposure: ToolExposure,
++    ) -> bool {
++        if !exposure.is_deferred() {
++            return false;
++        }
++        let Some(source) = runtime.client_search_source() else {
++            return false;
++        };
++        let Some(owner) = self.tools.get(&source.with_default_namespace()) else {
++            return false;
++        };
++        if !matches!(owner.runtime.spec(), ToolSpec::ProviderToolSearch(search) if !search.searches_on_provider())
++        {
++            return false;
++        }
++        match runtime.spec() {
++            ToolSpec::Function(_) => true,
++            ToolSpec::Namespace(namespace) => matches!(
++                namespace.tools.as_slice(),
++                [codex_tools::ResponsesApiNamespaceTool::Function(_)]
++            ),
++            _ => false,
++        }
++    }
++
+     pub(crate) fn record_collision(&mut self, tool_name: ToolName) {
+         self.first_collision.get_or_insert(tool_name);
+     }
+diff --git a/codex-rs/tools/src/tool_executor.rs b/codex-rs/tools/src/tool_executor.rs
+index b0fd7a14075a00f43661343f8464b135d02516bf..cb1dbc6ee4bdd05077347c234436673d7862470c 100644
+--- a/codex-rs/tools/src/tool_executor.rs
++++ b/codex-rs/tools/src/tool_executor.rs
+@@ -130,6 +130,11 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
+         ToolExposure::Direct
+     }
+ 
++    /// The registered client search that admitted this deferred function for this turn.
++    fn client_search_source(&self) -> Option<ToolName> {
++        None
++    }
++
+     fn search_info(&self) -> Option<ToolSearchInfo> {
+         let spec = self.spec();
+         ToolSearchInfo::from_tool_spec(spec, /*source_info*/ None)

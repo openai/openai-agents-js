@@ -858,8 +858,8 @@ impl PythonTools {
         durable: bool,
     ) -> Result<ProfileCatalog> {
         let id = self.allocate_generation()?;
-        // An explicitly admitted voice Agent supplies its own callback catalog.
-        // The opening policy still governs all durable profiles and turns.
+        // The opening policy governs durable profiles. Voice agents and client
+        // search candidates have separate, operation-scoped admission checks.
         let policy = durable.then_some(self.policy.as_ref());
         let mut generation = self.prepare_catalog(id, specs, policy)?;
         let mut manual = HashSet::new();
@@ -1813,7 +1813,7 @@ impl PythonTools {
             "Client tool search catalog exceeds its limit"
         );
         let generation = self
-            .profile_catalog(
+            .allocate_profile_catalog(
                 specs,
                 &manual_slots,
                 &terminal_slots,
@@ -1824,6 +1824,27 @@ impl PythonTools {
             .generation;
         let id = generation.id;
         let added = ClientToolSearchWork::additional_entries(&generation);
+        let captured_names: HashSet<_> = work
+            .generation
+            .entries
+            .iter()
+            .chain(
+                catalogs
+                    .iter()
+                    .filter(|catalog| {
+                        Arc::ptr_eq(&catalog.source, &work.generation)
+                            && catalog.profile == work.profile
+                    })
+                    .flat_map(|catalog| catalog.generation.entries.iter()),
+            )
+            .map(|entry| entry.name.clone().with_default_namespace())
+            .collect();
+        ensure!(
+            added
+                .iter()
+                .all(|entry| !captured_names.contains(&entry.name.clone().with_default_namespace())),
+            "Client tool search cannot replace a captured tool"
+        );
         codex_tools::ClientToolSearchSelection {
             tool_refs: added.iter().map(|entry| entry.name.clone()).collect(),
             catalog_generation: None,
@@ -3602,6 +3623,23 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
             (ToolExposure::Deferred, false, true) => ToolExposure::Direct,
             (exposure, _, _) => exposure,
         }
+    }
+
+    fn client_search_source(&self) -> Option<ToolName> {
+        let turn = self.admission.as_ref()?;
+        let catalogs = turn
+            .client_search_catalogs
+            .lock()
+            .expect("client search catalogs poisoned");
+        let catalog = catalogs.iter().find(|catalog| {
+            catalog.accepted.load(Ordering::Acquire)
+                && Arc::ptr_eq(&catalog.generation, &self.generation)
+                && catalog.profile == self.profile
+        })?;
+        catalog.source.entries.iter().find_map(|entry| {
+            matches!(&entry.spec, ToolSpec::ProviderToolSearch(search) if !search.searches_on_provider())
+                .then(|| entry.name.clone())
+        })
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {

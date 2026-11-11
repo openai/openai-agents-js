@@ -131,7 +131,7 @@ it('preserves raw client arguments and original identities while admitting callb
   let searches = 0;
   const agent = new Agent({
     provider,
-    model: 'fixture-client-tool-search',
+    model: 'gpt-5.5',
     instructions: 'Use support tools.',
     tools: [
       known,
@@ -164,12 +164,23 @@ it('preserves raw client arguments and original identities while admitting callb
   ).toBe('Both accounts loaded.');
   expect(searches).toBe(2);
   expect(effects).toEqual(['blue', 'green']);
-  expect(outputFor(model, 1, 'search_new').tools).toContainEqual(
-    expect.objectContaining({ type: 'function', name: 'discovered_lookup' }),
-  );
-  expect(outputFor(model, 3, 'search_again').tools).toContainEqual(
-    expect.objectContaining({ type: 'function', name: 'discovered_lookup' }),
-  );
+  for (const [request, callId] of [
+    [1, 'search_new'],
+    [3, 'search_again'],
+  ] as const) {
+    expect(outputFor(model, request, callId).tools).toContainEqual(
+      expect.objectContaining({
+        type: 'namespace',
+        name: 'functions',
+        tools: [
+          expect.objectContaining({
+            type: 'function',
+            name: 'discovered_lookup',
+          }),
+        ],
+      }),
+    );
+  }
   model.assertExhausted();
 }, 30_000);
 
