@@ -1,19 +1,22 @@
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 7c6c07405af19a6009da861d35eecf8048685c10..c13f7f4f8ef76312d068c0cabfd6fa528ef710ba 100644
 --- a/codex-rs/core/src/agent/control/spawn.rs
 +++ b/codex-rs/core/src/agent/control/spawn.rs
-@@ -626,13 +626,26 @@
+@@ -626,13 +626,28 @@ impl LocalAgentControl {
          {
              Some(parent.session.inherited_instructions().await)
          } else {
 -            self.runtime
-+            // The registered logical root supplies only current resource context.
-+            // Preserve the existing private/shared thread-provider policy separately.
-+            let user_appendix = if let Some(root_id) =
++            // The registered root has been supplying its applied user base and current
++            // resource appendix. Thread providers have been retaining their sharing policy.
++            let (user, user_appendix) = if let Some(root_id) =
 +                self.runtime.registry.agent_id_for_path(&AgentPath::root())
 +                && let Ok(root) = state.get_thread(root_id).await
 +            {
-+                root.session.inherited_instructions().await.user_appendix
++                let instructions = root.session.inherited_instructions().await;
++                (instructions.user, instructions.user_appendix)
 +            } else {
-+                None
++                (None, None)
 +            };
 +            let thread_provider = self
 +                .runtime
@@ -24,7 +27,8 @@
 -                    ..Default::default()
 -                })
 +                .cloned();
-+            (user_appendix.is_some() || thread_provider.is_some()).then_some(SessionInstructions {
++            (user.is_some() || user_appendix.is_some() || thread_provider.is_some()).then_some(SessionInstructions {
++                user,
 +                user_appendix,
 +                thread_provider,
 +                ..Default::default()
@@ -32,9 +36,11 @@
          };
          // Reserving a slot can evict an idle nested parent. Capture its instructions
          // alongside its authority so the child does not depend on a later live lookup.
+diff --git a/codex-rs/core/src/agents_md.rs b/codex-rs/core/src/agents_md.rs
+index 67a5a1979a2e930f5260be28fe828677e513dbdf..879719a1455bde91f01d9b39d34a4b2b6af5a0b0 100644
 --- a/codex-rs/core/src/agents_md.rs
 +++ b/codex-rs/core/src/agents_md.rs
-@@ -315,6 +315,9 @@
+@@ -333,6 +333,9 @@ pub struct LoadedAgentsMd {
      /// Account- or home-scoped instructions supplied by the host.
      user_instructions: Option<Instructions>,
  
@@ -44,7 +50,7 @@
      /// Thread-scoped instructions supplied by the host.
      thread_instructions: Option<Instructions>,
  
-@@ -333,6 +336,7 @@
+@@ -351,6 +354,7 @@ impl LoadedAgentsMd {
                  text: contents,
                  source: Some(path),
              }),
@@ -52,7 +58,7 @@
              thread_instructions: None,
              entries: Vec::new(),
          }
-@@ -342,6 +346,7 @@
+@@ -360,6 +364,7 @@ impl LoadedAgentsMd {
          Self {
              user_instructions: user_instructions
                  .filter(|instructions| !instructions.text.trim().is_empty()),
@@ -60,7 +66,7 @@
              thread_instructions: None,
              entries: Vec::new(),
          }
-@@ -351,9 +356,12 @@
+@@ -369,9 +374,12 @@ impl LoadedAgentsMd {
          mut self,
          user_instructions: Option<Instructions>,
          thread_instructions: Option<Instructions>,
@@ -73,7 +79,7 @@
          self.thread_instructions =
              thread_instructions.filter(|instructions| !instructions.text.trim().is_empty());
          (!self.is_empty()).then_some(self)
-@@ -370,6 +378,7 @@
+@@ -388,6 +396,7 @@ impl LoadedAgentsMd {
          }
          Self {
              user_instructions: None,
@@ -81,7 +87,7 @@
              thread_instructions: None,
              entries: vec![InstructionEntry {
                  contents,
-@@ -380,6 +389,7 @@
+@@ -398,6 +407,7 @@ impl LoadedAgentsMd {
  
      fn is_empty(&self) -> bool {
          self.user_instructions.is_none()
@@ -89,7 +95,7 @@
              && self.thread_instructions.is_none()
              && self
                  .entries
-@@ -400,15 +410,21 @@
+@@ -418,15 +428,21 @@ impl LoadedAgentsMd {
          let mut output = String::new();
          let mut has_previous = false;
          let mut previous_was_project = false;
@@ -114,7 +120,7 @@
              has_previous = true;
          }
          for entry in &self.entries {
-@@ -435,15 +451,21 @@
+@@ -453,15 +469,21 @@ impl LoadedAgentsMd {
          let mut output = String::new();
          let mut has_previous = false;
          let mut previous_environment: Option<(&str, &PathUri)> = None;
@@ -139,9 +145,11 @@
              has_previous = true;
          }
          for entry in &self.entries {
+diff --git a/codex-rs/core/src/agents_md_manager.rs b/codex-rs/core/src/agents_md_manager.rs
+index 4aaa1d0c3c382aab877e4d885d5a9a5d5cda1595..0ac5f993f9373d33551e4b2efb8e374fbbdb042e 100644
 --- a/codex-rs/core/src/agents_md_manager.rs
 +++ b/codex-rs/core/src/agents_md_manager.rs
-@@ -28,6 +28,7 @@
+@@ -28,6 +28,7 @@ pub(crate) struct AgentsMdManager {
  #[derive(Clone, Default)]
  pub(crate) struct SessionInstructions {
      pub(crate) user: Option<Instructions>,
@@ -149,7 +157,7 @@
      pub(crate) thread: Option<Instructions>,
      pub(crate) user_provider: Option<Arc<dyn UserInstructionsProvider>>,
      pub(crate) thread_provider: Option<Arc<dyn ThreadInstructionsProvider>>,
-@@ -48,6 +49,9 @@
+@@ -48,6 +49,9 @@ struct AgentsMdCache {
  impl AgentsMdManager {
      pub(crate) fn new(mut instructions: SessionInstructions) -> Self {
          instructions.user = normalize_instructions(instructions.user);
@@ -159,7 +167,7 @@
          instructions.thread = normalize_instructions(instructions.thread);
          Self {
              refresh_lock: Semaphore::new(/*permits*/ 1),
-@@ -109,12 +113,16 @@
+@@ -109,12 +113,16 @@ impl AgentsMdManager {
          }
  
          let result = async {
@@ -176,7 +184,7 @@
                      && state.instructions.thread == instructions.thread
                  {
                      return Ok(cached);
-@@ -128,7 +136,11 @@
+@@ -128,7 +136,11 @@ impl AgentsMdManager {
              } else {
                  cached.as_deref().cloned().unwrap_or_default()
              }
@@ -189,7 +197,7 @@
              .map(Arc::new);
              let mut state = self.state.lock().await;
              state.instructions = instructions;
-@@ -151,6 +163,7 @@
+@@ -151,6 +163,7 @@ impl AgentsMdManager {
          let state = self.state.lock().await;
          SessionInstructions {
              user: state.instructions.user.clone(),
@@ -197,9 +205,11 @@
              thread: state.instructions.thread.clone(),
              thread_provider: state
                  .instructions
+diff --git a/codex-rs/core/src/agents_md_tests.rs b/codex-rs/core/src/agents_md_tests.rs
+index 353da532c8319d5c603e5c83c74d94f6aa1aaff3..2549dde047de2f3a49d1d0916259007ac92ce12f 100644
 --- a/codex-rs/core/src/agents_md_tests.rs
 +++ b/codex-rs/core/src/agents_md_tests.rs
-@@ -422,6 +422,7 @@
+@@ -422,6 +422,7 @@ fn foreign_agents_md_uses_environment_native_paths() {
      };
      let source_path = cwd.join("AGENTS.md").expect("AGENTS.md URI");
      let loaded = LoadedAgentsMd {
@@ -207,7 +217,7 @@
          user_instructions: None,
          thread_instructions: None,
          entries: vec![InstructionEntry {
-@@ -456,6 +457,7 @@
+@@ -456,6 +457,7 @@ fn multi_environment_agents_md_renders_mixed_path_conventions() {
          .join("AGENTS.md")
          .expect("Windows AGENTS.md URI");
      let loaded = LoadedAgentsMd {
@@ -215,7 +225,7 @@
          user_instructions: None,
          thread_instructions: None,
          entries: vec![
-@@ -614,6 +616,7 @@
+@@ -614,6 +616,7 @@ fn empty_loaded_instructions_are_empty() {
  #[test]
  fn loaded_instructions_with_only_empty_or_whitespace_entries_are_empty() {
      let empty = LoadedAgentsMd {
@@ -223,7 +233,7 @@
          user_instructions: None,
          thread_instructions: None,
          entries: vec![InstructionEntry {
-@@ -622,6 +625,7 @@
+@@ -622,6 +625,7 @@ fn loaded_instructions_with_only_empty_or_whitespace_entries_are_empty() {
          }],
      };
      let whitespace = LoadedAgentsMd {
@@ -231,7 +241,7 @@
          user_instructions: None,
          thread_instructions: None,
          entries: vec![InstructionEntry {
-@@ -694,6 +698,7 @@
+@@ -694,6 +698,7 @@ async fn total_byte_limit_truncates_later_project_docs() {
  
      let loaded = load_agents_md(&config).await.expect("project instructions");
      let expected = LoadedAgentsMd {
@@ -239,7 +249,7 @@
          user_instructions: None,
          thread_instructions: None,
          entries: vec![
-@@ -1387,6 +1392,7 @@
+@@ -1387,6 +1392,7 @@ async fn concatenates_root_and_cwd_docs() {
      let root_agents = repo.path().join("AGENTS.md").abs();
      let crate_agents = cfg.cwd.join("AGENTS.md");
      let expected = LoadedAgentsMd {
@@ -247,7 +257,7 @@
          user_instructions: None,
          thread_instructions: None,
          entries: vec![
-@@ -1524,6 +1530,7 @@
+@@ -1524,6 +1530,7 @@ async fn instruction_sources_include_global_before_agents_md_docs() {
      let project_agents = cfg.cwd.join("AGENTS.md");
  
      let expected = LoadedAgentsMd {
@@ -255,7 +265,7 @@
          user_instructions: Some(Instructions {
              text: "global doc".to_string(),
              source: Some(global_agents.clone()),
-@@ -1797,3 +1804,46 @@
+@@ -1797,3 +1804,46 @@ fn create_skill(codex_home: PathBuf, name: &str, description: &str) {
      let content = format!("---\nname: {name}\ndescription: {description}\n---\n\n# Body\n");
      fs::write(skill_dir.join("SKILL.md"), content).unwrap();
  }
@@ -302,9 +312,11 @@
 +            .is_none()
 +    );
 +}
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index b99ef00d8acc0191b88557175d5120820b47beb2..33154fb4ae8acf29dfa48788f4a7d2175f58b984 100644
 --- a/codex-rs/core/src/thread_manager.rs
 +++ b/codex-rs/core/src/thread_manager.rs
-@@ -287,6 +287,9 @@
+@@ -287,6 +287,9 @@ pub struct StartThreadOptions {
      pub inherited_environments: Option<TurnEnvironmentSnapshot>,
      /// Explicit global instructions carried by an internal caller instead of loading them again.
      pub user_instructions: Option<LoadedUserInstructions>,
@@ -314,7 +326,7 @@
      pub thread_extension_init: ExtensionDataInit,
      /// Host-supplied data captured by each new turn. This is not persisted.
      pub turn_extension_init: ExtensionDataInit,
-@@ -314,6 +317,7 @@
+@@ -314,6 +317,7 @@ impl StartThreadOptions {
              environments: None,
              inherited_environments: None,
              user_instructions: None,
@@ -322,7 +334,7 @@
              thread_extension_init: ExtensionDataInit::default(),
              turn_extension_init: ExtensionDataInit::default(),
              client_mcp_extensions: ClientMcpExtensions::default(),
-@@ -2114,6 +2118,7 @@
+@@ -2114,6 +2118,7 @@ impl ThreadManagerState {
              environments,
              inherited_environments: captured_environments,
              user_instructions: supplied_user_instructions,
@@ -330,7 +342,7 @@
              mut thread_extension_init,
              turn_extension_init,
              client_mcp_extensions,
-@@ -2308,6 +2313,11 @@
+@@ -2308,6 +2313,11 @@ impl ThreadManagerState {
                  )
              };
          let mut instructions = instructions;

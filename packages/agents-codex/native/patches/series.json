@@ -650,8 +650,12 @@
     },
     {
       "path": "sdk-user-instructions-appendix.patch",
-      "sha256": "a3ea35cfd3f2eaeed66dc6ad6b06e7f651a7126ebfc66032636dc5bfe9ae31d9"
+      "sha256": "1ea384b3472809ec401beb1c155e580af84293f7d8b8f36c1bdb3164357d5a0d"
+    },
+    {
+      "path": "sdk-fork-originals-lineage.patch",
+      "sha256": "3f315e7d82ebdc5e30cb9d336282876d05a410458dce6bdf7a6d5576fcf65411"
     }
   ],
-  "result_tree": "e99f7b7c4a21cd5e7a83518efd21e1b03ced2fee"
+  "result_tree": "48acbffd60a9e629813bff2ea3912f6ecada4d11"
 }

@@ -1581,6 +1581,19 @@ impl ThreadStore for LocalChecklistStore {
         })
     }
 
+    fn load_original_history(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadHistory> {
+        Box::pin(async move {
+            let writers = self.writers.lock().await;
+            if let Some(writer) = writers.get(&params.thread_id) {
+                writer.check()?;
+            }
+            ThreadStore::load_original_history(&self.inner, params).await
+        })
+    }
+
     fn read_original_history(
         &self,
         params: LoadThreadHistoryParams,
