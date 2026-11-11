@@ -381,6 +381,7 @@ export interface SessionOptions {
   realtimeApiKey?: string;
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
+  includeRawProviderEvents?: boolean;
   beforeComplete?: BeforeComplete<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
   outputGuardrails?: readonly OutputGuardrail<any>[];
@@ -2637,6 +2638,7 @@ export class Session<OutputT = string, Context = unknown> {
           return request ? [request] : [];
         }),
     });
+    if (options.includeRawProviderEvents) native._enable_raw_provider_events();
     this.#native = native;
     this.#engine = engine;
     this.#modelApiKey = modelApiKey;
@@ -6560,10 +6562,37 @@ export class Session<OutputT = string, Context = unknown> {
         'token_count',
         'raw_response_completed',
         'hosted_tool_call_progress',
+        'sdk_raw_provider_event',
       ].includes(msg.type)
         ? event.id
         : undefined);
     if (typeof turnId !== 'string') return;
+    if (msg.type === 'sdk_raw_provider_event') {
+      const owner = this.childCallbacks.find(id, incarnation, turnId);
+      if (
+        owner &&
+        owner.observationPhase !== 'ended' &&
+        (!owner.instanceId ||
+          owner.instanceId === event.subagent_instance_id) &&
+        event.id === turnId &&
+        msg.source === 'responses' &&
+        (msg.transport === 'sse' ||
+          msg.transport === 'websocket' ||
+          msg.transport === 'json') &&
+        msg.payload &&
+        typeof msg.payload === 'object' &&
+        !Array.isArray(msg.payload)
+      )
+        this.observations.append({
+          type: 'raw_provider_event',
+          turnId,
+          submissionId: `child:${id}:${incarnation}:${turnId}`,
+          source: msg.source,
+          transport: msg.transport,
+          payload: msg.payload,
+        });
+      return;
+    }
     if (msg.type === 'hosted_tool_call_progress') {
       const owner = this.childCallbacks.find(id, incarnation, turnId);
       if (
@@ -7229,7 +7258,8 @@ export class Session<OutputT = string, Context = unknown> {
       msg.turnId ??
       (kind === 'task_complete' ||
       kind === 'turn_complete' ||
-      kind === 'turn_aborted'
+      kind === 'turn_aborted' ||
+      kind === 'sdk_raw_provider_event'
         ? event.id
         : null);
     if (eventTurn !== null && eventTurn !== undefined && eventTurn !== run.id)
@@ -7297,6 +7327,25 @@ export class Session<OutputT = string, Context = unknown> {
       this.observeTokenCount(event, run.id!, this.submissionIds.get(run)!)
     )
       run.usage = msg.info ?? null;
+    if (
+      kind === 'sdk_raw_provider_event' &&
+      eventTurn === run.id &&
+      msg.source === 'responses' &&
+      (msg.transport === 'sse' ||
+        msg.transport === 'websocket' ||
+        msg.transport === 'json') &&
+      msg.payload &&
+      typeof msg.payload === 'object' &&
+      !Array.isArray(msg.payload)
+    )
+      this.observations.append({
+        type: 'raw_provider_event',
+        turnId: run.id!,
+        submissionId: this.submissionIds.get(run)!,
+        source: msg.source,
+        transport: msg.transport,
+        payload: msg.payload,
+      });
     if (
       kind === 'response_fact' &&
       eventTurn === run.id &&
@@ -13294,6 +13343,8 @@ export class Session<OutputT = string, Context = unknown> {
           .map((tool) => ({ name: tool.name })),
       );
       owner.thread._configure_manual_tools(manualSlots);
+      if (this.options.includeRawProviderEvents)
+        owner.thread._enable_raw_provider_events();
       await this.publishContextStartup(owner, signal);
       beforeRetirement();
       await owner.change.validateCandidate(owner.thread);

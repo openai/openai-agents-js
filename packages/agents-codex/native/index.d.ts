@@ -162,6 +162,7 @@ export class NativeThread {
   _respond_native_question(response_json: string): Promise<void>;
   _read_model_context(): Promise<string>;
   _read_plan_usage(request: _ModelHttpRequest): Promise<string | null>;
+  _enable_raw_provider_events(): void;
   _canonical_history(
     limit?: number | null,
     forReplay?: boolean,
