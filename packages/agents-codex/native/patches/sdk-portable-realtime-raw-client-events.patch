@@ -772,7 +772,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                      && self.deletion_error_item(event).is_none() =>
              {
                  return Err("Realtime provider rejected the operation".into());
-@@ -1898,13 +2228,24 @@
+@@ -1898,13 +2228,26 @@
      fn is_cancel_race(&self, event: &Value) -> bool {
          event["error"]["type"] == "invalid_request_error"
              && event["error"]["event_id"].as_str().is_some_and(|event_id| {
@@ -797,13 +797,15 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
 +            .is_some_and(|(_, id)| event["error"]["event_id"].as_str() == Some(id))
 +    }
 +    fn is_settings_rejection(&self, event: &Value) -> bool {
-+        self.raw_settings_event
-+            .as_deref()
-+            .is_some_and(|id| event["error"]["event_id"].as_str() == Some(id))
++        event["error"]["type"] == "invalid_request_error"
++            && self
++                .raw_settings_event
++                .as_deref()
++                .is_some_and(|id| event["error"]["event_id"].as_str() == Some(id))
      }
      fn is_response_race(&self, event: &Value) -> bool {
          self.pending_default_event
-@@ -1939,13 +2280,21 @@
+@@ -1939,13 +2282,21 @@
              generated_metadata,
          )
      }
@@ -827,7 +829,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
              return;
          };
          let (event, generated_metadata) =
-@@ -1953,11 +2302,11 @@
+@@ -1953,11 +2304,11 @@
          if let Some(token) = event["event_id"].as_str() {
              self.default_metadata_generated = generated_metadata;
              self.pending_default = Some(self.new_scope(event["response"].clone(), vec![]));
@@ -841,7 +843,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
      }
      fn has_received_default_response(&self, response_id: Option<&str>) -> bool {
          self.incoming.iter().any(|(event, _)| {
-@@ -1986,7 +2335,8 @@
+@@ -1986,7 +2337,8 @@
              self.responses.pending_create = true;
          } else if self.responses.request_create() {
              let response = self.pending_response.take();
@@ -851,7 +853,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
          }
      }
      fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
-@@ -2000,7 +2350,17 @@
+@@ -2000,7 +2352,17 @@
              effects.push(Effect::Event { event });
              return Ok(());
          }
@@ -869,7 +871,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
              if let Some(item_id) = event["item"]["id"].as_str().map(str::to_owned) {
                  if self
                      .pending_deletions
-@@ -2008,9 +2368,14 @@
+@@ -2008,9 +2370,14 @@
                      .is_some_and(|pending| pending.retrieving)
                  {
                      self.observe_deletion_item(&event["item"]);
@@ -886,7 +888,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                      } else {
                          Self::reject_deletion(&item_id, effects);
                      }
-@@ -2152,6 +2517,19 @@
+@@ -2152,6 +2519,19 @@
              }
          }
          match kind {
@@ -906,7 +908,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
              "error" if self.is_response_race(&event) => {
                  let cancelled = self.cancel_before_created;
                  let response = self.pending_default.take().map(|scope| scope.request);
-@@ -2174,7 +2552,7 @@
+@@ -2174,7 +2554,7 @@
                      .as_bool()
                      != Some(false)
                  {
@@ -915,7 +917,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                  }
              }
              "response.cancelled" => {
-@@ -2210,7 +2588,8 @@
+@@ -2210,7 +2590,8 @@
                      self.pending_default_event = None;
                      self.remember_retired_response(id.clone());
                      self.cancel_waiting = Some(id.clone());
@@ -925,7 +927,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                      effects.push(Effect::Retire {
                          response_id: self.cancel_waiting.clone().unwrap(),
                      });
-@@ -2536,7 +2915,7 @@
+@@ -2536,7 +2917,7 @@
                  request["input"] = json!(input);
                  scope.request = request.clone();
                  scope.continuation = request;
@@ -934,7 +936,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                  self.batches.get_mut(&id).unwrap().continued = true;
              } else if !self.responses.active_default_response
                  && self.cancel_waiting.is_none()
-@@ -2564,6 +2943,7 @@
+@@ -2564,6 +2945,7 @@
                              | Command::ValidateHistory { .. }
                              | Command::ValidateCancel { .. }
                              | Command::ValidateResponse { .. }
@@ -942,7 +944,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                      );
                      self.apply(command)
                  })
-@@ -2586,6 +2966,39 @@
+@@ -2586,6 +2968,39 @@
      deserializer: D,
  ) -> Result<Option<Value>, D::Error> {
      Value::deserialize(deserializer).map(Some)
@@ -982,7 +984,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
  }
  fn string(value: &Value, key: &str) -> Result<String, String> {
      value
-@@ -2661,6 +3074,117 @@
+@@ -2661,6 +3076,144 @@
              json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
          )
      }
@@ -1095,6 +1097,33 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
 +                .any(|effect| effect["type"] == "configured")
 +        );
 +        assert_eq!(control.accepted_session["instructions"], "Revised.");
++    }
++
++    #[test]
++    fn raw_settings_fails_closed_on_correlated_fatal_errors() {
++        for error in [
++            json!({"type":"server_error","event_id":"settings-1","message":"internal error"}),
++            json!({"type":"rate_limit_error","event_id":"settings-1"}),
++            json!({"event_id":"settings-1"}),
++        ] {
++            let mut control = ready();
++            let sent = raw(
++                &mut control,
++                json!({"type":"session.update","event_id":"settings-1","session":{
++                    "instructions":"Revised."
++                }}),
++                false,
++            );
++            command(
++                &mut control,
++                json!({"type":"sent","id":sent["effects"][0]["id"]}),
++            );
++            let rejected = command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"error","error":error}}),
++            );
++            assert!(rejected.get("error").is_some(), "{rejected}");
++        }
 +    }
 +
      #[test]
