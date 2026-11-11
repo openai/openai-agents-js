@@ -414,7 +414,7 @@ export function tool<
   deferLoading?: boolean;
   /** Opt into strict Responses input schema generation. */
   strict?: boolean;
-  /** Describe the JSON object encoded in string results for the Responses API. */
+  /** Describe the JSON object encoded in string results for a native Responses request or ResponsesModel. */
   outputSchema?: JsonObject;
   /**
    * Callback-body deadline in seconds, at most 2_147_483.647.
