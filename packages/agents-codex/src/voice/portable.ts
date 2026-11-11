@@ -1,3 +1,7 @@
+export {
+  backgroundResult,
+  type BackgroundResult,
+} from '../runtime/background-result';
 export type { PortableVoiceApiKey } from './portable-credentials';
 import { PortableVoiceControlBinding } from './portable-binding';
 import type { PortableVoiceControlExports } from './portable-binding';
