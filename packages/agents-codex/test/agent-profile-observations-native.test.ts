@@ -70,6 +70,12 @@ nativeIt(
           ['B', 'agent_1', '1'],
           ['C', 'agent_2', '3'],
         ]);
+        expect(
+          notices.map((e) => [e.previousAgentName, e.previousProfileId]),
+        ).toEqual([
+          ['A', 'agent_0'],
+          ['B', 'agent_1'],
+        ]);
         for (const event of notices) {
           expect(event.sessionId).toBe(session.id);
           expect(event.turnId).toBe(turn.turnId);
@@ -141,6 +147,12 @@ nativeIt(
       ).toEqual([
         ['B', 'agent_1', '1'],
         [null, 'agent_0', '3'],
+      ]);
+      expect(
+        notices.map((e) => [e.previousAgentName, e.previousProfileId]),
+      ).toEqual([
+        [null, 'agent_0'],
+        ['B', 'agent_1'],
       ]);
       for (const event of notices) {
         expect(event.sessionId).toBe(session.id);

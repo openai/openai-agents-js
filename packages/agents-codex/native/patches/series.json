@@ -546,7 +546,7 @@
     },
     {
       "path": "sdk-agent-profile-observations.patch",
-      "sha256": "6e7ccb5f3b38d26fa69dbfc33338d829011692ab29a544baa074fb71bbcea607"
+      "sha256": "bb9c6aeb6d2ac7131ed73c91e5d40a869549096dc1b8ea559cda5ed038bdd043"
     },
     {
       "path": "sdk-realtime-retrieved-caller-profile.patch",
@@ -697,5 +697,5 @@
       "sha256": "bd79a55f664d247f9c7715607bc7b7c2d82004413e73b06e9226e79316f4d097"
     }
   ],
-  "result_tree": "fa58b8d9c99a7f7287f959cc8ce4091236973d99"
+  "result_tree": "ddea6f7bca6d97d8210c9eaa8ba1768c84f11bc5"
 }
