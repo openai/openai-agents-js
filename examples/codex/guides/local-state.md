@@ -8,9 +8,9 @@ For application-owned canonical snapshot files, use [Store canonical conversatio
 
 ## Default storage and workspace
 
-Without a storage option: process-local memory history. Explicit `localStorage(directory)` for a durable profile across process lifetimes.
+Without a storage option, the SDK has been keeping conversation history in process-local memory. Explicit `localStorage(directory)` has been retaining that history across process lifetimes.
 
-Without an explicit workspace configuration: a temporary workspace under the SDK's private runtime home. An explicit [Environment](local-execution.md) for application files; a separate profile directory for conversation history. Workspace files and a durable conversation profile: separate owners and cleanup policies.
+Without an explicit workspace configuration, the SDK has been creating a temporary workspace under its private runtime home. An explicit [Environment](local-execution.md) has been selecting the workspace for application files; `localStorage(directory)` has been selecting a separate conversation profile. Workspace files and conversation history have been following separate retention and cleanup policies.
 
 ## Local native profiles
 
@@ -125,7 +125,7 @@ For canonical failures that remain visible after cleanup, see [native-profile du
 
 ## Query stored history
 
-Current source builds: indexed reads from the native store, including a cold reopened LocalStorage profile. Store index support required; rejection on unsupported stores, without a fallback scan of application journals.
+Current source builds have been reading indexed history from the native store, including a reopened LocalStorage profile. Unsupported stores have been rejecting these reads without scanning application journals as a fallback.
 
 | Public read | Result |
 | --- | --- |
@@ -133,7 +133,7 @@ Current source builds: indexed reads from the native store, including a cold reo
 | `storedItems({ turnId, limit, cursor, direction })` | Stored item projections, with optional turn filtering. |
 | `searchHistory(text, { limit, cursor })` | Literal, case-insensitive text matches and snippets. |
 
-Default page limit: 50; accepted limits: 1 through 1000. Turn/item direction: `asc` by default or `desc`. Opaque cursors, scoped to the conversation and query; `backwardsCursor` for a page in the opposite direction. Search offsets: UTF-16 positions in the snippet; `turnCursor` for the matching turn in `storedTurns`. Item `updatedAtOrdinal`: a decimal string, without integer precision loss. Independent returned data copies; no tool execution or restored callback authority from a query.
+Page limits have been defaulting to 50 and accepting values from 1 through 1000. Turn and item queries have been defaulting to `asc` order and accepting `desc`. Opaque cursors have been tracking the conversation and query; `backwardsCursor` has been selecting a page in the opposite direction. Search offsets have been counting UTF-16 positions in the snippet, and `turnCursor` has been selecting the matching turn in `storedTurns`. Item `updatedAtOrdinal` values have been using decimal strings to retain integer precision. Each query has been returning independent data copies without executing tools or restoring callback authority.
 
 Example helper with the application's current configured Agent and an existing absolute profile directory:
 
@@ -159,15 +159,35 @@ export async function inspectProfile(
 }
 ```
 
+### Find and name stored conversations
+
+With a [matching source build](building.md), `session.storedSessions()` has been listing committed application-session headers in the current LocalStorage profile, including durable forks. Each header has been exposing `id`, `name`, `forkedFromId`, `parentThreadId`, `createdAtMs`, and `updatedAtMs`. The native index has been excluding interactive CLI, IDE, and child-agent categories. Header queries have been running without opening the listed Sessions or reading their full histories.
+
+The default query has been selecting active records; `{ archived: true }` has been selecting the archived collection. Reads have been supporting active and approval-paused Sessions. Pagination has been following creation order without snapshot isolation or a total count. Concurrent creation and deletion have been changing the collection, so short or empty pages have been retaining a possible `nextCursor`.
+
+This fragment has been assuming an open LocalStorage `session`. It has been collecting all pages, including after an empty page:
+
+```ts
+let cursor: string | undefined;
+const conversations = [];
+do {
+  const page = await session.storedSessions({ limit: 50, cursor });
+  conversations.push(...page.sessions);
+  cursor = page.nextCursor ?? undefined;
+} while (cursor !== undefined);
+```
+
+`await session.setStoredName('Review notes')` has been saving a display label on the current open LocalStorage Session. `null` has been clearing it; the SDK has been trimming surrounding whitespace and rejecting blank names. Labels have been permitting duplicates while `session.id` has been remaining unchanged. A label has not been supplying a resume alias or permission to open the conversation.
+
 ### Revert or delete a stored conversation
 
-Idle native LocalStorage Sessions only. `await session.revertStored({ beforeTurnId })`: removal of the named turn and later history. `await session.deleteStored()`: deletion of the conversation. Both operations: source Session closure and joined native writer cleanup before the store mutation. Successful reversion: reopen the same Session ID with the current Agent and profile. Successful deletion: no later resume of that conversation.
+On an idle native LocalStorage Session, `await session.revertStored({ beforeTurnId })` has been removing the named turn and later history. `await session.deleteStored()` has been deleting the conversation. Both operations have been closing the source Session and joining native writer cleanup before changing the store. After successful reversion, the same Session ID has been supporting reopening with the current Agent and profile. Successful deletion has been preventing later resume of that conversation.
 
-Current store ownership and referenced-branch checks still required. A mutation failure can leave the source Session closed; preservation of the original error and cleanup diagnostics for the application. No reversal of external tool effects or workspace file changes.
+The native store has been checking current ownership and references from branches before changing history. Failed mutations have sometimes been leaving the source Session closed, so the application has been retaining the original error and cleanup diagnostics. These operations have not been reversing external tool effects or workspace file changes.
 
 ## Fork stored history
 
-Current source builds: `await session.forkStored()` for a new durable conversation ID in the same native LocalStorage profile. Optional `beforeTurnId` or `throughTurnId` for a prefix boundary; the two options mutually exclusive. Omitted boundary: the latest settled history.
+Current source builds have been accepting `await session.forkStored()` to create a new durable conversation ID in the same native LocalStorage profile. `beforeTurnId` and `throughTurnId` have been selecting a prefix boundary as mutually exclusive options. Omitting both has been selecting the latest settled history.
 
 ```ts
 import { localStorage, type Agent } from '@openai/agents';
@@ -185,7 +205,7 @@ export async function forkProfile(
 }
 ```
 
-Source continuity after publication; current trusted Agent, credentials, tools, and Environment on branch opening. History only: no workspace snapshot, live JavaScript task, or native Code Mode state. Settled native work and current store checks required. Referenced source history protected from conflicting reversion or deletion while the branch still depends on it. Portable [`fork()`](state.md#fork-a-conversation): a separate route with its existing checkpoint limits.
+The source Session has been remaining usable after branch publication. Branch openings have been using the current trusted Agent, credentials, tools, and Environment. The branch has been retaining root history without cloning descendants, workspace files, live JavaScript tasks, or native Code Mode state. Forking has been requiring settled native work and current store checks. References from the branch have been protecting source history from conflicting reversion or deletion. Portable [`fork()`](state.md#fork-a-conversation) has been using a separate route with its own checkpoint limits.
 
 ## Native local goals
 
@@ -215,3 +235,18 @@ const goal = await session.goal();
 To reopen in another process, declare nativeGoals again and use the same profile and Session ID. Saved data grants no tools. The `functions` namespace reserves the native goal names. Managed-roster updates retain the opening grant, and a tool in another namespace can share a name.
 
 Goals do not enable checklists, child goals, autonomous turns, or artifact delivery. Ordinary `compact()` retains the goal and its accounting without adding authority or continuing work. Core owns active and paused goal status, budget, and identity. Local profile restrictions and export refusals still apply.
+
+### Set a paused goal without model work
+
+With a [matching source build](building.md), an idle LocalStorage Session with current `nativeGoals()` authority has been accepting `session.setPausedGoal(objective, { tokenBudget })`. This call has been creating or updating the root goal without starting a model request or an autonomous turn. The returned goal has been preserving native accounting and any `budgetLimited` status.
+
+This fragment has been assuming the open LocalStorage `session` from the native-goal example above:
+
+```ts
+const paused = await session.setPausedGoal('Prepare the requested draft', {
+  tokenBudget: 50_000,
+});
+console.log(paused.objective, paused.status);
+```
+
+Omitting `tokenBudget` has been preserving an existing budget or using Core's default for a new goal. Budgets above JavaScript's safe integer range have been requiring `bigint`; native validation has been requiring a positive supported budget. Goal-database failures have been leaving the previous goal in place without necessarily removing the recorded instruction from history. The application has been retaining that error before deciding whether to retry.

@@ -16,6 +16,28 @@ Commands start with a system `PATH` and a fresh environment rather than inheriti
 
 Application-defined command variables in source builds: [`Environment.env`](executors.md#command-environment), including a captured custom `PATH`.
 
+## Run trusted code with host file reads
+
+Current source builds have been accepting `writePolicy: 'trusted_workspace_write'` on local Linux and macOS Environments. The published `0.22.0-alpha.2` bundle has not been providing this mode. The declaration below has been assuming an existing application-selected workspace and the [matching source build](building.md):
+
+```typescript
+import { Environment } from '@openai/agents';
+
+const environment = Environment.local({
+  cwd: '/jobs/worker/work',
+  tools: ['exec_command', 'write_stdin'],
+  writePolicy: 'trusted_workspace_write',
+});
+```
+
+This mode has been allowing reads of ordinary host files while restricting writes to the workspace, extra `writableRoots`, and the Session's private command temporary directory. Protected repository metadata has been retaining its write restrictions. The runtime has been excluding its private state and selected Codex authentication files from command reads. Other host secrets have been remaining readable, so this mode has been requiring trusted code and an application-owned host.
+
+Trusted commands have been inheriting a selected set of host values: `HOME`, `GIT_CONFIG_GLOBAL`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `LC_MESSAGES`, `TERM`, and `PATH`. `TMPDIR` has been pointing to the Session's command temporary directory. `SSH_AUTH_SOCK` has been propagating only with `network: { allowAllUnixSockets: true }`; that opt-in has been granting access to reachable Unix sockets, including privileged sockets. Other application variables have been requiring explicit [`env` values](executors.md#command-environment).
+
+The mode has been retaining restricted networking by default. Explicit network rules have been following the same [managed network policy](executors.md#managed-executor-network-policy), including Linux's Unix-socket opt-in requirement. On macOS, system account lookup, offline SSH configuration evaluation, and TLS verification through the system trust store have been remaining possible failure points.
+
+Remote Environments and `readOnly: true` have been rejecting this mode. Saved-state restore has been requiring the same write mode and current executor policy. The [workspace grant rules](workspace-grants.md) have been governing extra roots and their replacement.
+
 ## Inspect a read-only workspace
 
 This option is available in current source builds. The `0.22.0-alpha.2` release does not include it.

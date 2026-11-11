@@ -1,24 +1,20 @@
-# Docs
+# Build and preview the documentation
 
-Astro Starlight generates the documentation site.
+Astro Starlight builds the documentation site from the source in `src/content/docs/`.
 
-## Running the docs
+## Preview a change
 
-From the repository root, run:
+Complete the [contributor setup](../CONTRIBUTING.md), then start the preview from the repository root:
 
 ```bash
 pnpm docs:dev
 ```
 
-## Translating docs
+## Update a guide
 
-All documentation is available in Japanese. To run the translation script, use:
+Edit the authored English page. The translation workflow generates Japanese, Korean, and Chinese pages. See the [repository guidance](../AGENTS.md#repo-structure--important-files) for how to update docs and code snippets.
 
-```bash
-pnpm docs:translate
-```
-
-## Building the docs
+## Build the site
 
 GitHub Actions builds and deploys the docs. To build them locally, run:
 

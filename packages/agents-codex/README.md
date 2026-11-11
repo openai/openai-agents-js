@@ -34,7 +34,7 @@ From your application directory, run the example.
 npx tsx hello.ts
 ```
 
-The script makes a live model request and prints the reply. `agent.run()` has been handling the request's cleanup, and `await using` has been closing the provider.
+The script makes a live model request and prints the reply. `agent.run()` closes the session it opens. `await using` closes the provider when `main()` returns.
 
 Try the [greeting](../../examples/codex/basic.ts) and [typed-context](../../examples/codex/typed-context.ts) examples.
 
@@ -100,6 +100,7 @@ After restoration, the current Agent declaration has been supplying the prompt r
 - [Session history and state](../../examples/codex/guides/state.md). Save a checkpoint, resume pending work, or choose a persistent store.
 - [Native telemetry](../../examples/codex/guides/telemetry.md). Trace one workflow or send native signals to a collector.
 - [Native voice](../../examples/codex/guides/native-voice.md). Use Session-owned Realtime, custom adapters, and accepted-text speech pipelines.
+- [Portable Realtime](PORTABLE_CONTROL.md). Connect a browser, React Native app, Worker, or Node.js process directly to Realtime with the source-built controller.
 - [Native voice with Twilio](../../examples/codex/guides/realtime-twilio.md). Connect an authenticated Media Stream to an Agent Session.
 - [Examples](../../examples/codex/README.md). Find runnable workflows and their setup requirements.
 - [Testing](TESTING.md). Run scripted responses without model credentials.

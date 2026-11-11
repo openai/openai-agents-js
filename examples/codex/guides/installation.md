@@ -79,9 +79,11 @@ The overrides keep transitive SDK dependencies on the same local packages. Run `
 
 ### Keep native tool declarations with their SDK instance
 
-Mixing ESM `import` and CommonJS `require` or loading separate installed copies has been creating separate SDK instances, even at the same version. Native Sessions have been accepting function declarations only from their own SDK instance.
+In `0.22.0-alpha.2`, mixing ESM `import` and CommonJS `require` or loading separate installed copies has been creating separate SDK instances, even at the same version. Native Sessions have been accepting function declarations only from their own SDK instance.
 
-Use the same module format and SDK installation for `Agent`, `tool()`, and tool helpers such as `SQLiteMemory`. When a library creates tools for your Session, pass it your application's `tool` factory.
+Using the same module format and SDK installation for `Agent`, `tool()`, and helpers such as `SQLiteMemory` has been avoiding this problem in alpha.2. Passing your application's `tool` factory to a library has been keeping that library's declarations with the consuming Session.
+
+The current [source build](building.md) has been sharing native v1 class and tool identity between ESM and CommonJS imports from one installed SDK on Node.js 24 with its default module settings. Separate installed copies have been retaining separate identities. Using one SDK installation has still been keeping declarations and Sessions together.
 
 ## Run the classic extensions
 

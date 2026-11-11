@@ -18,6 +18,7 @@ import {
 } from './realtime-guardrails';
 import type { FunctionTool } from './tools';
 import {
+  outputAudioBytesPerMillisecond,
   VoiceConversationHistory,
   type VoiceHistoryItem,
 } from '../voice/conversation-history';
@@ -550,6 +551,7 @@ class NativeRealtimeOwner {
   private readonly delegations = new Map<string, Delegation>();
   private readonly canonical = new Map<string, NativeRealtimeHistoryItem>();
   private readonly conversation: VoiceConversationHistory;
+  private outputAudioBytesPerMillisecond = 48;
   private readonly observers = new VoiceEventObservers<NativeRealtimeEvent>(
     (event) => this.detachEvent(event),
   );
@@ -891,8 +893,18 @@ class NativeRealtimeOwner {
     return this.conversation.snapshot();
   }
   /** @internal Record native-selected linked provider observations without writes. */
-  _observeProviderFrame(value: unknown): void {
-    this.conversation.observe(value);
+  _observeProviderFrame(
+    value: unknown,
+    outputFormat?: NativeRealtimeAudioFormat,
+  ): void {
+    const event = value as { response?: unknown } | undefined;
+    this.conversation.observe(
+      value,
+      outputAudioBytesPerMillisecond(
+        outputFormat ? { output_audio_format: outputFormat } : event?.response,
+        this.outputAudioBytesPerMillisecond,
+      ),
+    );
   }
   private eventContext(
     receipt: unknown,
@@ -1151,13 +1163,15 @@ class NativeRealtimeOwner {
           this.setProfileGuardrails(this.profileSource, config.guardrails);
         }
         signal?.throwIfAborted();
+        const settings = config?.settings ?? this.initialSettings;
+        this.retainOutputFormat(settings);
         const prepareParams = realtimePrepareParams(
           {
             ...this.options,
             instructions: config ? config.instructions : policy.instructions,
           },
           this.transport,
-          config?.settings ?? this.initialSettings,
+          settings,
           config?.tools ?? selection?.tools ?? null,
           config?.selectionId ??
             policy.selectionId ??
@@ -1216,6 +1230,7 @@ class NativeRealtimeOwner {
     await this.publishSettings(async () => {
       this.checkLive();
       await this.call('update', { update: snapshot });
+      this.retainOutputFormat(snapshot);
       this.retainProfileOverrides(snapshot);
     });
   }
@@ -1225,6 +1240,13 @@ class NativeRealtimeOwner {
       this.profileOverrides.instructions = update.instructions;
     if (Object.hasOwn(update, 'prompt'))
       this.profileOverrides.prompt = copyJsonValue(update.prompt);
+  }
+
+  private retainOutputFormat(settings: JsonObject | null): void {
+    this.outputAudioBytesPerMillisecond = outputAudioBytesPerMillisecond(
+      settings,
+      this.outputAudioBytesPerMillisecond,
+    );
   }
 
   private publishSettings<T>(publish: () => Promise<T>): Promise<T> {
@@ -1437,6 +1459,7 @@ class NativeRealtimeOwner {
         receipt.applied === false
       )
         return;
+      this.retainOutputFormat(update);
       this.profileSource = target;
     });
   }
@@ -1812,8 +1835,10 @@ class NativeRealtimeOwner {
                     update &&
                     typeof update === 'object' &&
                     !Array.isArray(update)
-                  )
+                  ) {
+                    this.retainOutputFormat(update);
                     this.retainProfileOverrides(update);
+                  }
                   return accepted;
                 })
               : await send();
@@ -2250,7 +2275,9 @@ class NativeRealtimeOwner {
         : entries[0]
     ) as [string, any];
     if (name === 'RawProviderEvent') {
-      if (value.history_observation) this._observeProviderFrame(value.event);
+      if (value.history_observation) {
+        this._observeProviderFrame(value.event, value.output_audio_format);
+      }
       if (this.options.includeRawProviderEvents)
         this.emit({ type: 'raw_provider_event', event: value.event });
     } else if (name === 'ProviderRequestError') {
