@@ -274,6 +274,8 @@ export interface RunOptions<Context = undefined> extends Omit<
   /** Capture conversation records for replay through another Session's transactHistory.
    * History above 4,096 original records or 8 MiB causes a size error after completion. */
   returnHistory?: boolean;
+  /** Retain the assistant and tool items produced by this run. */
+  returnItems?: boolean;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -787,6 +789,7 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
+        returnItems: options.returnItems,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         input: preparedInput,
@@ -803,6 +806,7 @@ export class Agent<Context = undefined, Output = string> {
       budget === undefined &&
       options.returnState !== true &&
       options.returnHistory !== true &&
+      options.returnItems !== true &&
       options.prepareRequest === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
@@ -831,6 +835,7 @@ export class Agent<Context = undefined, Output = string> {
       budget,
       returnState: options.returnState,
       returnHistory: options.returnHistory,
+      returnItems: options.returnItems,
       signal: options.signal,
     });
   }
