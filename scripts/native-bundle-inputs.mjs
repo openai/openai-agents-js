@@ -19,6 +19,7 @@ export const nativeInputPaths = [
   'scripts/restore-native-bundle.mjs',
   'scripts/verified-native-bundle.mjs',
   'scripts/select-native-bundles.mjs',
+  'scripts/use-ubuntu-archive-if-needed.sh',
 ];
 
 export function nativeComparisonPaths() {

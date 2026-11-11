@@ -54,6 +54,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+          bash scripts/use-ubuntu-archive-if-needed.sh
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends clang cmake pkg-config protobuf-compiler libssl-dev
       - name: Install macOS build tools
