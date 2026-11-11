@@ -1,3 +1,4 @@
+import { setTimeout as waitForRetry } from 'node:timers/promises';
 import { traceCredentialRoute } from './trace-delivery';
 import type { TraceEvent, TraceProcessor } from './telemetry';
 
@@ -11,6 +12,22 @@ function timestamp(nanos: string): string {
 }
 function spanId(value: string | null): string | null {
   return value === null ? null : `span_${value.padStart(24, '0')}`;
+}
+
+function retryAfterMs(headers: Headers): number {
+  for (const [name, scale] of [
+    ['retry-after-ms', 1],
+    ['retry-after', 1000],
+  ] as const) {
+    const value = headers.get(name);
+    if (value === null || value.length > 128 || value.trim() === '') continue;
+    let delay = Number(value) * scale;
+    if (!Number.isFinite(delay) && name === 'retry-after') {
+      delay = Math.max(0, Date.parse(value) - Date.now());
+    }
+    if (Number.isFinite(delay) && delay >= 0) return delay;
+  }
+  return 0;
 }
 
 type TraceDescriptor = Record<string, unknown>;
@@ -59,6 +76,8 @@ export class OpenAITraceExporter implements TraceProcessor {
   readonly #headers: Record<string, string>;
   readonly #timeoutMs: number;
   readonly #maxRetries: number;
+  readonly #retryDelayMs: number;
+  readonly #maxRetryDelayMs: number;
   readonly #traces = new Map<string, TraceState>();
   #credentialRevision = 0;
   #recoverySequence: number | undefined;
@@ -68,9 +87,13 @@ export class OpenAITraceExporter implements TraceProcessor {
     endpoint?: string;
     organization?: string;
     project?: string;
-    /** One delivery budget, including retries; native processor delivery has a one-second bound. */
+    /** One delivery budget, including retries and backoff. */
     timeoutMs?: number;
     maxRetries?: number;
+    /** Initial exponential backoff; zero preserves immediate retries. */
+    retryDelayMs?: number;
+    /** Maximum backoff or server-requested delay. Defaults to 30000. */
+    maxRetryDelayMs?: number;
   }) {
     let endpoint: URL;
     try {
@@ -91,13 +114,26 @@ export class OpenAITraceExporter implements TraceProcessor {
       );
     const timeout = options.timeoutMs ?? 750;
     const retries = options.maxRetries ?? 0;
-    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 900)
-      throw new RangeError('timeoutMs must be an integer from 1 through 900');
-    if (!Number.isInteger(retries) || retries < 0 || retries > 3)
-      throw new RangeError('maxRetries must be an integer from 0 through 3');
+    const retryDelay = options.retryDelayMs ?? 0;
+    const maxRetryDelay = options.maxRetryDelayMs ?? 30_000;
+    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 60_000)
+      throw new RangeError('timeoutMs must be an integer from 1 through 60000');
+    if (!Number.isSafeInteger(retries) || retries < 0)
+      throw new RangeError('maxRetries must be a non-negative safe integer');
+    for (const [name, delay] of [
+      ['retryDelayMs', retryDelay],
+      ['maxRetryDelayMs', maxRetryDelay],
+    ] as const) {
+      if (!Number.isInteger(delay) || delay < 0 || delay > 60_000)
+        throw new RangeError(`${name} must be an integer from 0 through 60000`);
+    }
+    if (maxRetryDelay < retryDelay)
+      throw new RangeError('maxRetryDelayMs must be at least retryDelayMs');
     this.#endpoint = endpoint;
     this.#timeoutMs = timeout;
     this.#maxRetries = retries;
+    this.#retryDelayMs = retryDelay;
+    this.#maxRetryDelayMs = maxRetryDelay;
     this.#headers = {
       'Content-Type': 'application/json',
       'OpenAI-Beta': 'traces=v1',
@@ -289,15 +325,20 @@ export class OpenAITraceExporter implements TraceProcessor {
       if (!records.length) continue;
       const body = JSON.stringify({ data: records });
       let delivered = false;
+      let delay = this.#retryDelayMs;
       for (
         let attempt = 0;
         attempt <= this.#maxRetries && !signal.aborted;
         attempt++
       ) {
         let retry = false;
+        let serverDelay = 0;
+        let requested = false;
+        let received = false;
         try {
           // Detached work cannot start another request after callback retirement.
           for (const event of group.events) traceCredentialRoute(event);
+          requested = true;
           const response = await fetch(this.#endpoint, {
             method: 'POST',
             headers: group.headers,
@@ -305,6 +346,13 @@ export class OpenAITraceExporter implements TraceProcessor {
             signal,
             redirect: 'manual',
           });
+          received = true;
+          retry =
+            ([408, 409, 429].includes(response.status) ||
+              response.status >= 500) &&
+            response.headers.get('x-should-retry')?.trim().toLowerCase() !==
+              'false';
+          if (retry) serverDelay = retryAfterMs(response.headers);
           await response.body?.cancel();
           if (response.ok) {
             if (this.#credentialRevision === revision) {
@@ -322,11 +370,22 @@ export class OpenAITraceExporter implements TraceProcessor {
             delivered = true;
             break;
           }
-          retry = response.status >= 500;
         } catch {
-          retry = true;
+          // Body cleanup cannot replace a received response's retry decision.
+          retry = !signal.aborted && (received ? retry : requested);
         }
-        if (!retry) break;
+        if (!retry || attempt === this.#maxRetries) break;
+        const wait = Math.min(
+          this.#maxRetryDelayMs,
+          Math.max(delay + Math.random() * delay * 0.1, serverDelay),
+        );
+        try {
+          // Yield even for immediate failures so the existing deadline can fire.
+          await waitForRetry(wait, undefined, { signal });
+        } catch {
+          break;
+        }
+        delay = Math.min(delay * 2, this.#maxRetryDelayMs);
       }
       deliveryFailed ||= !delivered;
     }

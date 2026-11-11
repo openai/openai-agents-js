@@ -2600,9 +2600,9 @@ nativeIt.each(['conversation item', 'generic error'] as const)(
   15000,
 );
 
-nativeIt(
-  'preserves small generic conversation items and provider errors',
-  async () => {
+nativeIt.each([false, true])(
+  'preserves small generic conversation items and recovers from provider errors (raw=%s)',
+  async (includeRawProviderEvents) => {
     const model = new ModelServer([]);
     const peer = new RealtimePeer(model);
     try {
@@ -2611,7 +2611,10 @@ nativeIt(
         instructions: 'Help the caller.',
         provider,
       }).session();
-      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        includeRawProviderEvents,
+      });
       const seen: NativeRealtimeEvent[] = [];
       let failure: unknown;
       const reading = (async () => {
@@ -2638,11 +2641,39 @@ nativeIt(
             ),
           ).toBe(true),
         );
-        peer.send({ type: 'error', error: { code: 'small-provider-error' } });
-        await reading;
-        expect(String((failure as Error).cause)).toContain(
-          'small-provider-error',
+        const error = {
+          type: 'error',
+          error: {
+            code: 'small_provider_error',
+            message: 'Provider detail retained only in raw',
+          },
+        };
+        peer.send(error);
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual({
+            type: 'provider_request_error',
+            code: 'small_provider_error',
+          }),
         );
+        const rawErrors = seen.filter(
+          (event) =>
+            event.type === 'raw_provider_event' && event.event.type === 'error',
+        );
+        expect(rawErrors).toEqual(
+          includeRawProviderEvents
+            ? [{ type: 'raw_provider_event', event: error }]
+            : [],
+        );
+        await voice.requestResponse();
+        await peer.frame((frame) => frame.type === 'response.create');
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual(
+            expect.objectContaining({ type: 'response', status: 'done' }),
+          ),
+        );
+        expect(failure).toBeUndefined();
+        expect(peer.authorization).toHaveLength(1);
+        expect(model.requests).toHaveLength(0);
       } finally {
         await voice.close().catch(() => {});
         await reading;

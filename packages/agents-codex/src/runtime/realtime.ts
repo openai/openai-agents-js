@@ -827,11 +827,7 @@ class NativeRealtimeOwner {
     }
     signal.throwIfAborted();
     this.checkLive();
-    if (result != null && typeof result !== 'string')
-      throw new TypeError(
-        'Realtime tool error formatter must return a string, null or undefined',
-      );
-    return result == null ? defaultMessage : result;
+    return typeof result === 'string' ? result : defaultMessage;
   }
 
   /** @internal Allow a later public opening to retry failed startup cleanup. */

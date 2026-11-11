@@ -3215,10 +3215,33 @@ impl ModelRequestContributor for Boundary {
         self.context_tools(thread_id)
             .is_some_and(|tools| tools.customizes_compaction())
     }
-    fn before_compact<'a>(
+    fn schedules_post_turn_compaction(
+        &self,
+        thread_id: &str,
+        step_store: &codex_extension_api::ExtensionData,
+    ) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.schedules_post_turn_compaction(step_store))
+    }
+    fn post_turn_compaction<'a>(
         &'a self,
         input: codex_extension_api::CompactionInput<'a>,
-    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+    ) -> ExtensionFuture<'a, std::result::Result<Option<bool>, String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired compaction policy owner")?
+                .post_turn_compaction(input)
+                .await
+                .map_err(|_| "Compaction policy callback failed".to_owned())
+        })
+    }
+    fn before_compact_result<'a>(
+        &'a self,
+        input: codex_extension_api::CompactionInput<'a>,
+    ) -> ExtensionFuture<
+        'a,
+        std::result::Result<Option<codex_extension_api::CompactionResult>, String>,
+    > {
         Box::pin(async move {
             if self.uses_chatgpt_plan() {
                 return Err("Sign in with ChatGPT does not support beforeCompact callbacks".into());
@@ -9463,7 +9486,10 @@ impl ModelRequestContributor for ModelProducerBoundary {
         if !tools.produces_model_response() {
             return None;
         }
-        Some(Box::new(ModelProducerRequest(tools, input.model.to_owned())))
+        Some(Box::new(ModelProducerRequest(
+            tools,
+            input.model.to_owned(),
+        )))
     }
 }
 struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>, String);

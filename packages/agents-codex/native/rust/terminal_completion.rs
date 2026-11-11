@@ -753,7 +753,7 @@ mod tests {
                 &[0],
                 &[],
                 None,
-                [false; 4],
+                [false; 5],
                 false,
             )
             .unwrap();
@@ -824,7 +824,7 @@ mod tests {
                     &[0],
                     &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false,
                 )
                 .unwrap();
@@ -925,7 +925,7 @@ mod tests {
                     &[0],
                     &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false,
                 )
                 .unwrap()

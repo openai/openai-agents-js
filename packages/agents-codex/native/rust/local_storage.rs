@@ -274,6 +274,16 @@ fn recorded_turns(history: &[RolloutItem]) -> BTreeMap<String, bool> {
 }
 
 impl LocalChecklistStore {
+    pub(crate) async fn retire_thread_owner(&self, id: ThreadId) -> ThreadStoreResult<()> {
+        let mut writers = self.writers.lock().await;
+        if let Some(writer) = writers.get(&id) {
+            writer.check()?;
+        }
+        self.inner.retire_thread_owner(id).await?;
+        writers.remove(&id);
+        Ok(())
+    }
+
     pub(crate) async fn list_threads_including_empty_preview(
         &self,
         params: codex_thread_store::ListThreadsParams,

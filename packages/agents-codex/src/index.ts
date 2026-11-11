@@ -251,6 +251,7 @@ export type {
 export * as telemetry from './runtime/telemetry';
 export type {
   ConsoleDiagnostics,
+  TraceDeliveryConfig,
   Exporter,
   OtelTlsConfig,
   TelemetryOptions,
@@ -473,3 +474,11 @@ export type {
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
 
 export { Handoff } from './runtime/handoffs';
+export {
+  ResponsesCompaction,
+  responsesCompaction,
+} from './runtime/responses-compaction';
+export type {
+  ResponsesCompactionOptions,
+  ResponsesCompactionContext,
+} from './runtime/responses-compaction';

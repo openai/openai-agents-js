@@ -215,7 +215,12 @@ export function captureProfileRuntimes(
       transform_context:
         declaration.transformContext !== undefined ||
         declaration.hostedPrompt !== undefined,
-      before_compact: declaration.beforeCompact !== undefined,
+      before_compact:
+        declaration.beforeCompact !== undefined ||
+        declaration.compaction !== undefined,
+      ...(declaration.compaction !== undefined
+        ? { post_turn_compact: true }
+        : {}),
       before_complete:
         declaration.beforeComplete !== undefined ||
         declaration.outputGuardrails.length > 0 ||
