@@ -7,6 +7,7 @@ import {
   Agent,
   HttpMCP,
   NativeProvider,
+  ToolOutput,
   backgroundResult,
   isFunctionApprovalRequest,
   realtimeHandoff,
@@ -1612,4 +1613,266 @@ nativeIt.each([
     }
   },
   15000,
+);
+
+nativeIt.each(['done', 'cancelled'] as const)(
+  'retains issuing response Agent/context after voice update (%s)',
+  async (terminal) => {
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    const application = { identity: {} };
+    const seen: Frame[] = [];
+    try {
+      await using provider = await providerFor(model);
+      const original = new Agent<typeof application>({
+        name: 'Original',
+        instructions: 'Original source',
+        provider,
+      });
+      const target = new Agent<typeof application>({
+        name: 'Target',
+        instructions: 'Target source',
+      });
+      await using session = await original.session({ context: application });
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      const event = async (status: string, id: string) => {
+        let found: Frame | undefined;
+        await vi.waitFor(() => {
+          found = seen.find(
+            (value) =>
+              value.type === 'response' &&
+              value.status === status &&
+              value.responseId === id,
+          );
+          expect(found).toBeDefined();
+        });
+        return found!;
+      };
+      try {
+        peer.send({ type: 'response.created', response: { id: 'issued-A' } });
+        const start = await event('created', 'issued-A');
+        expect(start.runContext.agent).toBe(original);
+        expect(start.runContext.context).toBe(application);
+        await voice.updateAgent(target);
+        peer.send({
+          type: `response.${terminal}`,
+          response: { id: 'issued-A', output: [] },
+        });
+        const end = await event(terminal, 'issued-A');
+        expect(end.runContext.agent).toBe(original);
+        expect(end.runContext.context).toBe(application);
+        peer.send({ type: 'response.created', response: { id: 'issued-B' } });
+        peer.send({
+          type: 'response.done',
+          response: { id: 'issued-B', output: [] },
+        });
+        const fresh = await event('done', 'issued-B');
+        expect(fresh.runContext.agent).toBe(target);
+        expect(fresh.runContext.context).toBe(application);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+      expect((await event(terminal, 'issued-A')).runContext.agent).toBe(
+        original,
+      );
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'keeps original admitted Tool and accepted output across same-key voice replacement',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    const application = { identity: {} };
+    const seen: Frame[] = [];
+    const effects: string[] = [];
+    const beforeEntered = Promise.withResolvers<void>();
+    const releaseBefore = Promise.withResolvers<void>();
+    const bodyEntered = Promise.withResolvers<void>();
+    const releaseBody = Promise.withResolvers<void>();
+    const oldLookup = tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      before: async (context) => {
+        expect(context.context).toBe(application);
+        beforeEntered.resolve();
+        await releaseBefore.promise;
+        return { action: 'allow' };
+      },
+      execute: async ({ key }) => {
+        bodyEntered.resolve();
+        await releaseBody.promise;
+        effects.push(key);
+        return 'untransformed-original';
+      },
+      after: () =>
+        new ToolOutput([{ type: 'inputText', text: 'accepted-original' }]),
+    });
+    const freshLookup = tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      execute: ({ key }) => {
+        effects.push(key);
+        return 'accepted-fresh';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      const original = new Agent<typeof application>({
+        name: 'Original',
+        instructions: 'Original source',
+        tools: [oldLookup],
+        provider,
+      });
+      const target = new Agent({
+        name: 'Fresh',
+        instructions: 'Fresh source',
+        tools: [freshLookup],
+      });
+      await using session = await original.session({ context: application });
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      const event = async (id: string, status: string) => {
+        let found: Frame | undefined;
+        await vi.waitFor(() => {
+          found = seen.find(
+            (value) =>
+              value.type === 'function_call' &&
+              value.callId === id &&
+              value.status === status,
+          );
+          expect(found).toBeDefined();
+        });
+        return found!;
+      };
+      try {
+        peer.call('lookup', { key: 'old' }, 'old-call');
+        await beforeEntered.promise;
+        const submitted = await event('old-call', 'started');
+        expect(submitted.arguments).toBe(JSON.stringify({ key: 'old' }));
+        expect(submitted.itemId).toBe('item-old-call');
+        expect(submitted.responseId).toBe('response-old-call');
+        expect(
+          seen.filter(
+            (value) =>
+              value.type === 'function_call' && value.status === 'executing',
+          ),
+        ).toEqual([]);
+        releaseBefore.resolve();
+        await bodyEntered.promise;
+        const entered = await event('old-call', 'executing');
+        expect(entered.tool).toBe(oldLookup);
+        expect(entered.runContext.agent).toBe(original);
+        expect(entered.runContext.context).toBe(application);
+        await voice.updateAgent(target);
+        peer.call('lookup', { key: 'fresh' }, 'fresh-call');
+        const fresh = await event('fresh-call', 'completed');
+        expect(fresh.tool).toBe(freshLookup);
+        expect(fresh.runContext.agent).toBe(target);
+        expect(fresh.output).toBe('accepted-fresh');
+        releaseBody.resolve();
+        const settled = await event('old-call', 'completed');
+        expect(settled.tool).toBe(oldLookup);
+        expect(settled.runContext.agent).toBe(original);
+        expect(settled.runContext.context).toBe(application);
+        expect(settled.output).toBe('accepted-original');
+        expect(settled.output).toBe(await peer.output('old-call'));
+        expect(effects).toEqual(['fresh', 'old']);
+      } finally {
+        releaseBefore.resolve();
+        releaseBody.resolve();
+        await voice.close();
+        await reading;
+      }
+      expect((await event('old-call', 'completed')).tool).toBe(oldLookup);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'reports native approval fallback without synthesizing a body Tool identity',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    const seen: Frame[] = [];
+    const execute = vi.fn(() => 'forbidden');
+    const risky = tool({
+      name: 'risky',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute,
+    });
+    try {
+      await using provider = await providerFor(model);
+      const original = new Agent({
+        instructions: 'Use risky.',
+        tools: [risky],
+        provider,
+      });
+      await using session = await original.session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const reading = (async () => {
+        for await (const event of voice.events()) seen.push(event);
+      })();
+      const interactions = session.interactions();
+      try {
+        peer.call('risky', {}, 'denied-call');
+        const { value: request } = await interactions.next();
+        if (!isFunctionApprovalRequest(request))
+          throw new Error('Native approval missing');
+        await session.respond(request.reject('Application declined'));
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (value) =>
+                value.type === 'function_call' &&
+                value.callId === 'denied-call' &&
+                value.status === 'failed',
+            ),
+          ).toBe(true),
+        );
+        const failed = seen.find(
+          (value) =>
+            value.type === 'function_call' &&
+            value.callId === 'denied-call' &&
+            value.status === 'failed',
+        )!;
+        expect(failed.output).toBe('Application declined');
+        expect(failed.output).toBe(await peer.output('denied-call'));
+        expect(failed.tool).toBeUndefined();
+        expect(failed.runContext.agent).toBe(original);
+        expect(failed.arguments).toBe('{}');
+        expect(execute).not.toHaveBeenCalled();
+        expect(
+          seen.filter(
+            (value) =>
+              value.type === 'function_call' && value.status === 'executing',
+          ),
+        ).toEqual([]);
+      } finally {
+        await interactions.return?.();
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
 );

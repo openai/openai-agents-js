@@ -1903,6 +1903,12 @@ export class Session<OutputT = string, Context = unknown> {
     };
   }
 
+  /** @internal Preserve absent application identity on a bare native Session. */
+  _realtimeEventSource(receipt: unknown) {
+    if (receipt == null && !this.options.applicationAgent) return undefined;
+    return this._realtimeConfigurationSource(receipt ?? null);
+  }
+
   /** @internal Capture the actual native catalog before resolving app callbacks. */
   async _realtimeSourceSnapshot(
     generation?: string,
@@ -10977,6 +10983,12 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined,
           () =>
             this.realtimeFunctionEnabled(owner, msg, tool.name, signal, true),
+          () =>
+            this.realtimeOwner?._toolBodyStarted(
+              msg._sdk_realtime_tool_call,
+              msg._sdk_realtime_tool_name as string,
+              toolDeclarationIdentity(tool) as FunctionTool<any>,
+            ),
         );
         if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';

@@ -9,7 +9,11 @@ import {
   type Observation,
   type SessionItem,
 } from '@openai/agents';
-import { textStream, vercelResponse } from '@openai/agents/ui';
+import {
+  textStream,
+  vercelMessageStream,
+  vercelResponse,
+} from '@openai/agents/ui';
 import { call } from './fixtures/model-server';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -18,7 +22,7 @@ afterEach(async () => {
 });
 
 /** Actual Responses text deltas and function calls through the native engine. */
-async function peer() {
+async function peer(summary?: string) {
   let requests = 0;
   const scripts = [
     call('lookup', { key: 'earlier-secret' }, { callId: 'old-call' }),
@@ -36,6 +40,24 @@ async function peer() {
       response.write(`data: ${JSON.stringify(value)}\n\n`);
     send({ type: 'response.created', response: { id: `r${requests}` } });
     if (typeof selected === 'string') {
+      let outputIndex = 0;
+      if (summary !== undefined) {
+        const current = selected === 'Found it.';
+        send({
+          type: 'response.output_item.done',
+          output_index: outputIndex++,
+          item: {
+            id: current ? 'current-reasoning' : 'earlier-reasoning',
+            type: 'reasoning',
+            summary: [
+              {
+                type: 'summary_text',
+                text: current ? summary : 'Earlier reasoning secret.',
+              },
+            ],
+          },
+        });
+      }
       const item = {
         id: `message-${requests}`,
         type: 'message',
@@ -46,31 +68,35 @@ async function peer() {
       };
       send({
         type: 'response.output_item.added',
-        output_index: 0,
+        output_index: outputIndex,
         item: { ...item, status: 'in_progress', content: [] },
       });
       send({
         type: 'response.content_part.added',
-        output_index: 0,
+        output_index: outputIndex,
         content_index: 0,
         item_id: item.id,
         part: { type: 'output_text', text: '' },
       });
       send({
         type: 'response.output_text.delta',
-        output_index: 0,
+        output_index: outputIndex,
         content_index: 0,
         item_id: item.id,
         delta: selected,
       });
       send({
         type: 'response.output_text.done',
-        output_index: 0,
+        output_index: outputIndex,
         content_index: 0,
         item_id: item.id,
         text: selected,
       });
-      send({ type: 'response.output_item.done', output_index: 0, item });
+      send({
+        type: 'response.output_item.done',
+        output_index: outputIndex,
+        item,
+      });
     } else {
       send({
         type: 'response.output_item.done',
@@ -200,6 +226,48 @@ it('official AI SDK client consumes native text/tool/terminal frames', async () 
   expect((await turn.wait()).finalOutput).toBe('Found it.');
 });
 
+it('streams typed native AI SDK chunks with opt-in provider summaries', async () => {
+  const summary = 'Checked the current record.';
+  await using provider = await peer(summary);
+  await using session = await new Agent({
+    instructions: 'Read.',
+    provider,
+    tools: [lookup()],
+  }).session();
+  await (await session.submit('earlier')).wait();
+  const turn = await session.submit('current');
+  const [visible, defaultView] = await Promise.all([
+    Array.fromAsync(
+      readUIMessageStream({
+        stream: vercelMessageStream(turn, session, {
+          includeReasoningSummaries: true,
+        }),
+        terminateOnError: true,
+      }),
+    ),
+    Array.fromAsync(
+      readUIMessageStream({
+        stream: vercelMessageStream(turn, session),
+        terminateOnError: true,
+      }),
+    ),
+  ]);
+  expect(visible.at(-1)?.parts).toContainEqual(
+    expect.objectContaining({
+      type: 'reasoning',
+      id: 'current-reasoning',
+      text: summary,
+      state: 'done',
+    }),
+  );
+  expect(defaultView.at(-1)?.parts).not.toContainEqual(
+    expect.objectContaining({ type: 'reasoning' }),
+  );
+  expect(JSON.stringify(visible)).not.toContain('current-secret');
+  expect(JSON.stringify(visible)).not.toContain('Earlier reasoning secret.');
+  expect((await turn.wait()).finalOutput).toBe('Found it.');
+});
+
 it('disconnect releases the public reader without stopping its native turn', async () => {
   await using provider = await peer();
   await using session = await new Agent({
@@ -248,6 +316,48 @@ function fixture(
     },
   };
 }
+
+it.each(['chunks', 'response'] as const)(
+  '%s cancellation waits for its observation reader to close',
+  async (format) => {
+    const { turn, session } = fixture([]);
+    const cleanup = Promise.withResolvers<void>();
+    const closing = Promise.withResolvers<void>();
+    const events: AsyncIterableIterator<Observation> = {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      async next() {
+        await cleanup.promise;
+        return { done: true, value: undefined };
+      },
+      async return() {
+        closing.resolve();
+        await cleanup.promise;
+        return { done: true, value: undefined };
+      },
+    };
+    const view = { ...turn, events: () => events };
+    const stream =
+      format === 'chunks'
+        ? vercelMessageStream(view, session)
+        : vercelResponse(view, session).body!;
+    const reader = stream.getReader();
+    await reader.read();
+    let cancelled = false;
+    const cancellation = reader.cancel().then(() => {
+      cancelled = true;
+    });
+    try {
+      await closing.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(cancelled).toBe(false);
+    } finally {
+      cleanup.resolve();
+      await cancellation;
+    }
+  },
+);
 
 it('gap after the exact start fails closed with one terminal', async () => {
   const { turn, session } = fixture([
