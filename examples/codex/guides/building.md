@@ -6,7 +6,7 @@ Build the SDK from a checkout when you need current source features, develop the
 
 Before building, install the tools for your host:
 
-- Node.js 24, Rust 1.95, and the pnpm version pinned in `package.json`.
+- Node.js 24, Rust 1.95 through rustup, and the pnpm version pinned in `package.json`.
 - Git, a C/C++ compiler and linker, CMake, and protoc.
 - On Linux, pkg-config and the OpenSSL development libraries.
 
@@ -18,6 +18,8 @@ pnpm native:prepare
 pnpm native:build
 pnpm build
 ```
+
+`pnpm build` has also been running the portable Realtime prebuild, including when the application only uses text. That prebuild has been adding the `wasm32-unknown-unknown` target through rustup and compiling the bundled WebAssembly and JavaScript assets. The first build has therefore been requiring access to the Rust target download and pinned native source repositories.
 
 The native source pin lives in `packages/agents-codex/native/CODEX_REVISION`. The native build produces the Node-API addon and helper binaries for the current host. Use `pnpm native:audit` to check prepared source against that pin.
 

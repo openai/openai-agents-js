@@ -12,6 +12,7 @@ Choose the record that matches your task. The application reconciles external ef
 | Check whether the current boundary can be captured | [Capture readiness](recovery.md#check-capture-readiness). |
 | Keep canonical snapshots in application-owned files | [File-backed custom storage](session-store.md#store-canonical-conversation-state-in-application-owned-files). |
 | Reopen a native profile with checklist or goal support | [Local native profiles](local-state.md#local-native-profiles). |
+| Find or label native stored conversations | [Stored conversation headers](local-state.md#find-and-name-stored-conversations). |
 | Confirm an external operation before continuing | [Reconcile external effects](recovery.md#reconcile-external-effects). |
 
 Conversation history and checkpoints do not replace an external service receipt. For Session opening and cleanup, start with [Agents and sessions](sessions.md#open-and-run-a-session).

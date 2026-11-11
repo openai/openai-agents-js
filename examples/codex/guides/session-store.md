@@ -130,6 +130,26 @@ If cleanup fails again, `AggregateError.errors` preserves both failures. Its `ca
 
 Import `NativeError` from `@openai/agents` with the storage helpers. Cleanup requires no Session or provider and never acquires a replacement writer.
 
+## Encrypt canonical snapshots
+
+The matching [source build](building.md) has been exporting `encryptedSessionStore(backend, { encryptionKey })` from `@openai/agents`. This wrapper has been encrypting complete canonical snapshots while the underlying `SessionStore` has been retaining responsibility for exclusive ownership, revisions, and durable commits. It has been using per-session HKDF keys and AES-256-GCM authentication.
+
+This fragment has been assuming a configured `agent`, an application-authorized private directory, and a persisted 32-byte random key loaded from private key storage:
+
+```ts
+import { encryptedSessionStore, fileSessionStore } from '@openai/agents';
+
+const storage = encryptedSessionStore(fileSessionStore(privateDirectory), {
+  encryptionKey: persistedKey,
+});
+await using session = await agent.session({ storage });
+// Retain session.id and reopen with the same backend and master key.
+```
+
+The wrapper has been copying the supplied key bytes at construction. Your application has been retaining the same master key across processes separately from the snapshot files. A newly generated key on every process start has been preventing successful reopening. Wrong keys, modified ciphertext, and snapshots copied to another Session ID have been failing authentication before plaintext readback.
+
+Encryption has been leaving Session IDs, revisions, write IDs, and ciphertext length visible to the backend. The wrapper has been preserving the backend's exact-write retry contract by reusing accepted ciphertext after a lost acknowledgment. It has not been adding expiry, key rotation, migration from plaintext, Python Fernet compatibility, or Classic item-store compatibility. The custom-store capability and reconciliation restrictions above have been continuing to apply; reconciliation has been requiring the same encrypted wrapper and key.
+
 ## Qualify versions and production storage
 
 Snapshot format version 1 is native SDK data, not a cross-language checkpoint. Keep backups and qualify a new SDK/runtime revision before upgrading stored conversations. The SDK rejects unknown format versions.
