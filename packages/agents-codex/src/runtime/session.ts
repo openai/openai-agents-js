@@ -468,6 +468,7 @@ export type OneShotOptions = {
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
   beforeStep?: OperationOptions<any>['beforeStep'];
+  returnRawUsage?: boolean;
   /** Private single-use owned-factory grant; never interpreted by truthiness. */
   privateEngineGrant?: object;
 };
@@ -610,6 +611,24 @@ const sessionStopSchema = z
   })
   .strict();
 
+/** Original usage from one accepted provider response. */
+export interface RawProviderUsage {
+  readonly responseId: string;
+  readonly upstreamRequestId: string | null;
+  readonly usage: Readonly<Record<string, JsonValue>>;
+}
+
+const rawProviderUsageSchema = z.array(
+  z.object({
+    response_id: z.string(),
+    upstream_request_id: z.string().nullable(),
+    // The binding has already decoded JSON. Retain the original object keys.
+    usage: z.custom<Record<string, JsonValue>>(
+      (value) =>
+        value !== null && typeof value === 'object' && !Array.isArray(value),
+    ),
+  }),
+);
 /** An accepted assistant or tool item and its producing Agent. */
 export interface ProducedItem {
   readonly item: HistoryItem;
@@ -633,6 +652,7 @@ export interface Completed<OutputT = string> {
   readonly state?: SessionState;
   /** Conversation records from returnHistory, for replay with the destination Session's instructions. */
   readonly history?: CanonicalHistorySnapshot['items'];
+  readonly rawUsage?: readonly RawProviderUsage[];
   readonly items?: readonly ProducedItem[];
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
@@ -1308,6 +1328,32 @@ function realtimeToolSelection(
 }
 
 export class Session<OutputT = string, Context = unknown> {
+  #collectingRawUsage = false;
+
+  /** @internal */
+  _startRawUsage(): void {
+    if (this.#collectingRawUsage) return;
+    this.#native._start_raw_usage();
+    this.#collectingRawUsage = true;
+  }
+
+  /** @internal */
+  _takeRawUsage(turnId: string): readonly RawProviderUsage[] {
+    if (!this.#collectingRawUsage)
+      throw new NativeError('Provider usage capture was not started');
+    this.#collectingRawUsage = false;
+    return Object.freeze(
+      decode(rawProviderUsageSchema, this.#native._take_raw_usage(turnId)).map(
+        (record) =>
+          Object.freeze({
+            responseId: record.response_id,
+            upstreamRequestId: record.upstream_request_id,
+            usage: Object.freeze(record.usage),
+          }),
+      ),
+    );
+  }
+
   private profileRuntimes: ReadonlyMap<string, AgentProfileRuntime> = new Map();
   private readonly voiceProfileGraphs = new Map<string, CapturedAgentGraph>();
   private voiceGraphGeneration?: string;
@@ -5834,6 +5880,8 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         stoppedBeforeAdmission = !check(true);
         if (!stoppedBeforeAdmission) {
+          if (this.#collectingRawUsage)
+            correction.#native._attach_raw_usage(this.#native);
           // startTurn checks the live Session before invoking native admission.
           repair.run = correction.startTurn(
             JSON.stringify({
@@ -6722,6 +6770,7 @@ export class Session<OutputT = string, Context = unknown> {
             event.subagent_instance_id,
           );
     if (!owner) return;
+    const submissionId = `child:${id}:${incarnation}:${turnId}`;
     // An acknowledged future turn can exist before an older start is read.
     // Only starts from this ordered reader establish prior-turn ownership.
     if (startsTurn) {
@@ -6730,8 +6779,17 @@ export class Session<OutputT = string, Context = unknown> {
         owner.rootTurnId === undefined &&
         typeof msg.root_turn_id === 'string' &&
         msg.root_turn_id
-      )
-        owner.rootTurnId = msg.root_turn_id;
+      ) {
+        const rootTurnId = msg.root_turn_id;
+        owner.rootTurnId = rootTurnId;
+        for (const output of this.applicationOutputs) {
+          if (
+            output.submissionId === submissionId &&
+            output.rootTurnId === undefined
+          )
+            output.rootTurnId = rootTurnId;
+        }
+      }
       this.observations.notify();
     }
     owner.instanceId ??= event.subagent_instance_id;
@@ -6751,7 +6809,6 @@ export class Session<OutputT = string, Context = unknown> {
         usage ? 0 : 1,
       );
     }
-    const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
     if (
@@ -8368,7 +8425,10 @@ export class Session<OutputT = string, Context = unknown> {
               } else {
                 const returned = await backend.complete(request);
                 check();
-                const data = captureModelResponse(returned);
+                const data = captureModelResponse(
+                  returned,
+                  msg.capture_raw_usage === true,
+                );
                 check();
                 reply({ data });
               }
@@ -10995,10 +11055,19 @@ export class Session<OutputT = string, Context = unknown> {
         const applicationData = toolApplicationData(response);
         const waitForApplicationAcceptance = applicationData !== undefined;
         if (tool.finishTurn && responseOutput.success) {
-          this.registerTerminalObservation(owner, identity, 'completed');
+          this.registerTerminalObservation(
+            owner,
+            identity,
+            'completed',
+            applicationData,
+          );
+          if (applicationData !== undefined)
+            this.pendingApplicationOutputs.push(
+              this.applicationOutputRecord(owner, identity, applicationData),
+            );
           deferredObservation = true;
         }
-        let accepted: boolean;
+        let accepted = false;
         try {
           accepted = await native._respond_python_tool(
             encodeReceipt({
@@ -11010,19 +11079,17 @@ export class Session<OutputT = string, Context = unknown> {
             }),
             waitForApplicationAcceptance,
           );
-          if (accepted && applicationData !== undefined) {
+          if (accepted && applicationData !== undefined && !deferredObservation)
             this.recordApplicationOutput(owner, identity, applicationData);
-            const observation = this.terminalProposals
-              .get(owner)
-              ?.observations.get(identity.callId);
-            if (observation) observation.applicationData = applicationData;
-          }
           if (accepted && msg._sdk_managed_approved === true) {
             const key = this.manualCallKey(event, true);
             if (key !== undefined) this.manualCalls.delete(key);
           }
         } catch (error) {
           this.callbackAuthorityFailed(delivery, error);
+        } finally {
+          if (deferredObservation && !accepted)
+            this.discardPendingApplicationOutputs(owner, identity.callId);
         }
         if (accepted && !deferredObservation) {
           const data = toolApplicationData(response);

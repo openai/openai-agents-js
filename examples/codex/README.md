@@ -38,10 +38,12 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Select eligible tools | **Run** [operation-selection.ts](operation-selection.ts). It rechecks eligibility before execution. See [tool selection](guides/tools.md#select-tools-for-one-root). |
 | Update a tool between Turns | **Run** [tool-updates.ts](tool-updates.ts). It waits for each Turn and the [idle Session update](guides/sessions.md#update-a-session). |
 | Bound calls or waiting | **Run** [callback-quota.ts](callback-quota.ts) for a per-run application quota, or [timeout-cleanup.ts](timeout-cleanup.ts) to release a waiter and join Session cleanup. |
+| Pause or restore a budgeted run | Compare live replies, portable checkpoints, and settled reopen in [budgeted recovery](guides/recovery.md#budgets-while-waiting-and-recovering). |
 | Edit a supported model request | **Run** [prepared-request.ts](prepared-request.ts) against a local Responses endpoint. See [request preparation](guides/request-preparation.md) for supported transports and return values. |
 | Correlate model requests and tool calls | **Run** [request-metadata.ts](request-metadata.ts) with scripted responses. It joins request dispatch identities and tool-call occurrences without changing requests. |
 | Inspect a tool call | **Run** [call-metadata.ts](call-metadata.ts) with access to its selected model. It reads metadata. Decisions and replies require their own grants. |
 | Validate an artifact | **Run** [validated-artifact.ts](validated-artifact.ts). The tool returns validation failures for correction and writes accepted content to an application-selected file. |
+| Publish accepted output | Follow [accepted output](guides/accepted-output.md) to run a scripted Turn with application progress and final answer checks. |
 | Use the packaged JSON artifact checker | [Packaged artifact validation](packaged-artifact.md) runs a rejected candidate and a corrected retry through `jsonArtifactTool`. It uses scripted responses and a temporary file. |
 | Choose an output contract | **Import** [`runOutputModes()`](output-modes.ts) for native and prompted output, or [`runOutputOverrides()`](output-overrides.ts) to read a root Turn's selected contract. |
 | Answer an approval or form | **Import** a [native question handler](native-questions.ts) for your own collector, or **run** its terminal consent demo with model credentials, `MCP_URL`, and `MCP_TOOL`. The configured MCP tool must request URL consent. See [URL consent](guides/interactions.md#explicit-url-consent-and-completion). |
@@ -61,9 +63,10 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Apply MCP argument and approval policy | Run [mcp-policy.ts](mcp-policy.ts) with model credentials and `MCP_URL` set to a trusted Streamable HTTP server exposing `lookup({ key })`. This example sends no MCP credentials. |
 | Resume one MCP thumbnail task | Follow [MCP Tasks](../../packages/agents-codex/MCP_TASKS.md) to start local peers and run [mcp-tasks.ts](mcp-tasks.ts) with a private POSIX state directory. |
 | <a name="bounded-mcp-reports"></a>Bound MCP results | [The report recipe](mcp-reports.md) runs [mcp-reports.ts](mcp-reports.ts) and keeps the full result in application storage. |
+| Bound a large function result | **Run** [oversized-tool-output.ts](oversized-tool-output.ts) with scripted responses to check the next request and retained evidence. |
 | <a name="await-mcp-call-observers"></a>Observe one classic MCP call | Run [mcp-observers.ts](mcp-observers.ts). It uses the built classic packages and local synthetic callbacks. |
 | Search the web through the native provider | Run [native-web-search.ts](native-web-search.ts) with model credentials. See [native web search](guides/tools.md#native-web-search) for search modes and limits. |
-| Use provider-hosted file search, code, and images | Follow [the hosted-tools example](hosted-tools/README.md) with the current native source build and model credentials. |
+| Use provider-hosted file search, code, and images | Check [hosted-tool compatibility](guides/tools.md#provider-hosted-tool-compatibility), then follow [the hosted-tools example](hosted-tools/README.md) with model credentials. |
 | Call two remote Agents over A2A | Follow the [A2A guide](../../packages/agents-codex/A2A.md) to run the [two-agent example](a2a/two-agents.ts) against local scripted peers. Use the current source checkout. |
 | Resume deferred A2A work after a coordinator restart | Follow [the deferred A2A workflow](../../packages/agents-codex/A2A.md#run-deferred-work-across-coordinator-restarts) to run [deferred-thumbnail.ts](a2a/deferred-thumbnail.ts) against a long-lived local peer. |
 
@@ -72,6 +75,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Task | Start here |
 | --- | --- |
 | <a name="run-the-specialist-example"></a>Consult an independently configured Agent | [Run the standalone specialist](input-retrieval-specialist/README.md#run-the-standalone-specialist). [specialist-agent.ts](specialist-agent.ts) checks both tool receipts without model credentials. |
+| Route to an authorized specialist | Follow [Decisions routing](guides/decisions.md#route-to-an-authorized-specialist) to choose a specialist with a separate Decisions provider and return its result to the orchestrator. |
 | <a name="remote-executor"></a><a name="configure-native-children"></a><a name="wait-for-captured-child-turns"></a><a name="apply-collaboration-policy"></a>Inspect a remote workspace or run native children | Follow [remote executor setup](guides/executors.md#run-the-remote-executor-example) to run [remote-executor.ts](remote-executor.ts). **Run** [native-children.ts](native-children.ts) with the same executor and model credentials, or **import** `runNativeChildren()` to admit a reviewer role to the same Session. |
 | Run a local command with workspace access | **Run** [local-execution.ts](local-execution.ts) with scripted responses. It verifies a command and a file write in a temporary directory. See [local execution](guides/local-execution.md) and [workspace grants](guides/workspace-grants.md). |
 | Configure executor approvals | **Import** [`executorEnvironment(url, cwd)`](executor-decisions.ts). Supply a provisioned executor, workspace, application context, and Session lifecycle. |
@@ -88,6 +92,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Share a quota and inspect effects after failure | [Concurrency and effects](concurrency-effects/README.md) |
 | <a name="native-telemetry-and-a-small-evaluation"></a><a name="record-native-telemetry"></a>Inspect native traces, logs, and application receipts | [Observability](observability/README.md) includes a [four-outcome CLI](native-telemetry.ts). **Import** [`runWithTrace()`](native-trace-context.ts) to pass W3C trace headers into a nested specialist run. |
 | Add or replace trace processors | **Run** [trace-processors.ts](trace-processors.ts). It checks the initial, additive, and replacement processor routes against a local receiver. See [trace processors](guides/trace-processors.md). |
+| Trace a business workflow across services | Follow [business workflow tracing](guides/business-workflow.md) to configure metadata-only tracing in two processes and check export delivery against a local sink. |
 | <a name="evaluate-two-scripted-cases"></a>Compare model and tool behavior | [Evaluation](evaluation/README.md) covers repeated trials and the [two-case catalog CLI](evaluate-catalog.ts). Select live mode and supply credentials to compare live models. |
 | Start a local MCP peer or aggregate tool data | [Stdio and programmatic tools](stdio-programmatic/README.md) |
 | <a name="project-native-text-into-a-ui-stream"></a>Display native results in a browser | [Native UI streams](native-ui/README.md) projects SSE for Vercel UI and AG-UI clients. The [web starter](web-starter/README.md) runs a browser application. |
