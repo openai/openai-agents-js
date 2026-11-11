@@ -1,0 +1,430 @@
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+index f50cc38..0318c7c 100644
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+@@ -1872,6 +1872,7 @@ fn contains_transcript_entry(entries: &[RealtimeTranscriptEntry], role: &str, te
+ }
+ 
+ pub struct RealtimeWebsocketClient {
++    connection_url: Option<Url>,
+     provider: Provider,
+     http_client_factory: HttpClientFactory,
+     webrtc_sideband_base_url: String,
+@@ -1892,6 +1893,7 @@ enum RealtimeSessionInitialization {
+ impl RealtimeWebsocketClient {
+     pub fn new(provider: Provider, http_client_factory: HttpClientFactory) -> Self {
+         Self {
++            connection_url: None,
+             provider,
+             http_client_factory,
+             webrtc_sideband_base_url: OPENAI_REALTIME_API_BASE_URL.to_string(),
+@@ -1903,6 +1905,12 @@ impl RealtimeWebsocketClient {
+         }
+     }
+ 
++    /// Set the endpoint for one trusted built-in WebSocket connection.
++    pub fn with_connection_url(mut self, url: Option<Url>) -> Self {
++        self.connection_url = url;
++        self
++    }
++
+     /// Use trusted application I/O under the existing native V2 protocol owner.
+     pub fn with_adapter(mut self, adapter: Arc<dyn RealtimeAdapter>) -> Self {
+         self.adapter = Some(adapter);
+@@ -2105,6 +2113,13 @@ impl RealtimeWebsocketClient {
+         session_initialization: RealtimeSessionInitialization,
+         transcript_state: RealtimeTranscriptState,
+     ) -> Result<RealtimeWebsocketConnection, ApiError> {
++        let ws_url = self.connection_url.clone().unwrap_or(ws_url);
++        let empty_provider_headers = HeaderMap::new();
++        let provider_headers = if self.connection_url.is_some() {
++            &empty_provider_headers
++        } else {
++            &self.provider.headers
++        };
+         // One expected payload serves both initialization and readiness. The
+         // native session identifier belongs in headers, not provider settings.
+         let expected = if config.event_parser == RealtimeEventParser::RealtimeV2
+@@ -2183,7 +2198,7 @@ impl RealtimeWebsocketClient {
+                 ApiError::Stream(format!("failed to build websocket request: {err}"))
+             })?;
+             let headers = merge_request_headers(
+-                &self.provider.headers,
++                provider_headers,
+                 with_session_id_header(extra_headers, config.session_id.as_deref())?,
+                 default_headers,
+             );
+diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
+index fd2810a..2114a00 100644
+--- a/codex-rs/core/src/realtime_conversation.rs
++++ b/codex-rs/core/src/realtime_conversation.rs
+@@ -1456,6 +1456,7 @@ struct ConversationState {
+ }
+ 
+ struct RealtimeStart {
++    connection_url: Option<url::Url>,
+     adapter: Option<Arc<dyn codex_api::RealtimeAdapter>>,
+     connection_auth: Option<crate::client::RealtimeConnectionAuth>,
+     hosted_mcp_auto_response: bool,
+@@ -2363,6 +2364,7 @@ impl RealtimeConversationManager {
+         mode_instructions: RealtimeModeInstructions,
+     ) -> CodexResult<RealtimeStartOutput> {
+         let RealtimeStart {
++            connection_url,
+             adapter,
+             connection_auth,
+             hosted_mcp_auto_response,
+@@ -2450,7 +2452,9 @@ impl RealtimeConversationManager {
+             audio_rx,
+         };
+ 
+-        let client = RealtimeWebsocketClient::new(api_provider, http_client_factory);
++        let override_sideband_headers = connection_url.is_some();
++        let client = RealtimeWebsocketClient::new(api_provider, http_client_factory)
++            .with_connection_url(connection_url);
+         let client = if handoff.sdk.is_some() {
+             let client = client.with_bounded_events();
+             match native_source {
+@@ -2580,6 +2584,7 @@ impl RealtimeConversationManager {
+         } else if let Some(existing_call_id) = existing_call_id {
+             call_id = Some(existing_call_id.clone());
+             let attaching = existing_call::attach(existing_call::ExistingCallAttachment {
++                override_sideband_headers,
+                 client,
+                 model_client,
+                 connection_auth,
+@@ -3654,6 +3659,7 @@ async fn cancel_sdk_tool_work(
+ }
+ 
+ struct PreparedRealtimeConversationStart {
++    connection_url: Option<url::Url>,
+     connection_auth: Option<crate::client::RealtimeConnectionAuth>,
+     hosted_mcp_auto_response: bool,
+     provider_event_observation: codex_protocol::protocol::RealtimeProviderEventObservation,
+@@ -3688,7 +3694,8 @@ async fn prepare_realtime_start(
+     params: ConversationStartParams,
+     sdk_owned: bool,
+ ) -> CodexResult<PreparedRealtimeConversationStart> {
+-    prepare_realtime_start_with_source(sess, params, sdk_owned, None, None).await
++    prepare_realtime_start_with_source(sess, params, sdk_owned, None, None, Default::default())
++        .await
+ }
+ 
+ async fn prepare_realtime_start_with_source(
+@@ -3697,7 +3704,37 @@ async fn prepare_realtime_start_with_source(
+     sdk_owned: bool,
+     frozen: Option<(Arc<Config>, ModelProviderInfo)>,
+     api_key: Option<String>,
++    connection_options: codex_protocol::protocol::RealtimeConversationConnectionOptions,
+ ) -> CodexResult<PreparedRealtimeConversationStart> {
++    let connection_url = connection_options
++        .url
++        .as_deref()
++        .map(|value| {
++            let url = url::Url::parse(value)
++                .map_err(|_| CodexErr::InvalidRequest("Invalid Realtime WebSocket URL".into()))?;
++            if !matches!(url.scheme(), "ws" | "wss")
++                || url.host_str().is_none()
++                || !url.username().is_empty()
++                || url.password().is_some()
++                || url.fragment().is_some()
++            {
++                return Err(CodexErr::InvalidRequest(
++                    "Realtime URL requires ws or wss without credentials or fragments".into(),
++                ));
++            }
++            Ok(url)
++        })
++        .transpose()?;
++    if connection_url.is_some()
++        && matches!(
++            params.transport,
++            Some(ConversationStartTransport::Webrtc { .. })
++        )
++    {
++        return Err(CodexErr::InvalidRequest(
++            "WebSocket connection options cannot configure WebRTC calls".into(),
++        ));
++    }
+     let frozen_provider = frozen.is_some();
+     let (config, current_provider) = match frozen {
+         Some(frozen) => frozen,
+@@ -3746,6 +3783,8 @@ async fn prepare_realtime_start_with_source(
+             Some(CodexAuth::from_api_key(&key)),
+             config.http_client_factory(),
+         )
++    } else if connection_url.is_some() {
++        (None, config.http_client_factory())
+     } else {
+         match auth_manager.auth_with_http_client_factory().await {
+             Some((auth, captured_factory)) if auth.is_chatgpt_auth() || auth.is_api_key_auth() => (
+@@ -3852,39 +3891,26 @@ async fn prepare_realtime_start_with_source(
+     let requested_realtime_session_id = session_config.session_id.clone();
+     let event_parser = session_config.event_parser;
+     let originator = sess.originator().await;
+-    let mut extra_headers = match transport {
+-        ConversationStartTransport::Websocket => {
+-            if let Some(header) = explicit_authorization {
+-                let mut headers = realtime_request_headers(
+-                    requested_realtime_session_id.as_deref(),
+-                    None,
+-                    event_parser,
+-                    originator.as_str(),
+-                )?
+-                .unwrap_or_default();
+-                headers.insert(http::header::AUTHORIZATION, header);
+-                Some(headers)
+-            } else {
+-                let realtime_api_key = realtime_api_key(auth.as_ref(), &provider)?;
+-                realtime_request_headers(
+-                    requested_realtime_session_id.as_deref(),
+-                    Some(realtime_api_key.as_str()),
+-                    event_parser,
+-                    originator.as_str(),
+-                )?
+-            }
+-        }
+-        ConversationStartTransport::Webrtc { .. }
+-        | ConversationStartTransport::ExistingCall { .. } => {
+-            realtime_request_headers(
+-                requested_realtime_session_id.as_deref(),
+-                /*api_key*/ None,
+-                event_parser,
+-                originator.as_str(),
+-            )?
+-        }
+-    }
++    let default_api_key = if matches!(transport, ConversationStartTransport::Websocket)
++        && explicit_authorization.is_none()
++        && connection_url.is_none()
++    {
++        Some(realtime_api_key(auth.as_ref(), &provider)?)
++    } else {
++        None
++    };
++    let mut extra_headers = realtime_request_headers(
++        requested_realtime_session_id.as_deref(),
++        default_api_key.as_deref(),
++        event_parser,
++        originator.as_str(),
++    )?
+     .unwrap_or_default();
++    if (matches!(transport, ConversationStartTransport::Websocket) || connection_url.is_some())
++        && let Some(header) = explicit_authorization
++    {
++        extra_headers.insert(http::header::AUTHORIZATION, header);
++    }
+     extra_headers.extend(build_session_headers(
+         Some(sess.session_id().to_string()),
+         Some(sess.thread_id().to_string()),
+@@ -3893,7 +3919,8 @@ async fn prepare_realtime_start_with_source(
+         value.set_sensitive(true);
+     }
+     // Voice calls can span zero or many backing turns; send only the saved thread source.
+-    if let Some(thread_source) = sess.thread_config_snapshot().await.thread_source
++    if connection_url.is_none()
++        && let Some(thread_source) = sess.thread_config_snapshot().await.thread_source
+         && thread_source.as_str().len() <= REALTIME_THREAD_SOURCE_MAX_BYTES
+         && let Ok(metadata) = to_ascii_json_string(&json!({ THREAD_SOURCE_KEY: thread_source }))
+         && let Ok(metadata) = HeaderValue::from_str(&metadata)
+@@ -3901,6 +3928,7 @@ async fn prepare_realtime_start_with_source(
+         extra_headers.insert(X_CODEX_TURN_METADATA_HEADER, metadata);
+     }
+     Ok(PreparedRealtimeConversationStart {
++        connection_url,
+         connection_auth,
+         hosted_mcp_auto_response: true,
+         provider_event_observation: Default::default(),
+@@ -4151,6 +4179,7 @@ async fn handle_start_inner_with_adapter(
+     adapter: Option<Arc<dyn codex_api::RealtimeAdapter>>,
+ ) -> CodexResult<RealtimeConversationStartResult> {
+     let PreparedRealtimeConversationStart {
++        connection_url,
+         connection_auth,
+         hosted_mcp_auto_response,
+         provider_event_observation,
+@@ -4185,6 +4214,7 @@ async fn handle_start_inner_with_adapter(
+     };
+     let sdk_owned = sdk_generation.is_some();
+     let start = RealtimeStart {
++        connection_url,
+         adapter,
+         connection_auth,
+         hosted_mcp_auto_response,
+diff --git a/codex-rs/core/src/realtime_conversation/existing_call.rs b/codex-rs/core/src/realtime_conversation/existing_call.rs
+index af920a4..ac47911 100644
+--- a/codex-rs/core/src/realtime_conversation/existing_call.rs
++++ b/codex-rs/core/src/realtime_conversation/existing_call.rs
+@@ -22,6 +22,7 @@ use tokio::task::JoinHandle;
+ use tokio_util::sync::CancellationToken;
+ 
+ pub(super) struct ExistingCallAttachment {
++    pub(super) override_sideband_headers: bool,
+     pub(super) client: Arc<RealtimeWebsocketClient>,
+     pub(super) model_client: ModelClient,
+     pub(super) connection_auth: Option<crate::client::RealtimeConnectionAuth>,
+@@ -41,6 +42,7 @@ pub(super) struct ExistingCallAttachment {
+ 
+ pub(super) async fn attach(attachment: ExistingCallAttachment) -> CodexResult<JoinHandle<()>> {
+     let ExistingCallAttachment {
++        override_sideband_headers,
+         client,
+         model_client,
+         connection_auth,
+@@ -57,14 +59,18 @@ pub(super) async fn attach(attachment: ExistingCallAttachment) -> CodexResult<Jo
+         transcript_tail_flush,
+         stop_token,
+     } = attachment;
+-    let sideband_headers = match connection_auth {
+-        Some(auth) => {
+-            crate::client::realtime_sideband_headers_with_connection_auth(extra_headers, &auth)
+-        }
+-        None => {
+-            model_client
+-                .realtime_sideband_headers(extra_headers)
+-                .await?
++    let sideband_headers = if override_sideband_headers {
++        extra_headers
++    } else {
++        match connection_auth {
++            Some(auth) => {
++                crate::client::realtime_sideband_headers_with_connection_auth(extra_headers, &auth)
++            }
++            None => {
++                model_client
++                    .realtime_sideband_headers(extra_headers)
++                    .await?
++            }
+         }
+     };
+     let transcript_state = RealtimeTranscriptState::default();
+diff --git a/codex-rs/core/src/realtime_conversation/preparation.rs b/codex-rs/core/src/realtime_conversation/preparation.rs
+index bba5d83..e90e602 100644
+--- a/codex-rs/core/src/realtime_conversation/preparation.rs
++++ b/codex-rs/core/src/realtime_conversation/preparation.rs
+@@ -274,6 +274,7 @@ pub(crate) async fn handle_activate_sdk(
+     sess: &Arc<Session>,
+     generation: String,
+     api_key: Option<RealtimeConversationApiKey>,
++    connection_options: codex_protocol::protocol::RealtimeConversationConnectionOptions,
+     reply: StartReply,
+ ) {
+     let mut reply = Some(reply);
+@@ -321,6 +322,7 @@ pub(crate) async fn handle_activate_sdk(
+                     &worker_preparation,
+                     input,
+                     api_key,
++                    connection_options,
+                 );
+                 let result = std::panic::AssertUnwindSafe(result)
+                     .catch_unwind()
+@@ -372,6 +374,7 @@ async fn run_prepared_start(
+     preparation: &Arc<SdkStartPreparation>,
+     input: SdkPreparedInput,
+     api_key: Option<String>,
++    connection_options: codex_protocol::protocol::RealtimeConversationConnectionOptions,
+ ) -> CodexResult<RealtimeConversationStartResult> {
+     let SdkPreparedInput {
+         draft,
+@@ -385,6 +388,11 @@ async fn run_prepared_start(
+         provider,
+         adapter,
+     } = input;
++    if adapter.is_some() && connection_options.url.is_some() {
++        return Err(CodexErr::InvalidRequest(
++            "Built-in WebSocket options cannot configure custom adapters".into(),
++        ));
++    }
+     params.client_managed_handoffs = true;
+     params.backend_reasoning_status = false;
+     let config = Arc::clone(draft.inputs.config());
+@@ -415,6 +423,7 @@ async fn run_prepared_start(
+             true,
+             Some((config, provider)),
+             api_key,
++            connection_options,
+         )
+         .await?;
+         if let Some(instructions) = inherited_call_instructions {
+@@ -473,7 +482,7 @@ pub(crate) async fn dispatch_start_sdk(
+     )
+     .await
+     {
+-        Ok(_) => handle_activate_sdk(sess, generation, None, reply).await,
++        Ok(_) => handle_activate_sdk(sess, generation, None, Default::default(), reply).await,
+         Err(error) => {
+             let _ = reply.send(Err(error));
+         }
+diff --git a/codex-rs/core/src/realtime_conversation_tests.rs b/codex-rs/core/src/realtime_conversation_tests.rs
+index a3f5d4d..63ad36d 100644
+--- a/codex-rs/core/src/realtime_conversation_tests.rs
++++ b/codex-rs/core/src/realtime_conversation_tests.rs
+@@ -3566,6 +3566,7 @@ async fn prepared_close_with_provider_credential(missing_env: bool) {
+         Some(codex_protocol::protocol::RealtimeConversationApiKey::new(
+             "private-voice-key".into(),
+         )),
++        Default::default(),
+         reply,
+     )
+     .await;
+@@ -3620,6 +3621,7 @@ async fn sdk_malformed_credential_fails_before_native_mcp_or_transport_preparati
+         Some(codex_protocol::protocol::RealtimeConversationApiKey::new(
+             "secret\ninvalid".into(),
+         )),
++        Default::default(),
+         reply,
+     )
+     .await;
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index 136c3b6..01953f9 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -578,10 +578,15 @@ pub(super) async fn submission_loop(
+                 Op::RealtimeConversationActivateSdk {
+                     generation,
+                     api_key,
++                    connection_options,
+                     reply,
+                 } => {
+                     crate::realtime_conversation::handle_activate_sdk(
+-                        &sess, generation, api_key, reply,
++                        &sess,
++                        generation,
++                        api_key,
++                        connection_options,
++                        reply,
+                     )
+                     .await;
+                     false
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index d8b0b44..4e5d229 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -221,6 +221,19 @@ impl std::fmt::Debug for RealtimeConversationApiKey {
+     }
+ }
+ 
++/// Trusted application endpoint for one built-in WebSocket connection.
++/// This value is never persisted or included in diagnostics.
++#[derive(Default, Clone, serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct RealtimeConversationConnectionOptions {
++    pub url: Option<String>,
++}
++impl std::fmt::Debug for RealtimeConversationConnectionOptions {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("RealtimeConversationConnectionOptions([REDACTED])")
++    }
++}
++
+ /// Retained SDK startup receipt; it does not depend on observing lifecycle events.
+ #[derive(Debug, Clone, Serialize)]
+ pub struct RealtimeConversationStartResult {
+@@ -980,6 +993,7 @@ pub enum Op {
+     RealtimeConversationActivateSdk {
+         generation: String,
+         api_key: Option<RealtimeConversationApiKey>,
++        connection_options: RealtimeConversationConnectionOptions,
+         reply: oneshot::Sender<CodexResult<RealtimeConversationStartResult>>,
+     },
+ 
