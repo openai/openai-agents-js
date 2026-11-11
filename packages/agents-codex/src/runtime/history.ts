@@ -657,6 +657,7 @@ const hostedToolStatusSchema = z.enum([
   'incomplete',
   'failed',
 ]);
+const shellToolStatusSchema = hostedToolStatusSchema.or(z.literal('unknown'));
 const repairItemProjectionSchema = z.intersection(
   z.object({ id: z.string().min(1), turnId: z.string().min(1) }),
   z.discriminatedUnion('type', [
@@ -772,7 +773,7 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('shell_call'),
       turn_id: z.string(),
-      status: hostedToolStatusSchema,
+      status: shellToolStatusSchema,
       provider_data: jsonObject,
       call_id: z.string(),
       action: jsonValue,
@@ -780,7 +781,7 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('shell_call_output'),
       turn_id: z.string(),
-      status: hostedToolStatusSchema,
+      status: shellToolStatusSchema,
       provider_data: jsonObject,
       call_id: z.string(),
       output: jsonValue,
@@ -1060,12 +1061,14 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
     raw.type === 'computer_call_output' ||
+    raw.type === 'shell_call_output' ||
     raw.type === 'tool_search_output';
   const call =
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
     raw.type === 'computer_call' ||
     raw.type === 'local_shell_call' ||
+    raw.type === 'shell_call' ||
     raw.type === 'tool_search_call';
   const id =
     text(raw.id) ??
@@ -2022,7 +2025,36 @@ export function projectHostedToolItem(
   turnId: string,
 ): HostedToolItem | undefined {
   const raw = object(value);
-  if (!raw || typeof raw.id !== 'string') return;
+  if (!raw) return;
+  const shell = raw.type === 'shell_call' || raw.type === 'shell_call_output';
+  const id =
+    text(raw.id) ??
+    (shell && typeof raw.call_id === 'string'
+      ? raw.call_id + (raw.type === 'shell_call_output' ? ':output' : '')
+      : null);
+  if (!id) return;
+  const identity = {
+    id,
+    turnId,
+    turn_id: turnId,
+  };
+  if (shell) {
+    const status = shellToolStatusSchema.safeParse(raw.status ?? 'unknown');
+    if (!status.success || typeof raw.call_id !== 'string') return;
+    const {
+      internal_chat_message_metadata_passthrough: _coreMetadata,
+      ...provider
+    } = raw;
+    const common = {
+      ...identity,
+      status: status.data,
+      call_id: raw.call_id,
+      provider_data: structuredClone(provider),
+    };
+    return raw.type === 'shell_call'
+      ? { ...common, type: raw.type, action: raw.action ?? null }
+      : { ...common, type: 'shell_call_output', output: raw.output ?? null };
+  }
   const status = hostedToolStatusSchema.safeParse(
     (raw.type === 'mcp_list_tools' || raw.type === 'mcp_call') &&
       raw.status === undefined
@@ -2032,14 +2064,20 @@ export function projectHostedToolItem(
       : raw.status,
   );
   if (!status.success) return;
+  if (
+    raw.type !== 'file_search_call' &&
+    raw.type !== 'code_interpreter_call' &&
+    raw.type !== 'image_generation_call' &&
+    raw.type !== 'mcp_list_tools' &&
+    raw.type !== 'mcp_call'
+  )
+    return;
   const {
     internal_chat_message_metadata_passthrough: _coreMetadata,
     ...provider
   } = raw;
   const common = {
-    id: raw.id,
-    turnId,
-    turn_id: turnId,
+    ...identity,
     status: status.data,
     provider_data: structuredClone(provider),
   };
@@ -2088,22 +2126,6 @@ export function projectHostedToolItem(
         arguments: text(raw.arguments) ?? '',
         output: raw.output ?? null,
         error: raw.error ?? null,
-      };
-    case 'shell_call':
-      if (typeof raw.call_id !== 'string') return;
-      return {
-        ...common,
-        type: raw.type,
-        call_id: raw.call_id,
-        action: raw.action ?? null,
-      };
-    case 'shell_call_output':
-      if (typeof raw.call_id !== 'string') return;
-      return {
-        ...common,
-        type: raw.type,
-        call_id: raw.call_id,
-        output: raw.output ?? null,
       };
   }
 }

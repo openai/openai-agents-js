@@ -319,12 +319,14 @@ fn request_response_by_default() -> bool {
 pub(crate) struct ToolReply {
     pub(crate) response: DynamicToolResponse,
     pub(crate) start_response: bool,
+    pub(crate) acceptance: Option<oneshot::Sender<()>>,
 }
 impl From<DynamicToolResponse> for ToolReply {
     fn from(response: DynamicToolResponse) -> Self {
         Self {
             response,
             start_response: true,
+            acceptance: None,
         }
     }
 }
@@ -350,6 +352,9 @@ fn functions(
                 })),
                 Cow::Owned(tool.callback_spec()),
             )),
+            DynamicToolSpec::Shell(tool) => {
+                functions.push((None, Cow::Owned(tool.callback_spec())))
+            }
             DynamicToolSpec::Namespace(namespace) => {
                 for DynamicToolNamespaceTool::Function(tool) in &namespace.tools {
                     functions.push((Some(Cow::Borrowed(namespace)), Cow::Borrowed(tool)));
@@ -360,12 +365,27 @@ fn functions(
     functions
 }
 
+fn original_tool_payload(spec: &ToolSpec, arguments: &Value) -> Option<ToolPayload> {
+    match spec {
+        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {
+            Some(ToolPayload::Computer {
+                arguments: arguments.to_string(),
+            })
+        }
+        ToolSpec::ApplicationShell { .. } => Some(ToolPayload::Shell {
+            arguments: arguments.to_string(),
+        }),
+        _ => None,
+    }
+}
+
 fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
     ensure!(
         specs.iter().all(|spec| match spec {
             DynamicToolSpec::Function(_)
             | DynamicToolSpec::Computer(_)
-            | DynamicToolSpec::HostedMcp(_) => true,
+            | DynamicToolSpec::HostedMcp(_)
+            | DynamicToolSpec::Shell(_) => true,
             DynamicToolSpec::Namespace(ns) => ns.tools.len() == 1,
         }),
         "invalid JavaScript tool slot projection"
@@ -1543,10 +1563,31 @@ impl PythonTools {
                     .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?,
             ),
             ToolPayload::HostedMcpApproval { .. } => Box::new(hosted_mcp_output(response)?),
+            ToolPayload::Shell { arguments } => Box::new(
+                codex_tools::ApplicationShellOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native shell response"))?,
+            ),
             _ => return Ok(Some(PythonOutput(response).receipt(key))),
         };
         let mut item: ResponseItem = output.to_response_item(&key.call, &payload).into();
-        item.set_turn_id_if_missing(&key.turn);
+        if let ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        }
+        | ResponseItem::ShellCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &mut item
+        {
+            *internal_chat_message_metadata_passthrough = Some(
+                codex_protocol::models::InternalChatMessageMetadataPassthrough {
+                    turn_id: Some(key.turn.clone()),
+                    ..Default::default()
+                },
+            );
+        } else {
+            item.set_turn_id_if_missing(&key.turn);
+        }
         Ok(Some(item))
     }
 
@@ -1592,6 +1633,8 @@ impl PythonTools {
                     server_label: mcp.server_label.clone(),
                     provider_data: serde_json::Map::new(),
                 })
+            } else if let DynamicToolSpec::Shell(shell) = declaration {
+                codex_tools::application_shell_spec(shell)
             } else {
                 match namespace.as_ref().filter(|_| !key.is_default_namespace()) {
                     None => ToolSpec::Function(function),
@@ -1611,7 +1654,10 @@ impl PythonTools {
                 spec,
                 exposure: if matches!(declaration, DynamicToolSpec::HostedMcp(_)) {
                     ToolExposure::Hidden
-                } else if matches!(declaration, DynamicToolSpec::Computer(_)) {
+                } else if matches!(
+                    declaration,
+                    DynamicToolSpec::Computer(_) | DynamicToolSpec::Shell(_)
+                ) {
                     ToolExposure::DirectModelOnly
                 } else if tool.defer_loading {
                     ToolExposure::Deferred
@@ -2112,15 +2158,10 @@ impl PythonTools {
                 key.clone(),
                 PendingCall {
                     original_payload: match &entry.spec {
-                        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {
-                            Some(ToolPayload::Computer {
-                                arguments: request["msg"]["arguments"].to_string(),
-                            })
-                        }
                         ToolSpec::Mcp(_) => Some(ToolPayload::HostedMcpApproval {
                             request: serde_json::from_value(request["msg"]["arguments"].clone())?,
                         }),
-                        _ => None,
+                        _ => original_tool_payload(&entry.spec, &request["msg"]["arguments"]),
                     },
                     media,
                     invocation,
@@ -3700,9 +3741,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     reply_guard.completed = true;
                     response
                 }
-                Err(_) if matches!(call.payload, ToolPayload::Computer { .. }) => {
+                Err(_)
+                    if matches!(
+                        call.payload,
+                        ToolPayload::Computer { .. } | ToolPayload::Shell { .. }
+                    ) =>
+                {
                     return Err(FunctionCallError::Fatal(
-                        "Computer call cancelled before reply".into(),
+                        "Native local tool call cancelled before reply".into(),
                     ));
                 }
                 Err(_) if self.tools.local_store.is_some() || self.tools.custom_store.is_some() => {
@@ -3729,8 +3775,18 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .insert(key);
             }
             if let ToolPayload::Computer { arguments } = &call.payload {
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ComputerToolOutput::from_dynamic_response(
+                        arguments,
+                        response.response,
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
+            }
+            if let ToolPayload::Shell { arguments } = &call.payload {
                 return Ok(
-                    Box::new(codex_tools::ComputerToolOutput::from_dynamic_response(
+                    Box::new(codex_tools::ApplicationShellOutput::from_dynamic_response(
                         arguments,
                         response.response,
                     )?) as Box<dyn ToolOutput>,
@@ -3745,6 +3801,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),
                 start_response: response.start_response,
+                acceptance: response.acceptance,
             }) as Box<dyn ToolOutput>)
         })
     }
@@ -3770,9 +3827,10 @@ fn hosted_mcp_output(
         .map_err(|_| FunctionCallError::Fatal("Invalid Hosted MCP approval decision".into()))
 }
 
-struct RealtimeToolOutput<T> {
+struct RealtimeToolOutput<T: ToolOutput> {
     output: T,
     start_response: bool,
+    acceptance: Option<oneshot::Sender<()>>,
 }
 impl<T: ToolOutput> ToolOutput for RealtimeToolOutput<T> {
     fn log_output(&self) -> String {
@@ -3781,11 +3839,20 @@ impl<T: ToolOutput> ToolOutput for RealtimeToolOutput<T> {
     fn success_for_logging(&self) -> bool {
         self.output.success_for_logging()
     }
+    fn contains_external_context(&self) -> bool {
+        self.output.contains_external_context()
+    }
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         self.output.to_response_item(call_id, payload)
     }
     fn realtime_response_requested(&self) -> bool {
         self.start_response
+    }
+    fn mark_accepted(&mut self) {
+        self.output.mark_accepted();
+        if let Some(acceptance) = self.acceptance.take() {
+            let _ = acceptance.send(());
+        }
     }
 }
 
@@ -3986,6 +4053,26 @@ mod pending_tests {
     use super::*;
 
     #[test]
+    fn computer_output_preserves_external_context_and_acceptance() {
+        let arguments = json!({"type":"computer_call","call_id":"computer-data","actions":[{"type":"screenshot"}],"pending_safety_checks":[]}).to_string();
+        let response = serde_json::from_value(json!({"success":true,"contentItems":[{"type":"inputText","text":json!({"output":{"type":"computer_screenshot","image_url":"data:image/png;base64,aA=="},"acknowledged_safety_checks":[]}).to_string()}]})).unwrap();
+        let (acceptance, mut accepted) = oneshot::channel();
+        let mut output = RealtimeToolOutput {
+            output: codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
+                .unwrap(),
+            start_response: true,
+            acceptance: Some(acceptance),
+        };
+        assert!(output.contains_external_context());
+        assert!(matches!(
+            accepted.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        output.mark_accepted();
+        assert_eq!(accepted.try_recv(), Ok(()));
+    }
+
+    #[test]
     fn response_scheduling_flag_stays_out_of_user_content() {
         let request = json!({"_sdk_python_tool":{"thread":"root","generation":0,"slot":0},"turnId":"turn","callId":"call"});
         let response = json!({"contentItems":[{"type":"inputText","text":"{\"start_response\":false}"}],"success":true});
@@ -3999,6 +4086,7 @@ mod pending_tests {
         let output = RealtimeToolOutput {
             output: PythonOutput(background.response),
             start_response: background.start_response,
+            acceptance: None,
         };
         assert!(!output.realtime_response_requested());
         assert_eq!(output.log_output(), "{\"start_response\":false}");

@@ -63,10 +63,19 @@ export type ToolImageReference = { detail?: ImageDetail | null } & (
 export class ToolOutput {
   declare private readonly toolOutputBrand: void;
 
+  /** Application-only JSON; never part of provider content or tracing. */
+  declare readonly applicationData?: JsonObject;
+
   constructor(
     readonly contentItems: z.infer<typeof toolOutputSchema>['contentItems'],
     readonly success = true,
-  ) {}
+    applicationData?: JsonObject | null,
+  ) {
+    if (applicationData != null) {
+      const captured = losslessJsonObjectSchema.parse(applicationData);
+      if (Object.keys(captured).length) this.applicationData = captured;
+    }
+  }
 
   /** Preserve legacy string construction and allow an explicit provider reference. */
   static image(reference: string | ToolImageReference): ToolOutput {
@@ -83,6 +92,40 @@ export class ToolOutput {
       captureToolPart({ type: 'inputFile', ...mediaRecord(reference) }),
     ]);
   }
+}
+
+// This transient carrier never survives JSON or structuredClone into native replies.
+const applicationDataBinding = Symbol('application tool output');
+type ApplicationToolResponse = ToolResponse & {
+  readonly [applicationDataBinding]?: JsonObject;
+};
+
+/** @internal Read detached passive data after the native result has been accepted. */
+export function toolApplicationData(response: object): JsonObject | undefined {
+  const data = (response as ApplicationToolResponse)[applicationDataBinding];
+  return data === undefined ? undefined : losslessJsonObjectSchema.parse(data);
+}
+
+/** @internal Carry passive data across an owned callback without serializing it. */
+export function withToolApplicationData<T extends object>(
+  value: T,
+  data: JsonObject | null | undefined,
+): T {
+  if (data != null) {
+    const captured = losslessJsonObjectSchema.parse(data);
+    if (Object.keys(captured).length)
+      Object.defineProperty(value, applicationDataBinding, { value: captured });
+  }
+  return value;
+}
+
+function captureToolResponse(value: ToolResponse | ToolOutput): ToolResponse {
+  const response = toolOutputSchema.parse(value);
+  const data =
+    value instanceof ToolOutput
+      ? value.applicationData
+      : toolApplicationData(value);
+  return withToolApplicationData(response, data);
 }
 
 /** An elapsed native function callback deadline; effects are not rolled back. */
@@ -235,6 +278,7 @@ export function supportsInputErrorRecovery(tool: SessionTool): boolean {
 }
 
 const computerDeclaration = Symbol('native computer declaration');
+const shellDeclaration = Symbol('native shell declaration');
 
 /** @internal The plan route admits only direct local function declarations. */
 export function isDirectFunctionTool(tool: SessionTool): boolean {
@@ -242,7 +286,8 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
     tool.kind !== 'manual' &&
     !tool.deferLoading &&
     !tool[computerDeclaration] &&
-    !hostedMcpBinding(tool)
+    !hostedMcpBinding(tool) &&
+    !tool[shellDeclaration]
   );
 }
 type Invocation<Context> = (
@@ -307,6 +352,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly errorFunction?: ToolErrorFunction<Context> | null;
   readonly kind?: 'function';
   readonly [computerDeclaration]?: JsonObject;
+  readonly [shellDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
   readonly [inputRecovery]?: boolean;
 }
@@ -390,7 +436,7 @@ export function createNamespacedFunctionTool<Context>(options: {
         onTimeout,
       );
       admit();
-      return toolOutputSchema.parse(result);
+      return captureToolResponse(result);
     },
   });
 }
@@ -628,7 +674,11 @@ export function tool<
   };
   const needsApproval = options.needsApproval;
   const runBeforeApproval = options.runBeforeApproval ?? false;
+  const shell = (
+    options as typeof options & { [shellDeclaration]?: JsonObject }
+  )[shellDeclaration];
   const declaration: FunctionTool<Context> = Object.freeze({
+    ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
     finishTurn: options.finishTurn ?? false,
     [inputRecovery]: inputErrorFunction !== undefined,
     name: options.name,
@@ -735,6 +785,10 @@ export function tool<
           };
         }
         if (decision?.action === 'replaceArguments') {
+          if (shell)
+            throw new TypeError(
+              'Shell before policies only allow or deny execution',
+            );
           parsed = parseInput(decision.arguments);
           callContext = {
             ...callContext,
@@ -867,6 +921,7 @@ export function tool<
         const original = new ToolOutput(
           response.contentItems,
           response.success,
+          toolApplicationData(response),
         );
         const accepted = await after(original, callContext);
         admit();
@@ -878,7 +933,7 @@ export function tool<
         if (!(output instanceof ToolOutput))
           throw new TypeError('Tool after must return ToolOutput');
         try {
-          response = toolOutputSchema.parse(output);
+          response = captureToolResponse(output);
         } catch {
           throw new TypeError('Tool result failed validation');
         }
@@ -983,6 +1038,10 @@ export function tool<
           return { required: false, denial: decision.reason };
         }
         if (decision.action === 'replaceArguments') {
+          if (shell)
+            throw new TypeError(
+              'Shell before policies only allow or deny execution',
+            );
           effective = losslessJsonValueSchema.parse(decision.arguments);
           parsed = parseInput(structuredClone(effective));
           callContext = {
@@ -1011,7 +1070,7 @@ export function tool<
 }
 
 export function outputOf(value: unknown): ToolResponse {
-  if (value instanceof ToolOutput) return toolOutputSchema.parse(value);
+  if (value instanceof ToolOutput) return captureToolResponse(value);
   return {
     success: true,
     contentItems: [
@@ -1024,6 +1083,22 @@ export function outputOf(value: unknown): ToolResponse {
       },
     ],
   };
+}
+
+/** @internal Preserve the ordinary tool callback and approval owners for local shell. */
+export function createShellTool<
+  T extends z.ZodType,
+  Context,
+  Result extends z.ZodType,
+>(
+  declaration: JsonObject,
+  options: Parameters<typeof tool<T, Context, Result>>[0],
+): FunctionTool<Context> {
+  const captured = {
+    ...options,
+    [shellDeclaration]: structuredClone(declaration),
+  };
+  return tool(captured);
 }
 
 export interface ToolCatalog<T extends SessionTool = SessionTool> {
@@ -1058,6 +1133,22 @@ export function captureTools(
       typeof tool.finishTurn !== 'boolean'
     )
       throw new TypeError('finishTurn must be a boolean');
+    const shell = (
+      tool as SessionTool & { readonly [shellDeclaration]?: JsonObject }
+    )[shellDeclaration];
+    if (
+      tool.kind !== 'manual' &&
+      shell &&
+      (tool.name !== 'shell' ||
+        tool.namespace !== undefined ||
+        tool.deferLoading ||
+        tool.finishTurn ||
+        tool.strict ||
+        tool.outputSchema !== undefined)
+    )
+      throw new TypeError(
+        'Shell declarations retain their native identity and policies',
+      );
     const approval = managedApproval(tool);
     const source = approval
       ? Object.freeze({
@@ -1073,6 +1164,7 @@ export function captureTools(
       : tool;
     const binding = Object.freeze({
       ...source,
+      ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
       ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
@@ -1105,6 +1197,8 @@ export function captureTools(
         );
       return { type: 'hostedMcp', serverLabel: mcp.serverLabel };
     }
+    if (tool[shellDeclaration])
+      return losslessJsonObjectSchema.parse(tool[shellDeclaration]);
     if (tool.kind !== 'manual' && tool[computerDeclaration]) {
       if (
         tool.name !== 'computer' ||

@@ -73,36 +73,44 @@ fn identities(
         match item {
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => turn = start.turn_id.clone(),
             RolloutItem::ResponseItem(row) => {
-                match crate::local_reconciliation::invocation_id(&row.item) {
-                    Some(call_id) => {
-                        let identity = (
-                            row.item.turn_id().unwrap_or(&turn).to_owned(),
-                            call_id.to_owned(),
-                        );
-                        if let Some(previous) = calls.get(&identity)
-                            && (matches!(previous, ResponseItem::ComputerCall { .. })
-                                || matches!(row.item, ResponseItem::ComputerCall { .. }))
-                        {
-                            return Err(error("ambiguous original computer call identity"));
-                        }
-                        if let Some(previous) = calls.get(&identity)
-                            && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
-                                || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
-                        {
-                            return Err(error("ambiguous original Hosted MCP approval identity"));
-                        }
-                        calls.insert(identity, row.item.clone());
+                let call_id = match &row.item {
+                    ResponseItem::ShellCall {
+                        provider_fields, ..
+                    } if crate::local_reconciliation::is_application_shell_call(row) => {
+                        provider_fields.get("call_id").and_then(Value::as_str)
                     }
-                    _ => {
-                        if let Some((call, owner)) =
-                            crate::local_reconciliation::output_identity(&row.item)
-                        {
-                            outputs.insert(
-                                (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
-                                row.item.clone(),
-                            );
-                        }
+                    item => crate::local_reconciliation::invocation_id(item),
+                };
+                if let Some(call_id) = call_id {
+                    let identity = (
+                        row.item.turn_id().unwrap_or(&turn).to_owned(),
+                        call_id.to_owned(),
+                    );
+                    if let Some(previous) = calls.get(&identity)
+                        && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
+                            || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
+                    {
+                        return Err(error("ambiguous original Hosted MCP approval identity"));
                     }
+                    if let Some(previous) = calls.get(&identity)
+                        && (matches!(
+                            previous,
+                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                        ) || matches!(
+                            row.item,
+                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                        ))
+                    {
+                        return Err(error("ambiguous original local tool call identity"));
+                    }
+                    calls.insert(identity, row.item.clone());
+                } else if let Some((call, owner)) =
+                    crate::local_reconciliation::output_identity(&row.item)
+                {
+                    outputs.insert(
+                        (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
+                        row.item.clone(),
+                    );
                 }
             }
             _ => {}
@@ -603,6 +611,11 @@ impl CustomThreadStore {
         if matches!(original, ResponseItem::ComputerCall { .. }) {
             let item = crate::local_reconciliation::computer_receipt(original, result, &turn)
                 .map_err(|_| error("Computer reconciliation requires a valid screenshot and safety acknowledgements"))?;
+            return self.receipt(id, item).await;
+        }
+        if matches!(original, ResponseItem::ShellCall { .. }) {
+            let item = crate::local_reconciliation::shell_receipt(original, result, &turn)
+                .map_err(|_| error("Shell reconciliation requires its original local call and valid structured output"))?;
             return self.receipt(id, item).await;
         }
         let mut item: ResponseItem = crate::python_tools::PythonOutput(result)

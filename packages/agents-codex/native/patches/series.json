@@ -1,5 +1,5 @@
 {
-  "result_tree": "d3b4b4e5b3fbeafd80963ace5784277db9468a14",
+  "result_tree": "5d0e8b5289a5a31de26a9abd5a892e35f699b10d",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -798,6 +798,10 @@
       "sha256": "812668a895ed2a195a841cdee417e40619068b5d17d4dce9b0591628562c7e6c"
     },
     {
+      "path": "sdk-application-tool-output-acceptance.patch",
+      "sha256": "f385082704b0d3dd5fa1e15645a152c2c7c342ed29551429d9f2051808a79365"
+    },
+    {
       "path": "sdk-mcp-forced-choice-captured-binding.patch",
       "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
     },
@@ -850,8 +854,16 @@
       "sha256": "def8fda0b26fa182be8cb6e3c82ac8375455d1eef40642549a53a3285222d1bd"
     },
     {
+      "path": "sdk-application-shell.patch",
+      "sha256": "348b596329d213e842f3e3ddedc99fb0a3e8d71453239f5264a795a2d0321238"
+    },
+    {
+      "path": "sdk-application-tool-durable-owner.patch",
+      "sha256": "a6e10d1e8a347c5a8623ffd275b858738b848380460cfbdace7f567fa1905705"
+    },
+    {
       "path": "sdk-provider-hosted-mcp.patch",
-      "sha256": "1a586c2e533874d6d600364971a351c54cd451f015d59b7f635dda41f5a7c85a"
+      "sha256": "2ddfa22a6d10ce0f8464e21152c5156664136a4b932d0772981e8aa78fa04353"
     }
   ]
 }

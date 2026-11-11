@@ -263,56 +263,60 @@ export type HostedToolStatus =
   | 'completed'
   | 'incomplete'
   | 'failed';
-type HostedItemIdentity = {
+type HostedItemIdentity<Status extends string = HostedToolStatus> = {
   id: string;
   turn_id: string;
   /** Existing JS history identity. */
   turnId: string;
-  status: HostedToolStatus;
+  status: Status;
   /** Complete provider item, including fields unknown to this SDK version. */
   provider_data: JsonObject;
 };
-export type HostedToolItem = HostedItemIdentity &
-  (
-    | {
-        type: 'file_search_call';
-        queries: string[];
-        results: import('./binding').JsonValue;
-      }
-    | {
-        type: 'code_interpreter_call';
-        container_id: string;
-        code: string | null;
-        outputs: import('./binding').JsonValue;
-      }
-    | {
-        type: 'image_generation_call';
-        result: string | null;
-        revised_prompt: string | null;
-      }
-    | {
-        type: 'mcp_list_tools';
-        server_label: string;
-        tools: import('./binding').JsonValue;
-        error: import('./binding').JsonValue;
-      }
-    | {
-        type: 'mcp_call';
-        serverLabel: string;
-        callId: null;
-        name: string;
-        arguments: string;
-        output: import('./binding').JsonValue;
-        error: import('./binding').JsonValue;
-      }
-    | {
-        type: 'shell_call';
-        call_id: string;
-        action: import('./binding').JsonValue;
-      }
-    | {
-        type: 'shell_call_output';
-        call_id: string;
-        output: import('./binding').JsonValue;
-      }
-  );
+export type HostedToolItem =
+  | (HostedItemIdentity &
+      (
+        | {
+            type: 'file_search_call';
+            queries: string[];
+            results: import('./binding').JsonValue;
+          }
+        | {
+            type: 'code_interpreter_call';
+            container_id: string;
+            code: string | null;
+            outputs: import('./binding').JsonValue;
+          }
+        | {
+            type: 'image_generation_call';
+            result: string | null;
+            revised_prompt: string | null;
+          }
+        | {
+            type: 'mcp_list_tools';
+            server_label: string;
+            tools: import('./binding').JsonValue;
+            error: import('./binding').JsonValue;
+          }
+        | {
+            type: 'mcp_call';
+            serverLabel: string;
+            callId: null;
+            name: string;
+            arguments: string;
+            output: import('./binding').JsonValue;
+            error: import('./binding').JsonValue;
+          }
+      ))
+  | (HostedItemIdentity<HostedToolStatus | 'unknown'> &
+      (
+        | {
+            type: 'shell_call';
+            call_id: string;
+            action: import('./binding').JsonValue;
+          }
+        | {
+            type: 'shell_call_output';
+            call_id: string;
+            output: import('./binding').JsonValue;
+          }
+      ));

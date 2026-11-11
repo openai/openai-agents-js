@@ -122,6 +122,32 @@ export function checkProfileReceipt(
     epoch: profileInteger(value.epoch),
   });
 }
+/** Portable history cannot grant a callback-backed profile transition. */
+export function checkPortableProfileReceipt(
+  value: unknown,
+  graph: CapturedAgentGraph,
+): AgentProfileReceipt {
+  const receipt = checkProfileReceipt(value, graph);
+  const candidates = [graph.rootId];
+  const visited = new Set<string>();
+  while (candidates.length) {
+    const id = candidates.pop()!;
+    if (id === receipt.profile_id) return receipt;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const profile = graph.profiles.get(id)!.profile;
+    for (const [name, target] of Object.entries(profile.handoffs))
+      if (
+        !profile.handoffCallbacks ||
+        !Object.hasOwn(profile.handoffCallbacks, name)
+      )
+        candidates.push(target);
+  }
+  throw new TypeError(
+    'Restored Agent profile requires live callback acceptance',
+  );
+}
+
 export function encodeProfileReceipt(receipt: AgentProfileReceipt): string {
   return JSON.stringify({
     profile_id: receipt.profile_id,
