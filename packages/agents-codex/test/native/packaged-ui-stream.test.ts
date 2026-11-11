@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { DefaultChatTransport, readUIMessageStream } from 'ai';
 import { z } from 'zod';
 import {
@@ -15,11 +15,62 @@ import {
   vercelResponse,
 } from '@openai/agents/ui';
 import { call } from './fixtures/model-server';
+import { binding } from '../../src/runtime/binding';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
+
+it.each([false, true])(
+  'signals a gap for an unowned completed model item with opt-in %s',
+  async (includeModelOutputItems) => {
+    const { NativeThread } = await binding();
+    const nextEvents = NativeThread.prototype._next_session_events;
+    const drained = Promise.withResolvers<void>();
+    vi.spyOn(NativeThread.prototype, '_next_session_events')
+      .mockImplementationOnce(async function (
+        this: InstanceType<typeof NativeThread>,
+      ) {
+        return [
+          JSON.stringify({
+            id: 'retired-turn',
+            msg: {
+              type: 'item_completed',
+              thread_id: this.id,
+              turn_id: 'retired-turn',
+              item: {
+                type: 'Reasoning',
+                id: 'late',
+                summary_text: ['Late reasoning.'],
+              },
+            },
+          }),
+        ];
+      })
+      .mockImplementationOnce(function (
+        this: InstanceType<typeof NativeThread>,
+      ) {
+        drained.resolve();
+        return nextEvents.call(this);
+      });
+    await using provider = await peer();
+    await using session = await new Agent({
+      instructions: 'Read.',
+      provider,
+    }).session({ includeModelOutputItems });
+    await drained.promise;
+    await session.close();
+    const events = await Array.fromAsync(session.events());
+    expect(events.some((event) => event.type === 'gap')).toBe(
+      includeModelOutputItems,
+    );
+    expect(
+      events.some((event) => event.type === 'model_output_item_completed'),
+    ).toBe(false);
+  },
+);
 
 /** Actual Responses text deltas and function calls through the native engine. */
 async function peer(summary?: string) {

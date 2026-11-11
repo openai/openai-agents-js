@@ -1709,6 +1709,7 @@ export class Agent<Context = undefined, Output = string> {
               });
               const correctionOptions: OwnedSessionOptions<undefined> = {
                 parentTrace,
+                includeModelOutputItems,
                 [correctionOpening]: {
                   apiKey: lease.realtimeApiKey,
                   retainOpening,

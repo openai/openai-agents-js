@@ -7138,7 +7138,7 @@ export class Session<OutputT = string, Context = unknown> {
           submissionId,
           item: modelItem,
         });
-    } else if (item || searchItem || hostedItem) this.observations.gap();
+    } else this.observations.gap();
   }
 
   private observeRequestMetadata(run: NativeTurn, event: NativeEvent): void {
