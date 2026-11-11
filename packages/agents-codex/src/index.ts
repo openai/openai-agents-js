@@ -240,6 +240,7 @@ export type {
 export * as telemetry from './runtime/telemetry';
 export type {
   ConsoleDiagnostics,
+  TraceDeliveryConfig,
   Exporter,
   OtelTlsConfig,
   TelemetryOptions,

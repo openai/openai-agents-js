@@ -49,6 +49,7 @@ export type Exporter =
     };
 
 let configuredHere = false;
+let processorBatchSize = 128;
 
 /** Local native diagnostic events as JSON lines on process stdout. */
 export interface ConsoleDiagnostics {
@@ -63,11 +64,26 @@ export interface ConsoleDiagnostics {
   readonly includeFields?: boolean;
 }
 
+/** Native trace queue limits and batch scheduling. */
+export interface TraceDeliveryConfig {
+  /** Pending-event limit, including deliveries awaiting acknowledgement. Default 2048. */
+  readonly maxQueueSize?: number;
+  /** Queued serialized-byte limit. Default 4194304. */
+  readonly maxQueueBytes?: number;
+  /** Maximum records per native drain. Default 128. */
+  readonly maxBatchSize?: number;
+  /** Delay before exporting a partial batch. Default 0 for immediate delivery. */
+  readonly scheduleDelayMs?: number;
+  /** Queue fraction triggering immediate delivery. Default 0.7. */
+  readonly exportTriggerRatio?: number;
+}
+
 export interface TelemetryOptions {
   /** Optional local diagnostics; default records contain only static source metadata. */
   readonly diagnostics?: ConsoleDiagnostics | null;
   /** Nonempty initial routes opt in to native tracing without a built-in exporter. */
   readonly traceProcessors?: readonly TraceProcessorRegistration[];
+  readonly traceDelivery?: TraceDeliveryConfig;
   readonly traces?: Exporter | null;
   readonly logs?: Exporter | null;
   readonly metrics?: Exporter | null;
@@ -95,6 +111,38 @@ function stringMap(value: unknown, field: string): Record<string, string> {
   const entries = Object.entries(object(value, field));
   if (entries.some(([, item]) => typeof item !== 'string')) invalid(field);
   return Object.fromEntries(entries) as Record<string, string>;
+}
+
+function traceDeliveryOptions(value: unknown) {
+  if (value === undefined) return undefined;
+  const input = object(value, 'traceDelivery');
+  const integer = (name: string, fallback: number, minimum = 1): number => {
+    const item = input[name] === undefined ? fallback : input[name];
+    if (
+      typeof item !== 'number' ||
+      !Number.isInteger(item) ||
+      item < minimum ||
+      item > 0xffff_ffff
+    )
+      invalid(`traceDelivery ${name}`);
+    return item;
+  };
+  const ratio =
+    input.exportTriggerRatio === undefined ? 0.7 : input.exportTriggerRatio;
+  if (
+    typeof ratio !== 'number' ||
+    !Number.isFinite(ratio) ||
+    ratio < 0 ||
+    ratio > 1
+  )
+    invalid('traceDelivery exportTriggerRatio');
+  return {
+    max_queue_size: integer('maxQueueSize', 2048),
+    max_queue_bytes: integer('maxQueueBytes', 4 * 1024 * 1024),
+    max_batch_size: integer('maxBatchSize', 128),
+    schedule_delay_ms: integer('scheduleDelayMs', 0, 0),
+    export_trigger_ratio: ratio,
+  };
 }
 
 function exporter(value: unknown, signal: string): unknown {
@@ -143,6 +191,7 @@ function exporter(value: unknown, signal: string): unknown {
  */
 export async function configure(options: TelemetryOptions = {}): Promise<void> {
   const input = object(options, 'options');
+  const delivery = traceDeliveryOptions(input.traceDelivery);
   const initial =
     input.traceProcessors === undefined ? [] : input.traceProcessors;
   // Validate before claiming the configure-once native provider.
@@ -169,6 +218,7 @@ export async function configure(options: TelemetryOptions = {}): Promise<void> {
       ? undefined
       : object(input.diagnostics, 'diagnostics');
   const encoded = JSON.stringify({
+    'sdk.trace_delivery': delivery,
     'sdk.console_diagnostics': diagnostics && {
       level: diagnostics.level,
       targets: diagnostics.targets,
@@ -187,6 +237,7 @@ export async function configure(options: TelemetryOptions = {}): Promise<void> {
   });
   await (await binding()).configure_telemetry(encoded);
   // Only one SDK instance/isolate can pass native's process-wide configure gate.
+  processorBatchSize = delivery?.max_batch_size ?? 128;
   configuredHere = true;
   if (initialProcessors.length) await route(initialProcessors, false);
 }
@@ -429,7 +480,9 @@ async function route(
     pump = withoutTracing(() =>
       (async () => {
         while (processors.size) {
-          const batch = JSON.parse(await native.drain_trace_events(128));
+          const batch = JSON.parse(
+            await native.drain_trace_events(processorBatchSize),
+          );
           const retireCredentials = () => {
             for (const route of Object.values(
               batch.credential_routes ?? {},
