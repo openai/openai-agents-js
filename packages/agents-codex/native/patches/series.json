@@ -691,7 +691,11 @@
     {
       "path": "sdk-portable-realtime-raw-client-events.patch",
       "sha256": "bd342b2230e59ca84744c4dde08680c154a6eb59afc29d02521c21e1be1bb5a6"
+    },
+    {
+      "path": "sdk-portable-realtime-hosted-completion.patch",
+      "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
     }
   ],
-  "result_tree": "87c4a770ae54d4ec5b908e35b30b3c20229bc899"
+  "result_tree": "951445461089892298a373ce28c65d0c91e91f17"
 }
