@@ -200,6 +200,7 @@ type Invocation<Context> = (
   admit: () => void,
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
+  beforeExecute?: () => Promise<boolean>,
 ) => Promise<ToolResponse>;
 
 /** A tool-local decision made before its execution callback runs. */
@@ -519,6 +520,7 @@ export function tool<
       admit: () => void,
       effectiveArgs?: JsonValue,
       approved?: ApprovedArguments,
+      beforeExecute?: () => Promise<boolean>,
     ) {
       admit();
       const originalArguments = Object.freeze(
@@ -617,6 +619,17 @@ export function tool<
             ...(parsed as Record<string, unknown>),
           }),
         };
+      }
+      if (before && beforeExecute) {
+        const enabled = await beforeExecute();
+        admit();
+        if (!enabled)
+          return {
+            success: false,
+            contentItems: [
+              { type: 'inputText' as const, text: `Tool ${name} not found` },
+            ],
+          };
       }
       const timeoutError =
         callbackTimeout === undefined
@@ -929,6 +942,7 @@ export async function invokeFunctionTool(
   checkAdmission?: () => void,
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
+  beforeExecute?: () => Promise<boolean>,
 ): Promise<ToolResponse> {
   const admit = () => {
     context.signal.throwIfAborted();
@@ -941,6 +955,7 @@ export async function invokeFunctionTool(
     admit,
     effectiveArgs,
     approved,
+    beforeExecute,
   );
 }
 

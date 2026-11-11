@@ -1531,6 +1531,16 @@ impl From<RealtimeStart> for ConversationStartParams {
 /// Acknowledged media commands for the matching SDK-owned Realtime generation.
 pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) -> Result<Value> {
     if operation == "realtime_tool_selection_sdk" {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SelectionParams {
+            #[serde(default)]
+            mcp_policy: Option<crate::native_interception::RealtimeMcpPolicy>,
+        }
+        let params: SelectionParams = decode(params)?;
+        if let Some(policy) = params.mcp_policy {
+            thread.thread_extension_data().insert(policy);
+        }
         let tools = thread
             .thread_extension_data()
             .get::<crate::python_tools::PythonTools>()

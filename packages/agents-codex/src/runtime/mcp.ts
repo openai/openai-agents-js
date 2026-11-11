@@ -1202,6 +1202,7 @@ export async function applyMcpPrePolicy<Context>(
   admit: () => void,
   deny: () => void,
   stop: () => void = () => {},
+  realtimeEnabled?: () => Promise<boolean>,
 ): Promise<JsonObject> {
   if (String(request._mcp_generation) !== generation.toString())
     return { action: 'deny' };
@@ -1220,7 +1221,7 @@ export async function applyMcpPrePolicy<Context>(
   );
   if (
     !server ||
-    (!server.before && !server.approval) ||
+    (!server.before && !server.approval && !realtimeEnabled) ||
     request.phase !== 'before'
   )
     return { action: 'deny' };
@@ -1257,6 +1258,11 @@ export async function applyMcpPrePolicy<Context>(
       signal: callbackSignal,
     });
   check();
+  if (realtimeEnabled) {
+    const enabled = await realtimeEnabled();
+    check();
+    if (!enabled) return { action: 'deny' };
+  }
   let replaced = false;
   if (server.before) {
     const allowed = await invokeWithTimeout(
@@ -1292,6 +1298,11 @@ export async function applyMcpPrePolicy<Context>(
       return { action: 'deny' };
     }
     if (approved !== true) return { action: 'deny' };
+  }
+  if (realtimeEnabled && (server.before || server.approval)) {
+    const enabled = await realtimeEnabled();
+    check();
+    if (!enabled) return { action: 'deny' };
   }
   check();
   // The effective candidate never shares storage with a retained callback view.

@@ -68,6 +68,165 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
+  it.each(['dispatch', 'arguments', 'needsApproval', 'approval'] as const)(
+    'rechecks live tool enablement after %s before portable execution',
+    async (phase) => {
+      const state = { enabled: true };
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const hold = async () => {
+        entered.resolve();
+        await release.promise;
+      };
+      const execute = vi.fn(() => 'accepted');
+      const frames: any[] = [];
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update')
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+          },
+          close() {},
+        },
+        {
+          model: 'test-realtime',
+          instructions: 'Help.',
+          context: state,
+          tools: [
+            {
+              name: 'lookup',
+              description: 'Look up a value.',
+              parameters: { type: 'object' },
+              isEnabled(context) {
+                expect(context.context).toBe(state);
+                return state.enabled;
+              },
+              async parseArguments(value) {
+                if (phase === 'arguments') await hold();
+                return value as Record<string, unknown>;
+              },
+              needsApproval:
+                phase === 'needsApproval'
+                  ? async () => {
+                      await hold();
+                      return true;
+                    }
+                  : phase === 'approval',
+              execute,
+            },
+          ],
+          async onApproval() {
+            if (phase === 'approval') await hold();
+            return true;
+          },
+        },
+      );
+      try {
+        await session.start();
+        if (phase === 'dispatch') state.enabled = false;
+        for (const event of fixtureEvents({ tools: [] }).slice(1))
+          session.receive(event);
+        if (phase !== 'dispatch') {
+          await entered.promise;
+          state.enabled = false;
+          release.resolve();
+        }
+        await vi.waitFor(() =>
+          expect(
+            frames.find((event) => event.item?.call_id === item.call_id),
+          ).toBeDefined(),
+        );
+        expect(execute).not.toHaveBeenCalled();
+        expect(
+          frames.find((event) => event.item?.call_id === item.call_id).item,
+        ).toMatchObject({ type: 'function_call_output' });
+        await vi.waitFor(() =>
+          expect(
+            frames.filter((event) => event.type === 'response.create'),
+          ).toHaveLength(1),
+        );
+        state.enabled = true;
+        const next = { ...item, id: 'item-2', call_id: 'call-2' };
+        session.receive({
+          type: 'response.created',
+          response: { id: 'response-2' },
+        });
+        session.receive({
+          type: 'response.done',
+          response: { id: 'response-2', status: 'completed', output: [next] },
+        });
+        await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      } finally {
+        release.resolve();
+        await session.close();
+      }
+    },
+  );
+
+  it('discards a late portable tool allowance after close', async () => {
+    const definition = agent();
+    const entered = Promise.withResolvers<AbortSignal>();
+    const release = Promise.withResolvers<void>();
+    let hold = false;
+    const frames: any[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      {
+        ...definition.options,
+        tools: [
+          {
+            ...definition.options.tools[0],
+            async isEnabled(context) {
+              if (hold) {
+                entered.resolve(context.signal);
+                await release.promise;
+              }
+              return true;
+            },
+          },
+        ],
+      },
+    );
+    try {
+      await session.start();
+      hold = true;
+      for (const event of fixtureEvents({ tools: [] }).slice(1))
+        session.receive(event);
+      const signal = await entered.promise;
+      const closing = session.close();
+      expect(signal.aborted).toBe(true);
+      release.resolve();
+      await closing;
+      expect(definition.execute).not.toHaveBeenCalled();
+      expect(frames.map((event) => event.type)).toEqual(['session.update']);
+    } finally {
+      release.resolve();
+      await session.close();
+    }
+  });
+
   it('counts provider usage once per response and retains it after close', async () => {
     const session: PortableVoiceSession = new PortableVoiceSession(
       control(),

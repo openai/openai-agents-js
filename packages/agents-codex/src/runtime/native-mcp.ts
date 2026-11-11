@@ -12,6 +12,7 @@ export const nativeMcpResultInfoSchema = z.object({
   tool_name: z.string(),
   callable_namespace: z.string(),
   callable_name: z.string(),
+  realtime_tool_name: z.string().optional(),
   arguments: losslessJsonObjectSchema,
   result: losslessJsonObjectSchema.optional(),
   phase: z.literal('metadata').optional(),

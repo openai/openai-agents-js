@@ -93,6 +93,7 @@ async function fixture(
   // Failure-only, bounded protocol evidence for the unsolicited GET fixtures.
   // Keep headers, URLs, arguments, descriptions and result payloads out of logs.
   const diagnosticEnabled =
+    !!options.idleQuestion ||
     !!options.urlRequired ||
     (!!(options.formOrigin || options.urlQuestion) && !options.urlCompletion);
   const diagnosticStart = Date.now();
@@ -158,7 +159,9 @@ async function fixture(
         emit(`phase-${index}`, row);
       });
       emit('summary', {
-        kind: options.formOrigin ?? 'url',
+        kind: options.idleQuestion
+          ? 'idle-form'
+          : (options.formOrigin ?? 'url'),
         calls: calls.length,
         formOrigins,
         replyCount: formReplies.length,
@@ -186,6 +189,7 @@ async function fixture(
     ServerResponse,
     { get: number; clientSession: string }
   >();
+  let idleOwnerSession: string | undefined;
   let urlOwnerSession: string | undefined;
   let nextClientSession = 0;
   let nextGet = Promise.withResolvers<void>();
@@ -284,8 +288,9 @@ async function fixture(
       const clientSession =
         typeof request.headers['mcp-session-id'] === 'string'
           ? request.headers['mcp-session-id']
-          : options.urlCompletion && rpc.method === 'initialize'
-            ? `url-client-${++nextClientSession}`
+          : (options.idleQuestion || options.urlCompletion) &&
+              rpc.method === 'initialize'
+            ? `questions-fixture-${++nextClientSession}`
             : 'questions-fixture';
       trace('rpc_post', {
         method: rpcMethod(rpc.method),
@@ -308,7 +313,6 @@ async function fixture(
           startupFormReply.resolve(rpc);
         if (options.childQuestion) childFormReply.resolve(rpc);
         idleReplies.get(rpc.id)?.resolve(rpc);
-        idleReplies.delete(rpc.id);
         trace('question_reply_received', {
           id: rpcId(rpc.id),
           declined: rpc.result?.action === 'decline',
@@ -331,6 +335,7 @@ async function fixture(
           };
           break;
         case 'tools/list':
+          if (options.idleQuestion) idleOwnerSession ??= clientSession;
           result = {
             tools: options.missingSelectedTool
               ? []
@@ -369,6 +374,7 @@ async function fixture(
           break;
         case 'tools/call':
           calls.push(rpc.params);
+          if (options.idleQuestion) idleOwnerSession = clientSession;
           if (options.retireExtraGetBeforeQuestion && calls.length === 2) {
             expect(openGets.size).toBeGreaterThan(0);
             await new Promise<void>((resolve, reject) => {
@@ -738,21 +744,38 @@ async function fixture(
       );
     },
     async emitIdleForm(id: number) {
+      trace('idle_form_wait_get', { id, ownerReady: !!idleOwnerSession });
+      const selected = await vi.waitFor(
+        () => {
+          const stream = idleOwnerSession
+            ? liveGets.get(idleOwnerSession)
+            : undefined;
+          if (!stream || stream.destroyed || stream.writableEnded)
+            throw new Error('No live GET for the idle MCP session');
+          return stream;
+        },
+        { timeout: 8_000, interval: 20 },
+      );
       const reply = Promise.withResolvers<(typeof formReplies)[number]>();
       idleReplies.set(id, reply);
-      let selected = activeGet;
-      while (
-        !selected ||
-        selected.response.destroyed ||
-        selected.response.writableEnded
-      ) {
-        await nextGet.promise;
-        selected = activeGet;
-      }
-      selected.response.write(
-        `event: message\ndata: ${JSON.stringify({ ...form, id })}\n\n`,
+      const timeout = setTimeout(
+        () => reply.reject(new Error(`No reply for idle MCP form ${id}`)),
+        8_000,
       );
-      return reply.promise;
+      try {
+        trace('idle_form_write_get', {
+          id,
+          get: openGets.get(selected)?.get,
+          getCount,
+        });
+        selected.write(
+          `event: message\ndata: ${JSON.stringify({ ...form, id })}\n\n`,
+        );
+        return await reply.promise;
+      } finally {
+        clearTimeout(timeout);
+        idleReplies.delete(id);
+      }
     },
     async close() {
       trace('fixture_close_begin');
@@ -786,7 +809,9 @@ it('refuses real idle forms before and after a root without issuing an applicati
   const f = await fixture({ idleQuestion: true });
   let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
   try {
+    f.trace('idle_session_open_wait');
     session = await f.agent.session();
+    f.trace('idle_session_open_complete');
     const before = await f.emitIdleForm(874);
     expect(before).toMatchObject({ result: { action: 'cancel' } });
     expect(before.result?.content ?? null).toBeNull();
@@ -798,6 +823,7 @@ it('refuses real idle forms before and after a root without issuing an applicati
 
     const turn = await session.submit('Read the fixture');
     expect((await turn.wait()).finalOutput).toBe('done');
+    f.trace('idle_root_complete');
     expect(f.calls).toHaveLength(1);
     const after = await f.emitIdleForm(875);
     expect(after).toMatchObject({ result: { action: 'cancel' } });
@@ -806,7 +832,9 @@ it('refuses real idle forms before and after a root without issuing an applicati
     expect(f.formReplies).toHaveLength(2);
   } finally {
     try {
+      f.trace('idle_session_close_wait');
       await session?.close();
+      f.trace('idle_session_close_complete');
     } finally {
       await f.close();
     }
