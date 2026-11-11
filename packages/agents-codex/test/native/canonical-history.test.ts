@@ -11,7 +11,6 @@ import {
   tool,
   type SessionStore,
 } from '../../src';
-import type { JsonObject, JsonValue } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
@@ -623,17 +622,18 @@ it('preserves self-contained provider-hosted history and unpaired server search 
   server.assertExhausted();
 });
 
-function wireCall(items: readonly JsonValue[]): JsonObject {
+function wireCall(items: readonly unknown[]): Record<string, unknown> {
   const item = items.find(
-    (value) =>
+    (value): value is Record<string, unknown> =>
       value !== null &&
       typeof value === 'object' &&
       !Array.isArray(value) &&
+      'type' in value &&
+      'call_id' in value &&
       value.type === 'function_call' &&
       value.call_id === 'wire-call',
   );
-  if (item === null || typeof item !== 'object' || Array.isArray(item))
-    throw new Error('Missing wire-call');
+  if (item === undefined) throw new Error('Missing wire-call');
   return item;
 }
 
@@ -692,7 +692,7 @@ it.each([
       items: snapshot.items,
     });
     await (await target.submit('continue from the replay')).wait();
-    const value = (items: readonly JsonValue[]) => {
+    const value = (items: readonly unknown[]) => {
       const item = wireCall(items);
       return {
         async: Object.hasOwn(item, 'async') ? item.async : 'absent',
@@ -700,9 +700,9 @@ it.each([
       };
     };
     const observed = {
-      accepted: value(server.requests[1]!.input as JsonValue[]),
+      accepted: value(server.requests[1]!.input as unknown[]),
       canonical: value(snapshot.items),
-      replayed: value(server.requests[2]!.input as JsonValue[]),
+      replayed: value(server.requests[2]!.input as unknown[]),
     };
     server.assertExhausted();
     expect(effects).toEqual(['replay']);
