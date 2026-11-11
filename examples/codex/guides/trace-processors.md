@@ -46,6 +46,53 @@ try {
 
 OpenAI export has been requiring a known native root descriptor. An externally supplied ingress `parentTrace` has been propagating span context without supplying that root descriptor. Such workflows have been completing while OpenAI delivery has been failing in the flush receipt. OTLP or an application processor accepting externally parented spans has been providing the route for those workflows; the [external-parent guidance](telemetry.md#carry-a-w3c-parent-across-services) has been describing context propagation. A successful agent result has not been establishing successful export.
 
+## Export credential lifetime
+
+Current source builds: explicit `TraceExportCredentials` for one workflow, independent of model credentials and the exporter's fallback API key. Private headers, excluded from span records and portable Session state.
+
+With built-in OTLP and JavaScript processors active, the SDK has been reserving each newly admitted span credential for built-in OTLP. The host `OpenAITraceExporter` has been using its configured fallback credentials for that span and descendants inheriting the credential, including after built-in OTLP removal through `setTraceProcessors()`. After replacement with host processors, a new explicit `exportCredential` admission has been authorizing host export.
+
+With host-only tracing, the SDK has been binding each explicit `exportCredential` to the active processor registrations when the span starts. Exporters added or re-registered later have been using their configured fallback credentials for events that inherit the earlier scope. Queued events have been retaining their original registrations and credentials.
+
+Fresh process with `OPENAI_API_KEY` for the model, plus explicit trace-only `OPENAI_TRACE_API_KEY` and `WORKFLOW_TRACE_API_KEY`:
+
+```ts
+import { Agent, NativeProvider, telemetry } from '@openai/agents';
+
+const fallbackApiKey = process.env.OPENAI_TRACE_API_KEY;
+const workflowApiKey = process.env.WORKFLOW_TRACE_API_KEY;
+if (!fallbackApiKey || !workflowApiKey)
+  throw new Error('Both trace API keys are required');
+const exporter = new telemetry.OpenAITraceExporter({ apiKey: fallbackApiKey });
+await telemetry.configure({ traceProcessors: [exporter] });
+const credential = new telemetry.TraceExportCredentials({
+  headers: { Authorization: `Bearer ${workflowApiKey}` },
+});
+try {
+  await using provider = new NativeProvider();
+  const agent = new Agent({ instructions: 'Answer clearly.', provider });
+  await telemetry.withTrace(
+    { name: 'Support answer', exportCredential: credential },
+    () => agent.run('Summarize the support request.'),
+  );
+  credential.close();
+  const receipt = await telemetry.forceFlush({ timeoutMs: 5000 });
+  if (
+    receipt.status !== 'success' ||
+    receipt.failedDeliveries !== 0 ||
+    receipt.droppedRecords !== 0
+  )
+    throw new Error('Trace delivery did not complete');
+} finally {
+  credential.close();
+  await telemetry.shutdown();
+}
+```
+
+`close()`: release of caller ownership; admitted spans and queued exports retain their captured credentials. New registration with a closed credential: rejection. `exporter.setApiKey(nextKey)`: new fallback credentials for subsequent delivery batches, without changing already captured batches or explicit workflow credential routes.
+
+Delegating processors: original immutable event objects for `onEvent` or `onEvents`. JSON copies without private credential authority, even with a retained public `credential_required` marker. Flush receipts and application destination receipts for delivery verification; successful agent output alone without export confirmation.
+
 ## Read inherited root metadata
 
 The matching source build has been exposing `TraceSpan.traceMetadata`: the original root metadata as a detached JSON snapshot, including on child spans and retained spans after end. Fresh snapshots per read, with local copy edits separate from native root state:

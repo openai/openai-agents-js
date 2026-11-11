@@ -1,3 +1,4 @@
+import { abortable } from './abortable';
 import { boundedVoiceJSON } from './bounded-voice-json';
 import { VoiceConversationHistory } from './conversation-history';
 import {
@@ -19,6 +20,8 @@ import {
 
 /** Host effects for the target-neutral Rust Realtime control crate. */
 export interface PortableVoiceTransport {
+  /** WebRTC transports clear their server output buffer when default playback is interrupted. */
+  readonly clearOutputAudioOnInterrupt?: boolean;
   send(frame: string): void | Promise<void>;
   close(): void | Promise<void>;
 }
@@ -205,6 +208,7 @@ export class PortableVoiceSession {
   readonly #history: VoiceConversationHistory;
   readonly #historyUpdates: PortableVoiceHistory;
   readonly #storeAudio: boolean;
+  readonly #clearOutputAudioOnInterrupt: boolean;
   #updating:
     { resolve: () => void; reject: (error: unknown) => void } | undefined;
   #updates: Promise<void> = Promise.resolve();
@@ -228,6 +232,8 @@ export class PortableVoiceSession {
     private readonly transport: PortableVoiceTransport,
     private options: PortableVoiceOptions,
   ) {
+    this.#clearOutputAudioOnInterrupt =
+      transport.clearOutputAudioOnInterrupt ?? false;
     this.#storeAudio = options.storeAudio ?? false;
     this.#history = new VoiceConversationHistory({
       storeAudio: options.storeAudio,
@@ -265,6 +271,9 @@ export class PortableVoiceSession {
       this.#dispatch({
         type: 'start',
         config: await this.#configuration(this.#profile),
+        ...(this.#clearOutputAudioOnInterrupt
+          ? { clear_output_audio_on_interrupt: true }
+          : {}),
       });
     } catch (error) {
       this.fail(error);
@@ -526,14 +535,20 @@ export class PortableVoiceSession {
     bytes = 8 * 1024 * 1024 - this.#queuedSendBytes,
   ): void {
     if (this.#closed) throw new Error('Portable voice session is closed.');
+    const immediate = { sends, bytes };
+    const deferred = { sends: 256, bytes: 8 * 1024 * 1024 };
     for (const effect of this.control.apply(command)) {
       if (effect.type !== 'preflight')
         throw new Error('Invalid native voice egress preflight.');
-      const availableSends = effect.immediate ? sends : 256;
-      const availableBytes = effect.immediate ? bytes : 8 * 1024 * 1024;
-      if (availableSends < 1)
+      const capacity = effect.immediate ? immediate : deferred;
+      if (capacity.sends < 1)
         throw new RangeError('Portable voice input exceeds capacity.');
-      boundedVoiceJSON(effect.event, Math.floor(availableBytes / 2));
+      const frame = boundedVoiceJSON(
+        effect.event,
+        Math.floor(capacity.bytes / 2),
+      );
+      capacity.sends--;
+      capacity.bytes -= frame.length * 2;
     }
   }
 
@@ -650,17 +665,26 @@ export class PortableVoiceSession {
       if (this.#closed) throw new Error('Portable voice session is closed.');
       const instructions =
         typeof profile.options.instructions === 'function'
-          ? await profile.options.instructions(this.#context(profile))
+          ? await abortable(
+              Promise.resolve(
+                profile.options.instructions(this.#context(profile)),
+              ),
+              this.#abort.signal,
+            )
           : profile.options.instructions;
       const tools = [];
       for (const tool of profile.tools.values()) {
         if (this.#closed) throw new Error('Portable voice session is closed.');
         const enabled =
           typeof tool.isEnabled === 'function'
-            ? await tool.isEnabled(this.#context(profile))
+            ? await abortable(
+                Promise.resolve(tool.isEnabled(this.#context(profile))),
+                this.#abort.signal,
+              )
             : (tool.isEnabled ?? true);
         if (enabled) tools.push(tool);
       }
+      this.#abort.signal.throwIfAborted();
       return {
         profile_id: profile.id,
         model: profile.options.model,
@@ -1173,6 +1197,19 @@ export class PortableVoiceSession {
               }
               const arguments_ = await this.#arguments(effect);
               if (this.#closed || call.abort.signal.aborted) return;
+              const enabled =
+                typeof tool.isEnabled === 'function'
+                  ? await tool.isEnabled(this.#toolContext(effect.call_id))
+                  : (tool.isEnabled ?? true);
+              if (this.#closed || call.abort.signal.aborted) return;
+              if (!enabled) {
+                this.#dispatch({
+                  type: 'tool_result',
+                  call_id: effect.call_id,
+                  output: `Tool ${effect.name} not found`,
+                });
+                return;
+              }
               const output = await tool.execute(
                 arguments_,
                 call.abort.signal,

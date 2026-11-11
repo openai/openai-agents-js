@@ -1,18 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { value as schemaValue } from '@hyperjump/browser';
-import {
-  registerSchema,
-  unregisterSchema,
-  validate as compileSchema,
-} from '@hyperjump/json-schema/draft-2020-12';
-import {
-  addKeyword,
-  defineVocabulary,
-  getKeywordId,
-} from '@hyperjump/json-schema/experimental';
-import { value as instanceValue } from '@hyperjump/json-schema/instance/experimental';
-import { parseUri } from '@hyperjump/uri';
+import { loadFormSchemas } from '../../node/decision-schema.js';
 import emailAddresses from 'email-addresses';
 import type { JsonObject, JsonValue } from './binding';
 
@@ -211,70 +199,82 @@ function comparableJson(value: JsonValue): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
-addKeyword<JsonValue>({
-  id: formKeywordIds.const,
-  compile: async (schema) =>
-    JSON.parse(schemaValue(schema) as string) as JsonValue,
-  interpret: (expected, instance) =>
-    isDeepStrictEqual(
-      expected,
-      comparableJson(instanceValue<JsonValue>(instance)),
-    ),
-});
-addKeyword<JsonValue[]>({
-  id: formKeywordIds.enum,
-  compile: async (schema) =>
-    (schemaValue(schema) as string[]).map(
-      (value) => JSON.parse(value) as JsonValue,
-    ),
-  interpret: (expected, instance) => {
-    const actual = comparableJson(instanceValue<JsonValue>(instance));
-    return expected.some((value) => isDeepStrictEqual(value, actual));
-  },
-});
-addKeyword<Decimal>({
-  id: formKeywordIds.multipleOf,
-  compile: async (schema) => decimal(schemaValue(schema) as number),
-  interpret: ([divisor, divisorExponent], instance) => {
-    const value = instanceValue<JsonValue>(instance);
-    if (typeof value !== 'number') return true;
-    const [coefficient, exponent] = decimal(value);
-    const difference = exponent - divisorExponent;
-    return difference >= 0
-      ? (coefficient * 10n ** BigInt(difference)) % divisor === 0n
-      : coefficient % (divisor * 10n ** BigInt(-difference)) === 0n;
-  },
-});
-defineVocabulary(
-  validationVocabulary,
-  Object.fromEntries(
-    [
-      'const',
-      'dependentRequired',
-      'enum',
-      'exclusiveMaximum',
-      'exclusiveMinimum',
-      'maxContains',
-      'maxItems',
-      'maxLength',
-      'maxProperties',
-      'maximum',
-      'minContains',
-      'minItems',
-      'minLength',
-      'minProperties',
-      'minimum',
-      'multipleOf',
-      'pattern',
-      'required',
-      'type',
-      'uniqueItems',
-    ].map((name) => [
-      name,
-      formKeywordIds[name] ?? getKeywordId(name, extensionDraft),
-    ]),
-  ),
-);
+let formSchemas: Awaited<ReturnType<typeof loadFormSchemas>>;
+let formInitialization: Promise<void> | undefined;
+
+function initializeFormSchemas(): Promise<void> {
+  return (formInitialization ??= (async () => {
+    formSchemas = await loadFormSchemas();
+    formSchemas.addKeyword<JsonValue>({
+      id: formKeywordIds.const,
+      compile: async (schema) =>
+        JSON.parse(formSchemas.schemaValue(schema) as string) as JsonValue,
+      interpret: (expected, instance) =>
+        isDeepStrictEqual(
+          expected,
+          comparableJson(formSchemas.instanceValue<JsonValue>(instance)),
+        ),
+    });
+    formSchemas.addKeyword<JsonValue[]>({
+      id: formKeywordIds.enum,
+      compile: async (schema) =>
+        (formSchemas.schemaValue(schema) as string[]).map(
+          (value) => JSON.parse(value) as JsonValue,
+        ),
+      interpret: (expected, instance) => {
+        const actual = comparableJson(
+          formSchemas.instanceValue<JsonValue>(instance),
+        );
+        return expected.some((value) => isDeepStrictEqual(value, actual));
+      },
+    });
+    formSchemas.addKeyword<Decimal>({
+      id: formKeywordIds.multipleOf,
+      compile: async (schema) =>
+        decimal(formSchemas.schemaValue(schema) as number),
+      interpret: ([divisor, divisorExponent], instance) => {
+        const value = formSchemas.instanceValue<JsonValue>(instance);
+        if (typeof value !== 'number') return true;
+        const [coefficient, exponent] = decimal(value);
+        const difference = exponent - divisorExponent;
+        return difference >= 0
+          ? (coefficient * 10n ** BigInt(difference)) % divisor === 0n
+          : coefficient % (divisor * 10n ** BigInt(-difference)) === 0n;
+      },
+    });
+    formSchemas.defineVocabulary(
+      validationVocabulary,
+      Object.fromEntries(
+        [
+          'const',
+          'dependentRequired',
+          'enum',
+          'exclusiveMaximum',
+          'exclusiveMinimum',
+          'maxContains',
+          'maxItems',
+          'maxLength',
+          'maxProperties',
+          'maximum',
+          'minContains',
+          'minItems',
+          'minLength',
+          'minProperties',
+          'minimum',
+          'multipleOf',
+          'pattern',
+          'required',
+          'type',
+          'uniqueItems',
+        ].map((name) => [
+          name,
+          formKeywordIds[name] ??
+            formSchemas.getKeywordId(name, extensionDraft),
+        ]),
+      ),
+    );
+  })());
+}
 
 async function extensionValidator(
   schema: JsonObject,
@@ -332,7 +332,7 @@ async function extensionValidator(
   }
   // Validate explicitly: an application may disable the library's automatic
   // schema checks. Validate all constraints before adapting the compiler copy.
-  const validateSchema = await compileSchema(extensionDraft);
+  const validateSchema = await formSchemas.compileSchema(extensionDraft);
   if (!validateSchema(compiledSchema, 'FLAG').valid) throw new TypeError();
   for (const node of compiledNodes) {
     if (!object(node)) continue;
@@ -345,7 +345,7 @@ async function extensionValidator(
   const id = `urn:uuid:${randomUUID()}`;
   const dialect = `urn:uuid:${randomUUID()}`;
   try {
-    registerSchema(
+    formSchemas.registerSchema(
       {
         $id: dialect,
         $schema: extensionDraft,
@@ -365,12 +365,12 @@ async function extensionValidator(
       extensionDraft,
     );
     compiledSchema.$schema = dialect;
-    registerSchema(compiledSchema, id, dialect);
-    const validator = await compileSchema(id);
+    formSchemas.registerSchema(compiledSchema, id, dialect);
+    const validator = await formSchemas.compileSchema(id);
     return (value) => validator(value, 'FLAG').valid;
   } finally {
-    unregisterSchema(id);
-    unregisterSchema(dialect);
+    formSchemas.unregisterSchema(id);
+    formSchemas.unregisterSchema(dialect);
   }
 }
 
@@ -641,7 +641,7 @@ function validUri(value: string): boolean {
   // Require ASCII URI input, including rejection of final line terminators.
   if (/[^\x21-\x7e]/.test(value)) return false;
   try {
-    parseUri(value);
+    formSchemas.parseUri(value);
     return true;
   } catch {
     // Parser errors contain the submitted value; expose only our fixed error.
@@ -695,6 +695,7 @@ export async function prepareNativeForm(
     const copied = copyJson(schema);
     if (!object(copied) || copied.type !== 'object') throw new TypeError();
     captured = copied;
+    await initializeFormSchemas();
     accepts =
       mode === 'form' && primitiveForm(captured)
         ? standardValidator(captured)

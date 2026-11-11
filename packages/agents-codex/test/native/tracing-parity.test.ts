@@ -234,7 +234,14 @@ it('retains native active roots across cache churn and fences callback retries',
   );
 }, 35000);
 
-it.each([[], ['--bytes'], ['--forward'], ['--retained-after-recovery']])(
+it.each([
+  [],
+  ['--bytes'],
+  ['--forward'],
+  ['--retained-after-recovery'],
+  ['--overlapping-loss'],
+  ['--overlapping-loss', '--forward'],
+])(
   'recovers bounded native descriptor capacity after queue loss %j',
   async (...arguments_: string[]) => {
     const result = await execute(
@@ -285,3 +292,25 @@ it('forwards immutable retained descriptors through single-event processors', as
     'PASS retained native context after descriptor eviction',
   );
 }, 45000);
+
+it.each(['host-only', 'mixed', 'early-shutdown', 'host-registration'])(
+  'qualifies supplied host exporter per-scope native authentication (%s)',
+  async (mode) => {
+    const directory = await mkdtemp(join(tmpdir(), 'agents-tracing-auth-'));
+    try {
+      const result = await execute(
+        process.execPath,
+        ['--import', 'tsx', join(fixtures, 'tracing-host-auth-child.ts'), mode],
+        {
+          timeout: 50_000,
+          maxBuffer: 2_097_152,
+          env: { ...process.env, CODEX_HOME: join(directory, 'home') },
+        },
+      );
+      expect(result.stdout).toContain(`PASS host-auth native ${mode}`);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  60_000,
+);

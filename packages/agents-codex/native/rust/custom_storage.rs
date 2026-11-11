@@ -719,6 +719,14 @@ impl ThreadStore for CustomThreadStore {
     ) -> ThreadStoreFuture<'_, StoredThreadHistory> {
         self.projection.load_history(params)
     }
+    fn read_original_history(
+        &self,
+        params: LoadThreadHistoryParams,
+        reader: Box<dyn codex_thread_store::OriginalHistoryReader>,
+    ) -> ThreadStoreFuture<'_, codex_thread_store::OriginalHistorySnapshot> {
+        self.projection.read_original_history(params, reader)
+    }
+
     fn load_latest_model_context(
         &self,
         params: LoadThreadHistoryParams,

@@ -83,6 +83,74 @@ const tool = {
 };
 
 describe.runIf(enabled)('direct client Rust authority', () => {
+  it.each(['instructions', 'tool', 'handoff'] as const)(
+    'closes while a direct-client %s configuration callback remains pending',
+    async (callback) => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<string | boolean>();
+      const pending = () => {
+        entered.resolve();
+        return release.promise;
+      };
+      const { session, frames, close } = fixture({
+        model: 'test',
+        instructions: 'Opening',
+      });
+      await session.start();
+      const target: PortableVoiceOptions = {
+        model: 'test',
+        instructions:
+          callback === 'instructions'
+            ? (pending as () => Promise<string>)
+            : 'Target',
+        tools: [
+          {
+            ...tool,
+            isEnabled:
+              callback === 'tool' ? (pending as () => Promise<boolean>) : true,
+            execute: () => 'unused',
+          },
+        ],
+        handoffs:
+          callback === 'handoff'
+            ? [
+                {
+                  name: 'support',
+                  description: 'Support',
+                  isEnabled: pending as () => Promise<boolean>,
+                  agent: { model: 'test', instructions: 'Support' },
+                },
+              ]
+            : [],
+      };
+      const updating = session.updateAgent(target);
+      void updating.catch(() => {});
+      await entered.promise;
+      const before = frames.length;
+      let closed = false;
+      const closing = session.close().then(() => {
+        closed = true;
+      });
+      try {
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 2000 });
+        await expect(updating).rejects.toThrow();
+        if (callback === 'handoff')
+          release.reject(new Error('late configuration failure'));
+        else
+          release.resolve(
+            callback === 'instructions' ? 'late instructions' : true,
+          );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(frames).toHaveLength(before);
+        expect(close).toHaveBeenCalledOnce();
+        await session.close();
+      } finally {
+        release.resolve(true);
+        await closing.catch(() => {});
+      }
+    },
+  );
+
   it('isolates nested source history for approval predicates, approval UI, executions and sibling calls', async () => {
     const observations: any[] = [];
     function mutate(
@@ -882,7 +950,7 @@ describe.runIf(enabled)('direct client Rust authority', () => {
     completeTool(session, 'predicate-response');
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
     expect(parseArguments).toHaveBeenCalledOnce();
-    expect(isEnabled).toHaveBeenCalledOnce();
+    expect(isEnabled).toHaveBeenCalledTimes(2);
     expect(needsApproval).toHaveBeenCalledOnce();
     expect(onApproval).toHaveBeenCalledOnce();
     await session.close();

@@ -1461,16 +1461,15 @@ pub async fn restore(
         for child in &mut checkpoint.descendants {
             if child.parent_thread_id == old {
                 child.parent_thread_id = root;
-                for item in &mut child.history {
-                    if let RolloutItem::SessionMeta(header) = item {
-                        ensure!(
-                            header.meta.id == child.thread_id
-                                && header.meta.parent_thread_id == Some(old),
-                            "manual child has foreign source parent"
-                        );
-                        header.meta.parent_thread_id = Some(root);
-                    }
-                }
+                let Some(RolloutItem::SessionMeta(header)) = child.history.first_mut() else {
+                    anyhow::bail!("manual child has foreign source parent");
+                };
+                ensure!(
+                    header.meta.id == child.thread_id
+                        && header.meta.parent_thread_id == Some(old),
+                    "manual child has foreign source parent"
+                );
+                header.meta.parent_thread_id = Some(root);
             }
         }
         if let Some(checklist) = &mut checkpoint.root_checklist {

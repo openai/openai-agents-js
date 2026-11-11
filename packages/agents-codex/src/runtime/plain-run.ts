@@ -3,9 +3,8 @@ import type { SessionSetup } from './agent';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
   binding,
-  decode,
+  decodePlainRunObject,
   encode,
-  jsonObject,
   type Engine,
   type JsonObject,
 } from './binding';
@@ -21,7 +20,7 @@ import { ObservationBuffer } from './observation';
 import type { ProviderLease } from './provider';
 import { decodeRequestMetadata } from './request-metadata';
 import { projectResponseFactRecord } from './response-facts';
-import { tokenUsageInfo } from './run-events';
+import { tokenUsageInfo, runUsageSnapshot } from './run-events';
 import {
   issueTurn,
   StaleTurnError,
@@ -52,6 +51,14 @@ async function completedPlainRun(
     !Array.isArray(dto.events)
   )
     throw new NativeError('Invalid plain run result');
+  // The dedicated plain bridge has been populating this DTO only from its
+  // final observed response completion, independently of retained history.
+  const threadUsage = tokenUsageInfo(dto.usage);
+  const measuredUsage = runUsageSnapshot(
+    threadUsage?.lastTokenUsage ?? null,
+    1,
+    threadUsage === null ? 1 : 0,
+  );
   const observations = new ObservationBuffer(sessionId, { retention });
   const identity = { submissionId, turnId };
   let rates: ApiRateLimits = Object.freeze({});
@@ -75,7 +82,7 @@ async function completedPlainRun(
       ].includes(String(row.kind))
     )
       continue;
-    const value = decode(jsonObject, row.payload);
+    const value = decodePlainRunObject(row.payload);
     switch (row.kind) {
       case 'model_request_dispatching': {
         const event = decodeRequestMetadata(value, submissionId);
@@ -167,6 +174,7 @@ async function completedPlainRun(
     undefined,
     {
       rootResultReady: () => true,
+      runUsage: () => measuredUsage,
       notify: () => observations.notify(),
       rateLimits: () => rates,
       wait: async (_turn, { signal }, completion: TurnCompletion<string>) => {
@@ -196,8 +204,10 @@ async function completedPlainRun(
   const completed: Completed<string> = Object.freeze({
     turn,
     finalOutput,
-    threadUsage: tokenUsageInfo(dto.usage),
+    threadUsage,
+    runUsage: measuredUsage,
     repairAttempts: Object.freeze([]),
+    guardrailResults: Object.freeze([]),
   });
   // Ordinary Agent.run has already waited on its Turn before publishing Completed.
   // Prime the same settlement so an already-aborted later waiter sees that outcome first.
@@ -221,6 +231,10 @@ export async function tryOpenPlainRun(
     !lease.apiKey ||
     options.modelBackend ||
     options.beforeComplete ||
+    options.inputGuardrails?.length ||
+    options.outputGuardrails?.length ||
+    options.agentInputGuardrails?.length ||
+    options.agentOutputGuardrails?.length ||
     options.beforeCompact ||
     options.transformContext ||
     options.tracingCapture ||
@@ -459,7 +473,7 @@ export async function tryOpenPlainRun(
       owned = await engine!._plain_run(payload);
       if (signal?.aborted) cancel();
       waiting = owned.wait();
-      const dto = decode(jsonObject, await waiting);
+      const dto = decodePlainRunObject(await waiting);
       signal?.throwIfAborted();
       if (dto.error != null) {
         const fault = dto.error;

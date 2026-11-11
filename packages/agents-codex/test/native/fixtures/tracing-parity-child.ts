@@ -945,7 +945,13 @@ async function restoreCase(batches: unknown[]) {
       const serialized = JSON.stringify(state);
       assert(!serialized.includes('"strict_executor_writes":'));
       assert(!/"executors":\[(?!\])/.test(serialized));
-      assert(!serialized.includes(originalHandle));
+      // Whole handles only: no substring matches inside longer opaque IDs.
+      const handleToken = originalHandle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      assert(
+        !new RegExp(`(?<![A-Za-z0-9_-])${handleToken}(?![A-Za-z0-9_-])`).test(
+          serialized,
+        ),
+      );
       assert(
         matchingPaths(state, originalTrace).every((path) =>
           /^\$\.history\.\d+\.payload\.trace_id$/.test(path),

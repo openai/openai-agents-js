@@ -8,25 +8,40 @@ export interface WebSearchLocation {
   timezone?: string;
 }
 
+/** Provider-hosted image result count and caption controls. */
+export interface WebSearchImageSettings {
+  maxResults?: number;
+  caption?: boolean;
+}
+
 /** A fixed native search grant captured when a Session opens. */
 export interface WebSearch {
   readonly kind: 'web_search';
   readonly mode: 'cached' | 'live';
   readonly route: 'standalone' | 'hosted';
+  readonly searchContextSize?: 'low' | 'medium' | 'high';
   readonly allowedDomains?: readonly string[];
   readonly blockedDomains?: readonly string[];
   readonly location?: Readonly<WebSearchLocation>;
+  readonly searchContentTypes?: readonly ('text' | 'image')[];
+  readonly imageSettings?: Readonly<WebSearchImageSettings>;
 }
 
 export interface WebSearchOptions {
   mode?: WebSearch['mode'];
   route?: WebSearch['route'];
+  /** Optional context budget for either route; omitted value: route default. */
+  searchContextSize?: WebSearch['searchContextSize'];
   /** Hosted only. Domain names without a URL scheme, including their subdomains. */
   allowedDomains?: readonly string[];
   /** Hosted only. Domain names without a URL scheme, including their subdomains. */
   blockedDomains?: readonly string[];
   /** Hosted only. Approximate user location. */
   location?: WebSearchLocation;
+  /** Hosted only. Omitted value: model default. */
+  searchContentTypes?: WebSearch['searchContentTypes'];
+  /** Hosted only. Omitted fields: provider defaults. */
+  imageSettings?: WebSearchImageSettings;
 }
 
 /** Cached standalone search by default. Omission from tools disables search. */
@@ -38,18 +53,24 @@ export function webSearch(options: WebSearchOptions = {}): WebSearch {
       ![
         'mode',
         'route',
+        'searchContextSize',
         'allowedDomains',
         'blockedDomains',
         'location',
+        'searchContentTypes',
+        'imageSettings',
       ].includes(key)
     )
       throw new TypeError(`Unsupported WebSearch option: ${key}`);
   const {
     mode = 'cached',
     route = 'standalone',
+    searchContextSize,
     allowedDomains,
     blockedDomains,
     location,
+    searchContentTypes,
+    imageSettings,
   } = options;
   if (mode !== 'cached' && mode !== 'live')
     throw new TypeError('WebSearch mode must be cached or live');
@@ -59,10 +80,23 @@ export function webSearch(options: WebSearchOptions = {}): WebSearch {
     route === 'standalone' &&
     (allowedDomains !== undefined ||
       blockedDomains !== undefined ||
-      location !== undefined)
+      location !== undefined ||
+      searchContentTypes !== undefined ||
+      imageSettings !== undefined)
   )
     throw new TypeError(
-      'Unsupported WebSearch controls on the standalone route. Use route: hosted for domain filters and location.',
+      'Unsupported WebSearch controls on the standalone route. Use route: hosted for domain filters, location, and image controls.',
+    );
+  const capturedImageSettings =
+    imageSettings === undefined ? undefined : { ...imageSettings };
+  // Native configuration uses signed 64-bit TOML integers.
+  const maxResults = capturedImageSettings?.maxResults;
+  if (
+    maxResults !== undefined &&
+    (!Number.isInteger(maxResults) || maxResults < 0 || maxResults >= 2 ** 63)
+  )
+    throw new RangeError(
+      'WebSearch image maxResults must be a non-negative integer below 2**63',
     );
   const capturedAllowedDomains = captureDomains(allowedDomains);
   const capturedBlockedDomains = captureDomains(blockedDomains);
@@ -83,6 +117,7 @@ export function webSearch(options: WebSearchOptions = {}): WebSearch {
     kind: 'web_search',
     mode,
     route,
+    ...(searchContextSize === undefined ? {} : { searchContextSize }),
     ...(capturedAllowedDomains === undefined
       ? {}
       : { allowedDomains: capturedAllowedDomains }),
@@ -92,6 +127,12 @@ export function webSearch(options: WebSearchOptions = {}): WebSearch {
     ...(capturedLocation === undefined
       ? {}
       : { location: Object.freeze(capturedLocation) }),
+    ...(searchContentTypes === undefined
+      ? {}
+      : { searchContentTypes: Object.freeze([...searchContentTypes]) }),
+    ...(capturedImageSettings === undefined
+      ? {}
+      : { imageSettings: Object.freeze(capturedImageSettings) }),
   });
 }
 

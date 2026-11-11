@@ -1,3 +1,4 @@
+import { abortable } from '../voice/abortable';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { Agent } from './public-agent';
@@ -217,8 +218,11 @@ export async function resolveRealtimeAgentConfiguration<Context>(input: {
     agent: input.agent,
     signal: input.signal,
   });
-  const invoke =
-    input.invoke ?? (async <T>(callback: () => T | Promise<T>) => callback());
+  const invoke = <T>(callback: () => T | Promise<T>) =>
+    abortable(
+      (input.invoke ?? (async (callback) => callback()))(callback),
+      input.signal,
+    );
   let instructions = input.instructions;
   if (instructions === undefined && defaults?.instructions !== undefined) {
     instructions =

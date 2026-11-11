@@ -279,10 +279,13 @@ it.each(['stopped', 'live', 'unrelated'] as const)(
       scenario === 'unrelated'
         ? new Error('Request was aborted.')
         : new APIUserAbortError();
-    if (scenario !== 'live') controller.abort(reason);
+    if (scenario === 'stopped') controller.abort(reason);
+    let dispatched = 0;
     const model = new ResponsesModel({
       responses: {
         async create() {
+          dispatched++;
+          if (scenario === 'unrelated') controller.abort(reason);
           throw failure;
         },
       },
@@ -296,5 +299,6 @@ it.each(['stopped', 'live', 'unrelated'] as const)(
         signal: controller.signal,
       }),
     ).rejects.toBe(scenario === 'stopped' ? reason : failure);
+    expect(dispatched).toBe(scenario === 'stopped' ? 0 : 1);
   },
 );

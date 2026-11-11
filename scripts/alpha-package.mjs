@@ -57,7 +57,7 @@ export function alphaManifest(original, version, platform) {
     private: true,
     os: [os],
     cpu: [cpu],
-    engines: { ...original.engines, node: '>=24' },
+    engines: { ...original.engines, node: '>=22' },
   };
   delete manifest.scripts;
   delete manifest.devDependencies;
@@ -93,7 +93,7 @@ export function starterManifest(packages, zod) {
   return {
     private: true,
     type: 'module',
-    engines: { node: '>=24' },
+    engines: { node: '>=22' },
     dependencies: {
       ...Object.fromEntries(
         Object.entries(packages).map(([name, record]) => [
@@ -354,7 +354,7 @@ export async function produceAlpha({ repository = root, version, output }) {
       join(starter, 'README.md'),
       `# Agents SDK alpha ${version}
 
-Use Node.js 24 and its bundled npm on ${platform}. Linux requires glibc 2.39 or newer and OpenSSL 3. Windows x64 requires the [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/); install it if startup reports a missing VCRUNTIME140.dll.
+Runtime: Node.js 22 or later with its bundled npm on ${platform}. Optional SQLiteMemory helper: Node.js 22.13 or later. Linux requires glibc 2.39 or newer and OpenSSL 3. Windows x64 requires the [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/); install it if startup reports a missing VCRUNTIME140.dll.
 
 Run \`npm ci --ignore-scripts\`, set OPENAI_API_KEY, then run \`node hello.mjs\`. The example sends a live API request. npm downloads third-party dependencies. Keep package.json, package-lock.json and all five vendor archives together.
 

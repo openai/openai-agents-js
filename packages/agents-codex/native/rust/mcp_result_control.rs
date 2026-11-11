@@ -55,6 +55,8 @@ struct Notice<'a> {
     tool_name: &'a str,
     callable_namespace: &'a str,
     callable_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    realtime_tool_name: Option<String>,
     arguments: &'a Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<&'a CallToolResult>,
@@ -121,22 +123,23 @@ pub(crate) fn validated(reply: &str) -> Option<CallToolResult> {
 #[derive(Debug)]
 enum AcceptedReply {
     Result(CallToolResult),
-    Metadata(serde_json::Map<String, Value>),
+    Metadata(Result<serde_json::Map<String, Value>, ()>),
 }
 
-fn validated_metadata(reply: &str) -> Option<serde_json::Map<String, Value>> {
+fn validated_metadata(reply: &str) -> Option<Result<serde_json::Map<String, Value>, ()>> {
     if reply.len() > MAX_REPLY {
         return None;
     }
     let value: Value = serde_json::from_str(reply).ok()?;
     let map = match value {
+        Value::Bool(false) => return Some(Err(())),
         Value::Null => serde_json::Map::new(),
         Value::Object(map) => map,
         _ => return None,
     };
     map.keys()
         .all(|key| !codex_extension_api::is_reserved_mcp_request_metadata_key(key))
-        .then_some(map)
+        .then_some(Ok(map))
 }
 
 struct Pending {
@@ -1044,6 +1047,9 @@ impl ToolLifecycleContributor for McpResultContributor {
                     tool_name: &tool.tool.name,
                     callable_namespace: &tool.callable_namespace,
                     callable_name: &tool.callable_name,
+                    realtime_tool_name: Some(codex_extension_api::realtime_tool_wire_name(
+                        &tool.canonical_tool_name(),
+                    )),
                     arguments: input.arguments,
                     result: None,
                 };
@@ -1102,7 +1108,7 @@ impl ToolLifecycleContributor for McpResultContributor {
                     }
                 },
             );
-            accepted.map(Some).ok_or(())
+            accepted.ok_or(())?.map(Some)
         })
     }
 
@@ -1206,6 +1212,7 @@ impl ToolLifecycleContributor for McpResultContributor {
                     tool_name: &tool.tool.name,
                     callable_namespace: &tool.callable_namespace,
                     callable_name: &tool.callable_name,
+                    realtime_tool_name: None,
                     arguments: input.arguments,
                     result: Some(&original),
                 };
@@ -1243,6 +1250,40 @@ impl ToolLifecycleContributor for McpResultContributor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_metadata_denial_requires_the_matching_metadata_reservation() {
+        for metadata in [false, true] {
+            let control = Arc::new(McpResultControl::new("root".into(), true));
+            let args = json!({});
+            let result = withheld();
+            let mut request = notice(1, "turn", &args, &result);
+            request.phase = metadata.then_some("metadata");
+            let mut rx = control
+                .enqueue(
+                    &mut control.state.lock().unwrap(),
+                    &request,
+                    Instant::now() + Duration::from_secs(30),
+                )
+                .unwrap();
+            assert!(!control.resolve(1, "other-turn", "call", "false"));
+            assert!(!control.resolve(1, "turn", "other-call", "false"));
+            assert_eq!(control.resolve(1, "turn", "call", "false"), metadata);
+            if metadata {
+                assert!(matches!(
+                    rx.await,
+                    Ok(Some(AcceptedReply::Metadata(Err(()))))
+                ));
+                assert!(!control.resolve(1, "turn", "call", "false"));
+            } else {
+                assert!(matches!(
+                    rx.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                assert!(control.fail_pending(1, "turn", "call"));
+            }
+        }
+    }
 
     #[tokio::test]
     async fn invalid_reply_waits_for_host_failure_before_releasing_native_receiver() {
@@ -1558,6 +1599,7 @@ mod tests {
             tool_name: "record",
             callable_namespace: "mcp__vault",
             callable_name: "record",
+            realtime_tool_name: None,
             arguments,
             result: Some(result),
         }

@@ -13,8 +13,8 @@ use codex_extension_api::{
 use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::dynamic_tools::{DynamicToolFunctionSpec, DynamicToolSpec};
 use codex_tools::{
-    FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolExposure, ToolName, ToolOutput, ToolSpec,
-    dynamic_tool_to_responses_api_tool,
+    FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolExposure, ToolName,
+    ToolOutput, ToolSpec, dynamic_tool_to_responses_api_tool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1073,10 +1073,9 @@ pub(crate) async fn update_instructions(thread: &CodexThread, text: &str) -> Res
     {
         return Ok(false);
     }
-    let captured = thread
-        .captured_agent_profile()
-        .await?
-        .context("Managed Agent instructions have no source")?;
+    let Some(captured) = thread.captured_agent_profile().await? else {
+        return Ok(false);
+    };
     let accepted = captured
         .profile
         .data
@@ -1111,10 +1110,9 @@ async fn update_active_inner(
         return Ok(false);
     };
     profiles.tools.check_idle(thread).await?;
-    let captured = thread
-        .captured_agent_profile()
-        .await?
-        .context("Managed Agent update has no committed source")?;
+    let Some(captured) = thread.captured_agent_profile().await? else {
+        return Ok(false);
+    };
     let catalog = if refresh_mcp {
         Some(
             captured
@@ -1252,10 +1250,9 @@ pub(crate) async fn replace_tools(
     };
     profiles.tools.check_idle(thread).await?;
     profiles.tools.check_family_idle()?;
-    let captured = thread
-        .captured_agent_profile()
-        .await?
-        .context("Managed Agent replacement has no committed source")?;
+    let Some(captured) = thread.captured_agent_profile().await? else {
+        return Ok(None);
+    };
     let previous = captured
         .profile
         .data

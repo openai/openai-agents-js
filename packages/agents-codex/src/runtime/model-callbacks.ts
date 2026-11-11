@@ -8,7 +8,7 @@ export type CompletionDecision =
   | { readonly action: 'stop' };
 
 /** Proposed completion before acceptance. Already streamed text stays visible. */
-export interface CompletionContext<Context = unknown> {
+export interface CompletionContext<Context = unknown, Output = JsonValue> {
   /** Available only until this hook invocation settles. */
   readonly decide: BoundDecide;
   readonly context: Context;
@@ -21,7 +21,7 @@ export interface CompletionContext<Context = unknown> {
   readonly signal: AbortSignal;
   readonly toolCall?: ToolCallInfo;
   /** Detached validated JSON proposal; editing it cannot change accepted output. */
-  readonly finalOutput?: JsonValue;
+  readonly finalOutput?: Output;
 }
 
 /** Captured history before summarization. A returned summary becomes canonical history. */

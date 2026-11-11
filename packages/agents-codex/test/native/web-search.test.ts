@@ -33,6 +33,43 @@ afterEach(() => {
 });
 
 describe('captured native WebSearch', () => {
+  it.each([1.5, -1, Number.NaN, Infinity, -Infinity, 2 ** 63, 2 ** 64])(
+    'rejects an image count outside the native integer domain: %s',
+    (maxResults) => {
+      expect(() =>
+        webSearch({ route: 'hosted', imageSettings: { maxResults } }),
+      ).toThrow('non-negative integer');
+    },
+  );
+
+  it.each([0, 1, Number.MAX_SAFE_INTEGER, 2 ** 62, 2 ** 63 - 1024])(
+    'captures a supported integer image count: %s',
+    (maxResults) => {
+      expect(
+        webSearch({ route: 'hosted', imageSettings: { maxResults } })
+          .imageSettings,
+      ).toEqual({ maxResults });
+    },
+  );
+
+  it('rejects a structural image count before acquiring its provider', async () => {
+    await using provider = new NativeProvider();
+    const acquire = vi.spyOn(provider, '_acquire');
+    await expect(
+      new Agent({
+        instructions: 'Act',
+        provider,
+        tools: [
+          {
+            ...webSearch({ route: 'hosted' }),
+            imageSettings: { maxResults: 1.5 },
+          },
+        ],
+      }).session(),
+    ).rejects.toThrow('non-negative integer');
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
   it('defaults to an immutable cached standalone opening declaration', () => {
     expect(webSearch()).toEqual({
       kind: 'web_search',
@@ -66,11 +103,15 @@ describe('captured native WebSearch', () => {
       allowedDomains: ['allowed.example.test'],
       blockedDomains: ['blocked.example.test'],
       location: { city: 'Chicago', timezone: 'America/Chicago' },
+      searchContentTypes: ['image'] as ('text' | 'image')[],
+      imageSettings: { maxResults: 3, caption: false },
     };
     const { webSearch: captured } = splitToolDeclarations([original]);
     original.allowedDomains[0] = 'other.test';
     original.blockedDomains.push('other.test');
     original.location.timezone = 'Etc/UTC';
+    original.searchContentTypes[0] = 'text';
+    original.imageSettings.caption = true;
     expect(captured).toEqual({
       kind: 'web_search',
       mode: 'cached',
@@ -78,12 +119,16 @@ describe('captured native WebSearch', () => {
       allowedDomains: ['allowed.example.test'],
       blockedDomains: ['blocked.example.test'],
       location: { city: 'Chicago', timezone: 'America/Chicago' },
+      searchContentTypes: ['image'],
+      imageSettings: { maxResults: 3, caption: false },
     });
     for (const value of [
       captured,
       captured!.allowedDomains,
       captured!.blockedDomains,
       captured!.location,
+      captured!.searchContentTypes,
+      captured!.imageSettings,
     ])
       expect(Object.isFrozen(value)).toBe(true);
   });
@@ -93,6 +138,8 @@ describe('captured native WebSearch', () => {
     { mode: null },
     { route: 'automatic' },
     { allowedDomains: ['example.test'] },
+    { searchContentTypes: ['image'] },
+    { imageSettings: { caption: true } },
   ])(
     'refuses unsupported options without silently widening search: %j',
     (options) => {

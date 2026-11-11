@@ -1,3 +1,4 @@
+import { traceCredentialRoute } from './trace-delivery';
 import type { TraceEvent, TraceProcessor } from './telemetry';
 
 function timestamp(nanos: string): string {
@@ -17,7 +18,7 @@ interface TraceState {
   descriptor: TraceDescriptor;
   activeSpans: number;
   rootEnded: boolean;
-  deliveredTo?: number;
+  deliveredTo?: { revision: number; identity: string };
 }
 function descriptor(
   event: Pick<TraceEvent, 'trace_id' | 'name' | 'attributes'>,
@@ -40,7 +41,7 @@ function descriptor(
  * Serialize real native lifecycle records for the OpenAI traces-ingest API.
  * Register in configure({ traceProcessors: [...] }); native flush barriers wait
  * for delivery. Native spans appear as custom spans with their native attributes,
- * parent IDs and exact timestamps. Native-drain batches share one HTTP request;
+ * parent IDs and exact timestamps. One HTTP request per effective credential within each native-drain batch;
  * acknowledgement waits for delivery. No Classic runtime or separate queue is used.
  * Up to1024 root descriptors are retained; active roots/descendants prevent
  * eviction. Completed traces retire first; full active capacity rejects new roots.
@@ -135,7 +136,11 @@ export class OpenAITraceExporter implements TraceProcessor {
   /** Deliver one native-owned batch before its records can be acknowledged. */
   async onEvents(events: readonly TraceEvent[]): Promise<void> {
     const revision = this.#credentialRevision;
-    const headers = { ...this.#headers };
+    const fallbackHeaders = { ...this.#headers };
+    // Resolve the complete original batch before mutating descriptor/liveness state.
+    const eventRoutes = new Map(
+      events.map((event) => [event, traceCredentialRoute(event)]),
+    );
     const states = new Map<string, TraceState>();
     const admitted: TraceEvent[] = [];
     let admissionError: string | undefined;
@@ -205,82 +210,127 @@ export class OpenAITraceExporter implements TraceProcessor {
     }
     // Failed native batches are acknowledged too. Deliver admitted records
     // before reporting rejected ones, so one unavailable root cannot lose others.
-    const pending = [...states]
-      .filter(([, state]) => state.deliveredTo !== revision)
-      .map(([traceId, state]) => ({
-        traceId,
-        state,
-        descriptor: state.descriptor,
-      }));
-    const records: Record<string, unknown>[] = pending.map(
-      (item) => item.descriptor,
-    );
-    for (const event of admitted) {
-      if (event.lifecycle === 'end')
-        records.push({
-          object: 'trace.span',
-          id: spanId(event.span_id),
-          trace_id: `trace_${event.trace_id}`,
-          parent_id: spanId(event.parent_span_id),
-          started_at: timestamp(event.start_time_unix_nanos),
-          ended_at: timestamp(event.end_time_unix_nanos!),
-          span_data: {
-            type: 'custom',
-            name: event.name,
-            data: event.attributes,
-          },
-          error:
-            event.outcome === 'error'
-              ? {
-                  message: 'Native span failed',
-                  data: { outcome: event.outcome },
-                }
-              : null,
-        });
-    }
-    if (!records.length) {
-      if (admissionError) throw new Error(admissionError);
-      return;
-    }
-    const body = JSON.stringify({ data: records });
-    const signal = AbortSignal.timeout(this.#timeoutMs);
-    let delivered = false;
-    for (
-      let attempt = 0;
-      attempt <= this.#maxRetries && !signal.aborted;
-      attempt++
-    ) {
-      let retry = false;
-      try {
-        const response = await fetch(this.#endpoint, {
-          method: 'POST',
-          headers,
-          body,
-          signal,
-          redirect: 'manual',
-        });
-        await response.body?.cancel();
-        if (response.ok) {
-          if (this.#credentialRevision === revision) {
-            for (const item of pending) {
-              if (
-                this.#traces.get(item.traceId) === item.state &&
-                item.state.descriptor === item.descriptor
-              )
-                item.state.deliveredTo = revision;
-            }
-          }
-          delivered = true;
-          break;
-        }
-        retry = response.status >= 500;
-      } catch {
-        retry = true;
+    const groups = new Map<
+      string,
+      {
+        identity: string;
+        headers: Record<string, string>;
+        events: TraceEvent[];
       }
-      if (!retry) break;
+    >();
+    for (const event of admitted) {
+      const route = eventRoutes.get(event);
+      const identity = route?.identity ?? '';
+      let group = groups.get(identity);
+      if (!group) {
+        group = {
+          identity,
+          headers: route
+            ? {
+                ...Object.fromEntries(
+                  Object.entries(fallbackHeaders).map(([key, value]) => [
+                    key.toLowerCase(),
+                    value,
+                  ]),
+                ),
+                ...route.headers,
+              }
+            : fallbackHeaders,
+          events: [],
+        };
+        groups.set(identity, group);
+      }
+      group.events.push(event);
     }
-    if (!delivered) {
-      // Do not expose endpoints, credentials, request bodies or response bodies.
+    const signal = AbortSignal.timeout(this.#timeoutMs);
+    let deliveryFailed = false;
+    for (const group of groups.values()) {
+      const traceIds = new Set(
+        group.events.map((event) => `trace_${event.trace_id}`),
+      );
+      const pending = [...states]
+        .filter(
+          ([traceId, state]) =>
+            traceIds.has(traceId) &&
+            (state.deliveredTo?.revision !== revision ||
+              state.deliveredTo.identity !== group.identity),
+        )
+        .map(([traceId, state]) => ({
+          traceId,
+          state,
+          descriptor: state.descriptor,
+        }));
+      const records: Record<string, unknown>[] = pending.map(
+        (item) => item.descriptor,
+      );
+      for (const event of group.events) {
+        if (event.lifecycle === 'end')
+          records.push({
+            object: 'trace.span',
+            id: spanId(event.span_id),
+            trace_id: `trace_${event.trace_id}`,
+            parent_id: spanId(event.parent_span_id),
+            started_at: timestamp(event.start_time_unix_nanos),
+            ended_at: timestamp(event.end_time_unix_nanos!),
+            span_data: {
+              type: 'custom',
+              name: event.name,
+              data: event.attributes,
+            },
+            error:
+              event.outcome === 'error'
+                ? {
+                    message: 'Native span failed',
+                    data: { outcome: event.outcome },
+                  }
+                : null,
+          });
+      }
+      if (!records.length) continue;
+      const body = JSON.stringify({ data: records });
+      let delivered = false;
+      for (
+        let attempt = 0;
+        attempt <= this.#maxRetries && !signal.aborted;
+        attempt++
+      ) {
+        let retry = false;
+        try {
+          // Detached work cannot start another request after callback retirement.
+          for (const event of group.events) traceCredentialRoute(event);
+          const response = await fetch(this.#endpoint, {
+            method: 'POST',
+            headers: group.headers,
+            body,
+            signal,
+            redirect: 'manual',
+          });
+          await response.body?.cancel();
+          if (response.ok) {
+            if (this.#credentialRevision === revision) {
+              for (const item of pending) {
+                if (
+                  this.#traces.get(item.traceId) === item.state &&
+                  item.state.descriptor === item.descriptor
+                )
+                  item.state.deliveredTo = {
+                    revision,
+                    identity: group.identity,
+                  };
+              }
+            }
+            delivered = true;
+            break;
+          }
+          retry = response.status >= 500;
+        } catch {
+          retry = true;
+        }
+        if (!retry) break;
+      }
+      deliveryFailed ||= !delivered;
+    }
+    if (deliveryFailed) {
       throw new Error(
         `Native OpenAI trace export failed${admissionError ? `; ${admissionError}` : ''}`,
       );

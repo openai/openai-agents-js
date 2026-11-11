@@ -173,7 +173,11 @@ export type {
 } from './runtime/input';
 export type { ChecklistState, SessionState } from './runtime/state';
 export { parseSessionState, readSessionInstructions } from './runtime/state';
-export type { TokenUsage, TokenUsageInfo } from './runtime/run-events';
+export type {
+  TokenUsage,
+  TokenUsageInfo,
+  RunUsage,
+} from './runtime/run-events';
 export type { RunBudget } from './runtime/run-budget';
 export type {
   Observation,
@@ -190,6 +194,17 @@ export type {
   ApiRateLimitWindow,
 } from './runtime/api-rate-limits';
 export type { CodexPlanLimit, CodexPlanUsage } from './runtime/plan-usage';
+export type {
+  StoredSession,
+  StoredSessionPage,
+  StoredForkOptions,
+  StoredItem,
+  StoredTurn,
+  StoredTurnPage,
+  StoredItemPage,
+  StoredMatch,
+  StoredMatchPage,
+} from './runtime/stored-history';
 export type { Subagent, ChildTurn, ChildCompleted } from './runtime/subagents';
 export type {
   SessionItem,
@@ -224,6 +239,7 @@ export type {
 
 export * as telemetry from './runtime/telemetry';
 export type {
+  ConsoleDiagnostics,
   Exporter,
   OtelTlsConfig,
   TelemetryOptions,
@@ -264,6 +280,7 @@ export type {
 export { webSearch } from './runtime/web-search';
 export type {
   WebSearch,
+  WebSearchImageSettings,
   WebSearchLocation,
   WebSearchOptions,
 } from './runtime/web-search';
@@ -397,6 +414,8 @@ export type {
   NativeModel,
   AiSdkLanguageModel,
   ModelAdapterOptions,
+  ModelRequestOptions,
+  ModelRequestOptionsFactory,
   ModelProvider,
   ModelRequest,
   ModelResponse,
@@ -428,3 +447,12 @@ export type {
   NativeRealtimeTool,
   NativeRealtimeToolErrorContext,
 } from './runtime/realtime-policy';
+export { GuardrailTripwire } from './runtime/guardrails';
+export type {
+  GuardrailResult,
+  GuardrailRecord,
+  InputGuardrail,
+  OutputGuardrail,
+} from './runtime/guardrails';
+
+export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';

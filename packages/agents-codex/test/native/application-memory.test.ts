@@ -15,6 +15,7 @@ import {
   type MemoryContext,
 } from '../../../../examples/codex/application-memory';
 import { invokeFunctionTool } from '../../src/runtime/tools';
+import { runUsageSnapshot } from '../../src/runtime/run-events';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 
@@ -167,6 +168,7 @@ describe('application memory recipe without native execution', () => {
     const run = vi.spyOn(Agent.prototype, 'run').mockResolvedValueOnce({
       turn: {} as Turn,
       threadUsage: null,
+      runUsage: runUsageSnapshot(null),
       finalOutput: 'Use plain language.',
       repairAttempts: [],
     });

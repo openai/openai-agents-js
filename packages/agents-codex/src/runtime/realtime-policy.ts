@@ -1,3 +1,4 @@
+import { abortable } from '../voice/abortable';
 import type { Agent } from './public-agent';
 import type { NativeRealtimeUsage } from './realtime-usage';
 
@@ -51,7 +52,7 @@ export async function resolveRealtimePolicy(
   await session._runVoiceCallback(async () => {
     resolved =
       typeof instructions === 'function'
-        ? await instructions(context)
+        ? await abortable(Promise.resolve(instructions(context)), signal)
         : instructions;
     signal?.throwIfAborted();
     check();
@@ -62,7 +63,10 @@ export async function resolveRealtimePolicy(
     if (enabled !== undefined) {
       disabledToolNames = [];
       for (const tool of source.tools) {
-        const accepted = await enabled(context, Object.freeze(tool));
+        const accepted = await abortable(
+          Promise.resolve(enabled(context, Object.freeze(tool))),
+          signal,
+        );
         signal?.throwIfAborted();
         check();
         if (typeof accepted !== 'boolean')

@@ -394,6 +394,52 @@ impl PythonTools {
     }
 }
 
+pub(super) fn hold(input: ToolCompletionInput<'_>) -> bool {
+    let Some(tools) = input.thread_store.get::<PythonTools>() else {
+        return false;
+    };
+    let Some(catalog) = input.step_store.get::<StepCatalog>() else {
+        return false;
+    };
+    let ResponseItem::FunctionCall {
+        name,
+        namespace,
+        call_id,
+        ..
+    } = input.call
+    else {
+        return false;
+    };
+    let name = ToolName::new(namespace.clone(), name.clone()).with_default_namespace();
+    let Some(slot) = catalog
+        .generation
+        .entries
+        .iter()
+        .position(|entry| entry.name.clone().with_default_namespace() == name)
+    else {
+        return false;
+    };
+    if !catalog.generation.terminal_slots.contains(&slot)
+        || !tools.current_completion_owner(input.thread_store.level_id())
+        || !tools.admits_generation(&catalog.generation)
+    {
+        return false;
+    }
+    catalog
+        .receipts
+        .lock()
+        .expect("JavaScript completion receipts poisoned")
+        .iter()
+        .any(|key| {
+            key.reply.thread == input.thread_store.level_id()
+                && key.reply.instance == tools.instance
+                && key.reply.generation == catalog.generation.id
+                && key.reply.slot == slot
+                && key.turn == input.turn_id
+                && key.call == *call_id
+        })
+}
+
 pub(super) async fn propose(
     input: ToolCompletionInput<'_>,
 ) -> std::result::Result<Option<ToolCompletionDecision>, String> {
@@ -450,8 +496,38 @@ pub(super) async fn propose(
                 && key.turn == input.turn_id
                 && key.call == *call_id
         })
-        .cloned()
-        .ok_or("Missing accepted terminal tool receipt")?;
+        .cloned();
+    let held = input
+        .turn_store
+        .get::<codex_extension_api::HeldToolCompletionResults>();
+    let is_held = || {
+        held.as_ref().is_some_and(|held| {
+            held.outputs
+                .lock()
+                .expect("held terminal outputs poisoned")
+                .iter()
+                .any(|(item, _)| item.item == *input.output)
+        })
+    };
+    let guard_only = input.guard_only || key.is_none();
+    if input.guard_only && !is_held() {
+        return Ok(None);
+    }
+    if guard_only && !is_held() {
+        return Err("Missing accepted terminal tool receipt".into());
+    }
+    // This pending callback identity carries no tool grant or accepted receipt.
+    let key = key.unwrap_or_else(|| PendingKey {
+        reply: ReplyKey {
+            thread: input.thread_store.level_id().to_owned(),
+            instance: tools.instance.clone(),
+            generation: catalog.generation.id,
+            slot,
+            manual_grant: None,
+        },
+        turn: input.turn_id.to_owned(),
+        call: call_id.clone(),
+    });
     let ResponseItem::FunctionCallOutput {
         call_id: output_id,
         output,
@@ -473,7 +549,7 @@ pub(super) async fn propose(
         "generation":catalog.generation.id.to_string(), "request_id":id.to_string(),
         "native_step":input.step_store.level_id(), "slot":slot,
         "tool":{"name":entry.name.name,"namespace":entry.name.namespace},
-        "call_id":call_id, "output":output.body, "model":input.model, "continuation_count":input.continuation_count
+        "call_id":call_id, "output":output.body, "model":input.model, "continuation_count":input.continuation_count, "guard_only":guard_only
     }});
     if let Some(profile) = tools
         .source_profile(Some(input.step_store))
@@ -487,7 +563,7 @@ pub(super) async fn propose(
         request["subagent_incarnation"] = json!(instance);
         request["subagent_managed_tools"] = json!(true);
     }
-    if let Some(turn) = input.turn_store.get::<crate::turn_settlement::Turn>() {
+    if !guard_only && let Some(turn) = input.turn_store.get::<crate::turn_settlement::Turn>() {
         *turn
             .tool_proposal
             .lock()
@@ -591,7 +667,14 @@ pub(super) async fn propose(
     }
     match decision {
         ReplyValue::Accept(final_output) => {
-            Ok(Some(ToolCompletionDecision::Accept { final_output }))
+            if guard_only {
+                if !is_held() {
+                    return Err("Expired held terminal candidate".into());
+                }
+                Ok(None)
+            } else {
+                Ok(Some(ToolCompletionDecision::Accept { final_output }))
+            }
         }
         ReplyValue::Continue(feedback) => {
             if let Some(turn) = input.turn_store.get::<crate::turn_settlement::Turn>() {
@@ -750,6 +833,7 @@ mod tests {
         .unwrap();
         let output: ResponseItem = serde_json::from_value(json!({"type":"function_call_output", "call_id":"call", "output":"settled after hooks"})).unwrap();
         let input = || ToolCompletionInput {
+            guard_only: false,
             continuation_count: 0,
             turn_id: "turn",
             model: "fixture-model",

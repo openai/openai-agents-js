@@ -1,5 +1,5 @@
 /* global AudioContext, document, fetch, RTCPeerConnection, setTimeout, window */
-import { NativeVoiceWebRTC } from '/voice-browser.mjs';
+import { NativeVoiceWebRTC } from '/sdk/voice/browser.mjs';
 
 // This local synthetic provider uses a real second browser peer. The native
 // server still owns call creation, the SDP answer, the sideband, and hangup.

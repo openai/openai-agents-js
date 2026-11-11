@@ -58,6 +58,14 @@ Mount credentials stay in trusted provider configuration. In-container helpers m
 
 For created or explicitly resumed resources, native retirement has been finishing before the source releases the gateway and provider session. Cleanup has been using the provider lifecycle with preservation disabled and attempting later owners even if an earlier cleanup fails. Selected resources follow that provider's actual ownership policy: selection does not universally mean preservation, so supply only resources you authorize that provider to dispose of. The source requires a cleanup route and reports failures the provider exposes; it cannot recover errors a provider suppresses internally.
 
+### Current workspace descriptions
+
+Current source builds with `sandboxEnvironment`: one native workspace description from the successfully prepared provider resource. Current working directory, prepared filesystem layout, declared storage access, and remote mount guidance. Provider rebases reflected in that prepared snapshot.
+
+A newly opened or restored Session: the current source's description, replacing earlier automatic SDK workspace descriptions while retaining original application and global instructions. Description lifetime tied to that exact current resource; no selection of an unrelated live sandbox from its path or display name. Current executor and write grants still required; descriptions alone without resource or filesystem authority.
+
+`renderStorageLayout(manifest)`: a separate application-facing rendering helper. A manifest before provider preparation can lack the final rebased paths. Mount paths and descriptions: intentional model-facing text; source credentials and file contents excluded from the automatic layout.
+
 ### Borrow or explicitly resume provider storage
 
 The matching [source build](building.md) has been accepting these alternatives to creation. These fragments have been assuming a trusted provider `client`, the authorized `manifest` and authenticated `connect` from the creation setup, and application-owned session or state values:
@@ -136,4 +144,4 @@ env -u OPENAI_API_KEY OPENAI_AGENTS_NATIVE_TESTS=1 pnpm exec vitest run \
   packages/agents-codex/test/native/storage-mounts-native.test.ts
 ```
 
-Use Node.js 24 and a Linux host that permits the sandbox's required namespaces. On supported Linux CI, sandbox startup failure fails the enforcement tests. Outside CI, only the explicitly marked Codex outer sandbox (`OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX=1`) may skip an unavailable nested sandbox. Set `OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1` to require enforcement even there. A local isolation-test skip does not qualify mounting behavior.
+Current source builds: Node.js 22 or later and a Linux host with the sandbox's required namespaces. Published `alpha.2` starter bundles: Node.js 24; [installation requirements](installation.md). On supported Linux CI, sandbox startup failure fails the enforcement tests. Outside CI, only the explicitly marked Codex outer sandbox (`OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX=1`) may skip an unavailable nested sandbox. Set `OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1` to require enforcement even there. A local isolation-test skip does not qualify mounting behavior.

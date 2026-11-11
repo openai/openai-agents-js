@@ -10,9 +10,11 @@ async function main() {
     : await import('../../../src/runtime/telemetry');
   const longNames = process.argv.includes('--bytes');
   const forwarded = process.argv.includes('--forward');
+  const overlappingLoss = process.argv.includes('--overlapping-loss');
   const retainedAfterRecovery = process.argv.includes(
     '--retained-after-recovery',
   );
+  const native = await binding();
   const records: Record<string, any>[] = [];
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -37,7 +39,36 @@ async function main() {
   let phase = false;
   let groups = 0;
   let configured = false;
+  const drain = native.drain_trace_events;
+  const prefixQueued = Promise.withResolvers<void>();
+  const shortDrain = Promise.withResolvers<string>();
+  const burstQueued = Promise.withResolvers<void>();
+  let primed = false;
+  let prefixCaptured = false;
+  let firstLossDrops = 0;
+  let retainedFreshRoot: string | undefined;
   try {
+    if (overlappingLoss) {
+      native.drain_trace_events = async (limit) => {
+        const readPrefix = primed && !prefixCaptured;
+        // Park the next read after the initial roots drain, so it cannot
+        // race the four prefix records as they enter the native queue.
+        if (readPrefix) await prefixQueued.promise;
+        const raw = await drain(limit);
+        if (readPrefix) {
+          prefixCaptured = true;
+          shortDrain.resolve(raw);
+          await burstQueued.promise;
+        } else if (firstLossDrops === 0) {
+          const batch = JSON.parse(raw);
+          primed ||= batch.events.some(
+            (event: TraceEvent) => event.name === 'active-1023',
+          );
+          firstLossDrops = batch.dropped_records;
+        }
+        return raw;
+      };
+    }
     const exporter = new telemetry.OpenAITraceExporter({
       apiKey: 'synthetic',
       endpoint: `http://127.0.0.1:${address.port}/ingest`,
@@ -57,7 +88,9 @@ async function main() {
             if (
               phase &&
               events.some((event) => event.name.startsWith('burst-')) &&
-              ++groups === 2
+              // The normal fixture waits through a lossy acknowledgment.
+              // The overlap case stops earlier with only four freed slots.
+              ++groups === (overlappingLoss ? 2 : 3)
             ) {
               entered();
               await released;
@@ -67,7 +100,6 @@ async function main() {
       ],
     });
     configured = true;
-    const native = await binding();
     const start = (name: string) =>
       JSON.parse(
         native.start_trace_span(
@@ -92,11 +124,24 @@ async function main() {
       'success',
     );
     phase = true;
-    for (let index = 0; index < 1600; index++)
+    const prefix = overlappingLoss ? 2 : 0;
+    if (overlappingLoss) {
+      end(start('burst-0'));
+      end(start('burst-1'));
+      prefixQueued.resolve();
+      const snapshot = JSON.parse(await shortDrain.promise);
+      assert.equal(snapshot.events.length, 4);
+      assert.equal(snapshot.dropped_records, 0);
+    }
+    for (let index = prefix; index < 1600; index++)
       end(start(`burst-${longNames ? 'x'.repeat(4000) : index}`));
     for (const root of roots.slice(1)) end(root);
+    burstQueued.resolve();
     await blocked;
-    // The pump captured a watermark and acknowledged its first lossy batch.
+    // Read the cutoff before queuing the markers while the pump is paused.
+    const firstCutoff = overlappingLoss
+      ? native.set_trace_routes('{"processor_ids":[],"replace":false}')
+      : 0;
     // Queue a fresh root while older records still occupy the native queue.
     const oldChild = JSON.parse(
       native.start_trace_span(
@@ -109,18 +154,113 @@ async function main() {
     ).handle;
     end(oldChild);
     end(roots[0]);
-    end(start('post-loss-fresh-root'));
+    const freshRoot = start('post-loss-fresh-root');
+    if (overlappingLoss) {
+      retainedFreshRoot = freshRoot;
+      native.end_trace_span(freshRoot, '{"status":"ok"}');
+    } else {
+      end(freshRoot);
+    }
     release();
     const result = await telemetry.forceFlush({ timeoutMs: 15000 });
     assert.ok(result.droppedRecords > 0);
     assert.equal(result.status, 'partial');
+    if (overlappingLoss) {
+      assert.ok(firstLossDrops > 0);
+      assert.equal(result.droppedRecords, firstLossDrops + 1);
+      assert.equal(result.barrier, firstCutoff + 5);
+    }
     assert.ok(sawMixedBatch);
     assert.ok(!records.some((row) => row.span_data?.name === 'old-after-loss'));
     const fresh = records.filter(
       (row) => row.workflow_name === 'post-loss-fresh-root',
     );
     assert.equal(fresh.length, 1);
-    assert.ok(records.some((row) => row.trace_id === fresh[0].id));
+    let expectedFailures = result.failedDeliveries;
+    if (overlappingLoss) {
+      const markers = observed.filter(
+        (event) =>
+          event.name === 'old-after-loss' ||
+          event.name === 'post-loss-fresh-root',
+      );
+      assert.deepEqual(
+        markers.map((event) => [
+          event.name,
+          event.lifecycle,
+          event.recovery_sequence,
+        ]),
+        [
+          ['old-after-loss', 'start', firstCutoff],
+          ['old-after-loss', 'end', firstCutoff],
+          ['post-loss-fresh-root', 'start', firstCutoff],
+        ],
+      );
+      const lateChild = JSON.parse(
+        native.start_trace_span(
+          JSON.stringify({
+            name: 'child-after-second-loss',
+            kind: 'custom',
+            parent: freshRoot,
+          }),
+        ),
+      ).handle;
+      end(lateChild);
+      // Flush the rejected events on their own so their failure count does
+      // not depend on whether the native drain batches them with a live root.
+      const rejected = await telemetry.forceFlush({ timeoutMs: 15000 });
+      assert.equal(rejected.status, 'partial');
+      assert.equal(rejected.droppedRecords, result.droppedRecords);
+      expectedFailures += 2;
+      assert.equal(rejected.failedDeliveries, expectedFailures);
+      const lateEvents = observed.filter(
+        (event) => event.name === 'child-after-second-loss',
+      );
+      assert.deepEqual(
+        lateEvents.map((event) => [
+          event.lifecycle,
+          event.parent_span_id,
+          event.recovery_sequence,
+        ]),
+        [
+          ['start', markers[2].span_id, result.barrier],
+          ['end', markers[2].span_id, result.barrier],
+        ],
+      );
+      assert.ok(
+        !records.some(
+          (row) => row.span_data?.name === 'child-after-second-loss',
+        ),
+      );
+      end(start('post-second-loss-root'));
+      const recovered = await telemetry.forceFlush({ timeoutMs: 15000 });
+      assert.equal(recovered.status, 'partial');
+      assert.equal(recovered.droppedRecords, result.droppedRecords);
+      assert.equal(recovered.failedDeliveries, expectedFailures);
+      const later = observed.filter(
+        (event) => event.name === 'post-second-loss-root',
+      );
+      assert.deepEqual(
+        later.map((event) => [event.lifecycle, event.recovery_sequence]),
+        [
+          ['start', result.barrier],
+          ['end', result.barrier],
+        ],
+      );
+      assert.ok(
+        records.some((row) => row.span_data?.name === 'post-second-loss-root'),
+      );
+      assert.ok(
+        observed.every(
+          (event, index) =>
+            index === 0 ||
+            (event.sequence > observed[index - 1].sequence &&
+              (event.recovery_sequence ?? 0) >=
+                (observed[index - 1].recovery_sequence ?? 0)),
+        ),
+      );
+    } else {
+      assert.ok(records.some((row) => row.trace_id === fresh[0].id));
+    }
     if (forwarded) {
       const recoveredRoots = Array.from({ length: 1024 }, (_, i) =>
         start(`recovered-active-${i}`),
@@ -128,12 +268,12 @@ async function main() {
       const active = await telemetry.forceFlush({ timeoutMs: 15000 });
       assert.equal(
         active.failedDeliveries,
-        result.failedDeliveries,
+        expectedFailures,
         'forwarding kept lost roots pinned',
       );
       recoveredRoots.forEach(end);
       const completed = await telemetry.forceFlush({ timeoutMs: 15000 });
-      assert.equal(completed.failedDeliveries, result.failedDeliveries);
+      assert.equal(completed.failedDeliveries, expectedFailures);
       assert.equal(completed.droppedRecords, result.droppedRecords);
     }
     if (retainedAfterRecovery) {
@@ -213,7 +353,11 @@ async function main() {
     );
   } finally {
     release();
+    prefixQueued.resolve();
+    burstQueued.resolve();
+    if (overlappingLoss) native.drain_trace_events = drain;
     try {
+      if (retainedFreshRoot) native.release_trace_span(retainedFreshRoot);
       if (configured) await telemetry.shutdown({ timeoutMs: 15000 });
     } finally {
       server.closeAllConnections();

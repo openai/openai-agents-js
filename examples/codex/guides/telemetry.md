@@ -34,6 +34,27 @@ Select `traces`, `logs`, and `metrics` independently. An omitted or null signal 
 
 Set `environment` to label exporter resources. Use `spanAttributes` to add string attributes to exported spans. Native transport libraries can also read OpenTelemetry environment settings.
 
+## Native console diagnostics
+
+Current source builds: optional JSON-line diagnostics on process stdout, separate from OTLP export and `ConsoleTraceProcessor` lifecycle records. Alternative configuration for the fresh-process example above, with the same Session/provider cleanup and final shutdown:
+
+```ts
+await telemetry.configure({
+  diagnostics: {
+    level: 'debug',
+    targets: ['codex_core::session::handlers'],
+  },
+});
+```
+
+| Configuration | Console content |
+| --- | --- |
+| Omitted or null `diagnostics` | No diagnostic route. |
+| Default `includeFields: false` | Static `kind`, `level`, `target`, `name`, `file`, and `line` metadata. |
+| Explicit `includeFields: true` | Additional `fields`, potentially including messages, errors, arguments, or application data. |
+
+Default level: `warn`. Target filters: exact names or `::` descendants; an empty target list for all targets. Explicit fields independent of workflow `includeSensitiveData` and OTLP payload switches. Application-owned stdout access and retention, especially with fields enabled. Inherited workflow JSON metadata: the separate [`TraceSpan.traceMetadata`](trace-processors.md#read-inherited-root-metadata) accessor.
+
 ## Trace one workflow
 
 In `0.22.0-alpha.2`, wrap a task in `telemetry.withTrace(options, callback)`. Use `telemetry.withSpan(options, callback)` inside it to time a step such as submitting a Turn. The [native telemetry example](../native-telemetry.ts) creates a named workflow and a child span, then compares exported spans with the application's receipts.

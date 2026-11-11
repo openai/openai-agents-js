@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import {
   jsonObject,
   losslessJsonObjectSchema,
@@ -20,6 +21,32 @@ import { NativeAgents } from './native-agents';
 import { nativeGoalToolNames } from './goals';
 
 // Only these module-owned constructors may declare the host's reserved alias.
+// Narrowed selectors retain their captured raw-name source, never a peer client.
+const mcpNameSources = new WeakMap<object, readonly string[]>();
+const mcpRefIdentities = new WeakMap<object, readonly [string, string]>();
+/** @internal Raw provenance only; admission still belongs to the captured binding. */
+export function mcpRefIdentity(
+  ref: ToolRef,
+): readonly [string, string] | undefined {
+  return mcpRefIdentities.get(ref);
+}
+export function mcpToolSelections(
+  servers: readonly McpTool[],
+): Array<[string, string, { namespace: string; name: string }]> {
+  const selections = new Map<
+    string,
+    [string, string, { namespace: string; name: string }]
+  >();
+  for (const server of servers) {
+    const names = mcpToolNames([server]);
+    server.tools.forEach((raw, index) => {
+      const key = JSON.stringify([server.name, raw]);
+      if (!selections.has(key))
+        selections.set(key, [server.name, raw, names[index]!]);
+    });
+  }
+  return [...selections.values()];
+}
 const hostedOptions = new WeakSet<object>();
 function hostRegistration<T extends object>(options: T): T {
   hostedOptions.add(options);
@@ -302,6 +329,7 @@ abstract class MCP<Context> {
     this.transformResult = options.transformResult;
     Object.defineProperty(this, 'transformResult', { enumerable: false });
     this.transformResultTimeout = options.transformResultTimeout;
+    mcpNameSources.set(this, this.tools);
     mcpToolNames([this]);
   }
 
@@ -313,7 +341,9 @@ abstract class MCP<Context> {
         `MCP tool ${rawName} is not declared on server ${this.name}`,
       );
     const selected = mcpToolNames([this])[index]!;
-    return toolRef(selected.name, selected.namespace);
+    const ref = toolRef(selected.name, selected.namespace);
+    mcpRefIdentities.set(ref, [this.name, rawName]);
+    return ref;
   }
 }
 
@@ -604,7 +634,7 @@ export function selectHttpLeaves(
   server: HttpMCP,
   tools: readonly string[],
 ): HttpMCP {
-  return new HttpMCP({
+  const selected = new HttpMCP({
     name: server.name,
     url: server.url,
     bearerToken: server.bearerToken,
@@ -621,6 +651,8 @@ export function selectHttpLeaves(
     requestMetadata: server.requestMetadata,
     transformResultTimeout: server.transformResultTimeout,
   });
+  mcpNameSources.set(selected, mcpNameSources.get(server) ?? server.tools);
+  return selected;
 }
 
 /** @internal Activate one ordinary resource connection without granting tools. */
@@ -648,16 +680,122 @@ export function resourceMcpBinding(server: McpTool): McpTool {
   });
 }
 
-/** @internal Project exactly the native names fixed by the opening allowlist. */
+/** @internal Synchronous projection of the existing native catalog name owner. */
+export function projectMcpToolNames(
+  servers: readonly { name: string; tools: readonly string[] }[],
+  prefix = true,
+): Map<string, { namespace: string; name: string }> {
+  const project = (value: string) =>
+    [...value]
+      .map((c) => (/[A-Za-z0-9_]/.test(c) || (!prefix && c === '-') ? c : '_'))
+      .join('') || '_';
+  const suffix = (value: string) =>
+    '_' + createHash('sha1').update(value, 'utf8').digest('hex').slice(0, 12);
+  for (const server of servers) {
+    for (const raw of [server.name, ...server.tools]) {
+      if (
+        typeof raw !== 'string' ||
+        !raw ||
+        raw.includes('\0') ||
+        Buffer.from(raw, 'utf8').toString('utf8') !== raw
+      )
+        throw new TypeError(
+          'MCP raw identities require nonempty valid Unicode without NUL',
+        );
+    }
+    if (new Set(server.tools).size !== server.tools.length)
+      throw new TypeError('MCP raw tool names must be unique');
+  }
+  const candidates = servers.flatMap((server) => {
+    const rawNamespace = `${server.name}\0${server.name}\0`;
+    const projected = project(server.name);
+    const namespace =
+      prefix && !projected.startsWith('mcp__')
+        ? `mcp__${projected}`
+        : projected;
+    return server.tools.map((raw) => ({
+      server: server.name,
+      raw,
+      namespace,
+      name: project(raw),
+      rawNamespace,
+      identity: `${rawNamespace}\0${raw}\0${raw}`,
+    }));
+  });
+  const namespaces = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const identities = namespaces.get(candidate.namespace) ?? new Set<string>();
+    identities.add(candidate.rawNamespace);
+    namespaces.set(candidate.namespace, identities);
+  }
+  for (const candidate of candidates) {
+    if (namespaces.get(candidate.namespace)!.size > 1) {
+      const hash = suffix(candidate.rawNamespace);
+      candidate.namespace = candidate.namespace.endsWith('__')
+        ? candidate.namespace.slice(0, -2) + hash + '__'
+        : candidate.namespace + hash;
+    }
+  }
+  const leaves = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const key = JSON.stringify([candidate.namespace, candidate.name]);
+    const identities = leaves.get(key) ?? new Set<string>();
+    identities.add(candidate.identity);
+    leaves.set(key, identities);
+  }
+  for (const candidate of candidates) {
+    if (
+      leaves.get(JSON.stringify([candidate.namespace, candidate.name]))!.size >
+      1
+    )
+      candidate.name += suffix(candidate.identity);
+  }
+  const result = new Map<string, { namespace: string; name: string }>();
+  const used = new Set<string>();
+  candidates.sort((a, b) =>
+    Buffer.compare(Buffer.from(a.identity), Buffer.from(b.identity)),
+  );
+  for (const candidate of candidates) {
+    let { namespace, name } = candidate;
+    if (
+      namespace.length + name.length + 2 > 128 ||
+      used.has(namespace + name)
+    ) {
+      for (let attempt = 0; ; attempt++) {
+        const hash = suffix(
+          attempt === 0
+            ? candidate.identity
+            : `${candidate.identity}\0${attempt}`,
+        );
+        const budget = Math.max(0, 128 - candidate.namespace.length - 2);
+        if (budget >= hash.length) {
+          namespace = candidate.namespace;
+          name = candidate.name.slice(0, budget - hash.length) + hash;
+        } else {
+          namespace = candidate.namespace.slice(0, 128 - hash.length - 2);
+          name = hash;
+        }
+        if (!used.has(namespace + name)) break;
+      }
+    }
+    used.add(namespace + name);
+    result.set(JSON.stringify([candidate.server, candidate.raw]), {
+      namespace,
+      name,
+    });
+  }
+  return result;
+}
+
+/** @internal Project names without loading the native addon during declaration. */
 export function mcpToolNames(
   servers: readonly Pick<MCP<unknown>, 'name' | 'tools'>[],
 ): Array<{ namespace: string; name: string }> {
-  const project = (name: string) =>
-    [...name].map((c) => (/[A-Za-z0-9_]/.test(c) ? c : '_')).join('');
   const namespaces = new Set<string>();
-  const combined = new Set<string>();
-  return servers.flatMap((server) => {
-    const projected = project(server.name);
+  for (const server of servers) {
+    const projected = [...server.name]
+      .map((c) => (/[A-Za-z0-9_]/.test(c) ? c : '_'))
+      .join('');
     const namespace = projected.startsWith('mcp__')
       ? projected
       : `mcp__${projected}`;
@@ -666,18 +804,31 @@ export function mcpToolNames(
         'MCP server aliases have colliding native namespaces',
       );
     namespaces.add(namespace);
-    const leaves = new Set<string>();
-    return server.tools.map((raw) => {
-      const name = project(raw);
-      if (leaves.has(name) || combined.has(namespace + name))
-        throw new TypeError('MCP tool names collide after native projection');
-      if (namespace.length + name.length + 2 > 128)
-        throw new TypeError('MCP native tool name exceeds 128 bytes');
-      leaves.add(name);
-      combined.add(namespace + name);
-      return { namespace, name };
-    });
-  });
+  }
+  const bases = new Map<string, string>();
+  for (const server of servers) {
+    const project = (raw: string) =>
+      [...raw].map((c) => (/[A-Za-z0-9_]/.test(c) ? c : '_')).join('');
+    const rawNamespace = project(server.name);
+    const namespace = rawNamespace.startsWith('mcp__')
+      ? rawNamespace
+      : `mcp__${rawNamespace}`;
+    for (const raw of mcpNameSources.get(server) ?? server.tools) {
+      const key = namespace + project(raw);
+      if (bases.has(key) && bases.get(key) !== server.name)
+        throw new TypeError('MCP names have a native concatenation collision');
+      bases.set(key, server.name);
+    }
+  }
+  const names = projectMcpToolNames(
+    servers.map((server) => ({
+      name: server.name,
+      tools: mcpNameSources.get(server) ?? server.tools,
+    })),
+  );
+  return servers.flatMap((server) =>
+    server.tools.map((raw) => names.get(JSON.stringify([server.name, raw]))!),
+  );
 }
 
 export function mcpConfig(
@@ -1030,8 +1181,9 @@ export function mcpPrePolicyRules(
   return servers.flatMap((server) =>
     !server.before && !server.approval
       ? []
-      : mcpToolNames([server]).map((tool) => ({
+      : mcpToolNames([server]).map((tool, index) => ({
           ...tool,
+          mcp_identity: [server.name, server.tools[index]!],
           generation: generation.toString(),
           timeout: server.approval ? null : 30,
           scope: 'thread_tree',
@@ -1050,27 +1202,36 @@ export async function applyMcpPrePolicy<Context>(
   admit: () => void,
   deny: () => void,
   stop: () => void = () => {},
+  realtimeEnabled?: () => Promise<boolean>,
 ): Promise<JsonObject> {
   if (String(request._mcp_generation) !== generation.toString())
     return { action: 'deny' };
   const identity = jsonObject.parse(request.tool_name);
+  const rawIdentity = request._mcp_identity as unknown as
+    readonly [string, string] | undefined;
   const server = servers.find((candidate) =>
-    mcpToolNames([candidate]).some(
-      (tool) =>
-        tool.namespace === identity.namespace && tool.name === identity.name,
-    ),
+    rawIdentity
+      ? candidate.name === rawIdentity[0] &&
+        candidate.tools.includes(rawIdentity[1])
+      : mcpToolNames([candidate]).some(
+          (tool) =>
+            tool.namespace === identity.namespace &&
+            tool.name === identity.name,
+        ),
   );
   if (
     !server ||
-    (!server.before && !server.approval) ||
+    (!server.before && !server.approval && !realtimeEnabled) ||
     request.phase !== 'before'
   )
     return { action: 'deny' };
   const names = mcpToolNames([server]);
-  const index = names.findIndex(
-    (tool) =>
-      tool.namespace === identity.namespace && tool.name === identity.name,
-  );
+  const index = rawIdentity
+    ? server.tools.indexOf(rawIdentity[1])
+    : names.findIndex(
+        (tool) =>
+          tool.namespace === identity.namespace && tool.name === identity.name,
+      );
   const original = losslessJsonObjectSchema.parse(
     request.route === 'direct'
       ? JSON.parse(request.input as string)
@@ -1097,6 +1258,11 @@ export async function applyMcpPrePolicy<Context>(
       signal: callbackSignal,
     });
   check();
+  if (realtimeEnabled) {
+    const enabled = await realtimeEnabled();
+    check();
+    if (!enabled) return { action: 'deny' };
+  }
   let replaced = false;
   if (server.before) {
     const allowed = await invokeWithTimeout(
@@ -1132,6 +1298,11 @@ export async function applyMcpPrePolicy<Context>(
       return { action: 'deny' };
     }
     if (approved !== true) return { action: 'deny' };
+  }
+  if (realtimeEnabled && (server.before || server.approval)) {
+    const enabled = await realtimeEnabled();
+    check();
+    if (!enabled) return { action: 'deny' };
   }
   check();
   // The effective candidate never shares storage with a retained callback view.

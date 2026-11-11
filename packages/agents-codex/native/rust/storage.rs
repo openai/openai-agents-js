@@ -641,6 +641,14 @@ impl ThreadStore for MemoryThreadStore {
         })
     }
 
+    fn read_original_history(
+        &self,
+        params: LoadThreadHistoryParams,
+        reader: Box<dyn codex_thread_store::OriginalHistoryReader>,
+    ) -> ThreadStoreFuture<'_, codex_thread_store::OriginalHistorySnapshot> {
+        self.inner.read_original_history(params, reader)
+    }
+
     fn load_latest_model_context(
         &self,
         params: LoadThreadHistoryParams,
