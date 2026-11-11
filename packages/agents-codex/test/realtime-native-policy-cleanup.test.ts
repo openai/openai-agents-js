@@ -1353,6 +1353,10 @@ nativeIt.each(['invalid', 'null', 'exception'] as const)(
           await expect(session.respond(request.reject())).rejects.toThrow(
             'formatter must return a string, null or undefined',
           );
+          // Closing the voice can discard output still queued for delivery.
+          expect(await peer.output('formatter-return')).toBe(
+            'The function failed.',
+          );
           await voice.close();
           await peer.disconnected.promise;
           expect(await session.pendingInteractions()).toEqual([]);

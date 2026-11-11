@@ -6250,11 +6250,19 @@ export class Session<OutputT = string, Context = unknown> {
     );
     const declaration = this.profileRuntimes.get(receipt.profile_id)!.profile
       .declaration;
+    const previous =
+      typeof msg.previous_profile_id === 'string'
+        ? this.profileRuntimes.get(msg.previous_profile_id)?.profile
+        : undefined;
     this.observations.append({
       type: 'agent_profile_changed',
       profileId: receipt.profile_id,
       profileEpoch: receipt.epoch,
       agentName: declaration.name ?? null,
+      ...(previous && {
+        previousProfileId: previous.id,
+        previousAgentName: previous.declaration.name ?? null,
+      }),
       turnId: typeof msg.turn_id === 'string' ? msg.turn_id : null,
       submissionId,
     });
