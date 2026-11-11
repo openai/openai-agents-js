@@ -32,26 +32,75 @@ index 5f00339c2696f7b350855b1d226e5fd8c92e045e..368ff49510bb140e8fae8b5b34212c79
          mut self,
          profile: Option<Arc<codex_extension_api::CapturedAgentProfile>>,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 3b42c3db775f0a94d9f1ab20b1446d6300b3cd77..a4c2042ac673d7ee0bb5be4f8e7ebe8660656500 100644
+index 3b42c3db775f0a94d9f1ab20b1446d6300b3cd77..624ed0997a81f7b677478b8b0a424d3306bb6f7d 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -429,6 +429,7 @@ pub(crate) async fn run_turn(
-             &turn_context.sub_id,
-             &history.items,
-         )?;
-+        record_tool_choice_use(&first_step_context, &tools);
+@@ -191,6 +191,21 @@ pub(crate) async fn run_turn(
+     let recovered_tools = turn_context
+         .extension_data
+         .remove::<codex_extension_api::RecoveredToolCompletionCandidates>();
++    // Resolve opt-in accepted recovery before this step captures its eligible catalog.
++    // Retain the starting profile receipt; a later handoff must keep its own choice.
++    let recovered_reset_tools = if let Some(candidates) = recovered_tools.as_deref() {
++        let settings = turn_context.next_step_settings.load_full();
++        if settings.request_controls().reset_tool_choice.flatten() == Some(true) {
++            let tools =
++                load_recovered_tools(&sess, &turn_context, candidates, &cancellation_token).await?;
++            record_tool_choice_use(&settings, &turn_context.extension_data, &tools);
++            Some(tools)
++        } else {
++            None
++        }
++    } else {
++        None
++    };
+     if recovered_tools.is_none()
+         && !pre_sampling_compaction_or_report(
+             &sess,
+@@ -411,24 +426,12 @@ pub(crate) async fn run_turn(
+     // 2. After auto-compact, while a model/tool continuation is pending.
+ 
+     if let Some(candidates) = recovered_tools {
+-        let live = sess.live_thread().ok_or_else(|| {
+-            CodexErr::InvalidRequest("Recovered tool completion requires retained history".into())
+-        })?;
+-        live.flush()
+-            .or_cancel(&cancellation_token)
+-            .await?
+-            .map_err(|_| CodexErr::Fatal("Could not flush recovered tool history".into()))?;
+-        let history = live
+-            .load_history(true)
+-            .or_cancel(&cancellation_token)
+-            .await?
+-            .map_err(|_| CodexErr::Fatal("Could not read recovered tool history".into()))?;
+-        let tools = recovered_tools_from_history(
+-            &candidates,
+-            sess.thread_id,
+-            &turn_context.sub_id,
+-            &history.items,
+-        )?;
++        let tools = match recovered_reset_tools {
++            Some(tools) => tools,
++            None => {
++                load_recovered_tools(&sess, &turn_context, &candidates, &cancellation_token).await?
++            }
++        };
          first_step_context
              .turn
              .extension_data
-@@ -633,6 +634,7 @@ pub(crate) async fn run_turn(
+@@ -633,6 +636,11 @@ pub(crate) async fn run_turn(
                      last_agent_message: sampling_request_last_agent_message,
                      settled_tools,
                  } = sampling_request_output;
-+                record_tool_choice_use(&step_context, &settled_tools);
++                record_tool_choice_use(
++                    &step_context.settings,
++                    &step_context.turn.extension_data,
++                    &settled_tools,
++                );
                  pending_agent_handoff = accepted_handoff;
                  if model_needs_follow_up {
                      sess.input_queue
-@@ -1999,6 +2001,12 @@ async fn run_sampling_request(
+@@ -1999,6 +2007,12 @@ async fn run_sampling_request(
                  base_instructions.clone(),
              );
              prompt.request_controls = step_context.settings.request_controls().clone();
@@ -64,7 +113,7 @@ index 3b42c3db775f0a94d9f1ab20b1446d6300b3cd77..a4c2042ac673d7ee0bb5be4f8e7ebe86
              prompt.prefer_buffered_response = sess
                  .services
                  .thread_extension_data
-@@ -2354,6 +2362,40 @@ struct SamplingRequestResult {
+@@ -2354,6 +2368,43 @@ struct SamplingRequestResult {
  /// Serialized terminal payloads and host initializers cannot construct this type.
  pub(crate) struct ValidatedToolCompletion(pub(crate) codex_protocol::protocol::ToolTurnCompletion);
  
@@ -87,14 +136,17 @@ index 3b42c3db775f0a94d9f1ab20b1446d6300b3cd77..a4c2042ac673d7ee0bb5be4f8e7ebe86
 +        })
 +}
 +
-+fn record_tool_choice_use(step: &StepContext, tools: &SettledDirectTools) {
-+    if step.settings.request_controls().reset_tool_choice.flatten() == Some(true)
++fn record_tool_choice_use(
++    settings: &super::step_settings::ResolvedStepSettings,
++    store: &codex_extension_api::ExtensionData,
++    tools: &SettledDirectTools,
++) {
++    if settings.request_controls().reset_tool_choice.flatten() == Some(true)
 +        && !tools.calls.is_empty()
 +        && !tools.outputs.is_empty()
 +    {
-+        step.turn.extension_data.insert(ToolChoiceUse {
-+            profile: step
-+                .settings
++        store.insert(ToolChoiceUse {
++            profile: settings
 +                .agent_profile
 +                .as_ref()
 +                .map(|profile| profile.receipt.clone()),
@@ -105,6 +157,39 @@ index 3b42c3db775f0a94d9f1ab20b1446d6300b3cd77..a4c2042ac673d7ee0bb5be4f8e7ebe86
  /// Original direct-call order and accepted outputs from this sample only.
  #[derive(Debug, Default)]
  struct SettledDirectTools {
+@@ -2362,6 +2413,32 @@ struct SettledDirectTools {
+     all_succeeded: bool,
+ }
+ 
++async fn load_recovered_tools(
++    sess: &Session,
++    turn_context: &TurnContext,
++    candidates: &codex_extension_api::RecoveredToolCompletionCandidates,
++    cancellation_token: &CancellationToken,
++) -> CodexResult<SettledDirectTools> {
++    let live = sess.live_thread().ok_or_else(|| {
++        CodexErr::InvalidRequest("Recovered tool completion requires retained history".into())
++    })?;
++    live.flush()
++        .or_cancel(cancellation_token)
++        .await?
++        .map_err(|_| CodexErr::Fatal("Could not flush recovered tool history".into()))?;
++    let history = live
++        .load_history(true)
++        .or_cancel(cancellation_token)
++        .await?
++        .map_err(|_| CodexErr::Fatal("Could not read recovered tool history".into()))?;
++    recovered_tools_from_history(
++        candidates,
++        sess.thread_id,
++        &turn_context.sub_id,
++        &history.items,
++    )
++}
++
+ /// Resolve one retained sampled batch across same-ID recovery starts. Outcome
+ /// data preserves sibling facts; only the later live policy can authorize a finish.
+ fn recovered_tools_from_history(
 diff --git a/codex-rs/protocol/src/model_request_controls.rs b/codex-rs/protocol/src/model_request_controls.rs
 index fb4bd92a3f640b60d241fd87d9122a0ce98063ff..b30f72b200644bac8cc9c6149ea0ed4467e8ecd8 100644
 --- a/codex-rs/protocol/src/model_request_controls.rs

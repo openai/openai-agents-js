@@ -702,8 +702,8 @@
     },
     {
       "path": "sdk-reset-tool-choice-after-use.patch",
-      "sha256": "292d1d06c82c1ee9afa6e0a393e91567cab1e4fed63c73b2f79192d5004b3f12"
+      "sha256": "6252ab047f0858279bb1ecb400bd1afa39ff368ebf284b2f1720d917431f8e05"
     }
   ],
-  "result_tree": "da775d464b67957629d54428f20fd2c7ffee7bd4"
+  "result_tree": "e8deea76d0314986c49e532a6da639332c5ff061"
 }

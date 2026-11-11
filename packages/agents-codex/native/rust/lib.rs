@@ -4183,8 +4183,16 @@ impl NativeThread {
                     .await
                     .map_err(native_error)?;
             }
+            let reset_tool_choice = inner
+                .thread
+                .thread_settings_snapshot()
+                .await
+                .request_controls
+                .reset_tool_choice
+                .flatten()
+                == Some(true);
             let terminal = frame
-                .terminal_seed(&saved["history"])
+                .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
             let result = ops::recover_prepared(
                 &inner,

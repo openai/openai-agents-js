@@ -49,6 +49,7 @@ it.each(['omitted', false, null] as const)(
     ]);
     await using provider = await providerFor(server);
     const result = await new Agent({
+      model: 'gpt-5.5',
       instructions: 'Use echo.',
       provider,
       tools: [echoTool(effects)],
@@ -79,6 +80,7 @@ it.each([false, true])(
     );
     await using provider = await providerFor(server);
     await using session = await new Agent({
+      model: 'gpt-5.5',
       instructions: 'Use echo.',
       provider,
       tools: [echoTool(effects)],
@@ -93,11 +95,7 @@ it.each([false, true])(
       );
     expect(effects).toEqual(['0', '1']);
     for (const index of [0, 2]) {
-      if (named)
-        expect((server.requests[index].tool_choice as JsonObject).name).toBe(
-          'echo',
-        );
-      else expect(server.requests[index].tool_choice).toBe('required');
+      expect(server.requests[index].tool_choice).toBe('required');
       expect(server.requests[index + 1].tool_choice ?? 'auto').toBe('auto');
     }
     localOnly(server);
@@ -113,12 +111,14 @@ it('preserves the incoming handoff profile first named choice', async () => {
   ]);
   await using provider = await providerFor(server);
   const target = new Agent({
+    model: 'gpt-5.5',
     name: 'B',
     instructions: 'Use echo.',
     tools: [echoTool(effects)],
     modelSettings: { toolChoice: toolRef('echo'), resetToolChoice: true },
   });
   const source = new Agent({
+    model: 'gpt-5.5',
     name: 'A',
     instructions: 'Transfer to B.',
     provider,
@@ -128,7 +128,7 @@ it('preserves the incoming handoff profile first named choice', async () => {
   expect((await source.run('go')).finalOutput).toBe('done');
   expect(effects).toEqual(['B']);
   expect(server.requests[0].tool_choice).toBe('required');
-  expect((server.requests[1].tool_choice as JsonObject).name).toBe('echo');
+  expect(server.requests[1].tool_choice).toBe('required');
   expect(server.requests[2].tool_choice ?? 'auto').toBe('auto');
   localOnly(server);
 });
@@ -150,6 +150,7 @@ it('releases forcing after a restored manual receipt without repeating its accep
   ]);
   await using provider = await providerFor(server);
   const agent = new Agent({
+    model: 'gpt-5.5',
     instructions: 'Use both tools.',
     provider,
     tools: [echoTool(effects), lookup],
@@ -188,6 +189,7 @@ it('preserves none when reset is enabled', async () => {
   expect(
     (
       await new Agent({
+        model: 'gpt-5.5',
         instructions: 'Answer.',
         provider,
         modelSettings: { toolChoice: 'none', resetToolChoice: true },
@@ -195,5 +197,57 @@ it('preserves none when reset is enabled', async () => {
     ).finalOutput,
   ).toBe('done');
   expect(server.requests[0].tool_choice).toBe('none');
+  localOnly(server);
+});
+
+it('keeps the original eligible catalog after a named manual restore releases forcing', async () => {
+  const effects: string[] = [];
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Read',
+    parameters: z.object({ key: z.string() }),
+    result: z.string(),
+  });
+  const server = new ModelServer([
+    [call('lookup', { key: 'pending' }, { callId: 'forced-manual' })],
+    [call('echo', { value: 'after-reset' }, { callId: 'eligible-other' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Read, then echo.',
+    provider,
+    tools: [lookup, echoTool(effects)],
+    modelSettings: { toolChoice: toolRef('lookup'), resetToolChoice: true },
+  });
+  await using original = await agent.session();
+  const batch = await (
+    await original.submit('go')
+  ).wait({ until: 'manual_tool' });
+  if (!('requests' in batch)) throw new Error('Expected a manual request');
+  const saved = parseSessionState(JSON.stringify(await original.suspend()));
+  await original.close();
+  expect(server.requests).toHaveLength(1);
+  expect(server.requests[0].tool_choice).toBe('required');
+  await using restored = await agent.session({ state: saved });
+  const pending = await restored.wait({ until: 'manual_tool' });
+  if (!('requests' in pending))
+    throw new Error('Expected a restored manual request');
+  const current = lookup.match(pending.requests[0]);
+  expect(current).toBeDefined();
+  await restored.respond(current!.reply('accepted'));
+  expect((await restored.wait()).finalOutput).toBe('done');
+  expect(effects).toEqual(['after-reset']);
+  expect(server.requests).toHaveLength(3);
+  expect(server.requests[1].tool_choice ?? 'auto').toBe('auto');
+  const declarations = (server.requests[1].tools as JsonObject[]).flatMap(
+    (spec) =>
+      spec.type === 'namespace' ? (spec.tools as JsonObject[]) : [spec],
+  );
+  expect(declarations.map((spec) => spec.name).sort()).toEqual([
+    'echo',
+    'lookup',
+  ]);
   localOnly(server);
 });
