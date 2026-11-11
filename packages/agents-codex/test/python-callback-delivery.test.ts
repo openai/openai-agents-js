@@ -163,9 +163,11 @@ it('aborts only the exact callback and releases it after its actual finally sett
     ]);
     await cleaning.promise;
     expect(siblingSignal!.aborted).toBe(false);
-    expect(peer.native._release_python_callback).not.toHaveBeenCalledWith(
-      first.wire,
-    );
+    expect(
+      peer.native._release_python_callback.mock.calls.map(
+        ([receipt]) => receipt,
+      ),
+    ).not.toContain(first.wire);
     release.resolve();
     await vi.waitFor(() =>
       expect(peer.native._release_python_callback).toHaveBeenCalledWith(
@@ -369,9 +371,11 @@ it.each(['request', 'selection'] as const)(
         { id: 'turn', msg: { type: '_sdk_callback_cancel', receipt } },
       ]);
       await cleaning.promise;
-      expect(peer.native._release_python_callback).not.toHaveBeenCalledWith(
-        wire,
-      );
+      expect(
+        peer.native._release_python_callback.mock.calls.map(
+          ([receipt]) => receipt,
+        ),
+      ).not.toContain(wire);
       if (kind === 'request')
         expect(
           JSON.parse(peer.native._reply_prepared_request.mock.calls[0][0])
@@ -451,7 +455,11 @@ it('retains a child selector receipt and cancels only its linked callback', asyn
       { ...envelope, msg: { type: '_sdk_callback_cancel', receipt } },
     ]);
     await cleaning.promise;
-    expect(peer.native._release_python_callback).not.toHaveBeenCalledWith(wire);
+    expect(
+      peer.native._release_python_callback.mock.calls.map(
+        ([receipt]) => receipt,
+      ),
+    ).not.toContain(wire);
     release.resolve();
     await vi.waitFor(() =>
       expect(peer.native._release_python_callback).toHaveBeenCalledWith(

@@ -42,51 +42,55 @@ function requestInstructions(request: JsonObject): string {
     .join('\n');
 }
 
-it('retains typed payload, callback context, declaration and acknowledgement', async () => {
-  const application = { account: 'captured' };
-  const effects: number[] = [];
-  const route = tool({
-    name: 'route_issue',
-    description: 'Issue routing',
-    parameters: z.object({ ticket: z.number().int() }),
-    execute({ ticket }, context: ToolContext<typeof application>) {
-      expect(context.context).toBe(application);
-      expect(context.callId).toBe('route-7');
-      effects.push(ticket);
-      return `accepted-ticket-${ticket}`;
-    },
-  });
-  const server = new ModelServer([
-    [call('route_issue', { ticket: 7 }, { callId: 'route-7' })],
-    [message('resolved')],
-  ]);
-  await using provider = await providerFor(server);
-  const target = new Agent<typeof application>({
-    instructions: 'TARGET_ONLY resolve',
-  });
-  await using session = await new Agent<typeof application>({
-    instructions: 'SOURCE_ONLY route',
-    model: 'gpt-5.5',
-    provider,
-    handoffs: [new Handoff(target, route)],
-  }).session({ context: application });
-  expect((await (await session.submit('Route')).wait()).finalOutput).toBe(
-    'resolved',
-  );
-  expect(effects).toEqual([7]);
-  const spec = (server.requests[0].tools as JsonObject[]).find(
-    (entry) => entry.name === 'route_issue',
-  );
-  expect(spec).toMatchObject({
-    description: 'Issue routing',
-    parameters: { properties: { ticket: { type: 'integer' } } },
-  });
-  expect(requestInstructions(server.requests[0])).toContain('SOURCE_ONLY');
-  expect(requestInstructions(server.requests[1])).toContain('TARGET_ONLY');
-  expect(output(server, 1, 'route-7')).toBe('accepted-ticket-7');
-  expect(await session.getActiveAgent()).toBe(target);
-  server.assertExhausted();
-});
+it.each([false, true])(
+  'retains typed payload, callback context, declaration and acknowledgement (declared tool=%s)',
+  async (declaredTool) => {
+    const application = { account: 'captured' };
+    const effects: number[] = [];
+    const route = tool({
+      name: 'route_issue',
+      description: 'Issue routing',
+      parameters: z.object({ ticket: z.number().int() }),
+      execute({ ticket }, context: ToolContext<typeof application>) {
+        expect(context.context).toBe(application);
+        expect(context.callId).toBe('route-7');
+        effects.push(ticket);
+        return `accepted-ticket-${ticket}`;
+      },
+    });
+    const server = new ModelServer([
+      [call('route_issue', { ticket: 7 }, { callId: 'route-7' })],
+      [message('resolved')],
+    ]);
+    await using provider = await providerFor(server);
+    const target = new Agent<typeof application>({
+      instructions: 'TARGET_ONLY resolve',
+    });
+    await using session = await new Agent<typeof application>({
+      instructions: 'SOURCE_ONLY route',
+      tools: declaredTool ? [route] : [],
+      model: 'gpt-5.5',
+      provider,
+      handoffs: [new Handoff(target, route)],
+    }).session({ context: application });
+    expect((await (await session.submit('Route')).wait()).finalOutput).toBe(
+      'resolved',
+    );
+    expect(effects).toEqual([7]);
+    const spec = (server.requests[0].tools as JsonObject[]).find(
+      (entry) => entry.name === 'route_issue',
+    );
+    expect(spec).toMatchObject({
+      description: 'Issue routing',
+      parameters: { properties: { ticket: { type: 'integer' } } },
+    });
+    expect(requestInstructions(server.requests[0])).toContain('SOURCE_ONLY');
+    expect(requestInstructions(server.requests[1])).toContain('TARGET_ONLY');
+    expect(output(server, 1, 'route-7')).toBe('accepted-ticket-7');
+    expect(await session.getActiveAgent()).toBe(target);
+    server.assertExhausted();
+  },
+);
 
 it('keeps a denied callback at the source before a later accepted transfer', async () => {
   const effects: number[] = [];
