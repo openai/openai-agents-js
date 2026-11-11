@@ -19,6 +19,7 @@ export interface ChildObservationProducer {
 
 /** Internal callback ownership for independently running native child turns. */
 export interface ChildCallbackOwner {
+  clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[];
   guardrailInput?: readonly JsonObject[];
   inputGuardrailsStarted: boolean;

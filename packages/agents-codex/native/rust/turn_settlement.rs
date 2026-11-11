@@ -52,6 +52,8 @@ pub(crate) struct Turn {
     local_exec_cancel_failed: AtomicBool,
     born_fenced: bool,
     same_id_recovery: bool,
+    pub(crate) client_search_catalogs:
+        Mutex<Vec<Arc<crate::python_tools::ClientToolSearchCatalog>>>,
     pub(crate) tool_proposal: Mutex<Option<crate::python_tools::TerminalProposal>>,
     model_attempt: Mutex<Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>>,
     provider_error: Mutex<
@@ -759,6 +761,7 @@ impl TurnLifecycleContributor for Contributor {
                 model_attempt: Mutex::default(),
                 provider_error: Mutex::default(),
                 tool_proposal: Mutex::default(),
+                client_search_catalogs: Mutex::default(),
             });
             let turn = input
                 .turn_store

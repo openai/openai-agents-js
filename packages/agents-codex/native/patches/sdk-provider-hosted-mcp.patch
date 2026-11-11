@@ -1,5 +1,5 @@
 diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
-index 98d69fb6dc55875fff86edb42d4110e4df0a2b69..fc94c5cb4c4ff6f153a6af7a8a6b99dd532d5866 100644
+index 98d69fb6..fc94c5cb 100644
 --- a/codex-rs/app-server/src/notification_media.rs
 +++ b/codex-rs/app-server/src/notification_media.rs
 @@ -50,6 +50,10 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
@@ -14,29 +14,29 @@ index 98d69fb6dc55875fff86edb42d4110e4df0a2b69..fc94c5cb4c4ff6f153a6af7a8a6b99dd
                  | ResponseItem::CodeInterpreterCall { .. }
                  | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
-index 8374c57e01cf4657a2ee35f8e2eb9cdeb0b68e9d..74c80892abb7e35baa9da57f2b50fed34d61caf9 100644
+index 1b82bd1d..66e3b7e2 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
-@@ -388,6 +388,9 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
-     let mut seen_namespaces = HashSet::new();
+@@ -389,6 +389,9 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
      for spec in tools {
          match spec {
+             DynamicToolSpec::ToolSearch(_) => { return Err("client tool search requires an extension-owned executor".to_string()); },
 +            DynamicToolSpec::HostedMcp(_) => {
 +                return Err("hosted MCP approval slots require an SDK executor".into());
 +            }
              DynamicToolSpec::Computer(tool) => {
                  tool.validate()?;
                  if !seen_tools.insert("computer") {
-@@ -1466,6 +1469,7 @@ impl ThreadRequestProcessor {
+@@ -1467,6 +1470,7 @@ impl ThreadRequestProcessor {
          let dynamic_tool_count: usize = dynamic_tools
              .iter()
              .map(|tool| match tool {
 +                DynamicToolSpec::HostedMcp(_) => 0,
                  DynamicToolSpec::Computer(_)
                  | DynamicToolSpec::Function(_)
-                 | DynamicToolSpec::Shell(_) => 1,
+                 | DynamicToolSpec::Shell(_)
 diff --git a/codex-rs/app-server/src/request_processors/turn_processor.rs b/codex-rs/app-server/src/request_processors/turn_processor.rs
-index df8890dc70ef25e6ba21298a116038e5ca4e3728..9be8870f4c55220f0a159ceb3fb6dfd74204c679 100644
+index df8890dc..9be8870f 100644
 --- a/codex-rs/app-server/src/request_processors/turn_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/turn_processor.rs
 @@ -66,6 +66,10 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
@@ -51,7 +51,7 @@ index df8890dc70ef25e6ba21298a116038e5ca4e3728..9be8870f4c55220f0a159ceb3fb6dfd7
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
-index 9bfcdbb3ec771463f932636f35d32a9c22fac35d..a4deba48ed92e864920f11ca29bade2cb1330603 100644
+index 9bfcdbb3..a4deba48 100644
 --- a/codex-rs/core/src/agent/control/spawn.rs
 +++ b/codex-rs/core/src/agent/control/spawn.rs
 @@ -111,6 +111,10 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool
@@ -66,7 +66,7 @@ index 9bfcdbb3ec771463f932636f35d32a9c22fac35d..a4deba48ed92e864920f11ca29bade2c
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index afc2ea3fa5164d29a7d4ccad1211538da40cf3f9..def3b557bc4ae085ddb17c13477bf0800e8651a9 100644
+index afc2ea3f..def3b557 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -1396,6 +1396,7 @@ impl ModelClient {
@@ -78,7 +78,7 @@ index afc2ea3fa5164d29a7d4ccad1211538da40cf3f9..def3b557bc4ae085ddb17c13477bf080
              }) || (request.request_controls.prompt.is_some()
                  && request.tools.is_none());
 diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
-index e338367edeed5019e124b3e1d0d82fe3a010a83b..326a81c9a052fe0c95ca24605cedf1115ede35c0 100644
+index e338367e..326a81c9 100644
 --- a/codex-rs/core/src/client_common.rs
 +++ b/codex-rs/core/src/client_common.rs
 @@ -189,6 +189,10 @@ fn normalize_image_details(items: &mut [ResponseItem], model_info: &ModelInfo) {
@@ -93,7 +93,7 @@ index e338367edeed5019e124b3e1d0d82fe3a010a83b..326a81c9a052fe0c95ca24605cedf111
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 8ad235e3e5ebe53e30567d9fc1dee7916f25afce..b874ae96d0120ea358a2358a8f583906b2c9287b 100644
+index 8ad235e3..b874ae96 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -957,6 +957,10 @@ fn reject_compaction_tool_output(item: &ResponseItem) -> CodexResult<()> {
@@ -108,7 +108,7 @@ index 8ad235e3e5ebe53e30567d9fc1dee7916f25afce..b874ae96d0120ea358a2358a8f583906
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
-index b3654ddc648463eca1b7ebbbca292241f635acc9..61b90421d4cfbce0a966d989b226e5d39f677bb6 100644
+index b3654ddc..61b90421 100644
 --- a/codex-rs/core/src/context_manager/history.rs
 +++ b/codex-rs/core/src/context_manager/history.rs
 @@ -1117,6 +1117,10 @@ pub(crate) fn is_api_message(
@@ -179,7 +179,7 @@ index b3654ddc648463eca1b7ebbbca292241f635acc9..61b90421d4cfbce0a966d989b226e5d3
          | ResponseItem::ItemReference { .. }
          | ResponseItem::Other => false,
 diff --git a/codex-rs/core/src/context_manager/normalize.rs b/codex-rs/core/src/context_manager/normalize.rs
-index 71bfaa87c2a7db2e9711cfc5e8f0e1cb1738c343..bd35f6c09344e55876369c71d667b737d059cb32 100644
+index 71bfaa87..bd35f6c0 100644
 --- a/codex-rs/core/src/context_manager/normalize.rs
 +++ b/codex-rs/core/src/context_manager/normalize.rs
 @@ -31,6 +31,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
@@ -236,7 +236,7 @@ index 71bfaa87c2a7db2e9711cfc5e8f0e1cb1738c343..bd35f6c09344e55876369c71d667b737
  
      // Insert synthetic outputs in reverse index order to avoid re-indexing.
 diff --git a/codex-rs/core/src/event_mapping.rs b/codex-rs/core/src/event_mapping.rs
-index f80a4bf49b618e5134450ad4931d54974d46d364..4d25dd03bc855d33ff897e5cdaf37a730fe6adb5 100644
+index f80a4bf4..4d25dd03 100644
 --- a/codex-rs/core/src/event_mapping.rs
 +++ b/codex-rs/core/src/event_mapping.rs
 @@ -255,6 +255,8 @@ pub fn parse_turn_item(item: &ResponseItem) -> Option<TurnItem> {
@@ -249,7 +249,7 @@ index f80a4bf49b618e5134450ad4931d54974d46d364..4d25dd03bc855d33ff897e5cdaf37a73
          | ResponseItem::ShellCallOutput { id, .. } => Some(TurnItem::HostedToolCall(
              codex_protocol::items::HostedToolCallItem {
 diff --git a/codex-rs/core/src/image_preparation.rs b/codex-rs/core/src/image_preparation.rs
-index b1cb1cbe028f85cc972a93b2cd4cd4dc1cd2ede4..228a3d8dacafb85ebcf37a3b9879a80566b011ea 100644
+index b1cb1cbe..228a3d8d 100644
 --- a/codex-rs/core/src/image_preparation.rs
 +++ b/codex-rs/core/src/image_preparation.rs
 @@ -282,6 +282,10 @@ pub(crate) async fn prepare_response_items(
@@ -264,7 +264,7 @@ index b1cb1cbe028f85cc972a93b2cd4cd4dc1cd2ede4..228a3d8dacafb85ebcf37a3b9879a805
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/session/sdk_produced_items.rs b/codex-rs/core/src/session/sdk_produced_items.rs
-index 1fdf6ea24cb402e2c654e13c9a424fe01c2e82b1..0f0fccc74ab7c4462b09bec302f8df3f8e1781c1 100644
+index 1fdf6ea2..0f0fccc7 100644
 --- a/codex-rs/core/src/session/sdk_produced_items.rs
 +++ b/codex-rs/core/src/session/sdk_produced_items.rs
 @@ -139,6 +139,8 @@ fn is_produced_response(item: &ResponseItem) -> bool {
@@ -277,7 +277,7 @@ index 1fdf6ea24cb402e2c654e13c9a424fe01c2e82b1..0f0fccc74ab7c4462b09bec302f8df3f
          | ResponseItem::ShellCallOutput { .. }
          | ResponseItem::ImageGenerationCall { .. } => true,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index de9fd1e3824495f204554f611c305048b4d09fdf..fbc7bec82dacb04c5474a3928468a17f5d0993eb 100644
+index de9fd1e3..fbc7bec8 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -3875,6 +3875,7 @@ fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
@@ -300,7 +300,7 @@ index de9fd1e3824495f204554f611c305048b4d09fdf..fbc7bec82dacb04c5474a3928468a17f
                          | ResponseItem::CodeInterpreterCall { .. }
                          | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
-index 8421b9799ce2c268994cc98cde8a59430b24106c..7e432958373c5ab8acab9b70a9f8af487e60d0e3 100644
+index 8421b979..7e432958 100644
 --- a/codex-rs/core/src/stream_events_utils.rs
 +++ b/codex-rs/core/src/stream_events_utils.rs
 @@ -181,6 +181,8 @@ fn response_item_may_include_external_context(item: &ResponseItem) -> bool {
@@ -363,10 +363,10 @@ index 8421b9799ce2c268994cc98cde8a59430b24106c..7e432958373c5ab8acab9b70a9f8af48
              Some(ResponseItem::FunctionCallOutput {
                  id: None,
 diff --git a/codex-rs/core/src/tools/context.rs b/codex-rs/core/src/tools/context.rs
-index 0b3a35c11c2b64c5127a0467183eeb4fe4c0eef0..22fe576d7bae39e6eb90d86ea239cf8eac142cea 100644
+index 6845f367..18eed832 100644
 --- a/codex-rs/core/src/tools/context.rs
 +++ b/codex-rs/core/src/tools/context.rs
-@@ -371,6 +371,14 @@ impl ToolOutput for AbortedToolOutput {
+@@ -333,6 +333,14 @@ impl ToolOutput for AbortedToolOutput {
  
      fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
          match payload {
@@ -378,11 +378,11 @@ index 0b3a35c11c2b64c5127a0467183eeb4fe4c0eef0..22fe576d7bae39e6eb90d86ea239cf8e
 +                call_id,
 +                payload,
 +            ),
-             ToolPayload::ToolSearch { .. } => ResponseInputItem::ToolSearchOutput {
-                 call_id: call_id.to_string(),
-                 status: "completed".to_string(),
+             ToolPayload::ToolSearch { .. } | ToolPayload::ClientToolSearch(_) => {
+                 ResponseInputItem::ToolSearchOutput {
+                     call_id: call_id.to_string(),
 diff --git a/codex-rs/core/src/tools/executed_tool_calls.rs b/codex-rs/core/src/tools/executed_tool_calls.rs
-index 03443d8455d15c2bd0066d1e34ee2f5343912f63..6b06a499934b50b3724546ea90b1d45e685806a0 100644
+index 6fb65c1a..2bdead49 100644
 --- a/codex-rs/core/src/tools/executed_tool_calls.rs
 +++ b/codex-rs/core/src/tools/executed_tool_calls.rs
 @@ -742,6 +742,9 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
@@ -395,7 +395,7 @@ index 03443d8455d15c2bd0066d1e34ee2f5343912f63..6b06a499934b50b3724546ea90b1d45e
          ToolPayload::Custom { input } => serialized_json_bytes(input).unwrap_or(usize::MAX),
          ToolPayload::ToolSearch { arguments } => {
              serialized_json_bytes(arguments).unwrap_or(usize::MAX)
-@@ -756,6 +759,9 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
+@@ -757,6 +760,9 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
              | ToolPayload::Function { arguments }
              | ToolPayload::Shell { arguments } => serde_json::from_str(arguments)
                  .unwrap_or_else(|_| JsonValue::String(arguments.clone())),
@@ -405,7 +405,7 @@ index 03443d8455d15c2bd0066d1e34ee2f5343912f63..6b06a499934b50b3724546ea90b1d45e
              ToolPayload::Custom { input } => JsonValue::String(input.clone()),
              ToolPayload::ToolSearch { arguments } => {
                  serde_json::to_value(arguments).unwrap_or_default()
-@@ -773,6 +779,7 @@ fn input_call_id(item: &ResponseItem) -> Option<&str> {
+@@ -775,6 +781,7 @@ fn input_call_id(item: &ResponseItem) -> Option<&str> {
          | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id),
          ResponseItem::ToolSearchCall { call_id, .. }
          | ResponseItem::LocalShellCall { call_id, .. } => call_id.as_deref(),
@@ -413,7 +413,7 @@ index 03443d8455d15c2bd0066d1e34ee2f5343912f63..6b06a499934b50b3724546ea90b1d45e
          _ => None,
      }
  }
-@@ -783,6 +790,10 @@ fn output_call_id(item: &ResponseItem) -> Option<&str> {
+@@ -785,6 +792,10 @@ fn output_call_id(item: &ResponseItem) -> Option<&str> {
          | ResponseItem::ToolSearchOutput { call_id, .. } => call_id.as_deref(),
          ResponseItem::ComputerCallOutput { call_id, .. }
          | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id),
@@ -425,10 +425,10 @@ index 03443d8455d15c2bd0066d1e34ee2f5343912f63..6b06a499934b50b3724546ea90b1d45e
      }
  }
 diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
-index 58019ad574bdf5e45b301f17a4e2a65e44de05c2..6dd61fb8f66caf211c5eea7e645bd640490e9d29 100644
+index 22148fd7..e4d4b345 100644
 --- a/codex-rs/core/src/tools/handlers/extension_tools.rs
 +++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
-@@ -128,6 +128,11 @@ impl CoreToolRuntime for ExtensionToolAdapter {
+@@ -132,6 +132,11 @@ impl CoreToolRuntime for ExtensionToolAdapter {
                  ToolSpec::Computer { .. }
                      | ToolSpec::ComputerUsePreview { .. }
                      | ToolSpec::ApplicationShell { .. }
@@ -440,7 +440,7 @@ index 58019ad574bdf5e45b301f17a4e2a65e44de05c2..6dd61fb8f66caf211c5eea7e645bd640
              ),
              ToolPayload::Custom { .. } => match self.0.spec() {
                  ToolSpec::Freeform(_) => true,
-@@ -141,6 +146,7 @@ impl CoreToolRuntime for ExtensionToolAdapter {
+@@ -145,6 +150,7 @@ impl CoreToolRuntime for ExtensionToolAdapter {
                  ToolSpec::Function(_)
                  | ToolSpec::ToolSearch { .. }
                  | ToolSpec::FileSearch(_)
@@ -449,7 +449,7 @@ index 58019ad574bdf5e45b301f17a4e2a65e44de05c2..6dd61fb8f66caf211c5eea7e645bd640
                  | ToolSpec::Shell(_)
                  | ToolSpec::ApplicationShell { .. }
 diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
-index 8a8fc04505ab2fe383cc85eb7661f8b0b0e3917a..1c20d63afaf81834daeba332d49a69e336dcb38c 100644
+index d706cdb8..1f86f3e4 100644
 --- a/codex-rs/core/src/tools/parallel.rs
 +++ b/codex-rs/core/src/tools/parallel.rs
 @@ -266,7 +266,12 @@ impl ToolCallRuntime {
@@ -506,10 +506,10 @@ index 8a8fc04505ab2fe383cc85eb7661f8b0b0e3917a..1c20d63afaf81834daeba332d49a69e3
              ToolPayload::Shell { arguments } => {
                  codex_tools::ApplicationShellOutput::error(arguments, message)
 diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
-index ec6c3a1baa9319aeec30647efcf23184d8199c85..51ddcbdf9854af1f432f245231c9c3c3dbf925c2 100644
+index 8d5a6910..e47ac871 100644
 --- a/codex-rs/core/src/tools/registry.rs
 +++ b/codex-rs/core/src/tools/registry.rs
-@@ -520,6 +520,7 @@ impl ToolRegistry {
+@@ -550,6 +550,7 @@ impl ToolRegistry {
                  | ToolSpec::Freeform(_)
                  | ToolSpec::ToolSearch { .. }
                  | ToolSpec::FileSearch(_)
@@ -517,7 +517,7 @@ index ec6c3a1baa9319aeec30647efcf23184d8199c85..51ddcbdf9854af1f432f245231c9c3c3
                  | ToolSpec::CodeInterpreter(_)
                  | ToolSpec::Shell(_)
                  | ToolSpec::ApplicationShell { .. }
-@@ -851,7 +852,8 @@ impl ToolRegistry {
+@@ -882,7 +883,8 @@ impl ToolRegistry {
                          && !matches!(&final_item, codex_protocol::models::ResponseItem::ComputerCallOutput { call_id, .. } if call_id == &invocation.call_id)
                      {
                          return Err(FunctionCallError::Fatal(
@@ -527,7 +527,7 @@ index ec6c3a1baa9319aeec30647efcf23184d8199c85..51ddcbdf9854af1f432f245231c9c3c3
                          ));
                      }
                      if matches!(invocation.payload, ToolPayload::Shell { .. })
-@@ -866,6 +868,14 @@ impl ToolRegistry {
+@@ -897,6 +899,14 @@ impl ToolRegistry {
                              "native shell result must retain its protocol type and call ID".into(),
                          ));
                      }
@@ -543,10 +543,10 @@ index ec6c3a1baa9319aeec30647efcf23184d8199c85..51ddcbdf9854af1f432f245231c9c3c3
                          invocation
                              .session
 diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
-index 98e8d570686d66d2033c930dac52806e88af14a9..c6de988ea99a1ee51b86b86b9ae2ceac62bf4a8d 100644
+index 7ff74136..e83e0684 100644
 --- a/codex-rs/core/src/tools/router.rs
 +++ b/codex-rs/core/src/tools/router.rs
-@@ -211,6 +211,7 @@ impl ToolRouter {
+@@ -210,6 +210,7 @@ impl ToolRouter {
                  }
                  ToolSpec::ToolSearch { .. }
                  | ToolSpec::FileSearch(_)
@@ -554,7 +554,7 @@ index 98e8d570686d66d2033c930dac52806e88af14a9..c6de988ea99a1ee51b86b86b9ae2ceac
                  | ToolSpec::CodeInterpreter(_)
                  | ToolSpec::Shell(_)
                  | ToolSpec::ImageGeneration(_)
-@@ -365,6 +366,13 @@ impl ToolRouter {
+@@ -393,6 +394,13 @@ impl ToolRouter {
  
      /// Check the retained dispatch plan without hooks, accounting, or parse-error logging.
      pub(crate) fn admits_response_item(&self, item: &ResponseItem) -> bool {
@@ -568,7 +568,7 @@ index 98e8d570686d66d2033c930dac52806e88af14a9..c6de988ea99a1ee51b86b86b9ae2ceac
          self.build_model_tool_call(item.clone())
              .ok()
              .flatten()
-@@ -412,6 +420,36 @@ impl ToolRouter {
+@@ -440,6 +448,36 @@ impl ToolRouter {
                      encrypted_function_args,
                  }))
              }
@@ -606,7 +606,7 @@ index 98e8d570686d66d2033c930dac52806e88af14a9..c6de988ea99a1ee51b86b86b9ae2ceac
                  call_id: Some(call_id),
                  execution,
 diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
-index 1a4e8587dd68b42461497ca16ab98262842b5ec4..3ed0f5099701e30d10befc6f4be1736e0893c8de 100644
+index 684af55e..4d87b25a 100644
 --- a/codex-rs/core/src/tools/router_tests.rs
 +++ b/codex-rs/core/src/tools/router_tests.rs
 @@ -245,6 +245,105 @@ fn test_tool_router(
@@ -715,16 +715,16 @@ index 1a4e8587dd68b42461497ca16ab98262842b5ec4..3ed0f5099701e30d10befc6f4be1736e
  #[tokio::test]
  async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow::Result<()> {
      let (_, turn) = make_session_and_context().await;
-@@ -740,6 +839,7 @@ fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<Str
-             | ToolSpec::Freeform(_)
+@@ -741,6 +840,7 @@ fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<Str
              | ToolSpec::ToolSearch { .. }
+             | ToolSpec::ProviderToolSearch(_)
              | ToolSpec::FileSearch(_)
 +            | ToolSpec::Mcp(_)
              | ToolSpec::CodeInterpreter(_)
              | ToolSpec::ImageGeneration(_)
              | ToolSpec::Shell(_)
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 9aa100852b0c2988a9ee79b11ae814af85f2923e..d21f8f938d0ff2f8f7ec77050baa842ebfffc196 100644
+index 0789dae8..3d2b5d99 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
 @@ -269,7 +269,7 @@ pub(crate) async fn build_tool_router(
@@ -736,7 +736,7 @@ index 9aa100852b0c2988a9ee79b11ae814af85f2923e..d21f8f938d0ff2f8f7ec77050baa842e
              .collect::<Vec<_>>();
          if matches!(
              effective_tool_mode(turn_context, model_info),
-@@ -345,7 +345,7 @@ pub(crate) async fn build_tool_router(
+@@ -354,7 +354,7 @@ pub(crate) async fn build_tool_router(
              registry.remove(&name);
          }
          hosted_specs.retain(|spec| {
@@ -745,7 +745,7 @@ index 9aa100852b0c2988a9ee79b11ae814af85f2923e..d21f8f938d0ff2f8f7ec77050baa842e
          });
      }
      finalize_selected_tool_router(
-@@ -569,6 +569,17 @@ pub(crate) fn finalize_tool_router(
+@@ -578,6 +578,17 @@ pub(crate) fn finalize_tool_router(
      )
  }
  
@@ -763,7 +763,7 @@ index 9aa100852b0c2988a9ee79b11ae814af85f2923e..d21f8f938d0ff2f8f7ec77050baa842e
  fn finalize_selected_tool_router(
      turn_context: &TurnContext,
      model_info: &ModelInfo,
-@@ -580,7 +591,7 @@ fn finalize_selected_tool_router(
+@@ -589,7 +600,7 @@ fn finalize_selected_tool_router(
      let allows = |name: &ToolName| {
          selected.is_none_or(|names| names.contains(&name.clone().with_default_namespace()))
      };
@@ -772,7 +772,7 @@ index 9aa100852b0c2988a9ee79b11ae814af85f2923e..d21f8f938d0ff2f8f7ec77050baa842e
      apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
      enforce_strict_3p_tools(turn_context, model_info, &mut registry);
      let tool_mode = effective_tool_mode(turn_context, model_info);
-@@ -679,6 +690,7 @@ fn finalize_selected_tool_router(
+@@ -705,6 +716,7 @@ fn finalize_selected_tool_router(
                      ToolSpec::Function(_) | ToolSpec::Freeform(_) => DEFAULT_FUNCTION_NAMESPACE,
                      ToolSpec::ToolSearch { .. } => TOOL_SEARCH_TOOL_NAME,
                      ToolSpec::FileSearch(_)
@@ -780,7 +780,7 @@ index 9aa100852b0c2988a9ee79b11ae814af85f2923e..d21f8f938d0ff2f8f7ec77050baa842e
                      | ToolSpec::CodeInterpreter(_)
                      | ToolSpec::Shell(_)
                      | ToolSpec::ApplicationShell { .. }
-@@ -1120,6 +1132,7 @@ fn register_code_mode_executors(
+@@ -1160,6 +1172,7 @@ fn register_code_mode_executors(
              ToolSpec::Namespace(_)
              | ToolSpec::ToolSearch { .. }
              | ToolSpec::FileSearch(_)
@@ -788,29 +788,30 @@ index 9aa100852b0c2988a9ee79b11ae814af85f2923e..d21f8f938d0ff2f8f7ec77050baa842e
              | ToolSpec::CodeInterpreter(_)
              | ToolSpec::Shell(_)
              | ToolSpec::ApplicationShell { .. }
-@@ -1720,6 +1733,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
+@@ -1761,7 +1774,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
  fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mut ToolRegistry) {
      for spec in dynamic_tools {
          match spec {
-+            // The SDK attaches a scoped approval executor through ToolContributor.
-+            DynamicToolSpec::HostedMcp(_) => {}
+-            DynamicToolSpec::ToolSearch(_) => {},
++            // SDK extensions attach these executors through ToolContributor.
++            DynamicToolSpec::ToolSearch(_) | DynamicToolSpec::HostedMcp(_) => {}
              DynamicToolSpec::Computer(tool) => {
                  if let Ok(handler) = super::handlers::computer::ComputerToolHandler::new(tool) {
                      registry.register_external(Arc::new(handler));
 diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
-index 27f595448627a138ea48c918673f1a70903cf381..71d46e68661de913d8cf60663aae4644deca9b93 100644
+index 5529dbd8..d5b4c0e1 100644
 --- a/codex-rs/core/src/tools/spec_plan_tests.rs
 +++ b/codex-rs/core/src/tools/spec_plan_tests.rs
-@@ -113,6 +113,7 @@ impl ToolPlanProbe {
-                 | ToolSpec::Function(_)
+@@ -114,6 +114,7 @@ impl ToolPlanProbe {
                  | ToolSpec::ToolSearch { .. }
+                 | ToolSpec::ProviderToolSearch(_)
                  | ToolSpec::FileSearch(_)
 +                | ToolSpec::Mcp(_)
                  | ToolSpec::CodeInterpreter(_)
                  | ToolSpec::ImageGeneration(_)
                  | ToolSpec::Shell(_)
 diff --git a/codex-rs/core/src/tools/tool_dispatch_trace.rs b/codex-rs/core/src/tools/tool_dispatch_trace.rs
-index a6dcb2eb0b7813117ab9a69f593c5ab2c22678ca..dedb56346aae1c623a8dd99aa797b0b310e89ed8 100644
+index c4aea9d2..645df57e 100644
 --- a/codex-rs/core/src/tools/tool_dispatch_trace.rs
 +++ b/codex-rs/core/src/tools/tool_dispatch_trace.rs
 @@ -116,6 +116,9 @@ fn tool_dispatch_payload(payload: &ToolPayload) -> ToolDispatchPayload {
@@ -824,7 +825,7 @@ index a6dcb2eb0b7813117ab9a69f593c5ab2c22678ca..dedb56346aae1c623a8dd99aa797b0b3
              arguments: arguments.clone(),
          },
 diff --git a/codex-rs/core/src/tools/tool_namespaces_info.rs b/codex-rs/core/src/tools/tool_namespaces_info.rs
-index 3d91b344fd1c9205b8ff53e5c3a2c7f4f32863b8..965370c3f2d166e0f6a149dbc73fd9b3455a590e 100644
+index 0b9f74af..82ad63da 100644
 --- a/codex-rs/core/src/tools/tool_namespaces_info.rs
 +++ b/codex-rs/core/src/tools/tool_namespaces_info.rs
 @@ -41,6 +41,7 @@ pub(super) fn collect_tool_namespaces_info(
@@ -836,7 +837,7 @@ index 3d91b344fd1c9205b8ff53e5c3a2c7f4f32863b8..965370c3f2d166e0f6a149dbc73fd9b3
              | ToolSpec::Shell(_)
              | ToolSpec::ApplicationShell { .. }
 diff --git a/codex-rs/core/src/turn_timing.rs b/codex-rs/core/src/turn_timing.rs
-index 1df591e9e3456529e700e865a973f5fb2bed47e6..bc5c06a8cb3bd0d421fe2cc3fe07a040d51deaa9 100644
+index 1df591e9..bc5c06a8 100644
 --- a/codex-rs/core/src/turn_timing.rs
 +++ b/codex-rs/core/src/turn_timing.rs
 @@ -441,6 +441,9 @@ fn response_item_records_turn_ttft(item: &ResponseItem) -> bool {
@@ -858,7 +859,7 @@ index 1df591e9e3456529e700e865a973f5fb2bed47e6..bc5c06a8cb3bd0d421fe2cc3fe07a040
          | ResponseItem::ItemReference { .. }
          | ResponseItem::Other => false,
 diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/action.rs b/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
-index b8005b8883d9cc21e279cfbe34360a1b7a508bf6..62a9b27f7f983e8938e56e01198863d5f95c6728 100644
+index e8a8e1e7..a1ce7b2e 100644
 --- a/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
 +++ b/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
 @@ -28,6 +28,7 @@ impl GuardianAction {
@@ -867,10 +868,10 @@ index b8005b8883d9cc21e279cfbe34360a1b7a508bf6..62a9b27f7f983e8938e56e01198863d5
              ToolPayload::Custom { input } => serde_json::Value::String(input),
 +            ToolPayload::HostedMcpApproval { request } => json!(request),
              ToolPayload::ToolSearch { arguments } => json!(arguments),
+             ToolPayload::ClientToolSearch(call) => call.arguments,
          };
-         let mut action = match arguments {
 diff --git a/codex-rs/ext/image-generation/src/tool.rs b/codex-rs/ext/image-generation/src/tool.rs
-index 062aff925d839911cd68b724a18228f5afbe0282..c9f7e84eab481cfcc8efc45466b12dbc579cfdca 100644
+index 062aff92..c9f7e84e 100644
 --- a/codex-rs/ext/image-generation/src/tool.rs
 +++ b/codex-rs/ext/image-generation/src/tool.rs
 @@ -523,6 +523,10 @@ fn recent_images(
@@ -885,7 +886,7 @@ index 062aff925d839911cd68b724a18228f5afbe0282..c9f7e84eab481cfcc8efc45466b12dbc
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/guardian-context/src/transcript.rs b/codex-rs/guardian-context/src/transcript.rs
-index 155962777e7e440d24fd579769179386948ab97f..496f55ef71f19fde1bdf273cde63d6d590a3280b 100644
+index 15596277..496f55ef 100644
 --- a/codex-rs/guardian-context/src/transcript.rs
 +++ b/codex-rs/guardian-context/src/transcript.rs
 @@ -346,6 +346,10 @@ pub fn collect_transcript(
@@ -900,7 +901,7 @@ index 155962777e7e440d24fd579769179386948ab97f..496f55ef71f19fde1bdf273cde63d6d5
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/history/src/sdk_originals.rs b/codex-rs/history/src/sdk_originals.rs
-index d77c9401434190281828714dc286d4462b8d7317..c45ea3c7160fe48e35bd4a5582ed38c8982b7be1 100644
+index d77c9401..c45ea3c7 100644
 --- a/codex-rs/history/src/sdk_originals.rs
 +++ b/codex-rs/history/src/sdk_originals.rs
 @@ -73,6 +73,11 @@ pub fn input_projection(value: &str) -> Result<Option<ResponseItem>, String> {
@@ -916,7 +917,7 @@ index d77c9401434190281828714dc286d4462b8d7317..c45ea3c7160fe48e35bd4a5582ed38c8
          | ResponseItem::ConfigurationUpdate { .. }
          | ResponseItem::CompactionTrigger { .. } => None,
 diff --git a/codex-rs/otel/src/events/session_telemetry.rs b/codex-rs/otel/src/events/session_telemetry.rs
-index 85546fdbfe05f43ba86db8adc558d173efa42282..e24bfc7a22922d08596cdc6d15e4e1e9f3b143ba 100644
+index 85546fdb..e24bfc7a 100644
 --- a/codex-rs/otel/src/events/session_telemetry.rs
 +++ b/codex-rs/otel/src/events/session_telemetry.rs
 @@ -1419,6 +1419,10 @@ impl SessionTelemetry {
@@ -931,10 +932,10 @@ index 85546fdbfe05f43ba86db8adc558d173efa42282..e24bfc7a22922d08596cdc6d15e4e1e9
              ResponseItem::CodeInterpreterCall { .. } => "code_interpreter_call".into(),
              ResponseItem::ShellCall { .. } => "shell_call".into(),
 diff --git a/codex-rs/protocol/src/dynamic_tools.rs b/codex-rs/protocol/src/dynamic_tools.rs
-index 7a067e62fef2c97499c661d49705d76e819ef311..5b5f475eddd2bf90ffc95965ed7ecd40d6ae023b 100644
+index 374498f5..a7711a33 100644
 --- a/codex-rs/protocol/src/dynamic_tools.rs
 +++ b/codex-rs/protocol/src/dynamic_tools.rs
-@@ -15,6 +15,7 @@ pub enum DynamicToolSpec {
+@@ -16,6 +16,7 @@ pub enum DynamicToolSpec {
      Function(DynamicToolFunctionSpec),
      Namespace(DynamicToolNamespaceSpec),
      Shell(DynamicShellToolSpec),
@@ -942,7 +943,7 @@ index 7a067e62fef2c97499c661d49705d76e819ef311..5b5f475eddd2bf90ffc95965ed7ecd40
  }
  
  /// Shell execution is supplied by the SDK host. Skills describe its local environment.
-@@ -458,3 +459,45 @@ mod image_reference_tests {
+@@ -480,3 +481,45 @@ mod image_reference_tests {
          assert!(typescript.contains("{ fileId: string; imageUrl?: never }"));
      }
  }
@@ -989,7 +990,7 @@ index 7a067e62fef2c97499c661d49705d76e819ef311..5b5f475eddd2bf90ffc95965ed7ecd40
 +    }
 +}
 diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
-index ddaf5cf8c7f8bde2cbc113edde2130ffd6b2c194..58de958a043ae9ee0d235ff941cb796482b91122 100644
+index ddaf5cf8..58de958a 100644
 --- a/codex-rs/protocol/src/models.rs
 +++ b/codex-rs/protocol/src/models.rs
 @@ -865,6 +865,16 @@ pub enum ResponseInputItem {
@@ -1246,7 +1247,7 @@ index ddaf5cf8c7f8bde2cbc113edde2130ffd6b2c194..58de958a043ae9ee0d235ff941cb7964
      fn hosted_response_items_preserve_nullable_and_unknown_provider_fields() {
          for value in [
 diff --git a/codex-rs/rollout/src/persistence_metrics.rs b/codex-rs/rollout/src/persistence_metrics.rs
-index 0660e04f335db4c86581f0e7b34e6385f902b03b..aa7063fd0a7dc410a92c4914cf1b4a7387c67614 100644
+index 0660e04f..aa7063fd 100644
 --- a/codex-rs/rollout/src/persistence_metrics.rs
 +++ b/codex-rs/rollout/src/persistence_metrics.rs
 @@ -333,6 +333,10 @@ fn response_item_type(item: &ResponseItemEnvelope) -> &'static str {
@@ -1261,7 +1262,7 @@ index 0660e04f335db4c86581f0e7b34e6385f902b03b..aa7063fd0a7dc410a92c4914cf1b4a73
          ResponseItem::CodeInterpreterCall { .. } => "response.code_interpreter_call",
          ResponseItem::ShellCall { .. } => "response.shell_call",
 diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
-index 7e56194dea2439396656831a6f2fcd54d2e5660d..fca83eb842b408c98f1dc56f414c010ce2261fa2 100644
+index 7e56194d..fca83eb8 100644
 --- a/codex-rs/rollout/src/policy.rs
 +++ b/codex-rs/rollout/src/policy.rs
 @@ -95,6 +95,10 @@ pub fn should_persist_response_item(item: &ResponseItem) -> bool {
@@ -1287,7 +1288,7 @@ index 7e56194dea2439396656831a6f2fcd54d2e5660d..fca83eb842b408c98f1dc56f414c010c
          | ResponseItem::CodeInterpreterCall { .. }
          | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/tools/src/code_mode.rs b/codex-rs/tools/src/code_mode.rs
-index ae01b6c466e6562decf2c60b0d01b7306e9a387f..791e92a31e638cc946521a5eb02697079b8360a2 100644
+index 6ea3aa90..b1912d3e 100644
 --- a/codex-rs/tools/src/code_mode.rs
 +++ b/codex-rs/tools/src/code_mode.rs
 @@ -225,6 +225,7 @@ fn code_mode_tool_definitions_for_spec(
@@ -1299,21 +1300,21 @@ index ae01b6c466e6562decf2c60b0d01b7306e9a387f..791e92a31e638cc946521a5eb0269707
          | ToolSpec::Shell(_)
          | ToolSpec::ApplicationShell { .. }
 diff --git a/codex-rs/tools/src/hosted_tools.rs b/codex-rs/tools/src/hosted_tools.rs
-index 822a1beae81402b949a94b3b3a34d3619844ca81..35a393e3b7b387e43cc17fc7b5307cbfd9c8bf20 100644
+index d2f49c33..3c64fc35 100644
 --- a/codex-rs/tools/src/hosted_tools.rs
 +++ b/codex-rs/tools/src/hosted_tools.rs
-@@ -14,6 +14,7 @@ pub enum HostedToolSpec {
-     CodeInterpreter(CodeInterpreterTool),
+@@ -15,6 +15,7 @@ pub enum HostedToolSpec {
      Shell(HostedShellTool),
      ImageGeneration(ImageGenerationTool),
+     ToolSearch(ProviderToolSearch),
 +    Mcp(HostedMcpTool),
  }
  
  impl From<HostedToolSpec> for crate::ToolSpec {
-@@ -23,6 +24,82 @@ impl From<HostedToolSpec> for crate::ToolSpec {
-             HostedToolSpec::CodeInterpreter(config) => Self::CodeInterpreter(config),
+@@ -25,6 +26,82 @@ impl From<HostedToolSpec> for crate::ToolSpec {
              HostedToolSpec::Shell(config) => Self::Shell(config),
              HostedToolSpec::ImageGeneration(config) => Self::ImageGeneration(config),
+             HostedToolSpec::ToolSearch(config) => Self::ProviderToolSearch(config),
 +            HostedToolSpec::Mcp(config) => Self::Mcp(config),
 +        }
 +    }
@@ -1393,7 +1394,7 @@ index 822a1beae81402b949a94b3b3a34d3619844ca81..35a393e3b7b387e43cc17fc7b5307cbf
          }
      }
  }
-@@ -200,6 +277,30 @@ mod tests {
+@@ -264,6 +341,30 @@ mod tests {
      use super::*;
      use serde_json::json;
  
@@ -1425,7 +1426,7 @@ index 822a1beae81402b949a94b3b3a34d3619844ca81..35a393e3b7b387e43cc17fc7b5307cbf
      fn hosted_declarations_serialize_provider_fields_without_include_flag() {
          let input = json!({"tools": [
 diff --git a/codex-rs/tools/src/tool_output.rs b/codex-rs/tools/src/tool_output.rs
-index 2f51a493325ed6ae589b797382582926421f8f25..4afd5f337e7a5038e6520287505973c782848393 100644
+index 08e45659..418d810e 100644
 --- a/codex-rs/tools/src/tool_output.rs
 +++ b/codex-rs/tools/src/tool_output.rs
 @@ -289,6 +289,16 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue
@@ -1446,35 +1447,35 @@ index 2f51a493325ed6ae589b797382582926421f8f25..4afd5f337e7a5038e6520287505973c7
          ResponseInputItem::McpToolCallOutput { output, .. } => serde_json::to_value(output)
              .unwrap_or_else(|err| {
 diff --git a/codex-rs/tools/src/tool_payload.rs b/codex-rs/tools/src/tool_payload.rs
-index 035abba527a1e94cac747e994fa4c66bc585433c..5fbfafe1e1bc19f7bf96a222a73dc5ef2b932ea0 100644
+index 7e3ffcb8..3049547d 100644
 --- a/codex-rs/tools/src/tool_payload.rs
 +++ b/codex-rs/tools/src/tool_payload.rs
-@@ -1,5 +1,7 @@
+@@ -1,6 +1,6 @@
  use std::borrow::Cow;
  
-+use crate::HostedMcpApprovalRequest;
-+
- use codex_protocol::models::SearchToolCallParams;
+-use crate::{ToolName, ToolSearchInfo};
++use crate::{HostedMcpApprovalRequest, ToolName, ToolSearchInfo};
+ use serde_json::Value;
  
- /// Canonical payload shapes accepted by model-visible tool runtimes.
-@@ -8,6 +10,7 @@ pub enum ToolPayload {
+ use codex_protocol::models::SearchToolCallParams;
+@@ -11,6 +11,7 @@ pub enum ToolPayload {
      Computer { arguments: String },
      Shell { arguments: String },
      Function { arguments: String },
 +    HostedMcpApproval { request: HostedMcpApprovalRequest },
      ToolSearch { arguments: SearchToolCallParams },
+     ClientToolSearch(ClientToolSearchCall),
      Custom { input: String },
- }
-@@ -18,6 +21,7 @@ impl ToolPayload {
+@@ -22,6 +23,7 @@ impl ToolPayload {
              ToolPayload::Computer { .. } => Cow::Borrowed("[native computer call]"),
              ToolPayload::Shell { .. } => Cow::Borrowed("[native shell call]"),
              ToolPayload::Function { arguments } => Cow::Borrowed(arguments),
 +            ToolPayload::HostedMcpApproval { .. } => Cow::Borrowed("[hosted MCP approval request]"),
              ToolPayload::ToolSearch { arguments } => Cow::Owned(arguments.query.clone()),
              ToolPayload::Custom { input } => Cow::Borrowed(input),
-         }
+             ToolPayload::ClientToolSearch(_) => Cow::Borrowed("[native client tool search]"),
 diff --git a/codex-rs/tools/src/tool_search.rs b/codex-rs/tools/src/tool_search.rs
-index c5d88af41f58881aa0f094005738467d6e383b60..4b5d605de0c413b238534dfaa59529c6294f2d04 100644
+index 94d236e9..cb3e6b7a 100644
 --- a/codex-rs/tools/src/tool_search.rs
 +++ b/codex-rs/tools/src/tool_search.rs
 @@ -45,6 +45,7 @@ impl ToolSearchInfo {
@@ -1485,7 +1486,7 @@ index c5d88af41f58881aa0f094005738467d6e383b60..4b5d605de0c413b238534dfaa59529c6
              | ToolSpec::CodeInterpreter(_)
              | ToolSpec::Shell(_)
              | ToolSpec::ApplicationShell { .. }
-@@ -96,6 +97,7 @@ fn normalize_search_spec(spec: ToolSpec) -> Option<LoadableToolSpec> {
+@@ -97,6 +98,7 @@ fn normalize_search_spec(spec: ToolSpec) -> Option<LoadableToolSpec> {
          ToolSpec::Namespace(namespace) => namespace,
          ToolSpec::ToolSearch { .. }
          | ToolSpec::FileSearch(_)
@@ -1493,7 +1494,7 @@ index c5d88af41f58881aa0f094005738467d6e383b60..4b5d605de0c413b238534dfaa59529c6
          | ToolSpec::CodeInterpreter(_)
          | ToolSpec::Shell(_)
          | ToolSpec::ApplicationShell { .. }
-@@ -150,6 +152,7 @@ fn default_tool_search_text(spec: &ToolSpec) -> String {
+@@ -152,6 +154,7 @@ fn default_tool_search_text(spec: &ToolSpec) -> String {
              push_search_part(&mut parts, description.clone());
          }
          ToolSpec::FileSearch(_)
@@ -1502,7 +1503,7 @@ index c5d88af41f58881aa0f094005738467d6e383b60..4b5d605de0c413b238534dfaa59529c6
          | ToolSpec::Shell(_)
          | ToolSpec::ApplicationShell { .. }
 diff --git a/codex-rs/tools/src/tool_spec.rs b/codex-rs/tools/src/tool_spec.rs
-index a2ad571b607de0464dded891069abc119a6626a5..fec8c545d942e9d68994bb0d9888c459461d6b16 100644
+index 6acc3717..343094d2 100644
 --- a/codex-rs/tools/src/tool_spec.rs
 +++ b/codex-rs/tools/src/tool_spec.rs
 @@ -64,6 +64,8 @@ pub enum ToolSpec {
@@ -1514,17 +1515,20 @@ index a2ad571b607de0464dded891069abc119a6626a5..fec8c545d942e9d68994bb0d9888c459
      #[serde(rename = "code_interpreter")]
      CodeInterpreter(crate::CodeInterpreterTool),
      #[serde(rename = "shell")]
-@@ -121,7 +123,7 @@ impl ToolSpec {
+@@ -123,7 +125,10 @@ impl ToolSpec {
              | Self::ImageGeneration(_) => {
                  target.is_default_namespace() && self.name() == target.name
              }
--            Self::Namespace(_) | Self::ToolSearch { .. } => false,
-+            Self::Namespace(_) | Self::ToolSearch { .. } | Self::Mcp(_) => false,
+-            Self::Namespace(_) | Self::ToolSearch { .. } | Self::ProviderToolSearch(_) => false,
++            Self::Namespace(_)
++            | Self::ToolSearch { .. }
++            | Self::ProviderToolSearch(_)
++            | Self::Mcp(_) => false,
          }
      }
  
-@@ -133,6 +135,7 @@ impl ToolSpec {
-             ToolSpec::ToolSearch { .. } => "tool_search",
+@@ -155,6 +160,7 @@ impl ToolSpec {
+             ToolSpec::ToolSearch { .. } | ToolSpec::ProviderToolSearch(_) => "tool_search",
              ToolSpec::WebSearch { .. } => "web_search",
              ToolSpec::FileSearch(_) => "file_search",
 +            ToolSpec::Mcp(_) => "mcp",
@@ -1532,7 +1536,7 @@ index a2ad571b607de0464dded891069abc119a6626a5..fec8c545d942e9d68994bb0d9888c459
              ToolSpec::Shell(_) | ToolSpec::ApplicationShell { .. } => "shell",
              ToolSpec::ImageGeneration(_) => "image_generation",
 diff --git a/codex-rs/tui/src/dynamic_tools.rs b/codex-rs/tui/src/dynamic_tools.rs
-index a7ad418ee1ba41547d96ff892e15add012b53a54..f1a68d52830ce5da994528d1d78dc5da924e2927 100644
+index fd804547..10773295 100644
 --- a/codex-rs/tui/src/dynamic_tools.rs
 +++ b/codex-rs/tui/src/dynamic_tools.rs
 @@ -264,6 +264,7 @@ pub(crate) fn non_delegation_tool_specs() -> Vec<DynamicToolSpec> {
@@ -1541,25 +1545,24 @@ index a7ad418ee1ba41547d96ff892e15add012b53a54..f1a68d52830ce5da994528d1d78dc5da
          .filter_map(|spec| match spec {
 +            DynamicToolSpec::HostedMcp(_) => None,
              spec @ (DynamicToolSpec::Computer(_) | DynamicToolSpec::Shell(_)) => Some(spec),
+             DynamicToolSpec::ToolSearch(_) => None,
              DynamicToolSpec::Function(function) => (!DELEGATION_TOOLS
-                 .contains(&function.name.as_str()))
 diff --git a/codex-rs/tui/src/dynamic_tools_mcp.rs b/codex-rs/tui/src/dynamic_tools_mcp.rs
-index 0e806377d6cbc5b98be637db9ac97068210d6726..648d4f75abea8fe7b588d2dc0196138a9e0461cf 100644
+index 960384a8..53342371 100644
 --- a/codex-rs/tui/src/dynamic_tools_mcp.rs
 +++ b/codex-rs/tui/src/dynamic_tools_mcp.rs
-@@ -262,7 +262,9 @@ impl ServerHandler for DynamicToolMcpHandler {
-         }
-         for spec in specs {
+@@ -264,7 +264,8 @@ impl ServerHandler for DynamicToolMcpHandler {
              let functions = match spec {
--                DynamicToolSpec::Computer(_) | DynamicToolSpec::Shell(_) => continue,
-+                DynamicToolSpec::Computer(_)
-+                | DynamicToolSpec::Shell(_)
+                 DynamicToolSpec::Computer(_)
+                 | DynamicToolSpec::Shell(_)
+-                | DynamicToolSpec::ToolSearch(_) => continue,
++                | DynamicToolSpec::ToolSearch(_)
 +                | DynamicToolSpec::HostedMcp(_) => continue,
                  DynamicToolSpec::Function(function) => vec![function],
                  DynamicToolSpec::Namespace(namespace) => namespace
                      .tools
 diff --git a/codex-rs/utils/audio/src/lib.rs b/codex-rs/utils/audio/src/lib.rs
-index 4662c1269488bae4336a3479cb954cb0fb932da3..896051d3d330e6db6c9f6e647afcc7a05641482b 100644
+index 4662c126..896051d3 100644
 --- a/codex-rs/utils/audio/src/lib.rs
 +++ b/codex-rs/utils/audio/src/lib.rs
 @@ -81,6 +81,10 @@ pub fn prepare_response_items(items: &mut [ResponseItem]) {

@@ -1189,6 +1189,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    client_search: None,
                     original_payload: self.resolve_generation(key.reply.generation).and_then(
                         |generation| {
                             generation.entries.get(key.reply.slot).and_then(|entry| {
