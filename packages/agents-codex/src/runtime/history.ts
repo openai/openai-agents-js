@@ -659,6 +659,17 @@ const repairItemProjectionSchema = z.intersection(
       status: repairItemStatusSchema,
       output: jsonValue,
       error: jsonValue,
+      turn_id: z.string().optional(),
+      provider_data: jsonObject.optional(),
+    }),
+    z.object({
+      type: z.literal('mcp_list_tools'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      server_label: z.string(),
+      tools: jsonValue,
+      error: jsonValue,
     }),
     z.object({
       type: z.literal('command_execution'),
@@ -1892,7 +1903,13 @@ export function projectHostedToolItem(
 ): HostedToolItem | undefined {
   const raw = object(value);
   if (!raw || typeof raw.id !== 'string') return;
-  const status = hostedToolStatusSchema.safeParse(raw.status);
+  const status = hostedToolStatusSchema.safeParse(
+    raw.type === 'mcp_list_tools' && raw.status === undefined
+      ? raw.error == null
+        ? 'completed'
+        : 'failed'
+      : raw.status,
+  );
   if (!status.success) return;
   const {
     internal_chat_message_metadata_passthrough: _coreMetadata,
@@ -1944,7 +1961,7 @@ export function projectHostedToolItem(
       return {
         ...common,
         type: raw.type,
-        server_label: text(raw.server_label) ?? '',
+        serverLabel: text(raw.server_label) ?? '',
         name: text(raw.name) ?? '',
         arguments: text(raw.arguments) ?? '',
         output: raw.output ?? null,

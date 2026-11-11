@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
-import { losslessJsonObjectSchema, type JsonObject } from './binding';
+import {
+  losslessJsonObjectSchema,
+  type JsonObject,
+  type JsonValue,
+} from './binding';
 import type { ToolRef } from './tools';
 
 const declaration = Symbol('nativeHostedMcp');

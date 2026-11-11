@@ -11935,6 +11935,8 @@ export class Session<OutputT = string, Context = unknown> {
         (item) =>
           item.type === 'mcp_call' &&
           item.turnId === turn.turnId &&
+          'callId' in item &&
+          'threadId' in item &&
           item.callId === callId &&
           item.threadId === this.id,
       );

@@ -8,6 +8,7 @@ import {
 } from '../src/runtime/hosted-mcp-binding';
 import { prepareManualResult } from '../src/runtime/manual';
 import { projectHostedToolItem } from '../src/runtime/history';
+import type { JsonObject } from '../src/runtime/binding';
 import {
   captureTools,
   isDirectFunctionTool,
@@ -86,11 +87,10 @@ describe('native hosted MCP declarations', () => {
   });
 
   it('retains MCP list and call provider items in public history', () => {
-    for (const item of [
+    const items: JsonObject[] = [
       {
         type: 'mcp_list_tools',
         id: 'list_fixture',
-        status: 'completed',
         server_label: 'docs',
         tools: [{ name: 'lookup' }],
       },
@@ -104,7 +104,8 @@ describe('native hosted MCP declarations', () => {
         output: 'found',
         caller: { type: 'direct' },
       },
-    ]) {
+    ];
+    for (const item of items) {
       const projected = projectHostedToolItem(item, 'turn_fixture');
       expect(projected?.type).toBe(item.type);
       expect(projected?.provider_data).toEqual(item);
