@@ -10,6 +10,7 @@ import {
   HttpMCP,
   NativeProvider,
   ToolOutput,
+  type Turn,
   manualTool,
   tool,
 } from '../../src';
@@ -27,6 +28,16 @@ async function providerFor(model: ModelServer) {
       .base_url,
     apiKey: 'synthetic-app-data',
     supportsWebsockets: false,
+  });
+}
+
+async function waitForManualRequests(turn: Turn, callIds: readonly string[]) {
+  await vi.waitFor(async () => {
+    const pending = await turn.wait({ until: 'manual_tool' });
+    if (!('requests' in pending)) throw new Error('Expected manual requests');
+    expect(new Set(pending.requests.map((request) => request.callId))).toEqual(
+      new Set(callIds),
+    );
   });
 }
 
@@ -534,10 +545,7 @@ nativeIt(
     {
       await using source = await agent.session();
       const turn = await source.submit('Begin');
-      const pending = await turn.wait({ until: 'manual_tool' });
-      if (!('requests' in pending))
-        throw new Error('Expected initial manual calls');
-      expect(pending.requests).toHaveLength(2);
+      await waitForManualRequests(turn, ['staged-first', 'still-pending']);
       firstState = await source.suspend().catch((cause) => {
         throw new Error('first suspension', { cause });
       });
@@ -648,10 +656,7 @@ nativeIt.each([false, true])(
     {
       await using source = await originalAgent.session();
       const turn = await source.submit('Begin');
-      const waiting = await turn.wait({ until: 'manual_tool' });
-      if (!('requests' in waiting))
-        throw new Error('Expected both manual calls');
-      expect(waiting.requests).toHaveLength(2);
+      await waitForManualRequests(turn, ['held-staged', 'held-pause']);
       firstState = await source.suspend();
     }
     let state;
