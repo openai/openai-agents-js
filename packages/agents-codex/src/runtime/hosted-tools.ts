@@ -1,4 +1,6 @@
 import type OpenAI from 'openai';
+import type { Agent } from './public-agent';
+import type { Tool, ToolCallContext, ToolRef } from './tools';
 import { copyJsonValue, type JsonObject, type JsonValue } from './binding';
 
 export interface HostedToolOptions {
@@ -63,14 +65,48 @@ export interface ImageGeneration extends ImageGenerationOptions {
   readonly kind: 'image_generation';
 }
 
-export interface ToolSearchOptions extends HostedToolOptions {
-  execution?: 'server' | 'client';
-  description?: string | null;
-  parameters?: JsonValue;
+export type ClientToolSearchExecutorResult<Context = unknown> =
+  | Tool<Context>
+  | ToolRef
+  | readonly (Tool<Context> | ToolRef)[]
+  | null
+  | undefined;
+
+export interface ClientToolSearchExecutorArgs<Context = unknown> {
+  readonly agent: Agent<Context> | undefined;
+  readonly availableTools: readonly (Tool<Context> | ToolRef)[];
+  readonly loadDefault: (paths: readonly string[]) => readonly ToolRef[];
+  readonly runContext: ToolCallContext<Context>;
+  readonly toolCall: Readonly<{
+    type: 'tool_search_call';
+    call_id: string;
+    execution: 'client';
+    arguments: JsonValue;
+  }>;
 }
 
+export type ClientToolSearchExecutor<Context = unknown> = (
+  args: ClientToolSearchExecutorArgs<Context>,
+) =>
+  | ClientToolSearchExecutorResult<Context>
+  | Promise<ClientToolSearchExecutorResult<Context>>;
+
+const clientToolSearchExecutor = Symbol('native client tool search executor');
+
+export type ToolSearchOptions<Context = unknown> = HostedToolOptions & {
+  description?: string | null;
+  parameters?: JsonValue;
+} & (
+    | { execution?: 'server'; execute?: never }
+    | { execution: 'client'; execute?: ClientToolSearchExecutor<Context> }
+  );
+
 /** Responses search configuration for deferred tools. */
-export interface ToolSearch extends ToolSearchOptions {
+export interface ToolSearch<Context = any> extends Omit<
+  ToolSearchOptions<Context>,
+  'execute'
+> {
+  readonly [clientToolSearchExecutor]?: ClientToolSearchExecutor<Context>;
   readonly kind: 'tool_search';
 }
 
@@ -115,13 +151,35 @@ export function imageGeneration(
   return capture({ ...options, kind: 'image_generation' as const });
 }
 
-export function toolSearch(options: ToolSearchOptions = {}): ToolSearch {
-  return capture({ ...options, kind: 'tool_search' as const });
+export function toolSearch<Context = unknown>(
+  options: ToolSearchOptions<Context> = {},
+): ToolSearch<Context> {
+  const { execute, ...configuration } = options;
+  return captureToolSearch(configuration, execute);
+}
+
+function captureToolSearch<Context>(
+  configuration: Omit<ToolSearchOptions<Context>, 'execute'>,
+  execute?: ClientToolSearchExecutor<Context>,
+): ToolSearch<Context> {
+  const result = { ...capture(configuration), kind: 'tool_search' as const };
+  if (execute)
+    Object.defineProperty(result, clientToolSearchExecutor, { value: execute });
+  return Object.freeze(result);
+}
+
+/** @internal Captured application callback, excluded from provider serialization. */
+export function getClientToolSearchExecutor<Context>(
+  tool: ToolSearch<Context>,
+): ClientToolSearchExecutor<Context> | undefined {
+  return tool[clientToolSearchExecutor];
 }
 
 /** @internal Re-capture structural declarations at the session opening boundary. */
 export function captureHostedTool(tool: HostedTool): HostedTool {
-  return capture(tool);
+  return tool.kind === 'tool_search'
+    ? captureToolSearch(tool, getClientToolSearchExecutor(tool))
+    : capture(tool);
 }
 
 /** @internal The bridge removes SDK include controls before provider serialization. */

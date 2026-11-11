@@ -29,7 +29,7 @@ import {
 import type { Turn } from './session';
 import { usageReportBinding, type UsageReporter } from './run-events';
 import type { WebSearch } from './web-search';
-import type { HostedTool } from './hosted-tools';
+import type { HostedTool, ClientToolSearchExecutor } from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
 import type { HttpMCP, StdioMCP } from './mcp';
 import { assembleManualTool, type ManualTool } from './manual';
@@ -154,21 +154,34 @@ export interface ToolCallContext<Context = unknown> {
   readonly callId: string;
   readonly signal: AbortSignal;
 }
-const toolSessionOwners = new WeakMap<object, object>();
+type ClientToolSearchInvocation = (
+  argumentsValue: JsonValue,
+  context: ToolCallContext,
+  execute: ClientToolSearchExecutor<any> | undefined,
+  admit: () => void,
+) => Promise<ToolResponse>;
+const toolSessionOwners = new WeakMap<
+  object,
+  {
+    owner: object;
+    clientToolSearch?: ClientToolSearchInvocation;
+  }
+>();
 
 /** @internal Bind SDK-issued callback contexts to their opaque Session identity. */
 export function registerToolSessionOwner(
   context: ToolCallContext,
   owner: object,
+  clientToolSearch?: ClientToolSearchInvocation,
 ): void {
-  toolSessionOwners.set(context, owner);
+  toolSessionOwners.set(context, { owner, clientToolSearch });
 }
 
 // Private extension hook; retained in declarations for the sibling package.
 export function _nativeToolSessionOwner(context: ToolCallContext): object {
   const owner = toolSessionOwners.get(context);
   if (!owner) throw new TypeError('Tool context has no native Session owner');
-  return owner;
+  return owner.owner;
 }
 
 function inheritToolSessionOwner<T extends ToolCallContext>(
@@ -226,11 +239,17 @@ export interface ToolDeclaration {
 
 const prepareInvocation = Symbol('function tool binding');
 const computerDeclaration = Symbol('native computer declaration');
+const clientToolSearchDeclaration = Symbol(
+  'native client tool search declaration',
+);
 
 /** @internal The plan route admits only direct local function declarations. */
 export function isDirectFunctionTool(tool: SessionTool): boolean {
   return (
-    tool.kind !== 'manual' && !tool.deferLoading && !tool[computerDeclaration]
+    tool.kind !== 'manual' &&
+    !tool.deferLoading &&
+    !tool[computerDeclaration] &&
+    !tool[clientToolSearchDeclaration]
   );
 }
 type Invocation<Context> = (
@@ -293,6 +312,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly errorFunction?: ToolErrorFunction<Context> | null;
   readonly kind?: 'function';
   readonly [computerDeclaration]?: JsonObject;
+  readonly [clientToolSearchDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
@@ -306,6 +326,40 @@ export function toolIdentity(tool: SessionTool): {
   namespace: string;
 } {
   return { name: tool.name, namespace: toolNamespace(tool) ?? 'functions' };
+}
+
+/** @internal Executable slot for an already captured provider declaration. */
+export function createClientToolSearchTool<Context>(
+  declaration: JsonObject,
+  execute?: ClientToolSearchExecutor<Context>,
+): FunctionTool<Context> {
+  return Object.freeze({
+    name: 'tool_search',
+    description: 'Load tools selected by the application',
+    parameters: {},
+    [clientToolSearchDeclaration]: declaration,
+    async [prepareInvocation](
+      args: JsonValue,
+      context: ToolCallContext<Context>,
+      _reportFailure: (error: Error) => void,
+      admit: () => void,
+    ) {
+      admit();
+      const invoke = toolSessionOwners.get(context)?.clientToolSearch;
+      if (!invoke)
+        throw new TypeError(
+          'Client tool search has no admitted callback owner',
+        );
+      return invoke(args, context, execute, admit);
+    },
+  });
+}
+
+/** @internal Distinguish the internal slot from an application function of the same name. */
+export function isClientToolSearchTool(tool: SessionTool): boolean {
+  return (
+    tool.kind !== 'manual' && tool[clientToolSearchDeclaration] !== undefined
+  );
 }
 
 /** @internal Bind a real computer declaration to the current callback owner. */
@@ -1046,6 +1100,24 @@ export function captureTools(
     if (names.has(key))
       throw new TypeError(`Duplicate tool ${identity.namespace}.${tool.name}`);
     names.add(key);
+    if (tool.kind !== 'manual' && tool[clientToolSearchDeclaration]) {
+      if (
+        tool.name !== 'tool_search' ||
+        tool.namespace !== undefined ||
+        tool.deferLoading ||
+        tool.finishTurn ||
+        tool.callbackTimeout !== undefined
+      )
+        throw new TypeError(
+          'Client search declarations retain their native identity and policies',
+        );
+      return {
+        type: 'toolSearch',
+        declaration: losslessJsonObjectSchema.parse(
+          tool[clientToolSearchDeclaration],
+        ),
+      };
+    }
     if (tool.kind !== 'manual' && tool[computerDeclaration]) {
       if (
         tool.name !== 'computer' ||

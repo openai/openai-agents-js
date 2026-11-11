@@ -1,0 +1,802 @@
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index 8787f370..d246c8b3 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -388,6 +388,7 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
+     let mut seen_namespaces = HashSet::new();
+     for spec in tools {
+         match spec {
++            DynamicToolSpec::ToolSearch(_) => { return Err("client tool search requires an extension-owned executor".to_string()); },
+             DynamicToolSpec::Computer(tool) => {
+                 tool.validate()?;
+                 if !seen_tools.insert("computer") {
+@@ -1461,7 +1462,7 @@ impl ThreadRequestProcessor {
+         let dynamic_tool_count: usize = dynamic_tools
+             .iter()
+             .map(|tool| match tool {
+-                DynamicToolSpec::Computer(_) | DynamicToolSpec::Function(_) => 1,
++                DynamicToolSpec::Computer(_) | DynamicToolSpec::ToolSearch(_) | DynamicToolSpec::Function(_) => 1,
+                 DynamicToolSpec::Namespace(namespace) => namespace.tools.len(),
+             })
+             .sum();
+diff --git a/codex-rs/core/src/tools/context.rs b/codex-rs/core/src/tools/context.rs
+index dad4c635..42dc9486 100644
+--- a/codex-rs/core/src/tools/context.rs
++++ b/codex-rs/core/src/tools/context.rs
+@@ -13,6 +13,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
+ use codex_protocol::models::ResponseInputItem;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::models::function_call_output_content_items_to_text;
++#[cfg(test)]
+ use codex_tools::LoadableToolSpec;
+ use codex_tools::ToolName;
+ use codex_utils_audio::estimate_audio_token_count;
+@@ -218,46 +219,7 @@ impl McpToolOutput {
+     }
+ }
+ 
+-#[derive(Clone)]
+-pub struct ToolSearchOutput {
+-    pub tools: Vec<LoadableToolSpec>,
+-}
+-
+-impl ToolOutput for ToolSearchOutput {
+-    fn log_output(&self) -> String {
+-        let tools = self
+-            .tools
+-            .iter()
+-            .map(|tool| {
+-                serde_json::to_value(tool).unwrap_or_else(|err| {
+-                    JsonValue::String(format!("failed to serialize tool_search output: {err}"))
+-                })
+-            })
+-            .collect();
+-        JsonValue::Array(tools).to_string()
+-    }
+-
+-    fn success_for_logging(&self) -> bool {
+-        true
+-    }
+-
+-    fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
+-        ResponseInputItem::ToolSearchOutput {
+-            call_id: call_id.to_string(),
+-            status: "completed".to_string(),
+-            execution: "client".to_string(),
+-            tools: self
+-                .tools
+-                .iter()
+-                .map(|tool| {
+-                    serde_json::to_value(tool).unwrap_or_else(|err| {
+-                        JsonValue::String(format!("failed to serialize tool_search output: {err}"))
+-                    })
+-                })
+-                .collect(),
+-        }
+-    }
+-}
++pub use codex_tools::ToolSearchOutput;
+ 
+ pub struct FunctionToolOutput {
+     pub body: Vec<FunctionCallOutputContentItem>,
+@@ -362,12 +324,14 @@ impl ToolOutput for AbortedToolOutput {
+ 
+     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+         match payload {
+-            ToolPayload::ToolSearch { .. } => ResponseInputItem::ToolSearchOutput {
+-                call_id: call_id.to_string(),
+-                status: "completed".to_string(),
+-                execution: "client".to_string(),
+-                tools: Vec::new(),
+-            },
++            ToolPayload::ToolSearch { .. } | ToolPayload::ClientToolSearch(_) => {
++                ResponseInputItem::ToolSearchOutput {
++                    call_id: call_id.to_string(),
++                    status: "completed".to_string(),
++                    execution: "client".to_string(),
++                    tools: Vec::new(),
++                }
++            }
+             _ => function_tool_response(
+                 call_id,
+                 payload,
+diff --git a/codex-rs/core/src/tools/executed_tool_calls.rs b/codex-rs/core/src/tools/executed_tool_calls.rs
+index b1c89ee9..d655988a 100644
+--- a/codex-rs/core/src/tools/executed_tool_calls.rs
++++ b/codex-rs/core/src/tools/executed_tool_calls.rs
+@@ -746,6 +746,7 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
+         ToolPayload::ToolSearch { arguments } => {
+             serialized_json_bytes(arguments).unwrap_or(usize::MAX)
+         }
++        ToolPayload::ClientToolSearch(call) => serialized_json_bytes(&call.arguments).unwrap_or(usize::MAX),
+     };
+     let name = codex_tools::code_mode_name_for_tool_name(&call.tool_name);
+     let recorded_call = if original_bytes > MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES {
+@@ -760,6 +761,7 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
+             ToolPayload::ToolSearch { arguments } => {
+                 serde_json::to_value(arguments).unwrap_or_default()
+             }
++            ToolPayload::ClientToolSearch(call) => call.arguments.clone(),
+         };
+         ExecutedToolCall::new(name, arguments)
+     };
+diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
+index dcce9855..57a2497e 100644
+--- a/codex-rs/core/src/tools/handlers/extension_tools.rs
++++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
+@@ -146,6 +146,7 @@ impl CoreToolRuntime for ExtensionToolAdapter {
+                 | ToolSpec::WebSearch { .. } => false,
+             },
+             ToolPayload::ToolSearch { .. } => false,
++            ToolPayload::ClientToolSearch(_) => matches!(self.0.spec(), ToolSpec::ProviderToolSearch(config) if !config.searches_on_provider()),
+         }
+     }
+ }
+@@ -236,6 +237,14 @@ async fn to_extension_call<'a>(
+             &invocation.step_context.settings,
+         ))
+         .and_then(|metadata| to_ascii_json_string(&metadata).ok());
++    let payload = match &invocation.payload {
++        ToolPayload::ClientToolSearch(call) => {
++            let mut call = call.clone();
++            call.catalog = invocation.step_context.tool_router.client_tool_search_catalog();
++            ToolPayload::ClientToolSearch(call)
++        }
++        payload => payload.clone(),
++    };
+     ExtensionToolCall {
+         turn_id: invocation.turn.sub_id.clone(),
+         call_id: invocation.call_id.clone(),
+@@ -259,7 +268,7 @@ async fn to_extension_call<'a>(
+             turn: Arc::downgrade(&invocation.turn),
+         }),
+         environments,
+-        payload: invocation.payload.clone(),
++        payload,
+     }
+ }
+ 
+diff --git a/codex-rs/core/src/tools/handlers/tool_search.rs b/codex-rs/core/src/tools/handlers/tool_search.rs
+index a107c13d..d0c086e5 100644
+--- a/codex-rs/core/src/tools/handlers/tool_search.rs
++++ b/codex-rs/core/src/tools/handlers/tool_search.rs
+@@ -202,6 +202,8 @@ impl ToolSearchHandler {
+ 
+         let args = match payload {
+             ToolPayload::ToolSearch { arguments } => arguments,
++            ToolPayload::ClientToolSearch(call) => serde_json::from_value(call.arguments)
++                .map_err(|error| FunctionCallError::RespondToModel(format!("failed to parse tool_search arguments: {error}")))?,
+             _ => {
+                 return Err(FunctionCallError::Fatal(format!(
+                     "{TOOL_SEARCH_TOOL_NAME} handler received unsupported payload"
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index f69668a1..9d85cb53 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -478,7 +478,7 @@ impl ToolCallRuntime {
+     fn failure_response(call: ToolCall, err: FunctionCallError) -> ResponseInputItem {
+         let message = err.to_string();
+         match call.payload {
+-            ToolPayload::ToolSearch { .. } => ResponseInputItem::ToolSearchOutput {
++            ToolPayload::ToolSearch { .. } | ToolPayload::ClientToolSearch(_) => ResponseInputItem::ToolSearchOutput {
+                 call_id: call.call_id,
+                 status: "completed".to_string(),
+                 execution: "client".to_string(),
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index 5810a103..524f3229 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -92,7 +92,7 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+     fn matches_kind(&self, payload: &ToolPayload) -> bool {
+         matches!(
+             payload,
+-            ToolPayload::Function { .. } | ToolPayload::ToolSearch { .. }
++            ToolPayload::Function { .. } | ToolPayload::ToolSearch { .. } | ToolPayload::ClientToolSearch(_)
+         )
+     }
+ 
+diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
+index fad6db6b..fff018c8 100644
+--- a/codex-rs/core/src/tools/router.rs
++++ b/codex-rs/core/src/tools/router.rs
+@@ -19,7 +19,6 @@ use crate::tools::spec_plan::finalize_tool_router;
+ use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::error::Result as CodexResult;
+ use codex_protocol::models::ResponseItem;
+-use codex_protocol::models::SearchToolCallParams;
+ #[cfg(test)]
+ use codex_protocol::openai_models::ModelInfo;
+ use codex_protocol::openai_models::ToolMode;
+@@ -210,8 +209,12 @@ impl ToolRouter {
+                 | ToolSpec::FileSearch(_)
+                 | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::ImageGeneration(_)
+-                | ToolSpec::ProviderToolSearch(_)
+                 | ToolSpec::WebSearch { .. } => false,
++                ToolSpec::ProviderToolSearch(config) => {
++                    !config.searches_on_provider()
++                        && name.is_default_namespace()
++                        && name.name == "tool_search"
++                }
+             })
+         {
+             return true;
+@@ -227,6 +230,29 @@ impl ToolRouter {
+             })
+     }
+ 
++    pub(crate) fn client_tool_search_catalog(&self) -> Vec<codex_tools::ClientToolSearchEntry> {
++        self.registry
++            .entries()
++            .filter(|tool| tool.exposure.is_direct() || tool.exposure.is_deferred())
++            .filter_map(|tool| {
++                let info = tool.runtime.search_info().or_else(|| {
++                    tool.runtime.immutable_spec().and_then(|spec| {
++                        codex_tools::ToolSearchInfo::from_shared_spec(
++                            String::new(),
++                            Arc::clone(spec),
++                            None,
++                        )
++                    })
++                })?;
++                Some(codex_tools::ClientToolSearchEntry {
++                    name: tool.runtime.tool_name(),
++                    deferred: tool.exposure.is_deferred(),
++                    info,
++                })
++            })
++            .collect()
++    }
++
+     /// Projects only schema-addition metadata for a complete selected catalog.
+     /// Call IDs, arguments, results and stored history remain unchanged.
+     pub(crate) fn project_tool_catalog_item(&self, item: &mut ResponseItem) -> bool {
+@@ -354,20 +380,15 @@ impl ToolRouter {
+                 execution,
+                 arguments,
+                 ..
+-            } if execution == "client" => {
+-                let arguments: SearchToolCallParams =
+-                    serde_json::from_value(arguments).map_err(|err| {
+-                        FunctionCallError::RespondToModel(format!(
+-                            "failed to parse tool_search arguments: {err}"
+-                        ))
+-                    })?;
+-                Ok(Some(ToolCall {
+-                    tool_name: ToolName::plain("tool_search"),
+-                    call_id,
+-                    payload: ToolPayload::ToolSearch { arguments },
+-                    encrypted_function_args: None,
+-                }))
+-            }
++            } if execution == "client" => Ok(Some(ToolCall {
++                tool_name: ToolName::plain("tool_search"),
++                call_id,
++                payload: ToolPayload::ClientToolSearch(codex_tools::ClientToolSearchCall {
++                    arguments,
++                    catalog: Vec::new(),
++                }),
++                encrypted_function_args: None,
++            })),
+             ResponseItem::ToolSearchCall { .. } => Ok(None),
+             ResponseItem::CustomToolCall {
+                 name,
+@@ -473,3 +494,34 @@ impl ToolRouter {
+ #[cfg(test)]
+ #[path = "router_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++mod application_client_search_tests {
++    use super::*;
++    use codex_protocol::models::ResponseInputItem;
++    use codex_tools::ToolOutput;
++
++    #[test]
++    fn arbitrary_client_arguments_have_been_retaining_their_call_owner() {
++        let arguments = serde_json::json!({"department":"support","tags":["billing"]});
++        let item: ResponseItem = serde_json::from_value(serde_json::json!({
++            "type":"tool_search_call", "id":"provider-item", "call_id":"client-search",
++            "execution":"client", "arguments":arguments,
++        }))
++        .unwrap();
++        let call = ToolRouter::build_tool_call(item).unwrap().unwrap();
++        assert_eq!(call.call_id, "client-search");
++        assert_eq!(call.tool_name, ToolName::plain("tool_search"));
++        let ToolPayload::ClientToolSearch(payload) = &call.payload else {
++            panic!("expected raw client search")
++        };
++        assert_eq!(payload.arguments, arguments);
++        let output = crate::tools::context::AbortedToolOutput {
++            message: "selection rejected".into(),
++        }
++        .to_response_item(&call.call_id, &call.payload);
++        assert!(
++            matches!(output, ResponseInputItem::ToolSearchOutput { call_id, .. } if call_id == "client-search")
++        );
++    }
++}
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index eeadb1ce..d9677796 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -1715,6 +1715,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
+ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mut ToolRegistry) {
+     for spec in dynamic_tools {
+         match spec {
++            DynamicToolSpec::ToolSearch(_) => {},
+             DynamicToolSpec::Computer(tool) => {
+                 if let Ok(handler) = super::handlers::computer::ComputerToolHandler::new(tool) {
+                     registry.register_external(Arc::new(handler));
+diff --git a/codex-rs/core/src/tools/tool_dispatch_trace.rs b/codex-rs/core/src/tools/tool_dispatch_trace.rs
+index 9f13a08b..7b64b6e9 100644
+--- a/codex-rs/core/src/tools/tool_dispatch_trace.rs
++++ b/codex-rs/core/src/tools/tool_dispatch_trace.rs
+@@ -119,6 +119,7 @@ fn tool_dispatch_payload(payload: &ToolPayload) -> ToolDispatchPayload {
+         ToolPayload::ToolSearch { arguments } => ToolDispatchPayload::ToolSearch {
+             arguments: arguments.clone(),
+         },
++        ToolPayload::ClientToolSearch(call) => ToolDispatchPayload::Function { arguments: call.arguments.to_string() },
+         ToolPayload::Custom { input } => ToolDispatchPayload::Custom {
+             input: input.clone(),
+         },
+diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/action.rs b/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
+index 80fc064e..abd8d42c 100644
+--- a/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
++++ b/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
+@@ -27,6 +27,7 @@ impl GuardianAction {
+             }
+             ToolPayload::Custom { input } => serde_json::Value::String(input),
+             ToolPayload::ToolSearch { arguments } => json!(arguments),
++            ToolPayload::ClientToolSearch(call) => call.arguments,
+         };
+         let mut action = match arguments {
+             serde_json::Value::Object(arguments) => arguments,
+diff --git a/codex-rs/protocol/src/dynamic_tools.rs b/codex-rs/protocol/src/dynamic_tools.rs
+index 26ec2242..48d65f8e 100644
+--- a/codex-rs/protocol/src/dynamic_tools.rs
++++ b/codex-rs/protocol/src/dynamic_tools.rs
+@@ -12,10 +12,32 @@ use ts_rs::TS;
+ #[ts(tag = "type", export_to = "v2/")]
+ pub enum DynamicToolSpec {
+     Computer(DynamicComputerToolSpec),
++    ToolSearch(DynamicToolSearchSpec),
+     Function(DynamicToolFunctionSpec),
+     Namespace(DynamicToolNamespaceSpec),
+ }
+ 
++/// Captured application-owned client search; never a function provider schema.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++#[ts(export_to = "v2/")]
++pub struct DynamicToolSearchSpec {
++    pub declaration: JsonValue,
++}
++impl DynamicToolSearchSpec {
++    pub fn callback_spec(&self) -> DynamicToolFunctionSpec {
++        DynamicToolFunctionSpec {
++            strict: false,
++            output_schema: None,
++            name: "tool_search".into(),
++            description: "Native client tool search".into(),
++            input_schema: self.declaration.get("parameters").cloned()
++                .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"],"additionalProperties":false})),
++            defer_loading: false,
++        }
++    }
++}
++
+ /// Native computer declaration. The host retains execution and safety-policy authority.
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+ #[serde(rename_all = "camelCase", deny_unknown_fields)]
+diff --git a/codex-rs/tools/src/hosted_tools.rs b/codex-rs/tools/src/hosted_tools.rs
+index bb034519..671f4ca3 100644
+--- a/codex-rs/tools/src/hosted_tools.rs
++++ b/codex-rs/tools/src/hosted_tools.rs
+@@ -323,3 +323,17 @@ mod option_fidelity_tests {
+         }
+     }
+ }
++
++/// Builds the provider declaration captured by the application client-search slot.
++pub fn client_tool_search_spec(
++    spec: &codex_protocol::dynamic_tools::DynamicToolSearchSpec,
++) -> Result<crate::ToolSpec, String> {
++    match serde_json::from_value::<HostedToolSpec>(spec.declaration.clone())
++        .map_err(|_| "Invalid captured client tool search declaration".to_string())?
++    {
++        HostedToolSpec::ToolSearch(config) if !config.searches_on_provider() => {
++            Ok(crate::ToolSpec::ProviderToolSearch(config))
++        }
++        _ => Err("Captured client tool search requires client execution".to_string()),
++    }
++}
+diff --git a/codex-rs/tools/src/lib.rs b/codex-rs/tools/src/lib.rs
+index 41313ff0..291e266f 100644
+--- a/codex-rs/tools/src/lib.rs
++++ b/codex-rs/tools/src/lib.rs
+@@ -108,8 +108,8 @@ pub use tool_executor::ToolExecutorFuture;
+ pub use tool_executor::ToolExposure;
+ pub use tool_executor::ToolExposures;
+ pub use tool_output::JsonToolOutput;
+-pub use tool_output::ToolOutput;
+-pub use tool_payload::ToolPayload;
++pub use tool_output::{ToolOutput, ToolSearchOutput};
++pub use tool_payload::{ClientToolSearchCall, ClientToolSearchEntry, ClientToolSearchSelection, ToolPayload};
+ pub use tool_search::ToolSearchEntry;
+ pub use tool_search::ToolSearchInfo;
+ pub use tool_spec::ResponsesApiWebSearchFilters;
+@@ -118,3 +118,5 @@ pub use tool_spec::ToolSpec;
+ pub use tool_spec::create_tools_json_for_responses_api;
+ pub use tool_spec::create_tools_json_for_responses_lite;
+ pub use tool_spec::create_tools_raw_json_for_responses_api;
++
++pub use hosted_tools::client_tool_search_spec;
+diff --git a/codex-rs/tools/src/tool_output.rs b/codex-rs/tools/src/tool_output.rs
+index 6ca3c213..eb0dc5fa 100644
+--- a/codex-rs/tools/src/tool_output.rs
++++ b/codex-rs/tools/src/tool_output.rs
+@@ -6,7 +6,7 @@ use codex_protocol::models::ImageReference;
+ use codex_protocol::models::ResponseInputItem;
+ use serde_json::Value as JsonValue;
+ 
+-use crate::ToolPayload;
++use crate::{LoadableToolSpec, ToolPayload};
+ 
+ /// Model-facing output contract returned by executable tool runtimes.
+ pub trait ToolOutput: Send {
+@@ -349,3 +349,44 @@ fn structured_provider_media_result(item: ResponseInputItem) -> Option<JsonValue
+     });
+     rich.then(|| serde_json::to_value(parts).expect("canonical content is serializable"))
+ }
++
++#[derive(Clone)]
++pub struct ToolSearchOutput {
++    pub tools: Vec<LoadableToolSpec>,
++}
++
++impl ToolOutput for ToolSearchOutput {
++    fn log_output(&self) -> String {
++        let tools = self
++            .tools
++            .iter()
++            .map(|tool| {
++                serde_json::to_value(tool).unwrap_or_else(|err| {
++                    JsonValue::String(format!("failed to serialize tool_search output: {err}"))
++                })
++            })
++            .collect();
++        JsonValue::Array(tools).to_string()
++    }
++
++    fn success_for_logging(&self) -> bool {
++        true
++    }
++
++    fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
++        ResponseInputItem::ToolSearchOutput {
++            call_id: call_id.to_string(),
++            status: "completed".to_string(),
++            execution: "client".to_string(),
++            tools: self
++                .tools
++                .iter()
++                .map(|tool| {
++                    serde_json::to_value(tool).unwrap_or_else(|err| {
++                        JsonValue::String(format!("failed to serialize tool_search output: {err}"))
++                    })
++                })
++                .collect(),
++        }
++    }
++}
+diff --git a/codex-rs/tools/src/tool_payload.rs b/codex-rs/tools/src/tool_payload.rs
+index 95cbd6a8..262cb560 100644
+--- a/codex-rs/tools/src/tool_payload.rs
++++ b/codex-rs/tools/src/tool_payload.rs
+@@ -1,5 +1,8 @@
+ use std::borrow::Cow;
+ 
++use crate::{ToolName, ToolSearchInfo};
++use serde_json::Value;
++
+ use codex_protocol::models::SearchToolCallParams;
+ 
+ /// Canonical payload shapes accepted by model-visible tool runtimes.
+@@ -8,6 +11,7 @@ pub enum ToolPayload {
+     Computer { arguments: String },
+     Function { arguments: String },
+     ToolSearch { arguments: SearchToolCallParams },
++    ClientToolSearch(ClientToolSearchCall),
+     Custom { input: String },
+ }
+ 
+@@ -18,6 +22,263 @@ impl ToolPayload {
+             ToolPayload::Function { arguments } => Cow::Borrowed(arguments),
+             ToolPayload::ToolSearch { arguments } => Cow::Owned(arguments.query.clone()),
+             ToolPayload::Custom { input } => Cow::Borrowed(input),
++            ToolPayload::ClientToolSearch(_) => Cow::Borrowed("[native client tool search]"),
+         }
+     }
+ }
++
++/// One entry from the exact admitted native tool registry.
++#[derive(Clone, PartialEq)]
++pub struct ClientToolSearchEntry {
++    pub name: ToolName,
++    pub deferred: bool,
++    pub info: ToolSearchInfo,
++}
++
++/// Raw application arguments and a trusted read-only catalog snapshot.
++#[derive(Clone, PartialEq)]
++pub struct ClientToolSearchCall {
++    pub arguments: Value,
++    pub catalog: Vec<ClientToolSearchEntry>,
++}
++
++impl std::fmt::Debug for ClientToolSearchCall {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("ClientToolSearchCall")
++            .field("catalog_entries", &self.catalog.len())
++            .finish_non_exhaustive()
++    }
++}
++
++#[derive(Clone, serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ClientToolSearchSelection {
++    pub tool_refs: Vec<ToolName>,
++    #[serde(default)]
++    pub catalog_generation: Option<String>,
++}
++
++impl ClientToolSearchSelection {
++    pub fn from_response(
++        response: &codex_protocol::dynamic_tools::DynamicToolResponse,
++    ) -> Result<Self, crate::FunctionCallError> {
++        use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
++        if !response.success {
++            return Err(crate::FunctionCallError::RespondToModel(
++                "Client tool search failed".into(),
++            ));
++        }
++        let [DynamicToolCallOutputContentItem::InputText { text }] =
++            response.content_items.as_slice()
++        else {
++            return Err(crate::FunctionCallError::RespondToModel(
++                "Client tool search requires a JSON selection".into(),
++            ));
++        };
++        serde_json::from_str(text).map_err(|_| {
++            crate::FunctionCallError::RespondToModel("Invalid client tool search selection".into())
++        })
++    }
++
++    pub fn resolve(
++        &self,
++        captured_catalog: &[ClientToolSearchEntry],
++        admitted_new_catalog: &[ClientToolSearchEntry],
++    ) -> Result<crate::ToolSearchOutput, crate::FunctionCallError> {
++        let mut catalog = std::collections::HashMap::new();
++        for entry in captured_catalog.iter().chain(admitted_new_catalog) {
++            let key = entry.name.clone().with_default_namespace();
++            if catalog.insert(key, entry).is_some() {
++                return Err(crate::FunctionCallError::RespondToModel(
++                    "Client tool search cannot replace a captured tool".into(),
++                ));
++            }
++        }
++        let mut seen = std::collections::HashSet::new();
++        let mut tools = Vec::new();
++        for name in &self.tool_refs {
++            let key = name.clone().with_default_namespace();
++            if !seen.insert(key.clone()) {
++                continue;
++            }
++            let entry = catalog.get(&key).ok_or_else(|| {
++                crate::FunctionCallError::RespondToModel(
++                    "Client tool search selected a tool outside its captured catalog".into(),
++                )
++            })?;
++            tools.push(entry.info.entry.to_loadable_spec());
++        }
++        Ok(crate::ToolSearchOutput {
++            tools: crate::coalesce_loadable_tool_specs(tools),
++        })
++    }
++}
++
++impl ClientToolSearchCall {
++    pub fn load_default(
++        &self,
++        paths: &[String],
++    ) -> Result<Vec<ToolName>, crate::FunctionCallError> {
++        use std::collections::{BTreeMap, HashSet};
++        let mut plain = BTreeMap::new();
++        let mut namespaces: BTreeMap<String, Vec<&ClientToolSearchEntry>> = BTreeMap::new();
++        let mut qualified = BTreeMap::new();
++        for entry in self.catalog.iter().filter(|entry| entry.deferred) {
++            if entry.name.is_default_namespace() {
++                plain.insert(entry.name.name.clone(), entry);
++            } else if let Some(namespace) = &entry.name.namespace {
++                namespaces.entry(namespace.clone()).or_default().push(entry);
++                qualified.insert(format!("{namespace}.{}", entry.name.name), entry);
++            }
++        }
++        for path in paths {
++            if usize::from(plain.contains_key(path))
++                + usize::from(namespaces.contains_key(path))
++                + usize::from(qualified.contains_key(path))
++                > 1
++            {
++                return Err(crate::FunctionCallError::RespondToModel(
++                    "Ambiguous deferred tool search path".into(),
++                ));
++            }
++        }
++        let requested_namespaces: HashSet<_> = paths
++            .iter()
++            .filter(|path| namespaces.contains_key(*path))
++            .collect();
++        let mut seen = HashSet::new();
++        let mut selected = Vec::new();
++        for path in paths {
++            let entries = if let Some(entry) = plain.get(path) {
++                vec![*entry]
++            } else if let Some(entries) = namespaces.get(path) {
++                entries.clone()
++            } else if let Some(entry) = qualified.get(path) {
++                if entry
++                    .name
++                    .namespace
++                    .as_ref()
++                    .is_some_and(|namespace| requested_namespaces.contains(namespace))
++                {
++                    continue;
++                }
++                vec![*entry]
++            } else {
++                Vec::new()
++            };
++            for entry in entries {
++                if seen.insert(entry.name.clone().with_default_namespace()) {
++                    selected.push(entry.name.clone());
++                }
++            }
++        }
++        Ok(selected)
++    }
++}
++
++#[cfg(test)]
++mod client_search_tests {
++    use super::*;
++    use serde_json::json;
++
++    fn entry(name: &str, namespace: Option<&str>, deferred: bool) -> ClientToolSearchEntry {
++        let function = crate::ResponsesApiTool {
++            name: name.into(),
++            description: "captured-schema-sentinel".into(),
++            strict: false,
++            defer_loading: None,
++            output_schema: None,
++            parameters: crate::JsonSchema::object(std::collections::BTreeMap::new(), None, None),
++        };
++        let spec = match namespace {
++            Some(namespace) => crate::ToolSpec::Namespace(crate::ResponsesApiNamespace {
++                name: namespace.into(),
++                description: String::new(),
++                tools: vec![crate::ResponsesApiNamespaceTool::Function(function)],
++            }),
++            None => crate::ToolSpec::Function(function),
++        };
++        ClientToolSearchEntry {
++            name: ToolName::new(namespace.map(str::to_owned), name),
++            deferred,
++            info: ToolSearchInfo::from_tool_spec(spec, None).unwrap(),
++        }
++    }
++
++    #[test]
++    fn default_paths_preserve_namespace_precedence_and_ignore_unknown_or_direct_tools() {
++        let call = ClientToolSearchCall {
++            arguments: json!({}),
++            catalog: vec![
++                entry("lookup", None, true),
++                entry("first", Some("reports"), true),
++                entry("second", Some("reports"), true),
++                entry("direct", None, false),
++            ],
++        };
++        let selected = call
++            .load_default(&[
++                "reports.first".into(),
++                "missing".into(),
++                "lookup".into(),
++                "reports".into(),
++                "lookup".into(),
++                "direct".into(),
++            ])
++            .unwrap();
++        assert_eq!(
++            selected,
++            vec![
++                ToolName::plain("lookup"),
++                ToolName::new(Some("reports".into()), "first"),
++                ToolName::new(Some("reports".into()), "second")
++            ]
++        );
++    }
++
++    #[test]
++    fn selected_refs_resolve_only_captured_or_admitted_new_tools() {
++        let captured = vec![entry("lookup", None, true)];
++        let added = vec![entry("new_lookup", Some("reports"), true)];
++        let response = codex_protocol::dynamic_tools::DynamicToolResponse {
++            success: true, content_items: vec![codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text: json!({"tool_refs":[{"name":"lookup"},{"name":"new_lookup","namespace":"reports"}],"catalog_generation":"42"}).to_string() }],
++        };
++        let selection = ClientToolSearchSelection::from_response(&response).unwrap();
++        assert_eq!(selection.catalog_generation.as_deref(), Some("42"));
++        assert_eq!(selection.resolve(&captured, &added).unwrap().tools.len(), 2);
++        assert!(selection.resolve(&captured, &[]).is_err());
++        assert!(
++            selection
++                .resolve(&captured, &[entry("lookup", None, true)])
++                .is_err()
++        );
++    }
++
++    #[test]
++    fn raw_client_payload_debug_has_been_redacting_arguments_and_schemas() {
++        let payload = ToolPayload::ClientToolSearch(ClientToolSearchCall {
++            arguments: json!({"department":"private-argument-sentinel","tags":["account"]}),
++            catalog: vec![entry("lookup", None, true)],
++        });
++        let debug = format!("{payload:?}");
++        assert!(!debug.contains("private-argument-sentinel"));
++        assert!(!debug.contains("captured-schema-sentinel"));
++        assert_eq!(payload.log_payload(), "[native client tool search]");
++    }
++
++    #[test]
++    fn typed_slot_has_been_preserving_provider_configuration_without_a_function_schema() {
++        let declaration = json!({"type":"tool_search","execution":"client","description":"Find support tools","parameters":{"type":"object","properties":{"department":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}});
++        let slot = codex_protocol::dynamic_tools::DynamicToolSearchSpec {
++            declaration: declaration.clone(),
++        };
++        let spec = crate::client_tool_search_spec(&slot).unwrap();
++        assert_eq!(serde_json::to_value(spec).unwrap(), declaration);
++        let wire = serde_json::to_value(
++            codex_protocol::dynamic_tools::DynamicToolSpec::ToolSearch(slot),
++        )
++        .unwrap();
++        assert_eq!(wire["type"], "toolSearch");
++        assert_eq!(wire["declaration"], declaration);
++    }
++}
+diff --git a/codex-rs/tui/src/dynamic_tools.rs b/codex-rs/tui/src/dynamic_tools.rs
+index ce42b41a..c199c692 100644
+--- a/codex-rs/tui/src/dynamic_tools.rs
++++ b/codex-rs/tui/src/dynamic_tools.rs
+@@ -265,6 +265,7 @@ pub(crate) fn non_delegation_tool_specs() -> Vec<DynamicToolSpec> {
+         .into_iter()
+         .filter_map(|spec| match spec {
+             DynamicToolSpec::Computer(tool) => Some(DynamicToolSpec::Computer(tool)),
++            DynamicToolSpec::ToolSearch(_) => None,
+             DynamicToolSpec::Function(function) => (!DELEGATION_TOOLS
+                 .contains(&function.name.as_str()))
+             .then_some(DynamicToolSpec::Function(function)),
+diff --git a/codex-rs/tui/src/dynamic_tools_mcp.rs b/codex-rs/tui/src/dynamic_tools_mcp.rs
+index dc2f3e8c..ae738817 100644
+--- a/codex-rs/tui/src/dynamic_tools_mcp.rs
++++ b/codex-rs/tui/src/dynamic_tools_mcp.rs
+@@ -262,7 +262,7 @@ impl ServerHandler for DynamicToolMcpHandler {
+         }
+         for spec in specs {
+             let functions = match spec {
+-                DynamicToolSpec::Computer(_) => continue,
++                DynamicToolSpec::Computer(_) | DynamicToolSpec::ToolSearch(_) => continue,
+                 DynamicToolSpec::Function(function) => vec![function],
+                 DynamicToolSpec::Namespace(namespace) => namespace
+                     .tools

@@ -187,7 +187,63 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
     sender
 }
 
+#[derive(Deserialize)]
+struct ClientToolSearchCapture {
+    specs: Vec<DynamicToolSpec>,
+    manual_slots: Vec<usize>,
+    terminal_slots: Vec<usize>,
+}
+
+struct ClientToolSearchWork {
+    call: codex_tools::ClientToolSearchCall,
+    generation: Arc<Generation>,
+    profile: Option<codex_extension_api::AgentProfileReceipt>,
+    turn_owner: Weak<crate::turn_settlement::Turn>,
+    turn: String,
+    call_id: String,
+    candidate: Mutex<Option<Arc<ClientToolSearchCatalog>>>,
+}
+
+pub(crate) struct ClientToolSearchCatalog {
+    source: Arc<Generation>,
+    profile: Option<codex_extension_api::AgentProfileReceipt>,
+    turn: String,
+    call_id: String,
+    generation: Arc<Generation>,
+    bytes: usize,
+    expected: Mutex<Option<[u8; 32]>>,
+    accepted: AtomicBool,
+}
+
+fn client_search_output_digest(output: &dyn ToolOutput, call_id: &str) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let payload = ToolPayload::ClientToolSearch(codex_tools::ClientToolSearchCall {
+        arguments: Value::Null,
+        catalog: Vec::new(),
+    });
+    serde_json::to_vec(&output.to_response_item(call_id, &payload))
+        .ok()
+        .map(|bytes| Sha256::digest(bytes).into())
+}
+
+impl ClientToolSearchWork {
+    fn additional_entries(generation: &Generation) -> Vec<codex_tools::ClientToolSearchEntry> {
+        generation
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                Some(codex_tools::ClientToolSearchEntry {
+                    name: entry.name.clone(),
+                    deferred: true,
+                    info: ToolSearchInfo::from_tool_spec(entry.spec.clone(), None)?,
+                })
+            })
+            .collect()
+    }
+}
+
 struct PendingCall {
+    client_search: Option<Arc<ClientToolSearchWork>>,
     // Captured by native enqueue, never reconstructed from a host reply.
     computer_arguments: Option<String>,
     media: Option<NativeMediaContext>,
@@ -312,6 +368,9 @@ fn functions(
     for spec in specs {
         match spec {
             DynamicToolSpec::Function(tool) => functions.push((None, Cow::Borrowed(tool))),
+            DynamicToolSpec::ToolSearch(tool) => {
+                functions.push((None, Cow::Owned(tool.callback_spec())))
+            }
             DynamicToolSpec::Computer(tool) => {
                 functions.push((None, Cow::Owned(tool.callback_spec())))
             }
@@ -328,7 +387,9 @@ fn functions(
 fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
     ensure!(
         specs.iter().all(|spec| match spec {
-            DynamicToolSpec::Function(_) | DynamicToolSpec::Computer(_) => true,
+            DynamicToolSpec::Function(_)
+            | DynamicToolSpec::Computer(_)
+            | DynamicToolSpec::ToolSearch(_) => true,
             DynamicToolSpec::Namespace(ns) => ns.tools.len() == 1,
         }),
         "invalid JavaScript tool slot projection"
@@ -340,6 +401,9 @@ fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
 pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
     validate_slots(specs)?;
     for declaration in specs {
+        if let DynamicToolSpec::ToolSearch(search) = declaration {
+            codex_tools::client_tool_search_spec(search).map_err(anyhow::Error::msg)?;
+        }
         if let DynamicToolSpec::Computer(computer) = declaration {
             codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?;
         }
@@ -350,6 +414,17 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
             .with_default_namespace();
         ensure!(seen.insert(key.clone()), "Duplicate JavaScript tool: {key}");
         ensure!(
+            !key.is_default_namespace()
+                || key.name != "tool_search"
+                || matches!(
+                    specs
+                        .iter()
+                        .find(|spec| matches!(spec, DynamicToolSpec::ToolSearch(_))),
+                    Some(_)
+                ),
+            "JavaScript tool uses a reserved name"
+        );
+        ensure!(
             !(key.is_default_namespace()
                 && matches!(
                     key.name.as_str(),
@@ -357,7 +432,6 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
                         | "shell_command"
                         | "exec"
                         | "wait"
-                        | "tool_search"
                         | "apply_patch"
                         | "write_stdin"
                 ))
@@ -1405,6 +1479,15 @@ impl PythonTools {
                 policy.is_none_or(|policy| policy.allows(&key)),
                 "JavaScript tool is excluded by ToolPolicy: {key}"
             );
+            if let DynamicToolSpec::ToolSearch(search) = declaration {
+                entries.push(Entry {
+                    name,
+                    spec: codex_tools::client_tool_search_spec(search)
+                        .map_err(anyhow::Error::msg)?,
+                    exposure: ToolExposure::DirectModelOnly,
+                });
+                continue;
+            }
             let mut function = dynamic_tool_to_responses_api_tool(&tool)?;
             function.defer_loading = None;
             if let Some(token) = &schema_token {
@@ -1631,6 +1714,142 @@ impl PythonTools {
 
     // An automatic checkpoint is the one busy snapshot admitted by the SDK.
     // Do not accept a name, a past generation, or an expired reply as authority.
+    fn pending_client_search(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+    ) -> Result<Arc<ClientToolSearchWork>> {
+        ensure!(
+            self.admit_callback(owner, key)?,
+            "Expired client tool search callback"
+        );
+        self.pending
+            .lock()
+            .expect("JavaScript replies poisoned")
+            .get(key)
+            .and_then(|call| call.client_search.clone())
+            .context("Request is not a client tool search")
+    }
+
+    pub(crate) fn load_client_search(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+        paths: Option<Vec<String>>,
+    ) -> Result<Value> {
+        let work = self.pending_client_search(owner, key)?;
+        let refs = paths
+            .as_deref()
+            .map(|paths| work.call.load_default(paths))
+            .transpose()
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let catalog: Vec<_> = work.call.catalog.iter().map(|entry| json!({"name":entry.name.name,"namespace":entry.name.namespace,"deferred":entry.deferred})).collect();
+        ensure!(
+            self.admit_callback(owner, key)?,
+            "Expired client tool search callback"
+        );
+        Ok(json!({"catalog":catalog,"tool_refs":refs}))
+    }
+
+    pub(crate) fn capture_client_search(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+        specs_json: &str,
+    ) -> Result<u64> {
+        const MAX_TOOLS: usize = 4096;
+        const MAX_BYTES: usize = 8 * 1024 * 1024;
+        ensure!(
+            specs_json.len() <= MAX_BYTES,
+            "Client tool search catalog exceeds its limit"
+        );
+        let work = self.pending_client_search(owner, key)?;
+        let turn = work
+            .turn_owner
+            .upgrade()
+            .context("Client tool search turn has expired")?;
+        let mut candidate = work
+            .candidate
+            .lock()
+            .expect("client search candidate poisoned");
+        ensure!(
+            candidate.is_none(),
+            "Client tool search already captured a catalog"
+        );
+        let ClientToolSearchCapture {
+            mut specs,
+            manual_slots,
+            terminal_slots,
+        } = serde_json::from_str(specs_json)?;
+        ensure!(
+            specs.len() <= MAX_TOOLS,
+            "Client tool search catalog exceeds its limit"
+        );
+        for spec in &mut specs {
+            match spec {
+                DynamicToolSpec::Function(function) => function.defer_loading = true,
+                DynamicToolSpec::Namespace(namespace) => {
+                    for DynamicToolNamespaceTool::Function(function) in &mut namespace.tools {
+                        function.defer_loading = true;
+                    }
+                }
+                _ => anyhow::bail!("Client tool search can admit new function tools only"),
+            }
+        }
+        let mut catalogs = turn
+            .client_search_catalogs
+            .lock()
+            .expect("client search catalogs poisoned");
+        ensure!(
+            catalogs
+                .iter()
+                .map(|catalog| catalog.generation.entries.len())
+                .sum::<usize>()
+                + specs.len()
+                <= MAX_TOOLS
+                && catalogs.iter().map(|catalog| catalog.bytes).sum::<usize>() + specs_json.len()
+                    <= MAX_BYTES,
+            "Client tool search catalog exceeds its limit"
+        );
+        let generation = self
+            .profile_catalog(
+                specs,
+                &manual_slots,
+                &terminal_slots,
+                None,
+                [false; 4],
+                false,
+            )?
+            .generation;
+        let id = generation.id;
+        let added = ClientToolSearchWork::additional_entries(&generation);
+        codex_tools::ClientToolSearchSelection {
+            tool_refs: added.iter().map(|entry| entry.name.clone()).collect(),
+            catalog_generation: None,
+        }
+        .resolve(&work.call.catalog, &added)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        self.schema_receipts.register(&generation);
+        self.register_generation(&generation)?;
+        ensure!(
+            self.admit_callback(owner, key)?,
+            "Expired client tool search callback"
+        );
+        let catalog = Arc::new(ClientToolSearchCatalog {
+            source: work.generation.clone(),
+            profile: work.profile.clone(),
+            turn: work.turn.clone(),
+            call_id: work.call_id.clone(),
+            generation,
+            bytes: specs_json.len(),
+            expected: Mutex::default(),
+            accepted: AtomicBool::new(false),
+        });
+        catalogs.push(catalog.clone());
+        *candidate = Some(catalog);
+        Ok(id)
+    }
+
     pub fn check_pending(&self, owner: &str, key: &PendingKey) -> Result<()> {
         ensure!(
             key.reply.thread == owner
@@ -1820,7 +2039,7 @@ impl PythonTools {
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
             thread, generation, slot, turn, call, arguments, source, model, media, admission, None,
-            None, None,
+            None, None, None,
         )
     }
 
@@ -1839,6 +2058,7 @@ impl PythonTools {
         profile: Option<&codex_extension_api::AgentProfileReceipt>,
         manual: Option<bool>,
         realtime_tool_call: Option<Value>,
+        client_search: Option<Arc<ClientToolSearchWork>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -1920,6 +2140,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    client_search,
                     computer_arguments: matches!(
                         entry.spec,
                         ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. }
@@ -3022,16 +3243,45 @@ impl ToolContributor for PythonContributor {
         {
             return Vec::new();
         }
-        self.executors(
+        let mut executors = self.executors(
             thread,
-            tools,
+            tools.clone(),
             snapshot.generation.clone(),
             snapshot.use_deferred_specs,
             &snapshot.slots,
             Some(snapshot.receipts.clone()),
-            profile,
+            profile.clone(),
             manual,
-        )
+        );
+        if let Some(turn) = thread
+            .get::<ModelPresentation>()
+            .and_then(|state| state.admission.clone())
+        {
+            let catalogs = turn
+                .client_search_catalogs
+                .lock()
+                .expect("client search catalogs poisoned")
+                .clone();
+            for catalog in catalogs {
+                if catalog.accepted.load(Ordering::Acquire)
+                    && Arc::ptr_eq(&catalog.source, &snapshot.generation)
+                    && catalog.profile == profile
+                {
+                    let slots: Vec<_> = (0..catalog.generation.entries.len()).collect();
+                    executors.extend(self.executors(
+                        thread,
+                        tools.clone(),
+                        catalog.generation.clone(),
+                        true,
+                        &slots,
+                        Some(snapshot.receipts.clone()),
+                        profile.clone(),
+                        None,
+                    ));
+                }
+            }
+        }
+        executors
     }
 
     fn select_tools_for_step<'a>(
@@ -3379,10 +3629,33 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
 
     fn on_result_accepted(
         &self,
-        _: &str,
-        _: &str,
+        turn_id: &str,
+        call_id: &str,
         result: &dyn ToolOutput,
     ) -> codex_tools::AcceptedToolOutcome {
+        if let Some(turn) = &self.admission {
+            for catalog in turn
+                .client_search_catalogs
+                .lock()
+                .expect("client search catalogs poisoned")
+                .iter()
+            {
+                if catalog.turn == turn_id
+                    && catalog.call_id == call_id
+                    && Arc::ptr_eq(&catalog.source, &self.generation)
+                {
+                    let expected = *catalog
+                        .expected
+                        .lock()
+                        .expect("client search receipt poisoned");
+                    if expected.is_some()
+                        && expected == client_search_output_digest(result, call_id)
+                    {
+                        catalog.accepted.store(true, Ordering::Release);
+                    }
+                }
+            }
+        }
         codex_tools::AcceptedToolOutcome {
             start_response: result.realtime_response_requested(),
             ..Default::default()
@@ -3394,8 +3667,28 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         ToolCall<'call>: 'a,
     {
         Box::pin(async move {
-            let arguments: Value = serde_json::from_str(call.function_arguments()?)
-                .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+            let client_search = if let ToolPayload::ClientToolSearch(search) = &call.payload {
+                Some(Arc::new(ClientToolSearchWork {
+                    call: search.clone(),
+                    generation: self.generation.clone(),
+                    profile: self.profile.clone(),
+                    turn_owner: self
+                        .admission
+                        .as_ref()
+                        .map(Arc::downgrade)
+                        .unwrap_or_default(),
+                    turn: call.turn_id.clone(),
+                    call_id: call.call_id.clone(),
+                    candidate: Mutex::default(),
+                }))
+            } else {
+                None
+            };
+            let arguments: Value = match &client_search {
+                Some(search) => search.call.arguments.clone(),
+                None => serde_json::from_str(call.function_arguments()?)
+                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?,
+            };
             if let Some(store) = &self.tools.local_store {
                 let id = codex_protocol::ThreadId::from_string(&self.thread)
                     .map_err(|_| FunctionCallError::Fatal("invalid local tool thread".into()))?;
@@ -3435,6 +3728,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                         .as_ref()
                         .map(|manual| manual.slots.contains(&self.slot)),
                     call.conversation_history.realtime_tool_call().cloned(),
+                    client_search.clone(),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
@@ -3481,6 +3775,35 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .lock()
                     .expect("JavaScript completion receipts poisoned")
                     .insert(key);
+            }
+            if let Some(search) = client_search {
+                let selection =
+                    codex_tools::ClientToolSearchSelection::from_response(&response.response)?;
+                let candidate = search
+                    .candidate
+                    .lock()
+                    .expect("client search candidate poisoned")
+                    .clone();
+                let added = match (&selection.catalog_generation, &candidate) {
+                    (None, None) => Vec::new(),
+                    (Some(id), Some(catalog)) if id == &catalog.generation.id.to_string() => {
+                        ClientToolSearchWork::additional_entries(&catalog.generation)
+                    }
+                    _ => {
+                        return Err(FunctionCallError::RespondToModel(
+                            "Client tool search catalog does not belong to this call".into(),
+                        ));
+                    }
+                };
+                let output = selection.resolve(&search.call.catalog, &added)?;
+                if let Some(catalog) = candidate {
+                    *catalog
+                        .expected
+                        .lock()
+                        .expect("client search receipt poisoned") =
+                        client_search_output_digest(&output, &call.call_id);
+                }
+                return Ok(Box::new(output) as Box<dyn ToolOutput>);
             }
             if let ToolPayload::Computer { arguments } = &call.payload {
                 return Ok(
@@ -3879,6 +4202,7 @@ mod pending_tests {
                 None,
                 None,
                 Some(manual.slots.contains(&0)),
+                None,
                 None,
             )
             .unwrap();

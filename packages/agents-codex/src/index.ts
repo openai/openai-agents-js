@@ -323,6 +323,9 @@ export type {
   ImageGenerationOptions,
   ToolSearch,
   ToolSearchOptions,
+  ClientToolSearchExecutor,
+  ClientToolSearchExecutorArgs,
+  ClientToolSearchExecutorResult,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
 export type {

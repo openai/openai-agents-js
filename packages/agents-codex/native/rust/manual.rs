@@ -1184,6 +1184,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    client_search: None,
                     computer_arguments: None,
                     media: None,
                     deadline: None,
