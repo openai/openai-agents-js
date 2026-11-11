@@ -4,6 +4,7 @@ import {
   supportsInputErrorRecovery,
   managedApproval,
   captureTools,
+  toolDeclarationIdentity,
   type ToolCatalog,
 } from './tools';
 import {
@@ -147,10 +148,18 @@ export function captureProfileRuntimes(
   for (const [index, profile] of profiles.entries()) {
     const declaration = profile.declaration;
     const { tools, mcp } = splitToolDeclarations(declaration.tools);
+    const callbackOwners = new Set(
+      profile.callbackTools?.map(toolDeclarationIdentity) ?? [],
+    );
     const catalog =
       index === 0
         ? profile.callbackTools?.length
-          ? captureTools([...rootCatalog.tools, ...profile.callbackTools])
+          ? captureTools([
+              ...rootCatalog.tools.filter(
+                (tool) => !callbackOwners.has(toolDeclarationIdentity(tool)),
+              ),
+              ...profile.callbackTools,
+            ])
           : rootCatalog
         : captureTools(tools);
     const output = prepareOutput(declaration.outputType);

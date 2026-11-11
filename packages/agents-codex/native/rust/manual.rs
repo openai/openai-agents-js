@@ -1856,6 +1856,12 @@ impl PythonTools {
             summary: Some(saved.reasoning_summary.unwrap_or_default()),
             service_tier: Some(saved.service_tier),
             tool_choice: saved.tool_choice,
+            request_controls: saved.request_controls.hosted_prompt.map(|prompt| {
+                codex_protocol::model_request_controls::ModelRequestControls {
+                    hosted_prompt: Some(prompt),
+                    ..Default::default()
+                }
+            }),
             ..Default::default()
         };
         let mut frame = frame.clone();
