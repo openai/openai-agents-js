@@ -1,5 +1,5 @@
 {
-  "result_tree": "6d41142833d3dc955c4090786dde58118c5aefc7",
+  "result_tree": "768c864ab0fccfbe27657248b4acb80b62db2280",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -756,6 +756,10 @@
     {
       "path": "sdk-reset-tool-choice-after-use.patch",
       "sha256": "6252ab047f0858279bb1ecb400bd1afa39ff368ebf284b2f1720d917431f8e05"
+    },
+    {
+      "path": "sdk-provider-hosted-shell.patch",
+      "sha256": "18200e097e6b835d6b9ef0cf0b06693235daf8423ed5d655994c0d206c167a09"
     }
   ]
 }

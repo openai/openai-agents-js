@@ -5,6 +5,7 @@ import {
   NativeProvider,
   fileSearch,
   codeInterpreter,
+  hostedShell,
   imageGeneration,
   tool,
 } from '../../src';
@@ -13,6 +14,142 @@ import type { JsonObject } from '../../src/runtime/binding';
 import type { CodeInterpreterOptions } from '../../src';
 
 afterEach(() => ModelServer.closeAll());
+
+it('retains provider-hosted shell calls and their output through the native loop', async () => {
+  const shellCall: JsonObject = {
+    type: 'shell_call',
+    id: 'sh_parity',
+    call_id: 'call_shell',
+    status: 'completed',
+    action: { commands: ['printf parity'], timeout_ms: 1000 },
+    environment: { type: 'container_reference', container_id: 'cntr_shell' },
+  };
+  const output: JsonObject = {
+    type: 'shell_call_output',
+    id: 'sho_parity',
+    call_id: 'call_shell',
+    status: 'completed',
+    output: [
+      { stdout: 'parity', stderr: '', outcome: { type: 'exit', exit_code: 0 } },
+    ],
+    provider_metadata: { retained: true },
+  };
+  const commandProgress = {
+    type: 'response.shell_call_command.delta',
+    command_index: 0,
+    delta: 'printf ',
+    output_index: 0,
+    sequence_number: 1,
+  };
+  const outputProgress = {
+    type: 'response.shell_call_output_content.delta',
+    command_index: 0,
+    delta: { stdout: 'parity' },
+    item_id: 'sho_parity',
+    output_index: 1,
+    sequence_number: 3,
+  };
+  const frames = [
+    { type: 'response.created', response: { id: 'resp_shell' } },
+    commandProgress,
+    { type: 'response.output_item.done', output_index: 0, item: shellCall },
+    outputProgress,
+    { type: 'response.output_item.done', output_index: 1, item: output },
+    {
+      type: 'response.output_item.done',
+      output_index: 2,
+      item: message('Shell completed.'),
+    },
+    { type: 'response.completed', response: { id: 'resp_shell' } },
+  ];
+  const model = new ModelServer([
+    {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: frames
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join(''),
+    },
+    [message('History retained.')],
+  ]);
+  const config = await model.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as JsonObject)
+      .base_url as string,
+    apiKey: 'synthetic-shell',
+    supportsWebsockets: false,
+  });
+  const environment = {
+    type: 'container_auto' as const,
+    file_ids: ['file_shell'],
+    skills: [{ type: 'skill_reference' as const, skill_id: 'skill_shell' }],
+    network_policy: {
+      type: 'allowlist' as const,
+      allowed_domains: ['fixture.invalid'],
+      domain_secrets: [
+        {
+          domain: 'fixture.invalid',
+          name: 'FIXTURE_TOKEN',
+          value: 'synthetic-shell-token',
+        },
+      ],
+    },
+  };
+  await using session = await new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Use the configured provider tool.',
+    tools: [hostedShell({ environment, allowedCallers: ['direct'] })],
+  }).session();
+  const first = await session.submit('Run the provider tool.');
+  const progress = (async () => {
+    const events = [];
+    for await (const event of first.events({ includeExecutionDetails: true }))
+      if (event.type === 'hosted_tool_call_progress') events.push(event);
+    return events;
+  })();
+  expect((await first.wait()).finalOutput).toBe('Shell completed.');
+  expect(await progress).toEqual([
+    expect.objectContaining({ event: commandProgress, itemId: null }),
+    expect.objectContaining({ event: outputProgress, itemId: 'sho_parity' }),
+  ]);
+  expect(model.requests[0].tools).toContainEqual({
+    type: 'shell',
+    environment,
+    allowed_callers: ['direct'],
+  });
+  const items = await Array.fromAsync(session.items());
+  expect(items).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'shell_call',
+        call_id: 'call_shell',
+        action: shellCall.action,
+        provider_data: shellCall,
+      }),
+      expect.objectContaining({
+        type: 'shell_call_output',
+        call_id: 'call_shell',
+        output: output.output,
+        provider_data: output,
+      }),
+    ]),
+  );
+  expect(JSON.stringify(items)).not.toContain('synthetic-shell-token');
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'History retained.',
+  );
+  expect(model.requests[1].input).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: 'shell_call', call_id: 'call_shell' }),
+      expect.objectContaining({
+        type: 'shell_call_output',
+        call_id: 'call_shell',
+      }),
+    ]),
+  );
+  model.assertExhausted();
+});
 
 it.each([
   {
