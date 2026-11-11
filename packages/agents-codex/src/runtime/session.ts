@@ -455,6 +455,7 @@ export type OneShotOptions = {
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
   beforeStep?: OperationOptions<any>['beforeStep'];
+  returnRawUsage?: boolean;
   /** Private single-use owned-factory grant; never interpreted by truthiness. */
   privateEngineGrant?: object;
 };
@@ -597,6 +598,25 @@ const sessionStopSchema = z
   })
   .strict();
 
+/** Original usage from one accepted provider response. */
+export interface RawProviderUsage {
+  readonly responseId: string;
+  readonly upstreamRequestId: string | null;
+  readonly usage: Readonly<Record<string, JsonValue>>;
+}
+
+const rawProviderUsageSchema = z.array(
+  z.object({
+    response_id: z.string(),
+    upstream_request_id: z.string().nullable(),
+    // The binding has already decoded JSON. Retain the original object keys.
+    usage: z.custom<Record<string, JsonValue>>(
+      (value) =>
+        value !== null && typeof value === 'object' && !Array.isArray(value),
+    ),
+  }),
+);
+
 export interface Completed<OutputT = string> {
   readonly turn: Turn<OutputT>;
   readonly finalOutput: OutputT;
@@ -608,6 +628,7 @@ export interface Completed<OutputT = string> {
   readonly state?: SessionState;
   /** Conversation records from returnHistory, for replay with the destination Session's instructions. */
   readonly history?: CanonicalHistorySnapshot['items'];
+  readonly rawUsage?: readonly RawProviderUsage[];
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
 }
@@ -1274,6 +1295,39 @@ function realtimeToolSelection(
 }
 
 export class Session<OutputT = string, Context = unknown> {
+  #collectingRawUsage = false;
+
+  /** @internal */
+  _startRawUsage(): void {
+    if (this.#collectingRawUsage) return;
+    this.#native._start_raw_usage();
+    this.#collectingRawUsage = true;
+  }
+
+  /** @internal */
+  _takeRawUsage(turnId: string): readonly RawProviderUsage[] {
+    try {
+      const records = decode(
+        rawProviderUsageSchema,
+        this.#native._take_raw_usage(turnId),
+      );
+      return Object.freeze(
+        records.map((record) =>
+          Object.freeze({
+            responseId: record.response_id,
+            upstreamRequestId: record.upstream_request_id,
+            usage: Object.freeze(record.usage),
+          }),
+        ),
+      );
+    } catch (error) {
+      throw new NativeError(
+        error instanceof Error ? error.message : String(error),
+        { cause: error },
+      );
+    }
+  }
+
   private profileRuntimes: ReadonlyMap<string, AgentProfileRuntime> = new Map();
   private readonly voiceProfileGraphs = new Map<string, CapturedAgentGraph>();
   private voiceGraphGeneration?: string;

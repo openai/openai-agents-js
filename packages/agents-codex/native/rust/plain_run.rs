@@ -708,7 +708,8 @@ async fn collect(
             return Err(integrity(reason));
         }
         match event {
-            ResponseEvent::ResponseObserved(observation) => {
+            ResponseEvent::ResponseObserved(received) => {
+                let observation = received.observation;
                 if let Some(id) = &observation.response_id {
                     state.response_id(id.clone())?;
                 }

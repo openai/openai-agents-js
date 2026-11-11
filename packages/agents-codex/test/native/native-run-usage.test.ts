@@ -36,6 +36,103 @@ async function providerFor(server: ModelServer) {
     supportsWebsockets: false,
   });
 }
+
+it.each([false, true])(
+  'keeps original provider usage out of history and checkpoints with capture=%s',
+  async (capture) => {
+    const sentinel = 'synthetic-provider-usage-extension';
+    const usage = [0, 1].map((sequence) => ({
+      ...modelUsage,
+      vendor_extension: {
+        sample: [0, false, null, sentinel],
+        sequence,
+      },
+      ['__proto__']: 'synthetic JSON key',
+    }));
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Resolve a code.',
+      parameters: z.object({}),
+      execute: () => 'resolved',
+    });
+    const server = new ModelServer(
+      [[call('lookup', {}, { callId: 'raw-usage-a' })], [message('done')]],
+      usage.map((record) => JSON.stringify(record)),
+    );
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use lookup once.',
+      tools: [lookup],
+      provider,
+    });
+    const result = await agent.run('look up A', {
+      returnRawUsage: capture,
+      returnHistory: true,
+      returnState: true,
+    });
+
+    expect(result.finalOutput).toBe('done');
+    expect(result.runUsage).toMatchObject({ requests: 2, totalTokens: 28 });
+    expect(server.requests).toHaveLength(2);
+    expect(result.state).toBeDefined();
+    expect(JSON.stringify(result.state)).not.toContain(sentinel);
+    expect(result.history).toBeDefined();
+    expect(JSON.stringify(result.history)).not.toContain(sentinel);
+    if (capture) {
+      expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+      expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+        'response-1',
+        'response-2',
+      ]);
+    } else {
+      expect(result).not.toHaveProperty('rawUsage');
+    }
+  },
+);
+
+it('keeps original provider usage for the resumed manual invocation', async () => {
+  const decision = manualTool({
+    name: 'decision',
+    description: 'Request approval.',
+    parameters: z.object({}),
+    result: z.string(),
+  });
+  const usage = { ...modelUsage, vendor_extension: 'resumed-provider-usage' };
+  const server = new ModelServer(
+    [
+      [call('decision', {}, { callId: 'raw-usage-manual' })],
+      [message('finished')],
+    ],
+    usage,
+  );
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Request approval and finish.',
+    tools: [decision],
+    provider,
+  });
+  await using session = await agent.session();
+  const turn = await session.submit('go');
+  const pending = await turn.wait({ until: 'manual_tool' });
+  expect(pending).toHaveProperty('requests');
+  const state = parseSessionState(JSON.stringify(await session.suspend()));
+  await session.close();
+
+  const resumed = await agent.run(null, {
+    state,
+    returnRawUsage: true,
+    onInteraction(action) {
+      const request = decision.match(action);
+      if (!request) throw new Error('Expected the restored decision request');
+      return request.reply('approved');
+    },
+  });
+
+  expect(resumed.finalOutput).toBe('finished');
+  expect(server.requests).toHaveLength(2);
+  expect(resumed.rawUsage).toMatchObject([{ responseId: 'response-2', usage }]);
+});
+
 it('captures explicit usage atomically and ignores model-visible usage-shaped output', async () => {
   const retained: ToolContext[] = [];
   const snapshots: unknown[] = [];
