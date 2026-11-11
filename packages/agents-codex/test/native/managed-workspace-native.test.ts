@@ -35,7 +35,7 @@ it('retains paired A while native continuation publishes B and then resumes orig
     pair?: ManagedWorkspaceCheckpoint,
     policy: {
       readOnly?: boolean;
-      network?: { allowAllUnixSockets: boolean };
+      deniedDomain?: string;
       trustedExpected?: ManagedWorkspaceCheckpoint;
     } = {},
   ) => {
@@ -86,13 +86,16 @@ it('retains paired A while native continuation publishes B and then resumes orig
               url: peer.url,
               headers: peer.headers,
               cwd: workspace,
-              tools: [],
+              tools: ['exec_command'],
               ...(policy.readOnly === undefined
                 ? {}
                 : { readOnly: policy.readOnly }),
-              ...(policy.network === undefined
-                ? {}
-                : { network: policy.network }),
+              network: {
+                allowAllUnixSockets: true,
+                deniedDomains: [
+                  policy.deniedDomain ?? 'blocked.example.invalid',
+                ],
+              },
             }),
             peer.close,
           );
@@ -124,19 +127,25 @@ it('retains paired A while native continuation publishes B and then resumes orig
     await expect(
       agent.session({ state: a, environment: source(a, { readOnly: true }) }),
     ).rejects.toThrow(/read-only/);
-    await expect(
-      agent.session({
-        state: a,
-        environment: source(a, { network: { allowAllUnixSockets: true } }),
-      }),
-    ).rejects.toThrow(/network policy/i);
-
     // This trusted expected value has been coming directly from SDK capture,
     // independently of the imported bytes under test.
     const importedA = ManagedWorkspaceCheckpoint.fromJSON(JSON.stringify(a));
     await expect(
       agent.session({ state: importedA, environment: source(a) }),
     ).rejects.toThrow(/trusted.*checkpoint/);
+    const modelRequests = server.requests.length;
+    await expect(
+      agent.session({
+        state: importedA,
+        environment: source(a, {
+          deniedDomain: 'different.example.invalid',
+          trustedExpected: a,
+        }),
+      }),
+    ).rejects.toThrow(
+      'Checkpoint and Environment must agree on the network policy',
+    );
+    expect(server.requests).toHaveLength(modelRequests);
     const second = await agent.session({
       state: importedA,
       environment: source(a, { trustedExpected: a }),
