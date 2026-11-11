@@ -1,7 +1,14 @@
 import OpenAI from 'openai';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
-import { Agent, NativeProvider, ResponsesModel, tool } from '../../src';
+import {
+  Agent,
+  NativeProvider,
+  ResponsesModel,
+  tool,
+  manualTool,
+  parseSessionState,
+} from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
@@ -250,5 +257,61 @@ it('resolves the current hosted prompt factory after a cold restore without over
   expect(JSON.stringify(server.requests[1]!.input)).toContain(
     'before restore result',
   );
+  server.assertExhausted();
+}, 20_000);
+
+it('rebinds an omitted hosted prompt through a manual checkpoint', async () => {
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Read.',
+    parameters: z.object({ key: z.string() }),
+    result: z.string(),
+  });
+  const server = new ModelServer([
+    [call('lookup', { key: 'A' }, { callId: 'prompt-manual' })],
+    [message('restored prompt')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-native-key',
+    supportsWebsockets: false,
+  });
+  let current = { id: 'pmpt_manual_before' };
+  let resolutions = 0;
+  const agent = new Agent({
+    provider,
+    tools: [lookup],
+    hostedPrompt: () => {
+      resolutions++;
+      return current;
+    },
+  });
+  const source = await agent.session();
+  const turn = await source.submit('Read');
+  const first = await turn.wait({ until: 'manual_tool' });
+  if (!('requests' in first)) throw new Error('Expected pending tool');
+  const state = parseSessionState(JSON.stringify(await source.suspend()));
+  await source.close();
+  current = { id: 'pmpt_manual_after' };
+  await using restored = await agent.session({ state });
+  const continuation = restored.restoredTurn;
+  if (!continuation) throw new Error('Expected restored continuation');
+  const pending = await continuation.wait({ until: 'manual_tool' });
+  if (!('requests' in pending)) throw new Error('Expected restored tool');
+  const request = lookup.match(pending.requests[0]);
+  if (!request) throw new Error('Expected exact lookup request');
+  await restored.respond(request.reply('known'));
+  expect((await continuation.wait()).finalOutput).toBe('restored prompt');
+  expect(resolutions).toBe(2);
+  expect(server.requests.map((request) => request.prompt)).toEqual([
+    { id: 'pmpt_manual_before' },
+    { id: 'pmpt_manual_after' },
+  ]);
+  for (const request of server.requests) {
+    expect(request).not.toHaveProperty('model');
+    expect(request).not.toHaveProperty('instructions');
+  }
   server.assertExhausted();
 }, 20_000);
