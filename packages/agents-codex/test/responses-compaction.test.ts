@@ -174,3 +174,163 @@ it.each([7, false, '', ' '])(
     expect(observe.mock.calls[0][0].totalTokens).toBe(6);
   },
 );
+
+it('reconciles an exact transformed control echo to detached canonical instructions', async () => {
+  const original = [
+    {
+      type: 'message',
+      role: 'developer',
+      content: [{ type: 'input_text', text: 'private instructions' }],
+    },
+  ];
+  const redacted = [
+    {
+      type: 'message',
+      role: 'developer',
+      content: [{ type: 'input_text', text: 'redacted instructions' }],
+    },
+  ];
+  const bodies: any[] = [];
+  const client = new OpenAI({
+    apiKey: 'synthetic',
+    maxRetries: 0,
+    fetch: async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      return new Response(
+        JSON.stringify({
+          ...result(),
+          output: [
+            ...body.input,
+            { type: 'compaction', encrypted_content: 'opaque' },
+          ],
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+  const factory = responsesCompaction({ client });
+  const prepared = factory.prepareContext(
+    { ...context(), items: redacted },
+    [],
+    undefined,
+    false,
+  );
+  const window = await factory.requestWindow(
+    prepared,
+    undefined,
+    () => {},
+    original,
+  );
+  expect(bodies[0].input).toEqual(redacted);
+  expect(window.items).toEqual([
+    ...original,
+    { type: 'compaction', encrypted_content: 'opaque' },
+  ]);
+});
+
+it('keeps control aliases exact and single-use before native validation', async () => {
+  const original = [
+    {
+      type: 'message',
+      role: 'developer',
+      id: 'control',
+      content: [{ type: 'input_text', text: 'canonical' }],
+    },
+  ];
+  const redacted = [
+    { ...original[0], content: [{ type: 'input_text', text: 'redacted' }] },
+  ];
+  const factory = responsesCompaction({
+    client: {
+      responses: {
+        compact: async () => ({
+          ...result(),
+          output: [...redacted, ...redacted],
+        }),
+      },
+    } as unknown as OpenAI,
+  });
+  const prepared = factory.prepareContext(
+    { ...context(), items: redacted },
+    [],
+    undefined,
+    false,
+  );
+  const window = await factory.requestWindow(
+    prepared,
+    undefined,
+    () => {},
+    original,
+  );
+  expect(window.items).toEqual([original[0], redacted[0]]);
+});
+it('preserves request-only control projections without granting canonical aliases', async () => {
+  const compact = vi.fn(async (body: any) => ({
+    ...result(),
+    output: body.input,
+  }));
+  const factory = responsesCompaction({
+    client: { responses: { compact } } as unknown as OpenAI,
+  });
+  const original = [
+    { type: 'message', role: 'developer', id: 'control', content: [] },
+  ];
+  for (const replacement of [
+    { ...original[0], role: 'system' },
+    { ...original[0], id: 'different' },
+  ]) {
+    const prepared = factory.prepareContext(
+      { ...context(), items: [replacement] },
+      [],
+      undefined,
+      false,
+    );
+    const window = await factory.requestWindow(
+      prepared,
+      undefined,
+      () => {},
+      original,
+    );
+    expect(window.items).toEqual([replacement]);
+  }
+  expect(compact).toHaveBeenCalledTimes(2);
+});
+
+it('keeps a later exact alias after an unmatched returned control', async () => {
+  const original = [
+    {
+      type: 'message',
+      role: 'developer',
+      id: 'control',
+      content: [{ type: 'input_text', text: 'canonical' }],
+    },
+  ];
+  const redacted = [
+    { ...original[0], content: [{ type: 'input_text', text: 'redacted' }] },
+  ];
+  const foreign = {
+    ...redacted[0],
+    content: [{ type: 'input_text', text: 'foreign' }],
+  };
+  const factory = responsesCompaction({
+    client: {
+      responses: {
+        compact: async () => ({ ...result(), output: [foreign, ...redacted] }),
+      },
+    } as unknown as OpenAI,
+  });
+  const prepared = factory.prepareContext(
+    { ...context(), items: redacted },
+    [],
+    undefined,
+    false,
+  );
+  const window = await factory.requestWindow(
+    prepared,
+    undefined,
+    () => {},
+    original,
+  );
+  expect(window.items).toEqual([foreign, original[0]]);
+});

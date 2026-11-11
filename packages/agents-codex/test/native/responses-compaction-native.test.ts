@@ -416,3 +416,155 @@ nativeIt.each(
     server.assertExhausted();
   },
 );
+
+nativeIt.each([false, true])(
+  'reconciles transformed instruction echoes through checkpoint restore (altered=%s)',
+  async (altered) => {
+    const server = new ModelServer([
+      [message('old answer')],
+      [message('continued')],
+    ]);
+    await using provider = await providerFor(server);
+    const compact = vi.fn(async (body: any) => {
+      const output = JSON.parse(JSON.stringify(body.input));
+      if (altered) {
+        const control = output.find(
+          (item: any) => item.type === 'message' && item.role === 'developer',
+        );
+        control.content = [{ type: 'input_text', text: 'FORGED_CONTROL' }];
+      }
+      return {
+        id: 'echo-window',
+        output: [
+          ...output,
+          { type: 'compaction', encrypted_content: 'OPAQUE_ECHO' },
+        ],
+      };
+    });
+    const options = {
+      provider,
+      model: 'gpt-5.5',
+      compaction: responsesCompaction({
+        client: clientFor(compact),
+        model: 'compactor',
+        mode: 'input',
+        shouldCompact: () => false,
+      }),
+      transformContext(context: any) {
+        return context.items.map((item: any) =>
+          item.type === 'message' && ['developer', 'system'].includes(item.role)
+            ? {
+                ...item,
+                content: [{ type: 'input_text', text: 'REDACTED_CONTROL' }],
+              }
+            : item,
+        );
+      },
+    };
+    const agent = new Agent({
+      ...options,
+      instructions: 'PRIVATE_APP_ORIGINAL',
+    });
+    let saved;
+    {
+      await using session = await agent.session();
+      await (await session.submit('original user')).wait();
+      await session.update({ instructions: 'PRIVATE_APP_CURRENT' });
+      const originals = await session.historySnapshot();
+      if (altered) {
+        await expect(session.compact()).rejects.toThrow(
+          'new or modified instruction or control',
+        );
+        expect(
+          (await (await session.submit('continue after refusal')).wait())
+            .finalOutput,
+        ).toBe('continued');
+      } else {
+        await session.compact();
+        const after = await session.historySnapshot();
+        expect(after.items.slice(0, originals.total)).toEqual(originals.items);
+        saved = await session.saveState();
+      }
+    }
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(text(compact.mock.calls[0]![0].input)).toContain('REDACTED_CONTROL');
+    expect(text(compact.mock.calls[0]![0].input)).not.toContain('PRIVATE_APP_');
+    if (!altered) {
+      await using restored = await new Agent({
+        ...options,
+        instructions: 'PRIVATE_APP_CURRENT',
+      }).session({ state: parseSessionState(text(saved)) });
+      expect(
+        (await (await restored.submit('continue after restore')).wait())
+          .finalOutput,
+      ).toBe('continued');
+    }
+    expect(server.requests).toHaveLength(2);
+    expect(text(server.requests.at(-1))).toContain('REDACTED_CONTROL');
+    expect(text(server.requests.at(-1))).not.toContain('PRIVATE_APP_');
+  },
+  30000,
+);
+
+nativeIt(
+  'keeps an added compaction-only instruction outside durable history',
+  async () => {
+    const server = new ModelServer([
+      [message('original answer')],
+      [message('continued')],
+    ]);
+    await using provider = await providerFor(server);
+    const compact = vi.fn(async (body: any) => ({
+      output: [
+        ...body.input,
+        { type: 'compaction', encrypted_content: 'OPAQUE_PROJECTED' },
+      ],
+    }));
+    const options = {
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'CANONICAL_INSTRUCTIONS',
+      compaction: responsesCompaction({
+        client: clientFor(compact),
+        model: 'compactor',
+        mode: 'input',
+        shouldCompact: () => false,
+      }),
+      transformContext(context: any) {
+        if (context.purpose === 'compaction')
+          return [
+            ...context.items,
+            {
+              type: 'message',
+              role: 'developer',
+              content: [{ type: 'input_text', text: 'PROJECTED_ONLY_CONTROL' }],
+            },
+          ];
+      },
+    };
+    let saved;
+    {
+      await using session = await new Agent(options).session();
+      await (await session.submit('original user')).wait();
+      await expect(session.compact()).rejects.toThrow(
+        'new or modified instruction or control',
+      );
+      expect(compact).toHaveBeenCalledTimes(1);
+      expect(text(compact.mock.calls[0]![0].input)).toContain(
+        'PROJECTED_ONLY_CONTROL',
+      );
+      saved = await session.saveState();
+      expect(text(saved)).not.toContain('PROJECTED_ONLY_CONTROL');
+    }
+    await using restored = await new Agent(options).session({
+      state: parseSessionState(text(saved)),
+    });
+    expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
+      'continued',
+    );
+    expect(text(server.requests.at(-1))).not.toContain(
+      'PROJECTED_ONLY_CONTROL',
+    );
+  },
+  30000,
+);

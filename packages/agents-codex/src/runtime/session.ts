@@ -8631,8 +8631,19 @@ export class Session<OutputT = string, Context = unknown> {
                     check();
                     reply({ admitted });
                   } else {
+                    let canonicalItems: typeof prepared.items | undefined;
                     let requestContext = prepared;
                     if (prepared.mode === 'input' && transformContext) {
+                      canonicalItems = JSON.parse(
+                        JSON.stringify(
+                          prepared.items.filter(
+                            (item) =>
+                              item.type === 'message' &&
+                              (item.role === 'developer' ||
+                                item.role === 'system'),
+                          ),
+                        ),
+                      ) as typeof prepared.items;
                       const replacement = await transformContext(
                         Object.freeze({
                           ...base,
@@ -8663,6 +8674,7 @@ export class Session<OutputT = string, Context = unknown> {
                           usage === null ? undefined : report.raw,
                         );
                       },
+                      canonicalItems,
                     );
                     check();
                     reply({ window });

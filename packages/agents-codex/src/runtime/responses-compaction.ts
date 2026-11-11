@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type OpenAI from 'openai';
 import { losslessJsonObjectSchema } from './binding';
 import type { TokenUsage } from './run-events';
@@ -95,6 +96,7 @@ export class ResponsesCompaction<Context = unknown> {
     context: ResponsesCompactionContext<Context>,
     providerResponse: { response_id: string; model?: string } | undefined,
     observe: (usage: TokenUsage | null) => void,
+    canonicalItems?: CompactionContext<Context>['items'],
   ): Promise<{ items: unknown[]; response_id?: string; model: string }> {
     const model = context.model;
     const body: Parameters<OpenAI['responses']['compact']>[0] = { model };
@@ -105,6 +107,10 @@ export class ResponsesCompaction<Context = unknown> {
         );
       body.previous_response_id = providerResponse.response_id;
     } else body.input = JSON.parse(JSON.stringify(context.items));
+    const aliases =
+      context.mode === 'input' && canonicalItems !== undefined
+        ? controlAliases(canonicalItems, body.input as unknown[])
+        : undefined;
     const response = await this.#compact(body, { signal: context.signal });
     let reported = false;
     try {
@@ -121,7 +127,10 @@ export class ResponsesCompaction<Context = unknown> {
       )
         throw new TypeError('Compaction response ID must be a nonempty string');
       return {
-        items: value.output,
+        items:
+          aliases === undefined
+            ? value.output
+            : canonicalControls(value.output, aliases),
         ...(responseId !== undefined ? { response_id: responseId } : {}),
         model,
       };
@@ -166,4 +175,51 @@ function compactUsage(value: unknown): TokenUsage | null {
   )
     return null;
   return counts as TokenUsage;
+}
+
+function instruction(item: unknown): item is Record<string, unknown> {
+  return (
+    typeof item === 'object' &&
+    item !== null &&
+    !Array.isArray(item) &&
+    (item as Record<string, unknown>).type === 'message' &&
+    ['system', 'developer'].includes(
+      String((item as Record<string, unknown>).role),
+    )
+  );
+}
+
+function controlAliases(
+  canonical: readonly unknown[],
+  outbound: readonly unknown[],
+) {
+  const originals = canonical.filter(instruction);
+  const controls = outbound.filter(instruction);
+  const identity = (items: Record<string, unknown>[]) =>
+    items.map((item) => [item.role, item.id ?? null]);
+  if (!isDeepStrictEqual(identity(originals), identity(controls)))
+    return undefined;
+  return controls.map((item, index) => ({
+    outbound: JSON.parse(JSON.stringify(item)) as unknown,
+    canonical: JSON.parse(JSON.stringify(originals[index])) as unknown,
+  }));
+}
+
+function canonicalControls(
+  output: unknown[],
+  aliases: NonNullable<ReturnType<typeof controlAliases>>,
+): unknown[] {
+  let cursor = 0;
+  return output.map((item) => {
+    if (!instruction(item)) return item;
+    for (let index = cursor; index < aliases.length; index++) {
+      const alias = aliases[index]!;
+      if (isDeepStrictEqual(item, alias.outbound)) {
+        cursor = index + 1;
+        return alias.canonical;
+      }
+    }
+    // Native Core remains the authority for unmatched or duplicated controls.
+    return item;
+  });
 }
