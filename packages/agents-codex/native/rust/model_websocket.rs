@@ -931,10 +931,95 @@ pub(crate) fn project_response_items(
             if item.id().is_some_and(|id| !id.is_prefixed()) {
                 item.set_id(None);
             }
+            // Match Core's private prepare_response_items_for_request projection.
+            match &mut item {
+                ResponseItem::ShellCall {
+                    provider_fields, ..
+                } => {
+                    provider_fields.remove("created_by");
+                }
+                ResponseItem::ShellCallOutput {
+                    provider_fields, ..
+                } => {
+                    provider_fields.remove("created_by");
+                    if let Some(serde_json::Value::Array(output)) =
+                        provider_fields.get_mut("output")
+                    {
+                        for chunk in output {
+                            if let serde_json::Value::Object(chunk) = chunk {
+                                chunk.remove("created_by");
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
             if !content_item_kinds {
                 item.clear_content_item_kinds();
             }
             Some(item)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::project_response_items;
+    use crate::model_websocket_prefix::Prefix;
+    use serde_json::json;
+
+    #[test]
+    fn shell_continuation_full_resend_omits_provider_creation_metadata() {
+        let call = json!({
+            "type": "shell_call", "call_id": "call_hosted",
+            "created_by": "provider-shell",
+            "environment": {"type": "container_reference", "container_id": "cntr_fixture"},
+            "action": {"commands": ["true"]}
+        });
+        let output = json!({
+            "type": "shell_call_output", "call_id": "call_hosted",
+            "created_by": "provider-shell",
+            "output": [{
+                "stdout": "done", "stderr": "", "outcome": {"type": "exit", "exit_code": 0},
+                "created_by": "provider-command",
+                "vendor": {"created_by": "preserved-nested-value"}
+            }]
+        });
+        let projected =
+            serde_json::to_value(project_response_items(vec![call, output], false)).unwrap();
+        let items = projected.as_array().unwrap();
+        assert!(items[0].get("created_by").is_none());
+        assert!(items[1].get("created_by").is_none());
+        assert!(items[1]["output"][0].get("created_by").is_none());
+        assert_eq!(
+            items[1]["output"][0]["vendor"]["created_by"],
+            "preserved-nested-value"
+        );
+
+        let mut prefix = Prefix::default();
+        let original = json!({"model": "fixture", "input": []});
+        prefix
+            .commit(
+                "resp_hosted".into(),
+                vec![],
+                Some(&original),
+                items.clone(),
+                false,
+            )
+            .unwrap();
+        let reconstructed = prefix
+            .reconstruct(
+                json!({
+                    "model": "fixture", "input": [], "previous_response_id": "resp_hosted",
+                    "temperature": 0.5
+                }),
+                Some(&json!({
+                    "model": "fixture", "response_id": "resp_hosted", "output": projected
+                })),
+            )
+            .unwrap();
+        let wire = prefix.encode(&reconstructed).unwrap();
+        assert!(wire.get("previous_response_id").is_none());
+        assert_eq!(wire["input"], projected);
+    }
 }
