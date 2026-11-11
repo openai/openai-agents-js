@@ -36,7 +36,7 @@ import {
   captureProfileRuntimes,
   profileRoster,
   parseProfileReceipt,
-  checkProfileReceipt,
+  checkPortableProfileReceipt,
   type CapturedAgentProfile,
   type CapturedAgentGraph,
 } from './agent-profiles';
@@ -1313,7 +1313,7 @@ export class Agent<Context = undefined, Output = string> {
     const graphNative = graph ? await binding() : undefined;
     const restoredSource =
       graph && state
-        ? checkProfileReceipt(
+        ? checkPortableProfileReceipt(
             parseProfileReceipt(
               graphNative!._agent_profiles_restore_source(
                 JSON.stringify(graph.roster),
@@ -1328,7 +1328,7 @@ export class Agent<Context = undefined, Output = string> {
       graph &&
       isManualSessionState(state) &&
       readCheckpointSelections(state).operation_tools?.length
-        ? checkProfileReceipt(
+        ? checkPortableProfileReceipt(
             parseProfileReceipt(
               graphNative!._agent_profiles_operation_source(
                 JSON.stringify(graph.roster),
