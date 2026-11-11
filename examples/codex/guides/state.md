@@ -142,7 +142,7 @@ Fork retains those accepted settings too. A different model or setting on the de
 
 ### Output and checkpoint versions
 
-Treat checkpoints as opaque data for this SDK and language. The current reader retains SDK envelope versions 2 through 15, subject to each version's restore checks below, and rejects unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
+Treat checkpoints as opaque data for this SDK and language. The matching source reader has been accepting SDK envelope versions 2 through 16, subject to each version's restore checks below, and rejecting unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
 
 The destination SDK must use the exact Codex revision that saved the checkpoint. A recognized envelope does not permit another native revision. Current trusted host configuration still supplies credentials, callbacks, tool bindings, the matching output contract, and executor policy; a recognized version grants none of those permissions.
 
@@ -162,6 +162,7 @@ For a pending manual checkpoint, instructions and pending tool declarations/resu
 | v10 / v11 | Managed defaults and optional pending selection, with settled Code Mode state. |
 | v12 / v13 | Explicit network policy identity for ordinary idle/manual state, with the same optional selection data. |
 | v14 / v15 | Explicit network policy identity with settled Code Mode state and the same optional selection data. |
+| Source-only idle v16 | Settled single-agent [Sign in with ChatGPT](session-configuration.md#use-sign-in-with-chatgpt) state, without pending manual work, descendants, passive repair receipts, Code Mode, or network-policy identity. Current credentials required on restore. |
 
 Code Mode capture refuses active cells. It preserves stored JSON object keys as data, including `__proto__`, without changing object prototypes. It does not serialize JavaScript stacks, arbitrary globals, or old reply grants. The destination supplies current trusted declarations and callback implementations.
 
