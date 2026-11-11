@@ -887,7 +887,8 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
       'kind' in tool &&
       (tool.kind === 'file_search' ||
         tool.kind === 'code_interpreter' ||
-        tool.kind === 'image_generation')
+        tool.kind === 'image_generation' ||
+        tool.kind === 'tool_search')
     ) {
       if (hostedTools.some((prior) => prior.kind === tool.kind))
         throw new TypeError(`Declare ${tool.kind} only once`);

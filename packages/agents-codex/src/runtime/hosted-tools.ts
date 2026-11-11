@@ -1,5 +1,5 @@
 import type OpenAI from 'openai';
-import { copyJsonValue, type JsonObject } from './binding';
+import { copyJsonValue, type JsonObject, type JsonValue } from './binding';
 
 export interface HostedToolOptions {
   /** Additional provider fields; declared fields and tool identity cannot be replaced. */
@@ -63,7 +63,19 @@ export interface ImageGeneration extends ImageGenerationOptions {
   readonly kind: 'image_generation';
 }
 
-export type HostedTool = FileSearch | CodeInterpreter | ImageGeneration;
+export interface ToolSearchOptions extends HostedToolOptions {
+  execution?: 'server' | 'client';
+  description?: string | null;
+  parameters?: JsonValue;
+}
+
+/** Responses search configuration for deferred tools. */
+export interface ToolSearch extends ToolSearchOptions {
+  readonly kind: 'tool_search';
+}
+
+export type HostedTool =
+  FileSearch | CodeInterpreter | ImageGeneration | ToolSearch;
 
 /** Capture nested provider configuration without retaining application objects. */
 function capture<T>(value: T): T {
@@ -103,6 +115,10 @@ export function imageGeneration(
   return capture({ ...options, kind: 'image_generation' as const });
 }
 
+export function toolSearch(options: ToolSearchOptions = {}): ToolSearch {
+  return capture({ ...options, kind: 'tool_search' as const });
+}
+
 /** @internal Re-capture structural declarations at the session opening boundary. */
 export function captureHostedTool(tool: HostedTool): HostedTool {
   return capture(tool);
@@ -127,6 +143,7 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
         'filters',
       ],
       code_interpreter: ['container', 'allowed_callers', 'include_outputs'],
+      tool_search: ['execution', 'description', 'parameters'],
       image_generation: [
         'action',
         'complexity',
@@ -186,6 +203,18 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
         ...(tool.allowedCallers === undefined
           ? {}
           : { allowed_callers: tool.allowedCallers }),
+      };
+    if (tool.kind === 'tool_search')
+      return {
+        ...providerData,
+        type: tool.kind,
+        ...(tool.execution === undefined ? {} : { execution: tool.execution }),
+        ...(tool.description === undefined
+          ? {}
+          : { description: tool.description }),
+        ...(tool.parameters === undefined
+          ? {}
+          : { parameters: tool.parameters }),
       };
     const fields = {
       action: tool.action,
