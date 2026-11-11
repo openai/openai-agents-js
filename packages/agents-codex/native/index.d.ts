@@ -298,6 +298,11 @@ export class NativeThread {
   _reply_compaction(response_json: string): void;
   _reply_model_context(response_json: string): void;
   _reply_natural_completion(response_json: string): void;
+  _load_client_tool_search(request_json: string, paths_json?: string): string;
+  _capture_client_tool_search(
+    request_json: string,
+    specs_json: string,
+  ): NativeId;
   _check_step(response_json: string): boolean;
   _stop_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;

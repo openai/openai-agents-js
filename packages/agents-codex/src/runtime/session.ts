@@ -149,7 +149,11 @@ import { createUrlCompletion } from './url-elicitation';
 import { prepareNativeForm, type PreparedNativeForm } from './native-forms';
 import { z } from 'zod';
 import type { WebSearch } from './web-search';
-import { hostedToolSpecs, type HostedTool } from './hosted-tools';
+import {
+  hostedToolSpecs,
+  type HostedTool,
+  type ClientToolSearchExecutor,
+} from './hosted-tools';
 import {
   assertOutputRepairSupported,
   OutputValidationError,
@@ -320,6 +324,7 @@ import {
   toolApplicationData,
   captureTools,
   isDirectFunctionTool,
+  isClientToolSearchTool,
   toolIdentity,
   toolRef,
   type ToolRef,
@@ -1174,7 +1179,13 @@ interface NativeCallbackDelivery {
   released: boolean;
 }
 
+const clientSearchCatalogSource = Symbol('client tool search source');
+type ClientSearchCatalog = ToolCatalog & {
+  readonly [clientSearchCatalogSource]: string;
+};
+
 class NativeTurn {
+  clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[] = [];
   guardrailInput?: UserInput;
   inputGuardrailsStarted = false;
@@ -2143,6 +2154,218 @@ export class Session<OutputT = string, Context = unknown> {
       throw new NativeError('Native callback has an unexpected Agent profile');
     return checkProfileReceipt(receipt, graph);
   }
+  private clientSearchCatalogKey(
+    message: Record<string, unknown>,
+    generation: string,
+    marker = message._sdk_python_tool as Record<string, unknown> | undefined,
+  ): string | undefined {
+    if (!marker || typeof marker.thread !== 'string') return undefined;
+    const source = this.messageProfile(message);
+    return JSON.stringify([
+      'client-tool-search',
+      marker.thread,
+      marker.instance ?? null,
+      source?.profile_id ?? null,
+      source?.epoch.toString() ?? null,
+      generation,
+    ]);
+  }
+
+  private retainedClientSearchCatalogs(
+    owner: NativeTurn | ChildCallbackOwner,
+    sourceKey: string | undefined,
+  ): readonly ClientSearchCatalog[] {
+    if (!sourceKey) return [];
+    return [...(owner.clientSearchCatalogKeys ?? [])].flatMap((key) => {
+      const catalog = this.profileCatalogs.get(key) as
+        ClientSearchCatalog | undefined;
+      return catalog && catalog[clientSearchCatalogSource] === sourceKey
+        ? [catalog]
+        : [];
+    });
+  }
+
+  private async executeClientToolSearch(
+    owner: NativeTurn | ChildCallbackOwner,
+    message: Record<string, unknown>,
+    native: NativeThread,
+    sourceCatalog: ToolCatalog,
+    argumentsValue: JsonValue,
+    context: ToolCallContext,
+    execute: ClientToolSearchExecutor<any> | undefined,
+    admit: () => void,
+  ): Promise<ToolResponse> {
+    const request = encodeReceipt(message);
+    const read = (paths?: readonly string[]) =>
+      decode(
+        z.object({
+          catalog: z.array(
+            z.object({
+              name: z.string(),
+              namespace: z.string().nullish(),
+              deferred: z.boolean(),
+            }),
+          ),
+          tool_refs: z
+            .array(
+              z.object({ name: z.string(), namespace: z.string().nullish() }),
+            )
+            .nullable(),
+        }),
+        native._load_client_tool_search(
+          request,
+          paths === undefined ? undefined : encode([...paths]),
+        ),
+      );
+    admit();
+    const metadata = read();
+    const key = (ref: { name: string; namespace?: string | null }) =>
+      JSON.stringify([ref.namespace ?? 'functions', ref.name]);
+    const capturedNames = new Set(metadata.catalog.map(key));
+    const identities = new Map<object, { name: string; namespace: string }>();
+    const available: (Tool<any> | ToolRef)[] = [];
+    const sourceKey = this.clientSearchCatalogKey(
+      message,
+      sourceCatalog.generation.toString(),
+    );
+    const retained = this.retainedClientSearchCatalogs(owner, sourceKey);
+    for (const tool of [sourceCatalog, ...retained].flatMap((catalog) => [
+      ...catalog.tools,
+    ])) {
+      if (isClientToolSearchTool(tool)) continue;
+      const identity = toolIdentity(tool);
+      if (!capturedNames.has(key(identity))) continue;
+      const original = toolDeclarationIdentity(tool);
+      identities.set(original, identity);
+      available.push(original as Tool<any>);
+    }
+    const ownedNames = new Set([...identities.values()].map(key));
+    for (const entry of metadata.catalog)
+      if (!ownedNames.has(key(entry)))
+        available.push(toolRef(entry.name, entry.namespace));
+    const loadDefault = (paths: readonly string[]) => {
+      admit();
+      return Object.freeze(
+        (read(paths).tool_refs ?? []).map((ref) =>
+          toolRef(ref.name, ref.namespace),
+        ),
+      );
+    };
+    const result = execute
+      ? await execute({
+          agent: this.sourceApplicationAgent(message),
+          availableTools: Object.freeze(available),
+          loadDefault,
+          runContext: context,
+          toolCall: Object.freeze({
+            type: 'tool_search_call',
+            call_id: context.callId,
+            execution: 'client',
+            arguments: argumentsValue,
+          }),
+        })
+      : loadDefault(
+          z.object({ paths: z.array(z.string()) }).parse(argumentsValue).paths,
+        );
+    admit();
+    const returned: readonly (Tool<any> | ToolRef)[] =
+      result == null
+        ? []
+        : Array.isArray(result)
+          ? result
+          : [result as Tool<any> | ToolRef];
+    const refs: { name: string; namespace?: string | null }[] = [];
+    const added: SessionTool[] = [];
+    for (const tool of returned) {
+      if ('kind' in tool && tool.kind === 'tool_ref') {
+        refs.push({ name: tool.name, namespace: tool.namespace });
+        continue;
+      }
+      const captured = identities.get(tool);
+      if (captured) {
+        refs.push(captured);
+        continue;
+      }
+      if (tool instanceof HttpMCP || tool instanceof StdioMCP)
+        throw new TypeError(
+          'Client search returns captured native tool references for MCP tools',
+        );
+      const candidate = tool as SessionTool;
+      const identity = toolIdentity(candidate);
+      if (capturedNames.has(key(identity)))
+        throw new TypeError(
+          'Client tool search cannot replace a captured tool',
+        );
+      added.push(candidate);
+      refs.push(identity);
+    }
+    let generation: string | undefined;
+    if (added.length) {
+      const captured = captureTools(added);
+      generation = native
+        ._capture_client_tool_search(
+          request,
+          encode({
+            specs: JSON.parse(captured.specsJson) as JsonValue,
+            manual_slots: captured.tools.flatMap((tool, slot) =>
+              tool.kind === 'manual' ? [slot] : [],
+            ),
+            terminal_slots: captured.tools.flatMap((tool, slot) =>
+              (tool.kind !== 'manual' && tool.finishTurn) ||
+              managedApproval(tool)?.function.finishTurn
+                ? [slot]
+                : [],
+            ),
+          }),
+        )
+        .toString();
+      admit();
+      const catalog = Object.freeze({
+        ...captured,
+        generation: BigInt(profileInteger(generation)),
+        [clientSearchCatalogSource]: sourceKey!,
+      });
+      const catalogKey = this.clientSearchCatalogKey(message, generation);
+      if (!catalogKey)
+        throw new NativeError('Client tool search has no source identity');
+      this.profileCatalogs.set(catalogKey, catalog);
+      this.profileHighWater =
+        catalog.generation > this.profileHighWater
+          ? catalog.generation
+          : this.profileHighWater;
+      if (!owner.clientSearchCatalogKeys) {
+        owner.clientSearchCatalogKeys = new Set();
+        const release = () => {
+          for (const key of owner.clientSearchCatalogKeys!)
+            this.profileCatalogs.delete(key);
+          owner.clientSearchCatalogKeys!.clear();
+        };
+        if (owner instanceof NativeTurn)
+          void owner.completion.promise.then(release, release);
+        else {
+          const drain = () => {
+            void this.childCallbacks
+              .drain(owner.childId, owner.incarnation, owner.turnId)
+              .then(release, release);
+          };
+          if (owner.controller.signal.aborted) drain();
+          else
+            owner.controller.signal.addEventListener('abort', drain, {
+              once: true,
+            });
+        }
+      }
+      owner.clientSearchCatalogKeys.add(catalogKey);
+    }
+    admit();
+    return outputOf(
+      JSON.stringify({
+        tool_refs: refs,
+        ...(generation === undefined ? {} : { catalog_generation: generation }),
+      }),
+    );
+  }
+
   private sourceCatalog(
     message: Record<string, unknown>,
     generation: string,
@@ -2152,10 +2375,16 @@ export class Session<OutputT = string, Context = unknown> {
       ? this.profileCatalogs.get(
           this.profileKey(source.profile_id, profileInteger(generation)),
         )
-      : this.catalog;
-    if (!catalog || catalog.generation.toString() !== generation)
+      : this.catalog.generation.toString() === generation
+        ? this.catalog
+        : undefined;
+    const retained =
+      this.profileCatalogs.get(
+        this.clientSearchCatalogKey(message, generation) ?? '',
+      ) ?? catalog;
+    if (!retained || retained.generation.toString() !== generation)
       throw new NativeError('Native callback has no captured source catalog');
-    return catalog;
+    return retained;
   }
   private sourceMcp(
     message: Record<string, unknown>,
@@ -4689,6 +4918,7 @@ export class Session<OutputT = string, Context = unknown> {
       : undefined,
     sourceMcp: readonly McpTool[] = this.openingMcpTools,
     mcpIndex = this.mcpNameIndex(sourceMcp),
+    admittedClientTools: ToolCatalog['tools'] = [],
   ): readonly ReturnType<typeof toolIdentity>[] {
     // A graph operation captures object authority, not a historical name alias.
     // Keep ordinary mono Session selector compatibility unchanged.
@@ -4724,10 +4954,13 @@ export class Session<OutputT = string, Context = unknown> {
           identity = declared;
         }
         const key = JSON.stringify([identity.namespace, identity.name]);
-        // Preserve immediate rejection outside the captured opening authority.
-        // Core derives tool_search from admitted leaves and still resolves every
-        // reference against the actual model's candidates before sampling.
-        if (selector.kind === 'tool_ref')
+        const clientTool = admittedClientTools.find((tool) => {
+          const admitted = toolIdentity(tool);
+          return JSON.stringify([admitted.namespace, admitted.name]) === key;
+        });
+        // Captured discovery extends this step's authority. Other references
+        // retain the opening policy and current model candidate checks.
+        if (selector.kind === 'tool_ref' && !clientTool)
           assertAdmittedToolReference(identity, opening);
         if (
           currentMcp &&
@@ -4740,6 +4973,11 @@ export class Session<OutputT = string, Context = unknown> {
           );
         if (
           selector.kind !== 'tool_ref' &&
+          !(
+            clientTool &&
+            toolDeclarationIdentity(clientTool) ===
+              toolDeclarationIdentity(selector)
+          ) &&
           !(sourceCatalog
             ? sourceCatalog.tools.some(
                 (tool) =>
@@ -8864,6 +9102,7 @@ export class Session<OutputT = string, Context = unknown> {
             if (isStepStop(selected)) stopped = true;
             else
               names = this.selectedStepNames(
+                run,
                 event,
                 selected,
                 this.profileOperationNames(selection, event, sourceCatalog),
@@ -9155,7 +9394,7 @@ export class Session<OutputT = string, Context = unknown> {
         );
         if (selected !== skipped) {
           if (isStepStop(selected)) stopped = true;
-          else names = this.selectedStepNames(event, selected);
+          else names = this.selectedStepNames(owner, event, selected);
         }
       } finally {
         await scope.close();
@@ -9244,6 +9483,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private selectedStepNames(
+    owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
     selected: readonly ToolSelector<Context>[] | undefined,
     defaults?: readonly ReturnType<typeof toolIdentity>[],
@@ -9269,6 +9509,20 @@ export class Session<OutputT = string, Context = unknown> {
         event.msg,
         z.string().parse(event.msg.generation),
       );
+    const identityKey = (tool: ReturnType<typeof toolIdentity>) =>
+      JSON.stringify([tool.namespace, tool.name]);
+    const candidateKeys = new Set(candidates.map(identityKey));
+    const sourceKey = this.clientSearchCatalogKey(
+      event.msg,
+      z.string().parse(event.msg.generation),
+      { thread: event.msg.thread, instance: event.subagent_incarnation },
+    );
+    const admittedClientTools = this.retainedClientSearchCatalogs(
+      owner,
+      sourceKey,
+    )
+      .flatMap((catalog) => [...catalog.tools])
+      .filter((tool) => candidateKeys.has(identityKey(toolIdentity(tool))));
     const servers = source
       ? (this.profileStepMcp.get(
           this.profileKey(source.profile_id, sourceCatalog!.generation),
@@ -9296,6 +9550,16 @@ export class Session<OutputT = string, Context = unknown> {
       return { name: actual.name, namespace: actual.namespace };
     };
     const resolvedDefaults = defaults?.map((name) => resolve(name));
+    if (resolvedDefaults) {
+      const seen = new Set(resolvedDefaults.map(identityKey));
+      for (const tool of admittedClientTools) {
+        const identity = toolIdentity(tool);
+        if (!seen.has(identityKey(identity))) {
+          seen.add(identityKey(identity));
+          resolvedDefaults.push(identity);
+        }
+      }
+    }
     const names =
       selected === undefined
         ? (resolvedDefaults ?? nativeDefaults ?? candidates)
@@ -9304,6 +9568,7 @@ export class Session<OutputT = string, Context = unknown> {
             sourceCatalog,
             servers,
             declared,
+            admittedClientTools,
           ).map((name, index) => resolve(name, selected[index]));
     const ceiling =
       resolvedDefaults && source
@@ -10956,7 +11221,23 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
-      registerToolSessionOwner(context, this.toolSessionOwner);
+      registerToolSessionOwner(
+        context,
+        this.toolSessionOwner,
+        isClientToolSearchTool(tool)
+          ? (args, context, execute, admit) =>
+              this.executeClientToolSearch(
+                owner,
+                msg,
+                native,
+                catalog,
+                args,
+                context,
+                execute,
+                admit,
+              )
+          : undefined,
+      );
       const identity: ToolIdentity = {
         callId: context.callId,
         toolName: tool.name,

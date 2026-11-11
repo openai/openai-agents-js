@@ -21,14 +21,17 @@ it('resolves a large captured MCP roster with linear reads and preserves its cei
     options: { value: { agentGraph: true } },
     threadOptions: { value: {} },
     hasOperationMcp: { value: false },
-    messageProfile: { value: () => ({ profile_id: 'source' }) },
+    messageProfile: { value: () => ({ profile_id: 'source', epoch: 0n }) },
     profileKey: { value: () => 'source' },
     profileStepMcp: {
       value: new Map([['source', [{ name: 'docs', tools }]]]),
     },
   });
+  const owner = { clientSearchCatalogKeys: new Set<string>() };
   const event = {
     msg: {
+      thread: 'fixture',
+      generation: '1',
       candidates,
       defaults: candidates,
       mcp_names: raw.map((tool, index) => ({
@@ -41,12 +44,13 @@ it('resolves a large captured MCP roster with linear reads and preserves its cei
   };
   const catalog = { generation: 1, tools: [] };
   expect(
-    session.selectedStepNames(event, undefined, defaults, catalog),
+    session.selectedStepNames(owner, event, undefined, defaults, catalog),
   ).toEqual(candidates);
   expect(reads).toBeLessThan(count * 12);
   reads = 0;
   expect(() =>
     session.selectedStepNames(
+      owner,
       event,
       [{ kind: 'tool_ref', ...defaults.at(-1)! }],
       defaults.slice(0, -1),
