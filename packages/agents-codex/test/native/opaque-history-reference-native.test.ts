@@ -49,7 +49,7 @@ it('rejects opaque-reference lossy projection in restricted preparation before d
       edits += 1;
       request.input.push({
         type: 'item_reference',
-        id: 'service-owned-opaque-reference',
+        id: 42,
       });
       return request;
     },
@@ -58,6 +58,6 @@ it('rejects opaque-reference lossy projection in restricted preparation before d
   expect(edits).toBe(1);
   expect(server.requests).toHaveLength(0);
   expect(JSON.stringify(await session.saveState())).not.toContain(
-    'service-owned-opaque-reference',
+    '"type":"item_reference"',
   );
 }, 15_000);

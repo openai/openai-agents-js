@@ -170,7 +170,7 @@ nativeIt.each(['throw', 'lossy'])(
       provider,
       transformContext: () => {
         if (mode === 'throw') throw failure;
-        return [{ type: 'item_reference', id: 'unsupported-reference' }];
+        return [{ type: 'item_reference', id: 42 }];
       },
     }).session();
     const turn = await session.submit('one');
