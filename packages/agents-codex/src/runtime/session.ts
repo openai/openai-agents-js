@@ -7612,18 +7612,10 @@ export class Session<OutputT = string, Context = unknown> {
     });
   }
 
-  private releaseTerminalObservation(
+  private promotePendingApplicationOutputs(
     owner: NativeTurn | ChildCallbackOwner,
-    value: unknown,
+    callId?: string,
   ): void {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-    const item = value as Record<string, unknown>;
-    if (
-      item.type !== 'function_call_output' ||
-      typeof item.call_id !== 'string'
-    )
-      return;
-    const state = this.terminalProposals.get(owner);
     const turnId = owner instanceof NativeTurn ? owner.id : owner.turnId;
     for (
       let index = this.pendingApplicationOutputs.length - 1;
@@ -7631,7 +7623,10 @@ export class Session<OutputT = string, Context = unknown> {
       index--
     ) {
       const pending = this.pendingApplicationOutputs[index]!;
-      if (pending.turnId !== turnId || pending.callId !== item.call_id)
+      if (
+        pending.turnId !== turnId ||
+        (callId !== undefined && pending.callId !== callId)
+      )
         continue;
       this.pendingApplicationOutputs.splice(index, 1);
       this.recordApplicationOutput(
@@ -7645,6 +7640,21 @@ export class Session<OutputT = string, Context = unknown> {
         pending.applicationData,
       );
     }
+  }
+
+  private releaseTerminalObservation(
+    owner: NativeTurn | ChildCallbackOwner,
+    value: unknown,
+  ): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const item = value as Record<string, unknown>;
+    if (
+      item.type !== 'function_call_output' ||
+      typeof item.call_id !== 'string'
+    )
+      return;
+    const state = this.terminalProposals.get(owner);
+    this.promotePendingApplicationOutputs(owner, item.call_id);
     const observation = state?.observations.get(item.call_id);
     if (!observation) return;
     state!.observations.delete(item.call_id);
@@ -10125,34 +10135,45 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TurnAborted(
             'Manual continuation stopped before native admission',
           );
-        const wire = await this.#native._complete_manual_continuation(
-          schema == null ? undefined : encodeReceipt(schema),
-          run.selection
-            ? encodeOperationSelection({
-                generation: this.catalog.generation.toString(),
-                ...(run.selection.operationDeclarationSource
-                  ? {
-                      operation_declaration_source:
-                        run.selection.operationDeclarationSource,
-                    }
-                  : {}),
-                names: run.selection.names ?? null,
-                before_step:
-                  run.selection.maxModelSteps !== undefined ||
-                  this.options.agentGraph !== undefined,
-              })
-            : undefined,
-          this.options.parentTrace
-            ? encode(this.options.parentTrace.toHeaders())
-            : undefined,
-          tracingContext,
-          this.submissionIds.get(run)!,
-        );
-        const submission = decode(submissionSchema, wire);
-        if (submission.status !== 'started' || submission.turn_id !== run.id)
-          throw new NativeError(
-            'Manual continuation changed the original turn',
-          );
+        const completion = this.#native
+          ._complete_manual_continuation(
+            schema == null ? undefined : encodeReceipt(schema),
+            run.selection
+              ? encodeOperationSelection({
+                  generation: this.catalog.generation.toString(),
+                  ...(run.selection.operationDeclarationSource
+                    ? {
+                        operation_declaration_source:
+                          run.selection.operationDeclarationSource,
+                      }
+                    : {}),
+                  names: run.selection.names ?? null,
+                  before_step:
+                    run.selection.maxModelSteps !== undefined ||
+                    this.options.agentGraph !== undefined,
+                })
+              : undefined,
+            this.options.parentTrace
+              ? encode(this.options.parentTrace.toHeaders())
+              : undefined,
+            tracingContext,
+            this.submissionIds.get(run)!,
+          )
+          .then((wire) => {
+            const submission = decode(submissionSchema, wire);
+            if (
+              submission.status !== 'started' ||
+              submission.turn_id !== run.id
+            )
+              throw new NativeError(
+                'Manual continuation changed the original turn',
+              );
+            // Native has durably injected every accepted recovered output before
+            // starting this exact turn; those rows do not emit live output events.
+            this.promotePendingApplicationOutputs(run);
+          });
+        this.track(run, completion, run.manualReplies);
+        await completion;
       } catch (error) {
         if (
           [...this.graphStops].some(

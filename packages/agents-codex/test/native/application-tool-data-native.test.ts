@@ -562,23 +562,6 @@ nativeIt(
         throw new Error('second suspension', { cause });
       });
     }
-    expect(secondState).not.toHaveProperty('application_tool_outputs');
-    expect(secondState).toHaveProperty('pending_application_tool_outputs', [
-      expect.objectContaining({
-        callId: 'staged-first',
-        applicationData: { ticket: 'private-staged-manual' },
-      }),
-    ]);
-    expect(JSON.stringify(nativeCheckpoint(secondState))).not.toContain(
-      'private-staged-manual',
-    );
-    const duplicate = JSON.parse(JSON.stringify(secondState));
-    duplicate.pending_application_tool_outputs.push(
-      structuredClone(duplicate.pending_application_tool_outputs[0]),
-    );
-    await expect(agent.session({ state: duplicate })).rejects.toThrow(
-      'Duplicate pending application tool output',
-    );
     await using final = await agent
       .session({ state: secondState })
       .catch((cause) => {
@@ -600,6 +583,23 @@ nativeIt(
         applicationData: { ticket: 'private-staged-manual' },
       }),
     ]);
+    expect(secondState).not.toHaveProperty('application_tool_outputs');
+    expect(secondState).toHaveProperty('pending_application_tool_outputs', [
+      expect.objectContaining({
+        callId: 'staged-first',
+        applicationData: { ticket: 'private-staged-manual' },
+      }),
+    ]);
+    expect(JSON.stringify(nativeCheckpoint(secondState))).not.toContain(
+      'private-staged-manual',
+    );
+    const duplicate = JSON.parse(JSON.stringify(secondState));
+    duplicate.pending_application_tool_outputs.push(
+      structuredClone(duplicate.pending_application_tool_outputs[0]),
+    );
+    await expect(agent.session({ state: duplicate })).rejects.toThrow(
+      'Duplicate pending application tool output',
+    );
     expect(JSON.stringify(model.requests)).not.toContain(
       'private-staged-manual',
     );
