@@ -1359,6 +1359,25 @@ function nativeItems(
   }
 }
 
+export type ModelOutputItem = Extract<
+  SessionItem,
+  { type: 'message' | 'reasoning' }
+>;
+
+export function projectModelOutputItem(
+  value: JsonValue | undefined,
+  turnId: string,
+  threadId: string,
+): ModelOutputItem | undefined {
+  const raw = object(value);
+  if (raw?.type !== 'AgentMessage' && raw?.type !== 'Reasoning') return;
+  const [item] = nativeItems(raw, true, turnId, threadId);
+  if (item?.type === 'message' || item?.type === 'reasoning') {
+    const { data: _data, ...projected } = item;
+    return projected;
+  }
+}
+
 /** Project completed native items carrying hosted search evidence for live consumers. */
 export function projectSearchItem(
   value: JsonValue | undefined,
