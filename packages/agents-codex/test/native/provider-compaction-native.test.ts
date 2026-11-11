@@ -104,3 +104,70 @@ nativeIt(
   },
   40_000,
 );
+
+nativeIt(
+  'keeps the provider window through native compaction and cold restore',
+  async () => {
+    const server = new ModelServer([
+      [message('OLD_ASSISTANT_SENTINEL')],
+      [
+        { type: 'compaction', encrypted_content: 'OPAQUE_PROVIDER_WINDOW' },
+        message('Provider summary accepted.'),
+      ],
+      [message('Current user accepted.')],
+      [message('NATIVE_SUMMARY_SENTINEL')],
+      [message('done')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-compaction-retention',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      model: 'fixture-provider-compaction',
+      instructions: 'Keep the current context.',
+      provider,
+      modelSettings: {
+        contextManagement: [{ type: 'compaction', compact_threshold: 1024 }],
+      },
+    });
+    const saved = await (async () => {
+      await using session = await agent.session();
+      await (await session.submit('OLD_USER_SENTINEL')).wait();
+      await (await session.submit('PROVIDER_TRIGGER_SENTINEL')).wait();
+      await (await session.submit('CURRENT_USER_SENTINEL')).wait();
+      await session.compact();
+      return session.saveState();
+    })();
+    {
+      await using restored = await agent.session({
+        state: parseSessionState(JSON.stringify(saved)),
+      });
+      expect(
+        (
+          await (
+            await restored.submit('Continue after native compaction.')
+          ).wait()
+        ).finalOutput,
+      ).toBe('done');
+    }
+    expect(server.requests).toHaveLength(5);
+    const compactInput = JSON.stringify(server.requests[3]!.input);
+    const finalInput = JSON.stringify(server.requests[4]!.input);
+    for (const old of [
+      'OLD_USER_SENTINEL',
+      'PROVIDER_TRIGGER_SENTINEL',
+      'OLD_ASSISTANT_SENTINEL',
+    ]) {
+      expect(compactInput).not.toContain(old);
+      expect(finalInput).not.toContain(old);
+      expect(JSON.stringify(saved)).toContain(old);
+    }
+    expect(finalInput.split('CURRENT_USER_SENTINEL')).toHaveLength(2);
+    expect(finalInput).toContain('NATIVE_SUMMARY_SENTINEL');
+    server.assertExhausted();
+  },
+  40_000,
+);
