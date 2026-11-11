@@ -104,6 +104,41 @@ it('clears an authoritative empty replacement after sealing without reopening gr
   });
 });
 
+it.each([
+  ['conversation.item.done', undefined],
+  ['conversation.item.done', '!!!!'],
+  ['conversation.item.retrieved', undefined],
+  ['conversation.item.retrieved', '!!!!'],
+] as const)(
+  'preserves truncation across %s with optional audio %s',
+  (type, audio) => {
+    for (const maxAudioBytes of [0, 2]) {
+      const history = new VoiceConversationHistory({
+        storeAudio: true,
+        maxAudioBytes,
+      });
+      history.observe(item('known', 'AQID'));
+      const followup = {
+        ...item('known', '', 'updated transcript'),
+        type,
+      };
+      if (audio === undefined)
+        delete (followup.item.content[0] as { audio?: string }).audio;
+      else followup.item.content[0].audio = audio;
+      history.observe(followup);
+      expect(content(history, 'known')).toMatchObject({
+        audio: maxAudioBytes ? 'AQI=' : '',
+        transcript: 'updated transcript',
+        audio_truncated: true,
+      });
+      history.observe(item('known', maxAudioBytes ? 'AQ==' : ''));
+      expect(content(history, 'known')).not.toHaveProperty('audio_truncated');
+      history.observe(followup);
+      expect(content(history, 'known')).not.toHaveProperty('audio_truncated');
+    }
+  },
+);
+
 it.each(['!!!!', 'A', 'AQ=', 'AQID!!!!'])(
   'ignores malformed embedded audio %s while retaining text and prior valid audio',
   (invalid) => {
@@ -127,6 +162,19 @@ it.each(['!!!!', 'A', 'AQ=', 'AQID!!!!'])(
     expect(content(history, 'following')).toMatchObject({ audio: 'BAUG' });
   },
 );
+
+it('clears a delta overflow marker on a valid complete replacement', () => {
+  const history = new VoiceConversationHistory({
+    storeAudio: true,
+    maxAudioBytes: 2,
+  });
+  history.observe(item('known', 'AQI='));
+  history.observeAudio('known', 0, Uint8Array.of(3));
+  expect(content(history, 'known').audio_truncated).toBe(true);
+  history.observe(item('known', 'AQ=='));
+  expect(content(history, 'known')).toMatchObject({ audio: 'AQ==' });
+  expect(content(history, 'known')).not.toHaveProperty('audio_truncated');
+});
 
 it.runIf(process.env.OPENAI_AGENTS_PORTABLE_TESTS === '1')(
   'keeps the portable session and raw observation live after malformed embedded audio',

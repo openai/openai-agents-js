@@ -247,7 +247,7 @@ export class VoiceConversationHistory {
       retained.chunks = [];
       retained.bytes = 0;
     }
-    if (replace && !data.byteLength && this.truncatedAudioKey === key)
+    if (replace && this.truncatedAudioKey === key)
       this.truncatedAudioKey = undefined;
     retained.chunks.push(Uint8Array.from(data));
     this.audioChunks++;
@@ -328,11 +328,21 @@ export class VoiceConversationHistory {
     let audioBytes = this.audioBytes;
     let audioChunks = this.audioChunks;
     let sealed = this.audioSealed;
+    const previousContent = this.items.get(id)?.content;
     if (Array.isArray(item.content))
       for (const [index, part] of item.content.entries()) {
         if (!part || typeof part !== 'object') continue;
         const data = part.audio;
         delete part.audio;
+        const previousPart = Array.isArray(previousContent)
+          ? previousContent[index]
+          : undefined;
+        if (
+          this.storeAudio &&
+          previousPart?.type === part.type &&
+          previousPart?.audio_truncated === true
+        )
+          part.audio_truncated = true;
         if (!this.storeAudio || typeof data !== 'string') continue;
         const length = providerAudioLength(data);
         // Invalid optional audio does not invalidate text or overwrite valid bytes.
@@ -353,7 +363,7 @@ export class VoiceConversationHistory {
         if (truncated) {
           part.audio_truncated = true;
           sealed = true;
-        }
+        } else delete part.audio_truncated;
         if (chunksAvailable) {
           audioBytes += retainedBytes - (previous?.bytes ?? 0);
           audioChunks += 1 - (previous?.chunks.length ?? 0);
