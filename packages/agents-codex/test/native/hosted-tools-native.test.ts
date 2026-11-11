@@ -15,7 +15,7 @@ import type { CodeInterpreterOptions } from '../../src';
 
 afterEach(() => ModelServer.closeAll());
 
-it('retains provider-hosted shell calls and their output through the native loop', async () => {
+it('completes a shell-only response and retains its provider-hosted output', async () => {
   const shellCall: JsonObject = {
     type: 'shell_call',
     id: 'sh_parity',
@@ -55,11 +55,6 @@ it('retains provider-hosted shell calls and their output through the native loop
     { type: 'response.output_item.done', output_index: 0, item: shellCall },
     outputProgress,
     { type: 'response.output_item.done', output_index: 1, item: output },
-    {
-      type: 'response.output_item.done',
-      output_index: 2,
-      item: message('Shell completed.'),
-    },
     { type: 'response.completed', response: { id: 'resp_shell' } },
   ];
   const model = new ModelServer([
@@ -108,7 +103,7 @@ it('retains provider-hosted shell calls and their output through the native loop
       if (event.type === 'hosted_tool_call_progress') events.push(event);
     return events;
   })();
-  expect((await first.wait()).finalOutput).toBe('Shell completed.');
+  await first.wait();
   expect(await progress).toEqual([
     expect.objectContaining({ event: commandProgress, itemId: null }),
     expect.objectContaining({ event: outputProgress, itemId: 'sho_parity' }),
