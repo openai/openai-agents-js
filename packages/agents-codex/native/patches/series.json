@@ -655,7 +655,11 @@
     {
       "path": "sdk-fork-originals-lineage.patch",
       "sha256": "3f315e7d82ebdc5e30cb9d336282876d05a410458dce6bdf7a6d5576fcf65411"
+    },
+    {
+      "path": "sdk-realtime-captured-mcp-policy.patch",
+      "sha256": "44cf60e7dfdac93b14839a5885991d4899e97731ae9216ea9720b58d20a35f50"
     }
   ],
-  "result_tree": "48acbffd60a9e629813bff2ea3912f6ecada4d11"
+  "result_tree": "5dcd23d1ea24a19cb161215b1e223b30a7a5d44d"
 }
