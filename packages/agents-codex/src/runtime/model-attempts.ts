@@ -169,7 +169,14 @@ function applyCaptured(
 }
 const factSchema = modelAttemptSnapshotSchema.extend({
   attempt_id: z.string().min(1),
-  phase: z.enum(['started', 'finished', 'retry', 'terminal', 'cancelled']),
+  phase: z.enum([
+    'started',
+    'measured',
+    'finished',
+    'retry',
+    'terminal',
+    'cancelled',
+  ]),
 });
 export function applyModelAttemptFact(
   owner: ModelAttemptOwner,

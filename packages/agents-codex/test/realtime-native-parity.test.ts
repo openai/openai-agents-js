@@ -3248,6 +3248,12 @@ nativeIt(
         expect(
           peer.frames
             .slice(start)
+            .find((frame) => frame.item?.call_id === 'transfer-call')?.item
+            .output,
+        ).toBe('Handoff reserved.');
+        expect(
+          peer.frames
+            .slice(start)
             .filter((frame) => frame.item?.call_id === 'transfer-call'),
         ).toHaveLength(1);
       } finally {

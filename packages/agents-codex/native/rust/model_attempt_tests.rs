@@ -276,7 +276,7 @@ async fn provider_failure_wrapper_reports_the_original_frame() {
             serde_json::from_value(json!({"owner":receipt(&event),"failed":true,
         "failure":{"attempt_id":"original","normalized":{"message":"provider failure",
         "is_abort":false,"is_network_error":true,"is_timeout":false},
-        "usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}))
+        "usage":{"input_tokens":3,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0,"total_tokens":5}}}))
             .unwrap(),
         )
         .unwrap();

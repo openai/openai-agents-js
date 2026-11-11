@@ -1734,6 +1734,10 @@ export function projectHistory(
         payload.type === 'turn_aborted';
       if (started || completed) {
         pendingUser = undefined;
+        if (started && !modelAttemptUsage.has(id)) {
+          responseUsage.delete(id);
+          incompleteCacheWriteUsage.delete(id);
+        }
         if (started) failures.delete(id);
         const error =
           failures.get(id) ??

@@ -236,3 +236,18 @@ it('reports exact integer cleanup usage without adding a request counter', () =>
   expect(wire).not.toContain('requests');
   expect(wire).not.toContain('"9007199254740993"');
 });
+
+it('publishes measured usage before settlement without counting it twice', () => {
+  const state = owner();
+  const measured = {
+    ...snapshot(1, 0, 7),
+    attempt_id: 'first',
+    phase: 'measured',
+  };
+  applyModelAttemptFact(state, measured);
+  expect(state.requests).toBe(1);
+  expect(state.tokenUsage?.inputTokens).toBe(7);
+  applyModelAttemptFact(state, measured);
+  expect(state.requests).toBe(1);
+  expect(state.tokenUsage?.inputTokens).toBe(7);
+});

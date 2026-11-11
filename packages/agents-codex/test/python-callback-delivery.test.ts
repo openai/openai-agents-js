@@ -170,6 +170,7 @@ it('aborts only the exact callback and releases it after its actual finally sett
     await vi.waitFor(() =>
       expect(peer.native._release_python_callback).toHaveBeenCalledWith(
         first.wire,
+        false,
       ),
     );
     sibling.resolve();
@@ -205,6 +206,7 @@ it('does not enter application validation or execution after native admission is
     await vi.waitFor(() =>
       expect(peer.native._release_python_callback).toHaveBeenCalledWith(
         call.wire,
+        false,
       ),
     );
     expect(peer.native._enter_python_callback).toHaveBeenCalledWith(call.wire);
@@ -234,6 +236,7 @@ it('atomically claims before application validation and skips a native-cancelled
     await vi.waitFor(() =>
       expect(peer.native._release_python_callback).toHaveBeenCalledWith(
         call.wire,
+        false,
       ),
     );
     expect(peer.native._enter_python_callback).toHaveBeenCalledWith(call.wire);
@@ -270,6 +273,7 @@ it('uses exact native cancellation proof when revocation beats its queued notice
     await vi.waitFor(() =>
       expect(peer.native._release_python_callback).toHaveBeenCalledWith(
         call.wire,
+        false,
       ),
     );
     expect(peer.native._python_callback_cancelled).toHaveBeenCalledWith(
@@ -295,6 +299,7 @@ it('releases a skipped delivery without claiming application execution', async (
     await vi.waitFor(() =>
       expect(peer.native._release_python_callback).toHaveBeenCalledWith(
         call.wire,
+        false,
       ),
     );
     expect(peer.native._enter_python_callback).not.toHaveBeenCalled();
@@ -378,7 +383,10 @@ it.each(['request', 'selection'] as const)(
         ).toBeNull();
       release.resolve();
       await vi.waitFor(() =>
-        expect(peer.native._release_python_callback).toHaveBeenCalledWith(wire),
+        expect(peer.native._release_python_callback).toHaveBeenCalledWith(
+          wire,
+          false,
+        ),
       );
       await peer.finish();
     } finally {
@@ -446,7 +454,10 @@ it('retains a child selector receipt and cancels only its linked callback', asyn
     expect(peer.native._release_python_callback).not.toHaveBeenCalledWith(wire);
     release.resolve();
     await vi.waitFor(() =>
-      expect(peer.native._release_python_callback).toHaveBeenCalledWith(wire),
+      expect(peer.native._release_python_callback).toHaveBeenCalledWith(
+        wire,
+        false,
+      ),
     );
     expect(
       JSON.parse(peer.native._reply_child_step.mock.calls[0][0]).names,
