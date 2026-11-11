@@ -521,6 +521,7 @@ export function release_trace_span(handle: string): void;
 export function force_flush_telemetry(timeout_ms: number): Promise<string>;
 export function set_trace_routes(options_json: string): number;
 export function drain_trace_events(max_count: number): Promise<string>;
+export function dispatch_trace_event(encoded: string): Promise<void>;
 export function ack_trace_events(
   through_sequence: number,
   failed_deliveries: number,
@@ -572,6 +573,7 @@ declare const binding: {
   force_flush_telemetry: typeof force_flush_telemetry;
   set_trace_routes: typeof set_trace_routes;
   drain_trace_events: typeof drain_trace_events;
+  dispatch_trace_event: typeof dispatch_trace_event;
   ack_trace_events: typeof ack_trace_events;
   register_trace_credentials: typeof register_trace_credentials;
   release_trace_credentials: typeof release_trace_credentials;
