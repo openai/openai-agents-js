@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,12 +68,18 @@ async function host(
   const rpc = new JsonRpcTransportHandler(
     new DefaultRequestHandler(card, store, executor),
   );
-  const client = await connectA2A(
-    { name: 'native', cardUrl: `${base}/card`, rpcUrl: `${base}/rpc` },
-    { authorization: async () => 'synthetic', limits },
-  );
+  const endpoint = {
+    name: 'native',
+    cardUrl: `${base}/card`,
+    rpcUrl: `${base}/rpc`,
+  };
+  const client = await connectA2A(endpoint, {
+    authorization: async () => 'synthetic',
+    limits,
+  });
   return {
     client,
+    endpoint,
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -921,11 +928,21 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
         await withScriptedResponses(
           state === 'completed'
-            ? [[text('once')]]
+            ? [
+                [toolCall('record_effect', {}, { callId: 'effect-call' })],
+                [text('once')],
+              ]
             : [[toolCall('decision', {}, { callId: 'decision' })]],
           async (model) => {
             const directory = await mkdtemp(join(tmpdir(), 'a2a-publication-'));
             const path = join(directory, 'store.json');
+            const receiptPath = join(directory, 'effect.json');
+            const effectReceipt = {
+              principal: 'user',
+              order: 'synthetic-order',
+              receipt: 'receipt-1',
+            };
+            let effectCalls = 0;
             let injected = false;
             class FaultStore extends FileA2AStore {
               override async save(task: Task, callContext: ServerCallContext) {
@@ -958,7 +975,22 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                         result: z.boolean(),
                       }),
                     ]
-                  : [],
+                  : [
+                      tool({
+                        name: 'record_effect',
+                        description: 'Record a synthetic application effect.',
+                        parameters: z.strictObject({}),
+                        execute: () => {
+                          effectCalls++;
+                          writeFileSync(
+                            receiptPath,
+                            JSON.stringify(effectReceipt),
+                            { flag: 'wx', mode: 0o600 },
+                          );
+                          return 'receipt-1';
+                        },
+                      }),
+                    ],
             });
             const native = new NativeA2AExecutor({
               store,
@@ -979,7 +1011,26 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               cancelTask: native.cancelTask,
             });
             try {
-              const created = await remote.client.sendMessage(
+              const registry = new Map([
+                ['approved-specialist', remote.endpoint],
+              ]);
+              let credentialCalls = 0;
+              const resolve = (name: string) => {
+                const endpoint = registry.get(name);
+                if (!endpoint) throw new Error('Unknown specialist');
+                return endpoint;
+              };
+              expect(() => resolve('unregistered-specialist')).toThrow(
+                'Unknown specialist',
+              );
+              expect(credentialCalls).toBe(0);
+              const client = await connectA2A(resolve('approved-specialist'), {
+                authorization: async () => {
+                  credentialCalls++;
+                  return 'synthetic';
+                },
+              });
+              const created = await client.sendMessage(
                 input([Part.fromJSON({ text: 'begin' })]),
               );
               if (!('id' in created)) throw new Error();
@@ -989,7 +1040,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               expect(errors).toHaveBeenCalled();
               const record = store.record(created.id, context)!;
               expect(record.state).toBe(state);
-              expect(model.requests).toHaveLength(1);
+              expect(model.requests).toHaveLength(
+                state === 'completed' ? 2 : 1,
+              );
               await remote.close();
               const child = spawnSync(
                 process.execPath,
@@ -1002,18 +1055,30 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                   path,
                   created.id,
                   created.contextId,
+                  ...(state === 'completed' ? [receiptPath] : []),
                 ],
                 { encoding: 'utf8', timeout: 20_000 },
               );
               expect(child.status, child.stderr).toBe(0);
               const recovered = JSON.parse(child.stdout.trim());
               expect(recovered.executions).toBe(0);
+              expect(recovered.pid).not.toBe(process.pid);
+              expect(credentialCalls).toBeGreaterThan(0);
+              if (state === 'completed') {
+                expect(recovered.effectReceipt).toEqual(effectReceipt);
+                expect(JSON.parse(readFileSync(receiptPath, 'utf8'))).toEqual(
+                  effectReceipt,
+                );
+                expect(effectCalls).toBe(1);
+              }
               expect(recovered.task).toEqual(Task.toJSON(record.desired));
               expect(recovered.task.artifacts ?? []).toHaveLength(
                 state === 'completed' ? 1 : 0,
               );
               expect(recovered.record.state).toBe(state);
-              expect(model.requests).toHaveLength(1);
+              expect(model.requests).toHaveLength(
+                state === 'completed' ? 2 : 1,
+              );
             } finally {
               await remote.close();
               await rm(directory, { recursive: true, force: true });

@@ -1,10 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { ServerCallContext } from '@a2a-js/sdk/server';
 import { Task } from '@a2a-js/sdk';
 import { NativeA2AExecutor } from '../../src/a2a/executor';
 import { FileA2AStore } from '../a2a-store';
 
 async function main() {
-  const [path, taskId, contextId] = process.argv.slice(2);
+  const [path, taskId, contextId, receiptPath] = process.argv.slice(2);
   const context = new ServerCallContext({
     user: { isAuthenticated: true, userName: 'user' },
     requestedVersion: '1.0',
@@ -25,6 +26,10 @@ async function main() {
   console.log(
     JSON.stringify({
       executions,
+      pid: process.pid,
+      ...(receiptPath
+        ? { effectReceipt: JSON.parse(readFileSync(receiptPath, 'utf8')) }
+        : {}),
       task: Task.toJSON((await store.load(taskId, context))!),
       record: store.record(taskId, context),
     }),
