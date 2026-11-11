@@ -95,11 +95,20 @@ for (const rootManual of [false, true]) {
 }
 
 for (const approvalMode of ['preapproved', 'native'] as const) {
-  it.each(['lookup', 'find-record'])(
+  it.each(['lookup', 'find-record', 'a.b'])(
     `observes selected target-only MCP %s with ${approvalMode} approval`,
     async (rawName) => {
       const serverName = 'records-service';
-      const projectedName = rawName === 'find-record' ? 'find_record' : rawName;
+      const peerNames = [
+        rawName,
+        'remove-record',
+        ...(rawName === 'a.b' ? ['a_b'] : []),
+      ];
+      const projectedName = new HttpMCP({
+        name: serverName,
+        url: 'http://localhost',
+        tools: peerNames,
+      }).tool(rawName).name;
       const effects: unknown[] = [];
       const peer = createServer(async (request, response) => {
         if (request.method !== 'POST') {
@@ -122,7 +131,7 @@ for (const approvalMode of ['preapproved', 'native'] as const) {
           };
         else if (rpc.method === 'tools/list')
           result = {
-            tools: [rawName, 'remove-record'].map((name) => ({
+            tools: peerNames.map((name) => ({
               name,
               description: 'Read a fixture record.',
               inputSchema: {

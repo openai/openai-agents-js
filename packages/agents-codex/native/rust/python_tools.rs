@@ -2932,7 +2932,12 @@ impl ToolContributor for PythonContributor {
             if let Some(source) = thread.get::<crate::native_interception::ProfileMcpSource>() {
                 step.insert((*source).clone());
             } else if let Some(control) = thread.get::<crate::native_interception::Control>() {
-                step.insert(control.capture_mcp_source());
+                step.insert(match step.get::<Arc<codex_mcp::McpBinding>>() {
+                    Some(binding) => {
+                        control.capture_mcp_source_for_binding(&binding, &tools.policy)
+                    }
+                    None => control.capture_mcp_source(),
+                });
             }
         }
         let snapshot = step.get_or_init(|| {
@@ -3009,11 +3014,18 @@ impl ToolContributor for PythonContributor {
                 .expect("JavaScript selection poisoned")
                 .clone();
             let cancellation = step.get::<codex_extension_api::ToolsOnlyWorkCancellation>();
+            let resolves_mcp_names = tools
+                .policy
+                .allowed_mcp_tools
+                .as_ref()
+                .is_some_and(|tools| !tools.is_empty());
             let source_owned = active.is_none()
                 && cancellation.is_some()
                 && step
                     .get::<ProfileCatalog>()
-                    .is_some_and(|catalog| catalog.selecting_steps);
+                    .is_some_and(|catalog| {
+                        catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
+                    });
             if let Some(active) = &active {
                 if active.turn != turn.level_id() || !tools.admits_generation(&active.generation) {
                     return Err("Expired step selection owner or generation".into());
@@ -3028,8 +3040,15 @@ impl ToolContributor for PythonContributor {
             let allowed = if profile.is_some() {
                 candidates.to_vec()
             } else if let Some(names) = active.as_ref().and_then(|active| active.names.as_ref()) {
-                validate_names(names, candidates).map_err(|error| error.to_string())?;
-                expand_step_helpers(names.clone(), candidates)
+                let names = match step.get::<Arc<codex_mcp::McpBinding>>() {
+                    Some(binding) => names
+                        .iter()
+                        .filter_map(|name| tools.policy.resolve_mcp_reference(name, &binding))
+                        .collect::<Vec<_>>(),
+                    None => names.clone(),
+                };
+                validate_names(&names, candidates).map_err(|error| error.to_string())?;
+                expand_step_helpers(names, candidates)
             } else {
                 // Legacy slots narrow managed tools; other admitted families keep
                 // their opening policy. Native-aware callers use explicit names.
@@ -3053,7 +3072,10 @@ impl ToolContributor for PythonContributor {
                     .cloned()
                     .collect::<Vec<_>>()
             });
-            if !source_owned && !active.as_ref().is_some_and(|active| active.before_step) {
+            if !source_owned
+                && !active.as_ref().is_some_and(|active| active.before_step)
+                && !resolves_mcp_names
+            {
                 return Ok(Some(defaults.unwrap_or(allowed)));
             }
             let id = tools
@@ -3123,6 +3145,24 @@ impl ToolContributor for PythonContributor {
                 tools: tools.clone(),
                 id,
             };
+            let mcp_names = step
+                .get::<Arc<codex_mcp::McpBinding>>()
+                .map(|binding| {
+                    binding
+                        .tools()
+                        .iter()
+                        .filter_map(|tool| {
+                            let name = tool.canonical_tool_name();
+                            allowed.contains(&name).then(|| {
+                                json!({
+                                    "server": tool.server_name, "tool": tool.tool.name,
+                                    "namespace": name.namespace, "name": name.name,
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let tracing = if tools.instance.is_some() {
                 turn.get::<codex_otel::sdk_trace::CapturedContext>()
                     .and_then(|captured| captured.context.clone())
@@ -3133,13 +3173,18 @@ impl ToolContributor for PythonContributor {
                 "type": "_sdk_select_step", "turn_id": turn.level_id(),
                 "thread": thread.level_id(), "native_step": step.level_id(),
                 "request_id": id.to_string(), "generation": generation.id.to_string(),
-                "candidates": allowed
+                "candidates": allowed, "mcp_names": mcp_names
             }});
             if let Some(defaults) = defaults {
                 request["msg"]["defaults"] = json!(defaults);
             }
             if let Some(callback) = &callback {
                 request["msg"]["_sdk_callback"] = callback.receipt.clone();
+            }
+            if let Some(initial) = turn.get::<codex_extension_api::InitialTurnInput>() {
+                if let Some(records) = &initial.0 {
+                    request["msg"]["initial_input"] = json!(records);
+                }
             }
             if let Some(profile) = profile {
                 request["msg"]["profile_id"] = json!(profile.profile_id);
@@ -3455,6 +3500,10 @@ impl ToolLifecycleContributor for PythonContributor {
 }
 
 impl TurnLifecycleContributor for PythonContributor {
+    fn hold_tool_completion(&self, input: codex_extension_api::ToolCompletionInput<'_>) -> bool {
+        terminal_completion::hold(input)
+    }
+
     fn before_turn_complete<'a>(
         &'a self,
         input: codex_extension_api::TurnCompletionInput<'a>,
@@ -3486,6 +3535,12 @@ impl TurnLifecycleContributor for PythonContributor {
             }
 
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
+                if tools.instance.is_some() && tools.child_before_step {
+                    input
+                        .turn_store
+                        .get_or_init(codex_extension_api::InitialTurnInput::default);
+                }
+
                 let deferred = tools
                     .snapshot()
                     .entries

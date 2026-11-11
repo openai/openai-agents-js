@@ -228,6 +228,11 @@ export async function applyNativeAgentsApproval<Context>(
         context,
         submission,
         decide,
+        reportUsage() {
+          throw new Error(
+            'Usage reporting requires an admitted function invocation',
+          );
+        },
         call: interceptedCallInfo(submission, request),
         threadId: call.threadId,
         turnId: call.turnId,

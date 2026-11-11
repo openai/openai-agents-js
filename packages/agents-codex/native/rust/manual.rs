@@ -219,15 +219,47 @@ pub(crate) struct Continuation {
 }
 
 impl Continuation {
-    pub(crate) fn terminal_seed(&mut self) -> Option<RecoveredToolCompletionSeed> {
-        match (self.tool_outcomes.take(), self.fresh.take()) {
-            (Some(outcomes), Some(fresh)) => Some(RecoveredToolCompletionSeed::new(
-                self.turn_id.clone(),
-                outcomes,
-                fresh,
-            )),
-            _ => None,
+    pub(crate) fn terminal_seed(
+        &mut self,
+        raw: &Value,
+    ) -> Result<Option<RecoveredToolCompletionSeed>> {
+        let calls = history(raw)?.calls;
+        let mut held = Vec::new();
+        if let Some(outcomes) = &self.tool_outcomes {
+            let unique: HashSet<_> = outcomes.held_call_ids.iter().collect();
+            ensure!(
+                unique.len() == outcomes.held_call_ids.len(),
+                "Duplicate held terminal identity"
+            );
+            for id in &outcomes.held_call_ids {
+                let call = calls
+                    .iter()
+                    .find(|call| &call.call_id == id)
+                    .context("Held result has no original call")?;
+                let receipt = self
+                    .accepted_replies
+                    .get(id)
+                    .context("Held result has no accepted private reply")?;
+                let success = outcomes
+                    .outcomes
+                    .iter()
+                    .find(|(call, _)| call == id)
+                    .map(|(_, success)| *success)
+                    .context("Held result has no captured outcome")?;
+                held.push((receipt.envelope(call, &self.turn_id)?, success));
+            }
         }
+        Ok(match self.tool_outcomes.take() {
+            Some(outcomes) if self.fresh.is_some() || !held.is_empty() => {
+                Some(RecoveredToolCompletionSeed::new(
+                    self.turn_id.clone(),
+                    outcomes,
+                    self.fresh.take(),
+                    held,
+                ))
+            }
+            _ => None,
+        })
     }
 }
 
@@ -276,6 +308,7 @@ pub(crate) struct ManualLedger {
     // pending earlier call.
     receipts: HashMap<PendingKey, Receipt>,
     native_turn: Weak<ManualNativeTurn>,
+    held_results: Option<(String, Arc<codex_extension_api::HeldToolCompletionResults>)>,
     waiter: Option<ManualWait>,
     // The continuation retains ManualCall data; each current key keeps the
     // exact event issued at restore, including any captured call metadata.
@@ -788,6 +821,12 @@ impl PythonTools {
         // Do not let an original-ID recovery keep the old capture waiter.
         manual.waiter = None;
         manual.native_turn = Arc::downgrade(&turn);
+        manual.held_results = Some((
+            input.turn_id.to_owned(),
+            input
+                .turn_store
+                .get_or_init(codex_extension_api::HeldToolCompletionResults::default),
+        ));
     }
 
     pub(crate) fn record_native_manual_completion(&self, input: ToolFinishInput<'_>) {
@@ -1297,6 +1336,46 @@ impl PythonTools {
             )?,
             fresh: None,
         };
+        if let Some((turn, held)) = &manual.held_results {
+            ensure!(
+                turn == &history.turn,
+                "Held terminal outputs belong to another turn"
+            );
+            for (output, succeeded) in held
+                .outputs
+                .lock()
+                .expect("held terminal outputs poisoned")
+                .iter()
+            {
+                let ResponseItem::FunctionCallOutput {
+                    call_id: Some(id), ..
+                } = &output.item
+                else {
+                    anyhow::bail!("Invalid held terminal result");
+                };
+                ensure!(
+                    history.calls.iter().any(|call| &call.call_id == id)
+                        && !history.outputs.contains_key(id),
+                    "Held terminal result conflicts with accepted history"
+                );
+                ensure!(
+                    frame
+                        .accepted_replies
+                        .insert(
+                            id.clone(),
+                            Receipt::Canonical(CanonicalResult(output.clone()))
+                        )
+                        .is_none(),
+                    "Duplicate held terminal result"
+                );
+                let outcomes = frame
+                    .tool_outcomes
+                    .as_mut()
+                    .context("Held terminal result has no sampled batch")?;
+                outcomes.record(id, *succeeded);
+                outcomes.held_call_ids.push(id.clone());
+            }
+        }
         let mut waiting = unique.len() != current.len();
         for call in &history.calls {
             if let Some(key) = unique.iter().find(|key| key.call == call.call_id) {
@@ -1316,7 +1395,7 @@ impl PythonTools {
                         .transpose()?;
                 }
                 frame.pending_manual.push(captured);
-            } else if !history.outputs.contains_key(&call.call_id) {
+            } else if !frame.accepted_replies.contains_key(&call.call_id) {
                 let reply = manual
                     .receipts
                     .iter()
@@ -1690,6 +1769,65 @@ impl PythonTools {
         if let Some(fresh) = &frame.fresh {
             fresh.check(self)?;
         }
+        let generation = frame
+            .generation
+            .as_ref()
+            .context("Manual continuation lost its current catalog")?;
+        ensure!(
+            self.admits_generation(generation),
+            "Expired terminal source catalog"
+        );
+        let mut held_ids = HashSet::new();
+        for call in &history.calls {
+            // Earlier accepted siblings already belong to canonical history.
+            if history.outputs.contains_key(&call.call_id) {
+                continue;
+            }
+            let name =
+                ToolName::new(call.namespace.clone(), call.name.clone()).with_default_namespace();
+            let slot = generation
+                .entries
+                .iter()
+                .position(|entry| entry.name.clone().with_default_namespace() == name);
+            if slot.is_some_and(|slot| generation.terminal_slots.contains(&slot))
+                && frame.accepted_replies.contains_key(&call.call_id)
+            {
+                ensure!(
+                    !call.custom,
+                    "native custom calls cannot acquire manual grants"
+                );
+                ensure!(
+                    frame
+                        .tool_outcomes
+                        .as_ref()
+                        .is_some_and(|outcomes| outcomes.call_ids.contains(&call.call_id)),
+                    "Held terminal reply has no current response facts"
+                );
+                held_ids.insert(call.call_id.clone());
+            } else if slot.is_some_and(|slot| {
+                generation.manual_slots.as_ref().map_or_else(
+                    || manual.slots.contains(&name),
+                    |slots| slots.contains(&slot),
+                )
+            }) {
+                self.slot_for_catalog(&manual, call, generation)?;
+            }
+            // Captured nonterminal automatic siblings may be absent from the
+            // strict history prefix. Their accepted receipts are validated below;
+            // they neither acquire manual grants nor become held terminal results.
+        }
+        ensure!(
+            held_ids.is_empty() || frame.tool_outcomes.is_some(),
+            "Terminal continuation lacks completed-response facts"
+        );
+        if let Some(outcomes) = &frame.tool_outcomes {
+            let unique: HashSet<_> = outcomes.held_call_ids.iter().collect();
+            ensure!(
+                unique.len() == outcomes.held_call_ids.len()
+                    && unique.iter().all(|id| held_ids.contains(*id)),
+                "Invalid held terminal identities"
+            );
+        }
         let mut items = Vec::new();
         for (id, call) in frame.reply_order.iter().zip(&history.calls) {
             let receipt = frame
@@ -1702,7 +1840,7 @@ impl PythonTools {
                     receipt.matches(written, call, &history.turn)?,
                     "manual result conflicts with history"
                 );
-            } else {
+            } else if !held_ids.contains(id) {
                 items.push(item);
             }
         }
@@ -1720,7 +1858,16 @@ impl PythonTools {
             tool_choice: saved.tool_choice,
             ..Default::default()
         };
-        Ok((frame.clone(), items, settings))
+        let mut frame = frame.clone();
+        if let Some(outcomes) = &mut frame.tool_outcomes {
+            outcomes.held_call_ids = frame
+                .reply_order
+                .iter()
+                .filter(|id| held_ids.contains(*id))
+                .cloned()
+                .collect();
+        }
+        Ok((frame, items, settings))
     }
 
     pub(crate) fn retire_manual(&self) {

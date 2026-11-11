@@ -43,6 +43,7 @@ function childServer(
   responses: readonly ChildResponse[],
   names: readonly string[] = ['child'],
   agentType?: string,
+  usage?: JsonObject,
 ) {
   let rootId: string | undefined;
   let rootRequests = 0;
@@ -72,6 +73,7 @@ function childServer(
   };
   return new ModelServer(
     Array.from({ length: responses.length + 2 }, () => respond),
+    usage ?? [],
   );
 }
 
@@ -1119,3 +1121,66 @@ it('keeps child tracing policy for explicit starts and active steering', async (
     await telemetry.forceFlush();
   }
 }, 60_000);
+
+it('rolls admitted child usage into only its authoritative native root', async () => {
+  let retiredReport: (() => void) | undefined;
+  const metered = tool({
+    name: 'metered',
+    description: 'Report measured child usage.',
+    parameters: z.object({}),
+    execute(_args, context) {
+      expect(context.submission.childId).toBeTruthy();
+      retiredReport = () => context.reportUsage(null);
+      context.reportUsage({
+        inputTokens: 3,
+        cachedInputTokens: 1,
+        cacheWriteInputTokens: 0,
+        outputTokens: 2,
+        reasoningOutputTokens: 0,
+        totalTokens: 5,
+      });
+      return 'done';
+    },
+  });
+  const server = childServer(
+    [
+      () => [call('metered', {}, { callId: 'child-meter' })],
+      () => [message('child finished')],
+    ],
+    undefined,
+    undefined,
+    { input_tokens: 11, output_tokens: 3, total_tokens: 14 },
+  );
+  const executor = await startPublicExecutor();
+  try {
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Delegate.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [new NativeAgents(), metered],
+    }).session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+    });
+    const root = await session.submit('begin');
+    const completed = await root.wait();
+    const frozen = completed.runUsage;
+    const { turn } = await oneChild(session);
+    const child = await turn.wait();
+    expect(child.runUsage).toMatchObject({ requests: 3, totalTokens: 33 });
+    expect(root.runUsage).toMatchObject({ requests: 5, totalTokens: 61 });
+    expect(completed.runUsage).toEqual(frozen);
+    expect(Object.isFrozen(frozen)).toBe(true);
+    expect(() => retiredReport!()).toThrow();
+    await session.close();
+    expect(root.runUsage).toMatchObject({ requests: 5, totalTokens: 61 });
+    expect(turn.runUsage).toEqual(child.runUsage);
+  } finally {
+    await executor.close();
+  }
+}, 30000);

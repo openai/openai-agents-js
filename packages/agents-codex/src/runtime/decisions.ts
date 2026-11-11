@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import {
-  registerSchema,
-  unregisterSchema,
-  validate as compileSchema,
-} from '@hyperjump/json-schema/draft-2020-12';
+import { loadDecisionSchema } from '../../node/decision-schema.js';
 import {
   copyJsonValue,
   losslessJsonObjectSchema,
@@ -267,6 +263,11 @@ function captureDecision(question: string, options: InternalOptions) {
 }
 
 async function applicationValidator(schema: JsonObject) {
+  const {
+    registerSchema,
+    unregisterSchema,
+    validate: compileSchema,
+  } = await loadDecisionSchema();
   const id = `urn:uuid:${randomUUID()}`;
   try {
     registerSchema(schema, id);

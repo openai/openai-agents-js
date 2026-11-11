@@ -1,3 +1,6 @@
+import type { JsonObject } from './binding';
+import type { GuardrailRecord } from './guardrails';
+import type { TokenUsage, TokenCount } from './run-events';
 import type { ObservationPhase } from './observation';
 
 /** Shared by a native owner's readers and their observed child turns. */
@@ -9,7 +12,15 @@ export interface ChildObservationProducer {
 
 /** Internal callback ownership for independently running native child turns. */
 export interface ChildCallbackOwner {
+  readonly guardrailResults: GuardrailRecord[];
+  guardrailInput?: readonly JsonObject[];
+  inputGuardrailsStarted: boolean;
+  inputGuardrailsTask?: Promise<void>;
   readonly childId: string;
+  rootTurnId?: string;
+  tokenUsage: TokenUsage | null;
+  requests: TokenCount;
+  missingUsageRequests: TokenCount;
   readonly incarnation: string;
   readonly turnId: string;
   readonly controller: AbortController;
@@ -48,7 +59,12 @@ export class ChildCallbacks {
     let owner = this.owners.get(key);
     if (!owner) {
       owner = {
+        guardrailResults: [],
+        inputGuardrailsStarted: false,
         childId,
+        tokenUsage: null,
+        requests: 0,
+        missingUsageRequests: 0,
         incarnation,
         turnId,
         controller: new AbortController(),
@@ -70,7 +86,7 @@ export class ChildCallbacks {
   /** End observation after entered callback work, without revoking authority. */
   retireObservations(
     producer: ChildObservationProducer,
-    notify: () => void,
+    notify: (owner: ChildCallbackOwner) => void,
     matches?: (owner: ChildCallbackOwner) => boolean,
   ): Promise<void> | undefined {
     const pending: Promise<void>[] = [];
@@ -88,7 +104,7 @@ export class ChildCallbacks {
           .catch(() => {})
           .finally(() => {
             owner.observationPhase = 'ended';
-            notify();
+            notify(owner);
           }),
       );
     }
@@ -139,6 +155,12 @@ export class ChildCallbacks {
     if (!owner) return;
     while (owner.tasks.size) await Promise.allSettled([...owner.tasks]);
     if (owner.failure !== undefined) throw owner.failure;
+  }
+  forOrigins(origins: ReadonlySet<string>): readonly ChildCallbackOwner[] {
+    return [...this.owners.values()].filter(
+      (owner) =>
+        owner.rootTurnId !== undefined && origins.has(owner.rootTurnId),
+    );
   }
   /** SDK callback work already entered, or still current when a stop begins. */
   entered(): ChildCallbackOwner[] {

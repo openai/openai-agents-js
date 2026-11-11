@@ -1051,3 +1051,105 @@ it.each(['inspection', 'policy'] as const)(
     }
   },
 );
+
+it('captures prepared workspace guidance separately for reused source acquisitions', async () => {
+  let created = 0;
+  const manifest = new Manifest({
+    entries: {
+      data: s3Mount({
+        bucket: 'synthetic-bucket',
+        secretAccessKey: 'SYNTHETIC_MOUNT_SECRET',
+        accessKeyId: 'synthetic-id',
+        readOnly: false,
+        mountStrategy: { type: 'modal_cloud_bucket' },
+      }),
+      notes: { type: 'file', content: 'SYNTHETIC_FILE_CONTENT' },
+    },
+    environment: { PRIVATE: 'SYNTHETIC_ENV_SECRET' },
+    remoteMountCommandAllowlist: ['cat'],
+  });
+  const client: SandboxClient = {
+    backendId: 'fixture',
+    async create(args) {
+      const captured = normalizeSandboxClientCreateArgs(args).manifest;
+      const root = `/prepared-${++created}`;
+      const resource: SandboxSessionLike = {
+        state: { manifest: captured },
+        async start() {
+          resource.state.manifest = new Manifest({
+            root,
+            entries: captured.entries,
+            environment: captured.environment,
+            remoteMountCommandAllowlist: captured.remoteMountCommandAllowlist,
+          });
+        },
+        async close() {},
+      };
+      return resource;
+    },
+    async delete() {},
+  };
+  const source = sandboxEnvironment({
+    client,
+    manifest,
+    connect: async (resource) =>
+      Environment.lease(
+        new Environment({
+          url: 'wss://synthetic-executor.invalid',
+          headers: { Authorization: 'SYNTHETIC_HEADER_SECRET' },
+          cwd: `${resource.state.manifest.root}/project`,
+          readOnly: true,
+        }),
+        async () => {},
+      ),
+  });
+  const first = await acquireEnvironment(source);
+  try {
+    const text = first.workspaceInstructions!;
+    expect(text.match(/# Current SDK workspace snapshot/g)).toHaveLength(1);
+    expect(text).toContain('"workspace": "/prepared-1"');
+    expect(text).toContain('Working directory: "/prepared-1/project"');
+    expect(text).toContain('Executor read-only: true');
+    expect(text).toContain('/prepared-1/data');
+    expect(text).toContain('/prepared-1/notes');
+    expect(text).toContain('untrusted external content');
+    expect(text).toContain('Allowed remote mount commands: `cat`');
+    expect(text).toContain('copy the result back');
+    expect(text).not.toContain('Use `apply_patch` directly');
+    for (const secret of [
+      'SYNTHETIC_MOUNT_SECRET',
+      'SYNTHETIC_ENV_SECRET',
+      'SYNTHETIC_FILE_CONTENT',
+      'SYNTHETIC_HEADER_SECRET',
+      'synthetic-executor.invalid',
+    ]) {
+      expect(text).not.toContain(secret);
+    }
+    const second = await acquireEnvironment(source);
+    try {
+      expect(second.workspaceInstructions).toContain('/prepared-2/project');
+      expect(second.workspaceInstructions).not.toContain('/prepared-1');
+      expect(first.workspaceInstructions).toBe(text);
+    } finally {
+      await second.dispose();
+    }
+  } finally {
+    await first.dispose();
+  }
+});
+
+it('does not publish workspace guidance when the gateway fails', async () => {
+  const f = fixture();
+  await expect(
+    acquireEnvironment(
+      sandboxEnvironment({
+        ...f,
+        manifest: new Manifest(),
+        connect: async () => {
+          throw new Error('gateway failed');
+        },
+      }),
+    ),
+  ).rejects.toThrow('gateway failed');
+  expect(f.events).toEqual(['create', 'close', 'delete']);
+});

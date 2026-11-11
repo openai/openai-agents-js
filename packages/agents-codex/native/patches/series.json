@@ -627,7 +627,39 @@
     {
       "path": "sdk-owned-retirement-persistence-error.patch",
       "sha256": "0a661f972c1bc0b2a797652186b5c68af73ebb5f4a6d47e61787a39ca3d1ffc6"
+    },
+    {
+      "path": "sdk-bounded-original-history-reads.patch",
+      "sha256": "3b5b1fbab18a6d0aef5416f82c4765871e1835bf2544b3a346168430a9f2f2cf"
+    },
+    {
+      "path": "0212-native-mcp-routing.patch",
+      "sha256": "06d7103aeab8b4bd9765c01ecb2888babc2996d72da76b6e3f9acf1e11674ac7"
+    },
+    {
+      "path": "sdk-terminal-candidate-admission.patch",
+      "sha256": "81e0fb0a23d63afd6a0d0826c7f74750eabb087e140eee22b05c65f5bd32c25b"
+    },
+    {
+      "path": "sdk-held-terminal-eligibility.patch",
+      "sha256": "92383d61f3a047490b1e88ed6930ee7018d58d14e5f068e7c3a09ff703516e3f"
+    },
+    {
+      "path": "sdk-host-trace-credentials.patch",
+      "sha256": "88a7876ebaee3fd063e0edfa5ae0997e6c36dae38b7df6b8ff4eb2c0128c88e7"
+    },
+    {
+      "path": "sdk-user-instructions-appendix.patch",
+      "sha256": "1ea384b3472809ec401beb1c155e580af84293f7d8b8f36c1bdb3164357d5a0d"
+    },
+    {
+      "path": "sdk-fork-originals-lineage.patch",
+      "sha256": "3f315e7d82ebdc5e30cb9d336282876d05a410458dce6bdf7a6d5576fcf65411"
+    },
+    {
+      "path": "sdk-realtime-captured-mcp-policy.patch",
+      "sha256": "44cf60e7dfdac93b14839a5885991d4899e97731ae9216ea9720b58d20a35f50"
     }
   ],
-  "result_tree": "ac8db6110ae04ba685aa2fa75c4d9e21a2f0e4eb"
+  "result_tree": "5dcd23d1ea24a19cb161215b1e223b30a7a5d44d"
 }

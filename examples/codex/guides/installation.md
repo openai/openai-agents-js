@@ -4,7 +4,9 @@ Run the included starter or add the prebuilt SDK packages to an existing applica
 
 ## Requirements
 
-Use Node.js 24 with its bundled npm. Choose a bundle for your operating system and architecture. The Linux x64 bundle requires glibc 2.39 or later and OpenSSL 3. On a minimal Ubuntu 24.04 system, install `libssl3t64`.
+Current source builds: Node.js 22 or later. Optional `SQLiteMemory` helper: Node.js 22.13 or later, with [unflagged SQLite support](https://nodejs.org/en/blog/release/v22.13.0). Alpha.2 starter bundles below: Node.js 24 with its bundled npm.
+
+Choose a bundle for your operating system and architecture. The Linux x64 bundle requires glibc 2.39 or later and OpenSSL 3. On a minimal Ubuntu 24.04 system, install `libssl3t64`.
 
 The Windows x64 bundle uses the Microsoft Visual C++ runtime. If Windows reports that `VCRUNTIME140.dll` is missing, install the [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/).
 

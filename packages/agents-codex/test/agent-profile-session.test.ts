@@ -610,6 +610,8 @@ it.each([
         tool: { name: 'lookup', namespace: null },
         call_id: 'terminal-call',
         output: '"accepted"',
+        model: 'fixture-native-model',
+        continuation_count: 0,
         profile_id: 'agent_0',
         profile_epoch: '1',
       });
@@ -665,6 +667,8 @@ it('settles an exact failed terminal attempt after the active profile changes', 
       tool: { name: 'lookup', namespace: null },
       call_id: 'terminal-call',
       output: '"accepted"',
+      model: 'fixture-native-model',
+      continuation_count: 0,
       profile_id: 'agent_0',
       profile_epoch: '1',
     });

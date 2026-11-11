@@ -10,6 +10,7 @@ import {
   tool,
 } from '../src';
 import { ModelServer, message } from './native/fixtures/model-server';
+import type { Session as NativeSession } from '../src/runtime/session';
 
 type Frame = Record<string, any>;
 
@@ -824,4 +825,91 @@ nativeIt(
     }
   },
   30000,
+);
+
+nativeIt(
+  'rejects a stale explicit voice capture after an equal-schema public update',
+  async () => {
+    const originalEffect = vi.fn(() => 'original');
+    const replacementEffect = vi.fn(() => 'replacement');
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: originalEffect,
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: replacementEffect,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [original],
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [original],
+        isToolEnabled: () => true,
+      });
+      const captured = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const nativeSession = session as unknown as NativeSession<
+        string,
+        unknown
+      >;
+      const select = nativeSession._realtimeFunctionTools.bind(nativeSession);
+      const selection = vi.spyOn(nativeSession, '_realtimeFunctionTools');
+      selection.mockImplementationOnce(async (...args) => {
+        const first = await select(...args);
+        captured.resolve();
+        await resume.promise;
+        return first;
+      });
+      try {
+        const updates = () =>
+          peer.frames.filter((frame) => frame.type === 'session.update').length;
+        const initialUpdates = updates();
+        const refreshing = session
+          .update({ instructions: 'Refresh the voice.' })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        await captured.promise;
+        const beforeReplacement = (session as unknown as { catalog: object })
+          .catalog;
+        const replacing = session.update({ tools: [replacement] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        await vi.waitFor(() =>
+          expect((session as unknown as { catalog: object }).catalog).not.toBe(
+            beforeReplacement,
+          ),
+        );
+        // Accepted replacement before the stale voice publication.
+        expect(updates()).toBe(initialUpdates);
+        resume.resolve();
+        const error = await refreshing;
+        expect(error).toBeInstanceOf(Error);
+        expect(String(error)).toMatch(/another captured catalog\/profile/);
+        await replacing;
+        expect(updates()).toBe(initialUpdates);
+        expect(originalEffect).not.toHaveBeenCalled();
+        expect(replacementEffect).not.toHaveBeenCalled();
+      } finally {
+        resume.resolve();
+        selection.mockRestore();
+        await voice.close();
+      }
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
 );

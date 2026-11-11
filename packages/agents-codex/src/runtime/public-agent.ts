@@ -1,10 +1,20 @@
 import {
+  ManagedWorkspaceCheckpoint,
+  managedWorkspaceRestore,
+  validateManagedWorkspaceOpening,
+} from './managed-workspace';
+import {
   captureRealtimeConfig,
   isRealtimeHandoff,
   realtimeHandoffTool,
   type RealtimeAgentConfig,
   type RealtimeHandoff,
 } from './realtime-agent-config';
+import {
+  captureGuardrails,
+  type InputGuardrail,
+  type OutputGuardrail,
+} from './guardrails';
 import type {
   BeforeCompact,
   BeforeComplete,
@@ -88,6 +98,7 @@ import {
   isHostedRegistration,
   mcpConfig,
   mcpToolNames,
+  mcpToolSelections,
   splitToolDeclarations,
 } from './mcp';
 import {
@@ -129,6 +140,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Cancellation and close join entered callbacks. Do not mutate this Session.
    */
   beforeComplete?: BeforeComplete<Context>;
+  inputGuardrails?: readonly InputGuardrail<Context>[];
+  outputGuardrails?: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
   /** Replace detached model input for turns, children, compaction and output repair.
    * Transport retries reuse its result; canonical history and tool authority stay intact.
@@ -180,6 +193,8 @@ export interface SessionBaseOptions<Context = undefined> {
    */
   parentTrace?: TraceContext | TraceContextHeaders | null;
   context?: Context;
+  inputGuardrails?: readonly InputGuardrail<Context>[];
+  outputGuardrails?: readonly OutputGuardrail<Context>[];
   /** Borrow this provider instead of the Agent provider. */
   provider?: NativeProvider;
   /** Override the Agent model for a new conversation; omit when restoring state. */
@@ -214,8 +229,18 @@ export interface SessionBaseOptions<Context = undefined> {
   tools?: readonly Tool<Context>[];
 }
 
-export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
+type NativeSessionOptions<Context> = SessionBaseOptions<Context> &
   SessionPersistenceOptions;
+export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
+  (
+    | {
+        state?: SessionState | ManagedWorkspaceCheckpoint;
+        storage?: never;
+        resume?: never;
+        reconciledCalls?: never;
+      }
+    | Exclude<SessionPersistenceOptions, { storage?: never }>
+  );
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionBaseOptions<Context>,
@@ -265,10 +290,15 @@ interface CapturedOpening {
   readonly observationRetention?: 'bounded' | 'all';
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
+  readonly agentInputGuardrails: readonly InputGuardrail<any>[];
+  readonly agentOutputGuardrails: readonly OutputGuardrail<any>[];
+  readonly inputGuardrails: readonly InputGuardrail<any>[];
+  readonly outputGuardrails: readonly OutputGuardrail<any>[];
   readonly beforeCompact?: BeforeCompact<any>;
   readonly transformContext?: ContextTransform<any>;
 }
-type OwnedSessionOptions<Context> = SessionOptions<Context> & {
+type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
+  [managedWorkspaceRestore]?: true;
   [outputSelection]?: OutputSpec<unknown>;
   [ownedRun]?: OneShotOptions & {
     decisions?: DecisionProvider;
@@ -328,6 +358,12 @@ export type Session<Output = string, Context = any> = Pick<
   | 'pendingInteractions'
   | 'items'
   | 'turns'
+  | 'forkStored'
+  | 'storedTurns'
+  | 'storedItems'
+  | 'searchHistory'
+  | 'revertStored'
+  | 'deleteStored'
   | 'rateLimits'
   | 'planUsage'
   | 'buildRealtimeSipConfig'
@@ -351,6 +387,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'compact'
   | 'executeCommand'
   | 'saveState'
+  | 'suspendWorkspace'
   | 'fork'
   | 'suspend'
   | 'close'
@@ -377,6 +414,8 @@ export class Agent<Context = undefined, Output = string> {
     })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
+  inputGuardrails: readonly InputGuardrail<Context>[];
+  outputGuardrails: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
   transformContext?: ContextTransform<Context>;
   provider: NativeProvider;
@@ -409,6 +448,8 @@ export class Agent<Context = undefined, Output = string> {
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
     this.beforeComplete = options.beforeComplete;
+    this.inputGuardrails = captureGuardrails(options.inputGuardrails);
+    this.outputGuardrails = captureGuardrails(options.outputGuardrails);
     this.beforeCompact = options.beforeCompact;
     this.transformContext = options.transformContext;
     this.provider = options.provider ?? new NativeProvider();
@@ -515,10 +556,20 @@ export class Agent<Context = undefined, Output = string> {
   ): Promise<
     { session: CoreSession<Output, Context> } | { plainRun: PreparedPlainRun }
   > {
+    const managedOpening =
+      suppliedOptions?.state instanceof ManagedWorkspaceCheckpoint
+        ? validateManagedWorkspaceOpening(
+            suppliedOptions.state,
+            suppliedOptions.environment,
+          )
+        : undefined;
     const options = {
       ...(suppliedOptions ?? {}),
+      ...(managedOpening
+        ? { state: managedOpening.state, [managedWorkspaceRestore]: true }
+        : {}),
       parentTrace: captureTraceContext(suppliedOptions?.parentTrace),
-    };
+    } as OwnedSessionOptions<Context>;
     if (
       options.observationRetention !== undefined &&
       options.observationRetention !== 'bounded' &&
@@ -674,6 +725,17 @@ export class Agent<Context = undefined, Output = string> {
         MAX_AUDIO_INPUT_BYTES,
       );
     const factory = this.session;
+    const factoryApply = factory.apply;
+    const guardrailInput =
+      input !== null &&
+      (this.inputGuardrails.length > 0 ||
+        (options.inputGuardrails?.length ?? 0) > 0 ||
+        (options.state !== undefined && this.handoffs.length > 0) ||
+        factory !== Agent.#canonicalSession ||
+        factoryApply !== Agent.#canonicalApply ||
+        this.prepare !== Agent.#canonicalPrepare)
+        ? structuredClone(input)
+        : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
       ...(initialMessages === undefined ? {} : { initialMessages }),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
@@ -689,6 +751,8 @@ export class Agent<Context = undefined, Output = string> {
       instructionFiles: options.instructionFiles,
       discoverAgentsMd: options.discoverAgentsMd,
       projectGuidance: options.projectGuidance,
+      inputGuardrails: options.inputGuardrails,
+      outputGuardrails: options.outputGuardrails,
       signal: options.signal,
       provider: options.provider,
       model: options.model,
@@ -704,7 +768,6 @@ export class Agent<Context = undefined, Output = string> {
         beforeStep,
       },
     };
-    const factoryApply = factory.apply;
     if (
       factoryApply === Agent.#canonicalApply &&
       factory === Agent.#canonicalSession &&
@@ -736,6 +799,7 @@ export class Agent<Context = undefined, Output = string> {
       ])) as CoreSession<Output>;
     }
     return runOwnedSession(session, preparedInput, {
+      guardrailInput,
       maxModelSteps,
       budget,
       returnState: options.returnState,
@@ -744,7 +808,7 @@ export class Agent<Context = undefined, Output = string> {
   }
 
   private async prepare(
-    options: SessionOptions<Context>,
+    options: NativeSessionOptions<Context>,
     acquiredEnvironment: (owner: EnvironmentAcquisition) => void,
     cleanupAcquired: () => void,
   ) {
@@ -771,6 +835,15 @@ export class Agent<Context = undefined, Output = string> {
       : owned
         ? owned.beforeComplete
         : this.beforeComplete;
+    const inputGuardrails =
+      opening?.inputGuardrails ?? captureGuardrails(options.inputGuardrails);
+    const outputGuardrails =
+      opening?.outputGuardrails ?? captureGuardrails(options.outputGuardrails);
+    const agentInputGuardrails =
+      opening?.agentInputGuardrails ?? captureGuardrails(this.inputGuardrails);
+    const agentOutputGuardrails =
+      opening?.agentOutputGuardrails ??
+      captureGuardrails(this.outputGuardrails);
     const beforeCompact = opening ? opening.beforeCompact : this.beforeCompact;
     const transformContext = opening
       ? opening.transformContext
@@ -949,6 +1022,8 @@ export class Agent<Context = undefined, Output = string> {
               realtime: this.realtime,
               decisions,
               beforeComplete,
+              inputGuardrails: agentInputGuardrails,
+              outputGuardrails: agentOutputGuardrails,
               programmaticToolCalling,
               beforeCompact,
               transformContext,
@@ -1082,7 +1157,13 @@ export class Agent<Context = undefined, Output = string> {
     )
       throw new TypeError('programmaticToolCalling reserves exec and wait');
     const graph = profiles
-      ? captureProfileRuntimes(profiles, catalog, instructions)
+      ? captureProfileRuntimes(
+          profiles,
+          catalog,
+          instructions,
+          outputGuardrails.length > 0,
+          inputGuardrails.length + agentInputGuardrails.length > 0,
+        )
       : undefined;
     const graphNative = graph ? await binding() : undefined;
     const restoredSource =
@@ -1439,6 +1520,10 @@ export class Agent<Context = undefined, Output = string> {
                 false),
             before_complete:
               beforeComplete !== undefined ||
+              agentOutputGuardrails.length > 0 ||
+              outputGuardrails.length > 0 ||
+              agentInputGuardrails.length > 0 ||
+              inputGuardrails.length > 0 ||
               (completedGraph?.roster.some(
                 (profile) => profile.before_complete === true,
               ) ??
@@ -1467,11 +1552,24 @@ export class Agent<Context = undefined, Output = string> {
                 ),
                 _native_agent_max_depth: nativeAgents.maxDepth,
                 _native_agent_before_step:
-                  nativeAgents.beforeStep !== undefined,
+                  nativeAgents.beforeStep !== undefined ||
+                  [
+                    ...inputGuardrails,
+                    ...agentInputGuardrails,
+                    ...(profiles?.flatMap(
+                      (profile) => profile.declaration.inputGuardrails,
+                    ) ?? []),
+                  ].some((guard) => guard.childCallback !== undefined),
               }
             : {}),
           tool_policy: {
             allowed_tools: selected,
+            allowed_mcp_tools: mcpToolSelections([
+              ...declarations.mcp,
+              ...(graph
+                ? [...graph.profiles.values()].flatMap((profile) => profile.mcp)
+                : []),
+            ]),
             ...(environment
               ? {
                   require_managed_sandbox: true,
@@ -1510,6 +1608,10 @@ export class Agent<Context = undefined, Output = string> {
             } as AgentOptions<Context, Output>),
           ) as Agent<any, any>),
         beforeComplete,
+        inputGuardrails,
+        outputGuardrails,
+        agentInputGuardrails,
+        agentOutputGuardrails,
         beforeCompact,
         transformContext,
         contextTransformPurpose,
@@ -1525,6 +1627,10 @@ export class Agent<Context = undefined, Output = string> {
         checklist: declarations.checklist,
         websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
+        managedWorkspace: environmentOwner.managedWorkspace,
+        [managedWorkspaceRestore]: (options as OwnedSessionOptions<Context>)[
+          managedWorkspaceRestore
+        ],
         environmentOwner,
         openCorrection: lease.codexLogin
           ? undefined
@@ -1575,6 +1681,10 @@ export class Agent<Context = undefined, Output = string> {
             profiles,
             decisions,
             beforeComplete,
+            inputGuardrails,
+            outputGuardrails,
+            agentInputGuardrails,
+            agentOutputGuardrails,
             factory,
             instructions,
             instructionFiles: files,
@@ -1734,6 +1844,8 @@ export function captureAgentProfiles<Context, Output>(
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
+      inputGuardrails: source.inputGuardrails,
+      outputGuardrails: source.outputGuardrails,
       beforeCompact: source.beforeCompact,
       transformContext: source.transformContext,
     } as AgentOptions<Context, Output>);

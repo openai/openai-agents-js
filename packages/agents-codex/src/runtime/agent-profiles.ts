@@ -127,6 +127,8 @@ export function captureProfileRuntimes(
   profiles: readonly CapturedAgentProfile<any, any>[],
   rootCatalog: ToolCatalog,
   rootInstructions: string,
+  outputGuardrails = false,
+  inputGuardrails = false,
 ): CapturedAgentGraph {
   if (!profiles.length)
     throw new TypeError('A native Agent graph requires its root');
@@ -186,8 +188,15 @@ export function captureProfileRuntimes(
         : {}),
       transform_context: declaration.transformContext !== undefined,
       before_compact: declaration.beforeCompact !== undefined,
-      before_complete: declaration.beforeComplete !== undefined,
-      selecting_steps: false,
+      before_complete:
+        declaration.beforeComplete !== undefined ||
+        declaration.outputGuardrails.length > 0 ||
+        outputGuardrails ||
+        declaration.inputGuardrails.length > 0 ||
+        inputGuardrails,
+      selecting_steps: declaration.inputGuardrails.some(
+        (guard) => guard.childCallback !== undefined,
+      ),
       output_fingerprint: output.identity.fingerprint,
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
       mcp_result_tools: policies.servers,

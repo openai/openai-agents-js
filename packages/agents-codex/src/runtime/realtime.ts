@@ -1283,8 +1283,8 @@ class NativeRealtimeOwner {
           function_tools: config?.tools ?? selection?.tools ?? null,
           expected_selection_id:
             config?.selectionId ??
-            policy.selectionId ??
             selection?.selectionId ??
+            policy.selectionId ??
             null,
           disabled_tool_names: policy.disabledToolNames ?? null,
         },
