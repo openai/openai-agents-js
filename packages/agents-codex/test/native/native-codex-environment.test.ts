@@ -6,7 +6,6 @@ import { Codex, type CodexOptions } from '@openai/codex-sdk';
 import {
   invokeFunctionTool,
   registerToolSessionOwner,
-  type ToolCallContext,
 } from '../../src/runtime/tools';
 import { nativeCodexTool } from '../../../agents-extensions/src/experimental/codex';
 import { usageReportBinding } from '../../src/runtime/run-events';
@@ -69,12 +68,18 @@ it
     const context = {
       [usageReportBinding]: usage,
       context: undefined,
-      submission: { sessionId: 'session' },
+      submission: {
+        sessionId: 'session',
+        childId: 'child',
+        instanceId: 'instance',
+        turnId: 'turn',
+        submissionId: 'submission',
+      },
       threadId: 'session',
       turnId: 'turn',
       callId: 'call',
       signal: new AbortController().signal,
-    } as ToolCallContext;
+    };
     registerToolSessionOwner(context, {});
     const result = await invokeFunctionTool(
       tool,

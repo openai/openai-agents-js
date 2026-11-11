@@ -382,6 +382,47 @@ describe('plain entry admission', () => {
     expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['outer result', 'recognized observation'] as const)(
+    'joins failed %s decoding before rejection and evicts reuse admission',
+    async (boundary) => {
+      const p = retained();
+      const valid = await p.request.wait.getMockImplementation()!();
+      const dto = JSON.parse(valid);
+      dto.events = [
+        {
+          kind: 'output_text_delta',
+          payload: '{"itemId":"item","delta":"text","overflow":1e400}',
+        },
+      ];
+      p.request.wait.mockResolvedValueOnce(
+        boundary === 'outer result'
+          ? '{"overflow":1e400}'
+          : JSON.stringify(dto),
+      );
+      const entered = Promise.withResolvers<void>();
+      const joined = Promise.withResolvers<void>();
+      const finish = p.finish.getMockImplementation()!;
+      p.finish.mockImplementationOnce(async (keep) => {
+        entered.resolve();
+        await joined.promise;
+        await finish(keep);
+      });
+      let settled = false;
+      const rejected = p.run().catch((error: unknown) => {
+        settled = true;
+        return error as Error;
+      });
+      await entered.promise;
+      expect(settled).toBe(false);
+      joined.resolve();
+      expect(((await rejected) as Error).name).toBe('ZodError');
+      expect(p.finish).toHaveBeenNthCalledWith(1, false, true);
+      expect(p.release).toHaveBeenCalledTimes(1);
+      expect((await p.run()).finalOutput).toBe('answer');
+      expect(p.engine._plain_run_supported).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('evicts a failed entry and admits again on the next opening', async () => {
     const p = retained();
     await p.run();
