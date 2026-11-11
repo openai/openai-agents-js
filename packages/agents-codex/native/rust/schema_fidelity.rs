@@ -420,6 +420,8 @@ mod tests {
         description: &str,
     ) -> Arc<Generation> {
         let original = DynamicToolFunctionSpec {
+            strict: false,
+            output_schema: None,
             name: name.to_owned(),
             description: description.to_owned(),
             input_schema: json!({
@@ -586,6 +588,8 @@ mod prepared_tests {
 
     fn fixture(receipts: &Receipts) -> (Arc<Generation>, PreparedRequestData) {
         let raw = DynamicToolFunctionSpec {
+            strict: false,
+            output_schema: None,
             name: "lookup".into(),
             description: "Original description.".into(),
             input_schema: json!({"type":"object","properties":{"key":{"type":"string","minLength":3}},"required":["key"],"additionalProperties":false}),

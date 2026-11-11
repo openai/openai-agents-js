@@ -3127,6 +3127,47 @@ impl NativeThread {
         owner.reply_model_retry(response).map_err(input_error)
     }
 
+    #[napi(js_name = "_start_model_producer")]
+    pub fn _start_model_producer(&self, owner_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::StepReply =
+            serde_json::from_str(&owner_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner
+            .start_model_producer_stream(&response)
+            .map_err(input_error)
+    }
+
+    #[napi(js_name = "_push_model_producer")]
+    pub async fn _push_model_producer(
+        &self,
+        owner_json: String,
+        event_json: String,
+    ) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let response: python_tools::StepReply =
+            serde_json::from_str(&owner_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner
+            .push_model_producer_event(&response, &event_json)
+            .await
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_model_producer")]
     pub fn _reply_model_producer(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;
@@ -4271,12 +4312,20 @@ impl NativeThread {
                 // writer append alone would let prompt normalization invent "aborted".
                 inner
                     .thread
-                    .inject_response_item_envelopes(items)
+                    .inject_sdk_response_item_envelopes(items, Some(&frame.turn_id))
                     .await
                     .map_err(native_error)?;
             }
+            let reset_tool_choice = inner
+                .thread
+                .thread_settings_snapshot()
+                .await
+                .request_controls
+                .reset_tool_choice
+                .flatten()
+                == Some(true);
             let terminal = frame
-                .terminal_seed(&saved["history"])
+                .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
             let result = ops::recover_prepared(
                 &inner,
@@ -4372,10 +4421,13 @@ impl NativeThread {
         for_replay: Option<bool>,
     ) -> napi::Result<String> {
         let inner = self.current()?;
-        let value =
-            canonical_history::snapshot(&inner, limit.map(|n| n as usize), for_replay.unwrap_or(false))
-                .await
-                .map_err(native_error)?;
+        let value = canonical_history::snapshot(
+            &inner,
+            limit.map(|n| n as usize),
+            for_replay.unwrap_or(false),
+        )
+        .await
+        .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
@@ -4427,6 +4479,24 @@ impl NativeThread {
             .await
             .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_start_produced_items")]
+    pub fn start_produced_items(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner.thread.sdk_start_produced_items();
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_produced_items")]
+    pub fn take_produced_items(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .thread
+            .sdk_take_produced_items(&turn_id)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "read_thread_history")]

@@ -12,12 +12,21 @@ async function publicRealtimeTypes(session: Session) {
   // @ts-expect-error SIP configuration does not resolve credentials or connect media.
   await session.buildRealtimeSipConfig({ apiKey: 'not-a-credential' });
   await session.buildRealtimeSipConfig({
+    // @ts-expect-error A WebSocket URL is unavailable for SIP acceptance.
+    url: 'wss://gateway.invalid/realtime',
+  });
+  await session.buildRealtimeSipConfig({
     // @ts-expect-error Hosted MCP continuation is configured on attachment.
     automaticallyTriggerResponseForMcpToolCalls: false,
   });
   const voice: NativeRealtimeSession = await session.realtime({
     model: 'gpt-realtime',
     instructions: 'Delegate work.',
+    url: 'wss://gateway.invalid/realtime',
+  });
+  await session.realtime({
+    transport: { type: 'sip', callId: 'typed-call' },
+    url: 'wss://gateway.invalid/sideband',
   });
   const create: ResponseCreateEvent = { type: 'response.create' };
   const cancel: ResponseCancelEvent = { type: 'response.cancel' };

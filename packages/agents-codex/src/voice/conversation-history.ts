@@ -1,6 +1,29 @@
-import { encodeBase64 } from './base64';
+import { decodeBase64, encodeBase64 } from './base64';
 
 export type VoiceHistoryItem = Readonly<Record<string, unknown>>;
+
+/** Realtime output is mono: 24kHz PCM16 or 8kHz G.711. */
+export function outputAudioBytesPerMillisecond(
+  value: any,
+  fallback: number,
+): number {
+  const format =
+    value?.audio?.output?.format ??
+    value?.output_audio_format ??
+    value?.output_format;
+  switch (typeof format === 'string' ? format : format?.type) {
+    case 'audio/pcmu':
+    case 'audio/pcma':
+    case 'g711_ulaw':
+    case 'g711_alaw':
+      return 8;
+    case 'audio/pcm':
+    case 'pcm16':
+      return 48;
+    default:
+      return fallback;
+  }
+}
 
 /** Local provider observations only; these rows confer no execution authority. */
 export class VoiceConversationHistory {
@@ -41,7 +64,7 @@ export class VoiceConversationHistory {
     this.maxAudioBytes = options.maxAudioBytes ?? 8 * 1024 * 1024;
   }
 
-  observe(value: unknown): boolean {
+  observe(value: unknown, audioBytesPerMillisecond = 48): boolean {
     if (!value || typeof value !== 'object' || Array.isArray(value))
       return false;
     const event = value as Record<string, any>;
@@ -59,7 +82,8 @@ export class VoiceConversationHistory {
       event.type === 'response.done' &&
       Array.isArray(event.response?.output)
     ) {
-      for (const item of event.response.output) this.put(item);
+      for (const item of event.response.output)
+        this.put(item, undefined, audioBytesPerMillisecond);
       return true;
     }
     if (
@@ -72,7 +96,11 @@ export class VoiceConversationHistory {
         'response.output_item.done',
       ].includes(event.type)
     ) {
-      return this.put(event.item, event.previous_item_id);
+      return this.put(
+        event.item,
+        event.previous_item_id,
+        audioBytesPerMillisecond,
+      );
     }
     if (event.type === 'conversation.item.truncated') {
       const stored = this.items.get(event.item_id);
@@ -174,23 +202,32 @@ export class VoiceConversationHistory {
     index: number,
     data: Uint8Array,
     bytesPerMillisecond = 48,
+    replace = false,
   ): void {
     if (
       !this.storeAudio ||
-      this.audioSealed ||
       !itemId ||
       !Number.isSafeInteger(index) ||
       index < 0 ||
       index >= 1024 ||
-      !data.byteLength ||
+      (!data.byteLength && !replace) ||
       !Number.isFinite(bytesPerMillisecond) ||
       bytesPerMillisecond <= 0
     )
       return;
     const key = JSON.stringify([itemId, index]);
+    const previous = replace ? this.audio.get(key) : undefined;
+    // Sealing prevents growth, but authoritative replacements can still shrink
+    // or clear bytes that were already retained.
     if (
-      this.audioBytes + data.byteLength > this.maxAudioBytes ||
-      this.audioChunks >= 4096
+      this.audioSealed &&
+      (!replace || data.byteLength > (previous?.bytes ?? 0))
+    )
+      return;
+    if (
+      this.audioBytes - (previous?.bytes ?? 0) + data.byteLength >
+        this.maxAudioBytes ||
+      this.audioChunks - (previous?.chunks.length ?? 0) >= 4096
     ) {
       this.audioSealed = true;
       this.truncatedAudioKey = key;
@@ -204,6 +241,14 @@ export class VoiceConversationHistory {
       bytesPerMillisecond,
     };
     if (retained.bytesPerMillisecond !== bytesPerMillisecond) return;
+    if (previous) {
+      this.audioBytes -= previous.bytes;
+      this.audioChunks -= previous.chunks.length;
+      retained.chunks = [];
+      retained.bytes = 0;
+    }
+    if (replace && this.truncatedAudioKey === key)
+      this.truncatedAudioKey = undefined;
     retained.chunks.push(Uint8Array.from(data));
     this.audioChunks++;
     retained.bytes += data.byteLength;
@@ -260,7 +305,11 @@ export class VoiceConversationHistory {
     this.truncatedAudioKey = undefined;
   }
 
-  private put(value: unknown, previous?: unknown): boolean {
+  private put(
+    value: unknown,
+    previous?: unknown,
+    audioBytesPerMillisecond = 48,
+  ): boolean {
     if (
       !value ||
       typeof value !== 'object' ||
@@ -269,17 +318,77 @@ export class VoiceConversationHistory {
     )
       return false;
     const item = JSON.parse(JSON.stringify(value)) as Record<string, any>;
-    if (Array.isArray(item.content))
-      for (const part of item.content) {
-        if (part && typeof part === 'object') delete part.audio;
-      }
     const id = item.id as string;
+    const providerAudio: {
+      index: number;
+      data: string;
+      retainedBytes: number;
+      truncated: boolean;
+    }[] = [];
+    let audioBytes = this.audioBytes;
+    let audioChunks = this.audioChunks;
+    let sealed = this.audioSealed;
+    const previousContent = this.items.get(id)?.content;
+    if (Array.isArray(item.content))
+      for (const [index, part] of item.content.entries()) {
+        if (!part || typeof part !== 'object') continue;
+        const data = part.audio;
+        delete part.audio;
+        const previousPart = Array.isArray(previousContent)
+          ? previousContent[index]
+          : undefined;
+        if (
+          this.storeAudio &&
+          previousPart?.type === part.type &&
+          previousPart?.audio_truncated === true
+        )
+          part.audio_truncated = true;
+        if (!this.storeAudio || typeof data !== 'string') continue;
+        const length = providerAudioLength(data);
+        // Invalid optional audio does not invalidate text or overwrite valid bytes.
+        if (length === undefined || index >= 1024) continue;
+        const previous = this.audio.get(JSON.stringify([id, index]));
+        const chunksAvailable =
+          audioChunks - (previous?.chunks.length ?? 0) < 4096;
+        const capacity = !chunksAvailable
+          ? 0
+          : sealed
+            ? (previous?.bytes ?? 0)
+            : Math.max(
+                0,
+                this.maxAudioBytes - audioBytes + (previous?.bytes ?? 0),
+              );
+        const retainedBytes = Math.min(length, capacity);
+        const truncated = retainedBytes < length;
+        if (truncated) {
+          part.audio_truncated = true;
+          sealed = true;
+        } else delete part.audio_truncated;
+        if (chunksAvailable) {
+          audioBytes += retainedBytes - (previous?.bytes ?? 0);
+          audioChunks += 1 - (previous?.chunks.length ?? 0);
+        }
+        providerAudio.push({ index, data, retainedBytes, truncated });
+      }
     if (!this.items.has(id) && this.items.size >= this.maxItems)
       throw new Error('Voice conversation history item capacity exceeded');
     const bytes = utf8Bytes(JSON.stringify(item));
     const total = this.bytes - (this.itemBytes.get(id) ?? 0) + bytes;
     if (total > this.maxBytes)
       throw new Error('Voice conversation history byte capacity exceeded');
+    for (const { index, data, retainedBytes, truncated } of providerAudio) {
+      // Full provider payloads replace earlier deltas. Decode only the prefix
+      // admitted above, before allocating or copying its audio buffer.
+      this.observeAudio(
+        id,
+        index,
+        decodeBase64(data.slice(0, Math.ceil((retainedBytes * 4) / 3))),
+        this.audio.get(JSON.stringify([id, index]))?.bytesPerMillisecond ??
+          audioBytesPerMillisecond,
+        true,
+      );
+      if (truncated) this.audioSealed = true;
+    }
     this.bytes = total;
     this.itemBytes.set(id, bytes);
     this.items.set(id, item);
@@ -307,6 +416,19 @@ export class VoiceConversationHistory {
         this.audio.delete(key);
       }
   }
+}
+
+/** Validate the full observation before decoding only its bounded prefix. */
+function providerAudioLength(value: string): number | undefined {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const length = value.length - padding;
+  if (
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value) ||
+    length % 4 === 1 ||
+    (padding > 0 && value.length % 4 !== 0)
+  )
+    return undefined;
+  return Math.floor((length * 6) / 8);
 }
 
 function utf8Bytes(value: string): number {

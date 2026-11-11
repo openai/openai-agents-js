@@ -473,6 +473,7 @@ export async function openSession(
   );
   options.environmentOwner?.attachSession(session);
   options.environmentOwner?.signal.throwIfAborted();
+  if (oneShot?.returnItems) session._startProducedItems();
   await session._start();
   if (isManualSessionState(saved))
     await session._restoreManualContinuation(saved);
@@ -491,6 +492,7 @@ interface OwnedRunOptions {
   guardrailInput?: import('./input').UserInput;
   returnState?: boolean;
   returnHistory?: boolean;
+  returnItems?: boolean;
   signal?: AbortSignal;
   maxModelSteps?: number;
   budget?: import('./run-budget').RunBudgetTracker;
@@ -560,18 +562,19 @@ async function completeOwnedSession<Output>(
     }
     throw options.signal.reason;
   }
-  const pending =
-    input == null
-      ? session.wait()
-      : session
-          ._run(
-            input,
-            options.signal,
-            options.maxModelSteps,
-            options.budget,
-            options.guardrailInput,
-          )
-          .then(() => session.wait());
+  const pending = (async () => {
+    if (options.returnItems) session._startProducedItems();
+    if (input != null) {
+      await session._run(
+        input,
+        options.signal,
+        options.maxModelSteps,
+        options.budget,
+        options.guardrailInput,
+      );
+    }
+    return session.wait();
+  })();
   delete options.guardrailInput;
   const result = await pending.catch(async (error) => {
     const primary = originalFailure(error);
@@ -590,7 +593,7 @@ async function completeOwnedSession<Output>(
   try {
     options.signal?.throwIfAborted();
     const completed =
-      options.returnState || options.returnHistory
+      options.returnState || options.returnHistory || options.returnItems
         ? Object.freeze({
             ...result,
             ...(options.returnState
@@ -598,6 +601,9 @@ async function completeOwnedSession<Output>(
               : {}),
             ...(options.returnHistory
               ? { history: await captureRunHistory(session) }
+              : {}),
+            ...(options.returnItems
+              ? { items: session._takeProducedItems(result.turn.turnId) }
               : {}),
           })
         : result;

@@ -222,6 +222,7 @@ impl Continuation {
     pub(crate) fn terminal_seed(
         &mut self,
         raw: &Value,
+        reset_tool_choice: bool,
     ) -> Result<Option<RecoveredToolCompletionSeed>> {
         let calls = history(raw)?.calls;
         let mut held = Vec::new();
@@ -250,7 +251,7 @@ impl Continuation {
             }
         }
         Ok(match self.tool_outcomes.take() {
-            Some(outcomes) if self.fresh.is_some() || !held.is_empty() => {
+            Some(outcomes) if self.fresh.is_some() || !held.is_empty() || reset_tool_choice => {
                 Some(RecoveredToolCompletionSeed::new(
                     self.turn_id.clone(),
                     outcomes,

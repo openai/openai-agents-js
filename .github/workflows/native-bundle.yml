@@ -54,8 +54,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends clang cmake pkg-config protobuf-compiler libssl-dev
+          bash scripts/install-linux-native-build-tools.sh
       - name: Install macOS build tools
         if: runner.os == 'macOS'
         run: brew install cmake pkgconf protobuf openssl@3

@@ -1,0 +1,127 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index b6a7df10..fb088942 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1314,18 +1314,19 @@ impl ModelClient {
+             tools: tools.filter(|_| {
+                 !hosted_prompt.is_some_and(|hosted| hosted.omit_tools && prompt.tools.is_empty())
+             }),
+-            tool_choice: (!(hosted_prompt.is_some() && controls.named_tool_choice.is_none()))
+-            .then(|| {
+-                if controls
+-                    .named_tool_choice
+-                    .as_ref()
+-                    .is_some_and(Option::is_some)
+-                {
+-                    "required".to_string()
+-                } else {
+-                    prompt.tool_choice.to_string()
+-                }
+-            }),
++            tool_choice: (!(hosted_prompt.is_some() && controls.named_tool_choice.is_none())).then(
++                || {
++                    if controls
++                        .named_tool_choice
++                        .as_ref()
++                        .is_some_and(Option::is_some)
++                    {
++                        "required".to_string()
++                    } else {
++                        prompt.tool_choice.to_string()
++                    }
++                },
++            ),
+             request_controls: codex_api::ResponsesRequestControls {
+                 prompt: prompt_reference,
+                 instructions: hosted_prompt
+@@ -1394,6 +1395,7 @@ impl ModelClient {
+                     tool,
+                     codex_tools::ToolSpec::CodeInterpreter(_)
+                         | codex_tools::ToolSpec::ImageGeneration(_)
++                        | codex_tools::ToolSpec::Shell(_)
+                 )
+             }) || (request.request_controls.prompt.is_some()
+                 && request.tools.is_none());
+@@ -2939,7 +2941,10 @@ impl ModelClientSession {
+             let projected = transformed.get_or_insert_with(|| prompt.clone());
+             contributor
+                 .transform_context(codex_extension_api::ModelContextInput {
+-                    turn_store: prompt.tool_admission.as_ref().map(|admission| admission.turn_store()),
++                    turn_store: prompt
++                        .tool_admission
++                        .as_ref()
++                        .map(|admission| admission.turn_store()),
+                     step_store: prompt
+                         .tool_admission
+                         .as_ref()
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index a2e14ca6..a78ec2a9 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2150,9 +2150,9 @@ async fn run_sampling_request(
+                             || retry_settings.and_then(|settings| settings.max_retries) == Some(0)),
+                 )
+                 .map_err(CodexErr::Fatal)?;
+-            step_context.extension_data.insert(
+-                codex_extension_api::CapturedModelAttempt(attempt.clone()),
+-            );
++            step_context
++                .extension_data
++                .insert(codex_extension_api::CapturedModelAttempt(attempt.clone()));
+             let admission = crate::model_request::tool_admission_for_step(
+                 sess.thread_id.to_string(),
+                 step_context.clone(),
+@@ -3872,6 +3872,8 @@ fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
+             item,
+             ResponseItem::CodeInterpreterCall { .. }
+                 | ResponseItem::ImageGenerationCall { .. }
++                | ResponseItem::ShellCall { .. }
++                | ResponseItem::ShellCallOutput { .. }
+                 | ResponseItem::Other
+         ),
+         ResponseEvent::HostedToolCallProgress(progress) => progress
+@@ -3883,6 +3885,9 @@ fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
+                     || kind.starts_with("response.code_interpreter_call_code.")
+                     || kind.starts_with("response.image_generation_call.")
+                     || kind.starts_with("response.mcp_call.")
++                    || kind.starts_with("response.shell_call.")
++                    || kind.starts_with("response.shell_call_command.")
++                    || kind.starts_with("response.shell_call_output_content.")
+             }),
+         _ => false,
+     }
+@@ -4945,3 +4950,34 @@ pub(crate) fn get_last_assistant_message_from_turn<'a>(
+ #[cfg(test)]
+ #[path = "turn_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++mod provider_hosted_shell_replay_tests {
++    use super::*;
++
++    #[test]
++    fn typed_hosted_shell_is_effect_evidence_without_reclassifying_local_shell() {
++        for kind in ["shell_call", "shell_call_output"] {
++            for added in [true, false] {
++                let item: ResponseItem = serde_json::from_value(serde_json::json!({
++                    "type":kind,"id":"sh_replay","status":"completed"
++                }))
++                .unwrap();
++                let event = if added {
++                    ResponseEvent::OutputItemAdded(item)
++                } else {
++                    ResponseEvent::OutputItemDone(item)
++                };
++                assert!(provider_event_may_have_effects(&event));
++            }
++        }
++        let local: ResponseItem = serde_json::from_value(serde_json::json!({
++            "type":"local_shell_call","id":"local_replay","call_id":"local_replay",
++            "status":"completed","action":{"type":"exec","command":["printf","local"]}
++        }))
++        .unwrap();
++        assert!(!provider_event_may_have_effects(
++            &ResponseEvent::OutputItemAdded(local)
++        ));
++    }
++}

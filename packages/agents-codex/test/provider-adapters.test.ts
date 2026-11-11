@@ -182,6 +182,55 @@ it.each([
   },
 );
 
+it.each(['root', 'additional tools'] as const)(
+  'rejects an AI SDK tool output schema from %s before provider I/O',
+  async (source) => {
+    let requests = 0;
+    const provider = createOpenAI({
+      apiKey: 'synthetic',
+      fetch: async () => {
+        requests++;
+        throw new Error('Unexpected provider request');
+      },
+    });
+    const model = new AiSdkModel(provider.responses('gpt-4.1'));
+    const declaration = {
+      type: 'function',
+      name: 'lookup',
+      description: 'Look up an order.',
+      parameters: { type: 'object', properties: {} },
+      output_schema: { type: 'object', properties: { id: { type: 'string' } } },
+    };
+    const body: ModelRequest['body'] =
+      source === 'root'
+        ? { input: [], tools: [declaration] }
+        : {
+            input: [
+              {
+                type: 'additional_tools',
+                tools: [
+                  {
+                    type: 'namespace',
+                    name: 'functions',
+                    tools: [declaration],
+                  },
+                ],
+              },
+            ],
+          };
+    await expect(
+      model.complete({
+        body: { model: 'gpt-4.1', ...body },
+        context: undefined,
+        sessionId: 'session',
+        turnId: 'turn',
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('AiSdkModel does not support tool output schemas');
+    expect(requests).toBe(0);
+  },
+);
+
 it.each(['v2', 'v3', 'v4'] as const)(
   'retains %s token accounting without changing the borrowed model',
   async (specificationVersion) => {

@@ -308,6 +308,7 @@ import {
   type RepairItemWire,
   type RecordedTurn,
   type CanonicalHistorySnapshot,
+  type HistoryItem,
 } from './history';
 import type { ThreadOptions } from './options';
 import {
@@ -492,6 +493,7 @@ export interface ManualCheckpointEntry {
 
 /** Options used by an owned Agent.run Session to drive manual replies. */
 export type OneShotOptions = {
+  returnItems?: boolean;
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
   beforeStep?: OperationOptions<any>['beforeStep'];
@@ -637,6 +639,18 @@ const sessionStopSchema = z
   })
   .strict();
 
+/** An accepted assistant or tool item and its producing Agent. */
+export interface ProducedItem {
+  readonly item: HistoryItem;
+  readonly agent: import('./public-agent').Agent<any, any>;
+  readonly handoffTarget?: import('./public-agent').Agent<any, any>;
+}
+
+const producedItemSchema = z.object({
+  record: threadHistorySchema.element,
+  agent: z.object({ profile_id: z.string() }).nullable(),
+});
+
 export interface Completed<OutputT = string> {
   readonly turn: Turn<OutputT>;
   readonly finalOutput: OutputT;
@@ -648,6 +662,7 @@ export interface Completed<OutputT = string> {
   readonly state?: SessionState;
   /** Conversation records from returnHistory, for replay with the destination Session's instructions. */
   readonly history?: CanonicalHistorySnapshot['items'];
+  readonly items?: readonly ProducedItem[];
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
 }
@@ -1514,6 +1529,7 @@ export class Session<OutputT = string, Context = unknown> {
           'guardrailTextThreshold',
           'automaticallyTriggerResponseForMcpToolCalls',
           'apiKey',
+          'url',
           'adapter',
           'historyStoreAudio',
           'includeRawProviderEvents',
@@ -1559,6 +1575,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       this.options.modelBackend !== undefined &&
       options.adapter === undefined &&
+      options.url === undefined &&
       options.apiKey === undefined
     ) {
       const apiKey = this.options.realtimeApiKey;
@@ -2568,6 +2585,7 @@ export class Session<OutputT = string, Context = unknown> {
   // Only one-shot manual handlers report child cleanup to the owning run.
   private readonly oneShotChildCleanupErrors: unknown[] = [];
   #native: NativeThread;
+  #producedItemsStarted = false;
   private storedHistoryClose?: ReturnType<
     NativeThread['_stored_history_close_action']
   >;
@@ -2765,18 +2783,30 @@ export class Session<OutputT = string, Context = unknown> {
         )
           throw new NativeError('Native model settings were not acknowledged');
       }
-      if (this.restored && !this.options.agentGraph) {
-        const acknowledged = await this.#native._update_model_settings(
-          encode({
-            request_controls: {
-              retry: { has_policy: this.capturedRetryPolicy() !== undefined },
-            },
+      if (
+        (this.restored ||
+          this.threadOptions._sdk_resume_thread_id !== undefined) &&
+        !this.options.agentGraph
+      ) {
+        const settings = this.options.initialModelSettings;
+        // Native merges retry patches field by field. Clear the checkpoint's
+        // retry settings before applying the current declaration.
+        const patches = [
+          modelOverrides(undefined, {
+            attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
+            retry: null,
           }),
-        );
-        if (acknowledged !== true)
-          throw new NativeError(
-            'Restored retry declaration was not acknowledged',
-          );
+        ];
+        if (settings?.retry != null)
+          patches.push(modelOverrides(undefined, { retry: settings.retry }));
+        for (const patch of patches) {
+          if (
+            (await this.#native._update_model_settings(encode(patch))) !== true
+          )
+            throw new NativeError(
+              'Restored retry declaration was not acknowledged',
+            );
+        }
       }
       this.configureNative(this.#native);
       if (
@@ -8514,23 +8544,49 @@ export class Session<OutputT = string, Context = unknown> {
                   this.callbackAuthorityFailed(delivery, replyError);
                 }
               };
-              let returned;
               try {
-                returned = await backend.complete(request);
+                if (backend.stream) {
+                  const stream = await backend.stream(request);
+                  const iterator = stream[Symbol.asyncIterator]();
+                  let finished = false;
+                  try {
+                    check();
+                    const streamOwner = encode(receipt);
+                    sourceNative._start_model_producer(streamOwner);
+                    while (true) {
+                      check();
+                      const next = await iterator.next();
+                      check();
+                      if (next.done) {
+                        finished = true;
+                        break;
+                      }
+                      const continuing =
+                        await sourceNative._push_model_producer(
+                          streamOwner,
+                          JSON.stringify(
+                            losslessJsonObjectSchema.parse(next.value),
+                          ),
+                        );
+                      check();
+                      if (!continuing) break;
+                    }
+                  } finally {
+                    if (!finished) await iterator.return?.();
+                  }
+                  check();
+                  reply({});
+                } else {
+                  const returned = await backend.complete(request);
+                  check();
+                  const data = captureModelResponse(returned);
+                  check();
+                  reply({ data });
+                }
               } catch (error) {
                 failed(error);
                 return;
               }
-              check();
-              let data;
-              try {
-                data = captureModelResponse(returned);
-              } catch (error) {
-                failed(error);
-                return;
-              }
-              check();
-              reply({ data });
             } else if (compact) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
               const context = Object.freeze({
@@ -13293,6 +13349,75 @@ export class Session<OutputT = string, Context = unknown> {
           text,
         }),
       ),
+    );
+  }
+
+  /** @internal Begin before submitting the owned turn. */
+  _startProducedItems(): void {
+    if (this.#producedItemsStarted) return;
+    this.#native._start_produced_items();
+    this.#producedItemsStarted = true;
+  }
+
+  /** @internal Read the exact owned turn before closing its Session. */
+  _takeProducedItems(turnId: string): readonly ProducedItem[] {
+    let encoded: string;
+    try {
+      encoded = this.#native._take_produced_items(turnId);
+    } catch (error) {
+      throw new NativeError(
+        error instanceof Error ? error.message : String(error),
+        { cause: error },
+      );
+    }
+    const captured = decode(z.array(producedItemSchema), encoded);
+    const history = [
+      { type: 'turn_context', payload: { turn_id: turnId } },
+      ...captured.map(({ record }) => record),
+    ];
+    const itemRecordIndexes = new Map<HistoryItem, number>();
+    const { items } = projectHistory(
+      history,
+      this.id,
+      undefined,
+      itemRecordIndexes,
+    );
+    return Object.freeze(
+      items.map((item) => {
+        const index = itemRecordIndexes.get(item);
+        if (index === undefined)
+          throw new NativeError('Produced item has no native record');
+        const entry = captured[index - 1];
+        const producer = entry.agent?.profile_id;
+        const agent =
+          producer === undefined
+            ? this.options.applicationAgent
+            : this.callbackProfileRuntime(producer)?.profile.agent;
+        if (agent === undefined)
+          throw new NativeError('Produced item has no Agent profile');
+        const metadata = entry.record.metadata;
+        const handoff =
+          metadata &&
+          typeof metadata === 'object' &&
+          'sdk_agent_handoff' in metadata
+            ? metadata.sdk_agent_handoff
+            : undefined;
+        const targetId =
+          handoff &&
+          typeof handoff === 'object' &&
+          'target_profile_id' in handoff
+            ? handoff.target_profile_id
+            : undefined;
+        const handoffTarget =
+          typeof targetId === 'string'
+            ? this.callbackProfileRuntime(targetId)?.profile.agent
+            : undefined;
+        return Object.freeze({
+          item,
+          agent,
+          ...(handoffTarget === undefined ? {} : { handoffTarget }),
+        });
+      }),
     );
   }
 

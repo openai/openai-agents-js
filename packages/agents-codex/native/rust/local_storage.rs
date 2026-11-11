@@ -1600,6 +1600,32 @@ impl ThreadStore for LocalChecklistStore {
         })
     }
 
+    fn canonical_tool_output<'a>(
+        &'a self,
+        thread_id: ThreadId,
+        output: &'a ResponseItem,
+    ) -> ThreadStoreFuture<'a, Option<ResponseItem>> {
+        Box::pin(async move {
+            let mut writers = self.writers.lock().await;
+            let writer = writers
+                .get_mut(&thread_id)
+                .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+            writer.check()?;
+            let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(output)
+            else {
+                return Ok(None);
+            };
+            let Some(accepted) = writer.early.get(&(turn.to_owned(), call.to_owned())) else {
+                return Ok(None);
+            };
+            if !crate::local_reconciliation::same_acknowledged_output(accepted, output) {
+                writer.failure = Some("Core drain changed an acknowledged SDK receipt".into());
+                writer.check()?;
+            }
+            Ok(Some(accepted.clone()))
+        })
+    }
+
     fn load_original_history(
         &self,
         params: LoadThreadHistoryParams,

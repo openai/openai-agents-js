@@ -57,7 +57,11 @@ it.each([false, true])(
         await memory.transactHistory({
           expectedRevision: current.revision,
           keep: 0,
-          items,
+          items: items.filter(
+            (item) =>
+              item.type !== 'message' ||
+              (item.role !== 'developer' && item.role !== 'system'),
+          ),
         });
         return parseSessionState(JSON.stringify(await memory.saveState()));
       };

@@ -1,3 +1,7 @@
+export {
+  backgroundResult,
+  type BackgroundResult,
+} from '../runtime/background-result';
 export type { PortableVoiceApiKey } from './portable-credentials';
 import {
   resolvePortableVoiceApiKey,

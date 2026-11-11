@@ -1,5 +1,5 @@
 {
-  "result_tree": "34eb4891251d3ee078b2e36a1847aa4544ebd87e",
+  "result_tree": "f0030b34341be636a4ce47868a18b8b2f7638cf1",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -726,6 +726,66 @@
       "sha256": "90ff113feefab6b456b9b0d4d8e0e3dc61741d74d3a5ed7e6b933f60737ce4b9"
     },
     {
+      "path": "sdk-realtime-connection-options.patch",
+      "sha256": "b5f011895428540651c529d0e70a1f657d0df2159f386fb6c7689b4a2d953fbf"
+    },
+    {
+      "path": "sdk-mailbox-carrier-only-trace.patch",
+      "sha256": "fff9add082337fcec9ad2290be767de0ec5b05a104a0dc559ddf4069545a06fc"
+    },
+    {
+      "path": "sdk-mailbox-receiver-trace-privacy.patch",
+      "sha256": "0d98f210b55c1af7d92732611e700c69b6d22b89a47185e6dd8f5729281f5627"
+    },
+    {
+      "path": "sdk-portable-realtime-tool-results.patch",
+      "sha256": "9e108aca0457ab663aaefd4eda7573948fc5b0b479ebb51abd6dc1dcea038f58"
+    },
+    {
+      "path": "sdk-portable-realtime-raw-client-events.patch",
+      "sha256": "88d34b6286fcc7d370aaff958dc624625acf920cf5bab5238e1de42bd4ce03b3"
+    },
+    {
+      "path": "sdk-portable-realtime-hosted-completion.patch",
+      "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
+    },
+    {
+      "path": "sdk-realtime-history-output-format.patch",
+      "sha256": "bd79a55f664d247f9c7715607bc7b7c2d82004413e73b06e9226e79316f4d097"
+    },
+    {
+      "path": "sdk-reset-tool-choice-after-use.patch",
+      "sha256": "6252ab047f0858279bb1ecb400bd1afa39ff368ebf284b2f1720d917431f8e05"
+    },
+    {
+      "path": "sdk-function-provider-schemas.patch",
+      "sha256": "ab9d85801742d4b5d27226ce26f25ad1909e743f84b4c2822b7afbb0b7b4d60f"
+    },
+    {
+      "path": "sdk-produced-run-items.patch",
+      "sha256": "5662fc947935ad7b28aa70878275fdb8ca93beb9d4259818baabd653793359e3"
+    },
+    {
+      "path": "sdk-provider-hosted-shell.patch",
+      "sha256": "f2bdb3888ab4893bcdec6de7a544f3bb4d5ece98b1efc0e80b4e6c10676d8885"
+    },
+    {
+      "path": "sdk-raw-provider-event-fixtures.patch",
+      "sha256": "1d030d1488ae51cbbb7c75c6814a8a3eedb7454573480e32d44ade99a4d31afc"
+    },
+    {
+      "path": "sdk-native-model-response-stream.patch",
+      "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
+    },
+    {
+      "path": "sdk-mailbox-deferred-user-fifo.patch",
+      "sha256": "00d32123fc3cc9127c0acc5a71d3ac11289b3af5300e8f9d05e33ebd61ef3e7b"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-produced-items.patch",
+      "sha256": "9d8d9946b04186bb9c8efda78d56f83f764ec3ccce3885217e12493ca9b9f084"
+    },
+    {
       "path": "sdk-mcp-forced-choice-captured-binding.patch",
       "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
     },
@@ -774,12 +834,20 @@
       "sha256": "3418e9344d345661a8857558750dd00552d03e6718f6ea899f5f4a54f988d2a8"
     },
     {
+      "path": "sdk-provider-hosted-shell-replay-compat.patch",
+      "sha256": "def8fda0b26fa182be8cb6e3c82ac8375455d1eef40642549a53a3285222d1bd"
+    },
+    {
       "path": "sdk-stored-owner-retirement.patch",
       "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
     },
     {
       "path": "sdk-borrowed-responses-compaction.patch",
-      "sha256": "d229b00207f28530f8b66cd221137d25cc301e88bdb8e4302a1a705e9f8f2ff1"
+      "sha256": "23e5e6eb0e1f00b84f46cb82a3739cea6a6ab26323b7c9ebcb0341767cb526e4"
+    },
+    {
+      "path": "sdk-managed-original-receipt-identity.patch",
+      "sha256": "d156a9f439a84e42dfe1191725b015145fdc4f1079d5d543ece1f18e548230e5"
     }
   ]
 }

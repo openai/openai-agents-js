@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 5f663d96..a0d3a269 100644
+index a72db3d8..dda045c0 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -1,4 +1,6 @@
@@ -47,7 +47,7 @@ index 5f663d96..a0d3a269 100644
      )
      .await;
      let status = compaction_status_from_result(&result);
-@@ -254,58 +261,291 @@ async fn run_compact_task_inner(
+@@ -254,58 +261,313 @@ async fn run_compact_task_inner(
      result.map(|_| ())
  }
  
@@ -60,9 +60,37 @@ index 5f663d96..a0d3a269 100644
 -    metadata: CompactionTurnMetadata,
 -) -> CodexResult<Option<String>> {
 -    let turn_context = &source_step_context.turn;
-+/// Reuse native prompt normalization without changing the captured/live window.
-+fn validate_compaction_window(history: &ContextManager, items: &[ResponseItem]) -> CodexResult<()> {
++fn is_compaction_control_item(item: &ResponseItem) -> bool {
++    matches!(item, ResponseItem::Message { role, .. } if role == "system" || role == "developer")
++        || matches!(
++            item,
++            ResponseItem::ConfigurationUpdate { .. }
++                | ResponseItem::CompactionTrigger { .. }
++                | ResponseItem::AdditionalTools { .. }
++                | ResponseItem::AgentMessage { .. }
++        )
++        || crate::context_manager::rollback_context_update(item).is_some()
++}
++
++/// Validate a borrowed replacement without changing the captured/live window.
++fn validate_compaction_window(
++    history: &ContextManager,
++    captured_items: &[ResponseItem],
++    items: &[ResponseItem],
++) -> CodexResult<()> {
 +    use codex_protocol::openai_models::InputModality;
++
++    let mut captured_controls = captured_items
++        .iter()
++        .filter(|item| is_compaction_control_item(item));
++    for item in items.iter().filter(|item| is_compaction_control_item(item)) {
++        if !captured_controls.any(|captured| captured == item) {
++            return Err(CodexErr::InvalidRequest(
++                "Compacted window contains a new or modified instruction or control item".into(),
++            ));
++        }
++    }
++
 +    let mut candidate = history.clone();
 +    candidate.replace_annotated(
 +        items
@@ -90,19 +118,13 @@ index 5f663d96..a0d3a269 100644
 +        .iter()
 +        .enumerate()
 +        .filter_map(|(index, item)| {
-+            (!matches!(item,
-+            ResponseItem::Message { role, .. } if role == "user" || role == "system" || role == "developer")
++            (!is_compaction_control_item(item)
++                && !matches!(item, ResponseItem::Message { role, .. } if role == "user")
 +                && !matches!(
 +                    item,
-+                    ResponseItem::Compaction { .. }
-+                        | ResponseItem::ContextCompaction { .. }
-+                        | ResponseItem::ConfigurationUpdate { .. }
-+                        | ResponseItem::CompactionTrigger { .. }
-+                        | ResponseItem::AdditionalTools { .. }
-+                        | ResponseItem::AgentMessage { .. }
-+                )
-+                && crate::context_manager::rollback_context_update(item).is_none())
-+                .then_some(index)
++                    ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
++                ))
++            .then_some(index)
 +        })
 +        .collect()
 +}
@@ -124,13 +146,13 @@ index 5f663d96..a0d3a269 100644
      {
 -        return Ok(None);
 +        return Ok(false);
-+    }
+     }
 +    if sess.input_queue.has_pending_input(&sess.active_turn).await {
 +        return Ok(true);
 +    }
 +    if cancellation_token.is_cancelled() {
 +        return Err(CodexErr::TurnAborted);
-     }
++    }
 +    sess.ensure_rollout_durable().await?;
      let history = sess.clone_history().await;
 -    let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
@@ -310,7 +332,7 @@ index 5f663d96..a0d3a269 100644
 +                {
 +                    return Err(CodexErr::InvalidRequest("Invalid compacted window".into()));
 +                }
-+                validate_compaction_window(history, &window.items)?;
++                validate_compaction_window(history, input.items, &window.items)?;
 +                // A borrowed client's producer is outside the native catalog owner.
 +                let model_hash = None;
 +                let output = window.items.clone();
@@ -372,7 +394,7 @@ index 5f663d96..a0d3a269 100644
          }
      }
      Ok(None)
-@@ -342,6 +582,52 @@ async fn publish_compaction_summary(
+@@ -342,6 +604,52 @@ async fn publish_compaction_summary(
          // belongs to this compaction turn.
          summary_item.set_turn_id_if_missing(&turn_context.sub_id);
      }
@@ -425,7 +447,7 @@ index 5f663d96..a0d3a269 100644
      let (window_number, window_ids) = if completed_output.is_some() {
          // Render with the next window's IDs before committing them to live history.
          sess.preview_auto_compact_window().await
-@@ -371,22 +657,14 @@ async fn publish_compaction_summary(
+@@ -371,22 +679,14 @@ async fn publish_compaction_summary(
              compaction_model_hash,
              reviewer_compaction_hash: None,
          },
@@ -450,7 +472,7 @@ index 5f663d96..a0d3a269 100644
  async fn run_compact_task_inner_impl(
      sess: Arc<Session>,
      source_step_context: Arc<StepContext>,
-@@ -395,17 +673,29 @@ async fn run_compact_task_inner_impl(
+@@ -395,17 +695,29 @@ async fn run_compact_task_inner_impl(
      world_state: Arc<WorldState>,
      compaction_metadata: CompactionTurnMetadata,
      cancellation_token: &CancellationToken,
@@ -481,7 +503,7 @@ index 5f663d96..a0d3a269 100644
      )
      .await?
      {
-@@ -413,9 +703,14 @@ async fn run_compact_task_inner_impl(
+@@ -413,9 +725,14 @@ async fn run_compact_task_inner_impl(
              .await;
          return Ok(summary);
      }
@@ -497,7 +519,7 @@ index 5f663d96..a0d3a269 100644
      let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
      history.record_items(
          &[initial_input_for_turn.into()],
-@@ -1065,3 +1360,46 @@ async fn drain_to_completed(
+@@ -1067,3 +1384,73 @@ async fn drain_to_completed(
  #[cfg(test)]
  #[path = "compact_tests.rs"]
  mod tests;
@@ -527,9 +549,36 @@ index 5f663d96..a0d3a269 100644
 +                json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"after"}]}),
 +            ),
 +        ];
-+        validate_compaction_window(&history, &items).unwrap();
++        validate_compaction_window(&history, &[], &items).unwrap();
 +        assert!(history.raw_items().next().is_none());
 +        assert_eq!(compaction_candidate_indexes(&items), vec![0, 2, 3, 4]);
++    }
++
++    #[test]
++    fn full_window_validation_requires_captured_control_provenance() {
++        let history = ContextManager::new();
++        let developer = item(json!({
++            "type": "message", "role": "developer",
++            "content": [{"type": "input_text", "text": "original developer"}],
++        }));
++        let system = item(json!({
++            "type": "message", "role": "system",
++            "content": [{"type": "input_text", "text": "original system"}],
++        }));
++        let changed = item(json!({
++            "type": "message", "role": "developer",
++            "content": [{"type": "input_text", "text": "modified developer"}],
++        }));
++        let captured = [developer.clone(), system.clone()];
++        validate_compaction_window(&history, &captured, &captured).unwrap();
++        validate_compaction_window(&history, &captured, std::slice::from_ref(&system)).unwrap();
++        for replacement in [
++            vec![changed],
++            vec![developer.clone(), developer.clone()],
++            vec![system, developer],
++        ] {
++            assert!(validate_compaction_window(&history, &captured, &replacement).is_err());
++        }
 +    }
 +
 +    #[test]
@@ -539,13 +588,13 @@ index 5f663d96..a0d3a269 100644
 +            json!({"type":"function_call","call_id":"call","name":"historic","arguments":"{}"}),
 +            json!({"type":"function_call_output","call_id":"call","output":"done"}),
 +        ] {
-+            assert!(validate_compaction_window(&history, &[item(value)]).is_err());
++            assert!(validate_compaction_window(&history, &[], &[item(value)]).is_err());
 +            assert!(history.raw_items().next().is_none());
 +        }
 +    }
 +}
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index 4f7b790b..8f787ac9 100644
+index 79f7b43d..bb316ab6 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
 @@ -56,6 +56,7 @@ use codex_rollout_trace::InferenceTraceContext;
@@ -629,10 +678,10 @@ index 4f7b790b..8f787ac9 100644
      .await?
      .is_some()
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 747fba4c..45a67ec8 100644
+index a78ec2a9..47da6b9d 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -445,6 +445,8 @@ pub(crate) async fn run_turn(
+@@ -451,6 +451,8 @@ pub(crate) async fn run_turn(
              &cancellation_token,
              &mut stop_hook_active,
              &mut completion_continuations,
@@ -641,7 +690,7 @@ index 747fba4c..45a67ec8 100644
          )
          .await?
          {
-@@ -655,6 +657,8 @@ pub(crate) async fn run_turn(
+@@ -687,6 +689,8 @@ pub(crate) async fn run_turn(
                      &cancellation_token,
                      &mut stop_hook_active,
                      &mut completion_continuations,
@@ -650,7 +699,7 @@ index 747fba4c..45a67ec8 100644
                  )
                  .await?
                  {
-@@ -864,47 +868,15 @@ pub(crate) async fn run_turn(
+@@ -896,47 +900,15 @@ pub(crate) async fn run_turn(
                      {
                          return Ok(None);
                      }
@@ -707,7 +756,7 @@ index 747fba4c..45a67ec8 100644
                      break;
                  }
                  continue;
-@@ -1706,6 +1678,79 @@ async fn maybe_run_previous_model_inline_compact(
+@@ -1738,6 +1710,79 @@ async fn maybe_run_previous_model_inline_compact(
      Ok(())
  }
  
@@ -787,7 +836,7 @@ index 747fba4c..45a67ec8 100644
  /// `world_state` belongs to `replacement_step_context`, which may differ from the compactor.
  #[allow(clippy::too_many_arguments)]
  #[instrument(
-@@ -1786,6 +1831,7 @@ async fn run_auto_compact(
+@@ -1818,6 +1863,7 @@ async fn run_auto_compact(
                  world_state,
                  reason,
                  phase,
@@ -795,7 +844,7 @@ index 747fba4c..45a67ec8 100644
              )
              .await?;
          }
-@@ -2915,6 +2961,7 @@ async fn release_failed_tool_candidates(sess: &Session, step: &StepContext) {
+@@ -3044,6 +3090,7 @@ async fn release_failed_tool_candidates(sess: &Session, step: &StepContext) {
      release_held_tool_results(sess, step, true).await;
  }
  
@@ -803,7 +852,7 @@ index 747fba4c..45a67ec8 100644
  async fn try_complete_tool_turn(
      sess: &Arc<Session>,
      step_context: &Arc<StepContext>,
-@@ -2922,6 +2969,8 @@ async fn try_complete_tool_turn(
+@@ -3051,6 +3098,8 @@ async fn try_complete_tool_turn(
      cancellation_token: &CancellationToken,
      stop_hook_active: &mut bool,
      completion_continuations: &mut usize,
@@ -812,7 +861,7 @@ index 747fba4c..45a67ec8 100644
  ) -> CodexResult<bool> {
      let proposal = propose_tool_completion(
          sess,
-@@ -2947,20 +2996,33 @@ async fn try_complete_tool_turn(
+@@ -3076,20 +3125,33 @@ async fn try_complete_tool_turn(
                  .await;
                  *stop_hook_active = true;
              }
@@ -884,10 +933,10 @@ index 67e3a534..e6b17102 100644
  pub use model_request::ModelHttpStream;
  pub use model_request::ModelRequestContributor;
 diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
-index 33169373..358bf030 100644
+index 9263b065..bdaa894f 100644
 --- a/codex-rs/ext/extension-api/src/model_request.rs
 +++ b/codex-rs/ext/extension-api/src/model_request.rs
-@@ -136,15 +136,37 @@ pub struct ModelContextInput<'a> {
+@@ -144,15 +144,37 @@ pub struct ModelContextInput<'a> {
  }
  
  /// Captured input before automatic or manual native summarization.
@@ -925,7 +974,7 @@ index 33169373..358bf030 100644
  /// Request identity before provider dispatch.
  pub struct ModelRequestInput<'a> {
      /// Whether this request generates output or warms up the session.
-@@ -233,6 +255,35 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
+@@ -241,6 +263,35 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
          Box::pin(async { Ok(None) })
      }
  

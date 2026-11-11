@@ -15,6 +15,112 @@ const message = (id: string, text: string) => ({
   content: [{ type: 'output_audio', transcript: text }],
 });
 
+it('retains provider input and output audio only with opt-in across item updates', () => {
+  for (const storeAudio of [false, true]) {
+    const history = new VoiceConversationHistory({ storeAudio });
+    const input = {
+      ...message('input', ''),
+      role: 'user',
+      content: [{ type: 'input_audio', audio: 'AQIDBA==' }],
+    };
+    history.observe({ type: 'conversation.item.retrieved', item: input });
+    history.observe({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'input',
+      transcript: 'heard',
+    });
+    history.observe({
+      type: 'response.output_item.added',
+      item: message('output', ''),
+    });
+    history.observeAudio('output', 0, new Uint8Array([5, 6]), 2);
+    const output = {
+      ...message('output', 'spoken'),
+      content: [
+        { type: 'output_audio', audio: 'BQYHCA==', transcript: 'spoken' },
+      ],
+    };
+    for (let i = 0; i < 2; i++)
+      history.observe({
+        type: 'response.done',
+        response: { output: [output] },
+      });
+    expect(history.snapshot().map((item) => item.content)).toEqual([
+      [
+        {
+          type: 'input_audio',
+          transcript: 'heard',
+          ...(storeAudio ? { audio: 'AQIDBA==' } : {}),
+        },
+      ],
+      [
+        {
+          type: 'output_audio',
+          transcript: 'spoken',
+          ...(storeAudio ? { audio: 'BQYHCA==' } : {}),
+        },
+      ],
+    ]);
+    expect(history.providerSnapshot().map((item) => item.content)).toEqual([
+      [{ type: 'input_audio', transcript: 'heard' }],
+      [{ type: 'output_audio', transcript: 'spoken' }],
+    ]);
+    expect(JSON.parse(history.serializeSnapshot())).toEqual(history.snapshot());
+    expect(input.content[0].audio).toBe('AQIDBA==');
+    if (storeAudio) {
+      history.observe({
+        type: 'conversation.item.truncated',
+        item_id: 'output',
+        content_index: 0,
+        audio_end_ms: 1,
+      });
+      expect(history.snapshot()[1].content).toEqual([
+        { type: 'output_audio', audio: 'BQY=' },
+      ]);
+    }
+    history.observe({ type: 'conversation.item.deleted', item_id: 'input' });
+    history.observe({
+      type: 'conversation.item.created',
+      item: message('input', 'new'),
+    });
+    expect((history.snapshot()[1].content as any[])[0].audio).toBeUndefined();
+  }
+});
+
+it('charges provider audio replacements against the shared audio budget without duplicating deltas', () => {
+  const history = new VoiceConversationHistory({
+    storeAudio: true,
+    maxAudioBytes: 4,
+  });
+  const item = {
+    ...message('one', ''),
+    content: [{ type: 'output_audio', audio: 'AQIDBA==' }],
+  };
+  history.observe({ type: 'conversation.item.added', item });
+  history.observe({ type: 'conversation.item.done', item });
+  history.observe({
+    type: 'conversation.item.truncated',
+    item_id: 'one',
+    content_index: 0,
+    audio_end_ms: 0,
+  });
+  history.observe({ type: 'conversation.item.done', item });
+  expect((history.snapshot()[0].content as any[])[0]).toMatchObject({
+    audio: 'AQIDBA==',
+  });
+  history.observeAudio('one', 0, new Uint8Array([5, 6]));
+  expect((history.snapshot()[0].content as any[])[0]).toMatchObject({
+    audio: 'AQIDBA==',
+    audio_truncated: true,
+  });
+  history.clear();
+  history.observe({ type: 'conversation.item.added', item });
+  expect((history.snapshot()[0].content as any[])[0]).toEqual({
+    type: 'output_audio',
+    audio: 'AQIDBA==',
+  });
+});
+
 it('retains detached audio only with opt-in, keeps a bounded prefix, and truncates played audio', () => {
   const off = new VoiceConversationHistory();
   const history = new VoiceConversationHistory({
@@ -81,6 +187,48 @@ it('maintains provider order and transcripts while bounding local item payloads'
       item: message('third', ''),
     }),
   ).toThrow('capacity');
+});
+
+it('replaces provider audio with an empty value and releases its byte budget', () => {
+  const history = new VoiceConversationHistory({
+    storeAudio: true,
+    maxAudioBytes: 4,
+  });
+  const item = {
+    ...message('one', ''),
+    content: [{ type: 'output_audio', audio: 'AQIDBA==' }],
+  };
+  history.observe({ type: 'conversation.item.created', item });
+  history.observeAudio('one', 0, new Uint8Array());
+  expect((history.snapshot()[0].content as any[])[0].audio).toBe('AQIDBA==');
+  history.observe({
+    type: 'conversation.item.done',
+    item: { ...item, content: [{ type: 'output_audio', audio: '' }] },
+  });
+  expect((history.snapshot()[0].content as any[])[0].audio).toBe('');
+  history.observe({
+    type: 'conversation.item.created',
+    item: { ...item, id: 'two' },
+  });
+  expect((history.snapshot()[1].content as any[])[0].audio).toBe('AQIDBA==');
+});
+
+it('truncates first-observed provider audio using its owning codec rate', () => {
+  const history = new VoiceConversationHistory({ storeAudio: true });
+  const item = {
+    ...message('g711', ''),
+    content: [{ type: 'output_audio', audio: 'AQIDBAUGBwgJCgsMDQ4PEA==' }],
+  };
+  history.observe({ type: 'response.done', response: { output: [item] } }, 8);
+  history.observe({
+    type: 'conversation.item.truncated',
+    item_id: 'g711',
+    content_index: 0,
+    audio_end_ms: 1,
+  });
+  expect((history.snapshot()[0].content as any[])[0].audio).toBe(
+    'AQIDBAUGBwg=',
+  );
 });
 
 it('isolates passive observers, detaches byte views, and releases subscriptions', async () => {
@@ -223,6 +371,88 @@ it('keeps opt-in provider audio readable after close independently of observers 
     transcript: 'spoken at close',
   });
   expect(() => owner.on('event', () => {})).toThrow('closed');
+});
+
+it('keeps exact provider input and output audio in the Node owner after close', async () => {
+  for (const historyStoreAudio of [false, true]) {
+    const { owner, emit } = await ownerFixture({ historyStoreAudio });
+    const input = {
+      ...message('input', 'heard'),
+      role: 'user',
+      content: [
+        { type: 'input_audio', audio: 'AQIDBA==', transcript: 'heard' },
+      ],
+    };
+    const output = {
+      ...message('output', 'spoken'),
+      content: [
+        { type: 'output_audio', audio: 'BQYHCA==', transcript: 'spoken' },
+      ],
+    };
+    emit({
+      RawProviderEvent: { type: 'conversation.item.retrieved', item: input },
+    });
+    emit({
+      RawProviderEvent: { type: 'response.output_item.done', item: output },
+    });
+    const expected = [input, output].map((item) => ({
+      ...item,
+      content: item.content.map(({ audio, ...part }) => ({
+        ...part,
+        ...(historyStoreAudio ? { audio } : {}),
+      })),
+    }));
+    expect(owner.providerHistory()).toEqual(expected);
+    await owner.close();
+    expect(owner.providerHistory()).toEqual(expected);
+    (owner.providerHistory()[0].content as any[])[0].audio = 'changed';
+    expect(owner.providerHistory()).toEqual(expected);
+  }
+});
+
+it('clears prior provider bytes on an empty same-item audio update in the Node owner', async () => {
+  const { owner, emit } = await ownerFixture({ historyStoreAudio: true });
+  const item = {
+    ...message('one', ''),
+    content: [{ type: 'output_audio', audio: 'AQIDBA==' }],
+  };
+  emit({ RawProviderEvent: { type: 'conversation.item.created', item } });
+  emit({
+    RawProviderEvent: {
+      type: 'conversation.item.done',
+      item: { ...item, content: [{ type: 'output_audio', audio: '' }] },
+    },
+  });
+  expect((owner.providerHistory()[0].content as any[])[0].audio).toBe('');
+  await owner.close();
+  expect((owner.providerHistory()[0].content as any[])[0].audio).toBe('');
+});
+
+it('truncates embedded provider audio using the accepted Node output format', async () => {
+  const { owner, emit } = await ownerFixture({ historyStoreAudio: true });
+  await owner.update({ outputFormat: 'g711_ulaw' });
+  const audio = Buffer.alloc(24, 7);
+  emit({
+    RawProviderEvent: {
+      type: 'response.output_item.done',
+      item: {
+        ...message('output', ''),
+        content: [{ type: 'output_audio', audio: audio.toString('base64') }],
+      },
+    },
+  });
+  emit({
+    RawProviderEvent: {
+      type: 'conversation.item.truncated',
+      item_id: 'output',
+      content_index: 0,
+      audio_end_ms: 1,
+    },
+  });
+  expect((owner.providerHistory()[0].content as any[])[0].audio).toBe(
+    audio.subarray(0, 8).toString('base64'),
+  );
+  await owner.close();
 });
 
 it('captures exact tool-source history before later input and isolates each callback view', async () => {
