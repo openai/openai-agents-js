@@ -310,3 +310,25 @@ index 3eb02d9..ad608dd 100644
              ToolSpec::WebSearch { .. } => "web_search",
              ToolSpec::FileSearch(_) => "file_search",
              ToolSpec::CodeInterpreter(_) => "code_interpreter",
+diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
+--- a/codex-rs/core/src/tools/router_tests.rs
++++ b/codex-rs/core/src/tools/router_tests.rs
+@@ -656,6 +656,7 @@
+             | ToolSpec::Function(_)
+             | ToolSpec::Freeform(_)
+             | ToolSpec::ToolSearch { .. }
++            | ToolSpec::ProviderToolSearch(_)
+             | ToolSpec::FileSearch(_)
+             | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::ImageGeneration(_)
+diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
+--- a/codex-rs/core/src/tools/spec_plan_tests.rs
++++ b/codex-rs/core/src/tools/spec_plan_tests.rs
+@@ -112,6 +112,7 @@
+                 | ToolSpec::ComputerUsePreview { .. }
+                 | ToolSpec::Function(_)
+                 | ToolSpec::ToolSearch { .. }
++                | ToolSpec::ProviderToolSearch(_)
+                 | ToolSpec::FileSearch(_)
+                 | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::ImageGeneration(_)
