@@ -99,7 +99,7 @@ async fn native_goal_read_reports_sticky_receipt_failure_instead_of_absence() {
         .unwrap()
         .fail_receipt_flush
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"real result"}],"success":true}}).to_string()).await.is_err());
+    assert!(native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"real result"}],"success":true}}).to_string(), None).await.is_err());
     let error = native._read_goal().await.unwrap_err();
     assert!(
         error.reason.contains("injected receipt flush failure"),

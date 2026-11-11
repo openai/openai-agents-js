@@ -629,6 +629,17 @@ impl DirectTurn {
     }
 }
 
+// Reuse the exact captured publication owner for final MCP assignment.
+pub(crate) fn publish_mcp_result(
+    thread: &ExtensionData,
+    turn: &ExtensionData,
+    publish: impl FnOnce(),
+) {
+    if let (Some(control), Some(owner)) = (thread.get::<Control>(), turn.get::<DirectTurn>()) {
+        let _ = control.publish_result(&owner, &control.stopped, true, None, publish);
+    }
+}
+
 // Stop only the captured task. Its existing host stop/join owner retains
 // physical settlement; joining here would wait on this very MCP hook.
 pub(crate) fn expire_mcp_result(
@@ -6057,6 +6068,36 @@ fn test_tool_admission(
         turn_store,
         selected,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn test_mcp_result_owner(
+    thread: &ExtensionData,
+    turn: &ExtensionData,
+    ended: bool,
+) -> impl FnOnce() {
+    let control = thread.get_or_init(|| Control::new(thread.level_id().into(), true));
+    let owner = turn.get_or_init(|| DirectTurn {
+        policy_stopped: AtomicBool::new(false),
+        id: turn.level_id().into(),
+        model: Mutex::new(None),
+        command_admission: Mutex::new(None),
+        cancelled: CancellationToken::new(),
+        settlement: None,
+        core_task: None,
+        mcp_calls: Mutex::default(),
+    });
+    if ended {
+        owner.cancelled.cancel();
+    }
+    move || {
+        let _state = control
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        owner.policy_stopped.store(true, Ordering::Release);
+    }
 }
 
 #[cfg(test)]
