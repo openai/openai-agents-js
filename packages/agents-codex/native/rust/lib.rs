@@ -3058,6 +3058,47 @@ impl NativeThread {
         owner.reply_step(&thread, response).map_err(input_error)
     }
 
+    #[napi(js_name = "_start_model_producer")]
+    pub fn _start_model_producer(&self, owner_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::StepReply =
+            serde_json::from_str(&owner_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner
+            .start_model_producer_stream(&response)
+            .map_err(input_error)
+    }
+
+    #[napi(js_name = "_push_model_producer")]
+    pub async fn _push_model_producer(
+        &self,
+        owner_json: String,
+        event_json: String,
+    ) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let response: python_tools::StepReply =
+            serde_json::from_str(&owner_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner
+            .push_model_producer_event(&response, &event_json)
+            .await
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_model_producer")]
     pub fn _reply_model_producer(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;

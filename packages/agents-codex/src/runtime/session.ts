@@ -8239,14 +8239,47 @@ export class Session<OutputT = string, Context = unknown> {
                   ? this.options.modelBackend
                   : this.options.modelBackend.getModel(base.model);
               check();
-              const returned = await backend.complete({
+              const request = {
                 ...base,
                 body: losslessJsonObjectSchema.parse(msg.data),
-              });
-              check();
-              const data = captureModelResponse(returned);
-              check();
-              reply({ data });
+              };
+              if (backend.stream) {
+                const stream = await backend.stream(request);
+                const iterator = stream[Symbol.asyncIterator]();
+                let finished = false;
+                try {
+                  check();
+                  const streamOwner = encode(receipt);
+                  sourceNative._start_model_producer(streamOwner);
+                  while (true) {
+                    check();
+                    const next = await iterator.next();
+                    check();
+                    if (next.done) {
+                      finished = true;
+                      break;
+                    }
+                    const continuing = await sourceNative._push_model_producer(
+                      streamOwner,
+                      JSON.stringify(
+                        losslessJsonObjectSchema.parse(next.value),
+                      ),
+                    );
+                    check();
+                    if (!continuing) break;
+                  }
+                } finally {
+                  if (!finished) await iterator.return?.();
+                }
+                check();
+                reply({});
+              } else {
+                const returned = await backend.complete(request);
+                check();
+                const data = captureModelResponse(returned);
+                check();
+                reply({ data });
+              }
             } else if (compact) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
               const returned = beforeCompact?.(
