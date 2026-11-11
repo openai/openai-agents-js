@@ -23,8 +23,12 @@ export {
   setTraceContextStorage,
   setTracingDisabled,
   setSensitiveDataLoggingEnabled,
+  setTracingIdGenerator,
 } from './tracing-context';
-export type { TraceContextStorage } from './tracing-context';
+export type {
+  TraceContextStorage,
+  TracingIdGenerator,
+} from './tracing-context';
 type Native = Awaited<ReturnType<typeof binding>>;
 
 /** Native HTTP or gRPC TLS paths. Supply client certificate and key together. */
@@ -297,6 +301,7 @@ export interface TraceOptions {
   /** Clear linkage while retaining ambient and Session content restrictions. */
   readonly detached?: boolean;
   readonly traceId?: string;
+  readonly spanId?: string;
   readonly groupId?: string;
   readonly metadata?: Readonly<Record<string, import('./binding').JsonValue>>;
   /** Disabled ancestry suppresses every descendant trace record. */
