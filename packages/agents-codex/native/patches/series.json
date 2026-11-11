@@ -1,5 +1,5 @@
 {
-  "result_tree": "7b926f1cc4fd28877678955d8464cdbd9af3fd02",
+  "result_tree": "1afa206f3a3fc8137dde5487ae8cdc83944d6b73",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -748,6 +748,10 @@
     {
       "path": "sdk-portable-realtime-hosted-completion.patch",
       "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
+    },
+    {
+      "path": "sdk-realtime-history-output-format.patch",
+      "sha256": "bd79a55f664d247f9c7715607bc7b7c2d82004413e73b06e9226e79316f4d097"
     }
   ]
 }
