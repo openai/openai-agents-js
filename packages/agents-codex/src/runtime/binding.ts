@@ -170,6 +170,32 @@ export async function binding() {
 export function decode<T>(schema: z.ZodType<T>, source: string): T {
   return schema.parse(JSON.parse(source));
 }
+/** @internal Eager private plain-run DTO decoding; canonical fallback keeps errors and key normalization. */
+export function decodePlainRunObject(source: string): JsonObject {
+  let ordinary = true;
+  let value: unknown;
+  try {
+    value = JSON.parse(source, (key, item: unknown) => {
+      if (
+        (typeof item === 'number' && !Number.isFinite(item)) ||
+        key === 'prototype' ||
+        key in Object.prototype ||
+        key in Array.prototype
+      )
+        ordinary = false;
+      return item;
+    });
+  } catch {
+    return decode(jsonObject, source);
+  }
+  return ordinary &&
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value)
+    ? (value as JsonObject)
+    : jsonObject.parse(value);
+}
+
 /** Count captured JSON before allocating its encoded representation. */
 function checkJsonCapacity(
   value: JsonValue,
