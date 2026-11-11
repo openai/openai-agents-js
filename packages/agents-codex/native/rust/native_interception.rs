@@ -874,6 +874,7 @@ pub struct Control {
 // One bounded callback owner per explicit root. Native ThreadSpawn ancestry
 // may share it, but never the parent's turn or thread-stop lifetime.
 struct Channel {
+    observe_raw_provider_events: AtomicBool,
     state: Mutex<State>,
     graph: crate::graph_stop::Graph,
     // At most MAX_PENDING live requests. Cancellation messages must not be
@@ -1048,6 +1049,7 @@ impl Control {
             command_tty: std::sync::OnceLock::new(),
             sentinel_request: Mutex::new(SentinelState::default()),
             channel: Arc::new(Channel {
+                observe_raw_provider_events: AtomicBool::new(false),
                 graph: crate::graph_stop::Graph::default(),
                 state: Mutex::new(State {
                     timeout: None,
@@ -1064,6 +1066,12 @@ impl Control {
                 bytes: Arc::new(Semaphore::new(bytes)),
             }),
         }
+    }
+
+    pub(crate) fn enable_raw_provider_events(&self) {
+        self.channel
+            .observe_raw_provider_events
+            .store(true, Ordering::Release);
     }
 
     fn descendant(id: String, parent: &Arc<Control>) -> Self {
@@ -3041,6 +3049,16 @@ impl TurnLifecycleContributor for Boundary {
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(control) = input.thread_store.get::<Control>() {
+                if !control.stopped.is_cancelled()
+                    && control
+                        .channel
+                        .observe_raw_provider_events
+                        .load(Ordering::Acquire)
+                {
+                    input
+                        .thread_store
+                        .insert(codex_core::ObserveRawProviderEvents);
+                }
                 let settlement = input
                     .turn_store
                     .get::<crate::turn_settlement::Turn>()
