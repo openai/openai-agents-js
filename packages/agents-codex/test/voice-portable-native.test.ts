@@ -68,7 +68,390 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
-  it.each(['dispatch', 'arguments', 'needsApproval', 'approval'] as const)(
+  it('sends raw provider events with history and response ownership', async () => {
+    const frames: Record<string, any>[] = [];
+    const message = {
+      id: 'raw-input',
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Original' }],
+    };
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          queueMicrotask(() => {
+            switch (event.type) {
+              case 'session.update':
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                });
+                break;
+              case 'conversation.item.create':
+                session.receive({
+                  type: 'conversation.item.created',
+                  item: event.item,
+                  previous_item_id: event.previous_item_id,
+                });
+                break;
+              case 'conversation.item.retrieve':
+                session.receive(
+                  event.item_id === message.id
+                    ? { type: 'conversation.item.retrieved', item: message }
+                    : {
+                        type: 'error',
+                        error: {
+                          type: 'invalid_request_error',
+                          event_id: event.event_id,
+                        },
+                      },
+                );
+                break;
+              case 'conversation.item.delete':
+                session.receive({
+                  type: 'conversation.item.deleted',
+                  item_id: event.item_id,
+                });
+                break;
+            }
+          });
+        },
+        close() {},
+      },
+      { model: 'test-realtime', instructions: 'Help.' },
+    );
+    try {
+      await session.start();
+      await expect(
+        session.sendEvent({
+          type: 'conversation.item.create',
+          item: {
+            type: 'function_call_output',
+            call_id: 'unowned',
+            output: 'Bad.',
+          },
+        }),
+      ).rejects.toThrow('conversation message');
+      const input = { ...message, content: [{ ...message.content[0] }] };
+      const create = session.sendEvent({
+        type: 'conversation.item.create',
+        event_id: 'create-input',
+        previous_item_id: null,
+        item: input,
+      });
+      input.content[0].text = 'Changed after admission';
+      await create;
+      expect(
+        await session.sendEvent({
+          type: 'conversation.item.retrieve',
+          event_id: 'read-input',
+          item_id: message.id,
+        }),
+      ).toEqual(message);
+      await expect(
+        session.sendEvent({
+          type: 'conversation.item.retrieve',
+          event_id: 'read-missing',
+          item_id: 'missing',
+        }),
+      ).rejects.toThrow('history retrieval');
+      await session.sendEvent({
+        type: 'conversation.item.delete',
+        event_id: 'delete-input',
+        item_id: message.id,
+      });
+      await vi.waitFor(() => expect(session.history).toEqual([]));
+      expect(frames.slice(1)).toEqual([
+        {
+          type: 'conversation.item.create',
+          event_id: 'create-input',
+          previous_item_id: null,
+          item: message,
+        },
+        {
+          type: 'conversation.item.retrieve',
+          event_id: 'read-input',
+          item_id: message.id,
+        },
+        {
+          type: 'conversation.item.retrieve',
+          event_id: 'read-missing',
+          item_id: 'missing',
+        },
+        {
+          type: 'conversation.item.delete',
+          event_id: 'delete-input',
+          item_id: message.id,
+        },
+      ]);
+      await session.sendEvent({
+        type: 'response.create',
+        event_id: 'raw-response',
+      });
+      await session.sendEvent({
+        type: 'response.cancel',
+        event_id: 'raw-cancel',
+      });
+      session.receive({
+        type: 'response.created',
+        response: { id: 'response-raw' },
+      });
+      await vi.waitFor(() =>
+        expect(frames.slice(-2)).toEqual([
+          { type: 'response.create', event_id: 'raw-response' },
+          {
+            type: 'response.cancel',
+            event_id: 'raw-cancel',
+            response_id: 'response-raw',
+          },
+        ]),
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each([
+    { response: undefined, vadFirst: false, cancelled: false, late: false },
+    { response: undefined, vadFirst: true, cancelled: false, late: false },
+    { response: {}, vadFirst: false, cancelled: false, late: false },
+    { response: {}, vadFirst: true, cancelled: false, late: false },
+    { response: undefined, vadFirst: true, cancelled: true, late: false },
+    { response: {}, vadFirst: true, cancelled: false, late: true },
+    { response: undefined, vadFirst: true, cancelled: true, late: true },
+    {
+      response: {},
+      vadFirst: true,
+      cancelled: true,
+      late: true,
+      cancelAfterDone: true,
+    },
+    {
+      response: {},
+      vadFirst: true,
+      cancelled: false,
+      late: true,
+      superseded: true,
+    },
+  ])(
+    'settles a raw default create with response=$response, vadFirst=$vadFirst, cancelled=$cancelled, late=$late, cancelAfterDone=$cancelAfterDone, superseded=$superseded',
+    async ({
+      response,
+      vadFirst,
+      cancelled,
+      late,
+      cancelAfterDone,
+      superseded,
+    }) => {
+      const frames: Record<string, unknown>[] = [];
+      const onEvent = vi.fn();
+      const onError = vi.fn();
+      const session: PortableVoiceSession = new PortableVoiceSession(
+        control(),
+        {
+          send(frame) {
+            const event = JSON.parse(frame);
+            frames.push(event);
+            if (event.type === 'session.update') {
+              queueMicrotask(() =>
+                session.receive({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
+              );
+            }
+          },
+          close() {},
+        },
+        { model: 'test-realtime', instructions: 'Help.', onEvent, onError },
+      );
+      const creates = () =>
+        frames.filter((frame) => frame.type === 'response.create');
+      const event = {
+        type: 'response.create',
+        event_id: 'raw-race',
+        ...(response === undefined ? {} : { response }),
+      };
+      const next = { type: 'response.create', event_id: 'next-request' };
+      const created = {
+        type: 'response.created',
+        response: { id: 'vad-response' },
+      };
+      const rejection = {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          code: 'conversation_already_has_active_response',
+          event_id: 'raw-race',
+        },
+      };
+      try {
+        await session.start();
+        await session.sendEvent(event);
+        await vi.waitFor(() => expect(creates()).toEqual([event]));
+        if (vadFirst) {
+          session.receive(created);
+          await vi.waitFor(() => expect(onEvent).toHaveBeenCalledWith(created));
+        }
+        if (cancelled && !cancelAfterDone) {
+          await session.sendEvent({ type: 'response.cancel' });
+          await vi.waitFor(() =>
+            expect(frames).toContainEqual(
+              expect.objectContaining({
+                type: 'response.cancel',
+                response_id: 'vad-response',
+              }),
+            ),
+          );
+        }
+        if (superseded) {
+          await session.sendEvent(next);
+          expect(creates()).toEqual([event]);
+        }
+        const done = {
+          type: 'response.done',
+          response: {
+            id: 'vad-response',
+            status: cancelled && !cancelAfterDone ? 'cancelled' : 'completed',
+            output: [],
+          },
+        };
+        if (late) {
+          session.receive(done);
+          await vi.waitFor(() => expect(onEvent).toHaveBeenCalledWith(done));
+        }
+        if (cancelAfterDone) {
+          await session.sendEvent({ type: 'response.cancel' });
+        }
+        session.receive(rejection);
+        if (!vadFirst) session.receive(created);
+        await vi.waitFor(() => expect(onEvent).toHaveBeenCalledWith(rejection));
+        if (!late) {
+          expect(creates()).toEqual([event]);
+          session.receive(done);
+          await vi.waitFor(() => expect(onEvent).toHaveBeenCalledWith(done));
+        }
+        expect(onError).not.toHaveBeenCalled();
+        if (superseded) {
+          await vi.waitFor(() => expect(creates()).toEqual([event, next]));
+          session.receive({
+            ...rejection,
+            error: { ...rejection.error, event_id: 'unknown-request' },
+          });
+          await vi.waitFor(() =>
+            expect(onError).toHaveBeenCalledWith(
+              expect.objectContaining({
+                message: 'Realtime provider rejected the operation',
+              }),
+            ),
+          );
+        } else if (cancelled) {
+          expect(creates()).toEqual([event]);
+          await session.sendEvent(next);
+          await vi.waitFor(() => expect(creates()).toEqual([event, next]));
+        } else {
+          await vi.waitFor(() => expect(creates()).toEqual([event, event]));
+          const retried = {
+            ...done,
+            response: { ...done.response, id: 'retried-response' },
+          };
+          session.receive({
+            type: 'response.created',
+            response: { id: 'retried-response' },
+          });
+          session.receive(retried);
+          await vi.waitFor(() => expect(onEvent).toHaveBeenCalledWith(retried));
+          expect(onError).not.toHaveBeenCalled();
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it('serializes raw settings updates and keeps the accepted profile after a rejection', async () => {
+    const frames: Record<string, any>[] = [];
+    const source = agent();
+    const enabledTool = vi.fn(() => true);
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type !== 'session.update') return;
+          queueMicrotask(() =>
+            session.receive(
+              event.event_id === 'rejected'
+                ? {
+                    type: 'error',
+                    error: {
+                      type: 'invalid_request_error',
+                      event_id: event.event_id,
+                    },
+                  }
+                : { type: 'session.updated', session: event.session },
+            ),
+          );
+        },
+        close() {},
+      },
+      {
+        ...source.options,
+        tools: [{ ...source.options.tools[0], isEnabled: enabledTool }],
+        settings: {
+          audio: { input: { format: { type: 'audio/pcm', rate: 24000 } } },
+        },
+      },
+    );
+    try {
+      await session.start();
+      const first = session.sendEvent({
+        type: 'session.update',
+        event_id: 'rejected',
+        session: { instructions: 'Provider rejected this.' },
+      });
+      const next = session.sendEvent({
+        type: 'session.update',
+        event_id: 'accepted',
+        session: {
+          audio: {
+            input: { transcription: { model: 'gpt-4o-mini-transcribe' } },
+          },
+        },
+      });
+      await expect(first).rejects.toThrow('settings update');
+      await expect(next).resolves.toBeNull();
+      expect(enabledTool).toHaveBeenCalledTimes(1);
+      expect(frames[2]).toMatchObject({
+        type: 'session.update',
+        event_id: 'accepted',
+        session: {
+          instructions: 'Help.',
+          tools: frames[0].session.tools,
+          audio: {
+            input: {
+              format: { type: 'audio/pcm', rate: 24000 },
+              transcription: { model: 'gpt-4o-mini-transcribe' },
+            },
+          },
+        },
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each([
+    'dispatch',
+    'arguments',
+    'needsApproval',
+    'approval',
+    'before',
+  ] as const)(
     'rechecks live tool enablement after %s before portable execution',
     async (phase) => {
       const state = { enabled: true };
@@ -120,6 +503,13 @@ describe.runIf(enabled)('portable Rust control', () => {
                       return true;
                     }
                   : phase === 'approval',
+              before:
+                phase === 'before'
+                  ? async () => {
+                      await hold();
+                      return { action: 'allow' as const };
+                    }
+                  : undefined,
               execute,
             },
           ],
@@ -170,6 +560,210 @@ describe.runIf(enabled)('portable Rust control', () => {
       }
     },
   );
+
+  it('does not suspend an admitted tool when no before policy is installed', async () => {
+    let enabled = true;
+    let revokeAfterAdmission = false;
+    const frames: any[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      {
+        model: 'test-realtime',
+        instructions: 'Help.',
+        tools: [
+          {
+            name: 'lookup',
+            description: 'Lookup.',
+            parameters: { type: 'object' },
+            isEnabled() {
+              if (revokeAfterAdmission) {
+                revokeAfterAdmission = false;
+                // Admission may await this callback; a missing policy must not add another yield.
+                queueMicrotask(() =>
+                  queueMicrotask(() => {
+                    enabled = false;
+                  }),
+                );
+              }
+              return enabled;
+            },
+            execute: () => (enabled ? 'accepted' : 'executed after revocation'),
+          },
+        ],
+      },
+    );
+    try {
+      await session.start();
+      revokeAfterAdmission = true;
+      for (const event of fixtureEvents({ tools: [] }).slice(1))
+        session.receive(event);
+      await vi.waitFor(() =>
+        expect(
+          frames.find((event) => event.item?.call_id === item.call_id)?.item
+            .output,
+        ).toBe('accepted'),
+      );
+      expect(enabled).toBe(false);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('keeps accepted tool and handoff callbacks during settings-only updates', async () => {
+    const source = agent();
+    const originalHandoff = vi.fn();
+    const changedHandoff = vi.fn();
+    const changedExecute = vi.fn(
+      async (_args: Record<string, unknown>) => 'changed',
+    );
+    const changedApproval = vi.fn(async () => false);
+    const target = { model: 'test-realtime', instructions: 'Transferred.' };
+    const handoff = {
+      name: 'transfer',
+      description: 'Transfer.',
+      agent: target,
+      onHandoff: originalHandoff,
+    };
+    const options = { ...source.options, handoffs: [handoff] };
+    const frames: any[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      options,
+    );
+    try {
+      await session.start();
+      options.tools[0].execute = changedExecute;
+      options.onApproval = changedApproval;
+      handoff.onHandoff = changedHandoff;
+      handoff.agent = {
+        model: 'test-realtime',
+        instructions: 'Changed target.',
+      };
+      await session.sendEvent({
+        type: 'session.update',
+        session: { instructions: 'Revised.' },
+      });
+      for (const event of fixtureEvents({ tools: [] }).slice(1))
+        session.receive(event);
+      await vi.waitFor(() =>
+        expect(
+          frames.find((event) => event.item?.call_id === 'call-1')?.item.output,
+        ).toBe('7'),
+      );
+      expect(source.execute).toHaveBeenCalledOnce();
+      expect(source.onApproval).toHaveBeenCalledOnce();
+      expect(changedExecute).not.toHaveBeenCalled();
+      expect(changedApproval).not.toHaveBeenCalled();
+      const transfer = {
+        ...item,
+        id: 'item-2',
+        call_id: 'call-2',
+        name: 'transfer',
+        arguments: '{}',
+      };
+      session.receive({
+        type: 'response.created',
+        response: { id: 'response-2' },
+      });
+      session.receive({
+        type: 'response.done',
+        response: { id: 'response-2', status: 'completed', output: [transfer] },
+      });
+      await vi.waitFor(() =>
+        expect(
+          frames.find((event) => event.item?.call_id === 'call-2'),
+        ).toBeDefined(),
+      );
+      expect(originalHandoff).toHaveBeenCalledOnce();
+      expect(changedHandoff).not.toHaveBeenCalled();
+      expect(
+        frames.filter((event) => event.type === 'session.update').at(-1).session
+          .instructions,
+      ).toBe('Transferred.');
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('reuses accepted raw tool_choice in a subsequent agent update', async () => {
+    const frames: any[] = [];
+    const source = agent();
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      source.options,
+    );
+    try {
+      await session.start();
+      await session.sendEvent({
+        type: 'session.update',
+        session: { tool_choice: 'none' },
+      });
+      // Reading the accepted options exercises the same captured profile reused by raw updates.
+      await session.updateAgent({
+        ...(session as any).options,
+        instructions: 'Updated.',
+      });
+      expect(
+        frames.filter((event) => event.type === 'session.update').at(-1)
+          .session,
+      ).toMatchObject({
+        tool_choice: 'none',
+        instructions: 'Updated.',
+        tools: frames[0].session.tools,
+      });
+      await session.sendEvent({
+        type: 'session.update',
+        session: { tool_choice: 'auto' },
+      });
+      for (const event of fixtureEvents({ tools: [] }).slice(1))
+        session.receive(event);
+      await vi.waitFor(() => expect(source.execute).toHaveBeenCalledOnce());
+    } finally {
+      await session.close();
+    }
+  });
 
   it('discards a late portable tool allowance after close', async () => {
     const definition = agent();

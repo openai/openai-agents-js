@@ -1,6 +1,15 @@
+import {
+  isBackgroundResult,
+  type BackgroundResult,
+} from '../runtime/background-result';
+import type { JsonValue } from '../runtime/binding';
+import type { ToolDecision } from '../runtime/tools';
 import { abortable } from './abortable';
 import { boundedVoiceJSON } from './bounded-voice-json';
-import { VoiceConversationHistory } from './conversation-history';
+import {
+  VoiceConversationHistory,
+  type VoiceHistoryItem,
+} from './conversation-history';
 import {
   PortableVoiceHistory,
   type PortableHistoryUpdate,
@@ -10,6 +19,7 @@ import { decodeBase64 } from './base64';
 import { VoiceEventObservers, detachVoiceObservation } from './event-observers';
 import {
   NativeRealtimeGuardrails,
+  captureRealtimeGuardrails,
   type NativeRealtimeOutputGuardrail,
 } from '../runtime/realtime-guardrails';
 import {
@@ -49,11 +59,36 @@ export interface PortableVoiceTool<
       ) => boolean | Promise<boolean>);
   /** Optional caller-schema validation; plain JSON schemas retain structural parsing. */
   parseArguments?: (value: unknown) => Arguments | Promise<Arguments>;
+  /** Reject a call before execution, or throw to fail the connection. */
+  before?: (
+    arguments_: Arguments,
+    context: PortableVoiceToolContext,
+  ) =>
+    | Extract<ToolDecision, { action: 'allow' | 'deny' }>
+    | Promise<Extract<ToolDecision, { action: 'allow' | 'deny' }>>;
+  /** Replace output; returning the original preserves background intent. */
+  after?: (
+    output: JsonValue,
+    context: PortableVoiceToolContext,
+  ) =>
+    | JsonValue
+    | BackgroundResult<JsonValue>
+    | Promise<JsonValue | BackgroundResult<JsonValue>>;
+  /** Format argument or execution failures for the model; null disables recovery. */
+  errorFunction?:
+    | ((
+        error: unknown,
+        context: PortableVoiceToolContext,
+      ) => JsonValue | Promise<JsonValue>)
+    | null;
   execute(
     arguments_: Arguments,
     signal: AbortSignal,
     context: PortableVoiceToolContext,
-  ): string | Promise<string>;
+  ):
+    | JsonValue
+    | BackgroundResult<JsonValue>
+    | Promise<JsonValue | BackgroundResult<JsonValue>>;
 }
 
 export interface PortableVoiceToolContext extends PortableVoiceContext {
@@ -76,6 +111,8 @@ export interface PortableVoiceOptions {
   guardrailTextThreshold?: number | null;
   /** Captured at construction; agent updates do not change audio retention. */
   storeAudio?: boolean;
+  /** Captured at construction; defaults to automatic hosted MCP continuation. */
+  automaticallyTriggerResponseForMcpToolCalls?: boolean;
   handoffs?: readonly PortableVoiceHandoff[];
   tools?: PortableVoiceTool<any>[];
   /** Provider-hosted MCP declarations; execution remains with the provider. */
@@ -154,7 +191,7 @@ export type PortableVoiceEffect =
   | { type: 'history_rejected'; item_id: string; message: string }
   | { type: 'event'; event: unknown }
   | { type: 'abort'; call_id: string }
-  | { type: 'ready' | 'configured' | 'closed' };
+  | { type: 'ready' | 'configured' | 'configuration_rejected' | 'closed' };
 
 /** A single owned Rust control generation, supplied by Wasm or a native binding. */
 export interface PortableVoiceControl {
@@ -208,6 +245,7 @@ export class PortableVoiceSession {
   readonly #history: VoiceConversationHistory;
   readonly #historyUpdates: PortableVoiceHistory;
   readonly #storeAudio: boolean;
+  readonly #hostedMcpAutoResponse: boolean;
   readonly #clearOutputAudioOnInterrupt: boolean;
   #updating:
     { resolve: () => void; reject: (error: unknown) => void } | undefined;
@@ -235,6 +273,8 @@ export class PortableVoiceSession {
     this.#clearOutputAudioOnInterrupt =
       transport.clearOutputAudioOnInterrupt ?? false;
     this.#storeAudio = options.storeAudio ?? false;
+    this.#hostedMcpAutoResponse =
+      options.automaticallyTriggerResponseForMcpToolCalls ?? true;
     this.#history = new VoiceConversationHistory({
       storeAudio: options.storeAudio,
     });
@@ -395,31 +435,110 @@ export class PortableVoiceSession {
         ),
       );
     const profile = this.#makeProfile(options);
-    const update = this.#updates.then(async () => {
-      await this.#ready;
-      if (this.#closed) throw new Error('Portable voice session is closed.');
+    return this.#queueUpdate(async () => {
       const config = await this.#configuration(profile);
-      const accepted = new Promise<void>((resolve, reject) => {
-        this.#updating = { resolve, reject };
-      });
-      this.#readyTimer = setTimeout(
-        () =>
-          this.fail(
-            new Error('Portable voice configuration acceptance timed out.'),
-          ),
-        10_000,
-      );
-      this.#pendingProfile = profile;
-      try {
-        this.#dispatch({ type: 'update', config });
-      } catch (error) {
-        this.fail(error);
-      }
-      await accepted;
+      await this.#acceptUpdate(profile, { type: 'update', config });
       this.#emit('agent_updated', options);
     });
-    this.#updates = update.catch(() => {});
-    return update;
+  }
+
+  /**
+   * Send a provider event through the native session's controls.
+   * Retrieval returns the provider item. Other events return null.
+   * Use updateAgent to change the model or tool catalog.
+   */
+  async sendEvent(
+    event: Readonly<Record<string, unknown>>,
+  ): Promise<VoiceHistoryItem | null> {
+    if (!this.#started)
+      throw new Error(
+        'Start a live portable voice session before sending events.',
+      );
+    const snapshot = this.#captureInput(event, 0).command as Record<
+      string,
+      unknown
+    >;
+    const command = { type: 'send_event', event: snapshot };
+    if (snapshot?.type === 'session.update') {
+      await this.#queueUpdate(async () => {
+        this.#preflight({ ...command, validate: true });
+        const {
+          type: _type,
+          model: _model,
+          tools: _tools,
+          instructions,
+          ...settings
+        } = snapshot.session as Record<string, unknown>;
+        const options = this.#profile.options;
+        const profile = this.#makeProfile(
+          {
+            ...options,
+            instructions:
+              typeof instructions === 'string'
+                ? instructions
+                : options.instructions,
+            settings: mergeSessionSettings(options.settings ?? {}, settings),
+          },
+          this.#profile,
+        );
+        await this.#acceptUpdate(profile, {
+          ...command,
+          profile_id: profile.id,
+        });
+      });
+      return null;
+    }
+    this.#preflight({ ...command, validate: true });
+    const eventId =
+      typeof snapshot.event_id === 'string' ? snapshot.event_id : undefined;
+    switch (snapshot.type) {
+      case 'conversation.item.retrieve':
+        return this.#historyUpdates.retrieve(
+          snapshot.item_id as string,
+          eventId,
+        );
+      case 'conversation.item.delete':
+        await this.#historyUpdates.delete(snapshot.item_id as string, eventId);
+        break;
+      case 'conversation.item.create':
+      case 'conversation.item.truncate':
+      case 'response.create':
+        await this.#dispatchAfterHistory(command);
+        break;
+      default:
+        this.#dispatch(command);
+    }
+    return null;
+  }
+
+  #queueUpdate(update: () => Promise<void>): Promise<void> {
+    const queued = this.#updates.then(async () => {
+      await this.#ready;
+      if (this.#closed) throw new Error('Portable voice session is closed.');
+      await update();
+    });
+    this.#updates = queued.catch(() => {});
+    return queued;
+  }
+
+  #acceptUpdate(profile: Profile, command: unknown): Promise<void> {
+    const accepted = new Promise<void>((resolve, reject) => {
+      this.#updating = { resolve, reject };
+    });
+    this.#readyTimer = setTimeout(
+      () =>
+        this.fail(
+          new Error('Portable voice configuration acceptance timed out.'),
+        ),
+      10_000,
+    );
+    this.#pendingProfile = profile;
+    try {
+      this.#dispatch(command);
+    } catch (error) {
+      this.fail(error);
+    }
+    return accepted;
   }
 
   sendAudio(audio: string): void {
@@ -585,12 +704,12 @@ export class PortableVoiceSession {
     });
   }
 
-  #makeProfile(options: PortableVoiceOptions): Profile {
+  #makeProfile(options: PortableVoiceOptions, captured?: Profile): Profile {
     options = { ...options };
     if (this.#profiles.size >= 256)
       throw new Error('Portable voice profile capacity exceeded.');
-    const tools = new Map<string, PortableVoiceTool<any>>();
-    for (const tool of options.tools ?? []) {
+    const tools = new Map<string, PortableVoiceTool<any>>(captured?.tools);
+    for (const tool of captured ? [] : (options.tools ?? [])) {
       if (tools.has(tool.name))
         throw new Error('Duplicate portable voice tool.');
       tools.set(tool.name, {
@@ -598,9 +717,11 @@ export class PortableVoiceSession {
         parameters: JSON.parse(JSON.stringify(tool.parameters)),
       });
     }
-    for (const handoff of (options.handoffs ?? []).map((value) => ({
-      ...value,
-    }))) {
+    for (const handoff of (captured ? [] : (options.handoffs ?? [])).map(
+      (value) => ({
+        ...value,
+      }),
+    )) {
       if (tools.has(handoff.name))
         throw new Error('Duplicate portable voice tool.');
       tools.set(handoff.name, {
@@ -629,8 +750,11 @@ export class PortableVoiceSession {
         },
       });
     }
+    const outputGuardrails = captureRealtimeGuardrails(
+      captured?.options.outputGuardrails ?? options.outputGuardrails ?? [],
+    );
     const guardrails = new NativeRealtimeGuardrails<PortableVoiceOptions>({
-      guardrails: options.outputGuardrails ?? [],
+      guardrails: outputGuardrails,
       threshold: options.guardrailTextThreshold,
       source: () => ({ agent: options, context: options.context }),
       invoke: async (callback) => callback(),
@@ -648,10 +772,11 @@ export class PortableVoiceSession {
     });
     const profile = {
       id: this.#nextProfile++,
-      options: { ...options },
+      options: { ...options, outputGuardrails },
       tools,
       handoffs: new Set(
-        (options.handoffs ?? []).map((handoff) => handoff.name),
+        captured?.handoffs ??
+          (options.handoffs ?? []).map((handoff) => handoff.name),
       ),
       guardrails,
     };
@@ -687,6 +812,9 @@ export class PortableVoiceSession {
       this.#abort.signal.throwIfAborted();
       return {
         profile_id: profile.id,
+        ...(!this.#hostedMcpAutoResponse
+          ? { hosted_mcp_auto_response: false }
+          : {}),
         model: profile.options.model,
         instructions,
         settings: profile.options.settings ?? {},
@@ -926,12 +1054,18 @@ export class PortableVoiceSession {
     }
   }
 
-  #dispatchAfterHistory(command: Record<string, unknown>): void {
+  #dispatchAfterHistory(
+    command: Record<string, unknown>,
+  ): void | Promise<void> {
     if (this.#closed) throw new Error('Portable voice session is closed.');
     const snapshot = this.#preflightHistoryCommand(command);
-    this.#historyUpdates.dispatchAfterEdits(snapshot, (captured) => {
+    return this.#historyUpdates.dispatchAfterEdits(snapshot, (captured) => {
+      const raw =
+        captured.type === 'send_event'
+          ? (captured.event as Record<string, unknown>)
+          : undefined;
       const ready =
-        captured.type === 'create_response'
+        captured.type === 'create_response' || raw?.type === 'response.create'
           ? { ...captured, history: this.#history.providerSnapshot() }
           : captured;
       // History edits can suspend admission while the transport budget changes.
@@ -942,6 +1076,16 @@ export class PortableVoiceSession {
   #preflightHistoryCommand(
     command: Record<string, unknown>,
   ): Record<string, unknown> {
+    if (command.type === 'send_event') {
+      const captured = JSON.parse(boundedVoiceJSON(command));
+      this.#captureInput(captured.event, 0);
+      this.#preflight({
+        type: 'send_event',
+        event: captured.event,
+        validate: true,
+      });
+      return captured;
+    }
     if (command.type === 'text' || command.type === 'input') {
       const overhead =
         command.type === 'input'
@@ -1055,6 +1199,21 @@ export class PortableVoiceSession {
           this.#updating?.resolve();
           this.#updating = undefined;
           break;
+        case 'configuration_rejected': {
+          const pending = this.#pendingProfile;
+          if (pending) {
+            this.#profiles.delete(pending);
+            this.#profileById.delete(pending.id);
+            this.#pendingProfile = undefined;
+          }
+          clearTimeout(this.#readyTimer);
+          this.#readyTimer = undefined;
+          this.#updating?.reject(
+            new Error('Provider rejected the Realtime settings update.'),
+          );
+          this.#updating = undefined;
+          break;
+        }
         case 'abort_mcp':
           break;
         case 'approve_mcp': {
@@ -1143,10 +1302,24 @@ export class PortableVoiceSession {
               if (this.#closed) return;
               const call = this.#call(effect.call_id);
               if (call.abort.signal.aborted) return;
-              const arguments_ = await this.#arguments(effect);
-              if (this.#closed || call.abort.signal.aborted) return;
               const context = this.#toolContext(effect.call_id);
               const tool = call.profile.tools.get(effect.name)!;
+              let arguments_: Record<string, unknown>;
+              try {
+                arguments_ = await this.#arguments(effect);
+              } catch (error) {
+                if (this.#closed || call.abort.signal.aborted) return;
+                const output = await this.#toolError(tool, error, context);
+                if (this.#closed || call.abort.signal.aborted) return;
+                this.#dispatch({
+                  type: 'approve',
+                  call_id: effect.call_id,
+                  approved: false,
+                  output: toolOutputText(output),
+                });
+                return;
+              }
+              if (this.#closed || call.abort.signal.aborted) return;
               const needsApproval =
                 typeof tool.needsApproval === 'function'
                   ? await tool.needsApproval(
@@ -1195,7 +1368,24 @@ export class PortableVoiceSession {
                 });
                 return;
               }
-              const arguments_ = await this.#arguments(effect);
+              let arguments_: Record<string, unknown>;
+              try {
+                arguments_ = await this.#arguments(effect);
+              } catch (error) {
+                if (this.#closed || call.abort.signal.aborted) return;
+                const output = await this.#toolError(
+                  tool,
+                  error,
+                  this.#toolContext(effect.call_id),
+                );
+                if (this.#closed || call.abort.signal.aborted) return;
+                this.#dispatch({
+                  type: 'tool_result',
+                  call_id: effect.call_id,
+                  output: toolOutputText(output),
+                });
+                return;
+              }
               if (this.#closed || call.abort.signal.aborted) return;
               const enabled =
                 typeof tool.isEnabled === 'function'
@@ -1210,18 +1400,60 @@ export class PortableVoiceSession {
                 });
                 return;
               }
-              const output = await tool.execute(
-                arguments_,
-                call.abort.signal,
-                this.#toolContext(effect.call_id),
-              );
-              if (typeof output !== 'string')
-                throw new TypeError('Portable voice tools must return text.');
+              const context = this.#toolContext(effect.call_id);
+              const decision = tool.before
+                ? await tool.before(arguments_, context)
+                : undefined;
+              if (this.#closed || call.abort.signal.aborted) return;
+              let output: JsonValue | BackgroundResult<JsonValue>;
+              if (decision?.action === 'deny') {
+                output = decision.reason;
+              } else {
+                if (tool.before && typeof tool.isEnabled === 'function') {
+                  const enabled = await tool.isEnabled(context);
+                  if (this.#closed || call.abort.signal.aborted) return;
+                  if (!enabled) {
+                    this.#dispatch({
+                      type: 'tool_result',
+                      call_id: effect.call_id,
+                      output: `Tool ${effect.name} not found`,
+                    });
+                    return;
+                  }
+                }
+                try {
+                  output = await tool.execute(
+                    arguments_,
+                    call.abort.signal,
+                    context,
+                  );
+                } catch (error) {
+                  if (this.#closed || call.abort.signal.aborted) return;
+                  output = await this.#toolError(tool, error, context);
+                }
+              }
+              if (this.#closed || call.abort.signal.aborted) return;
+              let background = isBackgroundResult(output);
+              let content = isBackgroundResult<JsonValue>(output)
+                ? output.content
+                : output;
+              if (decision?.action !== 'deny' && tool.after) {
+                const accepted = await tool.after(content, context);
+                if (this.#closed || call.abort.signal.aborted) return;
+                background =
+                  isBackgroundResult(accepted) ||
+                  (background && accepted === content);
+                content = isBackgroundResult<JsonValue>(accepted)
+                  ? accepted.content
+                  : accepted;
+              }
+              const text = toolOutputText(content);
               if (!this.#closed && !call.abort.signal.aborted)
                 this.#dispatch({
                   type: 'tool_result',
                   call_id: effect.call_id,
-                  output,
+                  output: text,
+                  ...(background ? { background: true } : {}),
                 });
             }),
             this.#call(effect.call_id).abort.signal,
@@ -1231,6 +1463,17 @@ export class PortableVoiceSession {
           break;
       }
     }
+  }
+
+  async #toolError(
+    tool: PortableVoiceTool<any>,
+    error: unknown,
+    context: PortableVoiceToolContext,
+  ): Promise<JsonValue> {
+    if (tool.errorFunction === null) throw error;
+    return tool.errorFunction
+      ? await tool.errorFunction(error, context)
+      : 'An error occurred while running the tool. Please try again.';
   }
 
   #track(task: Promise<void>, signal?: AbortSignal): void {
@@ -1258,4 +1501,31 @@ function outputAudioBytesPerMillisecond(value: any, fallback: number): number {
     default:
       return fallback;
   }
+}
+
+function mergeSessionSettings(
+  current: Record<string, unknown>,
+  changes: Record<string, unknown>,
+): Record<string, unknown> {
+  const record = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  return Object.fromEntries([
+    ...Object.entries(current),
+    ...Object.entries(changes).map(([key, value]) => {
+      const previous = Object.hasOwn(current, key) ? current[key] : undefined;
+      return [
+        key,
+        record(previous) && record(value)
+          ? mergeSessionSettings(previous, value)
+          : value,
+      ];
+    }),
+  ]);
+}
+
+function toolOutputText(content: JsonValue): string {
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  if (typeof text !== 'string')
+    throw new TypeError('Portable voice tools must return JSON or text.');
+  return text;
 }

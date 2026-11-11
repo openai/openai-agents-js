@@ -861,6 +861,61 @@ describe.runIf(enabled)('direct client Rust authority', () => {
     await session.close();
   });
 
+  it('continues once after all hosted MCP calls complete without response IDs', async () => {
+    const { session, frames } = fixture({
+      model: 'test',
+      instructions: 'Help',
+      hostedTools: [
+        {
+          type: 'mcp',
+          server_label: 'catalog',
+          server_url: 'https://mcp.example.test',
+          require_approval: 'never',
+        },
+      ],
+    });
+    const creates = () =>
+      frames.filter((frame) => frame.type === 'response.create');
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const calls = ['hosted-1', 'hosted-2'].map((id) => ({
+      type: 'mcp_call',
+      id,
+      server_label: 'catalog',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'in_progress',
+    }));
+    try {
+      await session.start();
+      response(session, 'hosted-response');
+      session.receive({
+        type: 'response.done',
+        response: { id: 'hosted-response', status: 'completed', output: calls },
+      });
+      await settle();
+      expect(creates()).toEqual([]);
+      session.receive({
+        type: 'conversation.item.done',
+        item: { ...calls[0], status: 'completed', output: 'first' },
+      });
+      await settle();
+      expect(creates()).toEqual([]);
+      const last = {
+        ...calls[1],
+        type: 'mcp_tool_call',
+        status: 'completed',
+        output: 'second',
+      };
+      session.receive({ type: 'conversation.item.done', item: last });
+      await vi.waitFor(() => expect(creates()).toHaveLength(1));
+      session.receive({ type: 'conversation.item.done', item: last });
+      await settle();
+      expect(creates()).toHaveLength(1);
+    } finally {
+      await session.close();
+    }
+  });
+
   it('approves hosted MCP through its response-owned source without local execution', async () => {
     const oldApproval = vi.fn(async () => true);
     const newApproval = vi.fn(async () => false);
@@ -1028,11 +1083,11 @@ describe.runIf(enabled)('direct client Rust authority', () => {
     await session.close();
   });
 
-  it('blocks invalid caller-schema arguments before approval or execution callbacks', async () => {
+  it('returns a scoped schema error without approval, execution, or closing', async () => {
     const execute = vi.fn(() => 'unsafe');
     const onApproval = vi.fn(async () => true);
     const onError = vi.fn();
-    const { session, close } = fixture({
+    const { session, frames, close } = fixture({
       model: 'test',
       instructions: 'Help',
       onApproval,
@@ -1057,13 +1112,42 @@ describe.runIf(enabled)('direct client Rust authority', () => {
       ],
     });
     await session.start();
-    response(session, 'invalid-response');
-    completeTool(session, 'invalid-response');
-    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
-    expect(execute).not.toHaveBeenCalled();
-    expect(onApproval).not.toHaveBeenCalled();
-    expect(onError).toHaveBeenCalledOnce();
-    await session.close();
+    try {
+      response(session, 'invalid-response');
+      completeTool(session, 'invalid-response');
+      await vi.waitFor(() =>
+        expect(
+          frames.filter((frame) => frame.item?.type === 'function_call_output'),
+        ).toEqual([
+          {
+            type: 'conversation.item.create',
+            item: {
+              type: 'function_call_output',
+              call_id: 'call',
+              output:
+                'An error occurred while running the tool. Please try again.',
+            },
+          },
+        ]),
+      );
+      session.sendText('Still connected');
+      await vi.waitFor(() =>
+        expect(frames).toContainEqual({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Still connected' }],
+          },
+        }),
+      );
+      expect(execute).not.toHaveBeenCalled();
+      expect(onApproval).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
   });
   it('revokes suspended parsing before an approval predicate or tool callback starts', async () => {
     const parsing = Promise.withResolvers<Record<string, unknown>>();
