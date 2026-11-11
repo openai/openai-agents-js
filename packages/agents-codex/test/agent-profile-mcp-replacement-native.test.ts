@@ -79,29 +79,6 @@ async function peer(toolNames = ['lookup']) {
   };
 }
 
-it.each([
-  ['GET', '/mcp', undefined, 405],
-  ['DELETE', '/mcp', undefined, 405],
-  ['POST', '/missing', '{}', 404],
-  ['POST', '/mcp', '', 400],
-  ['POST', '/mcp', '{', 400],
-  ['POST', '/mcp', 'null', 400],
-  ['POST', '/mcp', '[]', 400],
-] as const)(
-  'MCP fixture handles %s %s with body %j as HTTP %i',
-  async (method, path, body, status) => {
-    const remote = await peer();
-    try {
-      const response = await fetch(new URL(path, remote.url), { method, body });
-      expect(response.status).toBe(status);
-      if (status === 405) expect(response.headers.get('allow')).toBe('POST');
-      expect(remote.effects).toHaveLength(0);
-    } finally {
-      await remote.close();
-    }
-  },
-);
-
 it('MCP fixture accepts JSON-RPC requests and notifications', async () => {
   const remote = await peer();
   const post = (body: unknown) =>

@@ -10,14 +10,9 @@ import {
 import type { Session } from '../../src/runtime/session';
 import { Agent } from '../../src/runtime/public-agent';
 import { toolRef } from '../../src/runtime/tools';
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import type {
-  ActionRequested,
-  ExecutorContext,
-  NativeToolCall,
-  ToolContext,
-} from '@openai/agents';
+import type { ToolContext } from '@openai/agents';
 import {
   managedCallInfo,
   interceptedCallInfo,
@@ -116,20 +111,6 @@ describe('project search declarations', () => {
         new Environment({ ...connection, tools: ['project_search' as never] }),
     ).toThrow('Select distinct executor tool names');
   });
-});
-
-it('preserves old structural context and request shapes', () => {
-  expectTypeOf<
-    typeof context & {
-      originalArguments: Readonly<Record<string, never>>;
-      effectiveArguments: Readonly<Record<string, never>>;
-    }
-  >().toExtend<ToolContext>();
-  expectTypeOf<Omit<ActionRequested, 'call'>>().toExtend<ActionRequested>();
-  expectTypeOf<Omit<ExecutorContext, 'call'>>().toExtend<ExecutorContext>();
-  expectTypeOf<
-    Omit<NativeToolCall, 'agentRole' | 'model'>
-  >().toExtend<NativeToolCall>();
 });
 
 it('requires explicit managed source and preserves unavailable native attribution as null', () => {

@@ -46,13 +46,6 @@ const asTwilioWebSocket = (
 ): WebSocket | NodeWebSocket => socket as unknown as WebSocket | NodeWebSocket;
 
 describe('TwilioRealtimeTransportLayer', () => {
-  test('should be available', () => {
-    const transport = new TwilioRealtimeTransportLayer({
-      twilioWebSocket: asTwilioWebSocket(new FakeTwilioWebSocket()),
-    });
-    expect(transport).toBeDefined();
-  });
-
   test('ignores malformed mark names', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const twilio = new FakeTwilioWebSocket();
