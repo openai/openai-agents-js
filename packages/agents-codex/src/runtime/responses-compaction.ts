@@ -200,6 +200,7 @@ function responsesClientScope(client: OpenAI): ClientScope | undefined {
     if (
       Object.getPrototypeOf(client) !== OpenAI.prototype ||
       Object.getPrototypeOf(client.responses) !== OpenAI.Responses.prototype ||
+      Reflect.get(client.responses, '_client') !== client ||
       client.responses.compact !== OpenAI.Responses.prototype.compact
     )
       return;

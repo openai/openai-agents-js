@@ -375,9 +375,9 @@ nativeIt.each([
   },
 );
 
-nativeIt(
-  'keeps explicit input for a different borrowed compaction endpoint',
-  async () => {
+nativeIt.each([false, true])(
+  'keeps explicit input for a different borrowed compaction endpoint (rebound=%s)',
+  async (rebound) => {
     const native = new ModelServer([[message('ACKNOWLEDGED_NATIVE_ENDPOINT')]]);
     const compact = vi.fn(async (body: Record<string, unknown>) => ({
       status: 'previous_response_id' in body ? 400 : 200,
@@ -409,13 +409,23 @@ nativeIt(
       apiKey: 'synthetic-lineage',
       supportsWebsockets: false,
     });
-    const client = new OpenAI({
+    const foreign = new OpenAI({
       baseURL: (
         borrowedConfig['model_providers.fixture'] as { base_url: string }
       ).base_url,
       apiKey: 'synthetic-lineage',
       maxRetries: 0,
     });
+    const client = rebound
+      ? new OpenAI({
+          baseURL: (
+            nativeConfig['model_providers.fixture'] as { base_url: string }
+          ).base_url,
+          apiKey: 'synthetic-lineage',
+          maxRetries: 0,
+        })
+      : foreign;
+    if (rebound) client.responses = foreign.responses;
     const agent = new Agent({
       provider,
       model: 'gpt-5.5',
