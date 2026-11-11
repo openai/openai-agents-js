@@ -16,6 +16,14 @@ type HostTraceScope =
 
 const hostTraceScope = new AsyncLocalStorage<HostTraceScope>();
 let configuredStorage: TraceContextStorage | undefined;
+
+function captureTraceStorage() {
+  const scope = hostTraceScope.getStore();
+  const storage = scope ? scope.storage : configuredStorage;
+  return <T>(callback: () => T): T =>
+    hostTraceScope.run({ storage, span: undefined }, callback);
+}
+
 const ambient: TraceContextStorage = {
   getStore() {
     const scope = hostTraceScope.getStore();
@@ -219,6 +227,17 @@ export function getCurrentTrace(): TraceSpan | undefined {
   return span?.kind === 'workflow' ? span : span?.workflow;
 }
 
+/** @internal Deferred validation belongs to the scope that issued the request. */
+export function captureTraceValidation():
+  Pick<TraceSpan, 'validate'> | undefined {
+  const span = ambient.getStore();
+  if (!span) return undefined;
+  const runWithStorage = captureTraceStorage();
+  return {
+    validate: (callback) => runWithStorage(() => span.validate(callback)),
+  };
+}
+
 /** @internal Capture parent ownership before any asynchronous boundary. */
 export function captureTracing(
   options?: TraceOptions,
@@ -238,10 +257,9 @@ export class TraceCapture {
   private span?: TraceSpan;
   private contextToken?: string;
   private finished = false;
-  private readonly storage: TraceContextStorage | undefined;
+  /** @internal Restore the admitted backend without replacing native callback ancestry. */
+  readonly runWithStorage = captureTraceStorage();
   constructor(readonly ready: Promise<TraceSpan>) {
-    const scope = hostTraceScope.getStore();
-    this.storage = scope ? scope.storage : configuredStorage;
     void ready.then(
       (span) => {
         this.span = span;
@@ -262,13 +280,6 @@ export class TraceCapture {
   async context(): Promise<string> {
     const span = await this.ready;
     return (this.contextToken ??= span.retain());
-  }
-  /** @internal Restore the admitted backend without replacing native callback ancestry. */
-  runWithStorage<T>(callback: () => T): T {
-    return hostTraceScope.run(
-      { storage: this.storage, span: undefined },
-      callback,
-    );
   }
   async run<T>(
     name: string,
