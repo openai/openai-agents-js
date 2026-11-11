@@ -73,11 +73,13 @@ export interface PortableVoiceTool<
     | JsonValue
     | BackgroundResult<JsonValue>
     | Promise<JsonValue | BackgroundResult<JsonValue>>;
-  /** Format execution failures for the model; a thrown formatter error remains fatal. */
-  errorFunction?: (
-    error: unknown,
-    context: PortableVoiceToolContext,
-  ) => string | Promise<string>;
+  /** Format argument or execution failures for the model; null disables recovery. */
+  errorFunction?:
+    | ((
+        error: unknown,
+        context: PortableVoiceToolContext,
+      ) => JsonValue | Promise<JsonValue>)
+    | null;
   execute(
     arguments_: Arguments,
     signal: AbortSignal,
@@ -1290,10 +1292,24 @@ export class PortableVoiceSession {
               if (this.#closed) return;
               const call = this.#call(effect.call_id);
               if (call.abort.signal.aborted) return;
-              const arguments_ = await this.#arguments(effect);
-              if (this.#closed || call.abort.signal.aborted) return;
               const context = this.#toolContext(effect.call_id);
               const tool = call.profile.tools.get(effect.name)!;
+              let arguments_: Record<string, unknown>;
+              try {
+                arguments_ = await this.#arguments(effect);
+              } catch (error) {
+                if (this.#closed || call.abort.signal.aborted) return;
+                const output = await this.#toolError(tool, error, context);
+                if (this.#closed || call.abort.signal.aborted) return;
+                this.#dispatch({
+                  type: 'approve',
+                  call_id: effect.call_id,
+                  approved: false,
+                  output: toolOutputText(output),
+                });
+                return;
+              }
+              if (this.#closed || call.abort.signal.aborted) return;
               const needsApproval =
                 typeof tool.needsApproval === 'function'
                   ? await tool.needsApproval(
@@ -1342,7 +1358,24 @@ export class PortableVoiceSession {
                 });
                 return;
               }
-              const arguments_ = await this.#arguments(effect);
+              let arguments_: Record<string, unknown>;
+              try {
+                arguments_ = await this.#arguments(effect);
+              } catch (error) {
+                if (this.#closed || call.abort.signal.aborted) return;
+                const output = await this.#toolError(
+                  tool,
+                  error,
+                  this.#toolContext(effect.call_id),
+                );
+                if (this.#closed || call.abort.signal.aborted) return;
+                this.#dispatch({
+                  type: 'tool_result',
+                  call_id: effect.call_id,
+                  output: toolOutputText(output),
+                });
+                return;
+              }
               if (this.#closed || call.abort.signal.aborted) return;
               const enabled =
                 typeof tool.isEnabled === 'function'
@@ -1372,9 +1405,7 @@ export class PortableVoiceSession {
                   );
                 } catch (error) {
                   if (this.#closed || call.abort.signal.aborted) return;
-                  output = tool.errorFunction
-                    ? await tool.errorFunction(error, context)
-                    : 'An error occurred while running the tool. Please try again.';
+                  output = await this.#toolError(tool, error, context);
                 }
               }
               if (this.#closed || call.abort.signal.aborted) return;
@@ -1392,12 +1423,7 @@ export class PortableVoiceSession {
                   ? accepted.content
                   : accepted;
               }
-              const text =
-                typeof content === 'string' ? content : JSON.stringify(content);
-              if (typeof text !== 'string')
-                throw new TypeError(
-                  'Portable voice tools must return JSON or text.',
-                );
+              const text = toolOutputText(content);
               if (!this.#closed && !call.abort.signal.aborted)
                 this.#dispatch({
                   type: 'tool_result',
@@ -1413,6 +1439,17 @@ export class PortableVoiceSession {
           break;
       }
     }
+  }
+
+  async #toolError(
+    tool: PortableVoiceTool<any>,
+    error: unknown,
+    context: PortableVoiceToolContext,
+  ): Promise<JsonValue> {
+    if (tool.errorFunction === null) throw error;
+    return tool.errorFunction
+      ? await tool.errorFunction(error, context)
+      : 'An error occurred while running the tool. Please try again.';
   }
 
   #track(task: Promise<void>, signal?: AbortSignal): void {
@@ -1460,4 +1497,11 @@ function mergeSessionSettings(
       ];
     }),
   ]);
+}
+
+function toolOutputText(content: JsonValue): string {
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  if (typeof text !== 'string')
+    throw new TypeError('Portable voice tools must return JSON or text.');
+  return text;
 }
