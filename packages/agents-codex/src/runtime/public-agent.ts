@@ -587,11 +587,6 @@ export class Agent<Context = undefined, Output = string> {
       options.observationRetention !== 'all'
     )
       throw new TypeError('observationRetention must be "bounded" or "all"');
-    if (
-      options.includeModelOutputItems !== undefined &&
-      typeof options.includeModelOutputItems !== 'boolean'
-    )
-      throw new TypeError('includeModelOutputItems must be a boolean');
     options.initialMessages = captureInitialMessages(
       options.initialMessages,
       options.state,
