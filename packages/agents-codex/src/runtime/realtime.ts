@@ -1073,7 +1073,7 @@ class NativeRealtimeOwner {
           api_key: apiKey,
           ...(this.options.url === undefined
             ? {}
-            : { connection_options: { url: this.options.url, headers: null } }),
+            : { connection_options: { url: this.options.url } }),
         });
         this.admission = admission;
         return admission.then((raw) => {

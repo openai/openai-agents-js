@@ -105,7 +105,7 @@ it.each(['websocket', 'sip'] as const)(
     ).toEqual([
       expect.objectContaining({
         api_key: 'synthetic-override-key',
-        connection_options: { url, headers: null },
+        connection_options: { url },
       }),
     ]);
     await voice.close();
