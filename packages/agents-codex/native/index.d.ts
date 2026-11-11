@@ -337,6 +337,7 @@ export class NativeThread {
     observationSubmissionId?: string,
   ): Promise<string>;
   _start_raw_usage(): void;
+  _attach_raw_usage(parent: NativeThread): void;
   _take_raw_usage(turn_id: string): string;
   read_thread_history(subagent_id: string | null): Promise<string>;
   read_checklist(subagent_id?: string | null): Promise<string>;

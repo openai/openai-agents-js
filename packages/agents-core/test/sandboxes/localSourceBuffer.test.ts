@@ -15,8 +15,11 @@ function reader(data: Buffer, short = data.length) {
 test('fills a known-size result across short reads', async () => {
   const bytes = Buffer.alloc(200_000, 0x5a);
   expect(
-    await readLocalSourceBuffer(BigInt(bytes.length), reader(bytes, 17_003)),
-  ).toEqual(bytes);
+    Buffer.compare(
+      await readLocalSourceBuffer(BigInt(bytes.length), reader(bytes, 17_003)),
+      bytes,
+    ),
+  ).toBe(0);
 });
 
 test('returns only filled bytes when an acquired file shrinks', async () => {
