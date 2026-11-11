@@ -213,6 +213,7 @@ type Invocation<Context> = (
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
   beforeExecute?: () => Promise<boolean>,
+  onBodyEntry?: () => void,
 ) => Promise<ToolResponse>;
 
 /** A tool-local decision made before its execution callback runs. */
@@ -540,6 +541,7 @@ export function tool<
       effectiveArgs?: JsonValue,
       approved?: ApprovedArguments,
       beforeExecute?: () => Promise<boolean>,
+      onBodyEntry?: () => void,
     ) {
       admit();
       const originalArguments = Object.freeze(
@@ -673,6 +675,11 @@ export function tool<
           timeoutError,
           timeoutBehavior,
           errorFunction ? (error) => new FunctionBodyError(error) : undefined,
+          (signal) => {
+            signal.throwIfAborted();
+            admit();
+            onBodyEntry?.();
+          },
         );
       } catch (error) {
         if (error instanceof FunctionBodyError) {
@@ -979,6 +986,7 @@ export async function invokeFunctionTool(
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
   beforeExecute?: () => Promise<boolean>,
+  onBodyEntry?: () => void,
 ): Promise<ToolResponse> {
   const admit = () => {
     context.signal.throwIfAborted();
@@ -992,6 +1000,7 @@ export async function invokeFunctionTool(
     effectiveArgs,
     approved,
     beforeExecute,
+    onBodyEntry,
   );
 }
 
@@ -1005,8 +1014,10 @@ export async function invokeWithTimeout<T>(
   timeoutError?: Error,
   timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
   wrapBodyError?: (error: unknown) => unknown,
+  enterBody?: (signal: AbortSignal) => void,
 ): Promise<T> {
   if (timeoutSeconds === undefined) {
+    enterBody?.(parentSignal);
     if (!wrapBodyError) return invoke(parentSignal);
     try {
       return await invoke(parentSignal);
@@ -1027,6 +1038,7 @@ export async function invokeWithTimeout<T>(
   };
   const timer = setTimeout(expire, timeoutSeconds * 1000);
   try {
+    enterBody?.(signal);
     let value: T;
     try {
       const result = invoke(signal);

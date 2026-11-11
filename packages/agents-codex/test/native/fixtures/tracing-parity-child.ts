@@ -888,6 +888,101 @@ async function customOnlyCase() {
   }
 }
 
+async function manualReplyContextStorageCase() {
+  const admission = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
+  const caller = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
+  const select = (storage: typeof admission) =>
+    telemetry.setTraceContextStorage({
+      getStore: () => storage.getStore(),
+      run: (span, callback) => storage.run(span, callback),
+    });
+  let requestSpan: telemetry.TraceSpan | undefined;
+  let requestStorageSpan: telemetry.TraceSpan | undefined;
+  const validations: {
+    span: telemetry.TraceSpan | undefined;
+    admissionSpan: telemetry.TraceSpan | undefined;
+  }[] = [];
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Return a synthetic record.',
+    parameters: z.object({}).superRefine(() => {
+      requestSpan = telemetry.getCurrentSpan();
+      requestStorageSpan = admission.getStore();
+    }),
+    result: z.string().superRefine((value, context) => {
+      validations.push({
+        span: telemetry.getCurrentSpan(),
+        admissionSpan: admission.getStore(),
+      });
+      if (value === 'invalid')
+        context.addIssue({ code: 'custom', message: 'invalid' });
+    }),
+  });
+  await telemetry.configure();
+  try {
+    await withScriptedResponses(
+      [[toolCall('lookup', {}, { callId: 'manual-lookup' })], [text('done')]],
+      async (peer) => {
+        const agent = new Agent({
+          instructions: 'Use lookup then answer.',
+          model: 'gpt-5',
+          provider: peer.provider,
+          tools: [lookup],
+        });
+        select(admission);
+        await using session = await agent.session();
+        const { turn, request } = await telemetry.withTrace(
+          { name: 'storage.request' },
+          async (trace) => {
+            const turn = await session.submit('lookup');
+            const result = await turn.wait({ until: 'manual_tool' });
+            assert('requests' in result && result.requests.length === 1);
+            const request = lookup.match(result.requests[0]);
+            assert(request);
+            assert.equal(requestSpan?.context.traceId, trace.context.traceId);
+            assert.equal(requestStorageSpan, requestSpan);
+            return { turn, request };
+          },
+        );
+        select(caller);
+        await telemetry.withTrace({ name: 'storage.reply' }, async (trace) => {
+          assert.equal(caller.getStore(), trace);
+          await assert.rejects(
+            session.respond(request.reply('invalid')),
+            /Manual tool result failed validation/,
+          );
+          assert.equal(peer.requests.length, 1);
+          assert.equal(caller.getStore(), trace);
+          const reply = request.reply('valid');
+          await session.respond(reply);
+          await assert.rejects(
+            session.respond(reply),
+            /Manual reply must identify one pending call/,
+          );
+          assert.equal(telemetry.getCurrentSpan(), trace);
+          assert.equal(caller.getStore(), trace);
+        });
+        assert.equal((await turn.wait()).finalOutput, 'done');
+        peer.assertExhausted();
+        assert.equal(validations.length, 2);
+        for (const { span, admissionSpan } of validations) {
+          assert(span);
+          assert.equal(span.kind, 'validation');
+          assert.equal(span.context.traceId, requestSpan?.context.traceId);
+          assert.equal(span.context.parentSpanId, requestSpan?.context.spanId);
+          assert(
+            admissionSpan === span,
+            'Saved request adapter did not own validation',
+          );
+        }
+      },
+    );
+  } finally {
+    telemetry.setTraceContextStorage();
+    await telemetry.shutdown();
+  }
+}
+
 async function restoreCase(batches: unknown[]) {
   let directValidationTrace: string | undefined;
   const lookup = manualTool({
@@ -1207,6 +1302,141 @@ async function preparedRequestCase() {
   assert.equal(server.requests.length, 1);
 }
 
+async function sessionContextStorageCase() {
+  const storages = Array.from(
+    { length: 2 },
+    () => new AsyncLocalStorage<telemetry.TraceSpan | undefined>(),
+  );
+  const adapters = storages.map((storage): telemetry.TraceContextStorage => ({
+    getStore: () => storage.getStore(),
+    run: (span, callback) => storage.run(span, callback),
+  }));
+  const release = Promise.withResolvers<void>();
+  const pending: Promise<void>[] = [];
+  try {
+    for (const mode of ['default', 'before-open', 'late'] as const) {
+      const entered = Promise.withResolvers<void>();
+      const index =
+        mode === 'default' ? undefined : mode === 'before-open' ? 0 : 1;
+      const selected = index === undefined ? undefined : adapters[index];
+      const storage = index === undefined ? undefined : storages[index];
+      const rows: {
+        phase: string;
+        span: telemetry.TraceSpan | undefined;
+        trace: telemetry.TraceSpan | undefined;
+        stores: (telemetry.TraceSpan | undefined)[];
+      }[] = [];
+      let root: telemetry.TraceSpan;
+      const record = (phase: string) =>
+        rows.push({
+          phase,
+          span: telemetry.getCurrentSpan(),
+          trace: telemetry.getCurrentTrace(),
+          stores: storages.map((store) => store.getStore()),
+        });
+      const run = withScriptedResponses(
+        [
+          [toolCall('lookup', {}, { callId: `storage-${mode}` })],
+          [text('recovered')],
+        ],
+        async (peer) => {
+          // Exercise both directions: the reader and submission use different backends.
+          telemetry.setTraceContextStorage(
+            mode === 'late' ? undefined : adapters[0],
+          );
+          const lookup = tool({
+            name: 'lookup',
+            parameters: z.object({}),
+            async execute() {
+              record('execute');
+              entered.resolve();
+              await release.promise;
+              record('execute.after-reset');
+              await telemetry.withSpan(
+                { name: `storage.${mode}.nested` },
+                async () => {
+                  await Promise.resolve();
+                  record('nested');
+                },
+              );
+              record('execute.after-nested');
+              throw new Error('synthetic function body failure');
+            },
+            async errorFunction() {
+              await Promise.resolve();
+              record('errorFunction');
+              return 'synthetic mapped failure';
+            },
+          });
+          await using session = await new Agent({
+            instructions: 'Use lookup.',
+            model: 'gpt-5',
+            provider: peer.provider,
+            tools: [lookup],
+          }).session();
+          telemetry.setTraceContextStorage(selected);
+          const result = await telemetry.withTrace(
+            { name: `storage.session.${mode}` },
+            async (workflow) => {
+              root = workflow;
+              assert.equal(storage?.getStore(), storage ? root : undefined);
+              return (await session.submit('begin')).wait();
+            },
+          );
+          assert.equal(result.finalOutput, 'recovered');
+          assert.deepEqual(
+            rows.map((row) => row.phase),
+            [
+              'execute',
+              'execute.after-reset',
+              'nested',
+              'execute.after-nested',
+              'errorFunction',
+            ],
+          );
+          for (const row of rows) {
+            assert(row.span, `${mode}: ${row.phase} has no current span`);
+            assert.equal(row.span.context.traceId, root.context.traceId);
+            assert.equal(row.trace, root);
+            assert.notEqual(row.span, root);
+            for (const [storeIndex, value] of row.stores.entries())
+              assert.equal(
+                value === (storeIndex === index ? row.span : undefined),
+                true,
+                `${mode}: ${row.phase} uses the wrong context storage`,
+              );
+          }
+          const callback = rows[0]!.span!;
+          assert.equal(
+            rows[2]!.span!.context.parentSpanId,
+            callback.context.spanId,
+          );
+          for (const row of [rows[1]!, rows[3]!, rows[4]!])
+            assert.equal(row.span, callback);
+          peer.assertExhausted();
+        },
+      );
+      pending.push(run);
+      await Promise.race([entered.promise, run]);
+    }
+    telemetry.setTraceContextStorage();
+    release.resolve();
+    const settled = await Promise.allSettled(pending);
+    assert.deepEqual(
+      settled.flatMap((result) =>
+        result.status === 'rejected' ? [String(result.reason)] : [],
+      ),
+      [],
+    );
+    assert(storages.every((storage) => storage.getStore() === undefined));
+    assert.equal(telemetry.getCurrentSpan(), undefined);
+  } finally {
+    release.resolve();
+    await Promise.allSettled(pending);
+    telemetry.setTraceContextStorage();
+  }
+}
+
 async function customContextStorageCase() {
   const storage = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
   const customScopes: string[] = [];
@@ -1277,6 +1507,7 @@ async function customContextStorageCase() {
       assert.equal(telemetry.getCurrentTrace(), root);
       assert.equal(storage.getStore(), undefined);
     });
+    await sessionContextStorageCase();
   } finally {
     release.resolve();
     await Promise.allSettled([defaultRun, customRun]);
@@ -1286,6 +1517,11 @@ async function customContextStorageCase() {
 
 async function main() {
   const mode = process.argv[2];
+  if (mode === 'manual-reply-context-storage') {
+    await manualReplyContextStorageCase();
+    console.log('PASS manual-reply-context-storage');
+    return;
+  }
   if (mode === 'custom-context-storage') {
     await customContextStorageCase();
     console.log('PASS custom-context-storage');

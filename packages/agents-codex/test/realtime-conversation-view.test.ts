@@ -269,6 +269,7 @@ async function ownerFixture(options: NativeRealtimeOptions = {}) {
     _checkVoiceAdapterOperation() {},
     _prepareRealtimeMcp: async () => {},
     _runVoiceCallback: (callback: () => unknown) => callback(),
+    _realtimeEventSource: () => undefined,
     _realtimeGuardrailSource: () => ({ agent: {}, context: {} }),
   } as unknown as Session;
   const native = vi.fn(
