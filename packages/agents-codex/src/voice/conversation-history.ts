@@ -1,4 +1,4 @@
-import { encodeBase64 } from './base64';
+import { decodeBase64, encodeBase64 } from './base64';
 
 export type VoiceHistoryItem = Readonly<Record<string, unknown>>;
 
@@ -174,6 +174,7 @@ export class VoiceConversationHistory {
     index: number,
     data: Uint8Array,
     bytesPerMillisecond = 48,
+    replace = false,
   ): void {
     if (
       !this.storeAudio ||
@@ -188,9 +189,11 @@ export class VoiceConversationHistory {
     )
       return;
     const key = JSON.stringify([itemId, index]);
+    const previous = replace ? this.audio.get(key) : undefined;
     if (
-      this.audioBytes + data.byteLength > this.maxAudioBytes ||
-      this.audioChunks >= 4096
+      this.audioBytes - (previous?.bytes ?? 0) + data.byteLength >
+        this.maxAudioBytes ||
+      this.audioChunks - (previous?.chunks.length ?? 0) >= 4096
     ) {
       this.audioSealed = true;
       this.truncatedAudioKey = key;
@@ -204,6 +207,12 @@ export class VoiceConversationHistory {
       bytesPerMillisecond,
     };
     if (retained.bytesPerMillisecond !== bytesPerMillisecond) return;
+    if (previous) {
+      this.audioBytes -= previous.bytes;
+      this.audioChunks -= previous.chunks.length;
+      retained.chunks = [];
+      retained.bytes = 0;
+    }
     retained.chunks.push(Uint8Array.from(data));
     this.audioChunks++;
     retained.bytes += data.byteLength;
@@ -269,9 +278,14 @@ export class VoiceConversationHistory {
     )
       return false;
     const item = JSON.parse(JSON.stringify(value)) as Record<string, any>;
+    const providerAudio: { index: number; data: string }[] = [];
     if (Array.isArray(item.content))
-      for (const part of item.content) {
-        if (part && typeof part === 'object') delete part.audio;
+      for (const [index, part] of item.content.entries()) {
+        if (part && typeof part === 'object') {
+          if (this.storeAudio && typeof part.audio === 'string')
+            providerAudio.push({ index, data: part.audio });
+          delete part.audio;
+        }
       }
     const id = item.id as string;
     if (!this.items.has(id) && this.items.size >= this.maxItems)
@@ -280,6 +294,16 @@ export class VoiceConversationHistory {
     const total = this.bytes - (this.itemBytes.get(id) ?? 0) + bytes;
     if (total > this.maxBytes)
       throw new Error('Voice conversation history byte capacity exceeded');
+    for (const { index, data } of providerAudio) {
+      // Item updates carry the complete provider audio, including already observed deltas.
+      this.observeAudio(
+        id,
+        index,
+        decodeBase64(data),
+        this.audio.get(JSON.stringify([id, index]))?.bytesPerMillisecond ?? 48,
+        true,
+      );
+    }
     this.bytes = total;
     this.itemBytes.set(id, bytes);
     this.items.set(id, item);

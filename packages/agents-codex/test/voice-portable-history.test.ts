@@ -388,6 +388,40 @@ async function nativeFixture(
 
 const native = process.env.OPENAI_AGENTS_PORTABLE_TESTS === '1';
 it.runIf(native)(
+  'retains provider input and output audio through the portable public owner after close',
+  async () => {
+    for (const storeAudio of [false, true]) {
+      const { session } = await nativeFixture({ storeAudio });
+      const items = [
+        {
+          ...message('input'),
+          content: [{ type: 'input_audio', audio: 'AQIDBA==' }],
+        },
+        {
+          ...message('output'),
+          role: 'assistant',
+          content: [{ type: 'output_audio', audio: 'BQYHCA==' }],
+        },
+      ];
+      for (const item of items)
+        session.receive({ type: 'conversation.item.retrieved', item });
+      const expected = items.map((item) => ({
+        ...item,
+        content: item.content.map(({ audio, ...part }) => ({
+          ...part,
+          ...(storeAudio ? { audio } : {}),
+        })),
+      }));
+      expect(session.history).toEqual(expected);
+      await session.close();
+      expect(session.history).toEqual(expected);
+      (session.history[0].content as any[])[0].audio = 'changed';
+      expect(session.history).toEqual(expected);
+    }
+  },
+);
+
+it.runIf(native)(
   'reports direct deletion after closing synchronously without a provider request',
   async () => {
     const onError = vi.fn();
