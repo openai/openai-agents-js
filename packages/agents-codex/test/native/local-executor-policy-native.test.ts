@@ -3165,17 +3165,24 @@ it.skipIf(process.platform !== 'darwin')(
       const skillBody =
         '---\nname: nov9_read_only_probe\ndescription: NAMED_SKILL_CATALOG\n---\nRead marker.txt when this skill is requested.\n';
       const marker = join(granted, 'marker.txt');
+      const linkedMarker = join(granted, 'linked-marker');
+      const linkedAlias = join(granted, 'linked-marker-alias');
+      const workspaceAlias = join(cwd, 'read-only-hard-link');
       const outside = join(other, 'ungranted.txt');
       const metadata = '[core]\n\trepositoryformatversion = 0\n';
       await Promise.all([
         writeFile(join(granted, 'SKILL.md'), skillBody),
         writeFile(marker, 'GRANTED_SKILL_MARKER\n'),
+        writeFile(linkedMarker, 'GRANTED_HARD_LINK_MARKER\n'),
         writeFile(outside, 'UNGRANTED_PRIVATE_SENTINEL\n'),
         writeFile(join(cwd, '.git', 'config'), metadata),
         symlink(granted, skill),
         symlink(outside, join(cwd, 'ungranted-link')),
         symlink(outside, join(granted, 'ungranted-link')),
       ]);
+      await link(linkedMarker, linkedAlias);
+      await link(marker, workspaceAlias);
+      await rm(workspaceAlias);
       vi.stubEnv('TMPDIR', homes);
       let privateMarker = '';
       const denyRead = (path: string) =>
@@ -3190,6 +3197,10 @@ it.skipIf(process.platform !== 'darwin')(
                 `cat ${quote(join(skill, 'SKILL.md'))}`,
                 `cat ${quote(join(skill, 'marker.txt'))}`,
                 `cat ${quote(marker)}`,
+                `cat ${quote(linkedMarker)} ${quote(linkedAlias)}`,
+                denyWrite(linkedAlias),
+                `if link_error=$(LC_ALL=C /bin/ln ${quote(marker)} ${quote(workspaceAlias)} 2>&1); then printf READ_ONLY_LINK_CREATED; exit 13; fi`,
+                'case "$link_error" in *"Operation not permitted"|*"Permission denied") printf READ_ONLY_LINK_DENIED;; *) printf "%s" "$link_error" >&2; exit 14;; esac',
               ]
             : [denyRead(marker), denyRead(join(skill, 'marker.txt'))]),
           denyRead(outside),
@@ -3333,8 +3344,13 @@ it.skipIf(process.platform !== 'darwin')(
             expect(output).toContain('POLICY_OK');
             expect(output).not.toContain('UNGRANTED_PRIVATE_SENTINEL');
             expect(output).not.toContain('NATIVE_PRIVATE_SENTINEL');
-            if (phase !== 'strict-default')
+            if (phase !== 'strict-default') {
               expect(output).toContain('GRANTED_SKILL_MARKER');
+              expect(output).toContain('READ_ONLY_LINK_DENIED');
+              expect(output).toContain(
+                'GRANTED_HARD_LINK_MARKER\nGRANTED_HARD_LINK_MARKER',
+              );
+            }
           }
         },
       );
@@ -3349,6 +3365,7 @@ it.skipIf(process.platform !== 'darwin')(
         metadata,
       );
       expect(existsSync(join(granted, 'new.txt'))).toBe(false);
+      expect(existsSync(workspaceAlias)).toBe(false);
     } finally {
       vi.unstubAllEnvs();
       await rm(temporary, { recursive: true, force: true });
