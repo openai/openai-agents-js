@@ -3,7 +3,7 @@ import {
   capturePlanCredential,
   type SignInWithChatGPT,
 } from './sign-in-with-chatgpt';
-import { outputOf, ToolOutput } from './tools';
+import { outputOf, toolApplicationData, ToolOutput } from './tools';
 
 /**
  * Preview canonical native storage. Snapshots are opaque, versioned SDK data.
@@ -114,6 +114,7 @@ export interface ReconciledToolResult {
   sessionId: string;
   turnId: string;
   callId: string;
+  /** Private applicationData is unsupported by store reconciliation. */
   result: string | ToolOutput;
 }
 /**
@@ -137,6 +138,10 @@ export async function reconcileSessionStore(
   )
     throw new TypeError('Reconciled result must be a string or ToolOutput');
   const output = outputOf(result.result);
+  if (toolApplicationData(output) !== undefined)
+    throw new TypeError(
+      'Store reconciliation does not support applicationData',
+    );
   const callback = captureThreadStore(store);
   const source = options?.signInWithChatGPT;
   let planIdentity: string | undefined;
