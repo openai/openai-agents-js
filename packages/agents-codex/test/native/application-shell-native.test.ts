@@ -3,6 +3,7 @@ import {
   Agent,
   NativeProvider,
   shellTool,
+  hostedShell,
   isFunctionApprovalRequest,
   parseSessionState,
   type FunctionApprovalRequest,
@@ -300,6 +301,20 @@ it.each<{ label: string; marker: JsonObject }>([
   },
   { label: 'nonstring container ID', marker: { container_id: 7 } },
   { label: 'blank container ID', marker: { container_id: '   ' } },
+  {
+    label: 'missing reference container ID',
+    marker: { environment: { type: 'container_reference' } },
+  },
+  {
+    label: 'blank reference container ID',
+    marker: {
+      environment: { type: 'container_reference', container_id: '   ' },
+    },
+  },
+  {
+    label: 'numeric reference container ID',
+    marker: { environment: { type: 'container_reference', container_id: 7 } },
+  },
 ])(
   'denies receipt authority for a malformed remote marker: $label',
   async ({ marker }) => {
@@ -380,5 +395,29 @@ it.each<{ label: string; marker: JsonObject }>([
     'Hosted receipt retained.',
   );
   expect(effects).toBe(0);
+  server.assertExhausted();
+});
+
+it('rejects mixed application and hosted Shell declarations before model dispatch', async () => {
+  let effects = 0;
+  const local = shellTool({
+    execute() {
+      effects++;
+      return output;
+    },
+  });
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    provider,
+    model: 'gpt-5',
+    instructions: 'Reject ambiguous Shell ownership.',
+    tools: [local, hostedShell({ environment: { type: 'container_auto' } })],
+  });
+  await expect(agent.session()).rejects.toThrow(
+    'Hosted tool reserves the tool name shell',
+  );
+  expect(effects).toBe(0);
+  expect(server.requests).toHaveLength(0);
   server.assertExhausted();
 });
