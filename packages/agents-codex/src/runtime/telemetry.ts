@@ -214,14 +214,25 @@ export async function shutdown(
       'Telemetry shutdown cannot run in a trace processor async context',
     );
   const timeout = validateTimeout(options.timeoutMs);
+  const native = await binding();
+  let terminal = true;
   try {
-    await (await binding()).shutdown_telemetry(timeout);
+    await native.shutdown_telemetry(timeout);
+  } catch (error) {
+    // A rejected admission can settle after configure() succeeds in this isolate.
+    terminal = !(
+      error instanceof Error &&
+      error.message === 'Configure telemetry successfully before shutdown'
+    );
+    throw error;
   } finally {
-    processorDeliveryStop.abort();
-    processors.clear();
-    activeProcessorIds.clear();
-    retiredProcessorIds.clear();
-    wakePump?.();
+    if (terminal) {
+      processorDeliveryStop.abort();
+      processors.clear();
+      activeProcessorIds.clear();
+      retiredProcessorIds.clear();
+      wakePump?.();
+    }
   }
 }
 
@@ -499,6 +510,7 @@ async function route(
                       await invokeTraceDelivery(
                         events,
                         batch.credential_routes,
+                        id,
                         () =>
                           suppressTracing(() =>
                             processor.onEvents!(Object.freeze(events)),
@@ -513,6 +525,7 @@ async function route(
                       await invokeTraceDelivery(
                         [event],
                         batch.credential_routes,
+                        id,
                         () =>
                           suppressTracing(() => processor?.onEvent?.(event)),
                         processorDeliveryStop.signal,

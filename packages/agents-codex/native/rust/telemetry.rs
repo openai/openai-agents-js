@@ -18,7 +18,6 @@ struct State {
     engine_started: bool,
     provider: Option<OtelProvider>,
     emission: Option<EmissionSettings>,
-    initialized: bool,
 }
 
 static STATE: Mutex<State> = Mutex::const_new(State {
@@ -26,8 +25,8 @@ static STATE: Mutex<State> = Mutex::const_new(State {
     engine_started: false,
     provider: None,
     emission: None,
-    initialized: false,
 });
+static CONFIGURED: AtomicBool = AtomicBool::new(false);
 static TRACE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 const SERVICE: &str = "codex_agents_js";
@@ -183,12 +182,16 @@ pub async fn initialize(config_json: &str, runtime_json: &str) -> Result<()> {
     codex_otel::sdk_trace::configure_pipeline(TRACE_INITIALIZED.load(Ordering::Acquire));
     ACTIVE.store(true, Ordering::Release);
     state.provider = provider;
-    state.initialized = true;
+    CONFIGURED.store(true, Ordering::Release);
     Ok(())
 }
 
 pub async fn shutdown(timeout_ms: Option<u32>) -> Result<()> {
     let timeout = timeout(timeout_ms)?;
+    ensure!(
+        CONFIGURED.load(Ordering::Acquire),
+        "Configure telemetry successfully before shutdown"
+    );
     let started = std::time::Instant::now();
     // Publish before owner admission: an older flush may hold STATE until this
     // terminal call's entire budget expires. Its worker must still stop.
@@ -200,11 +203,6 @@ pub async fn shutdown(timeout_ms: Option<u32>) -> Result<()> {
     let mut state = tokio::time::timeout(timeout, STATE.lock())
         .await
         .map_err(|_| anyhow!("Telemetry shutdown timed out waiting for the telemetry owner"))?;
-    ensure!(
-        state.emission.is_some(),
-        "Configure telemetry successfully before shutdown"
-    );
-    state.initialized = false;
     if let Some(provider) = state.provider.take() {
         let remaining = timeout.saturating_sub(started.elapsed());
         let _ = provider.force_flush_with_timeout(remaining).await;
