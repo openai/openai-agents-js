@@ -71,7 +71,10 @@ describe('app-owned React Native media', () => {
         connectReactNativeDirectText({
           createPeerConnection,
           clientSecret,
-          agent: { model: 'synthetic-voice' },
+          agent: {
+            model: 'synthetic-voice',
+            instructions: 'Keep answers brief.',
+          },
         }),
       ).rejects.toThrow('requires an ephemeral client key');
       expect(createPeerConnection).not.toHaveBeenCalled();
