@@ -154,6 +154,7 @@ nativeIt(
     try {
       const first = await session.submit('first', { modelOverride: forced });
       await entered.promise;
+      const native = submitted.at(-1);
       if (!native) throw new Error('Expected the admitted native owner');
       const rejected = JSON.parse(
         await native._submit(
