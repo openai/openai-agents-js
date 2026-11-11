@@ -40,6 +40,10 @@ Unix-local path grants restrict supported host source access and SDK file APIs. 
 
 For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured `DockerSandboxClient` or hosted backend, or provide external isolation. Select the backend and configuration for the filesystem, network, and process isolation your application requires.
 
+### Host Python requirement
+
+Unix-local session preparation has been requiring a trusted Python 3 installation with descriptor-relative filesystem support for SDK file operations, including sessions without a PTY. The SDK has been checking `/usr/bin/python3`, `/usr/local/bin/python3`, and `/opt/homebrew/bin/python3`. The host `OPENAI_AGENTS_PYTHON` environment variable has been selecting an absolute trusted executable path when those locations have been lacking a suitable installation. Missing protection and `fileIOProtection: 'off'` have been causing preparation to fail before workspace setup.
+
 ### Switch local clients
 
 To switch from Unix-local to Docker, keep the agent definition the same and change only the client:
@@ -95,6 +99,8 @@ Use `sessionState` when you want to reconnect to the same backend session throug
   code={resumeSessionStateExample}
   title="Serialize and resume sandbox state"
 />
+
+Applications resuming serialized Unix-local state have been supplying trusted `resumeAuthority` bindings separately from the saved state. The example has been retaining the original workspace path and local snapshot path in application-owned storage. The example has been using those retained values instead of trusting paths from deserialized state. `workspaceRootOwned: true` has been authorizing the SDK to remove the bound workspace when the resumed session closes.
 
 `RunState` can also preserve runner-managed sandbox state when you pause or resume a larger workflow. Use explicit `sessionState` when the sandbox lifecycle is managed outside a serialized run.
 
@@ -264,4 +270,4 @@ Declare the ports in the client options when you need a backend to enforce an al
 
 #### Local PTY requirements
 
-Local PTY support uses a small Python 3 bridge in the SDK process. The SDK uses the bridge only for `tty: true` sessions. Node.js has no built-in PTY API, so the bridge provides standard POSIX PTY behavior for interactive stdin, signal handling, and exit status reporting. Install `python3` in the environment that runs your SDK code, or set `OPENAI_AGENTS_PYTHON` to a Python 3 executable. This is separate from the Python version, if any, installed inside a Docker sandbox image.
+Local PTY support uses a small Python 3 bridge in the SDK process. The SDK uses the bridge only for `tty: true` sessions. Node.js has no built-in PTY API, so the bridge provides standard POSIX PTY behavior for interactive stdin, signal handling, and exit status reporting. Install `python3` in the environment that runs your SDK code, or set `OPENAI_AGENTS_PYTHON` to an absolute path to a trusted Python 3 executable. This is separate from the Python version, if any, installed inside a Docker sandbox image.

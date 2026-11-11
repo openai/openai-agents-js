@@ -1,8 +1,6 @@
 # Integration tests
 
-This project hosts packages to test the different environments that the Agents SDK works in.
-
-It is intentionally not part of the `pnpm` workspace and instead installs the packages from a local package registry using verdaccio.
+The integration fixtures test installed SDK packages across runtimes. They install the packages from a local Verdaccio registry outside the `pnpm` workspace.
 
 Each fixture declares npm in `packageManager` so Dependabot treats its manifest independently instead of adopting the ancestor pnpm workspace. This metadata does not change the Bun or Deno commands used by their runtime tests.
 
@@ -10,58 +8,40 @@ Committed fixture `.npmrc` files use public npm so Dependabot can resolve depend
 
 ## How to run integration tests
 
-1. **Requirements:**
+### Prepare the host
 
-- Have Node.js, Bun, and Deno installed globally
-- Have `OPENAI_API_KEY` configured from a trusted service-account shell and `OPENAI_API_KEY_SOURCE=service-account`. Do not relabel an inherited or employee key.
-- Run `pnpm exec playwright install` to install playwright
-- `pnpm test:integration` will create temporary `integration-tests/cloudflare-workers/worker/.dev.vars` and `integration-tests/vite-react/.env` files from `OPENAI_API_KEY` and restore any pre-existing files during cleanup
-- Integration test fixture subprocesses run with `NODE_ENV=development` so real-model SDK examples keep the normal server-runtime tracing behavior even though Vitest itself runs with `NODE_ENV=test`
-- The Node.js published SDK behavior fixture uses `OPENAI_AGENTS_INTEGRATION_MODEL` when set and defaults to `gpt-5.6`. Hosted multi-agent coverage uses `OPENAI_AGENTS_INTEGRATION_HOSTED_MODEL` and defaults to `gpt-5.6-sol`.
-- Hosted MCP coverage uses `OPENAI_AGENTS_INTEGRATION_MCP_SERVER_URL` when set and defaults to the public DeepWiki MCP endpoint. Hosted multi-agent coverage requires API project access to the beta and fails when that access is unavailable.
-- Optional sandbox storage mount coverage requires Docker with FUSE support and is skipped unless `OPENAI_AGENTS_RUN_STORAGE_MOUNT_INTEGRATION=1` is set. It starts local Azurite and MinIO containers and removes them after the test.
-- The React Native fixture copies the Expo example, installs the locally published packages, type-checks it, and creates an Android Metro bundle. Set `OPENAI_AGENTS_RUN_REACT_NATIVE_LIVE=1` to additionally build and run it against the Realtime API on an already-running Android emulator with `adb` available.
+- Put Node.js, Bun, and Deno on `PATH`. Run `pnpm exec playwright install` to install the test browsers.
+- For tests that call the API, export `OPENAI_API_KEY` from a trusted service-account shell and set `OPENAI_API_KEY_SOURCE=service-account`. Use the service account's key.
+- For storage-mount tests, use Docker with FUSE support. Set `OPENAI_AGENTS_RUN_STORAGE_MOUNT_INTEGRATION=1` for a manual run. The test starts local Azurite and MinIO containers and removes them during cleanup.
 
-2. **Run the managed repository workflow**
+### Run the managed workflow
 
-   The canonical command validates credential provenance, refuses to interfere with an unowned process on Verdaccio's port, starts and waits for its own registry, installs and builds the workspace, resets and publishes to the local registry, runs the full integration suite with storage-mount coverage enabled, and cleans up on success, failure, `SIGINT`, or `SIGTERM`:
+```bash
+pnpm test:integration:managed
+```
 
-   ```bash
-   pnpm test:integration:managed
-   ```
+This command starts its own Verdaccio registry, builds and publishes the packages locally, and runs the full suite with storage-mount coverage. If another process owns the registry port, the command stops before using it. Only the integration-test process receives the validated API key.
 
-   The caller must supply the approved environment before invoking the command. The orchestrator does not source shell startup files or replace credentials. It removes `OPENAI_API_KEY` from Verdaccio and every local-only install, build, reset, and publish child; only the integration-test child receives the already validated key. The orchestrator accepts readiness only after its own Verdaccio child confirms a successful bind. Each invocation streams complete output and writes a timestamped `pipeline.log` and `verdaccio.log` under `.tmp/integration-tests-managed/`; cleanup or log-finalization failure makes an otherwise successful run fail.
+The command cleans up after success, failure, `SIGINT`, or `SIGTERM`. It streams output and writes `pipeline.log` and `verdaccio.log` under a timestamped directory in `.tmp/integration-tests-managed/`. A cleanup or log-finalization failure fails the run.
 
-3. **Low-level manual workflow**
+### Run individual profiles
 
-   Keep the following commands available when you need to manage Verdaccio and individual integration profiles yourself.
-
-   **Local npm registry**
-
-   We will publish packages in a local registry to emulate a real environment.
-
-   Run in one process `pnpm run local-npm:start` and keep it running until you are done with your test.
-
-   **Hint:** The first time you might have to run `npm adduser --registry http://localhost:4873/` (you can use any fake data)
-
-   **Publish your packages to run the tests**
-
-   In order to test the packages first build them (`pnpm build`) and then run `pnpm local-npm:publish`.
-
-   **Run your tests**
-
-   You can now run your integration tests:
+1. Start Verdaccio with `pnpm local-npm:start` and leave it running. If the local registry requires a login, run `npm adduser --registry http://localhost:4873/` with a local test account.
+2. In a separate shell, run `pnpm build`, then `pnpm local-npm:publish`.
+3. Run the suite or a focused profile:
 
    ```bash
    pnpm test:integration
-   ```
-
-   The published-package semantic profiles can also be run independently:
-
-   ```bash
    pnpm test:integration:sdk-core
    pnpm test:integration:sdk-capabilities
    ```
+
+### Configure live and device tests
+
+- The Node.js behavior fixture reads `OPENAI_AGENTS_INTEGRATION_MODEL` and defaults to `gpt-5.6`. The hosted multi-agent fixture reads `OPENAI_AGENTS_INTEGRATION_HOSTED_MODEL` and defaults to `gpt-5.6-sol`. The latter requires API project access to the beta.
+- Hosted MCP tests read `OPENAI_AGENTS_INTEGRATION_MCP_SERVER_URL` and default to the public DeepWiki MCP endpoint.
+- The suite temporarily writes the API key to `integration-tests/cloudflare-workers/worker/.dev.vars` and `integration-tests/vite-react/.env`. Cleanup restores existing files. The fixture processes use `NODE_ENV=development` to exercise normal server tracing.
+- The React Native fixture installs the locally published packages, type-checks the Expo example, and builds an Android Metro bundle. To also test the Realtime API, start an Android emulator with `adb` available and set `OPENAI_AGENTS_RUN_REACT_NATIVE_LIVE=1`.
 
 ### Released package API contract
 
@@ -90,14 +70,27 @@ pnpm test:integration:api-contract
 
 The package check first installs the package roots without optional provider peers to detect eager optional-provider loading. It then installs every optional peer declared by `@openai/agents-extensions` and checks all published subpaths, declarations, and supported ESM/CJS runtime bindings. Convenience exports are identity-checked against their owning packages in the same process, module format, and active export conditions. A module format that an optional peer does not export is not treated as a supported route. The check does not make OpenAI API calls and does not require `OPENAI_API_KEY`.
 
-The declaration check preserves released binding spaces and declaration kinds, enum and literal members, public class constructibility, and the names, optional/readonly shape, and callable-versus-property kind of public named members on SDK-owned classes and object types. Explicitly selected direct callable type aliases also preserve their generic parameters, callable parameters, and return type. Explicit `selectedPublicObjectProperties` entries also protect one direct inline object property of a selected function parameter. Each entry must list every immediate field and its primitive type, optionality, and readonly status, including before the object appears in the released baseline. This policy currently covers `webSearchTool` image settings through both public package roots. Optional field additions require complete policy enrollment; released field removals, shape/type changes, and required additions remain incompatible even if the candidate policy is updated. All declaration conditions, source checks, both installed-package profiles, and promotion validate these selections. Selected object properties support only a single non-generic function signature and inline objects with identifier-named number, boolean, or string fields; unsupported selected forms fail explicitly. Selection identities are registered in checker code independently of the candidate JSON policy. Removing a registered selection, omitting the selection policy, or adding an unregistered identity fails before package acquisition. Adding a new selection requires registering its identity in checker code as well as providing its complete JSON policy. Readonly checks use effective TypeScript symbols for both the selected object and its immediate fields, including mapped utility types. The checker does not recursively enroll other properties.
+#### What the declaration check covers
+
+The check preserves released binding spaces and declaration kinds, enum and literal members, and public class constructibility. For public named members of SDK-owned classes and object types, it preserves names, optional and readonly modifiers, and whether a member is callable or a property.
+
+The contract can protect two kinds of signatures in more detail:
+
+- Selected direct callable type aliases preserve their generic parameters, callable parameters, and return type.
+- `selectedPublicObjectProperties` protects one inline object property of a function parameter, such as the image settings of `webSearchTool` in both public package roots. The function must have one non-generic signature. The object's immediate fields must have identifier names and number, boolean, or string types.
+
+Register each selection in checker code and list it in the JSON policy. For a selected object, list every immediate field and its type, optionality, and readonly status, even before release. The checker reads the effective modifiers from TypeScript, including mapped utility types. It checks immediate fields only.
+
+Add new optional fields to the policy. Removing a released field, changing its type or shape, or adding a required field breaks the released contract. The source, declaration, package, and promotion checks enforce these rules.
 
 The contract intentionally does not implement a separate compatibility system for other methods, constructor or callable parameters and returns, unselected property types, index signatures, generics, overloads, or unselected callable type aliases. Existing TypeScript build checks and release review remain responsible for those deeper signature changes.
 
-New package subpaths and exports on `main` are checked for source, build, and package parity, but they are not released guarantees until the corresponding npm release is promoted. After publishing and tagging a release, update the baseline explicitly from a clean checkout:
+#### Promote a published release
+
+The checks cover new subpaths and exports on `main` across source, build output, and installed packages. Promote a release to add its public surface to the compatibility baseline. After publishing and tagging the release, set `RELEASE_VERSION` to its npm version and run this command from a clean checkout:
 
 ```sh
-pnpm api-contract:promote -- --version <version>
+pnpm api-contract:promote --version "${RELEASE_VERSION:?Set RELEASE_VERSION to the published npm version}"
 ```
 
 Promotion first rejects incompatibility with the previous baseline. It then records every subpath and export condition from the integrity-pinned published packages, so newly released paths become protected automatically. Promotion preserves selection policies and requires complete selected-object coverage before writing the new baseline.

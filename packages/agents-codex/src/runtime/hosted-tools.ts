@@ -34,6 +34,22 @@ export interface CodeInterpreter extends CodeInterpreterOptions {
   readonly kind: 'code_interpreter';
 }
 
+export type HostedShellEnvironment = Extract<
+  NonNullable<OpenAI.Responses.FunctionShellTool['environment']>,
+  { type: 'container_auto' | 'container_reference' }
+>;
+
+export interface HostedShellOptions extends HostedToolOptions {
+  /** Auto-provision a managed container or use an existing provider container. */
+  environment: HostedShellEnvironment;
+  allowedCallers?: OpenAI.Responses.FunctionShellTool['allowed_callers'];
+}
+
+/** Provider-owned shell execution inside a managed container. */
+export interface HostedShell extends HostedShellOptions {
+  readonly kind: 'shell';
+}
+
 export interface ImageGenerationOptions extends HostedToolOptions {
   action?: OpenAI.Responses.Tool.ImageGeneration['action'];
   background?: OpenAI.Responses.Tool.ImageGeneration['background'];
@@ -63,7 +79,8 @@ export interface ImageGeneration extends ImageGenerationOptions {
   readonly kind: 'image_generation';
 }
 
-export type HostedTool = FileSearch | CodeInterpreter | ImageGeneration;
+export type HostedTool =
+  FileSearch | CodeInterpreter | HostedShell | ImageGeneration;
 
 /** Capture nested provider configuration without retaining application objects. */
 function capture<T>(value: T): T {
@@ -97,6 +114,10 @@ export function codeInterpreter(
   return capture({ ...options, kind: 'code_interpreter' as const });
 }
 
+export function hostedShell(options: HostedShellOptions): HostedShell {
+  return captureHostedTool({ ...options, kind: 'shell' });
+}
+
 export function imageGeneration(
   options: ImageGenerationOptions = {},
 ): ImageGeneration {
@@ -104,7 +125,16 @@ export function imageGeneration(
 }
 
 /** @internal Re-capture structural declarations at the session opening boundary. */
-export function captureHostedTool(tool: HostedTool): HostedTool {
+export function captureHostedTool<T extends HostedTool>(tool: T): T {
+  if (
+    tool.kind === 'shell' &&
+    tool.environment?.type !== 'container_auto' &&
+    tool.environment?.type !== 'container_reference'
+  ) {
+    throw new TypeError(
+      'Hosted shell requires a managed container environment',
+    );
+  }
   return capture(tool);
 }
 
@@ -127,6 +157,7 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
         'filters',
       ],
       code_interpreter: ['container', 'allowed_callers', 'include_outputs'],
+      shell: ['environment', 'allowed_callers'],
       image_generation: [
         'action',
         'complexity',
@@ -183,6 +214,15 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
         ...(tool.includeOutputs === undefined
           ? {}
           : { include_outputs: tool.includeOutputs }),
+        ...(tool.allowedCallers === undefined
+          ? {}
+          : { allowed_callers: tool.allowedCallers }),
+      };
+    if (tool.kind === 'shell')
+      return {
+        ...providerData,
+        type: tool.kind,
+        environment: tool.environment as unknown as JsonObject,
         ...(tool.allowedCallers === undefined
           ? {}
           : { allowed_callers: tool.allowedCallers }),
@@ -249,5 +289,15 @@ export type HostedToolItem = HostedItemIdentity &
         type: 'image_generation_call';
         result: string | null;
         revised_prompt: string | null;
+      }
+    | {
+        type: 'shell_call';
+        call_id: string;
+        action: import('./binding').JsonValue;
+      }
+    | {
+        type: 'shell_call_output';
+        call_id: string;
+        output: import('./binding').JsonValue;
       }
   );

@@ -1,5 +1,5 @@
 {
-  "result_tree": "ded2aa839e20186349bd9f4cd2921b9d79d0f389",
+  "result_tree": "9d99cbeb2c3cdd395d15f9914c1b22bcc81f3e64",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -738,8 +738,56 @@
       "sha256": "0d98f210b55c1af7d92732611e700c69b6d22b89a47185e6dd8f5729281f5627"
     },
     {
+      "path": "sdk-portable-realtime-tool-results.patch",
+      "sha256": "9e108aca0457ab663aaefd4eda7573948fc5b0b479ebb51abd6dc1dcea038f58"
+    },
+    {
+      "path": "sdk-portable-realtime-raw-client-events.patch",
+      "sha256": "88d34b6286fcc7d370aaff958dc624625acf920cf5bab5238e1de42bd4ce03b3"
+    },
+    {
+      "path": "sdk-portable-realtime-hosted-completion.patch",
+      "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
+    },
+    {
+      "path": "sdk-realtime-history-output-format.patch",
+      "sha256": "bd79a55f664d247f9c7715607bc7b7c2d82004413e73b06e9226e79316f4d097"
+    },
+    {
+      "path": "sdk-reset-tool-choice-after-use.patch",
+      "sha256": "6252ab047f0858279bb1ecb400bd1afa39ff368ebf284b2f1720d917431f8e05"
+    },
+    {
+      "path": "sdk-function-provider-schemas.patch",
+      "sha256": "ab9d85801742d4b5d27226ce26f25ad1909e743f84b4c2822b7afbb0b7b4d60f"
+    },
+    {
+      "path": "sdk-produced-run-items.patch",
+      "sha256": "5662fc947935ad7b28aa70878275fdb8ca93beb9d4259818baabd653793359e3"
+    },
+    {
+      "path": "sdk-provider-hosted-shell.patch",
+      "sha256": "f2bdb3888ab4893bcdec6de7a544f3bb4d5ece98b1efc0e80b4e6c10676d8885"
+    },
+    {
+      "path": "sdk-raw-provider-event-fixtures.patch",
+      "sha256": "1d030d1488ae51cbbb7c75c6814a8a3eedb7454573480e32d44ade99a4d31afc"
+    },
+    {
+      "path": "sdk-native-model-response-stream.patch",
+      "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
+    },
+    {
+      "path": "sdk-mailbox-deferred-user-fifo.patch",
+      "sha256": "00d32123fc3cc9127c0acc5a71d3ac11289b3af5300e8f9d05e33ebd61ef3e7b"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-produced-items.patch",
+      "sha256": "9d8d9946b04186bb9c8efda78d56f83f764ec3ccce3885217e12493ca9b9f084"
+    },
+    {
       "path": "sdk-tracing-id-annotations.patch",
-      "sha256": "d29abadb92f08cf9ad98e351554c26633c76ea9849217a374d1ba7fda02d504e"
+      "sha256": "512c49955cbc456312311fbc5b6c6b6b949cacf2d22344e661f3b9586e5f412e"
     }
   ]
 }

@@ -2,6 +2,8 @@
 
 In `0.22.0-alpha.2`, new local and remote Environments default to `writePolicy: 'strict'`. Command tools can write in `Environment.cwd`; set `Environment.writableRoots` to opt into additional directories. Omitting roots or passing `[]` keeps the workspace writable. Neither value creates a read-only workspace. These roots select directories, while `Environment.tools` selects operations and `capabilityDirectories` selects [skill discovery](project-guidance.md#prepare-a-skill-catalog).
 
+Current source builds have also been supporting [trusted local workspace writes](local-execution.md#run-trusted-code-with-host-file-reads) on Linux and macOS. That opt-in has been expanding host reads and command environment inheritance while retaining scoped write grants.
+
 ## Replace the extra roots for a new Turn
 
 Choose existing absolute directories in application code. Set the Environment's `writableRoots` to the first list before opening the Session. After the first Turn and its executor work finish, pass the replacement list in the next `session.submit` call's options. The same grant options work with a provisioned remote executor and [Environment.local](local-execution.md).

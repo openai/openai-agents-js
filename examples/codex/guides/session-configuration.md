@@ -15,7 +15,7 @@ Context, environment, opening overrides, and native model requirements still nee
 The default `NativeProvider` transport has been sending model requests through Codex's built-in Responses client. Custom endpoints on this transport have been requiring the Responses protocol. The provider options have been controlling its endpoint, API key, and WebSocket policy.
 
 - For API-key authentication, `baseUrl` defaults to `https://api.openai.com/v1`. To use `OPENAI_BASE_URL`, pass `baseUrl: process.env.OPENAI_BASE_URL`.
-- A custom endpoint uses HTTP by default.
+- A custom endpoint has been using HTTP by default. At the default endpoint, eligible `agent.run()` calls have been selecting HTTP, while explicit Sessions have been allowing WebSockets. The [provider lifetime](#provider-lifetime) section has been describing reuse eligibility and explicit transport settings.
 - When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
 
 ### Use Sign in with ChatGPT
@@ -86,7 +86,7 @@ Your application owns the provider, including the default provider created by `n
 
 With the current [source build](building.md), a shared `NativeProvider` has been reusing idle engines for eligible API-key `agent.run()` calls over streaming or buffered HTTP. Eligible runs have been selecting HTTP by default, including at the default endpoint. With `supportsWebsockets` omitted, other streaming calls have been allowing WebSockets at the default endpoint, including explicit Sessions. For streaming calls, `supportsWebsockets: true` has been allowing WebSockets and disabling idle-engine reuse. Setting it to `false` has been forcing HTTP for other streaming calls, including explicit Sessions.
 
-Reuse is unavailable for runs with tools, structured output, initial messages, restored state, or a custom environment. Each eligible run starts a fresh conversation with its own instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
+Reuse has been excluding runs with tools, structured output, initial messages, restored state, a custom environment, or `returnState: true`. Request editing, instruction files, and discovered project guidance have also been preventing idle-engine reuse. Each eligible run starts a fresh conversation with its own instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
 
 Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. Without an explicit `NativeRuntime`, provider close has been releasing any retained native engine and HTTP connections. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions. Create a new provider for later work.
 
@@ -114,6 +114,8 @@ console.log((await agent.run('What is a prime number?')).finalOutput);
 ```
 
 This example has been requiring Node.js 24, the matching built SDK, the `openai` package, and client credentials such as `OPENAI_API_KEY`. A custom `NativeModel` has been owning its own authentication and has not been requiring an SDK API key. Each `complete` call has been receiving detached request data, application context, IDs, and an `AbortSignal`; it has been returning `{ output, responseId?, usage? }` with complete Responses items rather than deltas. Cancellation has been joining admitted backend work and discarding late output, so backends have been needing to honor the signal and settle their work.
+
+The same source build has also been exporting `ResponsesModel(client, model?, options?)` for an application-owned OpenAI Responses client and `AiSdkModel(model, providerOptions?, adapterOptions?)` for an AI SDK language model with specification version `v2`, `v3`, or `v4`. Both adapters have been producing complete responses through `modelBackend`; they have been leaving the native runtime in charge of the tool loop. The language-model specification version has been naming the provider interface, rather than the `ai` package version. The [adapter source](../../../packages/agents-codex/src/runtime/models.ts) has been defining supported request fields and response conversions.
 
 `ChatCompletionsModel` has been requesting `stream: false` and exactly one response choice. It has been translating text, image URLs, default-namespace function tools, text tool results, and native JSON-schema output. It has been accepting completed `stop` and `tool_calls` choices, plus refusals; truncated and unsupported completions have been failing. Hosted tools, other function namespaces, other message content, and Responses-only prompt, truncation, and context-management controls have been requiring a Responses provider or a custom `NativeModel`. The adapter has been forwarding the cancellation signal to the injected client's request. Existing [classic model configuration](../../../packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) has been remaining available for staged migrations.
 

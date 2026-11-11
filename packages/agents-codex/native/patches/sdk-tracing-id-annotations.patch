@@ -1,5 +1,5 @@
 diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
-index deabe0d4e60deacacd15c19f3809ddedc5ba91cf..3d00507ac46abe79d5e807aaf77fe3d90c5c8d6f 100644
+index deabe0d4..3d00507a 100644
 --- a/codex-rs/otel/src/sdk_trace.rs
 +++ b/codex-rs/otel/src/sdk_trace.rs
 @@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
@@ -154,7 +154,7 @@ index deabe0d4e60deacacd15c19f3809ddedc5ba91cf..3d00507ac46abe79d5e807aaf77fe3d9
      #[test]
      fn workflow_identity_uses_selected_parent_and_survives_closed_nonrecording_scopes() {
 diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
-index 645550c9dba3ee53dc3899411e559ba9984c8565..e707e245fb349643058d93660bbc25862074784e 100644
+index 645550c9..e707e245 100644
 --- a/codex-rs/otel/src/sdk_trace_routes.rs
 +++ b/codex-rs/otel/src/sdk_trace_routes.rs
 @@ -269,7 +269,14 @@ fn attributes(span: &SpanData) -> BTreeMap<String, Value> {
