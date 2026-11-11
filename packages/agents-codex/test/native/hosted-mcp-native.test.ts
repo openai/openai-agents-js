@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   Agent,
@@ -7,6 +10,9 @@ import {
   Handoff,
   NativeProvider,
   hostedMcp,
+  localStorage,
+  fileSessionStore,
+  type SessionStore,
   tool,
   type HostedMCPApprovalRequest,
 } from '../../src';
@@ -14,7 +20,15 @@ import { jsonObject, type JsonObject } from '../../src/runtime/binding';
 import { z } from 'zod';
 import { ModelServer, message, call } from './fixtures/model-server';
 
-afterEach(() => ModelServer.closeAll());
+const storageHomes: string[] = [];
+afterEach(async () => {
+  await ModelServer.closeAll();
+  await Promise.all(
+    storageHomes
+      .splice(0)
+      .map((home) => rm(home, { recursive: true, force: true })),
+  );
+});
 
 const responsesModel = z
   .object({
@@ -423,46 +437,52 @@ it('rejects a caller outside the captured server policy before application appro
   server.assertExhausted();
 });
 
-it('retains list and call items with original provider data and producing Agent', async () => {
-  const list: JsonObject = {
-    type: 'mcp_list_tools',
-    id: 'mcpl_fixture',
-    server_label: 'docs',
-    tools: [{ name: 'lookup', input_schema: { type: 'object' } }],
-  };
-  const invoked: JsonObject = {
-    type: 'mcp_call',
-    id: 'mcp_fixture',
-    server_label: 'docs',
-    name: 'lookup',
-    arguments: '{"key":"fixture"}',
-    status: 'completed',
-    output: 'found',
-    caller,
-  };
-  const server = new ModelServer([[list, invoked, message('done')]]);
-  await using provider = await providerFor(server);
-  const agent = new Agent({
-    model: responsesModel,
-    provider,
-    instructions: 'Use docs.',
-    tools: [
-      hostedMcp({ serverLabel: 'docs', serverUrl: 'https://docs.invalid/mcp' }),
-    ],
-  });
-  const result = await agent.run('lookup', { returnItems: true });
-  for (const raw of [list, invoked]) {
-    const item = result.items?.find((entry) => entry.item.type === raw.type);
-    expect(item?.agent).toBe(agent);
-    expect(item?.item).toMatchObject({ type: raw.type, provider_data: raw });
-  }
-  const called = result.items?.find(
-    (entry) => entry.item.type === 'mcp_call',
-  )?.item;
-  expect(called).toHaveProperty('callId', null);
-  expect(called).not.toHaveProperty('threadId');
-  server.assertExhausted();
-});
+it.each([true, false])(
+  'retains list and call items with original provider data and producing Agent (status: %s)',
+  async (withStatus) => {
+    const list: JsonObject = {
+      type: 'mcp_list_tools',
+      id: 'mcpl_fixture',
+      server_label: 'docs',
+      tools: [{ name: 'lookup', input_schema: { type: 'object' } }],
+    };
+    const invoked: JsonObject = {
+      type: 'mcp_call',
+      id: 'mcp_fixture',
+      server_label: 'docs',
+      name: 'lookup',
+      arguments: '{"key":"fixture"}',
+      ...(withStatus ? { status: 'completed' } : {}),
+      output: 'found',
+      caller,
+    };
+    const server = new ModelServer([[list, invoked, message('done')]]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      model: responsesModel,
+      provider,
+      instructions: 'Use docs.',
+      tools: [
+        hostedMcp({
+          serverLabel: 'docs',
+          serverUrl: 'https://docs.invalid/mcp',
+        }),
+      ],
+    });
+    const result = await agent.run('lookup', { returnItems: true });
+    for (const raw of [list, invoked]) {
+      const item = result.items?.find((entry) => entry.item.type === raw.type);
+      expect(item?.agent).toBe(agent);
+      expect(item?.item).toMatchObject({ type: raw.type, provider_data: raw });
+    }
+    const called = result.items?.find(
+      (entry) => entry.item.type === 'mcp_call',
+    )?.item;
+    expect(called).toHaveProperty('callId', null);
+    expect(called).not.toHaveProperty('threadId');
+    server.assertExhausted();
+  },
+);
 
 it('rejects edited positive approval authority while retaining negative cold restore', async () => {
   const server = new ModelServer([
@@ -600,3 +620,191 @@ for (const configured of [false, true]) {
     server.assertExhausted();
   });
 }
+
+for (const kind of ['local', 'canonical'] as const) {
+  for (const approve of [false, true]) {
+    it(`commits ${approve ? 'approved' : 'denied'} Hosted MCP receipts through ${kind} storage without replaying authority`, async () => {
+      const home = await mkdtemp(join(tmpdir(), 'native-hosted-mcp-'));
+      storageHomes.push(home);
+      const storage =
+        kind === 'local'
+          ? localStorage(join(home, 'profile'))
+          : fileSessionStore(join(home, 'canonical'));
+      const completed = {
+        type: 'mcp_call',
+        id: 'mcp_done',
+        server_label: 'docs',
+        name: 'lookup',
+        arguments: '{"key":"A"}',
+        output: 'retained result',
+        status: 'completed',
+      };
+      const server = new ModelServer([
+        [approval()],
+        [completed, message('accepted')],
+        [message('reopened')],
+      ]);
+      await using provider = await providerFor(server);
+      const callback = vi.fn(() => ({
+        approve,
+        reason: 'live owner decision',
+      }));
+      const agent = new Agent({
+        model: responsesModel,
+        provider,
+        instructions: 'Use docs.',
+        tools: [
+          hostedMcp({
+            serverLabel: 'docs',
+            serverUrl: 'https://docs.invalid/mcp',
+            requireApproval: 'always',
+            onApprovalRequest: callback,
+          }),
+        ],
+      });
+      await using session = await agent.session({ storage });
+      expect((await (await session.submit('lookup')).wait()).finalOutput).toBe(
+        'accepted',
+      );
+      const decisions = (server.requests[1].input as JsonObject[]).filter(
+        (item) => item.type === 'mcp_approval_response',
+      );
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({
+        approval_request_id: 'mcpr_fixture',
+        approve,
+        caller,
+      });
+      const id = session.id;
+      await session.close();
+      await using reopened = await agent.session({ storage, resume: id });
+      expect(
+        (await (await reopened.submit('continue')).wait()).finalOutput,
+      ).toBe('reopened');
+      const input = server.requests[2].input as JsonObject[];
+      expect(
+        input.filter((item) => item.type === 'mcp_approval_response'),
+      ).toHaveLength(approve ? 0 : 1);
+      if (approve)
+        expect(input.some((item) => item.type === 'mcp_approval_request')).toBe(
+          false,
+        );
+      expect(input.find((item) => item.type === 'mcp_call')).toMatchObject({
+        id: 'mcp_done',
+        output: 'retained result',
+      });
+      expect(callback).toHaveBeenCalledTimes(1);
+      server.assertExhausted();
+    });
+  }
+}
+
+it('withholds edited canonical approvals from resumed model input', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'native-hosted-mcp-tamper-'));
+  storageHomes.push(home);
+  const durable = fileSessionStore(home);
+  let tamper = false;
+  let changed = 0;
+  const storage: SessionStore = {
+    acquire: (id) => durable.acquire(id),
+    read: async (id, fence) => {
+      const snapshot = await durable.read(id, fence);
+      if (!tamper || snapshot === null) return snapshot;
+      return JSON.stringify(JSON.parse(snapshot), (key, value: unknown) => {
+        if (key === 'original' && typeof value === 'string') {
+          try {
+            const original = JSON.parse(value);
+            if (original?.type === 'mcp_approval_response')
+              return JSON.stringify({ ...original, approve: true });
+          } catch {
+            /* Other original values remain unchanged. */
+          }
+        }
+        if (
+          value &&
+          typeof value === 'object' &&
+          'type' in value &&
+          value.type === 'mcp_approval_response'
+        ) {
+          changed++;
+          return { ...value, approve: true };
+        }
+        return value;
+      });
+    },
+    commit: (...args) => durable.commit(...args),
+    release: (...args) => durable.release(...args),
+  };
+  const server = new ModelServer([
+    [approval()],
+    [message('denied')],
+    [message('resumed safely')],
+  ]);
+  await using provider = await providerFor(server);
+  const callback = vi.fn(() => ({ approve: false }));
+  const agent = new Agent({
+    model: responsesModel,
+    provider,
+    instructions: 'Use docs.',
+    tools: [
+      hostedMcp({
+        serverLabel: 'docs',
+        serverUrl: 'https://docs.invalid/mcp',
+        requireApproval: 'always',
+        onApprovalRequest: callback,
+      }),
+    ],
+  });
+  await using session = await agent.session({ storage });
+  expect((await (await session.submit('lookup')).wait()).finalOutput).toBe(
+    'denied',
+  );
+  const id = session.id;
+  await session.close();
+  tamper = true;
+  await using resumed = await agent.session({ storage, resume: id });
+  expect(changed).toBeGreaterThan(0);
+  expect((await (await resumed.submit('continue')).wait()).finalOutput).toBe(
+    'resumed safely',
+  );
+  expect(
+    (server.requests[2].input as JsonObject[]).some(
+      (item) =>
+        item.type === 'mcp_approval_response' ||
+        item.type === 'mcp_approval_request',
+    ),
+  ).toBe(false);
+  expect(callback).toHaveBeenCalledTimes(1);
+  server.assertExhausted();
+});
+
+it('retains approved live custody through supplied compaction', async () => {
+  const server = new ModelServer([
+    [approval()],
+    [message('accepted')],
+    [message('continued')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: responsesModel,
+    provider,
+    instructions: 'Use docs.',
+    tools: [
+      hostedMcp({
+        serverLabel: 'docs',
+        serverUrl: 'https://docs.invalid/mcp',
+        requireApproval: 'always',
+        onApprovalRequest: () => ({ approve: true }),
+      }),
+    ],
+  });
+  await using session = await agent.session();
+  expect((await (await session.submit('lookup')).wait()).finalOutput).toBe(
+    'accepted',
+  );
+  await session.compact({ summary: 'Lookup has been approved and completed.' });
+  expect((await (await session.submit('continue')).wait()).finalOutput).toBe(
+    'continued',
+  );
+  server.assertExhausted();
+});

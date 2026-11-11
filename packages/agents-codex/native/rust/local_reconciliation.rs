@@ -24,7 +24,11 @@ pub(crate) fn output_identity(item: &ResponseItem) -> Option<(&str, Option<&str>
             ..
         }
         | ResponseItem::CustomToolCallOutput { call_id: call, .. }
-        | ResponseItem::ComputerCallOutput { call_id: call, .. } => call,
+        | ResponseItem::ComputerCallOutput { call_id: call, .. }
+        | ResponseItem::McpApprovalResponse {
+            approval_request_id: call,
+            ..
+        } => call,
         _ => return None,
     };
     Some((call, item.turn_id()))
@@ -57,6 +61,18 @@ pub(crate) fn output_matches_invocation(call: &ResponseItem, result: &ResponseIt
                 call_id: actual, ..
             },
         ) => expected == actual,
+        (
+            ResponseItem::McpApprovalRequest {
+                id: Some(expected),
+                provider_fields,
+                ..
+            },
+            ResponseItem::McpApprovalResponse {
+                approval_request_id: actual,
+                caller,
+                ..
+            },
+        ) => expected == actual && provider_fields.get("caller") == caller.as_ref(),
         _ => false,
     }
 }
@@ -86,6 +102,27 @@ pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> 
                 ..
             },
         ) => left == right && left_checks == right_checks,
+        (
+            ResponseItem::McpApprovalResponse {
+                approval_request_id: left_id,
+                approve: left,
+                reason: left_reason,
+                caller: left_caller,
+                ..
+            },
+            ResponseItem::McpApprovalResponse {
+                approval_request_id: right_id,
+                approve: right,
+                reason: right_reason,
+                caller: right_caller,
+                ..
+            },
+        ) => {
+            left_id == right_id
+                && left == right
+                && left_reason == right_reason
+                && left_caller == right_caller
+        }
         _ => false,
     }
 }
@@ -313,7 +350,10 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
         match item {
             ResponseItem::FunctionCall { call_id, .. }
             | ResponseItem::CustomToolCall { call_id, .. }
-            | ResponseItem::ComputerCall { call_id, .. } => {
+            | ResponseItem::ComputerCall { call_id, .. }
+            | ResponseItem::McpApprovalRequest {
+                id: Some(call_id), ..
+            } => {
                 ensure!(
                     calls
                         .insert(

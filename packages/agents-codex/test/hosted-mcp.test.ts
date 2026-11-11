@@ -1,6 +1,7 @@
 import { inspect } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { hostedMcp } from '../src/runtime/hosted-mcp';
+import type { HostedMCPOptions } from '../src';
 import {
   assertHostedMcpConfigurations,
   hostedMcpConfigurations,
@@ -159,4 +160,17 @@ describe('native hosted MCP declarations', () => {
     ])
       expect(() => prepareManualResult(server, reply)).toThrow();
   });
+});
+
+it('accepts reusable exported HostedMCPOptions with an optional callback', () => {
+  const makeServer = (options: HostedMCPOptions) => hostedMcp(options);
+  const options: HostedMCPOptions = {
+    serverLabel: 'docs',
+    serverUrl: 'https://docs.invalid/mcp',
+    requireApproval: 'always',
+    onApprovalRequest: () => ({ approve: false }),
+  };
+  expect(makeServer(options).kind).toBe('function');
+  const { onApprovalRequest: _callback, ...manual } = options;
+  expect(makeServer(manual).kind).toBe('manual');
 });

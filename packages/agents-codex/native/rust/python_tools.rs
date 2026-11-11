@@ -1546,18 +1546,7 @@ impl PythonTools {
             _ => return Ok(Some(PythonOutput(response).receipt(key))),
         };
         let mut item: ResponseItem = output.to_response_item(&key.call, &payload).into();
-        if let ResponseItem::ComputerCallOutput {
-            internal_chat_message_metadata_passthrough,
-            ..
-        } = &mut item
-        {
-            *internal_chat_message_metadata_passthrough = Some(
-                codex_protocol::models::InternalChatMessageMetadataPassthrough {
-                    turn_id: Some(key.turn.clone()),
-                    ..Default::default()
-                },
-            );
-        }
+        item.set_turn_id_if_missing(&key.turn);
         Ok(Some(item))
     }
 

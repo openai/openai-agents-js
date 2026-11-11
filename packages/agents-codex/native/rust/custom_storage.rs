@@ -75,7 +75,10 @@ fn identities(
             RolloutItem::ResponseItem(row) => match &row.item {
                 ResponseItem::FunctionCall { call_id, .. }
                 | ResponseItem::CustomToolCall { call_id, .. }
-                | ResponseItem::ComputerCall { call_id, .. } => {
+                | ResponseItem::ComputerCall { call_id, .. }
+                | ResponseItem::McpApprovalRequest {
+                    id: Some(call_id), ..
+                } => {
                     let identity = (
                         row.item.turn_id().unwrap_or(&turn).to_owned(),
                         call_id.clone(),
@@ -85,6 +88,12 @@ fn identities(
                             || matches!(row.item, ResponseItem::ComputerCall { .. }))
                     {
                         return Err(error("ambiguous original computer call identity"));
+                    }
+                    if let Some(previous) = calls.get(&identity)
+                        && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
+                            || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
+                    {
+                        return Err(error("ambiguous original Hosted MCP approval identity"));
                     }
                     calls.insert(identity, row.item.clone());
                 }
@@ -687,7 +696,9 @@ impl ThreadStore for CustomThreadStore {
             self.check_provider(Some(&params.metadata.model_provider))?;
             self.open(params.thread_id, true).await?;
             params.history = None;
-            self.projection.resume_thread(params).await
+            let mut history = self.projection.resume_thread(params).await?;
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
+            Ok(history)
         })
     }
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {

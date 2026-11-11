@@ -2024,7 +2024,8 @@ export function projectHostedToolItem(
   const raw = object(value);
   if (!raw || typeof raw.id !== 'string') return;
   const status = hostedToolStatusSchema.safeParse(
-    raw.type === 'mcp_list_tools' && raw.status === undefined
+    (raw.type === 'mcp_list_tools' || raw.type === 'mcp_call') &&
+      raw.status === undefined
       ? raw.error == null
         ? 'completed'
         : 'failed'

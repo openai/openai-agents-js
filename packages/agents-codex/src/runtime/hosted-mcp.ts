@@ -71,7 +71,7 @@ export function hostedMcp(
   },
 ): HostedMCPManual;
 export function hostedMcp<Context = unknown>(
-  options: HostedMCPOptions<Context> & { onApprovalRequest?: undefined },
+  options: HostedMCPOptions<Context>,
 ): HostedMCPFunction<Context> | HostedMCPManual;
 /** Provider-hosted MCP with scoped native approval replies and the existing never default. */
 export function hostedMcp<Context = unknown>(

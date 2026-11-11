@@ -13813,7 +13813,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (current !== capturedContext)
           throw new NativeError('Model context snapshot is stale');
       }
-      const checkpoint = await owner.change.prepare(summary, retainedIndices);
+      await owner.change.prepare(summary, retainedIndices);
       const current = decode(
         z.object({
           instructions: z.string(),
@@ -13849,18 +13849,16 @@ export class Session<OutputT = string, Context = unknown> {
       owner.candidate = await owner.creation;
       beforeRetirement();
       this.carrier?.bindEngine(owner.candidate);
-      owner.thread = await owner.candidate.restore_checkpoint(
-        checkpoint,
+      owner.thread = await owner.change.restoreCandidate(
         encode(options),
         this.catalog.specsJson,
-        false,
       );
       beforeRetirement();
       this.configureNative(owner.thread);
       const manualSlots = encode(
         this.catalog.tools
           .filter((tool) => tool.kind === 'manual')
-          .map((tool) => ({ name: tool.name })),
+          .map((tool) => ({ name: tool.name, namespace: toolNamespace(tool) })),
       );
       owner.thread._configure_manual_tools(manualSlots);
       if (this.options.includeRawProviderEvents)
