@@ -10,7 +10,13 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
  }
  #[derive(Deserialize)]
  #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-@@ -309,6 +311,8 @@
+@@ -305,10 +307,14 @@
+     Approve {
+         call_id: String,
+         approved: bool,
++        #[serde(default)]
++        output: Option<String>,
+     },
      ToolResult {
          call_id: String,
          output: String,
@@ -19,7 +25,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
      },
      Sent {
          id: u64,
-@@ -395,6 +399,7 @@
+@@ -395,6 +401,7 @@
      claim: CallClaim,
      needs_approval: bool,
      output: Option<String>,
@@ -27,7 +33,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
  }
  struct HostedApproval {
      response_id: String,
-@@ -437,6 +442,7 @@
+@@ -437,6 +444,7 @@
  struct Batch {
      calls: Vec<String>,
      hosted: Vec<String>,
@@ -35,7 +41,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
      out_of_band: bool,
      continued: bool,
  }
-@@ -487,6 +493,7 @@
+@@ -487,6 +495,7 @@
      completed_response_order: VecDeque<String>,
      cancel_before_created: bool,
      cancel_waiting: Option<String>,
@@ -43,7 +49,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
      guardrail_output: Option<String>,
  }
  struct DefaultCancelScope {
-@@ -542,6 +549,7 @@
+@@ -542,6 +551,7 @@
              completed_response_order: VecDeque::new(),
              cancel_before_created: false,
              cancel_waiting: None,
@@ -51,7 +57,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
              guardrail_output: None,
          }
      }
-@@ -777,6 +785,7 @@
+@@ -777,6 +787,7 @@
                  if self.phase != Phase::New {
                      return Err("Realtime control already started".into());
                  }
@@ -59,10 +65,25 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                  self.configure(config, false, &mut effects)?;
                  self.clear_output_audio_on_interrupt = clear_output_audio_on_interrupt;
              }
-@@ -1014,11 +1023,16 @@
+@@ -1001,7 +1012,11 @@
+                     self.incoming_bytes += bytes;
+                 }
+             }
+-            Command::Approve { call_id, approved } => {
++            Command::Approve {
++                call_id,
++                approved,
++                output,
++            } => {
+                 self.require_ready()?;
+                 let call = self.calls.get_mut(&call_id).ok_or("Unknown approval")?;
+                 if call.phase != CallPhase::Approval {
+@@ -1013,12 +1028,17 @@
+                 } else {
                      self.publish(
                          &call_id,
-                         "Tool execution was not approved.".into(),
+-                        "Tool execution was not approved.".into(),
++                        output.unwrap_or_else(|| "Tool execution was not approved.".into()),
 +                        false,
                          &mut effects,
                      )?;
@@ -77,7 +98,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                  self.require_ready()?;
                  if self
                      .calls
-@@ -1027,7 +1041,7 @@
+@@ -1027,7 +1047,7 @@
                  {
                      return Err("Tool result has no live execution claim".into());
                  }
@@ -86,7 +107,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
              }
              Command::Text { text } => {
                  self.require_ready()?;
-@@ -2290,6 +2304,23 @@
+@@ -2290,6 +2310,23 @@
                  }) {
                      return Err("Completed response omitted a hosted MCP approval".into());
                  }
@@ -110,7 +131,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                  let deferred_create = if managed_detached {
                      let owner = self.detached.get_mut(&id).unwrap();
                      owner.active = false;
-@@ -2312,7 +2343,7 @@
+@@ -2312,7 +2349,7 @@
                          self.responses.mark_finished().is_some()
                      }
                  };
@@ -119,7 +140,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                      if self.batches.contains_key(&id) {
                          return Err("Response batch already admitted".into());
                      }
-@@ -2321,6 +2352,7 @@
+@@ -2321,6 +2358,7 @@
                          Batch {
                              calls: ids.clone(),
                              hosted: hosted_ids.clone(),
@@ -127,7 +148,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                              out_of_band: managed_detached,
                              continued: false,
                          },
-@@ -2411,6 +2443,7 @@
+@@ -2411,6 +2449,7 @@
                  claim: CallClaim::default(),
                  needs_approval,
                  output: None,
@@ -135,7 +156,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
              },
          );
          Ok(())
-@@ -2419,24 +2452,26 @@
+@@ -2419,24 +2458,26 @@
          &mut self,
          call_id: &str,
          output: String,
@@ -168,7 +189,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
          Ok(())
      }
      fn continue_batches(&mut self, effects: &mut Vec<Effect>) -> Result<(), String> {
-@@ -2462,7 +2497,19 @@
+@@ -2462,7 +2503,19 @@
              .map(|(id, _)| id.clone())
              .collect();
          for id in ready {
@@ -189,7 +210,7 @@ diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/sr
                  if self.pending_detached.is_some() {
                      continue;
                  }
-@@ -2608,6 +2655,120 @@
+@@ -2608,6 +2661,120 @@
              json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
          )
      }
