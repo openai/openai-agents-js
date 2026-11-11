@@ -1354,6 +1354,7 @@ export function projectHistory(
   history: ThreadHistory,
   sessionId: string,
   subagentId?: string,
+  itemRecordIndexes?: Map<HistoryItem, number>,
 ) {
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
@@ -1414,7 +1415,8 @@ export function projectHistory(
     return occurrence;
   }
   const receipts = new Map<string, TurnReceipt>();
-  for (const { type, payload, metadata: recordedMetadata } of history) {
+  for (const [recordIndex, record] of history.entries()) {
+    const { type, payload, metadata: recordedMetadata } = record;
     if (type === 'compacted' || type === 'session_meta')
       pendingUser = undefined;
     if (type === 'turn_context' && typeof payload.turn_id === 'string') {
@@ -1515,6 +1517,7 @@ export function projectHistory(
             false,
             typeof payload.id === 'string',
           );
+          itemRecordIndexes?.set(item, recordIndex);
           const inputOrder = object(recordedMetadata)?.user_input_order;
           const kinds = metadata?.content_item_kinds;
           if (

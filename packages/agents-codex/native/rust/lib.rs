@@ -4325,6 +4325,21 @@ impl NativeThread {
         serde_json::to_string(&value).map_err(native_error)
     }
 
+    #[napi(js_name = "_start_produced_items")]
+    pub fn start_produced_items(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner.thread.sdk_start_produced_items();
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_produced_items")]
+    pub fn take_produced_items(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner.thread.sdk_take_produced_items(&turn_id).map_err(native_error)
+    }
+
     #[napi(js_name = "read_thread_history")]
     pub async fn read_thread_history(&self, subagent_id: Option<String>) -> napi::Result<String> {
         let subagent_id = subagent_id.as_deref();
