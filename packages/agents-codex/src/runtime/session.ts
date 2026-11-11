@@ -322,6 +322,8 @@ import {
   toolDeclarationIdentity,
   type ToolSelector,
   invokeFunctionTool,
+  toolErrorFormatterBinding,
+  type ToolErrorFormatter,
   registerToolSessionOwner,
   outputOf,
   type ToolResponse,
@@ -392,6 +394,7 @@ export interface SessionOptions {
   initialMessages?: readonly import('./initial-messages').InitialMessage[];
   maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
+  toolErrorFormatter?: ToolErrorFormatter<any>;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
@@ -9340,6 +9343,7 @@ export class Session<OutputT = string, Context = unknown> {
           const context = {
             decide: scope.decide,
             [decisionBinding]: scope[decisionBinding],
+            [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
             realtimeUsage: this.realtimeUsage,
             ...(this.realtimeOwner?._realtimeToolContext(
               msg._sdk_realtime_tool_call,
@@ -10501,6 +10505,7 @@ export class Session<OutputT = string, Context = unknown> {
       const scope = this.decisionScope(event.msg, signal);
       const context = {
         [usageReportBinding]: this.toolUsageReporter(owner, check),
+        [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
         decide: scope.decide,
         [decisionBinding]: scope[decisionBinding],
         traceContext: nativeTraceContext(
