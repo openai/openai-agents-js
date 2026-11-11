@@ -71,6 +71,10 @@ function fixture(
     _hasRealtimeAgentConfiguration: vi.fn(() => false),
     _realtimeCurrentProfile: vi.fn(async () => null),
     _realtimeProfileTarget: vi.fn((target: unknown) => target ?? null),
+    _realtimeEventSource: vi.fn(
+      (_receipt: unknown): { agent: unknown; context: unknown } | undefined =>
+        undefined,
+    ),
     _realtimeGuardrailSource: vi.fn((_receipt: unknown) => ({
       agent: { name: 'captured Agent' } as never,
       context: undefined as unknown,
@@ -85,6 +89,18 @@ function fixture(
     id = generation,
   ) => owner._ingest({ id, msg: { type, ...msg } } as NativeEvent);
   const payload = (value: unknown, input?: string, id = generation) => {
+    const request = (
+      value as { FunctionCallRequested?: Record<string, unknown> }
+    )?.FunctionCallRequested;
+    if (request)
+      value = {
+        ...(value as Record<string, unknown>),
+        FunctionCallRequested: {
+          arguments: '{}',
+          item_id: `item-${request.call_id}`,
+          ...request,
+        },
+      };
     if (value && typeof value === 'object')
       for (const item of Object.values(value))
         if (

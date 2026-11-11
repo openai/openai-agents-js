@@ -73,11 +73,11 @@ import {
 } from './prepared-request';
 import {
   captureTracing,
+  captureTraceValidation,
   getCurrentSpan,
   workflowForTrace,
   withoutTracing,
   TraceCapture,
-  type TraceSpan,
   withNativeCallbackContext,
 } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -1874,6 +1874,12 @@ export class Session<OutputT = string, Context = unknown> {
     };
   }
 
+  /** @internal Preserve absent application identity on a bare native Session. */
+  _realtimeEventSource(receipt: unknown) {
+    if (receipt == null && !this.options.applicationAgent) return undefined;
+    return this._realtimeConfigurationSource(receipt ?? null);
+  }
+
   /** @internal Capture the actual native catalog before resolving app callbacks. */
   async _realtimeSourceSnapshot(
     generation?: string,
@@ -2464,7 +2470,7 @@ export class Session<OutputT = string, Context = unknown> {
       event: NativeEvent;
       tool: ManualTool;
       grant: ReturnType<typeof createManualRequest>;
-      tracing?: TraceSpan;
+      tracing?: ReturnType<typeof captureTraceValidation>;
       ready: boolean;
       identity: ToolIdentity;
     }
@@ -9064,17 +9070,21 @@ export class Session<OutputT = string, Context = unknown> {
       parent: toolInvocation.getStore(),
     };
     const tracing = run.tracing ?? run.issuedTracing;
+    const invokeNative = () =>
+      withNativeCallbackContext(
+        tracingContext,
+        callback,
+        signal,
+        workflowForTrace,
+      );
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
       .then(() =>
         toolInvocation.run(scope, () =>
           tracingContext !== undefined
-            ? withNativeCallbackContext(
-                tracingContext,
-                callback,
-                signal,
-                workflowForTrace,
-              )
+            ? tracing
+              ? tracing.runWithStorage(invokeNative)
+              : invokeNative()
             : tracing
               ? tracing.run('host.callback', 'callback', callback)
               : callback(),
@@ -9429,7 +9439,7 @@ export class Session<OutputT = string, Context = unknown> {
           event,
           tool,
           grant,
-          tracing: getCurrentSpan(),
+          tracing: captureTraceValidation(),
           identity,
           ready: false,
         });
@@ -10598,6 +10608,12 @@ export class Session<OutputT = string, Context = unknown> {
           approved,
           () =>
             this.realtimeFunctionEnabled(owner, msg, tool.name, signal, true),
+          () =>
+            this.realtimeOwner?._toolBodyStarted(
+              msg._sdk_realtime_tool_call,
+              msg._sdk_realtime_tool_name as string,
+              toolDeclarationIdentity(tool) as FunctionTool<any>,
+            ),
         );
         if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';
