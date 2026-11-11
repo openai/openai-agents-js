@@ -8715,6 +8715,8 @@ export class Session<OutputT = string, Context = unknown> {
       }
     };
     const abort = () => reply(null);
+    const treeStopping = () =>
+      [...this.graphStops].some((stop) => stop.options.scope === 'thread_tree');
     signal.addEventListener('abort', abort, { once: true });
     try {
       signal.throwIfAborted();
@@ -8722,9 +8724,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (
         !this.current(owner) ||
         native !== this.#native ||
-        [...this.graphStops].some(
-          (stop) => stop.options.scope === 'thread_tree',
-        ) ||
+        treeStopping() ||
         !original ||
         original.incarnation !== owner.incarnation ||
         original.turn_id !== owner.turnId ||
@@ -8755,28 +8755,42 @@ export class Session<OutputT = string, Context = unknown> {
         stepIndex: capturedSelection.stepIndex,
         signal,
       });
-      // Read-only admission must be adjacent to entry, after every await.
-      try {
-        if (!native._check_step(encode(receipt))) {
+      const stepReceipt = encode(receipt);
+      const isAdmitted = (diagnose = false) => {
+        if (signal.aborted) return false;
+        if (
+          !this.current(owner) ||
+          native !== this.#native ||
+          treeStopping() ||
+          capturedSelection.generation !== this.catalog.generation
+        ) {
+          if (diagnose) reply(null);
+          return false;
+        }
+        try {
+          if (native._check_step(stepReceipt)) return true;
           if (
+            diagnose &&
             delivery &&
             delivery.native._python_callback_cancelled(delivery.wire)
           )
-            this.callbackAuthorityFailed(
-              delivery,
-              new NativeError('Child step selection is no longer active'),
-            );
-          return;
+            throw new NativeError('Child step selection is no longer active');
+          return false;
+        } catch (error) {
+          this.callbackAuthorityFailed(delivery, error);
         }
-      } catch (error) {
-        this.callbackAuthorityFailed(delivery, error);
-      }
+      };
       signal.throwIfAborted();
+      if (!isAdmitted(true)) return;
       if (owner.failure !== undefined) throw owner.failure;
+      const skipped = Symbol();
+      let selected: StepDecision<Context> | typeof skipped;
       let names: ReturnType<typeof this.selectedStepNames> = [];
       let stopped = false;
       try {
-        const selected = await withNativeCallbackContext(
+        selected = await withNativeCallbackContext<
+          StepDecision<Context> | typeof skipped
+        >(
           typeof event.msg.tracing_context === 'string'
             ? event.msg.tracing_context
             : undefined,
@@ -8794,6 +8808,7 @@ export class Session<OutputT = string, Context = unknown> {
                   : (this.options.agentInputGuardrails ?? [])),
               ].filter((guard) => guard.childCallback !== undefined);
               if (guards.length) {
+                if (!isAdmitted()) return skipped;
                 if (!agent)
                   throw new NativeError('Child guardrail has no source Agent');
                 const initial = event.msg.initial_input;
@@ -8819,6 +8834,7 @@ export class Session<OutputT = string, Context = unknown> {
                     guards.filter((guard) => guard.runInParallel === false),
                     context,
                   );
+                  if (!isAdmitted()) return skipped;
                   const parallel = guards.filter(
                     (guard) => guard.runInParallel !== false,
                   );
@@ -8828,6 +8844,7 @@ export class Session<OutputT = string, Context = unknown> {
                       owner,
                       async () => {
                         try {
+                          if (!isAdmitted()) return;
                           await this.checkInputGuardrails(
                             owner,
                             event.msg,
@@ -8849,6 +8866,7 @@ export class Session<OutputT = string, Context = unknown> {
                 }
               }
             }
+            if (beforeStep && !isAdmitted()) return skipped;
             capturedSelection.stepIndex++;
             return beforeStep?.(context);
           },
@@ -8856,37 +8874,17 @@ export class Session<OutputT = string, Context = unknown> {
           workflowForTrace,
           owner.observationProducer.callbackTraceStorages,
         );
-        if (isStepStop(selected)) stopped = true;
-        else names = this.selectedStepNames(event, selected);
+        if (selected !== skipped) {
+          if (isStepStop(selected)) stopped = true;
+          else names = this.selectedStepNames(event, selected);
+        }
       } finally {
         await scope.close();
       }
       signal.throwIfAborted();
-      if (
-        !this.current(owner) ||
-        native !== this.#native ||
-        capturedSelection.generation !== this.catalog.generation
-      ) {
-        reply(null);
-        return;
-      }
-      try {
-        if (!native._check_step(encode(receipt))) {
-          if (
-            delivery &&
-            delivery.native._python_callback_cancelled(delivery.wire)
-          )
-            this.callbackAuthorityFailed(
-              delivery,
-              new NativeError('Child step selection is no longer active'),
-            );
-          return;
-        }
-      } catch (error) {
-        this.callbackAuthorityFailed(delivery, error);
-      }
+      if (!isAdmitted(true) || selected === skipped) return;
       if (stopped) {
-        if (native._stop_step(encode(receipt))) replied = true;
+        if (native._stop_step(stepReceipt)) replied = true;
         else reply(null);
         return;
       }

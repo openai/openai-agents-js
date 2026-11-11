@@ -698,6 +698,205 @@ it.each([
   20000,
 );
 
+it.each(['trace entry', 'queued guardrail', 'graceful tree stop'] as const)(
+  'skips child step callbacks after admission expires at %s',
+  async (mode) => {
+    const addon = await binding();
+    const { NativeThread } = addon;
+    const treeStop = mode === 'graceful tree stop';
+    const check = NativeThread.prototype._check_step;
+    const owners = vi.spyOn(ChildCallbacks.prototype, 'owner');
+    const refused = Promise.withResolvers<string>();
+    let admitted: { native: NativeThread; wire: string } | undefined;
+    let expired = false;
+    vi.spyOn(NativeThread.prototype, '_check_step').mockImplementation(
+      function (this: NativeThread, wire) {
+        if (wire === admitted?.wire && expired) {
+          refused.resolve(wire);
+          return false;
+        }
+        const active = check.call(this, wire);
+        if (active && JSON.parse(wire).instance)
+          admitted ??= { native: this, wire };
+        return active;
+      },
+    );
+    const heldCallback = Promise.withResolvers<NonNullable<typeof admitted>>();
+    const releaseCallback = Promise.withResolvers<void>();
+    const settling = Promise.withResolvers<void>();
+    const releaseStop = Promise.withResolvers<void>();
+    const stopSettled = Promise.withResolvers<void>();
+    if (treeStop) {
+      const requestStop = NativeThread.prototype._request_graph_stop;
+      vi.spyOn(
+        NativeThread.prototype,
+        '_request_graph_stop',
+      ).mockImplementation(function (this: NativeThread, scope, mode) {
+        const receipt = requestStop.call(this, scope, mode);
+        const settle = receipt.settle.bind(receipt);
+        vi.spyOn(receipt, 'settle').mockImplementation(async () => {
+          settling.resolve();
+          await releaseStop.promise;
+          await settle();
+          stopSettled.resolve();
+        });
+        return receipt;
+      });
+    }
+    const retain = addon._retain_callback_dispatch_context;
+    const nativeReleased = Promise.withResolvers<string>();
+    const nativeReleases: string[] = [];
+    const dispatch = vi
+      .spyOn(addon, '_retain_callback_dispatch_context')
+      .mockImplementation((handle, key, release) =>
+        retain(handle, key, () => {
+          release();
+          nativeReleases.push(key);
+          nativeReleased.resolve(key);
+        }),
+      );
+    const storage = new AsyncLocalStorage<telemetry.TraceSpan>();
+    const run = storage.run.bind(storage);
+    vi.spyOn(storage, 'run').mockImplementation((span, callback, ...args) => {
+      if (admitted && span?.kind === 'callback') {
+        // The two fault cases change only the check spy's answer.
+        if (mode === 'trace entry') expired = true;
+        if (treeStop) {
+          heldCallback.resolve(admitted);
+          return releaseCallback.promise.then(() =>
+            run(span, callback, ...args),
+          );
+        }
+      }
+      return run(span, callback, ...args);
+    });
+    const entries: string[] = [];
+    const beforeStep = (): undefined => {
+      entries.push('beforeStep');
+      // The parallel guardrail is queued while beforeStep runs synchronously.
+      if (mode === 'queued guardrail') expired = true;
+    };
+    const spawn = call(
+      'spawn_agent',
+      { task_name: 'guarded', message: 'child input', fork_turns: 'none' },
+      { namespace: 'collaboration', callId: 'spawn-guarded' },
+    );
+    const server = new ModelServer(
+      treeStop ? [[spawn]] : [[spawn], [message('root done')]],
+    );
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-child-guardrail',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Delegate.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [new NativeAgents({ maxChildren: 1, beforeStep })],
+      inputGuardrails: [
+        {
+          name: 'child-input',
+          runInParallel: true,
+          callback: () => ({ tripwireTriggered: false }),
+          childCallback() {
+            entries.push('guardrail');
+            return { tripwireTriggered: false };
+          },
+        },
+      ],
+    });
+    const executor = await startPublicExecutor();
+    let session: Awaited<ReturnType<typeof agent.session>> | undefined;
+    try {
+      const opened = (session = await agent.session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        }),
+      }));
+      telemetry.setTraceContextStorage(storage);
+      const root = await telemetry.withSpan({ name: 'submission' }, () =>
+        opened.submit('begin'),
+      );
+      let wire: string;
+      if (treeStop) {
+        const held = await within(heldCallback.promise, 'child callback hold');
+        await opened.interrupt({ scope: 'all', mode: 'graceful' });
+        await within(settling.promise, 'graceful stop settlement entry');
+        expect(check.call(held.native, held.wire)).toBe(true);
+        wire = held.wire;
+      } else {
+        expect((await within(root.wait(), 'root completion')).finalOutput).toBe(
+          'root done',
+        );
+        wire = await within(refused.promise, 'child step refusal');
+      }
+      const step = JSON.parse(wire);
+      const owner = owners.mock.results.find(
+        ({ type, value }) =>
+          type === 'return' &&
+          value.childId === step.thread &&
+          value.incarnation === step.instance &&
+          value.turnId === step.turn_id,
+      );
+      expect(owner?.type).toBe('return');
+      const registry = owner!.value.observationProducer.callbackTraceStorages;
+      const key = dispatch.mock.calls[0]?.[1];
+      if (treeStop) {
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(registry.get(key!)?.storage).toBe(storage);
+        expect(nativeReleases).toEqual([]);
+      }
+      releaseCallback.resolve();
+      await within(
+        Promise.allSettled([...owner!.value.tasks]),
+        'child callback cleanup',
+      );
+      if (treeStop) expect(entries).toEqual([]);
+      expect(owner!.value.failure).toBeUndefined();
+      expect(owner!.value.controller.signal.aborted).toBe(false);
+      const [child] = await within(
+        Array.fromAsync(opened.subagents()),
+        'child lookup',
+      );
+      expect(child?.turn).toBeTruthy();
+      const outcome = child!.turn!.wait().catch((error: unknown) => error);
+      if (treeStop) {
+        releaseStop.resolve();
+        await within(stopSettled.promise, 'graceful stop settlement');
+      }
+      await within(opened.close(), 'Session close');
+      expect(await within(outcome, 'closed child turn')).toBeInstanceOf(Error);
+      expect(entries).toEqual(
+        mode === 'queued guardrail' ? ['beforeStep'] : [],
+      );
+      if (treeStop) {
+        expect(
+          await within(nativeReleased.promise, 'native storage release'),
+        ).toBe(key);
+        expect(nativeReleases).toEqual([key]);
+        expect(registry.has(key!)).toBe(false);
+      }
+      server.assertExhausted();
+    } finally {
+      releaseCallback.resolve();
+      releaseStop.resolve();
+      telemetry.setTraceContextStorage();
+      try {
+        if (session) await within(session.close(), 'Session cleanup');
+      } finally {
+        await within(executor.close(), 'executor cleanup');
+      }
+    }
+  },
+  20000,
+);
+
 it('keeps the child trace storage until a parallel input guardrail returns on close', async () => {
   const addon = await binding();
   const owners = vi.spyOn(ChildCallbacks.prototype, 'owner');
