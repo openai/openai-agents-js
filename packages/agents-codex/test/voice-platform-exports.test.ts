@@ -40,6 +40,7 @@ it('bundles actual public voice platform subpaths for browsers without native or
             'event-observers',
             'webrtc',
             'base64',
+            '../runtime/background-result',
             '../runtime/realtime-guardrails',
             '../runtime/realtime-usage',
           ]

@@ -56,7 +56,13 @@ Warm `measuredWallMs` and process CPU exclude import, construction, prefill/warm
 
 The analyzer preserves all rounds and raw tails. It rejects errors, profiled/preloaded/marked diagnostic captures, mismatched parameters, missing pairs and unequal completed work. Metadata equality is checked within each workload/file when fields are supplied. Legacy rows may omit `inputs`, `runtime` and `sources`; if all relevant rows omit a field, the analyzer accepts its absence and does not verify that metadata. Mixing present and missing values in one workload is rejected. Use the portable controller's metadata-bearing rows plus the external input audit for a reviewable comparison; legacy compatibility does not establish provenance. The analyzer reports per-worker metric medians/ranges and a deterministic paired bootstrap interval for the ratio of medians. Worker processes, not individual turns, are the resampling units. The turn quantile uses `sorted[floor(q*n)]`, so named p95 is the maximum at 20 turns. Five paired rounds are exploratory and give weak tail/interval precision. More turns within one session change history depth; they do not create independent replicas.
 
-A substantial comparison should predeclare cases, metrics, tolerances and stop criteria. Preserve at least 10 paired workers per warm case at both 20 turns (primary) and 50 turns (longer-session sensitivity), with separate files/summaries. Include the large-stream cell (16384bytes/512chunks) at both horizons. Use 30 fresh-process pairs per cold case. Keep100ms model-delay and trace-on supplements separate rather than pooling them with the zero-delay baseline. The analyzer's minimum-round setting checks sample count, not completion of this full matrix, build provenance, host quietness or an acceptance policy. It always reports `acceptanceEstablished=false`; final published numbers and acceptance remain pending review.
+Before running a comparison, record the cases, metrics, tolerances, and stop criteria.
+
+- Collect at least 10 paired workers per warm case at 20 turns and again at 50 turns. Keep separate files and summaries for the two turn counts. Include the 16,384-byte, 512-chunk streaming case in both.
+- Collect 30 fresh-process pairs per cold case.
+- Keep the 100 ms model-delay and trace-on runs separate from the zero-delay baseline.
+
+The analyzer's minimum-round setting checks the sample count. It always reports `acceptanceEstablished=false`. Review the full test matrix, build provenance, and host load before drawing conclusions.
 
 Example primary warm collection (eight default warm cases); repeat with 50 turns in a different file:
 
