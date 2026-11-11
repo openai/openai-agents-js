@@ -9,7 +9,12 @@ import {
 } from './binding';
 import type { ThreadOptions } from './options';
 import type { ToolCallInfo } from './call-metadata';
-import { outputOf, type ToolDeclaration, type ToolResponse } from './tools';
+import {
+  outputOf,
+  ToolOutput,
+  type ToolDeclaration,
+  type ToolResponse,
+} from './tools';
 
 // Parsed function inputs can contain opaque application values. Keep their
 // semantics while detaching ordinary containers and dates from approval views.
@@ -260,8 +265,14 @@ export function manualTool<
       JSON.stringify(z.toJSONSchema(result, { io: 'input' })),
     ),
     parseInput: (args) => parameters.parse(args),
-    parseResult: (value) =>
-      outputOf(losslessJsonValueSchema.parse(result.parse(value))),
+    parseResult: (value) => {
+      const parsed = result.parse(value);
+      return outputOf(
+        parsed instanceof ToolOutput
+          ? parsed
+          : losslessJsonValueSchema.parse(parsed),
+      );
+    },
   };
   return assembleManualTool<z.output<P>, z.input<R>>(
     {

@@ -212,6 +212,12 @@ export class NativeThread {
     call_id: string,
     reply: string,
   ): boolean;
+  _resolve_native_mcp_result_with_assignment(
+    nonce: NativeId,
+    turn_id: string,
+    call_id: string,
+    reply: string,
+  ): Promise<[boolean, boolean]>;
   _read_goal(): Promise<string>;
   _set_paused_goal(
     objective: string,
@@ -310,7 +316,10 @@ export class NativeThread {
     allocate_generation?: boolean,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
-  _respond_python_tool(response_json: string): Promise<boolean>;
+  _respond_python_tool(
+    response_json: string,
+    wait_for_acceptance?: boolean,
+  ): Promise<boolean>;
   _require_tool_approval(requestJson: string, argumentsJson?: string): boolean;
   _approve_manual_tool(requestJson: string): Promise<boolean>;
   _configure_manual_tools(

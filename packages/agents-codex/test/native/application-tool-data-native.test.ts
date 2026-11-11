@@ -1,0 +1,390 @@
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import { afterEach, expect, it } from 'vitest';
+import { z } from 'zod';
+import {
+  Agent,
+  HttpMCP,
+  NativeProvider,
+  ToolOutput,
+  manualTool,
+  tool,
+} from '../../src';
+import { ModelServer, call, message } from './fixtures/model-server';
+
+const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
+afterEach(() => ModelServer.closeAll());
+async function providerFor(model: ModelServer) {
+  const config = await model.config();
+  return new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-app-data',
+    supportsWebsockets: false,
+  });
+}
+
+nativeIt(
+  'retains terminal application data only with the canonical output',
+  async () => {
+    const model = new ModelServer([
+      [call('finish', {}, { callId: 'terminal-data' })],
+    ]);
+    await using provider = await providerFor(model);
+    await using session = await new Agent({
+      instructions: 'Finish with the supplied tool.',
+      provider,
+      tools: [
+        tool({
+          name: 'finish',
+          parameters: z.object({}),
+          finishTurn: true,
+          execute: () =>
+            new ToolOutput([{ type: 'inputText', text: 'done' }], true, {
+              ticket: 'private-terminal',
+            }),
+        }),
+      ],
+    }).session();
+    const turn = await session.submit('Finish');
+    const result = await turn.wait();
+    expect(result.finalOutput).toBe('done');
+    expect(result.applicationToolOutputs).toEqual([
+      expect.objectContaining({
+        callId: 'terminal-data',
+        applicationData: { ticket: 'private-terminal' },
+      }),
+    ]);
+    expect(model.requests).toHaveLength(1);
+    expect(JSON.stringify(await session.saveState())).toContain(
+      'private-terminal',
+    );
+  },
+);
+
+nativeIt.each(['original', 'transformed', 'malformed'] as const)(
+  'extracts MCP application data after %s result with validated delivery',
+  async (mode) => {
+    const failures: unknown[] = [];
+    const peer = createServer(async (request, response) => {
+      if (request.method !== 'POST') {
+        response.writeHead(405).end();
+        return;
+      }
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const rpc = JSON.parse(Buffer.concat(chunks).toString());
+        if (rpc.id === undefined) {
+          response.writeHead(202).end();
+          return;
+        }
+        const result =
+          rpc.method === 'initialize'
+            ? {
+                protocolVersion: rpc.params.protocolVersion,
+                capabilities: { tools: {} },
+                serverInfo: { name: 'app-peer', version: '1' },
+              }
+            : rpc.method === 'tools/list'
+              ? {
+                  tools: [
+                    {
+                      name: 'lookup',
+                      inputSchema: {
+                        type: 'object',
+                        properties: { query: { type: 'string' } },
+                        required: ['query'],
+                      },
+                    },
+                  ],
+                }
+              : rpc.method === 'tools/call'
+                ? {
+                    content: [{ type: 'text', text: 'peer-public' }],
+                    _meta: { ticket: 'peer-meta' },
+                    structuredContent: { count: 7 },
+                    isError: false,
+                  }
+                : {};
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }));
+      } catch (error) {
+        failures.push(error);
+        response.destroy();
+      }
+    });
+    peer.listen(0, '127.0.0.1');
+    await once(peer, 'listening');
+    const address = peer.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Expected TCP peer');
+    let extracts = 0;
+    const model = new ModelServer([
+      [
+        call(
+          'lookup',
+          { query: 'input' },
+          { namespace: 'mcp__application', callId: 'mcp-app-data' },
+        ),
+      ],
+      (request) => {
+        expect(JSON.stringify(request)).not.toContain(
+          'private-mcp-application',
+        );
+        const output = (
+          request.input as { type: string; output?: unknown }[]
+        ).find((item) => item.type === 'function_call_output');
+        expect(JSON.stringify(output?.output)).toContain(
+          mode === 'transformed' ? '8' : '7',
+        );
+        return [message('done')];
+      },
+    ]);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use lookup.',
+        provider,
+        tools: [
+          new HttpMCP({
+            name: 'application',
+            url: `http://127.0.0.1:${address.port}/mcp`,
+            tools: ['lookup'],
+            approvalMode: 'preapproved',
+            ...(mode === 'original'
+              ? {}
+              : {
+                  transformResult: async (_context, result) =>
+                    mode === 'malformed'
+                      ? { ...result, content: 'invalid' }
+                      : {
+                          ...result,
+                          content: [{ type: 'text', text: 'edited-public' }],
+                          structuredContent: { count: 8 },
+                        },
+                }),
+            async extractApplicationData(context, result) {
+              extracts++;
+              expect(context.arguments).toEqual({ query: 'input' });
+              expect(context.toolDisplayName).toBe('lookup');
+              expect(result.structuredContent).toEqual({
+                count: mode === 'transformed' ? 8 : 7,
+              });
+              expect(result._meta).toEqual({ ticket: 'peer-meta' });
+              return { ticket: 'private-mcp-application' };
+            },
+          }),
+        ],
+      }).session();
+      const turn = await session.submit('Look up');
+      if (mode === 'malformed') {
+        await expect(turn.wait()).rejects.toThrow('MCP result policy failed');
+        expect(turn.applicationToolOutputs).toEqual([]);
+      } else {
+        const result = await turn.wait();
+        expect(result.applicationToolOutputs).toHaveLength(1);
+        expect(result.applicationToolOutputs![0]).toMatchObject({
+          callId: 'mcp-app-data',
+          applicationData: { ticket: 'private-mcp-application' },
+        });
+        expect(
+          JSON.stringify((await session.historySnapshot()).items),
+        ).not.toContain('private-mcp-application');
+        expect(JSON.stringify(await session.saveState())).toContain(
+          'private-mcp-application',
+        );
+      }
+      expect(extracts).toBe(1);
+      expect(failures).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => peer.close(() => resolve()));
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'retains generated-code function application data after native acceptance',
+  async () => {
+    let effects = 0;
+    const model = new ModelServer([
+      [
+        {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'application-cell',
+          input: 'text(await tools.record({}));',
+        },
+      ],
+      (request) => {
+        expect(JSON.stringify(request)).not.toContain(
+          'private-nested-application',
+        );
+        expect(JSON.stringify(request)).toContain('nested-public');
+        return [message('done')];
+      },
+    ]);
+    await using provider = await providerFor(model);
+    await using session = await new Agent({
+      instructions: 'Call record from code once.',
+      provider,
+      programmaticToolCalling: true,
+      tools: [
+        tool({
+          name: 'record',
+          parameters: z.object({}),
+          execute: (_args, context) => {
+            expect(context.call?.route).toBe('code');
+            effects++;
+            return new ToolOutput(
+              [{ type: 'inputText', text: 'nested-public' }],
+              true,
+              { ticket: 'private-nested-application' },
+            );
+          },
+        }),
+      ],
+    }).session();
+    const turn = await session.submit('Run the code.');
+    const result = await turn.wait();
+    expect(result.finalOutput).toBe('done');
+    expect(result.applicationToolOutputs).toEqual([
+      expect.objectContaining({
+        name: 'record',
+        applicationData: { ticket: 'private-nested-application' },
+      }),
+    ]);
+    expect(
+      JSON.stringify((await session.historySnapshot()).items),
+    ).not.toContain('private-nested-application');
+    expect(JSON.stringify(await session.saveState())).toContain(
+      'private-nested-application',
+    );
+    expect(effects).toBe(1);
+  },
+  30000,
+);
+
+nativeIt(
+  'retains one validated manual application result and rejects its duplicate',
+  async () => {
+    const model = new ModelServer([
+      [call('record', {}, { callId: 'manual-data' })],
+      (request) => {
+        expect(JSON.stringify(request)).toContain('public manual');
+        expect(JSON.stringify(request)).not.toContain('private-manual');
+        return [message('manual done')];
+      },
+    ]);
+    await using provider = await providerFor(model);
+    const declaration = manualTool({
+      name: 'record',
+      description: 'Record a public result',
+      parameters: z.object({}),
+      result: z.string().transform(
+        (text) =>
+          new ToolOutput([{ type: 'inputText', text }], true, {
+            ticket: 'private-manual',
+          }),
+      ),
+    });
+    await using session = await new Agent({
+      instructions: 'Use the supplied tool.',
+      provider,
+      tools: [declaration],
+    }).session();
+    const turn = await session.submit('Record');
+    let handled = false;
+    for await (const event of session.events()) {
+      const request = declaration.match(event);
+      if (!request) continue;
+      const reply = request.reply('public manual');
+      await session.respond(reply);
+      await expect(session.respond(reply)).rejects.toThrow();
+      handled = true;
+      break;
+    }
+    expect(handled).toBe(true);
+    expect((await turn.wait()).applicationToolOutputs).toEqual([
+      expect.objectContaining({
+        callId: 'manual-data',
+        applicationData: { ticket: 'private-manual' },
+      }),
+    ]);
+    expect(
+      JSON.stringify((await session.historySnapshot()).items),
+    ).not.toContain('private-manual');
+    expect(JSON.stringify(await session.saveState())).toContain(
+      'private-manual',
+    );
+    model.assertExhausted();
+  },
+);
+
+nativeIt(
+  'preserves accepted application data in completion after a manual checkpoint restore',
+  async () => {
+    const model = new ModelServer([
+      [call('record', {}, { callId: 'before-pause' })],
+      [call('pause', {}, { callId: 'manual-pause' })],
+      [message('resumed')],
+    ]);
+    await using provider = await providerFor(model);
+    const pause = manualTool({
+      name: 'pause',
+      description: 'Pause for approval',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const agent = new Agent({
+      instructions: 'Use the supplied tools.',
+      provider,
+      tools: [
+        tool({
+          name: 'record',
+          parameters: z.object({}),
+          execute: () =>
+            new ToolOutput([{ type: 'inputText', text: 'recorded' }], true, {
+              ticket: 'accepted-before-suspension',
+            }),
+        }),
+        pause,
+      ],
+    });
+    let state;
+    {
+      await using source = await agent.session();
+      const turn = await source.submit('Record, then pause');
+      for await (const event of source.events()) {
+        if (!pause.match(event)) continue;
+        expect(turn.applicationToolOutputs).toHaveLength(1);
+        state = await source.saveState();
+        break;
+      }
+    }
+    expect(state).toBeDefined();
+    await using restored = await agent.session({ state: state! });
+    for await (const event of restored.events()) {
+      const request = pause.match(event);
+      if (!request) continue;
+      await restored.respond(request.reply('continue'));
+      break;
+    }
+    const result = await restored.wait();
+    expect(result.finalOutput).toBe('resumed');
+    expect(result.applicationToolOutputs).toEqual([
+      expect.objectContaining({
+        callId: 'before-pause',
+        applicationData: { ticket: 'accepted-before-suspension' },
+      }),
+    ]);
+    expect(JSON.stringify(await restored.saveState())).toContain(
+      'accepted-before-suspension',
+    );
+    expect(JSON.stringify(model.requests)).not.toContain(
+      'accepted-before-suspension',
+    );
+    model.assertExhausted();
+  },
+);

@@ -131,6 +131,7 @@ export type {
   MCPBeforeDecision,
   MCPStopDecision,
   MCPResultContext,
+  MCPApplicationDataContext,
   StdioMCPOptions,
   HttpMCPOptions,
   HostedVerificationMCPOptions,
@@ -174,7 +175,11 @@ export type {
   ImageDetail,
   FunctionCallOutput,
 } from './runtime/input';
-export type { ChecklistState, SessionState } from './runtime/state';
+export type {
+  ApplicationToolOutput,
+  ChecklistState,
+  SessionState,
+} from './runtime/state';
 export { parseSessionState, readSessionInstructions } from './runtime/state';
 export type {
   TokenUsage,
