@@ -481,73 +481,46 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
         };
         let item = &envelope.item;
         let owner = item.turn_id().map(str::to_owned).or_else(|| turn.clone());
-        match item {
+        let invocation_id = match item {
             ResponseItem::FunctionCall { call_id, .. }
             | ResponseItem::CustomToolCall { call_id, .. }
-            | ResponseItem::ComputerCall { call_id, .. }
-            | ResponseItem::McpApprovalRequest {
-                id: Some(call_id), ..
-            } => {
-                ensure!(
-                    calls
-                        .insert(
-                            (owner, call_id.to_owned()),
-                            Call {
-                                invocation: item,
-                                output: None,
-                            }
-                        )
-                        .is_none(),
-                    "ambiguous tool call identity in local history"
-                );
-            }
+            | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
+            ResponseItem::McpApprovalRequest { id, .. } => id.as_ref().map(|id| id.as_str()),
             ResponseItem::ShellCall {
                 provider_fields, ..
-            } => {
-                let Some(call_id) = provider_fields
-                    .get("call_id")
-                    .and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                if !is_application_shell_call(envelope) {
-                    continue;
-                }
-                let call_id = provider_fields
-                    .get("call_id")
-                    .and_then(serde_json::Value::as_str)
-                    .context("recorded shell call has no valid call ID")?;
-                ensure!(
-                    calls
-                        .insert(
-                            (owner, call_id.to_owned()),
-                            Call {
-                                invocation: item,
-                                output: None
-                            }
-                        )
-                        .is_none(),
-                    "ambiguous tool call identity in local history"
-                );
-            }
-            _ => {
-                if let Some((call_id, _)) = output_identity(item)
-                    && let Some(entry) = calls.get_mut(&(owner, call_id.to_owned()))
-                {
-                    ensure!(
-                        output_matches_invocation(entry.invocation, item),
-                        "tool output kind does not match recorded invocation"
-                    );
-                    ensure!(
-                        entry
-                            .output
-                            .is_none_or(|prior| { tag(prior).is_none() && tag(item).is_none() })
-                            || entry.output == Some(item),
-                        "reconciliation conflicts with a retained result"
-                    );
-                    entry.output = Some(item);
-                }
-            }
+            } if is_application_shell_call(envelope) => provider_fields
+                .get("call_id")
+                .and_then(serde_json::Value::as_str),
+            _ => None,
+        };
+        if let Some(call_id) = invocation_id {
+            ensure!(
+                calls
+                    .insert(
+                        (owner, call_id.to_owned()),
+                        Call {
+                            invocation: item,
+                            output: None,
+                        }
+                    )
+                    .is_none(),
+                "ambiguous tool call identity in local history"
+            );
+        } else if let Some((call_id, _)) = output_identity(item)
+            && let Some(entry) = calls.get_mut(&(owner, call_id.to_owned()))
+        {
+            ensure!(
+                output_matches_invocation(entry.invocation, item),
+                "tool output kind does not match recorded invocation"
+            );
+            ensure!(
+                entry
+                    .output
+                    .is_none_or(|prior| { tag(prior).is_none() && tag(item).is_none() })
+                    || entry.output == Some(item),
+                "reconciliation conflicts with a retained result"
+            );
+            entry.output = Some(item);
         }
     }
     Ok(calls)
