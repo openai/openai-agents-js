@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   qualify:
-    name: Exact Darwin native transfer and public Session cases
+    name: Exact Darwin native transfer and installed Session cases
     if: github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/mark/nov9-js-macos-trusted-qualifier-478777b4'
     runs-on: macos-15
     timeout-minutes: 35
@@ -19,17 +19,17 @@ jobs:
       run:
         shell: bash
     env:
-      EXPECTED_HEAD: 478777b49c59617a84ba6ebf37b7ae40b7ebe83b
-      EXPECTED_TREE: b529aa071ee899139d9f2dfb35110df22563c016
-      NATIVE_INPUTS: 05206f90e7903f239ab8ffb62afc4a25d63629eda7dbbd08d6b8bd84627b2c92
-      RUSTUP_TOOLCHAIN: '1.95.0'
+      EXPECTED_HEAD: 3c78a7167ec8cb8dd9cc1285290b3c3b3b3557d9
+      EXPECTED_TREE: fde7b5fc89b6459753545f51605e0696c50592e2
+      NATIVE_INPUTS: 12335820ec8eaabae9ac626c03c02f350ba7d752dff37f0d4fadc3ce27121e6f
+      ALPHA_VERSION: 0.22.0-alpha.2
       OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
       CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
       EXECUTOR_SUITE: packages/agents-codex/test/native/local-executor-policy-native.test.ts
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 478777b49c59617a84ba6ebf37b7ae40b7ebe83b
+          ref: 3c78a7167ec8cb8dd9cc1285290b3c3b3b3557d9
           fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -41,52 +41,134 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
           git diff --exit-code
+          test "$(id -u)" -ne 0
           node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "darwin-arm64")'
-          printf 'SDK %s tree %s macOS %s UID %s\n' "$EXPECTED_HEAD" "$EXPECTED_TREE" "$(sw_vers -productVersion)" "$(id -u)"
+          printf 'SDK %s tree %s macOS %s image %s UID %s\n' \
+            "$EXPECTED_HEAD" "$EXPECTED_TREE" "$(sw_vers -productVersion)" "${ImageVersion:-unknown}" "$(id -u)"
       - name: Restore the verified Darwin native transfer
         env:
           GH_TOKEN: ${{ github.token }}
-          NATIVE_ARTIFACT: '{"artifact-id":"13765000375","artifact-digest":"266db2f0a4a086f0e2b835362e756ddebdb5dfb12c0bfda69984232b5c90418d"}'
+          NATIVE_ARTIFACT: '{"artifact-id":"13869968521","artifact-digest":"c2ed68fdeac66087047d0745e5e738a588f536c871bf2eb414ed8114e9f33876"}'
         run: |
           node scripts/restore-native-bundle.mjs
           test -x "$CODEX_EXEC_SERVER_TEST_BINARY"
-          shasum -a 256 -c <<'CHECKSUMS'
-          92d95b3966c76b5aaa6a09b4db85736998810d4ad39a68d5c164fb02ce5a3407  packages/agents-codex/native/codex.node
-          c9f765c307795032ed504c47ee42ae098972292d5120366b2a143a1c8d4cdc73  packages/agents-codex/native/test-bin/exec-server-fixture
-          CHECKSUMS
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
         with:
           run_install: false
       - name: Build the exact SDK with the restored addon
-        id: build_sdk
         run: |
           pnpm install --frozen-lockfile
-          pnpm build
+          # The root prebuild compiles portable Realtime with Rust.
+          pnpm --config.enable-pre-post-scripts=false build
           git diff --exit-code
-          shasum -a 256 -c <<'CHECKSUMS'
-          92d95b3966c76b5aaa6a09b4db85736998810d4ad39a68d5c164fb02ce5a3407  packages/agents-codex/native/codex.node
-          CHECKSUMS
-      - name: Trusted identity, offline SSH, toolchain, TLS and writes
-        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
-        run: >-
-          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
-          -t 'allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants'
-          --maxWorkers=1 --reporter=verbose
-      - name: Trusted Git and SSH settings and socket consent
-        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
-        run: >-
-          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
-          -t 'scopes Git and SSH settings for local commands'
-          --maxWorkers=1 --reporter=verbose
-      - name: Strict launch authority
-        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
-        run: >-
-          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
-          -t 'blocks delegation from a local command to launchd'
-          --maxWorkers=1 --reporter=verbose
-      - name: Strict detached child cleanup
-        if: ${{ !cancelled() && steps.build_sdk.outcome == 'success' }}
-        run: >-
-          env -u OPENAI_API_KEY pnpm test:native "$EXECUTOR_SUITE"
-          -t 'joins a detached local child at'
-          --maxWorkers=1 --reporter=verbose
+      - name: Package, install, and qualify the public ESM facade
+        run: |
+          umask 022
+          qualifier="$(mktemp -d "$RUNNER_TEMP/macos-qualifier.XXXXXX")"
+          archives="$qualifier/archives"
+          home="$qualifier/home"
+          starter="$qualifier/agents-starter"
+          mkdir -p "$home/.codex"
+
+          clean_env() {
+            env -i PATH="$PATH" HOME="$home" TMPDIR="${TMPDIR:-/tmp}" \
+              CODEX_HOME="$home/.codex" CI=true GITHUB_ACTIONS=true \
+              OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX="$OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX" \
+              CODEX_EXEC_SERVER_TEST_BINARY="$CODEX_EXEC_SERVER_TEST_BINARY" "$@"
+          }
+
+          # alpha-package calls verifyNativeReceipt before and after packaging.
+          clean_env node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$archives"
+          (
+            cd "$archives"
+            test "$(node -p 'require("./build-darwin-arm64.json").sourceCommit')" = "$EXPECTED_HEAD"
+            shasum -a 256 -c SHA256SUMS-darwin-arm64
+          )
+          tar -xzf "$archives/agents-starter-${ALPHA_VERSION}-darwin-arm64.tar.gz" -C "$qualifier"
+          (cd "$starter" && clean_env npm ci --ignore-scripts --no-audit --no-fund)
+
+          cat > "$starter/selected-tests.json" <<'JSON'
+          [
+            "scopes trusted local workspace writes, private authentication and command temp",
+            "applies a per-turn write policy to linked Git worktrees and fixed network on portable restore",
+            "applies a per-turn write policy to linked Git worktrees and fixed network on local restore",
+            "blocks delegation from a local command to launchd with strict",
+            "blocks delegation from a local command to launchd with trusted_workspace_write",
+            "applies a per-turn write policy with macOS read-only roots and restores a named linked skill"
+          ]
+          JSON
+
+          cat > "$starter/qualifier.config.mjs" <<'JS'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { fileURLToPath } from 'node:url';
+
+          const root = process.cwd();
+          const starter = import.meta.dirname;
+          const suite = 'packages/agents-codex/test/native/local-executor-policy-native.test.ts';
+          const selected = JSON.parse(readFileSync(join(starter, 'selected-tests.json'), 'utf8'));
+          const installed = join(starter, 'node_modules/@openai');
+          const aliases = [
+            [/^@openai\/agents$/, '@openai/agents', 'agents/dist/index.mjs'],
+            [/^@openai\/agents\/testing$/, '@openai/agents/testing', 'agents/dist/testing/index.mjs'],
+          ].map(([find, specifier, entry]) => {
+            const replacement = fileURLToPath(import.meta.resolve(specifier));
+            assert.equal(replacement, join(installed, entry));
+            assert.equal(realpathSync(replacement), replacement);
+            console.log(`${specifier} → ${replacement}`);
+            return { find, replacement };
+          });
+
+          const source = join(root, 'packages/agents-codex');
+          const receipt = JSON.parse(readFileSync(join(source, 'native/build-receipt.json'), 'utf8'));
+          assert.equal(Object.keys(receipt.inputs).length, 353);
+          for (const [name, expected] of Object.entries(receipt.products)) {
+            const file = join(installed, 'agents-codex', name);
+            const stat = lstatSync(file);
+            assert.ok(stat.isFile(), file);
+            assert.equal(realpathSync(file), file);
+            assert.equal(stat.mode & 0o777, 0o755, file);
+            const digest = 'sha256:' + createHash('sha256').update(readFileSync(file)).digest('hex');
+            assert.equal(digest, expected, file);
+            console.log(`0755 ${digest} ${file}`);
+          }
+
+          export default {
+            cacheDir: join(starter, '.vite'),
+            resolve: { alias: aliases },
+            server: { fs: { allow: [root, starter] } },
+            test: {
+              include: [suite],
+              testNamePattern: new RegExp('^(?:' + selected.map(RegExp.escape).join('|') + ')$'),
+              server: { deps: { external: [/\/node_modules\/@openai\/agents\/dist\//] } },
+            },
+          };
+          JS
+
+          report="$qualifier/results.json"
+          clean_env node node_modules/vitest/vitest.mjs run \
+            --config "$starter/qualifier.config.mjs" --configLoader native \
+            --pool=forks --maxWorkers=1 --reporter=verbose --reporter=json \
+            --outputFile.json="$report"
+
+          node --input-type=module - "$starter/selected-tests.json" "$report" "$EXECUTOR_SUITE" <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync, realpathSync } from 'node:fs';
+
+          const [selection, result, suite] = process.argv.slice(2);
+          const read = (file) => JSON.parse(readFileSync(file, 'utf8'));
+          const expected = read(selection);
+          const report = read(result);
+          assert.equal(expected.length, 6);
+          assert.equal(report.success, true);
+          assert.equal(report.testResults.length, 1);
+          const [file] = report.testResults;
+          assert.equal(realpathSync(file.name), realpathSync(suite));
+          const selected = file.assertionResults.filter(({ title }) => expected.includes(title));
+          assert.deepEqual(selected.map(({ title }) => title).sort(), expected.sort());
+          for (const { title, status } of selected) assert.equal(status, 'passed', title);
+          assert.equal(report.numPassedTests, 6);
+          console.log('All six selected installed-package cases passed.');
+          JS
