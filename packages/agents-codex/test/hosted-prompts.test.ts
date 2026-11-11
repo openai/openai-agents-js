@@ -1,3 +1,4 @@
+import type { SessionState } from '../src/runtime/state';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { Agent, captureAgentProfiles } from '../src/runtime/public-agent';
 import { captureProfileRuntimes } from '../src/runtime/agent-profiles';
@@ -261,11 +262,15 @@ it('rejects saved prompt authority before acquiring the native provider', async 
     instructions: 'Application instructions',
     provider,
   });
-  const state = {
-    format_version: 2 as const,
+  const state: SessionState = {
+    format_version: 2,
     codex_revision: CODEX_REVISION,
     source_session_id: 'root',
     root_metadata: {},
+    descendants: [],
+    interrupted_thread_ids: [],
+    root_tool_origins: {},
+    pending_actions: [],
     history: [
       {
         type: 'response_item',
