@@ -6,6 +6,7 @@ import {
   GuardrailTripwire,
   NativeProvider,
   tool,
+  type InputGuardrail,
   type OutputGuardrail,
 } from '../../src';
 
@@ -23,6 +24,76 @@ async function fixture(steps: ConstructorParameters<typeof ModelServer>[0]) {
     }),
   };
 }
+
+class ApplicationAgent extends Agent {
+  #identity = Symbol('application-agent');
+
+  applicationIdentity() {
+    return this.#identity;
+  }
+}
+
+it.each(
+  (['plain', 'handoff', 'realtime'] as const).flatMap((mode) =>
+    (['input', 'output'] as const).map((kind) => ({ mode, kind })),
+  ),
+)(
+  'application Agent identity with captured $kind guards ($mode)',
+  async ({ mode, kind }) => {
+    const { server, provider } = await fixture([[message('accepted')]]);
+    await using _provider = provider;
+    const seen: Agent[] = [];
+    const verdict = (agent: Agent) => {
+      seen.push(agent);
+      return {
+        tripwireTriggered: false,
+        outputInfo:
+          agent instanceof ApplicationAgent
+            ? agent.applicationIdentity()
+            : undefined,
+      };
+    };
+    const input: InputGuardrail = {
+      name: 'captured-input',
+      runInParallel: false,
+      callback: ({ agent }) => verdict(agent),
+    };
+    const output: OutputGuardrail = {
+      name: 'captured-output',
+      callback: (_context, agent) => verdict(agent),
+    };
+    const agent = new ApplicationAgent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+      inputGuardrails: kind === 'input' ? [input] : [],
+      outputGuardrails: kind === 'output' ? [output] : [],
+      ...(mode === 'handoff'
+        ? {
+            handoffs: [
+              new Agent({ name: 'Unused', instructions: 'Answer.', provider }),
+            ],
+          }
+        : {}),
+      ...(mode === 'realtime' ? { realtime: {} } : {}),
+    });
+    await using session = await agent.session();
+    agent.inputGuardrails = [];
+    agent.outputGuardrails = [];
+    const turn = await session.submit('original');
+    const result = await turn.wait();
+    expect(result.finalOutput).toBe('accepted');
+    expect(seen).toHaveLength(1);
+    expect.soft(seen[0]).toBe(agent);
+    expect(result.guardrailResults).toHaveLength(1);
+    expect.soft(result.guardrailResults![0].agent).toBe(agent);
+    expect(result.guardrailResults![0].result.outputInfo).toBe(
+      agent.applicationIdentity(),
+    );
+    expect(turn.guardrailResults).toEqual(result.guardrailResults);
+    server.assertExhausted();
+  },
+);
 
 it('checks converted output once and retains declaration order despite reversed completion', async () => {
   const { server, provider } = await fixture([[message('{"count":7}')]]);
@@ -257,9 +328,14 @@ it('overlaps parallel input checks with the model and gates completion', async (
   );
 });
 
-it.each([false, true])(
-  'owns explicit child input checks (parallel: %s)',
-  async (parallel) => {
+it.each([
+  { parallel: false, profiles: false },
+  { parallel: true, profiles: false },
+  { parallel: false, profiles: true },
+  { parallel: true, profiles: true },
+])(
+  'owns explicit child input checks (parallel: $parallel, profiles: $profiles)',
+  async ({ parallel, profiles }) => {
     const { Environment, NativeAgents, Turn, toolRef } =
       await import('../../src');
     const { startPublicExecutor } = await import('./fixtures/public-executor');
@@ -269,6 +345,7 @@ it.each([false, true])(
     let rootId: string | undefined;
     let rootCalls = 0;
     let rootChecks = 0;
+    const childAgents = new Map<string, Agent>();
     const childCalls = new Set<string>();
     const server = new ModelServer(
       Array.from({ length: 4 }, () => (request: any) => {
@@ -304,11 +381,24 @@ it.each([false, true])(
         apiKey: 'synthetic-child-guards',
         supportsWebsockets: false,
       });
-      await using session = await new Agent({
+      const nativeAgents = new NativeAgents({ maxChildren: 2 });
+      const agent = new ApplicationAgent({
         instructions: 'Spawn both children.',
         model: 'gpt-5.5',
         provider,
-        tools: [new NativeAgents({ maxChildren: 2 })],
+        tools: [nativeAgents],
+        ...(profiles
+          ? {
+              handoffs: [
+                new Agent<undefined>({
+                  name: 'Unused',
+                  instructions: 'Answer.',
+                  provider,
+                  tools: [nativeAgents],
+                }),
+              ],
+            }
+          : {}),
         inputGuardrails: [
           {
             name: 'initial-input',
@@ -320,6 +410,7 @@ it.each([false, true])(
               return { tripwireTriggered: false };
             },
             async childCallback(context) {
+              childAgents.set(context.child.childId, context.agent);
               expect(context.stepIndex).toBe(0);
               expect(JSON.stringify(context.input)).toContain(
                 'child-input-sentinel',
@@ -337,7 +428,8 @@ it.each([false, true])(
             },
           },
         ],
-      }).session({
+      });
+      await using session = await agent.session({
         environment: new Environment({
           url: executor.url,
           cwd: executor.cwd,
@@ -350,7 +442,8 @@ it.each([false, true])(
           stepIndex === 0 ? [toolRef('spawn_agent', 'collaboration')] : [],
       });
       await entered.promise;
-      expect((await root.wait()).finalOutput).toBe('root complete');
+      if (!profiles)
+        expect((await root.wait()).finalOutput).toBe('root complete');
       const children = await Array.fromAsync(session.subagents());
       expect(children).toHaveLength(2);
       if (parallel) {
@@ -358,11 +451,19 @@ it.each([false, true])(
         await vi.waitFor(() => expect(childCalls.size).toBe(2));
       } else expect(childCalls.size).toBe(0);
       release.resolve();
+      if (profiles)
+        expect((await root.wait()).finalOutput).toBe('root complete');
       for (const child of children) {
         await expect(child.turn!.wait()).rejects.toBeInstanceOf(
           GuardrailTripwire,
         );
         expect(child.turn!.guardrailResults.at(-1)?.subagentId).toBe(child.id);
+        expect.soft(childAgents.get(child.id)).toBe(agent);
+        expect.soft(child.turn!.guardrailResults.at(-1)?.agent).toBe(agent);
+        expect(childAgents.get(child.id)).toBeInstanceOf(ApplicationAgent);
+        expect(
+          (childAgents.get(child.id) as ApplicationAgent).applicationIdentity(),
+        ).toBe(agent.applicationIdentity());
       }
       expect(rootChecks).toBe(1);
     } finally {
