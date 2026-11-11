@@ -9,6 +9,7 @@ import {
   type ToolCallContext,
 } from '../../src/runtime/tools';
 import { nativeCodexTool } from '../../../agents-extensions/src/experimental/codex';
+import { usageReportBinding } from '../../src/runtime/run-events';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -64,7 +65,9 @@ it
         ? { codex: new Codex(options) }
         : { codexOptions: options },
     );
+    const usage = vi.fn();
     const context = {
+      [usageReportBinding]: usage,
       context: undefined,
       submission: { sessionId: 'session' },
       threadId: 'session',
@@ -78,6 +81,18 @@ it
       { prompt: 'Inspect the selected test variables', threadId: null },
       context,
       () => {},
+    );
+    expect(usage).toHaveBeenCalledOnce();
+    expect(usage).toHaveBeenCalledWith(
+      {
+        inputTokens: 1,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 1,
+        reasoningOutputTokens: 0,
+        totalTokens: 2,
+      },
+      undefined,
     );
     const content = result.contentItems?.[0];
     expect(content?.type).toBe('inputText');

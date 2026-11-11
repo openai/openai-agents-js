@@ -335,7 +335,9 @@ it('reports an MCP execution timeout as a tool error without claiming its entere
   const model = new ModelServer([
     [call('lookup', {}, { namespace: 'mcp__fixture', callId: 'timed-tool' })],
     (request) => {
-      expect(JSON.stringify(request.input)).toMatch(/timed out|timeout/i);
+      expect(JSON.stringify(request.input)).toContain(
+        'MCP tool invocation failed',
+      );
       expect(JSON.stringify(request.input)).not.toContain(
         'PRIVATE_LATE_RECORD',
       );
