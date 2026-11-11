@@ -2418,6 +2418,32 @@ struct StepCatalog {
     use_deferred_specs: bool,
     slots: Vec<usize>,
 }
+fn admitted_client_generations(
+    thread: &ExtensionData,
+    source: &Arc<Generation>,
+    profile: &Option<codex_extension_api::AgentProfileReceipt>,
+) -> Vec<Arc<Generation>> {
+    let Some(turn) = thread
+        .get::<ModelPresentation>()
+        .and_then(|state| state.admission.clone())
+    else {
+        return Vec::new();
+    };
+    let catalogs = turn
+        .client_search_catalogs
+        .lock()
+        .expect("client search catalogs poisoned")
+        .clone();
+    catalogs
+        .iter()
+        .filter(|catalog| {
+            catalog.accepted.load(Ordering::Acquire)
+                && Arc::ptr_eq(&catalog.source, source)
+                && &catalog.profile == profile
+        })
+        .map(|catalog| catalog.generation.clone())
+        .collect()
+}
 fn validate_selection(slots: &[usize], allowed: &[usize]) -> Result<()> {
     let mut seen = HashSet::new();
     ensure!(
@@ -2789,6 +2815,7 @@ impl PythonContributor {
         receipts: Option<Arc<Mutex<HashSet<PendingKey>>>>,
         profile: Option<codex_extension_api::AgentProfileReceipt>,
         manual: Option<Arc<CapturedManualTools>>,
+        wrap_profile_handoffs: bool,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         slots
             .iter()
@@ -2809,12 +2836,16 @@ impl PythonContributor {
                     code_mode_enabled: self.code_mode_enabled,
                 })
                     as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>;
-                crate::agent_profiles::wrap_handoff_callback(
-                    thread,
-                    profile.as_ref(),
-                    slot,
-                    callback,
-                )
+                if wrap_profile_handoffs {
+                    crate::agent_profiles::wrap_handoff_callback(
+                        thread,
+                        profile.as_ref(),
+                        slot,
+                        callback,
+                    )
+                } else {
+                    callback
+                }
             })
             .collect()
     }
@@ -3165,6 +3196,7 @@ impl ToolContributor for PythonContributor {
             None,
             None,
             None,
+            true,
         )
     }
 
@@ -3274,34 +3306,21 @@ impl ToolContributor for PythonContributor {
             Some(snapshot.receipts.clone()),
             profile.clone(),
             manual,
+            true,
         );
-        if let Some(turn) = thread
-            .get::<ModelPresentation>()
-            .and_then(|state| state.admission.clone())
-        {
-            let catalogs = turn
-                .client_search_catalogs
-                .lock()
-                .expect("client search catalogs poisoned")
-                .clone();
-            for catalog in catalogs {
-                if catalog.accepted.load(Ordering::Acquire)
-                    && Arc::ptr_eq(&catalog.source, &snapshot.generation)
-                    && catalog.profile == profile
-                {
-                    let slots: Vec<_> = (0..catalog.generation.entries.len()).collect();
-                    executors.extend(self.executors(
-                        thread,
-                        tools.clone(),
-                        catalog.generation.clone(),
-                        true,
-                        &slots,
-                        Some(snapshot.receipts.clone()),
-                        profile.clone(),
-                        None,
-                    ));
-                }
-            }
+        for generation in admitted_client_generations(thread, &snapshot.generation, &profile) {
+            let slots: Vec<_> = (0..generation.entries.len()).collect();
+            executors.extend(self.executors(
+                thread,
+                tools.clone(),
+                generation,
+                true,
+                &slots,
+                Some(snapshot.receipts.clone()),
+                profile.clone(),
+                None,
+                false,
+            ));
         }
         executors
     }

@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
-index 75909cec51757a7405e0118ddff2050e28fbe76e..c0dbfeae4a340a02377e682929ce04841f42a699 100644
+index 75909cec..c0dbfeae 100644
 --- a/codex-rs/core/src/tools/handlers/extension_tools.rs
 +++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
 @@ -51,6 +51,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
@@ -14,7 +14,7 @@ index 75909cec51757a7405e0118ddff2050e28fbe76e..c0dbfeae4a340a02377e682929ce0484
          self.0.supports_parallel_tool_calls()
      }
 diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
-index 0191c3d562110d0146c4e535e343735449882c43..ba74b7574bb7f0cf5e2e7a3f02ce01acd93e9ad5 100644
+index 0191c3d5..ba74b757 100644
 --- a/codex-rs/core/src/tools/registry.rs
 +++ b/codex-rs/core/src/tools/registry.rs
 @@ -431,7 +431,9 @@ impl ToolRegistry {
@@ -63,8 +63,30 @@ index 0191c3d562110d0146c4e535e343735449882c43..ba74b7574bb7f0cf5e2e7a3f02ce01ac
      pub(crate) fn record_collision(&mut self, tool_name: ToolName) {
          self.first_collision.get_or_insert(tool_name);
      }
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index caf29b35..a10775e5 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -264,7 +264,16 @@ pub(crate) async fn build_tool_router(
+                 ToolName::plain(codex_code_mode::WAIT_TOOL_NAME),
+             ]);
+         }
+-        if model_info.supports_search_tool
++        let client_tool_search = registry.entries().any(|tool| {
++            tool.exposure.is_direct()
++                && tool.runtime.tool_name() == ToolName::plain(TOOL_SEARCH_TOOL_NAME)
++                && matches!(
++                    tool.runtime.spec(),
++                    ToolSpec::ProviderToolSearch(config) if !config.searches_on_provider()
++                )
++        });
++        if !client_tool_search
++            && model_info.supports_search_tool
+             && registry.entries().any(|tool| tool.exposure.is_deferred())
+         {
+             candidates.push(ToolName::plain(TOOL_SEARCH_TOOL_NAME));
 diff --git a/codex-rs/tools/src/tool_executor.rs b/codex-rs/tools/src/tool_executor.rs
-index b0fd7a14075a00f43661343f8464b135d02516bf..cb1dbc6ee4bdd05077347c234436673d7862470c 100644
+index b0fd7a14..cb1dbc6e 100644
 --- a/codex-rs/tools/src/tool_executor.rs
 +++ b/codex-rs/tools/src/tool_executor.rs
 @@ -130,6 +130,11 @@ pub trait ToolExecutor<Invocation>: Send + Sync {

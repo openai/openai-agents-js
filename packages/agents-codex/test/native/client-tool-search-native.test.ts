@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  realtimeHandoff,
   tool,
   toolRef,
   toolSearch,
@@ -12,6 +13,104 @@ import type { JsonObject, JsonValue } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
+
+it.each(['fixture', 'gpt-5.5'])(
+  'keeps discovered callback slots separate from profile handoff slots (%s)',
+  async (modelName) => {
+    const model = new ModelServer([
+      [search('search_slots', {})],
+      [call('discovered_second', {}, { callId: 'second_slot' })],
+      [message('Discovered callback completed.')],
+    ]);
+    await using provider = await providerFor(model);
+    const effects: string[] = [];
+    const discovery = toolSearch({
+      execution: 'client',
+      execute: () =>
+        ['first', 'second'].map((name) =>
+          tool({
+            name: `discovered_${name}`,
+            parameters: z.object({}),
+            execute: () => {
+              effects.push(name);
+              return name;
+            },
+          }),
+        ),
+    });
+    const target = new Agent({
+      name: 'handoff_target',
+      provider,
+      instructions: 'Receive handoffs.',
+      tools: [discovery],
+    });
+    await using session = await new Agent({
+      name: 'source',
+      instructions: 'Discover and execute tools.',
+      provider,
+      model: modelName,
+      tools: [discovery],
+      handoffs: [
+        realtimeHandoff(target, {
+          name: 'transfer_to_target',
+          onHandoff: () => {
+            effects.push('handoff');
+          },
+        }),
+      ],
+    }).session();
+    const completed = await (
+      await session.submit('Use the second discovered tool.')
+    ).wait();
+    expect(completed.finalOutput).toBe('Discovered callback completed.');
+    expect(effects).toEqual(['second']);
+    expect(model.requests[2].input).toContainEqual(
+      expect.objectContaining({
+        type: 'function_call_output',
+        call_id: 'second_slot',
+        output: 'second',
+      }),
+    );
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+it('finishes directly from an admitted discovered terminal callback', async () => {
+  const model = new ModelServer([
+    [search('search_terminal', {})],
+    [call('discovered_finish', {}, { callId: 'finish_discovered' })],
+    [message('Unexpected model continuation.')],
+  ]);
+  await using provider = await providerFor(model);
+  let executions = 0;
+  await using session = await new Agent({
+    instructions: 'Finish using a discovered tool.',
+    provider,
+    model: 'gpt-5.5',
+    tools: [
+      toolSearch({
+        execution: 'client',
+        execute: () =>
+          tool({
+            name: 'discovered_finish',
+            parameters: z.object({}),
+            finishTurn: true,
+            execute: () => {
+              executions++;
+              return 'Discovered terminal result.';
+            },
+          }),
+      }),
+    ],
+  }).session();
+  const completed = await (
+    await session.submit('Finish with the discovered tool.')
+  ).wait();
+  expect(completed.finalOutput).toBe('Discovered terminal result.');
+  expect(executions).toBe(1);
+  expect(model.requests).toHaveLength(2);
+}, 30_000);
 
 function search(callId: string, argumentsValue: JsonValue): JsonObject {
   return {
