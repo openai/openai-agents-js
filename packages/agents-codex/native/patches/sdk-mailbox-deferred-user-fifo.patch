@@ -1,0 +1,909 @@
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index 04f98d2f837c2b3202b013ca53bae1458146f4a4..036a67b6fea4e3b848c41fbc528b9aac9254333b 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -27,6 +27,8 @@ use tokio_util::task::AbortOnDropHandle;
+ use tracing::Span;
+ use tracing::info_span;
+ 
++use super::turn_context::TurnContext;
++
+ /// Host capture metadata belonging to one input, including steers within another turn.
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct UserInputMetadata {
+@@ -99,6 +101,9 @@ pub(crate) struct TurnInputQueue {
+     items: Vec<TurnInput>,
+ }
+ 
++/// Prefix reserved for an explicit user turn's first sample.
++pub(crate) struct StartupMailboxInput(usize);
++
+ /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
+ pub(crate) struct InputQueue {
+     activity_tx: watch::Sender<InputQueueActivity>,
+@@ -110,7 +115,7 @@ pub(crate) struct PendingMailboxCommunication {
+     pub(crate) communication: InterAgentCommunication,
+     start_options: TurnStartOptions,
+     trace: Option<MailboxTrace>,
+-    // Mail received during a sealed startup stays queued for a separate wake.
++    // Keep a sealed or reserved prefix out of ordinary pending-input drains.
+     requires_wake: bool,
+     // Preserve the sealed triggering prefix if its taskless reservation is interrupted.
+     ends_startup_batch: bool,
+@@ -180,11 +185,7 @@ pub(crate) struct MailboxWakeBatch {
+ }
+ 
+ impl MailboxWakeBatch {
+-    pub(crate) fn wake_span(
+-        &self,
+-        sub_id: &str,
+-        restriction: sdk_trace::ScopeRestriction,
+-    ) -> Span {
++    pub(crate) fn wake_span(&self, sub_id: &str, restriction: sdk_trace::ScopeRestriction) -> Span {
+         if self.initiating_agent_path.is_none() {
+             // Queue-only durable wake has no triggering caller.
+             return Span::current();
+@@ -220,6 +221,18 @@ fn mailbox_ready(pending: &VecDeque<PendingMailboxCommunication>) -> bool {
+     pending.front().is_some_and(|mail| !mail.requires_wake)
+ }
+ 
++fn has_triggering_mail(pending: &VecDeque<PendingMailboxCommunication>) -> bool {
++    pending.iter().any(|mail| mail.communication.trigger_turn)
++}
++
++fn owns_registered_turn(turn: &ActiveTurn, turn_context: &Arc<TurnContext>) -> bool {
++    turn.task.as_ref().is_some_and(|task| {
++        Arc::ptr_eq(&task.turn_context, turn_context)
++            && !task.cancellation_token.is_cancelled()
++            && !task.handle.owner().stopping()
++    })
++}
++
+ impl InputQueue {
+     /// Linearize validated terminal selection against input acceptance. Locks are
+     /// released before any persistence I/O. The live task remains the finishing owner.
+@@ -426,11 +439,8 @@ impl InputQueue {
+     }
+ 
+     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
+-        self.mailbox_pending_mails
+-            .lock()
+-            .await
+-            .iter()
+-            .any(|mail| mail.communication.trigger_turn)
++        let pending = self.mailbox_pending_mails.lock().await;
++        has_triggering_mail(&pending)
+     }
+ 
+     pub(crate) async fn drain_mailbox(&self) -> Vec<PendingMailboxCommunication> {
+@@ -515,10 +525,21 @@ impl InputQueue {
+         mails
+     }
+ 
++    pub(crate) async fn reserve_mailbox_for_user_turn(&self) -> Option<StartupMailboxInput> {
++        let mut pending = self.mailbox_pending_mails.lock().await;
++        self.read_mailbox(&mut pending);
++        let first = pending.front_mut()?;
++        // Keep the reserved FIFO out of ordinary drains so a later user turn
++        // can reserve it if this task stops before claiming it.
++        first.requires_wake = true;
++        // A trigger present at registration keeps its prefix for its wake.
++        (!has_triggering_mail(&pending)).then_some(StartupMailboxInput(pending.len()))
++    }
++
+     pub(crate) async fn drain_ready_mailbox(&self) -> Vec<PendingMailboxCommunication> {
+         let mut pending = self.mailbox_pending_mails.lock().await;
+         self.read_mailbox(&mut pending);
+-        // The first deferred envelope fences its suffix as well, preserving FIFO.
++        // The first fenced envelope protects its suffix as well, preserving FIFO.
+         let ready = pending
+             .iter()
+             .take_while(|mail| !mail.requires_wake)
+@@ -690,6 +711,68 @@ impl InputQueue {
+         turn_state.lock().await.pending_input.items.split_off(0)
+     }
+ 
++    #[expect(
++        clippy::await_holding_invalid_type,
++        reason = "the initial snapshot must use the currently registered task's input"
++    )]
++    pub(crate) async fn snapshot_initial_input(
++        &self,
++        active_turn: &Mutex<Option<ActiveTurn>>,
++        turn_context: &Arc<TurnContext>,
++    ) -> Vec<TurnInput> {
++        let active = active_turn.lock().await;
++        let Some(turn) = active
++            .as_ref()
++            .filter(|turn| owns_registered_turn(turn, turn_context))
++        else {
++            return Vec::new();
++        };
++        let admitted = turn.turn_state.lock().await.pending_input.snapshot();
++        let Some(prefix) = turn_context.extension_data.get::<StartupMailboxInput>() else {
++            return admitted;
++        };
++        let pending = self.mailbox_pending_mails.lock().await;
++        if has_triggering_mail(&pending) {
++            return admitted;
++        }
++        // Preview the reserved prefix for the initial guardrail without consuming it.
++        pending
++            .iter()
++            .take(prefix.0)
++            .map(|mail| TurnInput::InterAgentCommunication(mail.communication.clone()))
++            .chain(admitted)
++            .collect()
++    }
++
++    #[expect(
++        clippy::await_holding_invalid_type,
++        reason = "startup input belongs to the exact active task"
++    )]
++    pub(super) async fn take_startup_mailbox_input(
++        &self,
++        active_turn: &Mutex<Option<ActiveTurn>>,
++        turn_context: &Arc<TurnContext>,
++        startup: &StartupMailboxInput,
++    ) -> Vec<TurnInput> {
++        let mails = {
++            let active = active_turn.lock().await;
++            let Some(turn) = active.as_ref() else {
++                return Vec::new();
++            };
++            let mut pending = self.mailbox_pending_mails.lock().await;
++            self.read_mailbox(&mut pending);
++            // A trigger accepted during preparation keeps the FIFO for its wake.
++            if !owns_registered_turn(turn, turn_context) || has_triggering_mail(&pending) {
++                return Vec::new();
++            }
++            pending.drain(..startup.0).collect::<Vec<_>>()
++        };
++        mails
++            .into_iter()
++            .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
++            .collect()
++    }
++
+     #[expect(
+         clippy::await_holding_invalid_type,
+         reason = "active turn checks and turn state updates must remain atomic"
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index 7820ff7b0aab19dc91c6d2fad4343923ac0b5229..d1564a633b63037b31c100b244e2cba1193126f7 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -13502,7 +13502,12 @@ enum MailboxStartupMail {
+     MixedTriggers,
+     QueuedPrefix,
+     QueuedDuringSeal,
++    QueuedDuringSealThenUser,
++    QueuedDuringSealThenInterruptedUser,
++    QueuedDuringSealThenUserAndTrigger,
+     QueuedDuringTurn,
++    ReadyThenCancelledUser,
++    ReadyThenUserAndSteer,
+ }
+ 
+ #[test_case(false, MailboxStartupMail::LateTrigger; "late trigger")]
+@@ -13510,19 +13515,60 @@ enum MailboxStartupMail {
+ #[test_case(false, MailboxStartupMail::MixedTriggers; "coalesced owners share carrier but not policy")]
+ #[test_case(false, MailboxStartupMail::QueuedPrefix; "disabled queue-only mail before enabled trigger")]
+ #[test_case(false, MailboxStartupMail::QueuedDuringSeal; "queue-only mail during seal waits for a later trigger")]
++#[test_case(false, MailboxStartupMail::QueuedDuringSealThenUser; "explicit user turn receives queue-only mail deferred by the seal")]
++#[test_case(false, MailboxStartupMail::QueuedDuringSealThenInterruptedUser; "external interruption leaves the unclaimed mail for the next user turn")]
++#[test_case(false, MailboxStartupMail::QueuedDuringSealThenUserAndTrigger; "a trigger before the user turn's first sample keeps the queued prefix")]
+ #[test_case(false, MailboxStartupMail::QueuedDuringTurn; "queue-only mail after registration can join the active turn")]
++#[test_case(false, MailboxStartupMail::ReadyThenCancelledUser; "ready mail survives cancellation before user task registration")]
++#[test_case(false, MailboxStartupMail::ReadyThenUserAndSteer; "ready mail enters first sampling while an active steer stays pending")]
+ #[tokio::test]
+ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+     interrupt: bool,
+     mail: MailboxStartupMail,
+ ) {
++    use codex_extension_api::InitialTurnInput;
+     use codex_extension_api::TurnStartPhase;
+     use codex_otel::sdk_trace;
++    use codex_tools::ToolCall as ExtensionToolCall;
++    use codex_tools::ToolName;
++    use std::sync::atomic::AtomicUsize;
++    use std::sync::atomic::Ordering;
++
++    #[derive(Default)]
++    struct StartupStepSelections(AtomicUsize);
++
++    impl codex_extension_api::ToolContributor for StartupStepSelections {
++        fn tools(
++            &self,
++            _: &codex_extension_api::ExtensionData,
++            _: &codex_extension_api::ExtensionData,
++        ) -> Vec<Arc<dyn for<'call> codex_tools::ToolExecutor<ExtensionToolCall<'call>>>> {
++            Vec::new()
++        }
++
++        fn select_tools_for_step<'a>(
++            &'a self,
++            _: &'a codex_extension_api::ExtensionData,
++            _: &'a codex_extension_api::ExtensionData,
++            turn_store: &'a codex_extension_api::ExtensionData,
++            _: &'a codex_extension_api::ExtensionData,
++            _: &'a [ToolName],
++        ) -> codex_extension_api::ExtensionFuture<'a, Result<Option<Vec<ToolName>>, String>>
++        {
++            Box::pin(async move {
++                if turn_store.level_id() == "next-user" {
++                    self.0.fetch_add(1, Ordering::Relaxed);
++                }
++                Ok(None)
++            })
++        }
++    }
+ 
+     struct StartGate {
+         phase: TurnStartPhase,
+         started: async_channel::Sender<(String, Option<Arc<sdk_trace::ScopePolicy>>)>,
+         release: Option<Arc<tokio::sync::Semaphore>>,
++        check_startup_snapshot: bool,
+     }
+ 
+     impl codex_extension_api::TurnLifecycleContributor for StartGate {
+@@ -13538,6 +13584,23 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+                 if input.turn_id == "old-turn" {
+                     return;
+                 }
++                if self.check_startup_snapshot
++                    && matches!(input.turn_id, "next-user" | "retry-user")
++                {
++                    if self.phase == TurnStartPhase::BeforeTaskRegistration {
++                        input.turn_store.get_or_init(InitialTurnInput::default);
++                    } else {
++                        let initial = input
++                            .turn_store
++                            .get::<InitialTurnInput>()
++                            .expect("initial user input snapshot");
++                        let snapshot = initial.0.as_deref().expect("initial user input");
++                        assert_eq!(snapshot.len(), USER_MAIL_INPUT.len());
++                        for (item, marker) in snapshot.iter().zip(USER_MAIL_INPUT) {
++                            assert!(item.to_string().contains(marker), "{item}");
++                        }
++                    }
++                }
+                 self.started
+                     .try_send((input.turn_id.to_owned(), sdk_trace::current_scope_policy()))
+                     .expect("record turn start");
+@@ -13548,14 +13611,10 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+         }
+     }
+ 
+-    async fn submit(
+-        session: &Arc<Session>,
+-        id: &str,
+-        message: &str,
++    fn caller_trace(
+         trace_byte: &str,
+         disabled: bool,
+-        trigger_turn: bool,
+-    ) -> Arc<sdk_trace::ScopePolicy> {
++    ) -> (W3cTraceContext, Arc<sdk_trace::ScopePolicy>) {
+         let trace_id = trace_byte.repeat(16);
+         let options = json!({
+             "name": "mail sender",
+@@ -13574,6 +13633,18 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+             traceparent: Some(format!("00-{trace_id}-0000000000000066-01")),
+             tracestate: None,
+         };
++        (trace, policy)
++    }
++
++    async fn submit(
++        session: &Arc<Session>,
++        id: &str,
++        message: &str,
++        trace_byte: &str,
++        disabled: bool,
++        trigger_turn: bool,
++    ) -> Arc<sdk_trace::ScopePolicy> {
++        let (trace, policy) = caller_trace(trace_byte, disabled);
+         let communication = InterAgentCommunication::new(
+             AgentPath::try_from("/root/sender").expect("sender path"),
+             AgentPath::root(),
+@@ -13617,6 +13688,37 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+         policy
+     }
+ 
++    async fn submit_user(
++        session: &Arc<Session>,
++        id: &str,
++        text: &str,
++        (trace, policy): (W3cTraceContext, Arc<sdk_trace::ScopePolicy>),
++    ) -> CodexResult<()> {
++        let dispatch = info_span!("explicit_user");
++        let parent = codex_otel::context_from_w3c_trace_context(&trace)
++            .expect("explicit user carrier")
++            .with_value(policy);
++        codex_otel::set_parent_from_context(&dispatch, parent);
++        let result = super::turn_input::handle(
++            session,
++            TurnInputRequest::user_input(vec![UserInput::Text {
++                text: text.to_owned(),
++                text_elements: Vec::new(),
++            }]),
++            TurnInputMode::StartIfIdle,
++            id.to_owned(),
++        )
++        .instrument(dispatch)
++        .await?;
++        assert_eq!(
++            result,
++            TurnInputSubmission::Started {
++                turn_id: id.to_owned(),
++            }
++        );
++        Ok(())
++    }
++
+     async fn receive<T>(rx: &async_channel::Receiver<T>) -> T {
+         timeout(Duration::from_secs(10), rx.recv())
+             .await
+@@ -13626,12 +13728,24 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+ 
+     let queue_only_prefix = mail == MailboxStartupMail::QueuedPrefix;
+     let mixed = queue_only_prefix || mail == MailboxStartupMail::MixedTriggers;
+-    let queued_during_seal = mail == MailboxStartupMail::QueuedDuringSeal;
++    let interrupt_next_user = mail == MailboxStartupMail::QueuedDuringSealThenInterruptedUser;
++    let trigger_before_claim = mail == MailboxStartupMail::QueuedDuringSealThenUserAndTrigger;
++    let direct_claim = mail == MailboxStartupMail::QueuedDuringSealThenUser;
++    let cancel_before_registration = mail == MailboxStartupMail::ReadyThenCancelledUser;
++    let steer_before_recording = mail == MailboxStartupMail::ReadyThenUserAndSteer;
++    let ready_prefix = cancel_before_registration || steer_before_recording;
++    let next_is_user = direct_claim || interrupt_next_user || trigger_before_claim || ready_prefix;
++    let queue_only_follow_up = mail == MailboxStartupMail::QueuedDuringSeal || next_is_user;
+     let queued_during_turn = mail == MailboxStartupMail::QueuedDuringTurn;
+     const SUFFIX: &str = "synthetic later queue-only suffix";
+     const NEXT_TRIGGER: &str = "synthetic follow-up after the first turn";
++    const NEXT_USER: &str = "synthetic explicit user input";
++    const INTERRUPTED_USER: &str = "synthetic user input interrupted before sampling";
+     const FIRST: &str = "synthetic mail accepted before the startup seal";
+     const LATE: &str = "synthetic mail from the disabled late sender";
++    const LATE_SECOND: &str = "synthetic second envelope after the seal";
++    const STEER: &str = "synthetic steer accepted before first recording";
++    const USER_MAIL_INPUT: [&str; 4] = [NEXT_USER, LATE, LATE_SECOND, SUFFIX];
+     let _tracing = install_test_tracing("codex-core-tests");
+     let server = start_mock_server().await;
+     let first_request = mount_sse_once(
+@@ -13652,20 +13766,42 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+         ]),
+     )
+     .await;
++    let third_request = if trigger_before_claim || steer_before_recording {
++        Some(
++            mount_sse_once(
++                &server,
++                sse(vec![
++                    ev_response_created("third-response"),
++                    ev_assistant_message("third-message", "third result"),
++                    ev_completed("third-response"),
++                ]),
++            )
++            .await,
++        )
++    } else {
++        None
++    };
+     let (before_tx, before_rx) = async_channel::unbounded();
+     let (regular_tx, regular_rx) = async_channel::unbounded();
+     let release_registration = Arc::new(tokio::sync::Semaphore::new(0));
+     let release_sampling = Arc::new(tokio::sync::Semaphore::new(0));
+     let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
++    let step_selections = Arc::new(StartupStepSelections::default());
++    if direct_claim {
++        builder.tool_contributor(step_selections.clone());
++    }
+     builder.turn_lifecycle_contributor(Arc::new(StartGate {
+         phase: TurnStartPhase::BeforeTaskRegistration,
+         started: before_tx,
+         release: Some(Arc::clone(&release_registration)),
++        check_startup_snapshot: ready_prefix || direct_claim,
+     }));
+     builder.turn_lifecycle_contributor(Arc::new(StartGate {
+         phase: TurnStartPhase::RegularTaskStart,
+         started: regular_tx,
+-        release: (queued_during_seal || queued_during_turn).then(|| Arc::clone(&release_sampling)),
++        release: (queue_only_follow_up || queued_during_turn)
++            .then(|| Arc::clone(&release_sampling)),
++        check_startup_snapshot: ready_prefix || direct_claim,
+     }));
+     let home = tempfile::tempdir().expect("synthetic Codex home");
+     let (mut session, _, events) = make_session_and_context_with_auth_config_home_and_rx(
+@@ -13723,11 +13859,14 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+     let (reserved, _) = receive(&before_rx).await;
+     let owner_b = if let Some(owner) = mixed_owner {
+         Some(owner)
+-    } else if queued_during_turn {
++    } else if queued_during_turn || ready_prefix {
+         None
+     } else {
+-        Some(submit(&session, "admit-b", LATE, "22", true, !queued_during_seal).await)
++        Some(submit(&session, "admit-b", LATE, "22", true, !queue_only_follow_up).await)
+     };
++    if next_is_user && !ready_prefix {
++        submit(&session, "admit-c", LATE_SECOND, "55", true, false).await;
++    }
+     assert!(first_request.requests().is_empty());
+     assert!(regular_rx.is_empty());
+     assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
+@@ -13798,10 +13937,12 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+     } else {
+         assert!(Arc::ptr_eq(&first_policy, &owner_a));
+     }
+-    if queued_during_seal {
++    if queue_only_follow_up {
+         assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
+         assert!(first_request.requests().is_empty());
+-        submit(&session, "admit-suffix", SUFFIX, "33", true, false).await;
++        if !next_is_user {
++            submit(&session, "admit-suffix", SUFFIX, "33", true, false).await;
++        }
+         release_sampling.add_permits(1);
+     } else if queued_during_turn {
+         assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
+@@ -13849,30 +13990,179 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+         );
+         assert!(second_request.requests().is_empty());
+         assert!(regular_rx.is_empty());
+-    } else if queued_during_seal {
++    } else if queue_only_follow_up {
+         assert_eq!(late_position, None);
+-        assert!(input.iter().all(|item| !item.to_string().contains(SUFFIX)));
++        assert!(input.iter().all(|item| {
++            let text = item.to_string();
++            !text.contains(SUFFIX) && !text.contains(LATE_SECOND)
++        }));
++        if next_is_user {
++            // TurnComplete can be sent just before the active reservation clears.
++            timeout(Duration::from_secs(10), async {
++                while session.active_turn.lock().await.is_some() {
++                    tokio::task::yield_now().await;
++                }
++            })
++            .await
++            .expect("idle after first wake");
++            if ready_prefix {
++                submit(&session, "admit-ready-a", LATE, "22", true, false).await;
++                submit(&session, "admit-ready-b", LATE_SECOND, "55", true, false).await;
++                assert!(session.input_queue.has_pending_mailbox_items().await);
++            }
++            submit(&session, "admit-suffix", SUFFIX, "33", true, false).await;
++        }
+         assert!(second_request.requests().is_empty());
+         assert!(before_rx.is_empty());
+         assert!(regular_rx.is_empty());
+         assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        let next_caller = next_is_user.then(|| caller_trace("44", false));
+         let next = tokio::spawn({
+             let session = Arc::clone(&session);
+-            async move { submit(&session, "admit-next", NEXT_TRIGGER, "44", false, true).await }
++            let next_caller = next_caller.clone();
++            async move {
++                if let Some(caller) = next_caller {
++                    submit_user(
++                        &session,
++                        "next-user",
++                        if interrupt_next_user || cancel_before_registration {
++                            INTERRUPTED_USER
++                        } else {
++                            NEXT_USER
++                        },
++                        caller,
++                    )
++                    .await
++                } else {
++                    submit(&session, "admit-next", NEXT_TRIGGER, "44", false, true).await;
++                    Ok(())
++                }
++            }
+         });
+-        let (next_reservation, _) = receive(&before_rx).await;
+-        release_registration.add_permits(1);
+-        let (next_turn, next_policy) = receive(&regular_rx).await;
+-        assert_eq!(next_turn, next_reservation);
++        let (mut next_turn, _) = receive(&before_rx).await;
++        if cancel_before_registration {
++            assert_eq!(next_turn, "next-user");
++            timeout(Duration::from_secs(10), session.interrupt_task())
++                .await
++                .expect("interrupt the taskless user reservation");
++            release_registration.add_permits(1);
++            let cancelled = timeout(Duration::from_secs(10), next)
++                .await
++                .expect("cancelled startup deadline")
++                .expect("cancelled startup task");
++            assert!(matches!(
++                cancelled,
++                Err(error) if matches!(error.details(), CodexErrorDetails::TurnAborted)
++            ));
++            assert!(regular_rx.is_empty());
++        } else {
++            release_registration.add_permits(1);
++            let (registered, next_policy) = receive(&regular_rx).await;
++            assert_eq!(registered, next_turn);
++            let next_policy = next_policy.expect("successor policy");
++            if let Some((_, user_policy)) = &next_caller {
++                assert!(Arc::ptr_eq(&next_policy, user_policy));
++            } else {
++                assert!(next_policy.disabled);
++                assert!(!next_policy.include_sensitive_data);
++            }
++            next.await
++                .expect("later follow-up task")
++                .expect("later follow-up submission");
++        }
++        if interrupt_next_user {
++            // Interrupt while RegularTaskStart still holds the registered user turn.
++            timeout(Duration::from_secs(10), session.interrupt_task())
++                .await
++                .expect("interrupt held user turn");
++            let aborted = recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
++            assert_eq!(aborted.id, next_turn);
++        }
++        if cancel_before_registration || interrupt_next_user {
++            assert!(second_request.requests().is_empty());
++            let history = session.clone_history().await;
++            assert!(history.raw_items().all(|item| {
++                let text = serde_json::to_string(item).expect("recorded item");
++                [LATE, LATE_SECOND, SUFFIX]
++                    .iter()
++                    .all(|&mail| !text.contains(mail))
++            }));
++            assert!(before_rx.is_empty());
++            let retry = tokio::spawn({
++                let session = Arc::clone(&session);
++                let caller = next_caller.expect("explicit user caller");
++                async move { submit_user(&session, "retry-user", NEXT_USER, caller).await }
++            });
++            let (retry_turn, _) = receive(&before_rx).await;
++            release_registration.add_permits(1);
++            (next_turn, _) = receive(&regular_rx).await;
++            assert_eq!(next_turn, retry_turn);
++            retry
++                .await
++                .expect("retry user submission task")
++                .expect("retry user submission");
++        }
+         assert_ne!(next_turn, first_turn);
+-        let next_policy = next_policy.expect("mixed successor policy");
+-        assert!(next_policy.disabled);
+-        assert!(!next_policy.include_sensitive_data);
++        if steer_before_recording {
++            assert!(second_request.requests().is_empty());
++            let steer = vec![UserInput::Text {
++                text: STEER.to_owned(),
++                text_elements: Vec::new(),
++            }];
++            assert_eq!(
++                submit_steer_only(&session, steer.clone(), &next_turn).await,
++                TurnInputSubmission::Steered {
++                    turn_id: next_turn.clone(),
++                }
++            );
++            let state = session
++                .input_queue
++                .turn_state_for_sub_id(&session.active_turn, &next_turn)
++                .await
++                .expect("registered user turn");
++            let pending = state.lock().await.pending_input.snapshot();
++            assert!(matches!(
++                pending.as_slice(),
++                [TurnInput::UserInput { content, .. }] if content == &steer
++            ));
++        }
++        if trigger_before_claim {
++            submit(&session, "claim-trigger", NEXT_TRIGGER, "66", false, true).await;
++            assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
++        }
+         release_sampling.add_permits(1);
+         completion(&next_turn).await;
+-        next.await.expect("later follow-up submitted");
+-        let input = second_request.single_request().input();
+-        let positions = [LATE, SUFFIX, NEXT_TRIGGER].map(|text| {
++        let input = if trigger_before_claim {
++            let input = second_request.single_request().input();
++            assert!(
++                input
++                    .iter()
++                    .any(|item| item.to_string().contains(NEXT_USER))
++            );
++            assert!(input.iter().all(|item| {
++                let text = item.to_string();
++                [LATE, LATE_SECOND, SUFFIX, NEXT_TRIGGER]
++                    .iter()
++                    .all(|&mail| !text.contains(mail))
++            }));
++            let (trigger_reservation, _) = receive(&before_rx).await;
++            release_registration.add_permits(1);
++            let (trigger_turn, policy) = receive(&regular_rx).await;
++            assert_eq!(trigger_turn, trigger_reservation);
++            let policy = policy.expect("mixed wake scope");
++            assert!(policy.disabled);
++            assert!(!policy.include_sensitive_data);
++            release_sampling.add_permits(1);
++            completion(&trigger_turn).await;
++            third_request
++                .as_ref()
++                .expect("trigger request")
++                .single_request()
++                .input()
++        } else {
++            second_request.single_request().input()
++        };
++        let position = |input: &[serde_json::Value], text: &str| {
+             let matching = input
+                 .iter()
+                 .enumerate()
+@@ -13882,8 +14172,38 @@ async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
+                 panic!("expected exactly one delivery for {text}, got {matching:?}");
+             };
+             *position
+-        });
++        };
++        let expected: &[&str] = if trigger_before_claim {
++            &[LATE, LATE_SECOND, SUFFIX, NEXT_TRIGGER]
++        } else if next_is_user {
++            &USER_MAIL_INPUT
++        } else {
++            &[LATE, SUFFIX, NEXT_TRIGGER]
++        };
++        let positions = expected
++            .iter()
++            .map(|text| position(&input, text))
++            .collect::<Vec<_>>();
+         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
++        if steer_before_recording {
++            assert!(input.iter().all(|item| !item.to_string().contains(STEER)));
++            let input = third_request
++                .as_ref()
++                .expect("steer request")
++                .single_request()
++                .input();
++            let positions = USER_MAIL_INPUT
++                .into_iter()
++                .chain([STEER])
++                .map(|text| position(&input, text))
++                .collect::<Vec<_>>();
++            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
++            assert!(before_rx.is_empty());
++            assert!(regular_rx.is_empty());
++        }
++        if direct_claim {
++            assert_eq!(step_selections.0.load(Ordering::Relaxed), 1);
++        }
+     } else {
+         assert_eq!(late_position, None);
+         let (late_reservation, _) = receive(&before_rx).await;
+@@ -13931,6 +14251,7 @@ async fn stale_task_start_does_not_change_active_plugin_selection() {
+         Vec::new(),
+         crate::tasks::RegularTask::new(),
+         &reservation,
++        /*accepts_deferred_mail*/ false,
+     );
+     tokio::pin!(start);
+     assert!(futures::poll!(start.as_mut()).is_pending());
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index c02371c5d19db1daad2eeb7fcdc9691a5cfd4283..ae0efac6e9a1377dae48947058aefe687b9bac3a 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -37,6 +37,7 @@ use crate::responses_retry::handle_response_stream_error;
+ use crate::session::PreviousTurnSettings;
+ use crate::session::TurnInput;
+ use crate::session::daemon_recovery::RecordedTurnInput;
++use crate::session::input_queue::StartupMailboxInput;
+ use crate::session::session::Session;
+ use crate::session::step_context::StepContext;
+ use crate::session::turn_context::TurnContext;
+@@ -52,6 +53,7 @@ use crate::stream_events_utils::mark_thread_memory_mode_polluted_if_external_con
+ use crate::stream_events_utils::raw_assistant_output_text_from_item;
+ use crate::stream_events_utils::record_completed_response_item_with_finalized_facts;
+ use crate::tasks::PendingCompactionFatal;
++use crate::tasks::TaskFinalization;
+ use crate::tasks::emit_compact_metric;
+ use crate::tools::ToolRouter;
+ use crate::tools::context::SharedTurnDiffTracker;
+@@ -487,7 +489,21 @@ pub(crate) async fn run_turn(
+     let mut next_step_context = Some(first_step_context);
+     let mut guardian_budget_compacted = false;
+     let mut pending_agent_handoff = None;
++    let mut startup_mailbox = turn_context.extension_data.remove::<StartupMailboxInput>();
+     loop {
++        let startup_mailbox = startup_mailbox.take();
++        let claiming_startup_mailbox = startup_mailbox.is_some();
++        let finalization = claiming_startup_mailbox.then(|| {
++            sess.services
++                .thread_extension_data
++                .get_or_init(TaskFinalization::default)
++        });
++        // A forced interrupt can detach the task before the mailbox claim. Once
++        // claimed, keep the batch safe from hard abort until it is recorded.
++        let finalization_guard = match &finalization {
++            Some(finalization) => Some(finalization.0.lock().await),
++            None => None,
++        };
+         // Note that pending_input would be something like a message the user
+         // submitted through the UI while the model was running. Though the UI
+         // may support this, the model might not.
+@@ -495,7 +511,11 @@ pub(crate) async fn run_turn(
+             .extension_data
+             .get_or_init(super::owned_turn_stop::OwnedTurnTask::default);
+         let recording = input_owner.recording.lock().await;
+-        let pending_input = if can_drain_pending_input {
++        let pending_input = if let Some(startup_mailbox) = startup_mailbox {
++            sess.input_queue
++                .take_startup_mailbox_input(&sess.active_turn, &turn_context, &startup_mailbox)
++                .await
++        } else if can_drain_pending_input {
+             sess.input_queue
+                 .get_pending_input(&sess.active_turn)
+                 .await
+@@ -519,7 +539,8 @@ pub(crate) async fn run_turn(
+         // Input and turn-start injections are recorded before recovery can continue this turn.
+         turn_context.extension_data.insert(RecordedTurnInput);
+         drop(recording);
+-        if input_owner.stopping() {
++        drop(finalization_guard);
++        if input_owner.stopping() || (finalization.is_some() && cancellation_token.is_cancelled()) {
+             return Err(CodexErr::TurnAborted);
+         }
+         let window_id = sess.current_window_id().await;
+@@ -543,9 +564,11 @@ pub(crate) async fn run_turn(
+         }
+ 
+         // Capture once so context, advertised tools, and tool calls share one request view.
++        // The startup mailbox adds history only. Its entries cannot change step requirements.
++        let refresh_step_context = !claiming_startup_mailbox && !pending_input.is_empty();
+         let step_context = match next_step_context.take() {
+-            Some(step_context) if pending_input.is_empty() => step_context,
+-            None if pending_input.is_empty() => {
++            Some(step_context) if !refresh_step_context => step_context,
++            None if !refresh_step_context => {
+                 sess.capture_step_context_with_required_mcp_servers(
+                     Arc::clone(&turn_context),
+                     &cancellation_token,
+diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
+index 88cacd84f0408f0cdfc8ee6f2113310dfd14dbcb..cc4c7d95437973dc23751f6b0c68197badee084d 100644
+--- a/codex-rs/core/src/session/turn_input.rs
++++ b/codex-rs/core/src/session/turn_input.rs
+@@ -630,6 +630,7 @@ async fn start_if_idle_inner(
+                 Vec::new(),
+                 realtime_tool.expect("source task"),
+                 &turn_state,
++                /*accepts_deferred_mail*/ false,
+             );
+             let started = tokio::select! {biased;_=cancellation.cancelled()=>false,_=session.services.local_agent_runtime.shutdown.cancelled()=>false,started=starting=>started};
+             if !started {
+@@ -692,7 +693,13 @@ async fn start_if_idle_inner(
+ 
+     if let Some(task) = realtime_tool {
+         if !session
+-            .start_reserved_task(turn_context, Vec::new(), task, &turn_state)
++            .start_reserved_task(
++                turn_context,
++                Vec::new(),
++                task,
++                &turn_state,
++                /*accepts_deferred_mail*/ false,
++            )
+             .await
+         {
+             session.clear_reserved_idle_turn(&turn_state).await;
+@@ -727,7 +734,13 @@ async fn start_if_idle_inner(
+         }
+     }
+     if !session
+-        .start_reserved_task(turn_context, task_input, RegularTask::new(), &turn_state)
++        .start_reserved_task(
++            turn_context,
++            task_input,
++            RegularTask::new(),
++            &turn_state,
++            kind == TurnStartKind::User,
++        )
+         .await
+     {
+         session.clear_reserved_idle_turn(&turn_state).await;
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index cbf76b1d0be0f709c6813f5dd703dcbf67199967..42167b756c515e522f20b9935c296559af0b9dbf 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -99,6 +99,7 @@ impl PendingCompactionFatal {
+ enum TaskStartup<'a> {
+     Direct {
+         reservation: &'a Arc<Mutex<TurnState>>,
++        accepts_deferred_mail: bool,
+     },
+     Replace,
+     Mailbox {
+@@ -115,7 +116,7 @@ impl TaskStartup<'_> {
+                     && turn.task.is_none()
+                     && Arc::ptr_eq(reservation, &turn.turn_state)
+             }),
+-            Self::Direct { reservation } => active.is_some_and(|turn| {
++            Self::Direct { reservation, .. } => active.is_some_and(|turn| {
+                 !turn.mailbox_start_sealed
+                     && turn.task.is_none()
+                     && Arc::ptr_eq(reservation, &turn.turn_state)
+@@ -391,12 +392,16 @@ impl Session {
+         input: Vec<TurnInput>,
+         task: T,
+         reservation: &Arc<Mutex<TurnState>>,
++        accepts_deferred_mail: bool,
+     ) -> bool {
+         self.start_task_inner(
+             turn_context,
+             input,
+             task,
+-            TaskStartup::Direct { reservation },
++            TaskStartup::Direct {
++                reservation,
++                accepts_deferred_mail,
++            },
+         )
+         .await
+     }
+@@ -488,11 +493,16 @@ impl Session {
+             if !startup.matches(active.as_ref()) {
+                 return false;
+             }
+-            let pending_mail = if !matches!(startup, TaskStartup::Mailbox { .. }) {
++            if !matches!(startup, TaskStartup::Mailbox { .. }) {
+                 self.record_started_turn(&turn_context.sub_id).await;
+-                self.input_queue.drain_ready_mailbox().await
+-            } else {
+-                Vec::new()
++            }
++            let pending_mail = match startup {
++                TaskStartup::Mailbox { .. }
++                | TaskStartup::Direct {
++                    accepts_deferred_mail: true,
++                    ..
++                } => Vec::new(),
++                _ => self.input_queue.drain_ready_mailbox().await,
+             };
+             let turn = active.get_or_insert_with(ActiveTurn::default);
+             debug_assert!(turn.task.is_none());
+@@ -530,6 +540,14 @@ impl Session {
+         }
+         let turn = active.get_or_insert_with(ActiveTurn::default);
+         debug_assert!(turn.task.is_none());
++        if let TaskStartup::Direct {
++            accepts_deferred_mail: true,
++            ..
++        } = startup
++            && let Some(startup_input) = self.input_queue.reserve_mailbox_for_user_turn().await
++        {
++            turn_context.extension_data.insert(startup_input);
++        }
+         let committed_mail = if let TaskStartup::Mailbox { len, .. } = startup {
+             // Leave the prefix in the queue if stop replaced this reservation before registration.
+             let committed_mail = self
+diff --git a/codex-rs/core/src/tasks/regular.rs b/codex-rs/core/src/tasks/regular.rs
+index f80cf8f7b0400239f8fa09693c3dcc5ac28bb7ea..198c1ee8902ab7c9ef54df3a42d9d3936e14f9b4 100644
+--- a/codex-rs/core/src/tasks/regular.rs
++++ b/codex-rs/core/src/tasks/regular.rs
+@@ -55,16 +55,10 @@ impl SessionTask for RegularTask {
+         {
+             // Mailbox-triggered children can start with an empty task input.
+             // Snapshot this turn's admitted queue without consuming its records.
+-            let pending_input = if let Some(state) = sess
++            let pending_input = sess
+                 .input_queue
+-                .turn_state_for_sub_id(&sess.active_turn, &ctx.sub_id)
+-                .await
+-            {
+-                let pending = state.lock().await;
+-                pending.pending_input.snapshot()
+-            } else {
+-                Vec::new()
+-            };
++                .snapshot_initial_input(&sess.active_turn, &ctx)
++                .await;
+             let initial = input
+                 .iter()
+                 .chain(pending_input.iter())

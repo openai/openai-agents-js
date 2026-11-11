@@ -1,5 +1,5 @@
 {
-  "result_tree": "3d58584a05c3d0b4005f25deed9c86c77bd210ad",
+  "result_tree": "78dc715cfd24d76c714771186d8cbf6c24602c77",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -776,6 +776,10 @@
     {
       "path": "sdk-native-model-response-stream.patch",
       "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
+    },
+    {
+      "path": "sdk-mailbox-deferred-user-fifo.patch",
+      "sha256": "00d32123fc3cc9127c0acc5a71d3ac11289b3af5300e8f9d05e33ebd61ef3e7b"
     }
   ]
 }
