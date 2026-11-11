@@ -74,6 +74,12 @@ const harness = vi.hoisted(() => {
         callback_storage_key: dispatch?.key,
       });
     }),
+    trace_span_context: vi.fn((handle: string) => {
+      const context = contexts.get(handle);
+      if (!context || released.has(handle))
+        throw new Error('Unknown or released native tracing context');
+      return JSON.stringify(context);
+    }),
     end_trace_span: vi.fn(),
     release_trace_span: vi.fn((handle: string) => {
       released.add(handle);
