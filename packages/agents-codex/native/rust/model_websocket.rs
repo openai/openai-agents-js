@@ -999,13 +999,7 @@ mod projection_tests {
         let mut prefix = Prefix::default();
         let original = json!({"model": "fixture", "input": []});
         prefix
-            .commit(
-                "resp_hosted".into(),
-                vec![],
-                Some(&original),
-                items.clone(),
-                false,
-            )
+            .commit("resp_hosted".into(), original, items.clone(), false)
             .unwrap();
         let reconstructed = prefix
             .reconstruct(

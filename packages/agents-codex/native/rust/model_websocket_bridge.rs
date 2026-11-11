@@ -93,7 +93,6 @@ pub(crate) async fn connect(
 }
 
 struct Generation {
-    input: Vec<Value>,
     request: Value,
     warmup: bool,
     content_item_kinds: bool,
@@ -235,10 +234,7 @@ impl Bridge<'_> {
         native_interception::sentinel_restore_schemas(&engine, self.provider, &ticket, &mut body)
             .await?;
         normalize_relay_numbers(&mut body)?;
-        let input = body["input"]
-            .as_array()
-            .context("Invalid native Responses input")?
-            .clone();
+        ensure!(body["input"].is_array(), "Invalid native Responses input");
         drop(permit);
         drop(engine);
         let wire = self.prefix.encode(&body).map_err(anyhow::Error::msg)?;
@@ -252,7 +248,6 @@ impl Bridge<'_> {
             .await
             .map_err(|error| anyhow::anyhow!(error.reason))?;
         self.generation = Some(Generation {
-            input,
             request: body,
             warmup,
             content_item_kinds: receipt["content_item_kinds"] == true,
@@ -302,8 +297,7 @@ impl Bridge<'_> {
             self.prefix
                 .commit(
                     response_id.to_owned(),
-                    generation.input,
-                    Some(&generation.request),
+                    generation.request,
                     projected,
                     generation.warmup,
                 )

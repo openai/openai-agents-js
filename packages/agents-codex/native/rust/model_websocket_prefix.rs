@@ -13,10 +13,10 @@ type Result<T> = std::result::Result<T, String>;
 #[derive(Debug, Default)]
 pub(crate) struct Prefix {
     id: Option<String>,
-    // The JS carrier stores original + output, then slices to originalLength.
-    // Retain precisely that slice, without another copy of projected output.
-    original_input: Vec<Value>,
-    provider_input: Option<Vec<Value>>,
+    // The restored request input is followed by the provider's projected output.
+    // Core reconstruction uses only the original input before this boundary.
+    history: Vec<Value>,
+    original_len: usize,
     properties: Option<Map<String, Value>>,
     active_id: Option<String>,
     warmup: bool,
@@ -62,7 +62,7 @@ impl Prefix {
                 .ok_or("Invalid native WebSocket completion receipt")?
                 .clone()
         };
-        let mut input = self.original_input.clone();
+        let mut input = self.history[..self.original_len].to_vec();
         input.extend(tail);
         if let Some(Value::Array(delta)) = body.remove("input") {
             input.extend(delta);
@@ -84,17 +84,15 @@ impl Prefix {
             .ok_or("Edited Responses input must be a list")?;
         let properties = properties(body);
         // The bridge normalizes the request and committed output before comparison.
-        let prefix = self.provider_input.as_ref().filter(|prefix| {
-            self.id.is_some()
-                && self.properties.as_ref() == Some(&properties)
-                && input.starts_with(prefix)
+        let reference = self.id.as_ref().filter(|_| {
+            self.properties.as_ref() == Some(&properties) && input.starts_with(&self.history)
         });
-        let mut outgoing = if let Some(prefix) = prefix {
+        let mut outgoing = if let Some(reference) = reference {
             let mut delta: Map<String, Value> = body
                 .iter()
                 .map(|(key, value)| {
                     let value = if key == "input" {
-                        Value::Array(input[prefix.len()..].to_vec())
+                        Value::Array(input[self.history.len()..].to_vec())
                     } else {
                         value.clone()
                     };
@@ -103,7 +101,7 @@ impl Prefix {
                 .collect();
             delta.insert(
                 "previous_response_id".into(),
-                Value::String(self.id.clone().expect("committed prefix has an id")),
+                Value::String(reference.clone()),
             );
             delta
         } else {
@@ -115,32 +113,30 @@ impl Prefix {
         Ok(Value::Object(outgoing))
     }
 
-    /// `original` and `edited` are the full, restored request, before encode
-    /// selects a delta. `items` have already passed the existing projector.
+    /// `edited` is the full, restored request, before encode selects a delta.
+    /// `items` have already passed the existing projector.
     pub(crate) fn commit(
         &mut self,
         id: String,
-        original: Vec<Value>,
-        edited: Option<&Value>,
+        mut edited: Value,
         items: Vec<Value>,
         warmup: bool,
     ) -> Result<()> {
         if self.active_id.as_ref().is_some_and(|active| active != &id) {
             return Err("Native WebSocket completion changed response identity".into());
         }
-        let body = edited.and_then(Value::as_object);
-        let provider_input = body
-            .and_then(|body| body.get("input"))
-            .and_then(Value::as_array)
-            .map(|input| {
-                let mut input = input.clone();
-                input.extend(items);
-                input
-            });
+        let body = edited
+            .as_object_mut()
+            .ok_or("Edited Responses request must be an object")?;
+        let Some(Value::Array(mut history)) = body.remove("input") else {
+            return Err("Edited Responses input must be a list".into());
+        };
+        let original_len = history.len();
+        history.extend(items);
         self.id = Some(id);
-        self.original_input = original;
-        self.provider_input = provider_input;
-        self.properties = body.map(properties);
+        self.history = history;
+        self.original_len = original_len;
+        self.properties = Some(properties(body));
         self.active_id = None;
         self.warmup = warmup;
         Ok(())
@@ -174,7 +170,7 @@ impl Prefix {
     /// A failed/non-interrupted incomplete response invalidates provider delta
     /// reuse. The last committed native receipt can still reconstruct history.
     pub(crate) fn clear_provider_prefix(&mut self) {
-        self.provider_input = None;
+        self.history.truncate(self.original_len);
         self.properties = None;
         self.active_id = None;
     }
@@ -209,34 +205,36 @@ mod tests {
     }
 
     #[test]
-    fn delta_reconstruction_uses_native_completion_not_projected_output() {
+    fn moves_large_input_and_reconstructs_from_the_native_receipt() {
         let mut prefix = Prefix::default();
-        let original = vec![json!({"role":"user", "content":"hello"})];
-        let edited = request(json!([{"role":"user", "content":"edited"}]));
+        let edited = request(json!([{
+            "type":"function_call_output", "call_id":"call_large", "output":"x".repeat(128 * 1024)
+        }]));
+        let original = edited["input"][0].clone();
+        let original_output = edited["input"][0]["output"].as_str().unwrap().as_ptr();
         prefix
-            .commit(
-                "r".into(),
-                original.clone(),
-                Some(&edited),
-                vec![json!("provider")],
-                false,
-            )
+            .commit("r".into(), edited, vec![json!("provider")], false)
             .unwrap();
-        let receipt = json!({"response_id":"r", "model":"m", "output":["accepted partial"]});
-        let delta = json!({"model":"m", "input":["next"], "previous_response_id":"r"});
-        let full = prefix.reconstruct(delta, Some(&receipt)).unwrap();
         assert_eq!(
-            full["input"],
-            json!([original[0], "accepted partial", "next"])
+            prefix.history[0]["output"].as_str().unwrap().as_ptr(),
+            original_output
         );
+        let receipt = json!({"response_id":"r", "model":"m", "output":["accepted partial"]});
+        let delta =
+            json!({"model":"m", "stream":true, "input":["next"], "previous_response_id":"r"});
+        let full = prefix.reconstruct(delta, Some(&receipt)).unwrap();
+        assert_eq!(full["input"], json!([original, "accepted partial", "next"]));
         assert!(full.get("previous_response_id").is_none());
+        let wire = prefix.encode(&full).unwrap();
+        assert!(wire.get("previous_response_id").is_none());
+        assert_eq!(wire["input"], full["input"]);
     }
 
     #[test]
     fn continuation_requires_matching_socket_response_model_and_receipt_shape() {
         let mut prefix = Prefix::default();
         prefix
-            .commit("r".into(), vec![], None, vec![], false)
+            .commit("r".into(), request(json!([])), vec![], false)
             .unwrap();
         let delta = json!({"model":"m", "input":[], "previous_response_id":"r"});
         for receipt in [
@@ -253,7 +251,7 @@ mod tests {
     fn warmup_continuation_has_no_completion_tail() {
         let mut prefix = Prefix::default();
         prefix
-            .commit("w".into(), vec![json!("original")], None, vec![], true)
+            .commit("w".into(), request(json!(["original"])), vec![], true)
             .unwrap();
         let full = prefix
             .reconstruct(json!({"input":["next"], "previous_response_id":"w"}), None)
@@ -266,13 +264,7 @@ mod tests {
         let mut prefix = Prefix::default();
         let edited = request(json!(["original"]));
         prefix
-            .commit(
-                "r".into(),
-                vec![json!("original")],
-                Some(&edited),
-                vec![json!("output")],
-                false,
-            )
+            .commit("r".into(), edited, vec![json!("output")], false)
             .unwrap();
         let mut next = request(json!(["original", "output", "next"]));
         next["client_metadata"] = json!({"different":"ticket"});
@@ -291,12 +283,12 @@ mod tests {
     }
 
     #[test]
-    fn changed_numeric_properties_and_failed_response_select_full_requests() {
+    fn changed_numeric_properties_and_input_select_full_requests() {
         let mut prefix = Prefix::default();
         let mut edited = request(json!(["original"]));
         edited["temperature"] = json!(0);
         prefix
-            .commit("r".into(), vec![], Some(&edited), vec![], false)
+            .commit("r".into(), edited.clone(), vec![], false)
             .unwrap();
         edited["temperature"] = json!(1);
         assert!(
@@ -308,21 +300,9 @@ mod tests {
         );
         let mut edited = request(json!([{"number":0}]));
         prefix
-            .commit("r".into(), vec![], Some(&edited), vec![], false)
+            .commit("r".into(), edited.clone(), vec![], false)
             .unwrap();
         edited["input"][0]["number"] = json!(1);
-        assert!(
-            prefix
-                .encode(&edited)
-                .unwrap()
-                .get("previous_response_id")
-                .is_none()
-        );
-        let edited = request(json!([]));
-        prefix
-            .commit("r".into(), vec![], Some(&edited), vec![], false)
-            .unwrap();
-        prefix.clear_provider_prefix();
         assert!(
             prefix
                 .encode(&edited)
@@ -333,13 +313,35 @@ mod tests {
     }
 
     #[test]
+    fn failed_response_disables_provider_delta_without_losing_native_history() {
+        let mut prefix = Prefix::default();
+        prefix
+            .commit(
+                "r".into(),
+                request(json!(["original"])),
+                vec![json!("provider")],
+                false,
+            )
+            .unwrap();
+        prefix.clear_provider_prefix();
+        let would_match = prefix
+            .encode(&request(json!(["original", "provider", "next"])))
+            .unwrap();
+        assert!(would_match.get("previous_response_id").is_none());
+        let receipt = json!({"response_id":"r", "model":"m", "output":["accepted"]});
+        let delta = json!({"model":"m", "input":["next"], "previous_response_id":"r"});
+        let full = prefix.reconstruct(delta, Some(&receipt)).unwrap();
+        assert_eq!(full["input"], json!(["original", "accepted", "next"]));
+    }
+
+    #[test]
     fn matched_normalized_numeric_properties_and_input_allow_delta() {
         let mut prefix = Prefix::default();
         let mut edited = request(json!([{"number":0}]));
         edited["max_output_tokens"] = json!(1024);
         edited["tools"] = json!([{"parameters":{"minimum":0, "maximum":10}}]);
         prefix
-            .commit("r".into(), vec![], Some(&edited), vec![], false)
+            .commit("r".into(), edited.clone(), vec![], false)
             .unwrap();
         let mut next = edited.clone();
         next["input"] = json!([{"number":0}, "next"]);
@@ -362,11 +364,11 @@ mod tests {
         assert!(prefix.validate_interrupt(&wrong, true).is_err());
         assert!(
             prefix
-                .commit("other".into(), vec![], None, vec![], false)
+                .commit("other".into(), request(json!([])), vec![], false)
                 .is_err()
         );
         prefix
-            .commit("r".into(), vec![], None, vec![], false)
+            .commit("r".into(), request(json!([])), vec![], false)
             .unwrap();
         assert!(prefix.validate_interrupt(&interrupt, true).is_err());
     }
