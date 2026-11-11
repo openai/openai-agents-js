@@ -235,6 +235,19 @@ index 6dd8e2e4..4b231a1e 100644
      ));
  
      // Insert synthetic outputs in reverse index order to avoid re-indexing.
+diff --git a/codex-rs/core/src/event_mapping.rs b/codex-rs/core/src/event_mapping.rs
+index f80a4bf4..4d25dd03 100644
+--- a/codex-rs/core/src/event_mapping.rs
++++ b/codex-rs/core/src/event_mapping.rs
+@@ -255,6 +255,8 @@ pub fn parse_turn_item(item: &ResponseItem) -> Option<TurnItem> {
+         }
+         ResponseItem::FileSearchCall { id, .. }
+         | ResponseItem::CodeInterpreterCall { id, .. }
++        | ResponseItem::McpListTools { id, .. }
++        | ResponseItem::McpCall { id, .. }
+         | ResponseItem::ShellCall { id, .. }
+         | ResponseItem::ShellCallOutput { id, .. } => Some(TurnItem::HostedToolCall(
+             codex_protocol::items::HostedToolCallItem {
 diff --git a/codex-rs/core/src/image_preparation.rs b/codex-rs/core/src/image_preparation.rs
 index b1cb1cbe..228a3d8d 100644
 --- a/codex-rs/core/src/image_preparation.rs
@@ -250,6 +263,19 @@ index b1cb1cbe..228a3d8d 100644
              | ResponseItem::FileSearchCall { .. }
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/session/sdk_produced_items.rs b/codex-rs/core/src/session/sdk_produced_items.rs
+index 1fdf6ea2..0f0fccc7 100644
+--- a/codex-rs/core/src/session/sdk_produced_items.rs
++++ b/codex-rs/core/src/session/sdk_produced_items.rs
+@@ -139,6 +139,8 @@ fn is_produced_response(item: &ResponseItem) -> bool {
+         | ResponseItem::WebSearchCall { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
+         | ResponseItem::ShellCall { .. }
+         | ResponseItem::ShellCallOutput { .. }
+         | ResponseItem::ImageGenerationCall { .. } => true,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
 index a78ec2a9..3c4e77c1 100644
 --- a/codex-rs/core/src/session/turn.rs
@@ -274,7 +300,7 @@ index a78ec2a9..3c4e77c1 100644
                          | ResponseItem::CodeInterpreterCall { .. }
                          | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
-index 729130d9..2bbbc0f8 100644
+index 729130d9..9b75cca1 100644
 --- a/codex-rs/core/src/stream_events_utils.rs
 +++ b/codex-rs/core/src/stream_events_utils.rs
 @@ -160,6 +160,8 @@ fn response_item_may_include_external_context(item: &ResponseItem) -> bool {
@@ -317,7 +343,16 @@ index 729130d9..2bbbc0f8 100644
          ResponseItem::FileSearchCall { .. } => "file_search_call",
          ResponseItem::CodeInterpreterCall { .. } => "code_interpreter_call",
          ResponseItem::ShellCall { .. } => "shell_call",
-@@ -549,7 +568,8 @@ fn completed_item_defers_mailbox_delivery_to_next_turn(
+@@ -466,6 +485,8 @@ pub(crate) async fn handle_non_tool_response_item(
+         ResponseItem::Message { .. }
+         | ResponseItem::Reasoning { .. }
+         | ResponseItem::WebSearchCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+@@ -549,7 +570,8 @@ fn completed_item_defers_mailbox_delivery_to_next_turn(
  
  pub(crate) fn response_input_to_response_item(input: &ResponseInputItem) -> Option<ResponseItem> {
      match input {

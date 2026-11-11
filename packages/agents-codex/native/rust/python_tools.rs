@@ -13,8 +13,8 @@ use codex_extension_api::{
     WorldStateContributionInput, WorldStateSectionContribution,
 };
 use codex_protocol::dynamic_tools::{
-    DynamicToolFunctionSpec, DynamicToolNamespaceSpec, DynamicToolNamespaceTool,
-    DynamicToolResponse, DynamicToolSpec,
+    DynamicToolCallOutputContentItem, DynamicToolFunctionSpec, DynamicToolNamespaceSpec,
+    DynamicToolNamespaceTool, DynamicToolResponse, DynamicToolSpec,
 };
 use codex_protocol::models::{
     FunctionCallOutputBody, FunctionCallOutputContentItem, FunctionCallOutputPayload,

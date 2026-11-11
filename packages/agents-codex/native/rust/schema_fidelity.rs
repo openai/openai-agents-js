@@ -147,7 +147,7 @@ impl Receipts {
             // A marker is not its own grant. Check its exact generated header
             // and original description before stripping it from Core's prompt.
             let name = codex_tools::code_mode_name_for_tool_name(&codex_tools::ToolName::new(
-                namespace.map(|namespace| namespace.name.clone()),
+                namespace.as_ref().map(|namespace| namespace.name.clone()),
                 source.name.clone(),
             ));
             let global = codex_code_mode::normalize_code_mode_identifier(&name);
@@ -272,7 +272,7 @@ impl Receipts {
             specs.push(match namespace {
                 None => DynamicToolSpec::Function(raw),
                 Some(namespace) => {
-                    let mut namespace = namespace.clone();
+                    let mut namespace = namespace.into_owned();
                     namespace.tools = vec![DynamicToolNamespaceTool::Function(raw)];
                     DynamicToolSpec::Namespace(namespace)
                 }
