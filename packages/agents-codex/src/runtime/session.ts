@@ -2786,29 +2786,17 @@ export class Session<OutputT = string, Context = unknown> {
           throw new NativeError('Native model settings were not acknowledged');
       }
       if (
-        (this.restored ||
-          this.threadOptions._sdk_resume_thread_id !== undefined) &&
-        !this.options.agentGraph
+        this.restored ||
+        this.threadOptions._sdk_resume_thread_id !== undefined
       ) {
-        const settings = this.options.initialModelSettings;
-        // Native merges retry patches field by field. Clear the checkpoint's
-        // retry settings before applying the current declaration.
-        const patches = [
-          modelOverrides(undefined, {
-            attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
-            retry: null,
-          }),
-        ];
-        if (settings?.retry != null)
-          patches.push(modelOverrides(undefined, { retry: settings.retry }));
-        for (const patch of patches) {
-          if (
-            (await this.#native._update_model_settings(encode(patch))) !== true
-          )
-            throw new NativeError(
-              'Restored retry declaration was not acknowledged',
-            );
-        }
+        const graph = this.options.agentGraph;
+        const source = graph?.restoredSource;
+        const settings =
+          source && source.profile_id !== graph!.rootId
+            ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+                .modelSettings
+            : this.options.initialModelSettings;
+        await this.restoreModelControls(settings);
       }
       this.configureNative(this.#native);
       if (
@@ -2940,6 +2928,21 @@ export class Session<OutputT = string, Context = unknown> {
           await this.commitProfile(allocated.active, true);
         } else await this.commitProfile(allocated.active, false);
       }
+      if (
+        this.options.agentGraph &&
+        (this.restored ||
+          this.threadOptions._sdk_resume_thread_id !== undefined) &&
+        (!this.restored || !isManualSessionState(this.restored))
+      ) {
+        const source = this.profileCurrent!;
+        const settings =
+          source.profile_id === this.options.agentGraph.rootId
+            ? this.options.initialModelSettings
+            : this.profileRuntimes.get(source.profile_id)!.profile.declaration
+                .modelSettings;
+        await this.restoreModelControls(settings);
+        await this.acknowledgeProfilePublication();
+      }
       if (startup.cause) throw startup.cause.value;
       this.starting = undefined;
     } catch (error) {
@@ -2965,6 +2968,28 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.starting) this.failStartup(error);
       else this.readerFailed(error);
     });
+  }
+
+  private async restoreModelControls(
+    settings: ModelSettings | undefined,
+  ): Promise<void> {
+    // Native merges retry patches field by field. Clear the checkpoint's
+    // retry settings before applying the current declaration.
+    const patches = [
+      modelOverrides(undefined, {
+        invocationTimeoutMs: settings?.invocationTimeoutMs ?? null,
+        attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
+        retry: null,
+      }),
+    ];
+    if (settings?.retry != null)
+      patches.push(modelOverrides(undefined, { retry: settings.retry }));
+    for (const patch of patches) {
+      if ((await this.#native._update_model_settings(encode(patch))) !== true)
+        throw new NativeError(
+          'Restored retry declaration was not acknowledged',
+        );
+    }
   }
 
   private configureNative(native: NativeThread): void {

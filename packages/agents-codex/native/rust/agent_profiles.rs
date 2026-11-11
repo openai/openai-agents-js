@@ -536,6 +536,15 @@ struct VoiceGraphAdmission {
     previous_registry: Option<VoiceProfileRegistry>,
 }
 
+fn rebind_restored_controls(
+    model: &mut AgentProfileModelSettings,
+    current: &AgentProfileModelSettings,
+) {
+    model.invocation_timeout_ms = current.invocation_timeout_ms;
+    model.request_controls.retry = current.request_controls.retry.clone();
+    model.request_controls.attempt_timeout_ms = current.request_controls.attempt_timeout_ms;
+}
+
 async fn prepare_profile(
     thread: &CodexThread,
     tools: &PythonTools,
@@ -1008,11 +1017,14 @@ pub(crate) async fn configure(
     });
     let mut profiles = BTreeMap::new();
     for descriptor in &opening.roster {
-        let model = if descriptor.id == opening.root_id {
+        let mut model = if descriptor.id == opening.root_id {
             opening_model.clone()
         } else {
             descriptor.model.clone()
         };
+        if restored {
+            rebind_restored_controls(&mut model, &descriptor.model);
+        }
         profiles.insert(
             descriptor.id.clone(),
             prepare_profile(
