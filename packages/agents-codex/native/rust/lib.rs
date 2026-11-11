@@ -4441,6 +4441,51 @@ impl NativeThread {
         serde_json::to_string(&value).map_err(native_error)
     }
 
+    #[napi(js_name = "_start_raw_usage")]
+    pub fn start_raw_usage(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = inner.thread.sdk_start_raw_usage();
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_attach_raw_usage")]
+    pub fn attach_raw_usage(&self, parent: &NativeThread) -> napi::Result<()> {
+        let inner = self.current()?;
+        let parent = parent.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = parent
+            .thread
+            .sdk_raw_usage_link()
+            .ok_or_else(|| native_error("Provider usage capture was not started"))?;
+        link.attach(inner.thread.thread_extension_data());
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_raw_usage")]
+    pub fn take_raw_usage(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .thread
+            .sdk_take_raw_usage(&turn_id)
+            .map_err(native_error)
+    }
+
     #[napi(js_name = "_start_produced_items")]
     pub fn start_produced_items(&self) -> napi::Result<()> {
         let inner = self.current()?;
@@ -5696,6 +5741,22 @@ pub fn end_trace_span(handle: String, outcome_json: String) -> napi::Result<()> 
 #[napi(js_name = "retain_trace_context")]
 pub fn retain_trace_context(handle: String) -> napi::Result<String> {
     codex_otel::sdk_trace::retain_trace_context(&handle).map_err(native_error)
+}
+
+#[napi(js_name = "borrow_trace_context")]
+pub fn borrow_trace_context(
+    parent: String,
+    restrictions_parent: Option<String>,
+    disabled: bool,
+    include_sensitive_data: bool,
+) -> napi::Result<String> {
+    codex_otel::sdk_trace::borrow_trace_context(
+        &parent,
+        restrictions_parent.as_deref(),
+        disabled,
+        include_sensitive_data,
+    )
+    .map_err(native_error)
 }
 
 #[napi(js_name = "_retain_callback_dispatch_context")]

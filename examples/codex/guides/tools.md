@@ -381,6 +381,23 @@ A factory without a disposer returns a borrowed driver. Its first call runs the 
 
 These live callbacks do not create a durable approval to resume after a restart. Saved state carries no driver or permission grant; restore with the current trusted declaration. [Unknown effects require explicit reconciliation](recovery.md#reconcile-external-effects). A computer reconciliation result must contain an actual `computer_screenshot` and all full original safety checks approved by your application, for either outcome. Text-only function receipts cannot settle a computer call.
 
+## Provider-hosted tool compatibility
+
+The [JavaScript source baseline](https://github.com/openai/openai-agents-js/tree/8fbc64a473b06b407df2db2e91418076c0235915) has been providing the SDK behavior below through an API-key `NativeProvider`. Local fixtures have been sending synthetic Responses over HTTP with streamed server events. They have been checking SDK request and history handling without calling OpenAI. Live provider verification has been remaining outstanding for every row.
+
+| Tool | Standard Responses over HTTP: local fixture coverage | Responses Lite: SDK restriction |
+| --- | --- | --- |
+| `fileSearch()` | Request fields, completed results, citations, and idle saved-state restore | Native model validation has been rejecting the declaration |
+| `codeInterpreter()` | Container options, completed outputs, and idle saved-state restore | Native model validation has been rejecting the declaration |
+| `imageGeneration()` | Generation, inline-image editing, partial events, and idle saved-state restore | Native model validation has been rejecting the declaration |
+| `hostedShell()` | Managed-container request, shell-only completion, output history, and continuation | Native model validation has been rejecting the declaration |
+
+The [native hosted-tool fixtures](../../../packages/agents-codex/test/native/hosted-tools-native.test.ts) have been covering the positive HTTP cases. A refused Lite model update has been raising `Provider-hosted tools require Responses; Responses Lite is unsupported` before any request and preserving the original model for continuation. That negative fixture has been using file search; shared validation has been guarding all four declarations. `hostedShell()` has been accepting `container_auto` and `container_reference`; a local environment has been raising `Hosted shell requires a managed container environment`.
+
+WebSocket transport, Codex login, Azure deployments, and other providers have been remaining outside this matrix's fixture evidence. Idle restore has been requiring current declarations and credentials; saved history has not been granting tools or extending provider resource lifetimes. Checkpoints awaiting manual tool results have not been supporting these hosted tools. The Python native SDK at the matching [Python baseline](https://github.com/openai/openai-agents-python/tree/22562087f13e841a7ad00ff97356107c3200608b) has been exposing file search, Code Interpreter, and image generation, without a hosted-shell declaration.
+
+The [GPT-5.2 model reference](https://developers.openai.com/api/docs/models/gpt-5.2) has been listing all four tools, while the [shell guide](https://developers.openai.com/api/docs/guides/tools-shell) has been describing hosted shell through Responses. Those service references have not been establishing support for every SDK, account, or tool option. The provider has been validating those combinations. No live request, uploaded resource, or customer runtime has been contributing verification to this matrix. The [hosted-tool example](../hosted-tools/README.md) has been explaining resource ownership, image inputs, and detailed observations.
+
 ## Native web search
 
 Add `webSearch()` to `Agent.tools` to allow cached standalone search. Omission disables both standalone and hosted search. Choose `mode: 'live'` to allow external web access, or `route: 'hosted'` to use the provider-hosted Responses tool. The current provider must support the chosen route.

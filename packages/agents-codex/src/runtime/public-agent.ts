@@ -275,6 +275,10 @@ export interface RunOptions<Context = undefined> extends Omit<
   /** Capture conversation records for replay through another Session's transactHistory.
    * History above 4,096 original records or 8 MiB causes a size error after completion. */
   returnHistory?: boolean;
+  /** Return original usage from accepted Responses requests completed during this
+   * invocation, in response order. History and checkpoints omit these objects.
+   * Capture above 4,096 responses or 8 MiB raises NativeError after completion. */
+  returnRawUsage?: boolean;
   /** Retain the assistant and tool items produced by this run. */
   returnItems?: boolean;
 }
@@ -796,6 +800,7 @@ export class Agent<Context = undefined, Output = string> {
         input: preparedInput,
         prepareRequest: options.prepareRequest,
         beforeStep,
+        returnRawUsage: options.returnRawUsage,
       },
     };
     if (
@@ -807,6 +812,7 @@ export class Agent<Context = undefined, Output = string> {
       budget === undefined &&
       options.returnState !== true &&
       options.returnHistory !== true &&
+      options.returnRawUsage !== true &&
       options.returnItems !== true &&
       options.prepareRequest === undefined &&
       options.onInteraction === undefined &&
@@ -836,6 +842,7 @@ export class Agent<Context = undefined, Output = string> {
       budget,
       returnState: options.returnState,
       returnHistory: options.returnHistory,
+      returnRawUsage: options.returnRawUsage,
       returnItems: options.returnItems,
       signal: options.signal,
     });
