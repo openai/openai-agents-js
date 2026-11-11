@@ -347,6 +347,9 @@ export class NativeThread {
     tracing_context?: string,
     observationSubmissionId?: string,
   ): Promise<string>;
+  _start_raw_usage(): void;
+  _attach_raw_usage(parent: NativeThread): void;
+  _take_raw_usage(turn_id: string): string;
   _start_produced_items(): void;
   _take_produced_items(turn_id: string): string;
   read_thread_history(subagent_id: string | null): Promise<string>;

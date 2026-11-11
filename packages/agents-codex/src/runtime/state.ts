@@ -748,10 +748,76 @@ export const sessionStateSchema = z
     }
     validateCheckpointTree(state, ctx);
   });
+// Saved histories cannot authorize a hosted prompt. Live declarations travel
+// separately; the native serializer deliberately omits their references.
+function checkpointRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+function validateStoredPromptControls(
+  state: z.infer<typeof checkpointTreeSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  const check = (controls: unknown, path: (string | number)[]) => {
+    if (
+      checkpointRecord(checkpointRecord(controls)?.hosted_prompt)?.reference !=
+      null
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path,
+        message: 'Stored hosted prompt references are not authorized',
+      });
+  };
+  const metadata = (value: unknown, path: (string | number)[]) => {
+    const profile = checkpointRecord(
+      checkpointRecord(value)?.sdk_agent_profile,
+    );
+    check(checkpointRecord(profile?.model)?.request_controls, path);
+  };
+  const row = (value: unknown, path: (string | number)[]) => {
+    const item = checkpointRecord(value);
+    const payload = checkpointRecord(item?.payload);
+    if (item?.type === 'response_item') metadata(item.metadata, path);
+    if (
+      item?.type === 'event_msg' &&
+      payload?.type === 'thread_settings_applied'
+    )
+      check(checkpointRecord(payload.thread_settings)?.request_controls, path);
+    if (
+      item?.type === 'compacted' &&
+      Array.isArray(payload?.replacement_history_metadata)
+    )
+      payload.replacement_history_metadata.forEach((entry, i) =>
+        metadata(entry, [
+          ...path,
+          'payload',
+          'replacement_history_metadata',
+          i,
+        ]),
+      );
+  };
+  state.history.forEach((value, i) => row(value, ['history', i]));
+  state.descendants?.forEach((child, i) =>
+    child.history.forEach((value, j) =>
+      row(value, ['descendants', i, 'history', j]),
+    ),
+  );
+  const accepted = checkpointRecord(
+    checkpointRecord(checkpointRecord(state)?.manual_continuation)
+      ?.accepted_replies,
+  );
+  if (accepted)
+    for (const [id, value] of Object.entries(accepted))
+      row(value, ['manual_continuation', 'accepted_replies', id]);
+}
+
 function validateCheckpointTree(
   state: z.infer<typeof checkpointTreeSchema>,
   ctx: z.RefinementCtx,
 ): void {
+  validateStoredPromptControls(state, ctx);
   if (
     state.root_checklist &&
     state.root_checklist.thread_id !== state.source_session_id

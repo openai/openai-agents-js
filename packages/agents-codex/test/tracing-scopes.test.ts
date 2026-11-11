@@ -4,6 +4,11 @@ import { runInNewContext } from 'node:vm';
 import { nativeEventBatch } from './fixtures/native-event-batches';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+it('generates group IDs through native telemetry', async () => {
+  const { telemetry } = await import('../src');
+  expect(telemetry.generateGroupId()).toMatch(/^group_[0-9a-f]{24}$/);
+});
+
 const harness = vi.hoisted(() => {
   let id = 0;
   const starts: Record<string, unknown>[] = [];

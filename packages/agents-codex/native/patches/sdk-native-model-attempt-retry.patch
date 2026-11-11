@@ -1951,18 +1951,6 @@ index 856e1189ae6f8443680acf308bc01ad59521fa3d..55dd5fecbb54cf3e301697c6b56d2be8
  pub(crate) struct PreparedToolRecommendations {
      auth: Option<CodexAuth>,
      endpoint_candidates: Option<Vec<DiscoverableTool>>,
-@@ -2712,7 +3053,10 @@ async fn propose_tool_completion(
-                     return Ok(None);
-                 }
-                 Some(codex_extension_api::ToolCompletionDecision::Accept { .. })
--                    if !tools.all_succeeded => continue,
-+                    if !tools.all_succeeded =>
-+                {
-+                    continue;
-+                }
-                 Some(codex_extension_api::ToolCompletionDecision::Accept { final_output }) => {
-                     return Ok(Some(codex_protocol::protocol::ToolTurnCompletion {
-                         call_id: call_id.clone(),
 @@ -2901,7 +3245,9 @@ pub(super) enum RealtimeEventText {
  
  pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventText> {

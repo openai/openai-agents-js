@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { Agent, captureAgentProfiles } from '../src/runtime/public-agent';
 import { captureProfileRuntimes } from '../src/runtime/agent-profiles';
 import { captureTools } from '../src/runtime/tools';
@@ -249,4 +249,50 @@ describe('hosted prompt reference capture', () => {
       (graph.roster[1]!.model as { request_controls: object }).request_controls,
     ).toHaveProperty('hosted_prompt', null);
   });
+});
+
+// Controlled provider acquisition proves rejection before native startup.
+it('rejects saved prompt authority before acquiring the native provider', async () => {
+  const { NativeProvider } = await import('../src/runtime/provider');
+  const { CODEX_REVISION } = await import('../src/runtime/state');
+  const provider = new NativeProvider({ apiKey: 'test' });
+  const acquire = vi.spyOn(provider, '_acquire');
+  const agent = new Agent({
+    instructions: 'Application instructions',
+    provider,
+  });
+  const state = {
+    format_version: 2 as const,
+    codex_revision: CODEX_REVISION,
+    source_session_id: 'root',
+    root_metadata: {},
+    history: [
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [] },
+        metadata: {
+          sdk_agent_profile: {
+            profile_id: 'agent_0',
+            epoch: 1,
+            model: {
+              model: 'gpt-5',
+              request_controls: {
+                hosted_prompt: {
+                  reference: { id: 'pmpt_untrusted' },
+                  omit_model: true,
+                  omit_instructions: true,
+                  omit_tools: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  };
+  await expect(agent.session({ state })).rejects.toThrow(
+    'Stored hosted prompt references are not authorized',
+  );
+  expect(acquire).not.toHaveBeenCalled();
+  acquire.mockRestore();
 });

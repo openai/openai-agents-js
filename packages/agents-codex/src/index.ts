@@ -62,6 +62,7 @@ export type {
   SessionUpdate,
   SessionInterruptOptions,
   Completed,
+  RawProviderUsage,
   ProducedItem,
   PendingRequests,
   SteeringReceipt,

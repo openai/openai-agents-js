@@ -1,5 +1,5 @@
 {
-  "result_tree": "54e5ea09d985c56c07977f992fa743975cc63e4b",
+  "result_tree": "aacb41bee596510441aa78e2831ee5c6ad0ab56d",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -790,6 +790,10 @@
       "sha256": "547f6fa749098e6779a30271dd1e62999a2a048fd651ebbe0c748fa4a5b27ad3"
     },
     {
+      "path": "sdk-raw-provider-usage.patch",
+      "sha256": "f0967a375204effb912fa9761b03cbb8bf32634048176e0b7e4e60669fd7c9cc"
+    },
+    {
       "path": "sdk-mcp-forced-choice-captured-binding.patch",
       "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
     },
@@ -803,7 +807,7 @@
     },
     {
       "path": "sdk-native-model-attempt-retry.patch",
-      "sha256": "dce7e903a138fa26e27c95eddbe9615f5ec649935196bd7625966095b933ad47"
+      "sha256": "4a692bc289d4e8b82c142c66f3404600e78a47a69004e71eb6b9c90750b77569"
     },
     {
       "path": "sdk-realtime-incarnation-ownership.patch",
