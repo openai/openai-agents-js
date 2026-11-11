@@ -15,6 +15,70 @@ import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
 
+it('forwards provider item references after native history restore', async () => {
+  const references = [
+    { type: 'item_reference', id: 'msg_remote_first' },
+    { type: 'item_reference', id: 'msg_remote_second' },
+    { type: 'item_reference', id: 'msg_remote_first' },
+  ];
+  const directory = await mkdtemp(join(tmpdir(), 'provider-references-'));
+  try {
+    const storage = fileSessionStore(directory);
+    const server = new ModelServer([[message('continued')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-history',
+    });
+    const agent = new Agent({
+      instructions: 'Answer briefly.',
+      model: 'gpt-5',
+      provider,
+    });
+    let sessionId: string;
+    {
+      await using session = await agent.session({ storage });
+      sessionId = session.id;
+      const snapshot = await session.historySnapshot();
+      for (const invalid of [
+        { type: 'item_reference' },
+        { type: 'item_reference', id: 17 },
+      ]) {
+        await expect(
+          session.transactHistory({
+            expectedRevision: snapshot.revision,
+            keep: 0,
+            items: [invalid],
+          }),
+        ).rejects.toThrow('Invalid canonical history item');
+        expect((await session.historySnapshot()).revision).toBe(
+          snapshot.revision,
+        );
+      }
+      await session.transactHistory({
+        expectedRevision: snapshot.revision,
+        keep: 0,
+        items: references,
+      });
+      expect((await session.historySnapshot()).items).toEqual(references);
+    }
+    await using restored = await agent.session({ storage, resume: sessionId });
+    expect((await restored.historySnapshot()).items).toEqual(references);
+    expect(server.requests).toHaveLength(0);
+    expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
+      'continued',
+    );
+    expect(server.requests).toHaveLength(1);
+    const wire = server.requests[0]!.input as Array<{ type: string }>;
+    expect(wire.filter((item) => item.type === 'item_reference')).toEqual(
+      references,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('rejects oversized one-shot history after the run completes', async () => {
   const server = new ModelServer([[message('completed')]]);
   const config = await server.config();
