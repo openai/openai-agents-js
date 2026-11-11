@@ -337,3 +337,88 @@ it.each([true, false])(
     expect(Object.isFrozen(result.runUsage)).toBe(true);
   },
 );
+
+it('captures invalid and successful output-repair responses in request order', async () => {
+  const usage = [0, 1, 2].map((sequence) => ({ ...modelUsage, sequence }));
+  const server = new ModelServer(
+    [
+      [message('{"label":"x"}')],
+      [message('{"label":"y"}')],
+      [message('{"label":"corrected"}')],
+    ],
+    usage.map((record) => JSON.stringify(record)),
+  );
+  await using provider = await providerFor(server);
+  const result = await new Agent({
+    instructions: 'Answer.',
+    provider,
+    outputType: {
+      mode: 'prompted',
+      schema: z.object({ label: z.string().min(2) }),
+      maxRetries: 2,
+    },
+  }).run('run', { returnRawUsage: true });
+  expect(result.finalOutput).toEqual({ label: 'corrected' });
+  expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+    'response-1',
+    'response-2',
+    'response-3',
+  ]);
+  expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+  expect(server.requests).toHaveLength(3);
+  server.assertExhausted();
+}, 30_000);
+
+it.each([false, true])(
+  'orders correction usage before resumed sampling and defers combined overflow=%s',
+  async (overflow) => {
+    const usage = [0, 1, 2].map((sequence) => ({
+      ...modelUsage,
+      sequence,
+      ...(overflow && sequence < 2 ? { padding: 'x'.repeat(4_500_000) } : {}),
+    }));
+    const server = new ModelServer(
+      [
+        [message('{"label":"x"}')],
+        [message('{"label":"corrected"}')],
+        [message('{"label":"final"}')],
+      ],
+      usage.map((record) => JSON.stringify(record)),
+    );
+    await using provider = await providerFor(server);
+    let continued = false;
+    const pending = new Agent({
+      instructions: 'Answer.',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string().min(2) }),
+        maxRetries: 1,
+      },
+      beforeComplete(context) {
+        if (context.text?.includes('corrected')) {
+          continued = true;
+          return {
+            action: 'continue',
+            instructions: 'Sample the final response.',
+          };
+        }
+      },
+    }).run('run', { returnRawUsage: true });
+    if (overflow) await expect(pending).rejects.toThrow('capture limit');
+    else {
+      const result = await pending;
+      expect(result.finalOutput).toEqual({ label: 'final' });
+      expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+        'response-1',
+        'response-2',
+        'response-3',
+      ]);
+      expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+    }
+    expect(continued).toBe(true);
+    expect(server.requests).toHaveLength(3);
+    server.assertExhausted();
+  },
+  30_000,
+);

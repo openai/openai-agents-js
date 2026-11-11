@@ -605,6 +605,12 @@ export interface RawProviderUsage {
   readonly usage: Readonly<Record<string, JsonValue>>;
 }
 
+interface RawUsageCapture {
+  readonly records: RawProviderUsage[];
+  payloadBytes: number;
+  error?: NativeError;
+}
+
 const rawProviderUsageSchema = z.array(
   z.object({
     response_id: z.string(),
@@ -1295,24 +1301,34 @@ function realtimeToolSelection(
 }
 
 export class Session<OutputT = string, Context = unknown> {
-  #collectingRawUsage = false;
+  #rawUsageCapture?: RawUsageCapture;
 
   /** @internal */
   _startRawUsage(): void {
-    if (this.#collectingRawUsage) return;
+    if (this.#rawUsageCapture) return;
     this.#native._start_raw_usage();
-    this.#collectingRawUsage = true;
+    this.#rawUsageCapture = { records: [], payloadBytes: 2 };
   }
 
-  /** @internal */
-  _takeRawUsage(turnId: string): readonly RawProviderUsage[] {
+  private collectRawUsage(turnId: string, capture: RawUsageCapture): void {
+    if (capture.error) return;
     try {
-      const records = decode(
-        rawProviderUsageSchema,
-        this.#native._take_raw_usage(turnId),
-      );
-      return Object.freeze(
-        records.map((record) =>
+      const encoded = this.#native._take_raw_usage(turnId);
+      const records = decode(rawProviderUsageSchema, encoded);
+      if (!records.length) return;
+      const payloadBytes =
+        capture.payloadBytes +
+        Buffer.byteLength(encoded, 'utf8') -
+        2 +
+        (capture.records.length ? 1 : 0);
+      if (
+        payloadBytes > 8 * 1024 * 1024 ||
+        capture.records.length + records.length > 4096
+      )
+        throw new NativeError('Provider usage exceeds the SDK capture limit');
+      capture.payloadBytes = payloadBytes;
+      capture.records.push(
+        ...records.map((record) =>
           Object.freeze({
             responseId: record.response_id,
             upstreamRequestId: record.upstream_request_id,
@@ -1321,11 +1337,23 @@ export class Session<OutputT = string, Context = unknown> {
         ),
       );
     } catch (error) {
-      throw new NativeError(
+      capture.records.length = 0;
+      capture.error = new NativeError(
         error instanceof Error ? error.message : String(error),
         { cause: error },
       );
     }
+  }
+
+  /** @internal */
+  _takeRawUsage(turnId: string): readonly RawProviderUsage[] {
+    const capture = this.#rawUsageCapture;
+    if (!capture)
+      throw new NativeError('Provider usage capture was not started');
+    this.collectRawUsage(turnId, capture);
+    this.#rawUsageCapture = undefined;
+    if (capture.error) throw capture.error;
+    return Object.freeze(capture.records);
   }
 
   private profileRuntimes: ReadonlyMap<string, AgentProfileRuntime> = new Map();
@@ -5830,6 +5858,16 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         stoppedBeforeAdmission = !check(true);
         if (!stoppedBeforeAdmission) {
+          const capture = this.#rawUsageCapture;
+          if (capture) {
+            // A completion decision can resume the parent after this repair.
+            // Drain its prefix before the correction, then capture later sampling.
+            this.collectRawUsage(run.id!, capture);
+            if (!capture.error) {
+              this.#native._start_raw_usage();
+              correction.#native._start_raw_usage();
+            }
+          }
           // startTurn checks the live Session before invoking native admission.
           repair.run = correction.startTurn(
             JSON.stringify({
@@ -5860,6 +5898,8 @@ export class Session<OutputT = string, Context = unknown> {
           possiblyAdmitted = false;
       }
       if (possiblyAdmitted) {
+        const capture = this.#rawUsageCapture;
+        if (capture) correction.collectRawUsage(repair.run!.id!, capture);
         try {
           const recorded = projectHistory(
             await correction.#readHistory(),
