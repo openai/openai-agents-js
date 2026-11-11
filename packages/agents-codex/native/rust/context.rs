@@ -537,7 +537,7 @@ pub(crate) fn check_pairs(
                 ("apply_patch", Some(call_id.as_str()), true)
             }
             ResponseItem::ApplyPatchCallOutput { call_id, .. } => {
-                ("apply_patch", Some(call_id), false)
+                ("apply_patch", Some(call_id.as_str()), false)
             }
             ResponseItem::ToolSearchCall {
                 call_id, execution, ..
