@@ -3841,9 +3841,12 @@ impl NativeThread {
         else {
             return Ok(false);
         };
-        let saved = checkpoint::export(&inner, (!tools.has_restored_manual()).then_some(&first))
-            .await
-            .map_err(native_error)?;
+        let saved = if tools.has_restored_manual() {
+            checkpoint::export_restored_manual(&inner).await
+        } else {
+            checkpoint::export(&inner, Some(&first)).await
+        }
+        .map_err(native_error)?;
         // Run the frame validator first. Permanent invalid/duplicate history
         // must fail even while another unrelated callback is not ready.
         let checked = tools

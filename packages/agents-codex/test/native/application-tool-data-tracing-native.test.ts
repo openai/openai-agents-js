@@ -1,7 +1,8 @@
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
 import { Agent, NativeProvider, ToolOutput, telemetry, tool } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+afterEach(() => ModelServer.closeAll());
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 async function providerFor(model: ModelServer) {
   const config = await model.config();

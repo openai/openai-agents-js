@@ -15,6 +15,7 @@ import {
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 import type { JsonObject } from '../../src/runtime/binding';
+import { nativeCheckpoint } from '../../src/runtime/state';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 afterEach(() => ModelServer.closeAll());
@@ -493,4 +494,118 @@ nativeIt(
     }
   },
   30000,
+);
+
+nativeIt(
+  'preserves staged restored manual data through a second suspension before canonical output',
+  async () => {
+    const model = new ModelServer([
+      [
+        call('record', {}, { callId: 'staged-first' }),
+        call('record', {}, { callId: 'still-pending' }),
+      ],
+      [message('both complete')],
+    ]);
+    await using provider = await providerFor(model);
+    const declaration = manualTool({
+      name: 'record',
+      description: 'Record a manual value',
+      parameters: z.object({}),
+      result: z
+        .string()
+        .transform(
+          (text) =>
+            new ToolOutput(
+              [{ type: 'inputText', text }],
+              true,
+              text === 'first'
+                ? { ticket: 'private-staged-manual' }
+                : undefined,
+            ),
+        ),
+    });
+    const agent = new Agent({
+      instructions: 'Call both tools.',
+      provider,
+      tools: [declaration],
+    });
+    let firstState;
+    {
+      await using source = await agent.session();
+      const turn = await source.submit('Begin');
+      const pending = await turn.wait({ until: 'manual_tool' });
+      if (!('requests' in pending))
+        throw new Error('Expected initial manual calls');
+      expect(pending.requests).toHaveLength(2);
+      firstState = await source.suspend().catch((cause) => {
+        throw new Error('first suspension', { cause });
+      });
+    }
+    let secondState;
+    {
+      await using restored = await agent
+        .session({ state: firstState })
+        .catch((cause) => {
+          throw new Error('first restore', { cause });
+        });
+      const turn = restored.restoredTurn!;
+      const pending = await turn.wait({ until: 'manual_tool' });
+      if (!('requests' in pending))
+        throw new Error('Expected restored manual calls');
+      const first = pending.requests
+        .map((row) => declaration.match(row))
+        .find((row) => row?.callId === 'staged-first');
+      if (!first) throw new Error('Expected first restored call');
+      await restored.respond(first.reply('first'));
+      expect(turn.applicationToolOutputs).toEqual([]);
+      secondState = await restored.suspend().catch((cause) => {
+        throw new Error('second suspension', { cause });
+      });
+    }
+    expect(secondState).not.toHaveProperty('application_tool_outputs');
+    expect(secondState).toHaveProperty('pending_application_tool_outputs', [
+      expect.objectContaining({
+        callId: 'staged-first',
+        applicationData: { ticket: 'private-staged-manual' },
+      }),
+    ]);
+    expect(JSON.stringify(nativeCheckpoint(secondState))).not.toContain(
+      'private-staged-manual',
+    );
+    const duplicate = JSON.parse(JSON.stringify(secondState));
+    duplicate.pending_application_tool_outputs.push(
+      structuredClone(duplicate.pending_application_tool_outputs[0]),
+    );
+    await expect(agent.session({ state: duplicate })).rejects.toThrow(
+      'Duplicate pending application tool output',
+    );
+    await using final = await agent
+      .session({ state: secondState })
+      .catch((cause) => {
+        throw new Error('second restore', { cause });
+      });
+    const turn = final.restoredTurn!;
+    const pending = await turn.wait({ until: 'manual_tool' });
+    if (!('requests' in pending))
+      throw new Error('Expected remaining manual call');
+    expect(pending.requests).toHaveLength(1);
+    const second = declaration.match(pending.requests[0]);
+    if (!second) throw new Error('Expected remaining exact call');
+    expect(second.callId).toBe('still-pending');
+    expect(turn.applicationToolOutputs).toEqual([]);
+    await final.respond(second.reply('second'));
+    expect((await turn.wait()).applicationToolOutputs).toEqual([
+      expect.objectContaining({
+        callId: 'staged-first',
+        applicationData: { ticket: 'private-staged-manual' },
+      }),
+    ]);
+    expect(JSON.stringify(model.requests)).not.toContain(
+      'private-staged-manual',
+    );
+    expect(JSON.stringify(await final.saveState())).toContain(
+      'private-staged-manual',
+    );
+    model.assertExhausted();
+  },
 );

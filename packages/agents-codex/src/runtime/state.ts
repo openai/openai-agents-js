@@ -380,6 +380,22 @@ const sdkOutputState = {
   repair_turns: z.array(repairTurnWireSchema).default([]),
   repair_items: z.array(repairItemWireSchema).default([]),
   application_tool_outputs: z.array(applicationToolOutputSchema).optional(),
+  pending_application_tool_outputs: z
+    .array(applicationToolOutputSchema)
+    .superRefine((outputs, ctx) => {
+      const seen = new Set<string>();
+      outputs.forEach((output, index) => {
+        const key = JSON.stringify([output.turnId, output.callId]);
+        if (seen.has(key))
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Duplicate pending application tool output',
+            path: [index],
+          });
+        seen.add(key);
+      });
+    })
+    .optional(),
 };
 const checkpointTreeSchema = z.object({ ...rootState, ...treeState });
 const planProviderPrefix = 'native_agent_siwc_v1_';
@@ -420,6 +436,7 @@ const nativeCheckpointSchema = checkpointTreeSchema
         'repair_turns',
         'repair_items',
         'application_tool_outputs',
+        'pending_application_tool_outputs',
         'manual_continuation',
         'manual_context',
         'operation_tools',
@@ -954,6 +971,7 @@ type OutputRepairs = {
   readonly turns: readonly RepairTurnWire[];
   readonly items: readonly RepairItemWire[];
   readonly applicationToolOutputs?: readonly ApplicationToolOutput[];
+  readonly pendingApplicationToolOutputs?: readonly ApplicationToolOutput[];
 };
 function outputStateFields(
   sessionId: string,
@@ -971,7 +989,15 @@ function outputStateFields(
 ) {
   const applicationOutputs =
     repairs?.applicationToolOutputs ?? receipts?.application_tool_outputs;
+  const pendingApplicationOutputs =
+    repairs?.pendingApplicationToolOutputs ??
+    receipts?.pending_application_tool_outputs;
   return {
+    ...(pendingApplicationOutputs !== undefined &&
+    (pendingApplicationOutputs.length ||
+      receipts?.pending_application_tool_outputs !== undefined)
+      ? { pending_application_tool_outputs: pendingApplicationOutputs }
+      : {}),
     ...(applicationOutputs?.length
       ? { application_tool_outputs: applicationOutputs }
       : {}),
@@ -1038,6 +1064,7 @@ export function nativeCheckpoint(state: SessionState) {
     repair_turns: _turns,
     repair_items: _items,
     application_tool_outputs: _applicationOutputs,
+    pending_application_tool_outputs: _pendingApplicationOutputs,
     ...checkpoint
   } = state;
   return {

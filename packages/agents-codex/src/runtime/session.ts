@@ -2365,10 +2365,6 @@ export class Session<OutputT = string, Context = unknown> {
         readonly json?: JsonValue;
         waiterConsumed?: true;
       };
-      applicationOutputs: Map<
-        string,
-        { identity: ToolIdentity; data: JsonObject }
-      >;
       observations: Map<
         string,
         {
@@ -2384,6 +2380,7 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly repairTurns: RepairTurnWire[];
   private readonly repairItems: RepairItemWire[];
   private readonly applicationOutputs: ApplicationToolOutput[];
+  private readonly pendingApplicationOutputs: ApplicationToolOutput[];
   private repairReceiptsIncomplete = false;
   private readonly completedResults = new WeakMap<
     NativeRunResult,
@@ -2602,6 +2599,9 @@ export class Session<OutputT = string, Context = unknown> {
 
     this.applicationOutputs = structuredClone(
       receipts?.application_tool_outputs ?? [],
+    );
+    this.pendingApplicationOutputs = structuredClone(
+      receipts?.pending_application_tool_outputs ?? [],
     );
 
     this.defaultTools = checkpointDefaultTools(
@@ -7569,7 +7569,7 @@ export class Session<OutputT = string, Context = unknown> {
   private terminalState(owner: NativeTurn | ChildCallbackOwner) {
     let state = this.terminalProposals.get(owner);
     if (!state) {
-      state = { observations: new Map(), applicationOutputs: new Map() };
+      state = { observations: new Map() };
       this.terminalProposals.set(owner, state);
     }
     return state;
@@ -7608,13 +7608,25 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     const state = this.terminalProposals.get(owner);
-    const applicationOutput = state?.applicationOutputs.get(item.call_id);
-    if (applicationOutput) {
-      state!.applicationOutputs.delete(item.call_id);
+    const turnId = owner instanceof NativeTurn ? owner.id : owner.turnId;
+    for (
+      let index = this.pendingApplicationOutputs.length - 1;
+      index >= 0;
+      index--
+    ) {
+      const pending = this.pendingApplicationOutputs[index]!;
+      if (pending.turnId !== turnId || pending.callId !== item.call_id)
+        continue;
+      this.pendingApplicationOutputs.splice(index, 1);
       this.recordApplicationOutput(
         owner,
-        applicationOutput.identity,
-        applicationOutput.data,
+        {
+          callId: pending.callId,
+          toolName: pending.name,
+          namespace: pending.namespace,
+          family: 'function',
+        },
+        pending.applicationData,
       );
     }
     const observation = state?.observations.get(item.call_id);
@@ -7669,11 +7681,18 @@ export class Session<OutputT = string, Context = unknown> {
   private flushTerminalObservations(
     owner: NativeTurn | ChildCallbackOwner,
   ): void {
+    const turnId = owner instanceof NativeTurn ? owner.id : owner.turnId;
+    for (
+      let index = this.pendingApplicationOutputs.length - 1;
+      index >= 0;
+      index--
+    )
+      if (this.pendingApplicationOutputs[index]!.turnId === turnId)
+        this.pendingApplicationOutputs.splice(index, 1);
     const state = this.terminalProposals.get(owner);
     if (!state) return;
     const pending = [...state.observations.values()];
     state.observations.clear();
-    state.applicationOutputs.clear();
     for (const observation of pending)
       this.observeTool(
         owner,
@@ -9314,7 +9333,17 @@ export class Session<OutputT = string, Context = unknown> {
     applicationData?: JsonObject,
   ): void {
     if (applicationData === undefined) return;
-    this.applicationOutputs.push({
+    this.applicationOutputs.push(
+      this.applicationOutputRecord(owner, identity, applicationData),
+    );
+  }
+
+  private applicationOutputRecord(
+    owner: NativeTurn | ChildCallbackOwner,
+    identity: ToolIdentity,
+    applicationData: JsonObject,
+  ): ApplicationToolOutput {
+    return {
       turnId: owner instanceof NativeTurn ? owner.id! : owner.turnId,
       submissionId:
         owner instanceof NativeTurn
@@ -9327,7 +9356,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? { rootTurnId: owner.rootTurnId }
         : {}),
       applicationData: losslessJsonObjectSchema.parse(applicationData),
-    });
+    };
   }
 
   private observeToolStart(
@@ -9999,20 +10028,28 @@ export class Session<OutputT = string, Context = unknown> {
       const run = call.run;
       const operation = (async () => {
         const data = toolApplicationData(output);
-        if (data !== undefined && this.manualRestoring)
-          this.terminalState(run).applicationOutputs.set(call.identity.callId, {
-            identity: call.identity,
-            data,
-          });
+        const pendingApplicationOutput =
+          data !== undefined && this.manualRestoring
+            ? this.applicationOutputRecord(run, call.identity, data)
+            : undefined;
+        if (pendingApplicationOutput)
+          this.pendingApplicationOutputs.push(pendingApplicationOutput);
         let accepted = false;
         if (this.manualRestoring) {
-          await this.#native._respond_manual_continuation(
-            encodeReceipt({
-              request: call.event.msg,
-              response: output,
-            }),
-          );
-          accepted = true;
+          try {
+            await this.#native._respond_manual_continuation(
+              encodeReceipt({ request: call.event.msg, response: output }),
+            );
+            accepted = true;
+          } catch (error) {
+            if (pendingApplicationOutput) {
+              const index = this.pendingApplicationOutputs.indexOf(
+                pendingApplicationOutput,
+              );
+              if (index >= 0) this.pendingApplicationOutputs.splice(index, 1);
+            }
+            throw error;
+          }
         } else {
           accepted = await this.#native._respond_python_tool(
             encodeReceipt({ request: call.event.msg, response: output }),
@@ -10416,6 +10453,9 @@ export class Session<OutputT = string, Context = unknown> {
             turns: this.repairTurns,
             items: this.repairItems,
             applicationToolOutputs: this.applicationOutputSnapshot(),
+            pendingApplicationToolOutputs: structuredClone(
+              this.pendingApplicationOutputs,
+            ),
           },
           {
             manual_continuation: result.manual_continuation,
@@ -13983,6 +14023,9 @@ export class Session<OutputT = string, Context = unknown> {
           turns: this.repairTurns,
           items: this.repairItems,
           applicationToolOutputs: this.applicationOutputSnapshot(),
+          pendingApplicationToolOutputs: structuredClone(
+            this.pendingApplicationOutputs,
+          ),
         },
         undefined,
         this.checkpointSelections(),
@@ -14017,6 +14060,9 @@ export class Session<OutputT = string, Context = unknown> {
         turns: this.repairTurns,
         items: this.repairItems,
         applicationToolOutputs: this.applicationOutputSnapshot(),
+        pendingApplicationToolOutputs: structuredClone(
+          this.pendingApplicationOutputs,
+        ),
       },
       undefined,
       this.checkpointSelections(),
