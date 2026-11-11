@@ -360,6 +360,8 @@ export class ChatCompletionsModel implements NativeModel {
           throw new TypeError(
             'ChatCompletionsModel supports native function tools',
           );
+        if (tool.output_schema != null)
+          throw new TypeError('Tool output schemas require the Responses API');
         return {
           type: 'function',
           function: Object.fromEntries(
