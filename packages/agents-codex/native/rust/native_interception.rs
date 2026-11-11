@@ -310,6 +310,8 @@ struct Notice<'a, T> {
     nonce: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    realtime_tool_name: Option<String>,
     request: Identified<'a, T>,
 }
 
@@ -416,6 +418,29 @@ impl ProfileMcpPolicy {
             .collect()
     }
 
+    /// Realtime captures an additional dispatch check without changing backend policy.
+    pub(crate) fn for_realtime(
+        &self,
+        generation: u64,
+        additional: Option<&RealtimeMcpPolicy>,
+    ) -> Self {
+        let mut policy = self.clone();
+        if let Some(additional) = additional {
+            policy.names.extend(additional.names.iter().cloned());
+        }
+        for name in &policy.names {
+            policy.rules.entry(name.clone()).or_insert((
+                Some(Duration::from_secs(30)),
+                Scope::ThreadTree,
+                Some(generation),
+                false,
+                false,
+                policy.identities.get(name).cloned(),
+            ));
+        }
+        policy
+    }
+
     pub(crate) fn has_pre_policy(&self) -> bool {
         self.rules.values().any(|rule| rule.2.is_some())
     }
@@ -467,12 +492,56 @@ impl ProfileMcpPolicy {
     }
 }
 
+/// Mono Session MCP declarations, enrolled only for captured Realtime dispatch.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RealtimeMcpPolicy {
+    names: Vec<ToolName>,
+}
+
 /// Callback attribution only; it carries no Session, environment, or callable executor.
 #[derive(Clone)]
 pub(crate) struct ProfileMcpSource {
     pub(crate) result_selection: Option<Arc<crate::mcp_result_control::Selection>>,
     pub(crate) receipt: Option<codex_extension_api::AgentProfileReceipt>,
     pub(crate) policy: Option<Arc<ProfileMcpPolicy>>,
+}
+impl ProfileMcpSource {
+    pub(crate) fn for_binding(
+        mut self,
+        binding: &codex_mcp::McpBinding,
+        policy: &codex_extension_api::ToolPolicy,
+    ) -> Self {
+        let (Some(selectors), Some(captured)) = (&policy.allowed_mcp_tools, &self.policy) else {
+            return self;
+        };
+        let mut rules = captured.rules.clone();
+        let mut names = captured.names.clone();
+        for (_, _, declared) in selectors {
+            rules.remove(&declared.clone().with_default_namespace());
+            names.remove(&declared.clone().with_default_namespace());
+        }
+        for tool in binding.tools() {
+            let actual = tool.canonical_tool_name().with_default_namespace();
+            names.insert(actual.clone());
+            if let Some((_, _, declared)) = selectors.iter().find(|(server, raw, _)| {
+                tool.server_name == *server && tool.tool.name.as_ref() == raw
+            }) {
+                if let Some(rule) = captured
+                    .rules
+                    .get(&declared.clone().with_default_namespace())
+                {
+                    rules.insert(actual, rule.clone());
+                }
+            }
+        }
+        self.policy = Some(Arc::new(ProfileMcpPolicy {
+            identities: ProfileMcpPolicy::identities(binding),
+            names,
+            rules,
+        }));
+        self
+    }
 }
 fn capture_mcp_source(
     step: Option<&ExtensionData>,
@@ -1400,37 +1469,7 @@ impl Control {
         binding: &codex_mcp::McpBinding,
         policy: &codex_extension_api::ToolPolicy,
     ) -> ProfileMcpSource {
-        let mut source = self.capture_mcp_source();
-        let Some(selectors) = &policy.allowed_mcp_tools else {
-            return source;
-        };
-        let captured = source.policy.as_ref().expect("captured MCP policy");
-        let mut rules = captured.rules.clone();
-        let mut names = captured.names.clone();
-        for (_, _, declared) in selectors {
-            rules.remove(&declared.clone().with_default_namespace());
-            names.remove(&declared.clone().with_default_namespace());
-        }
-        for tool in binding.tools() {
-            let actual = tool.canonical_tool_name().with_default_namespace();
-            names.insert(actual.clone());
-            if let Some((_, _, declared)) = selectors.iter().find(|(server, raw, _)| {
-                tool.server_name == *server && tool.tool.name.as_ref() == raw
-            }) {
-                if let Some(rule) = captured
-                    .rules
-                    .get(&declared.clone().with_default_namespace())
-                {
-                    rules.insert(actual, rule.clone());
-                }
-            }
-        }
-        source.policy = Some(Arc::new(ProfileMcpPolicy {
-            identities: ProfileMcpPolicy::identities(binding),
-            names,
-            rules,
-        }));
-        source
+        self.capture_mcp_source().for_binding(binding, policy)
     }
 
     fn configured_in(&self, state: &State) -> bool {
@@ -1978,6 +2017,9 @@ impl Control {
                     .map(|receipt| receipt.epoch),
                 nonce,
                 generation,
+                realtime_tool_name: identity
+                    .as_ref()
+                    .map(codex_extension_api::realtime_tool_wire_name),
                 request: Identified {
                     thread_id: &self.id,
                     agent_role: self.agent_role.get().and_then(|role| role.as_deref()),

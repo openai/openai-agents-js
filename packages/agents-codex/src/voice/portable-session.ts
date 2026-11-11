@@ -1187,6 +1187,19 @@ export class PortableVoiceSession {
               }
               const arguments_ = await this.#arguments(effect);
               if (this.#closed || call.abort.signal.aborted) return;
+              const enabled =
+                typeof tool.isEnabled === 'function'
+                  ? await tool.isEnabled(this.#toolContext(effect.call_id))
+                  : (tool.isEnabled ?? true);
+              if (this.#closed || call.abort.signal.aborted) return;
+              if (!enabled) {
+                this.#dispatch({
+                  type: 'tool_result',
+                  call_id: effect.call_id,
+                  output: `Tool ${effect.name} not found`,
+                });
+                return;
+              }
               const output = await tool.execute(
                 arguments_,
                 call.abort.signal,

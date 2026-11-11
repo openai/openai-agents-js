@@ -385,7 +385,7 @@ nativeIt(
   30000,
 );
 
-async function mcpPeer() {
+async function mcpPeer(toolNames: readonly string[] = ['lookup']) {
   const calls: Frame[] = [];
   const failures: unknown[] = [];
   const server = createServer(async (request, response) => {
@@ -410,18 +410,16 @@ async function mcpPeer() {
         };
       else if (rpc.method === 'tools/list')
         result = {
-          tools: [
-            {
-              name: 'lookup',
-              description: 'Read a record.',
-              inputSchema: {
-                type: 'object',
-                properties: { key: { type: 'string' } },
-                required: ['key'],
-                additionalProperties: false,
-              },
+          tools: toolNames.map((name) => ({
+            name,
+            description: 'Read a record.',
+            inputSchema: {
+              type: 'object',
+              properties: { key: { type: 'string' } },
+              required: ['key'],
+              additionalProperties: false,
             },
-          ],
+          })),
         };
       else if (rpc.method === 'tools/call') {
         calls.push(rpc.params);
@@ -554,6 +552,57 @@ nativeIt.each([
       expect(mcp.failures).toEqual([]);
       expect(model.requests).toHaveLength(0);
       await voice.update({ instructions: 'Keep listening.' });
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+      await mcp.close();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'attributes a partial Realtime MCP declaration to its raw tool',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const mcp = await mcpPeer(['a.b', 'a_b']);
+    const checked: string[] = [];
+    try {
+      await using provider = await providerFor(model);
+      const descriptor = new HttpMCP({
+        name: 'records',
+        url: mcp.url,
+        tools: ['a.b'],
+        approvalMode: 'preapproved',
+        before(context) {
+          checked.push(context.toolName);
+          return { action: 'allow' };
+        },
+      });
+      await using session = await new Agent({
+        instructions: 'Read the selected record.',
+        tools: [descriptor],
+        provider,
+      }).session();
+      await using _voice = await session.realtime({
+        model: 'fixture-realtime',
+      });
+      const initial = await peer.frame(
+        (frame) => frame.type === 'session.update',
+      );
+      const declarations: Frame[] = initial.session.tools.filter(
+        (item: Frame) => item.description === 'Read a record.',
+      );
+      expect(declarations.map((item) => item.name)).toHaveLength(1);
+      peer.call(declarations[0].name, { key: 'partial' }, 'mcp-partial');
+      const output = await peer.frame(
+        (frame) => frame.item?.call_id === 'mcp-partial',
+      );
+      expect(output.item.output).toContain('raw MCP result');
+      expect(checked).toEqual(['a.b']);
+      expect(mcp.calls.map((call) => call.name)).toEqual(['a.b']);
+      expect(mcp.failures).toEqual([]);
     } finally {
       await peer.close();
       await ModelServer.closeAll();

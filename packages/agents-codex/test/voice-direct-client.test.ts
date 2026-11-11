@@ -882,7 +882,7 @@ describe.runIf(enabled)('direct client Rust authority', () => {
     completeTool(session, 'predicate-response');
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
     expect(parseArguments).toHaveBeenCalledOnce();
-    expect(isEnabled).toHaveBeenCalledOnce();
+    expect(isEnabled).toHaveBeenCalledTimes(2);
     expect(needsApproval).toHaveBeenCalledOnce();
     expect(onApproval).toHaveBeenCalledOnce();
     await session.close();

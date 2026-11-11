@@ -757,24 +757,31 @@ class NativeRealtimeOwner {
     name: string,
     signal: AbortSignal,
     type: 'function' | 'handoff' = 'function',
+    recheckAgent?: () => Promise<boolean>,
   ): Promise<boolean> {
     const predicate = this.options.isToolEnabled;
     if (predicate === undefined) return true;
     if (!agent) throw new Error('Realtime tool policy has no captured Agent');
     signal.throwIfAborted();
     this.checkLive();
+    let asynchronous = false;
     const result = await this.#context(() =>
-      this.session._runVoiceCallback(() =>
-        predicate(
+      this.session._runVoiceCallback(() => {
+        const result = predicate(
           Object.freeze({ agent, context, realtimeUsage: this.usage, signal }),
           Object.freeze({ type, name }),
-        ),
-      ),
+        );
+        asynchronous = typeof result !== 'boolean';
+        return result;
+      }),
     );
     signal.throwIfAborted();
     this.checkLive();
     if (typeof result !== 'boolean')
       throw new TypeError('Realtime tool predicate must return a boolean');
+    // The connection grant applies to this call. Agent policy can change
+    // while the connection callback is waiting for its decision.
+    if (result && asynchronous && recheckAgent) return recheckAgent();
     return result;
   }
 

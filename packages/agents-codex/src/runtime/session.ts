@@ -316,6 +316,8 @@ import {
   captureTools,
   isDirectFunctionTool,
   toolIdentity,
+  toolRef,
+  type ToolRef,
   toolNamespace,
   toolDeclarationIdentity,
   type ToolSelector,
@@ -1887,7 +1889,14 @@ export class Session<OutputT = string, Context = unknown> {
               checkProfileReceipt(target, this.callbackProfileGraph(target)!),
             ),
           )
-        : await this.#native.call('realtime_tool_selection_sdk', '{}'),
+        : await this.#native.call(
+            'realtime_tool_selection_sdk',
+            this.options.agentGraph
+              ? '{}'
+              : encode({
+                  mcp_policy: { names: mcpToolNames(this.openingMcpTools) },
+                }),
+          ),
     );
     const snapshot = realtimeToolSelection(raw);
     if (
@@ -1919,6 +1928,19 @@ export class Session<OutputT = string, Context = unknown> {
       agent,
       `voice_${generation}_${this.voiceProfileGraphs.size}_`,
     );
+    if ([...graph.profiles.values()].some((profile) => profile.mcp.length)) {
+      if (!this.mcpReaderStarted) {
+        this.#native._enable_native_mcp_results(30);
+        this.mcpReaderStarted = true;
+        this.ownReader(withoutTracing(() => this.readMcpResults()));
+      }
+      if (!this.interceptionReaderStarted) {
+        this.#native._enable_native_interception(30, 'thread_tree');
+        this.#native._configure_native_interception('[]');
+        this.interceptionReaderStarted = true;
+        this.ownReader(withoutTracing(() => this.readInterceptions()));
+      }
+    }
     this.voiceGraphGeneration = generation;
     const raw = parseProfileReceipt(
       await this.#native._admit_realtime_agent_graph(
@@ -2422,6 +2444,7 @@ export class Session<OutputT = string, Context = unknown> {
   private mcpGeneration = 0n;
   private mcpAppToolsUpdated = false;
   private mcpReaderStarted = false;
+  private interceptionReaderStarted = false;
   private readonly publicChildTurns = new Map<
     string,
     {
@@ -2764,8 +2787,10 @@ export class Session<OutputT = string, Context = unknown> {
         executorPolicy ||
         this.options.nativeAgents ||
         this.hasMcpPolicyReaders
-      )
+      ) {
+        this.interceptionReaderStarted = true;
         this.ownReader(withoutTracing(() => this.readInterceptions()));
+      }
       if (this.options.agentGraph) {
         const graph = this.options.agentGraph;
         const allocated = allocatedProfileCatalogs(
@@ -2875,7 +2900,12 @@ export class Session<OutputT = string, Context = unknown> {
     this.mcpReaderStarted = this.hasMcpPolicyReaders;
     if (this.mcpReaderStarted)
       this.ownReader(withoutTracing(() => this.readMcpResults()));
-    if (executorPolicy || this.options.nativeAgents || this.hasMcpPolicyReaders)
+    this.interceptionReaderStarted = !!(
+      executorPolicy ||
+      this.options.nativeAgents ||
+      this.hasMcpPolicyReaders
+    );
+    if (this.interceptionReaderStarted)
       this.ownReader(withoutTracing(() => this.readInterceptions()));
     this.watchChildObservationProducer();
   }
@@ -6257,11 +6287,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (!event.subagent_id && msg.type === 'shutdown_complete') {
           // Core has stopped these controls before publishing ShutdownComplete.
           // Cancel their idle readers too, including after a manual suspension.
-          if (
-            this.options.nativeAgents ||
-            this.options.mcpTools ||
-            (this.environment !== null && hasExecutorPolicy(this.environment))
-          )
+          if (this.interceptionReaderStarted)
             native._revoke_native_interception();
           if (this.mcpReaderStarted) native._revoke_native_mcp_results();
         }
@@ -10279,11 +10305,41 @@ export class Session<OutputT = string, Context = unknown> {
       this.publishManualRequest(run, event);
     }
   }
+  /** @internal Recheck the declaration that owns the retained native source. */
+  async _realtimeAgentToolEnabled(
+    receipt: unknown,
+    reference: ToolRef,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      receipt == null &&
+      !this.options.agentGraph &&
+      !this.options.applicationAgent &&
+      !this.options.realtimeDeclaration
+    )
+      return true;
+    const source = this._realtimeConfigurationSource(receipt);
+    const predicate = source.declaration.realtime?.toolEnabled;
+    if (!predicate) return true;
+    signal.throwIfAborted();
+    const enabled = await this._runVoiceCallback(() =>
+      predicate(
+        Object.freeze({ agent: source.agent, context: source.context, signal }),
+        reference,
+      ),
+    );
+    signal.throwIfAborted();
+    if (typeof enabled !== 'boolean')
+      throw new TypeError('Realtime toolEnabled must return a boolean');
+    return enabled;
+  }
+
   private async realtimeFunctionEnabled(
     owner: NativeTurn | ChildCallbackOwner,
     msg: NativeEvent['msg'],
     name: string,
     signal: AbortSignal,
+    recheckHandoff = false,
   ): Promise<boolean> {
     if (
       !(owner instanceof NativeTurn) ||
@@ -10292,12 +10348,58 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return true;
     const source = this.sourceApplicationAgent(msg);
-    const enabled = await this.realtimeOwner._toolEnabled(
-      source,
-      this.options.context,
-      name,
-      signal,
-    );
+    const checkAgent = () =>
+      this._realtimeAgentToolEnabled(
+        this.messageProfile(msg) ?? null,
+        toolRef(
+          typeof msg._sdk_realtime_tool_name === 'string'
+            ? msg._sdk_realtime_tool_name
+            : name,
+        ),
+        signal,
+      );
+    let enabled =
+      (await checkAgent()) &&
+      (await this.realtimeOwner._toolEnabled(
+        source,
+        this.options.context,
+        name,
+        signal,
+        'function',
+        checkAgent,
+      ));
+    if (enabled && recheckHandoff && source) {
+      const handoff = this._realtimeConfigurationSource(
+        this.messageProfile(msg) ?? null,
+      ).handoffs?.[name];
+      if (handoff) {
+        const predicate = handoff.isEnabled;
+        let asynchronous = false;
+        enabled =
+          typeof predicate === 'function'
+            ? await this._runVoiceCallback(() => {
+                const result = predicate(
+                  Object.freeze({
+                    agent: source,
+                    context: this.options.context,
+                  }),
+                );
+                asynchronous = typeof result !== 'boolean';
+                return result;
+              })
+            : predicate;
+        signal.throwIfAborted();
+        if (typeof enabled !== 'boolean')
+          throw new TypeError(
+            'Realtime handoff isEnabled must return a boolean',
+          );
+        if (enabled && asynchronous) {
+          // The awaited handoff grant applies to this dispatch. Refresh the
+          // source and connection grants after that application wait.
+          return this.realtimeFunctionEnabled(owner, msg, name, signal);
+        }
+      }
+    }
     if (!enabled) this.realtimeOwner._markToolUnavailable(msg.callId as string);
     return enabled;
   }
@@ -10478,6 +10580,8 @@ export class Session<OutputT = string, Context = unknown> {
             ? undefined
             : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
           approved,
+          () =>
+            this.realtimeFunctionEnabled(owner, msg, tool.name, signal, true),
         );
         if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';
@@ -13672,13 +13776,34 @@ export class Session<OutputT = string, Context = unknown> {
               requestExpired = true;
               return;
             }
-            return transformMcpResult(
+            const transformed = await transformMcpResult(
               sourceServers,
               sourceGeneration,
               this.options.context,
               submission,
               { ...notice, incarnation, generation: notice.generation ?? '' },
             );
+            if (
+              !requestExpired &&
+              notice.phase === 'metadata' &&
+              owner instanceof NativeTurn &&
+              submissions.get(owner)?.realtimeTools &&
+              this.realtimeOwner
+            ) {
+              if (!notice.realtime_tool_name)
+                throw new NativeError(
+                  'Realtime MCP metadata is missing its captured wire name',
+                );
+              if (
+                !(await this._realtimeAgentToolEnabled(
+                  this.messageProfile(raw as Record<string, unknown>) ?? null,
+                  toolRef(notice.realtime_tool_name),
+                  owner.controller.signal,
+                ))
+              )
+                return false;
+            }
+            return transformed;
           };
           let response: unknown;
           if (owner instanceof NativeTurn && tracing_context !== undefined) {
@@ -14037,6 +14162,7 @@ export class Session<OutputT = string, Context = unknown> {
               nonce: z.string(),
               generation: z.string().optional(),
               mcp_identity: z.tuple([z.string(), z.string()]).optional(),
+              realtime_tool_name: z.string().optional(),
               request: losslessJsonObjectSchema,
             }),
           ])
@@ -14298,6 +14424,23 @@ export class Session<OutputT = string, Context = unknown> {
                       () => {
                         requestStop('Turn stopped by MCP policy');
                       },
+                      owner instanceof NativeTurn &&
+                        submissions.get(owner)?.realtimeTools &&
+                        this.realtimeOwner
+                        ? () => {
+                            if (!notice.realtime_tool_name)
+                              throw new NativeError(
+                                'Realtime MCP policy is missing its captured wire name',
+                              );
+                            return this._realtimeAgentToolEnabled(
+                              this.messageProfile(
+                                raw as Record<string, unknown>,
+                              ) ?? null,
+                              toolRef(notice.realtime_tool_name),
+                              signal,
+                            );
+                          }
+                        : undefined,
                     )
                   : this.options.nativeAgents && collaboration
                     ? await (async () => {
@@ -14664,12 +14807,7 @@ export class Session<OutputT = string, Context = unknown> {
         }
       }
       if (phase === 'revoke') {
-        if (
-          this.options.nativeAgents ||
-          this.options.mcpTools ||
-          (this.environment instanceof Environment &&
-            hasExecutorPolicy(this.environment))
-        )
+        if (this.interceptionReaderStarted)
           this.#native._revoke_native_interception();
         if (this.mcpReaderStarted) this.#native._revoke_native_mcp_results();
         phase = 'native';
