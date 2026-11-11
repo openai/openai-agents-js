@@ -354,6 +354,8 @@ import {
   toolDeclarationIdentity,
   type ToolSelector,
   invokeFunctionTool,
+  toolErrorFormatterBinding,
+  type ToolErrorFormatter,
   registerToolSessionOwner,
   outputOf,
   type ToolResponse,
@@ -425,6 +427,7 @@ export interface SessionOptions {
   initialMessages?: readonly import('./initial-messages').InitialMessage[];
   maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
+  toolErrorFormatter?: ToolErrorFormatter<any>;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
@@ -1903,6 +1906,12 @@ export class Session<OutputT = string, Context = unknown> {
       context: this.options.context,
       handoffs: runtime?.profile.handoffOptions,
     };
+  }
+
+  /** @internal Preserve absent application identity on a bare native Session. */
+  _realtimeEventSource(receipt: unknown) {
+    if (receipt == null && !this.options.applicationAgent) return undefined;
+    return this._realtimeConfigurationSource(receipt ?? null);
   }
 
   /** @internal Capture the actual native catalog before resolving app callbacks. */
@@ -9745,6 +9754,7 @@ export class Session<OutputT = string, Context = unknown> {
           const context = {
             decide: scope.decide,
             [decisionBinding]: scope[decisionBinding],
+            [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
             realtimeUsage: this.realtimeUsage,
             ...(this.realtimeOwner?._realtimeToolContext(
               msg._sdk_realtime_tool_call,
@@ -11015,6 +11025,7 @@ export class Session<OutputT = string, Context = unknown> {
       const scope = this.decisionScope(event.msg, signal);
       const context = {
         [usageReportBinding]: this.toolUsageReporter(owner, check),
+        [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
         decide: scope.decide,
         [decisionBinding]: scope[decisionBinding],
         traceContext: nativeTraceContext(
@@ -11124,6 +11135,12 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined,
           () =>
             this.realtimeFunctionEnabled(owner, msg, tool.name, signal, true),
+          () =>
+            this.realtimeOwner?._toolBodyStarted(
+              msg._sdk_realtime_tool_call,
+              msg._sdk_realtime_tool_name as string,
+              toolDeclarationIdentity(tool) as FunctionTool<any>,
+            ),
         );
         if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';

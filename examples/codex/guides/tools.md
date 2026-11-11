@@ -43,7 +43,7 @@ The returned text has been becoming a failed tool result before approval, input 
 
 ### Recover from callback-body errors
 
-With `errorFunction(context, error)`, the SDK has been publishing the returned string as a failed tool result and continuing the model turn. The formatter has been receiving the captured `ToolContext`, including the original and effective arguments. Omitting the formatter has been preserving the existing turn failure.
+With `errorFunction(context, error)`, the SDK has been publishing the returned string as a failed tool result and continuing the model turn. The formatter has been receiving the captured `ToolContext`, including the original and effective arguments. Omitting both the per-tool formatter and the session formatter has been preserving the existing turn failure.
 
 ```ts
 import { tool } from '@openai/agents';
@@ -60,6 +60,39 @@ const lookup = tool({
 ```
 
 This handler has been covering callback-body exceptions only. Cancellation, callback deadlines, approval and input policies, argument/result validation, and cleanup failures have been retaining their existing handling. Formatted failures have been bypassing the `result` schema and `after` hook, and have not been completing a `finishTurn` tool. Formatter exceptions and non-string returns have been failing the turn. Formatting has been remaining outside `callbackTimeout`, under the turn's cancellation and admission checks. Neither failure formatting nor cancellation has been undoing earlier external effects.
+
+### Session defaults for function errors
+
+With the current [source build](building.md), `Agent.session({ toolErrorFormatter })` and `Agent.run(input, { toolErrorFormatter })` have been applying a default to original function argument validation and callback-body failures. Each callback has been receiving `ToolErrorContext`: application `context`, observed `call` metadata, the invocation's `signal`, `phase` (`'arguments'` or `'execution'`), `defaultMessage`, and the original local `error`.
+
+```ts
+import { Agent, tool } from '@openai/agents';
+import { z } from 'zod';
+
+const agent = new Agent({
+  instructions: 'Use lookup to find a record.',
+  tools: [
+    tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      execute() {
+        throw new Error('Synthetic private failure');
+      },
+    }),
+  ],
+});
+await using session = await agent.session({
+  toolErrorFormatter: ({ defaultMessage }) => defaultMessage,
+});
+const result = await (await session.submit('Find a record.')).wait();
+console.log(result.finalOutput);
+```
+
+Per-tool `inputErrorFunction` and `errorFunction` callbacks have been taking precedence for their respective phases. `errorFunction: null` has been suppressing the session default for both phases. An explicit body formatter has been leaving session argument formatting available. Each session opening, including state restoration, has been capturing a fresh caller-supplied formatter; saved state has not been retaining callbacks.
+
+Global callback exceptions, `undefined`, and non-string returns have been selecting safe default text while the invocation has been remaining active. The default text has been naming the function without including the exception message. An empty string has been remaining a valid failed result. These results have been bypassing output validation and `after`, and have not been finishing a `finishTurn` tool. Async formatters have been receiving the invocation signal for cancellable requests. Cancellation has been joining entered formatting and preventing late publication; cancellation cleanup exceptions have been retaining their original owners.
+
+The session default has been covering initial host validation before managed approval. Rewritten arguments, approval policies, callback deadlines, output validation and `after` failures have been retaining their existing handling. Missing function names, malformed JSON handled before host entry, native MCP failures and executor failures have been remaining Core-owned and outside this formatter.
 
 ### Finish a turn from a function tool
 

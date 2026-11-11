@@ -291,6 +291,7 @@ export type NativeRealtimeEvent =
       usage?: NativeRealtimeUsage;
       /** Connection total at this event, including this accepted response. */
       cumulativeUsage?: NativeRealtimeUsage;
+      readonly runContext?: NativeRealtimePolicyContext;
     }
   | {
       type: 'delegation';
@@ -321,8 +322,18 @@ export type NativeRealtimeEvent =
       type: 'function_call';
       callId: string;
       name: string;
-      status: 'started' | 'completed' | 'failed';
+      /** Batch submission: started. Callable entry after approval/input policies: executing. */
+      status: 'started' | 'executing' | 'completed' | 'failed';
       error?: Error;
+      readonly arguments?: string;
+      readonly itemId?: string;
+      readonly namespace?: string;
+      readonly responseId?: string;
+      /** Original application declaration; absent without body admission. */
+      readonly tool?: FunctionTool<any>;
+      /** Exact model-visible text accepted by Core, including selected fallbacks. */
+      readonly output?: string;
+      readonly runContext?: NativeRealtimePolicyContext;
     }
   | {
       type: 'tool_batch_error';
@@ -538,10 +549,7 @@ class NativeRealtimeOwner {
   private readonly canonical = new Map<string, NativeRealtimeHistoryItem>();
   private readonly conversation: VoiceConversationHistory;
   private readonly observers = new VoiceEventObservers<NativeRealtimeEvent>(
-    (event) =>
-      event.type === 'hosted_mcp_approval_requested'
-        ? event
-        : detachVoiceObservation(event),
+    (event) => this.detachEvent(event),
   );
   private historyBytes = 0;
   private historyTranscriptWork = 0;
@@ -550,6 +558,10 @@ class NativeRealtimeOwner {
     {
       name: string;
       itemId?: string;
+      arguments: string;
+      namespace?: string;
+      tool?: FunctionTool<any>;
+      bytes: number;
       history: Buffer;
       sourceProfile?: unknown;
       error?: Error;
@@ -856,6 +868,96 @@ class NativeRealtimeOwner {
   _observeProviderFrame(value: unknown): void {
     this.conversation.observe(value);
   }
+  private eventContext(
+    receipt: unknown,
+  ): NativeRealtimePolicyContext | undefined {
+    const source = this.session._realtimeEventSource(receipt);
+    if (!source) return undefined;
+    return Object.freeze({
+      agent: source.agent,
+      context: source.context,
+      realtimeUsage: this.usage,
+    });
+  }
+  private detachEvent(event: NativeRealtimeEvent): NativeRealtimeEvent {
+    if (event.type === 'hosted_mcp_approval_requested') return event;
+    if (event.type === 'function_call' || event.type === 'response') {
+      const { runContext, ...wire } = event;
+      const tool = event.type === 'function_call' ? event.tool : undefined;
+      const detached = detachVoiceObservation({
+        ...wire,
+        ...(event.type === 'function_call' ? { tool: undefined } : {}),
+      });
+      return {
+        ...detached,
+        ...(event.type === 'function_call' ? { tool } : {}),
+        ...(runContext
+          ? {
+              runContext: Object.freeze({
+                agent: runContext.agent,
+                context: runContext.context,
+                realtimeUsage:
+                  runContext.realtimeUsage === undefined
+                    ? undefined
+                    : structuredClone(runContext.realtimeUsage),
+              }),
+            }
+          : {}),
+      } as NativeRealtimeEvent;
+    }
+    return detachVoiceObservation(event);
+  }
+  private functionEvent(
+    callId: string,
+    status: 'started' | 'executing' | 'completed' | 'failed',
+    output?: string,
+  ): Extract<NativeRealtimeEvent, { type: 'function_call' }> {
+    const call = this.functions.get(callId)!;
+    return {
+      type: 'function_call',
+      callId,
+      name: call.name,
+      status,
+      arguments: call.arguments,
+      itemId: call.itemId,
+      namespace: call.namespace,
+      responseId: call.responseId,
+      tool: call.tool,
+      output,
+      ...(call.error ? { error: call.error } : {}),
+      runContext: this.eventContext(call.sourceProfile),
+    };
+  }
+  /** @internal This observation follows approval/input policies and immediately precedes the body. */
+  _toolBodyStarted(
+    source: unknown,
+    wireName: string,
+    tool: FunctionTool<any>,
+  ): void {
+    const captured = this.capturedFunction(source);
+    if (!captured || captured.call.name !== wireName || captured.call.tool)
+      return;
+    captured.call.tool = tool;
+    this.emit(this.functionEvent(captured.id, 'executing'));
+  }
+  private capturedFunction(source: unknown) {
+    if (!source || typeof source !== 'object') return;
+    const identity = source as Record<string, unknown>;
+    if (
+      identity.generation !== this.#generation ||
+      typeof identity.provider_call_id !== 'string'
+    )
+      return;
+    const call = this.functions.get(identity.provider_call_id);
+    if (
+      !call ||
+      call.retired ||
+      call.itemId !== (identity.provider_item_id ?? undefined) ||
+      call.responseId !== (identity.provider_response_id ?? undefined)
+    )
+      return;
+    return { id: identity.provider_call_id, call };
+  }
   /** @internal The source history captured when this exact native call was issued. */
   _realtimeToolContext<Context>(
     source: unknown,
@@ -864,21 +966,9 @@ class NativeRealtimeOwner {
     context: Context;
     history?: readonly VoiceHistoryItem[];
   } {
-    if (!source || typeof source !== 'object') return { context };
-    const identity = source as Record<string, unknown>;
-    if (
-      identity.generation !== this.#generation ||
-      typeof identity.provider_call_id !== 'string'
-    )
-      return { context };
-    const call = this.functions.get(identity.provider_call_id);
-    if (
-      !call ||
-      call.retired ||
-      call.itemId !== (identity.provider_item_id ?? undefined) ||
-      call.responseId !== (identity.provider_response_id ?? undefined)
-    )
-      return { context };
+    const captured = this.capturedFunction(source);
+    if (!captured) return { context };
+    const { call } = captured;
     const history = JSON.parse(
       call.history.toString('utf8'),
     ) as readonly VoiceHistoryItem[];
@@ -1991,6 +2081,14 @@ class NativeRealtimeOwner {
           AUDIO_LIMIT - bytes,
         );
     }
+    if (
+      (event.type === 'function_call' || event.type === 'response') &&
+      event.runContext?.realtimeUsage
+    )
+      bytes += jsonAllocationBytes(
+        event.runContext.realtimeUsage,
+        AUDIO_LIMIT - bytes,
+      );
     for (const value of Object.values(fields))
       if (typeof value === 'string') bytes += value.length * 4;
     return bytes;
@@ -2341,7 +2439,13 @@ class NativeRealtimeOwner {
         throw new TypeError('Native Realtime function request lacks identity');
       if (this.seen.has(id)) return;
       this.reclaimRequestId();
-      const bytes = Buffer.byteLength(id) + Buffer.byteLength(value.name);
+      const bytes =
+        Buffer.byteLength(id) +
+        Buffer.byteLength(value.name) +
+        4 *
+          (value.arguments.length +
+            value.item_id.length +
+            (value.namespace?.length ?? 0));
       const pending = [...this.functions.values()].filter(
         (record) => !record.batch && !record.retired,
       ).length;
@@ -2365,7 +2469,10 @@ class NativeRealtimeOwner {
       this.functionHistoryBytes += history.byteLength;
       this.functions.set(id, {
         name: value.name,
-        itemId: typeof value.item_id === 'string' ? value.item_id : undefined,
+        itemId: value.item_id,
+        arguments: value.arguments,
+        namespace: value.namespace ?? undefined,
+        bytes,
         history,
         sourceProfile: value.source_profile,
         retired:
@@ -2390,15 +2497,14 @@ class NativeRealtimeOwner {
         if (this.seen.has(value.call_id)) return;
         throw new Error('Native Realtime result has no registered function');
       }
-      this.emit({
-        type: 'function_call',
-        callId: value.call_id,
-        name: record.name,
-        status: value.succeeded ? 'completed' : 'failed',
-        ...(record.error ? { error: record.error } : {}),
-      });
-      this.functionBytes -=
-        Buffer.byteLength(value.call_id) + Buffer.byteLength(record.name);
+      this.emit(
+        this.functionEvent(
+          value.call_id,
+          value.succeeded ? 'completed' : 'failed',
+          value.output ?? undefined,
+        ),
+      );
+      this.functionBytes -= record.bytes;
       this.functionHistoryBytes -= record.history.byteLength;
       this.functions.delete(value.call_id);
     } else if (name === 'Error')
@@ -2474,6 +2580,7 @@ class NativeRealtimeOwner {
               ? 'done'
               : 'cancelled',
         responseId,
+        runContext: this.eventContext(value.profile_receipt),
         ...(outOfBand ? { outOfBand: true } : {}),
       });
     } else if (
@@ -2713,12 +2820,7 @@ class NativeRealtimeOwner {
       const record = this.functions.get(id)!;
       record.batch = batch;
       record.responseId = responseId;
-      this.emit({
-        type: 'function_call',
-        callId: id,
-        name: record.name,
-        status: 'started',
-      });
+      this.emit(this.functionEvent(id, 'started'));
     }
     if (this.live) {
       batch.task = this.#context(() => this.runFunctionBatch(batch));
@@ -3103,8 +3205,7 @@ class NativeRealtimeOwner {
         retired.has(record.responseId) &&
         (!record.batch || record.batch.cleaned)
       ) {
-        this.functionBytes -=
-          Buffer.byteLength(id) + Buffer.byteLength(record.name);
+        this.functionBytes -= record.bytes;
         this.functionHistoryBytes -= record.history.byteLength;
         this.functions.delete(id);
       }

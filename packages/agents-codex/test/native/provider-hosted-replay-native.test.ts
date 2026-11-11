@@ -75,6 +75,60 @@ for (const configured of [false, true]) {
       }, 30_000);
     }
   }
+  it.each(['accepted', 'preacceptance', 'empty'])(
+    `guards ${configured ? 'configured' : 'default'} hosted-template acceptance (%s)`,
+    async (mode) => {
+      const server = new ModelServer([
+        {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+          body:
+            mode === 'preacceptance'
+              ? ''
+              : 'data: {"type":"response.created","response":{"id":"accepted"}}\n\n',
+        },
+        [message('recovered')],
+      ]);
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-hosted-acceptance',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        instructions: 'Answer.',
+        hostedPrompt: { id: 'pmpt_provider_tools' },
+        provider,
+        ...(mode === 'empty' ? { tools: [] } : {}),
+        ...(configured
+          ? {
+              modelSettings: {
+                retry: {
+                  maxRetries: 1,
+                  backoff: { initialDelayMs: 0, jitter: false },
+                  policy: () => ({
+                    retry: true,
+                    delayMs: 0,
+                    approveUnsafeReplay: true,
+                  }),
+                },
+              },
+            }
+          : {}),
+      });
+      if (mode === 'accepted') {
+        await expect(agent.run('run')).rejects.toThrow();
+        expect(server.requests).toHaveLength(1);
+      } else {
+        expect((await agent.run('run')).finalOutput).toBe('recovered');
+        expect(server.requests).toHaveLength(2);
+        if (mode === 'empty') expect(server.requests[0].tools).toEqual([]);
+        server.assertExhausted();
+      }
+    },
+    30_000,
+  );
   it.each(['none', 'file_search_call', 'web_search_call', 'reasoning'])(
     `retains ${configured ? 'configured' : 'default'} retry after %s without action evidence`,
     async (safeKind) => {
@@ -117,7 +171,6 @@ for (const configured of [false, true]) {
       const agent = new Agent({
         model: 'gpt-5.5',
         instructions: 'Answer.',
-        hostedPrompt: { id: 'pmpt_provider_tools' },
         provider,
         ...(configured
           ? {

@@ -97,6 +97,8 @@ export type {
   FunctionToolTimeoutBehavior,
   ToolTimeoutErrorFunction,
   ToolErrorFunction,
+  ToolErrorContext,
+  ToolErrorFormatter,
   Tool,
   ToolContext,
   ToolCallContext,
