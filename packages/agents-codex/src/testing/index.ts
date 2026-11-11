@@ -17,6 +17,14 @@ import { NativeProvider } from '../runtime/provider';
 
 export type ScriptedItem =
   | Readonly<{
+      type: 'computer_call';
+      id: string;
+      call_id: string;
+      status: 'completed';
+      actions: readonly JsonObject[];
+      pending_safety_checks: readonly JsonObject[];
+    }>
+  | Readonly<{
       type: 'message';
       role: 'assistant';
       id: string;
@@ -85,6 +93,29 @@ export function text(
     content: [{ type: 'output_text', text: value }],
   };
 }
+/** Emit a GA computer call; native tool policy still authorizes every effect.
+ * Inputs are captured now. Use raw events for preview or malformed-wire calls.
+ */
+export function computerCall(
+  actions: readonly JsonObject[],
+  options: {
+    callId: string;
+    itemId?: string;
+    pendingSafetyChecks?: readonly JsonObject[];
+  },
+): ScriptedItem {
+  return {
+    type: 'computer_call',
+    id: options.itemId ?? randomUUID(),
+    call_id: options.callId,
+    status: 'completed',
+    actions: actions.map((action) => jsonObject.parse(action)),
+    pending_safety_checks: (options.pendingSafetyChecks ?? []).map((check) =>
+      jsonObject.parse(check),
+    ),
+  };
+}
+
 export function toolCall(
   name: string,
   argumentsValue: JsonObject,
@@ -131,6 +162,16 @@ export function httpError(
   }
 }
 const itemSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('computer_call'),
+      id: z.string(),
+      call_id: z.string(),
+      status: z.literal('completed'),
+      actions: z.array(jsonObject),
+      pending_safety_checks: z.array(jsonObject),
+    })
+    .strict(),
   z
     .object({
       type: z.literal('message'),

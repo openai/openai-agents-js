@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest';
-import { parseNative } from '../src/runtime/binding';
+import { encodeReceipt, parseNative } from '../src/runtime/binding';
 import {
   projectHistory,
   recordedTurnToWire,
@@ -95,6 +95,30 @@ it('restores exact integer tokens only in owned attempt paths', () => {
   expect(parsed.msg.data.usage.token_usage.input_tokens).toBe(token);
   expect(parsed.msg.data.usage.requests).toBe('2');
   expect(parsed.arbitrary.input_tokens).toBe(3);
+});
+it('retains exact model usage bytes when restoring a manual checkpoint', () => {
+  const large = '9007199254740993';
+  const checkpoint = {
+    manual_context: {
+      model_attempt: {
+        owner_attempt_id: 'owner',
+        usage: {
+          requests: 2,
+          requests_without_token_usage: '1',
+          token_usage: {
+            input_tokens: large,
+            output_tokens: 4,
+          },
+        },
+        terminal_attempt_id: null,
+      },
+    },
+  };
+  const serialized = JSON.stringify(checkpoint);
+  expect(encodeReceipt(parseNative(serialized))).toBe(serialized);
+  expect(
+    encodeReceipt(parseNative(serialized.replace(`"${large}"`, large))),
+  ).toBe(serialized);
 });
 it('sums distinct restored ledger owners under a retained turn and preserves the legacy prefix', () => {
   const fact = (owner: string, input: number) => ({

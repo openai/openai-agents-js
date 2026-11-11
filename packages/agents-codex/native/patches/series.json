@@ -1,4 +1,5 @@
 {
+  "result_tree": "556bf3f7646b89af1966fe2bb2c91ae43f83f46e",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -701,6 +702,26 @@
       "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
     },
     {
+      "path": "sdk-deferred-followup-trace.patch",
+      "sha256": "bb5bfe944f0278638fd9eb50a913cf89341c19815382af5a1c47e3dded0ada46"
+    },
+    {
+      "path": "sdk-realtime-provider-error-observation.patch",
+      "sha256": "69a74476497a8189f717036a231c5f48a3e391dc06191693dc7507851c81e7dc"
+    },
+    {
+      "path": "sdk-function-call-wire.patch",
+      "sha256": "9d7f6a164c86be95591bcfeaf8098e76113e17da4a6af92047e70769d7017adf"
+    },
+    {
+      "path": "sdk-raw-provider-events.patch",
+      "sha256": "727b360551627c3a0dcfcde6dfe13fadf11185e32e55035d93de404b7d0cb7f1"
+    },
+    {
+      "path": "sdk-sender-communication-privacy.patch",
+      "sha256": "ef7d55fb13765fc4d9d441af6d799c5aa0987eda2296597a84aadd57f9f8d36c"
+    },
+    {
       "path": "sdk-mcp-forced-choice-captured-binding.patch",
       "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
     },
@@ -714,7 +735,7 @@
     },
     {
       "path": "sdk-native-model-attempt-retry.patch",
-      "sha256": "09d7801b709c5bd1cdc337a1583b96b2a99195e521f2200a70678db92e62083a"
+      "sha256": "dce7e903a138fa26e27c95eddbe9615f5ec649935196bd7625966095b933ad47"
     },
     {
       "path": "sdk-realtime-incarnation-ownership.patch",
@@ -745,17 +766,16 @@
       "sha256": "cc46a7a1c697e833784f9f5ffa7245b0e2354e5bbc5a0a8bb892fae7ae55c53e"
     },
     {
+      "path": "sdk-native-owned-stop-durability-report.patch",
+      "sha256": "3418e9344d345661a8857558750dd00552d03e6718f6ea899f5f4a54f988d2a8"
+    },
+    {
       "path": "sdk-stored-owner-retirement.patch",
       "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
     },
     {
       "path": "sdk-borrowed-responses-compaction.patch",
       "sha256": "d229b00207f28530f8b66cd221137d25cc301e88bdb8e4302a1a705e9f8f2ff1"
-    },
-    {
-      "path": "sdk-realtime-provider-error-observation.patch",
-      "sha256": "69a74476497a8189f717036a231c5f48a3e391dc06191693dc7507851c81e7dc"
     }
-  ],
-  "result_tree": "e882aecb4cafb7b48c995bc2135df8263b1d8471"
+  ]
 }
