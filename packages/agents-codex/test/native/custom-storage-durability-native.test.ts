@@ -14,8 +14,11 @@ import {
   nativeGoals,
   checklist,
   manualTool,
+  shellTool,
+  hostedShell,
   webSearch,
   fileSessionStore,
+  localStorage,
   reconcileSessionStore,
   tool,
   ToolOutput,
@@ -1266,4 +1269,244 @@ describe('public native custom storage durability', () => {
     },
     30000,
   );
+});
+
+it('reconciles one application Shell effect after process exit without rerunning it', async () => {
+  const path = await directory();
+  const effects = join(path, 'effects');
+  const shell = {
+    type: 'shell_call',
+    call_id: 'parity-shell',
+    environment: null,
+    container_id: null,
+    action: { commands: ['application effect'], max_output_length: 4 },
+  };
+  const crashed = new ModelServer([[shell]]);
+  const original = await worker(crashed, {
+    directory: path,
+    effects,
+    mode: 'hold-shell',
+  });
+  const opened = await original.wait('opened');
+  const submitted = await original.wait('submitted');
+  await original.wait('effect');
+  original.child.kill('SIGKILL');
+  await original.exited;
+  await rm(join(path, `${opened.id}.lock`), { recursive: true });
+  const resumed = new ModelServer([[message('Verified Shell result.')]]);
+  await using provider = await providerFor(resumed);
+  let repeated = 0;
+  const agent = new Agent({
+    instructions: 'Use record when requested.',
+    model: 'gpt-5',
+    provider,
+    tools: [
+      shellTool({
+        execute() {
+          repeated++;
+          return { output: [] };
+        },
+      }),
+    ],
+  });
+  const blocked = await agent
+    .session({ storage: fileSessionStore(path), resume: opened.id })
+    .catch((error: unknown) => error);
+  expect(blocked).toBeInstanceOf(LocalRecoveryRequired);
+  expect((blocked as LocalRecoveryRequired).calls).toContainEqual(
+    expect.objectContaining({
+      callId: 'parity-shell',
+      turnId: submitted.turnId,
+      name: 'shell',
+    }),
+  );
+  if (blocked instanceof NativeError && blocked.cleanup)
+    await blocked.cleanup.close();
+  expect(resumed.requests).toHaveLength(0);
+  await reconcileSessionStore(fileSessionStore(path), {
+    sessionId: opened.id,
+    turnId: submitted.turnId,
+    callId: 'parity-shell',
+    result: {
+      output: [
+        {
+          stdout: 'verified output',
+          stderr: '',
+          outcome: { type: 'exit', exit_code: 0 },
+        },
+      ],
+    },
+  });
+  await using session = await agent.session({
+    storage: fileSessionStore(path),
+    resume: opened.id,
+  });
+  const items = await history(session);
+  const receipts = items.filter((item) => item.type === 'shell_call_output');
+  expect(receipts).toHaveLength(1);
+  expect(receipts[0]).toMatchObject({
+    id: expect.any(String),
+    call_id: 'parity-shell',
+  });
+  expect(receipts[0]?.provider_data.output).toEqual([
+    expect.objectContaining({ stdout: 'veri' }),
+  ]);
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'Verified Shell result.',
+  );
+  expect(resumed.requests[0].input).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'shell_call_output',
+        call_id: 'parity-shell',
+        output: [expect.objectContaining({ stdout: 'veri' })],
+      }),
+    ]),
+  );
+  expect(await readFile(effects, 'utf8')).toBe('shell\n');
+  expect(repeated).toBe(0);
+  resumed.assertExhausted();
+});
+
+it('refuses application reconciliation of a markerless provider-managed Shell call', async () => {
+  const path = await directory();
+  const server = new ModelServer([
+    [
+      {
+        type: 'shell_call',
+        id: 'provider-call',
+        call_id: 'hosted-only',
+        status: 'completed',
+        action: { commands: ['provider work'] },
+      },
+    ],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    provider,
+    instructions: 'Use provider Shell.',
+    model: 'gpt-5',
+    tools: [hostedShell({ environment: { type: 'container_auto' } })],
+  });
+  const session = await agent.session({ storage: fileSessionStore(path) });
+  const id = session.id;
+  const turn = await session.submit('Use hosted Shell.');
+  await turn.wait();
+  const rows = await history(session);
+  const original = rows.find((item) => item.type === 'shell_call');
+  expect(original).toBeDefined();
+  await session.close();
+  await expect(
+    reconcileSessionStore(fileSessionStore(path), {
+      sessionId: id,
+      turnId: original!.turnId,
+      callId: 'hosted-only',
+      result: { output: [] },
+    }),
+  ).rejects.toThrow(/original call|application/);
+  await using reopened = await agent.session({
+    storage: fileSessionStore(path),
+    resume: id,
+  });
+  expect(
+    (await history(reopened)).filter((item) => item.type === 'shell_call'),
+  ).toHaveLength(1);
+  expect(server.requests).toHaveLength(1);
+});
+
+it('retains an interrupted application Shell in LocalStorage until verified recovery', async () => {
+  const path = await directory();
+  const effects = join(path, 'effects');
+  const crashed = new ModelServer([
+    [
+      {
+        type: 'shell_call',
+        call_id: 'local-shell',
+        action: { commands: ['application effect'], max_output_length: 4 },
+      },
+    ],
+  ]);
+  const original = await worker(crashed, {
+    directory: path,
+    effects,
+    mode: 'hold-shell',
+    local: true,
+  });
+  const opened = await original.wait('opened');
+  const submitted = await original.wait('submitted');
+  await original.wait('effect');
+  original.child.kill('SIGKILL');
+  await original.exited;
+  const resumed = new ModelServer([[message('Local Shell verified.')]]);
+  await using provider = await providerFor(resumed);
+  let repeated = 0;
+  const agent = new Agent({
+    instructions: 'Use record when requested.',
+    model: 'gpt-5',
+    provider,
+    tools: [
+      shellTool({
+        execute() {
+          repeated++;
+          return { output: [] };
+        },
+      }),
+    ],
+  });
+  const blocked = await agent
+    .session({ storage: localStorage(path), resume: opened.id })
+    .catch((error: unknown) => error);
+  expect(blocked).toBeInstanceOf(LocalRecoveryRequired);
+  expect((blocked as LocalRecoveryRequired).calls).toContainEqual(
+    expect.objectContaining({
+      callId: 'local-shell',
+      name: 'shell',
+      turnId: submitted.turnId,
+    }),
+  );
+  if (blocked instanceof NativeError && blocked.cleanup)
+    await blocked.cleanup.close();
+  expect(resumed.requests).toHaveLength(0);
+  await using session = await agent.session({
+    storage: localStorage(path),
+    resume: opened.id,
+    reconciledCalls: [
+      {
+        threadId: opened.id,
+        turnId: submitted.turnId,
+        callId: 'local-shell',
+        outcome: 'applied',
+        result: JSON.stringify({
+          output: [
+            {
+              stdout: 'verified local output',
+              stderr: '',
+              outcome: { type: 'exit', exit_code: 0 },
+            },
+          ],
+        }),
+      },
+    ],
+  });
+  expect(
+    (await history(session)).filter(
+      (item) => item.type === 'shell_call_output',
+    ),
+  ).toHaveLength(1);
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'Local Shell verified.',
+  );
+  expect(resumed.requests[0].input).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'shell_call_output',
+        call_id: 'local-shell',
+        output: [expect.objectContaining({ stdout: 'veri' })],
+      }),
+    ]),
+  );
+  expect(repeated).toBe(0);
+  expect(await readFile(effects, 'utf8')).toBe('shell\n');
+  crashed.assertExhausted();
+  resumed.assertExhausted();
 });

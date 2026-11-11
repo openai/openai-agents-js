@@ -1,5 +1,5 @@
 {
-  "result_tree": "060ea6031e6a95757b6e4b485d279a8706fa0669",
+  "result_tree": "12c67d06c18611b80182df829e15c53df508dbc2",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -800,6 +800,26 @@
     {
       "path": "sdk-application-tool-output-acceptance.patch",
       "sha256": "f385082704b0d3dd5fa1e15645a152c2c7c342ed29551429d9f2051808a79365"
+    },
+    {
+      "path": "sdk-application-shell.patch",
+      "sha256": "348b596329d213e842f3e3ddedc99fb0a3e8d71453239f5264a795a2d0321238"
+    },
+    {
+      "path": "sdk-application-tool-durable-owner.patch",
+      "sha256": "a6e10d1e8a347c5a8623ffd275b858738b848380460cfbdace7f567fa1905705"
+    },
+    {
+      "path": "sdk-provider-tool-search.patch",
+      "sha256": "b25e248670ddf7b7f02e5fb7f1834906501b49622d65684a7ef0dd82ca590dc0"
+    },
+    {
+      "path": "sdk-native-client-tool-search.patch",
+      "sha256": "9f5145bd9c75c97a0c690bbeb36fe89b66cdf22ade447c6f83aec2a3d474a253"
+    },
+    {
+      "path": "sdk-client-tool-search-discovery-admission.patch",
+      "sha256": "137b34494fb5240f00e811a56b930e1e565c82f1bcf2cc01c1fef8810fc59e2c"
     },
     {
       "path": "sdk-trace-lifecycle-dispatch.patch",

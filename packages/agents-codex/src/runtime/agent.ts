@@ -5,7 +5,7 @@ import {
   privateRuntime,
   finishPrivateRuntime,
 } from './private-engine-reuse';
-import { RunCleanupError } from './native-error';
+import { RunCleanupError, RunDiagnosticError } from './native-error';
 import { captureInitialMessages } from './initial-messages';
 import { projectProfileCatalog } from './agent-profiles';
 import { captureTraceContext } from './trace-context';
@@ -491,6 +491,7 @@ async function closePrivateOwnedRuntime(
 
 interface OwnedRunOptions {
   guardrailInput?: import('./input').UserInput;
+  errorInput?: import('./input').UserInput | null;
   returnState?: boolean;
   returnHistory?: boolean;
   returnRawUsage?: boolean;
@@ -566,7 +567,8 @@ async function completeOwnedSession<Output>(
   }
   const pending = (async () => {
     if (options.returnRawUsage) session._startRawUsage();
-    if (options.returnItems) session._startProducedItems();
+    if (options.returnItems || options.errorInput !== undefined)
+      session._startProducedItems();
     if (input != null) {
       await session._run(
         input,
@@ -580,7 +582,17 @@ async function completeOwnedSession<Output>(
   })();
   delete options.guardrailInput;
   const result = await pending.catch(async (error) => {
-    const primary = originalFailure(error);
+    let primary = originalFailure(error);
+    if (options.errorInput !== undefined && !options.signal?.aborted) {
+      try {
+        const details = await session._captureRunErrorDetails(
+          options.errorInput,
+        );
+        if (details) primary = new RunDiagnosticError(details, primary);
+      } catch {
+        // Preserve the original failure when evidence capture throws.
+      }
+    }
     try {
       await closeOwned();
     } catch (cleanupError) {

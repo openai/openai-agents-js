@@ -120,6 +120,86 @@ const exists = (path: string) =>
   );
 
 describe('public native local profiles', () => {
+  it('fences repeated application Shell calls after confirmed local reconciliation', async () => {
+    const p = await profile();
+    const original = {
+      type: 'shell_call',
+      call_id: 'reconciled-shell',
+      action: { commands: ['record application effect'] },
+    };
+    const server = new ModelServer([
+      [original],
+      [message('Recovered Shell receipt.')],
+      [original],
+      [message('Unexpected repeated execution.')],
+    ]);
+    const first = await worker(server, {
+      profile: p.storage.path,
+      effects: p.effects,
+      label: 'source',
+      mode: 'hold-effect',
+      applicationShell: true,
+    });
+    const { id } = await first.wait('opened');
+    await first.wait('effect');
+    first.child.kill('SIGKILL');
+    await first.exited;
+    const reopen = (reconciledCalls?: unknown[]) =>
+      worker(server, {
+        profile: p.storage.path,
+        effects: p.effects,
+        label: 'destination',
+        mode: 'run',
+        applicationShell: true,
+        resume: id,
+        ...(reconciledCalls ? { reconciledCalls } : {}),
+      });
+    const unresolved = await reopen();
+    const hold = await unresolved.wait('failure');
+    expect(hold.message).toContain('unknown tool effects');
+    expect(hold.calls).toHaveLength(1);
+    expect(hold.calls[0]).toMatchObject({
+      threadId: id,
+      callId: 'reconciled-shell',
+      name: 'shell',
+    });
+    expect((await unresolved.exited).code).toBe(1);
+    const receipt = {
+      threadId: id,
+      turnId: hold.calls[0].turnId,
+      callId: 'reconciled-shell',
+      outcome: 'applied',
+      result: JSON.stringify({
+        output: [
+          {
+            stdout: 'source',
+            stderr: '',
+            outcome: { type: 'exit', exit_code: 0 },
+          },
+        ],
+      }),
+    };
+    const recovered = await reopen([receipt]);
+    expect((await recovered.wait('result')).output).toBe(
+      'Recovered Shell receipt.',
+    );
+    expect((await recovered.exited).code).toBe(0);
+    expect(await readFile(p.effects, 'utf8')).toBe('source\n');
+    const repeated = await reopen([receipt]);
+    const exit = await repeated.exited;
+    expect(await readFile(p.effects, 'utf8')).toBe('source\n');
+    expect(exit.code).toBe(1);
+    expect(repeated.messages).toContainEqual(
+      expect.objectContaining({
+        type: 'failure',
+        message: expect.stringContaining(
+          'Cannot reuse an original call identity during recovery',
+        ),
+      }),
+    );
+    expect(server.requests).toHaveLength(3);
+  }, 60000);
+
   it.each([false, true])(
     'keeps one user item per file submission after reopen (with text: %s)',
     async (withText) => {
