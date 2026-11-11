@@ -757,11 +757,13 @@ it.each(['trace entry', 'queued guardrail', 'graceful tree stop'] as const)(
       );
     const storage = new AsyncLocalStorage<telemetry.TraceSpan>();
     const run = storage.run.bind(storage);
+    let held = false;
     vi.spyOn(storage, 'run').mockImplementation((span, callback, ...args) => {
       if (admitted && span?.kind === 'callback') {
         // The two fault cases change only the check spy's answer.
         if (mode === 'trace entry') expired = true;
-        if (treeStop) {
+        if (treeStop && !held) {
+          held = true;
           heldCallback.resolve(admitted);
           return releaseCallback.promise.then(() =>
             run(span, callback, ...args),
@@ -781,9 +783,16 @@ it.each(['trace entry', 'queued guardrail', 'graceful tree stop'] as const)(
       { task_name: 'guarded', message: 'child input', fork_turns: 'none' },
       { namespace: 'collaboration', callId: 'spawn-guarded' },
     );
-    const server = new ModelServer(
-      treeStop ? [[spawn]] : [[spawn], [message('root done')]],
-    );
+    const rootRequest = Promise.withResolvers<void>();
+    const releaseRoot = Promise.withResolvers<void>();
+    const server = new ModelServer([
+      [spawn],
+      async () => {
+        rootRequest.resolve();
+        if (treeStop) await releaseRoot.promise;
+        return [message('root done')];
+      },
+    ]);
     const config = await server.config();
     await using provider = new NativeProvider({
       baseUrl: (config['model_providers.fixture'] as { base_url: string })
@@ -826,6 +835,7 @@ it.each(['trace entry', 'queued guardrail', 'graceful tree stop'] as const)(
       let wire: string;
       if (treeStop) {
         const held = await within(heldCallback.promise, 'child callback hold');
+        await within(rootRequest.promise, 'root followup entry');
         await opened.interrupt({ scope: 'all', mode: 'graceful' });
         await within(settling.promise, 'graceful stop settlement entry');
         expect(check.call(held.native, held.wire)).toBe(true);
@@ -867,6 +877,7 @@ it.each(['trace entry', 'queued guardrail', 'graceful tree stop'] as const)(
       expect(child?.turn).toBeTruthy();
       const outcome = child!.turn!.wait().catch((error: unknown) => error);
       if (treeStop) {
+        releaseRoot.resolve();
         releaseStop.resolve();
         await within(stopSettled.promise, 'graceful stop settlement');
       }
@@ -884,6 +895,7 @@ it.each(['trace entry', 'queued guardrail', 'graceful tree stop'] as const)(
       }
       server.assertExhausted();
     } finally {
+      releaseRoot.resolve();
       releaseCallback.resolve();
       releaseStop.resolve();
       telemetry.setTraceContextStorage();

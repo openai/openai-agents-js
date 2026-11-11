@@ -336,6 +336,7 @@ export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
 export type {
   HostedToolProgress,
   HostedToolItemSummary,
+  ModelOutputItemCompleted,
 } from './runtime/observation';
 
 export {
