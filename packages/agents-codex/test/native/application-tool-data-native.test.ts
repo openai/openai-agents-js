@@ -16,7 +16,11 @@ import {
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
-import type { JsonObject } from '../../src/runtime/binding';
+import {
+  binding,
+  type JsonObject,
+  type NativeThread,
+} from '../../src/runtime/binding';
 import { nativeCheckpoint } from '../../src/runtime/state';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
@@ -31,6 +35,64 @@ async function providerFor(model: ModelServer) {
   });
 }
 
+async function startApplicationDataPeer() {
+  const failures: unknown[] = [];
+  const peer = createServer(async (request, response) => {
+    if (request.method !== 'POST') {
+      response.writeHead(405).end();
+      return;
+    }
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const rpc = JSON.parse(Buffer.concat(chunks).toString());
+      if (rpc.id === undefined) {
+        response.writeHead(202).end();
+        return;
+      }
+      const result =
+        rpc.method === 'initialize'
+          ? {
+              protocolVersion: rpc.params.protocolVersion,
+              capabilities: { tools: {} },
+              serverInfo: { name: 'app-peer', version: '1' },
+            }
+          : rpc.method === 'tools/list'
+            ? {
+                tools: [
+                  {
+                    name: 'lookup',
+                    inputSchema: {
+                      type: 'object',
+                      properties: { query: { type: 'string' } },
+                      required: ['query'],
+                    },
+                  },
+                ],
+              }
+            : rpc.method === 'tools/call'
+              ? {
+                  content: [{ type: 'text', text: 'peer-public' }],
+                  _meta: { ticket: 'peer-meta' },
+                  structuredContent: { count: 7 },
+                  isError: false,
+                }
+              : {};
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }));
+    } catch (error) {
+      failures.push(error);
+      response.destroy();
+    }
+  });
+  peer.listen(0, '127.0.0.1');
+  await once(peer, 'listening');
+  const address = peer.address();
+  if (!address || typeof address === 'string')
+    throw new Error('Expected TCP peer');
+  return { peer, failures, url: `http://127.0.0.1:${address.port}/mcp` };
+}
+
 async function waitForManualRequests(turn: Turn, callIds: readonly string[]) {
   await vi.waitFor(async () => {
     const pending = await turn.wait({ until: 'manual_tool' });
@@ -41,13 +103,15 @@ async function waitForManualRequests(turn: Turn, callIds: readonly string[]) {
   });
 }
 
-nativeIt(
-  'retains terminal application data only with the canonical output',
-  async () => {
+nativeIt.each([false, true])(
+  'retains live terminal application data only with the canonical output, reject=%s',
+  async (reject) => {
     const model = new ModelServer([
       [call('finish', {}, { callId: 'terminal-data' })],
     ]);
     await using provider = await providerFor(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     await using session = await new Agent({
       instructions: 'Finish with the supplied tool.',
       provider,
@@ -62,8 +126,33 @@ nativeIt(
             }),
         }),
       ],
+      outputGuardrails: [
+        {
+          name: 'hold-live-terminal',
+          async callback() {
+            entered.resolve();
+            await release.promise;
+            return { tripwireTriggered: reject };
+          },
+        },
+      ],
     }).session();
     const turn = await session.submit('Finish');
+    try {
+      await entered.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(turn.applicationToolOutputs).toEqual([]);
+    } finally {
+      release.resolve();
+    }
+    if (reject) {
+      await expect(turn.wait()).rejects.toBeInstanceOf(GuardrailTripwire);
+      expect(turn.applicationToolOutputs).toEqual([]);
+      expect(JSON.stringify(await session.saveState())).not.toContain(
+        'private-terminal',
+      );
+      return;
+    }
     const result = await turn.wait();
     expect(result.finalOutput).toBe('done');
     expect(result.applicationToolOutputs).toEqual([
@@ -82,60 +171,7 @@ nativeIt(
 nativeIt.each(['original', 'transformed', 'malformed'] as const)(
   'extracts MCP application data after %s result with validated delivery',
   async (mode) => {
-    const failures: unknown[] = [];
-    const peer = createServer(async (request, response) => {
-      if (request.method !== 'POST') {
-        response.writeHead(405).end();
-        return;
-      }
-      try {
-        const chunks: Buffer[] = [];
-        for await (const chunk of request) chunks.push(Buffer.from(chunk));
-        const rpc = JSON.parse(Buffer.concat(chunks).toString());
-        if (rpc.id === undefined) {
-          response.writeHead(202).end();
-          return;
-        }
-        const result =
-          rpc.method === 'initialize'
-            ? {
-                protocolVersion: rpc.params.protocolVersion,
-                capabilities: { tools: {} },
-                serverInfo: { name: 'app-peer', version: '1' },
-              }
-            : rpc.method === 'tools/list'
-              ? {
-                  tools: [
-                    {
-                      name: 'lookup',
-                      inputSchema: {
-                        type: 'object',
-                        properties: { query: { type: 'string' } },
-                        required: ['query'],
-                      },
-                    },
-                  ],
-                }
-              : rpc.method === 'tools/call'
-                ? {
-                    content: [{ type: 'text', text: 'peer-public' }],
-                    _meta: { ticket: 'peer-meta' },
-                    structuredContent: { count: 7 },
-                    isError: false,
-                  }
-                : {};
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }));
-      } catch (error) {
-        failures.push(error);
-        response.destroy();
-      }
-    });
-    peer.listen(0, '127.0.0.1');
-    await once(peer, 'listening');
-    const address = peer.address();
-    if (!address || typeof address === 'string')
-      throw new Error('Expected TCP peer');
+    const { peer, failures, url } = await startApplicationDataPeer();
     let extracts = 0;
     const model = new ModelServer([
       [
@@ -166,7 +202,7 @@ nativeIt.each(['original', 'transformed', 'malformed'] as const)(
         tools: [
           new HttpMCP({
             name: 'application',
-            url: `http://127.0.0.1:${address.port}/mcp`,
+            url,
             tools: ['lookup'],
             approvalMode: 'preapproved',
             ...(mode === 'original'
@@ -406,9 +442,9 @@ nativeIt(
   },
 );
 
-nativeIt(
-  'exposes accepted child application data through its completed result and detached getter',
-  async () => {
+nativeIt.each([false, true])(
+  'exposes accepted child application data, MCP extraction precedes ordered child start=%s',
+  async (earlyMcpResult) => {
     let roots = 0,
       children = 0;
     const respond = (request: JsonObject) => {
@@ -427,7 +463,18 @@ nativeIt(
         return [message('root done')];
       }
       return ++children === 1
-        ? [call('record', {}, { callId: 'child-data' })]
+        ? [
+            earlyMcpResult
+              ? call(
+                  'lookup',
+                  { query: 'input' },
+                  {
+                    namespace: 'mcp__application',
+                    callId: 'child-data',
+                  },
+                )
+              : call('record', {}, { callId: 'child-data' }),
+          ]
         : [message('child done')];
     };
     const model = new ModelServer(Array.from({ length: 5 }, () => respond));
@@ -438,6 +485,44 @@ nativeIt(
       result: z.string(),
     });
     const executor = await startPublicExecutor();
+    const mcp = earlyMcpResult ? await startApplicationDataPeer() : undefined;
+    const releaseStart = Promise.withResolvers<void>();
+    let childStartHeld = false;
+    let childOutputAssigned = false;
+    const prototype = (await binding()).NativeThread.prototype;
+    const nextBatch = prototype._next_session_events;
+    const assignMcpResult =
+      prototype._resolve_native_mcp_result_with_assignment;
+    const readSpy = mcp
+      ? vi
+          .spyOn(prototype, '_next_session_events')
+          .mockImplementation(async function (this: NativeThread) {
+            const batch = await nextBatch.call(this);
+            if (
+              batch.some((raw) => {
+                const event = JSON.parse(raw);
+                return (
+                  event.subagent_id &&
+                  ['task_started', 'turn_started'].includes(event.msg.type)
+                );
+              })
+            ) {
+              childStartHeld = true;
+              await releaseStart.promise;
+            }
+            return batch;
+          })
+      : undefined;
+    const assignSpy = mcp
+      ? vi
+          .spyOn(prototype, '_resolve_native_mcp_result_with_assignment')
+          .mockImplementation(async function (this: NativeThread, ...args) {
+            const assignment = await assignMcpResult.call(this, ...args);
+            if (args[2] === 'child-data' && assignment[1])
+              childOutputAssigned = true;
+            return assignment;
+          })
+      : undefined;
     try {
       await using provider = await providerFor(model);
       await using session = await new Agent({
@@ -447,16 +532,26 @@ nativeIt(
         tools: [
           new NativeAgents(),
           pause,
-          tool({
-            name: 'record',
-            parameters: z.object({}),
-            execute: () =>
-              new ToolOutput(
-                [{ type: 'inputText', text: 'child public' }],
-                true,
-                { ticket: 'private-child-ticket' },
-              ),
-          }),
+          mcp
+            ? new HttpMCP({
+                name: 'application',
+                url: mcp.url,
+                tools: ['lookup'],
+                approvalMode: 'preapproved',
+                extractApplicationData: () => ({
+                  ticket: 'private-child-ticket',
+                }),
+              })
+            : tool({
+                name: 'record',
+                parameters: z.object({}),
+                execute: () =>
+                  new ToolOutput(
+                    [{ type: 'inputText', text: 'child public' }],
+                    true,
+                    { ticket: 'private-child-ticket' },
+                  ),
+              }),
         ],
       }).session({
         environment: new Environment({
@@ -467,6 +562,21 @@ nativeIt(
         }),
       });
       const root = await session.submit('Delegate');
+      if (mcp) {
+        try {
+          await vi.waitFor(
+            () => {
+              expect(childStartHeld).toBe(true);
+              expect(childOutputAssigned).toBe(true);
+            },
+            { timeout: 6000 },
+          );
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(root.applicationToolOutputs).toEqual([]);
+        } finally {
+          releaseStart.resolve();
+        }
+      }
       const pending = await root.wait({ until: 'manual_tool' });
       if (!('requests' in pending)) throw new Error('Expected parent pause');
       const child = await vi.waitUntil(
@@ -494,6 +604,7 @@ nativeIt(
       expect((await root.wait()).applicationToolOutputs).toEqual([
         expect.objectContaining({
           callId: 'child-data',
+          rootTurnId: root.turnId,
           applicationData: { ticket: 'private-child-ticket' },
         }),
       ]);
@@ -501,7 +612,13 @@ nativeIt(
         'private-child-ticket',
       );
       model.assertExhausted();
+      expect(mcp?.failures ?? []).toEqual([]);
     } finally {
+      releaseStart.resolve();
+      assignSpy?.mockRestore();
+      readSpy?.mockRestore();
+      mcp?.peer.closeAllConnections();
+      mcp?.peer.close();
       await executor.close();
     }
   },

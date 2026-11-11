@@ -6770,6 +6770,7 @@ export class Session<OutputT = string, Context = unknown> {
             event.subagent_instance_id,
           );
     if (!owner) return;
+    const submissionId = `child:${id}:${incarnation}:${turnId}`;
     // An acknowledged future turn can exist before an older start is read.
     // Only starts from this ordered reader establish prior-turn ownership.
     if (startsTurn) {
@@ -6778,8 +6779,17 @@ export class Session<OutputT = string, Context = unknown> {
         owner.rootTurnId === undefined &&
         typeof msg.root_turn_id === 'string' &&
         msg.root_turn_id
-      )
-        owner.rootTurnId = msg.root_turn_id;
+      ) {
+        const rootTurnId = msg.root_turn_id;
+        owner.rootTurnId = rootTurnId;
+        for (const output of this.applicationOutputs) {
+          if (
+            output.submissionId === submissionId &&
+            output.rootTurnId === undefined
+          )
+            output.rootTurnId = rootTurnId;
+        }
+      }
       this.observations.notify();
     }
     owner.instanceId ??= event.subagent_instance_id;
@@ -6799,7 +6809,6 @@ export class Session<OutputT = string, Context = unknown> {
         usage ? 0 : 1,
       );
     }
-    const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
     if (
@@ -11046,10 +11055,19 @@ export class Session<OutputT = string, Context = unknown> {
         const applicationData = toolApplicationData(response);
         const waitForApplicationAcceptance = applicationData !== undefined;
         if (tool.finishTurn && responseOutput.success) {
-          this.registerTerminalObservation(owner, identity, 'completed');
+          this.registerTerminalObservation(
+            owner,
+            identity,
+            'completed',
+            applicationData,
+          );
+          if (applicationData !== undefined)
+            this.pendingApplicationOutputs.push(
+              this.applicationOutputRecord(owner, identity, applicationData),
+            );
           deferredObservation = true;
         }
-        let accepted: boolean;
+        let accepted = false;
         try {
           accepted = await native._respond_python_tool(
             encodeReceipt({
@@ -11061,19 +11079,17 @@ export class Session<OutputT = string, Context = unknown> {
             }),
             waitForApplicationAcceptance,
           );
-          if (accepted && applicationData !== undefined) {
+          if (accepted && applicationData !== undefined && !deferredObservation)
             this.recordApplicationOutput(owner, identity, applicationData);
-            const observation = this.terminalProposals
-              .get(owner)
-              ?.observations.get(identity.callId);
-            if (observation) observation.applicationData = applicationData;
-          }
           if (accepted && msg._sdk_managed_approved === true) {
             const key = this.manualCallKey(event, true);
             if (key !== undefined) this.manualCalls.delete(key);
           }
         } catch (error) {
           this.callbackAuthorityFailed(delivery, error);
+        } finally {
+          if (deferredObservation && !accepted)
+            this.discardPendingApplicationOutputs(owner, identity.callId);
         }
         if (accepted && !deferredObservation) {
           const data = toolApplicationData(response);
