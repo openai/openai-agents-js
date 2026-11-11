@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  NativeAgents,
+  Environment,
   Turn,
   tool,
   manualTool,
@@ -10,6 +12,9 @@ import {
   type ToolContext,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { startPublicExecutor } from './fixtures/public-executor';
+import { nativeDescendantModel } from './fixtures/native-descendant-model';
+import type { JsonObject } from '../../src/runtime/binding';
 
 afterEach(() => ModelServer.closeAll());
 const reported = {
@@ -36,6 +41,151 @@ async function providerFor(server: ModelServer) {
     supportsWebsockets: false,
   });
 }
+
+it('returns produced items and original usage from the same native invocation', async () => {
+  const usage = [0, 1].map((sequence) => ({
+    ...modelUsage,
+    vendor_extension: { sequence, marker: 'synthetic-combined-capture' },
+  }));
+  const effects: string[] = [];
+  const lookup = tool({
+    name: 'lookup',
+    parameters: z.object({}),
+    execute() {
+      effects.push('lookup');
+      return 'resolved';
+    },
+  });
+  const server = new ModelServer(
+    [[call('lookup', {}, { callId: 'combined-capture' })], [message('done')]],
+    usage.map((record) => JSON.stringify(record)),
+  );
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use lookup once.',
+    tools: [lookup],
+    provider,
+  });
+  const result = await agent.run('look up A', {
+    returnItems: true,
+    returnRawUsage: true,
+  });
+
+  expect(result.finalOutput).toBe('done');
+  expect(effects).toEqual(['lookup']);
+  expect(result.items?.map(({ item }) => item.type)).toEqual([
+    'function_call',
+    'function_call_output',
+    'message',
+  ]);
+  expect(result.items?.every((entry) => entry.agent === agent)).toBe(true);
+  expect(JSON.stringify(result.items?.map(({ item }) => item))).not.toContain(
+    'synthetic-combined-capture',
+  );
+  expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+  expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+    'response-1',
+    'response-2',
+  ]);
+  expect(server.requests).toHaveLength(2);
+});
+
+it.each([false, true])(
+  'keeps original provider usage out of history and checkpoints with capture=%s',
+  async (capture) => {
+    const sentinel = 'synthetic-provider-usage-extension';
+    const usage = [0, 1].map((sequence) => ({
+      ...modelUsage,
+      vendor_extension: {
+        sample: [0, false, null, sentinel],
+        sequence,
+      },
+      ['__proto__']: 'synthetic JSON key',
+    }));
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Resolve a code.',
+      parameters: z.object({}),
+      execute: () => 'resolved',
+    });
+    const server = new ModelServer(
+      [[call('lookup', {}, { callId: 'raw-usage-a' })], [message('done')]],
+      usage.map((record) => JSON.stringify(record)),
+    );
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use lookup once.',
+      tools: [lookup],
+      provider,
+    });
+    const result = await agent.run('look up A', {
+      returnRawUsage: capture,
+      returnHistory: true,
+      returnState: true,
+    });
+
+    expect(result.finalOutput).toBe('done');
+    expect(result.runUsage).toMatchObject({ requests: 2, totalTokens: 28 });
+    expect(server.requests).toHaveLength(2);
+    expect(result.state).toBeDefined();
+    expect(JSON.stringify(result.state)).not.toContain(sentinel);
+    expect(result.history).toBeDefined();
+    expect(JSON.stringify(result.history)).not.toContain(sentinel);
+    if (capture) {
+      expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+      expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+        'response-1',
+        'response-2',
+      ]);
+    } else {
+      expect(result).not.toHaveProperty('rawUsage');
+    }
+  },
+);
+
+it('keeps original provider usage for the resumed manual invocation', async () => {
+  const decision = manualTool({
+    name: 'decision',
+    description: 'Request approval.',
+    parameters: z.object({}),
+    result: z.string(),
+  });
+  const usage = { ...modelUsage, vendor_extension: 'resumed-provider-usage' };
+  const server = new ModelServer(
+    [
+      [call('decision', {}, { callId: 'raw-usage-manual' })],
+      [message('finished')],
+    ],
+    usage,
+  );
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Request approval and finish.',
+    tools: [decision],
+    provider,
+  });
+  await using session = await agent.session();
+  const turn = await session.submit('go');
+  const pending = await turn.wait({ until: 'manual_tool' });
+  expect(pending).toHaveProperty('requests');
+  const state = parseSessionState(JSON.stringify(await session.suspend()));
+  await session.close();
+
+  const resumed = await agent.run(null, {
+    state,
+    returnRawUsage: true,
+    onInteraction(action) {
+      const request = decision.match(action);
+      if (!request) throw new Error('Expected the restored decision request');
+      return request.reply('approved');
+    },
+  });
+
+  expect(resumed.finalOutput).toBe('finished');
+  expect(server.requests).toHaveLength(2);
+  expect(resumed.rawUsage).toMatchObject([{ responseId: 'response-2', usage }]);
+});
+
 it('captures explicit usage atomically and ignores model-visible usage-shaped output', async () => {
   const retained: ToolContext[] = [];
   const snapshots: unknown[] = [];
@@ -240,3 +390,236 @@ it.each([true, false])(
     expect(Object.isFrozen(result.runUsage)).toBe(true);
   },
 );
+
+it('captures invalid and successful output-repair responses in request order', async () => {
+  const usage = [0, 1, 2].map((sequence) => ({ ...modelUsage, sequence }));
+  const server = new ModelServer(
+    [
+      [message('{"label":"x"}')],
+      [message('{"label":"y"}')],
+      [message('{"label":"corrected"}')],
+    ],
+    usage.map((record) => JSON.stringify(record)),
+  );
+  await using provider = await providerFor(server);
+  const result = await new Agent({
+    instructions: 'Answer.',
+    provider,
+    outputType: {
+      mode: 'prompted',
+      schema: z.object({ label: z.string().min(2) }),
+      maxRetries: 2,
+    },
+  }).run('run', { returnRawUsage: true });
+  expect(result.finalOutput).toEqual({ label: 'corrected' });
+  expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+    'response-1',
+    'response-2',
+    'response-3',
+  ]);
+  expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+  expect(server.requests).toHaveLength(3);
+  server.assertExhausted();
+}, 30_000);
+
+it.each([false, true])(
+  'orders correction usage before resumed sampling and defers combined overflow=%s',
+  async (overflow) => {
+    const usage = [0, 1, 2].map((sequence) => ({
+      ...modelUsage,
+      sequence,
+      ...(overflow && sequence < 2 ? { padding: 'x'.repeat(4_500_000) } : {}),
+    }));
+    const server = new ModelServer(
+      [
+        [message('{"label":"x"}')],
+        [message('{"label":"corrected"}')],
+        [message('{"label":"final"}')],
+      ],
+      usage.map((record) => JSON.stringify(record)),
+    );
+    await using provider = await providerFor(server);
+    let continued = false;
+    const pending = new Agent({
+      instructions: 'Answer.',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ label: z.string().min(2) }),
+        maxRetries: 1,
+      },
+      beforeComplete(context) {
+        if (context.text?.includes('corrected')) {
+          continued = true;
+          return {
+            action: 'continue',
+            instructions: 'Sample the final response.',
+          };
+        }
+      },
+    }).run('run', { returnRawUsage: true });
+    if (overflow) await expect(pending).rejects.toThrow('capture limit');
+    else {
+      const result = await pending;
+      expect(result.finalOutput).toEqual({ label: 'final' });
+      expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+        'response-1',
+        'response-2',
+        'response-3',
+      ]);
+      expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+    }
+    expect(continued).toBe(true);
+    expect(server.requests).toHaveLength(3);
+    server.assertExhausted();
+  },
+  30_000,
+);
+
+it.each([false, true])(
+  'orders automatic compaction usage between sampling responses with capture=%s',
+  async (capture) => {
+    let effects = 0;
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => {
+        effects++;
+        return 'resolved';
+      },
+    });
+    const usage = [
+      {
+        ...modelUsage,
+        input_tokens: 260_000,
+        output_tokens: 1_000,
+        total_tokens: 261_000,
+        vendor_extension: { sequence: 1 },
+      },
+      { ...modelUsage, vendor_extension: { sequence: 2, compaction: true } },
+      { ...modelUsage, vendor_extension: { sequence: 3 } },
+    ];
+    const server = new ModelServer(
+      [
+        [call('lookup', {}, { callId: 'compaction-usage' })],
+        [message('summary')],
+        [message('done')],
+      ],
+      usage.map((record) => JSON.stringify(record)),
+    );
+    await using provider = await providerFor(server);
+    const result = await new Agent({
+      instructions: 'Use lookup once.',
+      provider,
+      tools: [lookup],
+    }).run('look up A', { returnRawUsage: capture });
+    expect(result.finalOutput).toBe('done');
+    expect(effects).toBe(1);
+    expect(server.requests).toHaveLength(3);
+    const metadata = server.requests.map(
+      (request) =>
+        JSON.parse(
+          (request.client_metadata as Record<string, string>)[
+            'x-codex-turn-metadata'
+          ]!,
+        ) as { request_kind: string },
+    );
+    expect(metadata[1]!.request_kind).toBe('compaction');
+    if (capture) {
+      expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+        'response-1',
+        'response-2',
+        'response-3',
+      ]);
+      expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+    } else {
+      expect(result).not.toHaveProperty('rawUsage');
+    }
+  },
+);
+
+it('includes admitted child responses in the invocation raw usage log', async () => {
+  let rootId: string | undefined;
+  let rootRequests = 0;
+  let childRequests = 0;
+  const isRoot = (request: JsonObject) => {
+    const metadata = JSON.parse(
+      (request.client_metadata as Record<string, string>)[
+        'x-codex-turn-metadata'
+      ]!,
+    ) as { thread_id: string };
+    rootId ??= metadata.thread_id;
+    return metadata.thread_id === rootId;
+  };
+  const respond = (request: JsonObject) => {
+    if (!isRoot(request)) {
+      childRequests++;
+      return [message('child complete')];
+    }
+    rootRequests++;
+    if (rootRequests === 1)
+      return [
+        call(
+          'spawn_agent',
+          { task_name: 'usage_child', message: 'Finish the child task.' },
+          { namespace: 'collaboration', callId: 'raw-spawn' },
+        ),
+      ];
+    if (rootRequests === 2)
+      return [
+        call(
+          'wait_agent',
+          { timeout_ms: 10_000 },
+          { namespace: 'collaboration', callId: 'raw-wait' },
+        ),
+      ];
+    return [message('root complete')];
+  };
+  const usage = (request: JsonObject) =>
+    JSON.stringify({
+      ...modelUsage,
+      provider_extension: isRoot(request) ? 'root' : 'child-private-usage',
+    });
+  const server = new ModelServer(
+    Array.from({ length: 4 }, () => respond),
+    Array.from({ length: 4 }, () => usage),
+  );
+  const executor = await startPublicExecutor();
+  try {
+    await using provider = await providerFor(server);
+    const result = await new Agent({
+      instructions: 'Delegate and wait for the child.',
+      model: nativeDescendantModel,
+      provider,
+      tools: [new NativeAgents()],
+    }).run('Delegate the task.', {
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+      returnRawUsage: true,
+      returnHistory: true,
+    });
+    expect(result.finalOutput).toBe('root complete');
+    expect(rootRequests).toBe(3);
+    expect(childRequests).toBe(1);
+    expect(server.requests).toHaveLength(4);
+    expect(result.rawUsage).toHaveLength(4);
+    expect(result.rawUsage?.map((record) => record.responseId).sort()).toEqual([
+      'response-1',
+      'response-2',
+      'response-3',
+      'response-4',
+    ]);
+    expect(
+      result.rawUsage?.filter(
+        (record) => record.usage.provider_extension === 'child-private-usage',
+      ),
+    ).toHaveLength(1);
+    expect(JSON.stringify(result.history)).not.toContain('child-private-usage');
+  } finally {
+    await executor.close();
+  }
+});

@@ -473,6 +473,7 @@ export async function openSession(
   );
   options.environmentOwner?.attachSession(session);
   options.environmentOwner?.signal.throwIfAborted();
+  if (oneShot?.returnRawUsage) session._startRawUsage();
   if (oneShot?.returnItems) session._startProducedItems();
   await session._start();
   if (isManualSessionState(saved))
@@ -492,6 +493,7 @@ interface OwnedRunOptions {
   guardrailInput?: import('./input').UserInput;
   returnState?: boolean;
   returnHistory?: boolean;
+  returnRawUsage?: boolean;
   returnItems?: boolean;
   signal?: AbortSignal;
   maxModelSteps?: number;
@@ -563,6 +565,7 @@ async function completeOwnedSession<Output>(
     throw options.signal.reason;
   }
   const pending = (async () => {
+    if (options.returnRawUsage) session._startRawUsage();
     if (options.returnItems) session._startProducedItems();
     if (input != null) {
       await session._run(
@@ -593,7 +596,10 @@ async function completeOwnedSession<Output>(
   try {
     options.signal?.throwIfAborted();
     const completed =
-      options.returnState || options.returnHistory || options.returnItems
+      options.returnState ||
+      options.returnHistory ||
+      options.returnRawUsage ||
+      options.returnItems
         ? Object.freeze({
             ...result,
             ...(options.returnState
@@ -601,6 +607,9 @@ async function completeOwnedSession<Output>(
               : {}),
             ...(options.returnHistory
               ? { history: await captureRunHistory(session) }
+              : {}),
+            ...(options.returnRawUsage
+              ? { rawUsage: session._takeRawUsage(result.turn.turnId) }
               : {}),
             ...(options.returnItems
               ? { items: session._takeProducedItems(result.turn.turnId) }

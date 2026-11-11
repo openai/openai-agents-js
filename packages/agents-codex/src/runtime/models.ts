@@ -30,6 +30,13 @@ function selectedFunctionName(
   return selected.name;
 }
 
+const originalResponsesUsage = Symbol('original Responses usage');
+type OriginalResponsesUsage = {
+  usage: unknown;
+  responseId: unknown;
+  upstreamRequestId: unknown;
+};
+
 /** Detached native provider input; Core retains canonical history and tool execution. */
 export interface ModelRequest {
   readonly body: JsonObject;
@@ -69,7 +76,10 @@ export interface ModelProvider {
   getModel(modelName: string): NativeModel;
 }
 /** @internal Capture on settlement, before the application can change retained values. */
-export function captureModelResponse(response: ModelResponse): JsonObject {
+export function captureModelResponse(
+  response: ModelResponse,
+  captureRawUsage = false,
+): JsonObject {
   if (!response || !Array.isArray(response.output))
     throw new TypeError('NativeModel.complete must return ModelResponse');
   const responseId = response.responseId ?? `resp_${randomUUID()}`;
@@ -105,10 +115,38 @@ export function captureModelResponse(response: ModelResponse): JsonObject {
     if (response.usage.total_tokens === undefined)
       usage.total_tokens = usage.input_tokens + usage.output_tokens;
   }
+  const original = captureRawUsage
+    ? (
+        response as ModelResponse & {
+          [originalResponsesUsage]?: OriginalResponsesUsage;
+        }
+      )[originalResponsesUsage]
+    : undefined;
+  if (
+    original &&
+    (typeof original.responseId !== 'string' ||
+      !original.responseId.trim() ||
+      original.responseId !== responseId)
+  )
+    throw new TypeError(
+      'Original Responses usage requires its unchanged provider response ID',
+    );
   return copyJsonValue({
     response_id: responseId,
     output: response.output,
     usage,
+    ...(original
+      ? {
+          original_usage: {
+            response_id: original.responseId,
+            upstream_request_id:
+              typeof original.upstreamRequestId === 'string'
+                ? original.upstreamRequestId
+                : null,
+            usage: original.usage,
+          },
+        }
+      : {}),
   }) as JsonObject;
 }
 /** HTTP options for one borrowed OpenAI client request; native cancellation is retained. */
@@ -613,7 +651,7 @@ function projectResponsesResponse(response: any): ModelResponse {
   if (response.status !== 'completed' && !refusal)
     throw new TypeError('Responses adapter requires a completed response');
   const usage = response.usage;
-  return {
+  const projected: ModelResponse = {
     output,
     ...(response.id ? { responseId: response.id } : {}),
     ...(usage
@@ -631,6 +669,22 @@ function projectResponsesResponse(response: any): ModelResponse {
         }
       : {}),
   };
+  if (
+    response.status === 'completed' &&
+    typeof response.id === 'string' &&
+    response.id.trim().length > 0 &&
+    usage &&
+    typeof usage === 'object' &&
+    !Array.isArray(usage)
+  )
+    Object.defineProperty(projected, originalResponsesUsage, {
+      value: {
+        usage,
+        responseId: response.id,
+        upstreamRequestId: response._request_id,
+      },
+    });
+  return projected;
 }
 
 /** AI SDK language models are borrowed; optional provider packages remain application-owned. */
