@@ -641,6 +641,7 @@ fn restored_profile_plan(
 )> {
     let rows: Vec<RolloutItem> = serde_json::from_value(raw.clone())?;
     let source = crate::agent_profiles::restore_source(opening, &rows)?;
+    opening.validate_pending_source(&source)?;
     let mut pending_ids = HashSet::new();
     for call in &frame.pending_manual {
         ensure!(
@@ -700,7 +701,11 @@ fn restored_profile_plan(
             proof.source.0 == proof.receipt.source && proof.source.1 == opening.fingerprint,
             "Handoff differs from original call source or admitted graph"
         );
-        opening.validate_restored_handoff(&proof.name, &proof.receipt)?;
+        opening.validate_restored_handoff(
+            &proof.name,
+            &proof.receipt,
+            proof.next_profile.is_none(),
+        )?;
         if let Some((next, graph)) = &proof.next_profile {
             ensure!(
                 graph == &opening.fingerprint
