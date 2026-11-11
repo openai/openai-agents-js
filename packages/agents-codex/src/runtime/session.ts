@@ -284,6 +284,8 @@ import {
   storedTurnPage,
   storedItemPage,
   storedMatchPage,
+  storedSessionPage,
+  type StoredSessionPage,
   type StoredForkOptions,
   type StoredTurnPage,
   type StoredItemPage,
@@ -12196,6 +12198,34 @@ export class Session<OutputT = string, Context = unknown> {
       JSON.stringify(action),
     );
     return this.close();
+  }
+
+  /** Committed native Exec application-session headers from this LocalStorage.
+   * Exec category, including SDK/exec applications; interactive CLI, IDE and
+   * subagent categories excluded. Native creation-order cursor; active and
+   * approval-paused reads without snapshot isolation or totals. Archived
+   * collection only for archived=true; active collection otherwise. Potential
+   * short/empty pages with a next cursor after deletion. Concurrent opening or
+   * fork entries; no stable pagination or publication promise. Validated links;
+   * without opening the listed sessions or loading their history. Existing
+   * materialization/flush of the current owner. */
+  async storedSessions(
+    options: { limit?: number; cursor?: string; archived?: boolean } = {},
+  ): Promise<StoredSessionPage> {
+    const { limit = 50, cursor, archived = false } = options;
+    const query = storedOptions(limit, cursor);
+    if (typeof archived !== 'boolean')
+      throw new TypeError('archived must be a boolean');
+    return storedSessionPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'sessions',
+          limit: query.limit,
+          cursor: query.cursor,
+          archived,
+        }),
+      ),
+    );
   }
 
   /** Core has been returning committed turn metadata and optional summary items.

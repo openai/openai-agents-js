@@ -80,6 +80,7 @@ export async function connectPortableVoiceWebRTC<Media extends MediaConnection>(
   const session = new PortableVoiceSession(
     options.control,
     {
+      clearOutputAudioOnInterrupt: true,
       async send(frame) {
         await opened;
         if (!channel || channel.readyState !== 'open')

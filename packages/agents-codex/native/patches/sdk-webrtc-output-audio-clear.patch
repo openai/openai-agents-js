@@ -1,0 +1,267 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -239,6 +239,8 @@
+ pub enum Command {
+     Start {
+         config: Config,
++        #[serde(default)]
++        clear_output_audio_on_interrupt: bool,
+     },
+     Update {
+         config: Config,
+@@ -442,6 +444,7 @@
+ /// No OS, executor, socket, callback, filesystem, or ambient credential access.
+ pub struct Control {
+     phase: Phase,
++    clear_output_audio_on_interrupt: bool,
+     tools: BTreeMap<String, Tool>,
+     expected_session: Value,
+     accepted_session: Value,
+@@ -486,10 +489,17 @@
+     cancel_waiting: Option<String>,
+     guardrail_output: Option<String>,
+ }
++struct DefaultCancelScope {
++    live: bool,
++    matches_pending: bool,
++    preserves_other: bool,
++}
++
+ impl Default for Control {
+     fn default() -> Self {
+         Self {
+             phase: Phase::New,
++            clear_output_audio_on_interrupt: false,
+             tools: BTreeMap::new(),
+             expected_session: Value::Null,
+             accepted_session: Value::Null,
+@@ -582,6 +592,16 @@
+             return vec![];
+         }
+         let received = self.default_cancel_target();
++        let detached = response_id.is_some_and(|id| {
++            self.responses.sdk_response_id.as_deref() != Some(id)
++                && received.as_deref() != Some(id)
++                && !self.has_received_default_response(Some(id))
++        });
++        let clear_default = !detached
++            && response_id.is_none_or(|id| {
++                let scope = self.default_cancel_scope(id);
++                scope.live || !scope.preserves_other
++            });
+         let target = match response_id {
+             Some(id)
+                 if self.responses.sdk_response_id.as_deref() != Some(id)
+@@ -596,10 +616,17 @@
+             Some(id) => received.filter(|current| current == id),
+             None => received,
+         };
+-        target.map(|id| vec![Effect::Preflight {
++        let mut effects = target.map(|id| vec![Effect::Preflight {
+             event: json!({"type":"response.cancel","response_id":id,"event_id":self.next_cancel_id()}),
+             immediate: true,
+-        }]).unwrap_or_default()
++        }]).unwrap_or_default();
++        if self.clear_output_audio_on_interrupt && clear_default {
++            effects.push(Effect::Preflight {
++                event: json!({"type":"output_audio_buffer.clear"}),
++                immediate: true,
++            });
++        }
++        effects
+     }
+     fn response_preflight(&self, response: Option<&Value>) -> Vec<Effect> {
+         // Scope, phase and payload validation on actual response admission.
+@@ -743,11 +770,15 @@
+             | Command::ValidateHistory { .. }
+             | Command::ValidateCancel { .. }
+             | Command::ValidateResponse { .. } => unreachable!("control preflight is read-only"),
+-            Command::Start { config } => {
++            Command::Start {
++                config,
++                clear_output_audio_on_interrupt,
++            } => {
+                 if self.phase != Phase::New {
+                     return Err("Realtime control already started".into());
+                 }
+                 self.configure(config, false, &mut effects)?;
++                self.clear_output_audio_on_interrupt = clear_output_audio_on_interrupt;
+             }
+             Command::Update { config } => {
+                 if self.phase != Phase::Ready {
+@@ -1603,14 +1634,12 @@
+             .or_else(|| event["response"]["id"].as_str())
+             .is_some_and(|id| self.retired_responses.contains(id))
+     }
+-    fn cancel_selected_default(&mut self, id: &String, effects: &mut Vec<Effect>) {
+-        let live = self.default_cancel_target().as_ref() == Some(id);
+-        self.remember_retired_response(id.clone());
+-        self.abort_scope(id, effects);
++    fn default_cancel_scope(&self, id: &str) -> DefaultCancelScope {
++        let live = self.default_cancel_target().as_deref() == Some(id);
+         let matches_pending = self.pending_default.as_ref().is_some_and(|scope| {
+             self.incoming.iter().any(|(event, _)| {
+                 event["type"] == "response.created"
+-                    && event["response"]["id"].as_str() == Some(id.as_str())
++                    && event["response"]["id"].as_str() == Some(id)
+                     && event["response"].get("metadata").unwrap_or(&Value::Null)
+                         == scope.request.get("metadata").unwrap_or(&Value::Null)
+             })
+@@ -1626,23 +1655,44 @@
+                     && !self.retired_responses.contains(owner)
+             });
+         let unrelated_pending = self.pending_default.is_some() && !matches_pending;
++        DefaultCancelScope {
++            live,
++            matches_pending,
++            preserves_other: predecessor_survives || unrelated_pending,
++        }
++    }
++    fn clear_output_audio(&mut self, effects: &mut Vec<Effect>) {
++        if self.clear_output_audio_on_interrupt {
++            self.send(json!({"type":"output_audio_buffer.clear"}), effects);
++        }
++    }
++    fn send_default_cancel(&mut self, id: &str, effects: &mut Vec<Effect>) {
++        self.send(json!({"type":"response.cancel","response_id":id}), effects);
++        self.clear_output_audio(effects);
++    }
++    fn cancel_selected_default(&mut self, id: &String, effects: &mut Vec<Effect>) {
++        let scope = self.default_cancel_scope(id);
++        self.remember_retired_response(id.clone());
++        self.abort_scope(id, effects);
+         if self.responses.sdk_response_id.as_ref() == Some(id) {
+             self.responses.sdk_response_id = None;
+         }
+-        if !predecessor_survives && !unrelated_pending {
++        if !scope.preserves_other {
+             self.responses.active_default_response = false;
+             self.responses.pending_create = false;
+             self.pending_response = None;
+             self.cancel_before_created = false;
+         }
+-        if matches_pending {
++        if scope.matches_pending {
+             self.pending_default = None;
+             self.pending_default_event = None;
+             self.cancel_before_created = false;
+         }
+-        if live {
++        if scope.live {
+             self.cancel_waiting = Some(id.clone());
+-            self.send(json!({"type":"response.cancel","response_id":id}), effects);
++            self.send_default_cancel(id, effects);
++        } else if !scope.preserves_other {
++            self.clear_output_audio(effects);
+         }
+     }
+     fn interrupt(
+@@ -1714,9 +1764,12 @@
+             retired.insert(id.clone());
+             self.remember_retired_response(id.clone());
+             self.cancel_waiting = Some(id.clone());
+-            self.send(json!({"type":"response.cancel","response_id":id}), effects);
+-        } else if unidentified {
+-            self.cancel_before_created = true;
++            self.send_default_cancel(&id, effects);
++        } else {
++            if unidentified {
++                self.cancel_before_created = true;
++            }
++            self.clear_output_audio(effects);
+         }
+         for (id, request) in &mut self.approvals {
+             if !self.detached.contains_key(&request.response_id)
+@@ -2137,7 +2190,7 @@
+                     self.pending_default_event = None;
+                     self.remember_retired_response(id.clone());
+                     self.cancel_waiting = Some(id.clone());
+-                    self.send(json!({"type":"response.cancel","response_id":id}), effects);
++                    self.send_default_cancel(&id, effects);
+                     effects.push(Effect::Retire {
+                         response_id: self.cancel_waiting.clone().unwrap(),
+                     });
+@@ -5218,4 +5271,82 @@
+             }
+         }
+     }
++    fn webrtc_ready() -> Control {
++        let mut control = Control::default();
++        let started = command(
++            &mut control,
++            json!({"type":"start","clear_output_audio_on_interrupt":true,"config":{"model":"test-realtime","instructions":"Help.","tools":[tool()]}}),
++        );
++        assert!(started.get("error").is_none(), "{started}");
++        command(&mut control, json!({"type":"sent","id":1}));
++        accepted(&mut control);
++        control
++    }
++    #[test]
++    fn webrtc_cancel_preview_matches_active_and_idle_packets_without_mutation() {
++        for named in [false, true] {
++            let mut control = webrtc_ready();
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.created","response":{"id":"default-a"}}}),
++            );
++            let input = if named {
++                json!({"type":"validate_cancel","response_id":"default-a"})
++            } else {
++                json!({"type":"validate_cancel"})
++            };
++            let before = control.next_cancel;
++            let preview = command(&mut control, input.clone());
++            assert_eq!(preview, command(&mut control, input));
++            assert_eq!(control.next_cancel, before);
++            let events = preview["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .map(|effect| effect["event"].clone())
++                .collect::<Vec<_>>();
++            assert_eq!(events.len(), 2);
++            assert_eq!(events[0]["type"], "response.cancel");
++            assert_eq!(events[1], json!({"type":"output_audio_buffer.clear"}));
++            let cancel = if named {
++                json!({"type":"cancel","response_id":"default-a"})
++            } else {
++                json!({"type":"cancel"})
++            };
++            let result = command(&mut control, cancel);
++            let sent = result["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .filter(|effect| effect["type"] == "send")
++                .map(|effect| effect["event"].clone())
++                .collect::<Vec<_>>();
++            assert_eq!(sent, events);
++        }
++        let mut idle = webrtc_ready();
++        let preview = command(&mut idle, json!({"type":"validate_cancel"}));
++        assert_eq!(
++            preview["effects"],
++            json!([{"type":"preflight","event":{"type":"output_audio_buffer.clear"},"immediate":true}])
++        );
++        let cancelled = command(&mut idle, json!({"type":"cancel"}));
++        assert_eq!(
++            cancelled["effects"][0]["event"],
++            json!({"type":"output_audio_buffer.clear"})
++        );
++        assert_eq!(idle.next_cancel, 0);
++    }
++    #[test]
++    fn malformed_webrtc_capability_retires_without_sending() {
++        for invalid in [json!("true"), json!(1), Value::Null] {
++            let mut control = Control::default();
++            let result = command(
++                &mut control,
++                json!({"type":"start","clear_output_audio_on_interrupt":invalid,"config":{"model":"test-realtime","instructions":"Help.","tools":[tool()]}}),
++            );
++            assert!(result.get("error").is_some(), "{result}");
++            assert!(control.phase == Phase::Closed);
++            assert!(control.pending_send.is_empty());
++        }
++    }
+ }
