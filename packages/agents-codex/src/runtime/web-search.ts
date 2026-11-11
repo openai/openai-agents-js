@@ -89,16 +89,6 @@ export function webSearch(options: WebSearchOptions = {}): WebSearch {
     );
   const capturedImageSettings =
     imageSettings === undefined ? undefined : { ...imageSettings };
-  const capturedSearchContentTypes =
-    searchContentTypes === undefined ? undefined : [...searchContentTypes];
-  if (
-    capturedSearchContentTypes?.some(
-      (value) => value !== 'text' && value !== 'image',
-    )
-  )
-    throw new TypeError(
-      'WebSearch content types must contain only text or image',
-    );
   // Native configuration uses signed 64-bit TOML integers.
   const maxResults = capturedImageSettings?.maxResults;
   if (
@@ -137,9 +127,9 @@ export function webSearch(options: WebSearchOptions = {}): WebSearch {
     ...(capturedLocation === undefined
       ? {}
       : { location: Object.freeze(capturedLocation) }),
-    ...(capturedSearchContentTypes === undefined
+    ...(searchContentTypes === undefined
       ? {}
-      : { searchContentTypes: Object.freeze(capturedSearchContentTypes) }),
+      : { searchContentTypes: Object.freeze([...searchContentTypes]) }),
     ...(capturedImageSettings === undefined
       ? {}
       : { imageSettings: Object.freeze(capturedImageSettings) }),
