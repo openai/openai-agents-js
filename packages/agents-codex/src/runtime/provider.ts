@@ -644,6 +644,13 @@ export interface ModelSettings {
   include?: readonly string[] | null;
   contextManagement?: readonly JsonObject[] | null;
   extraBody?: JsonObject | null;
+  /**
+   * Ordinary text sampling only: opt-in release of required/named forcing after an
+   * accepted tool batch on this profile.
+   * Omitted/false/null: persistent forcing. New runs and incoming profiles: their own
+   * declared first choice. No change to toolChoice: 'none'.
+   */
+  resetToolChoice?: boolean | null;
 }
 
 /** @internal Capture nested settings before opening can await. */
@@ -658,6 +665,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'serviceTier',
     'toolChoice',
     'invocationTimeoutMs',
+    'resetToolChoice',
     'inputModalities',
     'maxOutputTokens',
     'temperature',
@@ -718,7 +726,11 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
       } else if (key === 'temperature' || key === 'topP') {
         if (typeof value !== 'number' || !Number.isFinite(value))
           throw new TypeError(`${key} must be a finite number or null`);
-      } else if (key === 'parallelToolCalls' || key === 'store') {
+      } else if (
+        key === 'parallelToolCalls' ||
+        key === 'store' ||
+        key === 'resetToolChoice'
+      ) {
         if (typeof value !== 'boolean')
           throw new TypeError(`${key} must be boolean or null`);
       } else if (key === 'truncation') {
@@ -824,6 +836,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
       ![
         'serviceTier',
         'inputModalities',
+        'resetToolChoice',
+        'reset_tool_choice',
         'toolChoice',
         'invocationTimeoutMs',
         'maxOutputTokens',
@@ -1057,6 +1071,7 @@ export function modelOverrides(
     overrides.service_tier = selected.serviceTier;
   const names = {
     inputModalities: 'input_modalities',
+    resetToolChoice: 'reset_tool_choice',
     maxOutputTokens: 'max_output_tokens',
     temperature: 'temperature',
     topP: 'top_p',

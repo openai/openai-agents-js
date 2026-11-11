@@ -183,6 +183,7 @@ jobs:
       - name: Install Linux worker prerequisites
         if: runner.os == 'Linux'
         run: |
+          bash scripts/use-ubuntu-archive-if-needed.sh
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends apparmor-profiles bubblewrap
           if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
