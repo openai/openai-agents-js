@@ -332,3 +332,17 @@ diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tool
                  | ToolSpec::FileSearch(_)
                  | ToolSpec::CodeInterpreter(_)
                  | ToolSpec::ImageGeneration(_)
+diff --git a/codex-rs/tools/src/tool_search.rs b/codex-rs/tools/src/tool_search.rs
+--- a/codex-rs/tools/src/tool_search.rs
++++ b/codex-rs/tools/src/tool_search.rs
+@@ -150,7 +150,9 @@
+         ToolSpec::FileSearch(_) | ToolSpec::CodeInterpreter(_) | ToolSpec::ImageGeneration(_) => {
+             push_search_part(&mut parts, spec.name().to_string());
+         }
+-        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {}
++        ToolSpec::Computer { .. }
++        | ToolSpec::ComputerUsePreview { .. }
++        | ToolSpec::ProviderToolSearch(_) => {}
+         ToolSpec::WebSearch { .. } => {
+             push_search_part(&mut parts, "web search".to_string());
+         }
