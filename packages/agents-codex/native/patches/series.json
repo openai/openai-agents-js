@@ -715,7 +715,11 @@
     {
       "path": "sdk-model-attempt-settlement.patch",
       "sha256": "10542c2f8ef8c766bba5ace407bf991c25bb42e5074ee881e70f1a42f7437356"
+    },
+    {
+      "path": "sdk-model-attempt-test-fixtures.patch",
+      "sha256": "7ce81597cf01d1958cad22e851f2a331f18b1273012e1f7e62ab34654adb472a"
     }
   ],
-  "result_tree": "b46e0339abc4c4366e4b389fb7c9e2049696583a"
+  "result_tree": "cdb998920721278cd4e7f988f45cffd328e57fec"
 }
