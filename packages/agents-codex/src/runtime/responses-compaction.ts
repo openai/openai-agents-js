@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type OpenAI from 'openai';
+import OpenAI from 'openai';
 import { losslessJsonObjectSchema } from './binding';
 import type { TokenUsage } from './run-events';
 import type { CompactionContext } from './model-callbacks';
@@ -17,9 +17,11 @@ export interface ResponsesCompactionOptions<Context = unknown> {
   /** Defaults to the captured native compaction source model. */
   model?: string;
   /** Auto has been selecting previous-response mode for an acknowledged,
-   * unchanged native provider window without a context transform and otherwise
+   * unchanged native provider window for a matching plain SDK client and account,
+   * without a context transform, and otherwise
    * supplying input. Explicit
-   * previous-response mode has been requiring that receipt before client effects. */
+   * previous-response mode has been requiring that receipt and matching client scope
+   * before client effects. Custom routing/transports have been using input. */
   mode?: 'auto' | 'input' | 'previous_response_id';
   /** Controls optional post-turn compaction, excluding manual/required work. */
   shouldCompact?: (
@@ -33,6 +35,8 @@ export class ResponsesCompaction<Context = unknown> {
   readonly mode: 'auto' | 'input' | 'previous_response_id';
   readonly shouldCompact?: ResponsesCompactionOptions<Context>['shouldCompact'];
   readonly #compact: OpenAI['responses']['compact'];
+  readonly #client: OpenAI;
+  readonly #clientScope: ClientScope | undefined;
 
   constructor(options: ResponsesCompactionOptions<Context>) {
     for (const key of Object.keys(options))
@@ -53,7 +57,47 @@ export class ResponsesCompaction<Context = unknown> {
     this.mode = mode;
     this.shouldCompact = shouldCompact;
     this.#compact = compact.bind(responses);
+    this.#client = client;
+    this.#clientScope = responsesClientScope(client);
     Object.freeze(this);
+  }
+
+  /** @internal Borrowed-client matching against the captured native response store. */
+  matchesProvider(
+    apiKey: string | undefined,
+    config: Readonly<Record<string, unknown>> | undefined,
+  ): boolean {
+    const scope = this.#clientScope;
+    if (scope === undefined) return false;
+    if (!isDeepStrictEqual(responsesClientScope(this.#client), scope))
+      throw new TypeError(
+        'Compaction client provider scope changed after capture',
+      );
+    const provider =
+      config?.['model_providers.' + String(config.model_provider)];
+    if (!provider || typeof provider !== 'object' || Array.isArray(provider))
+      return false;
+    const value = provider as Record<string, unknown>;
+    if (value.query_params && Object.keys(value.query_params).length)
+      return false;
+    const headers = Object.fromEntries(
+      Object.entries(value.http_headers ?? {}).map(([name, value]) => [
+        name.toLowerCase(),
+        value,
+      ]),
+    );
+    if (
+      Object.keys(headers).some(
+        (name) => !['openai-organization', 'openai-project'].includes(name),
+      )
+    )
+      return false;
+    return isDeepStrictEqual(scope, [
+      String(value.base_url ?? '').replace(/\/+$/, ''),
+      apiKey,
+      headers['openai-organization'] ?? null,
+      headers['openai-project'] ?? null,
+    ]);
   }
 
   /** @internal Resolve the captured native request before predicate/client effects. */
@@ -146,6 +190,40 @@ export function responsesCompaction<Context = unknown>(
   options: ResponsesCompactionOptions<Context>,
 ): ResponsesCompaction<Context> {
   return new ResponsesCompaction(options);
+}
+
+type ClientScope = readonly [string, string, string | null, string | null];
+
+function responsesClientScope(client: OpenAI): ClientScope | undefined {
+  try {
+    // No response-store attestation for unknown clients or request rewriting.
+    if (
+      Object.getPrototypeOf(client) !== OpenAI.prototype ||
+      Object.getPrototypeOf(client.responses) !== OpenAI.Responses.prototype ||
+      client.responses.compact !== OpenAI.Responses.prototype.compact
+    )
+      return;
+    const options = Reflect.get(client, '_options') as Record<string, unknown>;
+    if (
+      Reflect.get(client, 'fetch') !== globalThis.fetch ||
+      client.fetchOptions !== undefined ||
+      options.defaultHeaders != null ||
+      options.defaultQuery != null ||
+      options.workloadIdentity != null ||
+      typeof options.apiKey !== 'string' ||
+      typeof client.apiKey !== 'string' ||
+      !client.apiKey
+    )
+      return;
+    return Object.freeze([
+      client.baseURL.replace(/\/+$/, ''),
+      client.apiKey,
+      client.organization ?? null,
+      client.project ?? null,
+    ]);
+  } catch {
+    return undefined;
+  }
 }
 
 function compactUsage(value: unknown): TokenUsage | null {

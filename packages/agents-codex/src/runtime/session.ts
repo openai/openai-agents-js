@@ -8603,7 +8603,12 @@ export class Session<OutputT = string, Context = unknown> {
                 try {
                   const providerResponse =
                     transformContext !== undefined ||
-                    msg.provider_response == null
+                    msg.provider_response == null ||
+                    compaction.mode === 'input' ||
+                    !compaction.matchesProvider(
+                      this.#modelApiKey,
+                      this.threadOptions.config,
+                    )
                       ? undefined
                       : z
                           .object({
@@ -8665,6 +8670,16 @@ export class Session<OutputT = string, Context = unknown> {
                           ),
                         });
                     }
+                    if (
+                      prepared.mode === 'previous_response_id' &&
+                      !compaction.matchesProvider(
+                        this.#modelApiKey,
+                        this.threadOptions.config,
+                      )
+                    )
+                      throw new TypeError(
+                        'Compaction client provider scope changed before dispatch',
+                      );
                     const window = await compaction.requestWindow(
                       requestContext,
                       providerResponse,
