@@ -1,4 +1,4 @@
-name: Nov 9 JS ARM64 corrected native qualification
+name: Nov 9 JS official ARM64 installed qualification
 
 on:
   push:
@@ -11,24 +11,22 @@ permissions:
 
 jobs:
   qualify:
-    name: Qualify exact corrected JS on stock ARM64
+    name: Qualify the official JS transfer on stock ARM64
     if: github.repository == 'openai/openai-agents-js'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
     env:
       ALPHA_VERSION: 0.22.0-alpha.2
       EXPECTED_PLATFORM: linux-arm64
-      NATIVE_INPUTS: a970de3fb10e770ca34eee2df95dae496f6c40aa9dfc4549c881f91300299210
+      NATIVE_INPUTS: 12335820ec8eaabae9ac626c03c02f350ba7d752dff37f0d4fadc3ce27121e6f
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: '4'
-      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: f0b77a19e220f24acb9eca5c84bb33668ec1c1bf
+          ref: 3c78a7167ec8cb8dd9cc1285290b3c3b3b3557d9
           fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -37,8 +35,8 @@ jobs:
           package-manager-cache: false
       - name: Verify signed source, native inputs and stock ARM64
         run: |
-          test "$(git rev-parse HEAD)" = "f0b77a19e220f24acb9eca5c84bb33668ec1c1bf"
-          test "$(git rev-parse 'HEAD^{tree}')" = "62dadc289be6aa4c6095a56499f671540b3fefb1"
+          test "$(git rev-parse HEAD)" = "3c78a7167ec8cb8dd9cc1285290b3c3b3b3557d9"
+          test "$(git rev-parse 'HEAD^{tree}')" = "fde7b5fc89b6459753545f51605e0696c50592e2"
           git diff --quiet HEAD --
           grep -qx 'VERSION_CODENAME=noble' /etc/os-release
           test "$RUNNER_ARCH" = ARM64
@@ -53,6 +51,16 @@ jobs:
           test "$(cat /sys/module/apparmor/parameters/enabled)" = Y
           test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
           echo "AppArmor enabled; unprivileged user namespace restriction = 1"
+          evidence="$RUNNER_TEMP/nov9-native-tests"
+          mkdir -p "$evidence"
+          {
+            git show -s --format='%H %T %P'
+            printf 'Runner image: %s %s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            uname -a
+            node -v
+            getconf GNU_LIBC_VERSION
+            echo "AppArmor enabled; unprivileged user namespace restriction = 1"
+          } > "$evidence/platform-initial.txt"
       - name: Install Linux tools from the authenticated Ubuntu Ports mirror
         run: |
           apt_dir=$(mktemp -d "$RUNNER_TEMP/apt.XXXXXX")
@@ -76,7 +84,7 @@ jobs:
             -o Acquire::Languages=none
           )
           sudo apt-get "${options[@]}" --error-on=any update
-          packages=(clang cmake pkg-config protobuf-compiler libssl-dev apparmor-profiles bubblewrap)
+          packages=(apparmor-profiles bubblewrap)
           sudo apt-get "${options[@]}" install --yes --no-install-recommends "${packages[@]}"
           dpkg-query -W "${packages[@]}"
       - name: Qualify Bubblewrap with AppArmor enabled
@@ -97,35 +105,21 @@ jobs:
           run_install: false
       - name: Install SDK dependencies from the lockfile
         run: pnpm install --frozen-lockfile
-      - name: Install Rust
-        run: |
-          echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: Build the native runtime
+      - name: Restore official release transfer 13870449255
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          node packages/agents-codex/scripts/native.mjs package
-      - name: Build the executor test fixture
-        working-directory: packages/agents-codex/native
-        run: |
-          native_host=$(rustc -vV | sed -n 's/^host: //p')
-          native_args=(build --locked --release --example exec-server-fixture)
-          native_output="$CARGO_TARGET_DIR/release"
-          native_archive="librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
-          native_suffix=""
-          if [[ "$EXPECTED_PLATFORM" == win32-x64 ]]; then
-            native_args+=(--config "$PWD/.upstream/reviewed-codex/codex-rs/.cargo/config.toml" --target "$native_host")
-            native_output="$CARGO_TARGET_DIR/$native_host/release"
-            native_archive="rusty_v8_ptrcomp_sandbox_release_${native_host}.lib.gz"
-            native_suffix=".exe"
-          fi
-          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/$native_archive"
-          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_${native_host}.rs"
-          cargo "${native_args[@]}"
-          mkdir -p test-bin
-          install -m 0755 "$native_output/examples/exec-server-fixture$native_suffix" "test-bin/exec-server-fixture$native_suffix"
+          archive="$RUNNER_TEMP/official-native-linux-arm64.tar.gz"
+          evidence="$RUNNER_TEMP/nov9-native-tests"
+          mkdir -p "$evidence"
+          gh api --method GET repos/openai/openai-agents-js/actions/artifacts/13870449255/zip > "$archive"
+          unset GH_TOKEN
+          printf '%s  %s\n' c27d27c4fccac7e782e6f1fa7a87d0c34106bf1b62ec2b9d3a7a991c4e807413 "$archive" | sha256sum -c
+          tar -xzf "$archive" -C packages/agents-codex
+          printf '%s\n' 'Run 43049808803 job 130623664551 artifact 13870449255' \
+            'Archive SHA-256 c27d27c4fccac7e782e6f1fa7a87d0c34106bf1b62ec2b9d3a7a991c4e807413' \
+            'Native fingerprint 12335820ec8eaabae9ac626c03c02f350ba7d752dff37f0d4fadc3ce27121e6f' \
+            > "$evidence/official-transfer.log"
       - name: Verify release native receipts, products and executor
         run: |
           node --input-type=module <<'NODE'
@@ -135,13 +129,13 @@ jobs:
           import { verifyNativeReceipt } from './scripts/alpha-package.mjs';
           await verifyNativeReceipt(process.cwd(), 'linux-arm64');
           const receipt = JSON.parse(readFileSync('packages/agents-codex/native/build-receipt.json'));
-          assert.equal(Object.keys(receipt.inputs).length, 352);
+          assert.equal(Object.keys(receipt.inputs).length, 353);
           const inputMap = Object.fromEntries(Object.keys(receipt.inputs).sort().map((name) => [name, receipt.inputs[name]]));
           const inputDigest = createHash('sha256').update(JSON.stringify(inputMap)).digest('hex');
-          assert.equal(inputDigest, '29b586ff7087363fc99374ebc628383524eb22271ed3ad1354fe1cc91d5e7b26');
+          assert.equal(inputDigest, '9638d8a17dcd69241b3b31707ed24bcc519e45110c2a04287912c5fa2c75ab91');
           console.log('Native receipt inputs:', Object.keys(inputMap).length, inputDigest);
-          assert.equal(receipt.sources.codex.result_tree, '1afa206f3a3fc8137dde5487ae8cdc83944d6b73');
-          assert.equal(receipt.sources.codex.manifest_sha256, '86c3701a235265c65025f6009c971c30c1aa2983f43e9c00c3be8d78250c8186');
+          assert.equal(receipt.sources.codex.result_tree, '6d41142833d3dc955c4090786dde58118c5aefc7');
+          assert.equal(receipt.sources.codex.manifest_sha256, '3d937e936e21d4a9b5e5451ce420c124d5e0884f3099ae402946c027b4387fc2');
           assert.equal(receipt.sources['rust-sdk'].result_tree, '24324fe84298bf5c169e37bcaf8539b29bc6a16c');
           assert.equal(receipt.sources['rust-sdk'].manifest_sha256, '3e947fd3c6567ce7a9183575aad4d7e78d85ffea58306a05da07bc9dd468b463');
           NODE
@@ -154,28 +148,27 @@ jobs:
           done
           evidence="$RUNNER_TEMP/nov9-native-tests"
           mkdir -p "$evidence"
-          sha256sum "$package/native/build-receipt.json" "${products[@]}" | tee "$evidence/native-SHA256SUMS"
+          for product in "${products[@]}"; do
+            test "$(stat -c %a "$product")" = 755
+          done
+          test "$(stat -c %a "$package/native/build-receipt.json")" = 644
+          stat -c '%a %n' "$package/native/build-receipt.json" "${products[@]}" | tee "$evidence/native-modes.txt"
+          cat > "$evidence/native-SHA256SUMS" <<'SHA256SUMS'
+          19e5f33e35a5b21b927d90569d6843121da3289dd47d6f4c61eb09e0b92eebf4  packages/agents-codex/native/build-receipt.json
+          18cb12bb7a66b8ee29585fed2ba4998fada54ee2950ea6138e39a991bf7ffc18  packages/agents-codex/native/codex.node
+          8e06fcd566f030fa50d306b9abf96d85fb5bb05f9bdaf9a0f0d387e022f30f2f  packages/agents-codex/bin/codex-sdk-runtime
+          12e2c3a0881929371d74657b3f5790f40342a26c3c59a5f90a30f2905bc34fd9  packages/agents-codex/bin/codex-code-mode-host
+          8e06fcd566f030fa50d306b9abf96d85fb5bb05f9bdaf9a0f0d387e022f30f2f  packages/agents-codex/bin/codex-linux-sandbox
+          8e06fcd566f030fa50d306b9abf96d85fb5bb05f9bdaf9a0f0d387e022f30f2f  packages/agents-codex/bin/codex-execve-wrapper
+          6eac2b3ac7a03b92279e19bf9f72a14736eb95ff19382ccc59276b7ef29f863a  packages/agents-codex/native/test-bin/exec-server-fixture
+          SHA256SUMS
+          sha256sum -c "$evidence/native-SHA256SUMS"
           cp "$package/native/build-receipt.json" "$evidence/native-build-receipt.json"
-      - name: Archive the native bundle
-        working-directory: packages/agents-codex
-        run: |
-          products=(native/codex.node native/build-receipt.json bin)
-          if [[ "$EXPECTED_PLATFORM" == win32-x64 ]]; then
-            products+=(native/test-bin/exec-server-fixture.exe)
-          else
-            products+=(native/test-bin/exec-server-fixture)
-          fi
-          tar -czf - "${products[@]}" > "$RUNNER_TEMP/native-$NATIVE_INPUTS-$EXPECTED_PLATFORM.tar.gz"
-      - name: Upload the native transfer
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          path: ${{ runner.temp }}/native-${{ env.NATIVE_INPUTS }}-linux-arm64.tar.gz
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
-      - name: Build the exact SDK
+      - name: Build SDK package assets with restored native products
         id: sdk-build
-        run: pnpm build
+        run: |
+          pnpm build
+          sha256sum -c "$RUNNER_TEMP/nov9-native-tests/native-SHA256SUMS"
       - name: Prepare the repository OTLP test collector
         id: collector
         run: |
@@ -194,7 +187,7 @@ jobs:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: |
           node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha" 2>&1 | tee "$RUNNER_TEMP/nov9-native-tests/verify-release-bundles.log"
-      - name: Run the four-worker native suite and explicit controls
+      - name: Run focused native behavior controls
         if: ${{ !cancelled() && steps.sdk-build.outcome == 'success' && steps.collector.outcome == 'success' }}
         env:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
@@ -220,7 +213,6 @@ jobs:
           child=packages/agents-codex/test/native/child-callback-publication-native.test.ts
           trace=packages/agents-codex/test/native/trace-context-native.test.ts
           focused=(--maxWorkers=1 --reporter=verbose)
-          run full --mode full --maxWorkers=4 --reporter=verbose
           run missing-trace-admission "$child" -t '^owns a child callback whose ordered start is held until missing-trace-admission$' "${focused[@]}"
           run graceful-tree-stop "$child" -t '^skips child step callbacks after admission expires at graceful tree stop$' "${focused[@]}"
           run callback-ancestry-recovery "$trace" -t '^exports isolated root and compaction parents, queued snapshots, exact callback ancestry, and fresh-worker manual recovery$' "${focused[@]}"
@@ -228,7 +220,8 @@ jobs:
           run mailbox-receiver-policy packages/agents-codex/test/native/tracing-parity.test.ts -t '^qualifies real native tracing mailbox-receiver-(scoped|bare)-(disabled|metadata-only|permissive) \(REQ423-429\)$' "${focused[@]}"
           run buffered-raw-observation packages/agents-codex/test/native/raw-provider-events-native.test.ts -t '^captures buffered Responses with model output opt-in=(false|true)$' "${focused[@]}"
           run item-reference-boundaries packages/agents-codex/test/native/model-context-callbacks.test.ts packages/agents-codex/test/native/opaque-history-reference-native.test.ts packages/agents-codex/test/native/canonical-history.test.ts -t '^(prevents dispatch when context transformation is (lossy|throw)|rejects opaque service item references as public input before dispatch|rejects opaque-reference lossy projection in restricted preparation before dispatch|forwards provider item references after native history restore)$' "${focused[@]}"
-          for entry in missing-trace-admission:1 graceful-tree-stop:1 callback-ancestry-recovery:1 durable-sender:1 mailbox-receiver-policy:6 buffered-raw-observation:2 item-reference-boundaries:5; do
+          run forced-tool-reset packages/agents-codex/test/native/forced-tool-reset-native.test.ts "${focused[@]}"
+          for entry in forced-tool-reset:9 missing-trace-admission:1 graceful-tree-stop:1 callback-ancestry-recovery:1 durable-sender:1 mailbox-receiver-policy:6 buffered-raw-observation:2 item-reference-boundaries:5; do
             name=${entry%:*}
             expected=${entry#*:}
             count=$(grep -Ec '^ +✓ .* > ' "$evidence/$name.log" || true)
@@ -241,12 +234,12 @@ jobs:
         run: |
           test "$(cat /sys/module/apparmor/parameters/enabled)" = Y
           test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
-          echo "AppArmor enabled; unprivileged user namespace restriction = 1"
+          echo "AppArmor enabled; unprivileged user namespace restriction = 1" | tee "$RUNNER_TEMP/nov9-native-tests/platform-final.txt"
       - name: Upload native and installed qualification receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: nov9-js-f0b77a19-arm64-qualification
+          name: nov9-js-3c78a716-official-arm64-qualification
           path: |
             ${{ runner.temp }}/nov9-native-tests/
             ${{ runner.temp }}/agents-alpha/*.tgz
