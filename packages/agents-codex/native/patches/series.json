@@ -697,9 +697,13 @@
       "sha256": "9e655c5c429f03e58cee41a7818b31daf89ef9b429d2d31575a13c5ed6e99408"
     },
     {
+      "path": "sdk-bounded-one-shot-history.patch",
+      "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
+    },
+    {
       "path": "sdk-realtime-connection-options.patch",
-      "sha256": "781bc8c13dcef506f9ec8c30efb41cb7bc8112d4a5e447a19855032f653533e8"
+      "sha256": "85458eaec118b327b82cf29188d59d1662a208fef207ea7fef230d65dc9523ea"
     }
   ],
-  "result_tree": "b3c30492011ac62deacc82b0e9a42fcbc44eb994"
+  "result_tree": "2825303c8cbe4e6fd30cb5d0e9e8e0a07e30c143"
 }

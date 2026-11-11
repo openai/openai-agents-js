@@ -110,7 +110,7 @@ export interface NativeRealtimeOptions {
   outputModality?: 'audio' | 'text';
   /** Resolve once per connection without changing the Session provider's auth. */
   apiKey?: string | ((signal?: AbortSignal) => string | Promise<string>);
-  /** Exact WebSocket URL for this connection. Only an explicit apiKey supplies auth. */
+  /** Exact WebSocket or SIP sideband URL. Only an explicit apiKey supplies auth. */
   url?: string;
   signal?: AbortSignal;
   settings?: NativeRealtimeSettings;
@@ -646,7 +646,7 @@ class NativeRealtimeOwner {
   ) {
     this.options = { ...options };
     if (options.url !== undefined) {
-      if (options.transport !== undefined || options.adapter !== undefined)
+      if (options.transport?.type === 'webrtc' || options.adapter !== undefined)
         throw new TypeError('url requires the built-in WebSocket transport');
       let url: URL;
       try {

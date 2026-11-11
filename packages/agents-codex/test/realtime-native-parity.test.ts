@@ -28,6 +28,7 @@ class RealtimePeer {
   readonly upgrades: { url: string; headers: IncomingHttpHeaders }[] = [];
   readonly pendingUpdates: Frame[] = [];
   autoAck = true;
+  sessionCreated?: Frame;
   private socket?: WebSocket;
   private readonly server = new WebSocketServer({ noServer: true });
 
@@ -66,6 +67,13 @@ class RealtimePeer {
           this.send({ type: 'response.done', response: { id } });
         }
       });
+      if (this.sessionCreated) {
+        Object.assign(state, this.sessionCreated);
+        this.send({
+          type: 'session.created',
+          session: { ...structuredClone(state), id: 'fixture-call' },
+        });
+      }
     });
   }
 
@@ -149,7 +157,14 @@ async function providerFor(model: ModelServer) {
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 
-nativeIt.each(['provider', 'override', 'backend'] as const)(
+nativeIt.each([
+  'provider',
+  'override',
+  'backend',
+  'sip-provider',
+  'sip-override',
+  'sip-backend',
+] as const)(
   'scopes exact WebSocket routing and %s credentials to one native connection',
   async (kind) => {
     const model = new ModelServer([]);
@@ -157,6 +172,9 @@ nativeIt.each(['provider', 'override', 'backend'] as const)(
     const gateway = new ModelServer([]);
     const overridden = new RealtimePeer(gateway);
     const credential = vi.fn(() => 'synthetic-connection-key');
+    const sip = kind.startsWith('sip-');
+    const override = kind.endsWith('override');
+    const backend = kind.endsWith('backend');
     const baseUrl = `http://127.0.0.1:${await model.port()}/v1`;
     const path =
       '/tenant/custom-voice?route=one&route=two&model=fixture-realtime';
@@ -169,7 +187,7 @@ nativeIt.each(['provider', 'override', 'backend'] as const)(
         headers: { 'x-provider-only': 'synthetic-provider-header' },
         organization: 'synthetic-organization',
         supportsWebsockets: false,
-        ...(kind === 'backend'
+        ...(backend
           ? {
               modelBackend: { complete: () => ({ output: [message('text')] }) },
             }
@@ -179,24 +197,42 @@ nativeIt.each(['provider', 'override', 'backend'] as const)(
         instructions: 'Help.',
         provider,
       }).session();
+      if (sip)
+        overridden.sessionCreated = await session.buildRealtimeSipConfig({
+          model: 'fixture-realtime',
+        });
       const voice = await session.realtime({
         model: 'fixture-realtime',
         url,
-        ...(kind === 'override' ? { apiKey: credential } : {}),
+        ...(override ? { apiKey: credential } : {}),
+        ...(sip
+          ? { transport: { type: 'sip' as const, callId: 'fixture-call' } }
+          : {}),
       });
+      expect(voice.callId).toBe(sip ? 'fixture-call' : undefined);
       await voice.sendText('Use the scoped endpoint.');
       await overridden.frame((frame) => frame.type === 'response.create');
       expect(original.upgrades).toEqual([]);
       expect(overridden.upgrades).toHaveLength(1);
       expect(overridden.upgrades[0].url).toBe(path);
+      for (const name of [
+        ...(sip ? [] : ['x-session-id']),
+        'originator',
+        'user-agent',
+      ]) {
+        expect(overridden.upgrades[0].headers[name], name).toEqual(
+          expect.any(String),
+        );
+        expect(overridden.upgrades[0].headers[name], name).not.toBe('');
+      }
       expect(overridden.upgrades[0].headers.authorization).toBe(
-        kind === 'override' ? 'Bearer synthetic-connection-key' : undefined,
+        override ? 'Bearer synthetic-connection-key' : undefined,
       );
       expect(overridden.upgrades[0].headers['x-provider-only']).toBeUndefined();
       expect(
         overridden.upgrades[0].headers['openai-organization'],
       ).toBeUndefined();
-      expect(credential).toHaveBeenCalledTimes(kind === 'override' ? 1 : 0);
+      expect(credential).toHaveBeenCalledTimes(override ? 1 : 0);
       await voice.close();
 
       const next = await session.realtime({ model: 'fixture-realtime' });
@@ -205,6 +241,10 @@ nativeIt.each(['provider', 'override', 'backend'] as const)(
         '/v1/realtime?model=fixture-realtime',
       );
       expect(original.authorization).toEqual(['Bearer synthetic-provider-key']);
+      if (!sip)
+        expect(overridden.upgrades[0].headers['x-session-id']).toBe(
+          original.upgrades[0].headers['x-session-id'],
+        );
       expect(overridden.upgrades).toHaveLength(1);
       await next.close();
     } finally {

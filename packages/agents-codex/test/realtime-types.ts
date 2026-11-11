@@ -24,6 +24,10 @@ async function publicRealtimeTypes(session: Session) {
     instructions: 'Delegate work.',
     url: 'wss://gateway.invalid/realtime',
   });
+  await session.realtime({
+    transport: { type: 'sip', callId: 'typed-call' },
+    url: 'wss://gateway.invalid/sideband',
+  });
   const create: ResponseCreateEvent = { type: 'response.create' };
   const cancel: ResponseCancelEvent = { type: 'response.cancel' };
   const item: ConversationItem = {

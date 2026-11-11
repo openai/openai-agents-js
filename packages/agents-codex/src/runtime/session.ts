@@ -606,6 +606,8 @@ export interface Completed<OutputT = string> {
   readonly threadUsage: TokenUsageInfo | null;
   readonly runUsage: RunUsage;
   readonly state?: SessionState;
+  /** Conversation records from returnHistory, for replay with the destination Session's instructions. */
+  readonly history?: CanonicalHistorySnapshot['items'];
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
 }
@@ -12632,6 +12634,18 @@ export class Session<OutputT = string, Context = unknown> {
   async historySnapshot(
     options: { limit?: number } = {},
   ): Promise<CanonicalHistorySnapshot> {
+    return this.#captureCanonicalHistory(options);
+  }
+
+  /** @internal One-shot replay capture with native size limits. */
+  _historyForReplay(): Promise<CanonicalHistorySnapshot> {
+    return this.#captureCanonicalHistory({}, true);
+  }
+
+  async #captureCanonicalHistory(
+    options: { limit?: number },
+    forReplay = false,
+  ): Promise<CanonicalHistorySnapshot> {
     this.checkCallbackOperation('read canonical history from');
     this.idle('historySnapshot');
     const { limit } = options;
@@ -12642,7 +12656,9 @@ export class Session<OutputT = string, Context = unknown> {
       throw new RangeError('limit must be a nonnegative 32-bit integer');
     return this.mutate(async () => {
       const snapshot: { revision: string; total: number; items: string[] } =
-        JSON.parse(await this.#native._canonical_history(limit ?? null));
+        JSON.parse(
+          await this.#native._canonical_history(limit ?? null, forReplay),
+        );
       return {
         ...snapshot,
         items: snapshot.items.map(

@@ -81,38 +81,47 @@ function fixture(providerFailure?: Error) {
   };
 }
 
-it('scopes a WebSocket URL and credentials to one connection', async () => {
-  const f = fixture();
-  await f.session._start();
-  const apiKey = vi.fn(async () => 'synthetic-override-key');
-  const url = 'wss://gateway.invalid/tenant/voice?token=synthetic-route';
-  const voice = await f.session.realtime({ url, apiKey });
-  expect(apiKey).toHaveBeenCalledOnce();
-  expect(
-    f.native.call.mock.calls
-      .filter(
-        ([operation]) => operation === 'realtime_conversation_activate_sdk',
-      )
-      .map(([, raw]) => JSON.parse(raw)),
-  ).toEqual([
-    expect.objectContaining({
-      api_key: 'synthetic-override-key',
-      connection_options: { url, headers: null },
-    }),
-  ]);
-  await voice.close();
-  const next = await f.session.realtime();
-  const activations = f.native.call.mock.calls.filter(
-    ([operation]) => operation === 'realtime_conversation_activate_sdk',
-  );
-  expect(JSON.parse(activations[1][1])).not.toHaveProperty(
-    'connection_options',
-  );
-  expect(JSON.parse(activations[1][1]).api_key).toBeNull();
-  expect(apiKey).toHaveBeenCalledOnce();
-  await next.close();
-  await f.session.close();
-});
+it.each(['websocket', 'sip'] as const)(
+  'scopes a %s URL and credentials to one connection',
+  async (transport) => {
+    const f = fixture();
+    await f.session._start();
+    const apiKey = vi.fn(async () => 'synthetic-override-key');
+    const url = 'wss://gateway.invalid/tenant/voice?token=synthetic-route';
+    const voice = await f.session.realtime({
+      url,
+      apiKey,
+      ...(transport === 'sip'
+        ? { transport: { type: 'sip' as const, callId: 'synthetic-call' } }
+        : {}),
+    });
+    expect(apiKey).toHaveBeenCalledOnce();
+    expect(
+      f.native.call.mock.calls
+        .filter(
+          ([operation]) => operation === 'realtime_conversation_activate_sdk',
+        )
+        .map(([, raw]) => JSON.parse(raw)),
+    ).toEqual([
+      expect.objectContaining({
+        api_key: 'synthetic-override-key',
+        connection_options: { url, headers: null },
+      }),
+    ]);
+    await voice.close();
+    const next = await f.session.realtime();
+    const activations = f.native.call.mock.calls.filter(
+      ([operation]) => operation === 'realtime_conversation_activate_sdk',
+    );
+    expect(JSON.parse(activations[1][1])).not.toHaveProperty(
+      'connection_options',
+    );
+    expect(JSON.parse(activations[1][1]).api_key).toBeNull();
+    expect(apiKey).toHaveBeenCalledOnce();
+    await next.close();
+    await f.session.close();
+  },
+);
 
 it.each([
   '',
@@ -137,10 +146,9 @@ it.each([
 
 it.each([
   { transport: { type: 'webrtc' as const, offerSdp: 'synthetic-offer' } },
-  { transport: { type: 'sip' as const, callId: 'synthetic-call' } },
   { adapter: { connect: vi.fn() } },
 ])(
-  'rejects a URL override with call or custom transports before side effects',
+  'rejects a URL override with WebRTC or custom transports before side effects',
   async (options) => {
     const f = fixture();
     await f.session._start();
