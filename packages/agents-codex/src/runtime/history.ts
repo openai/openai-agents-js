@@ -707,6 +707,22 @@ const repairItemProjectionSchema = z.intersection(
       revised_prompt: z.string().nullable(),
     }),
     z.object({
+      type: z.literal('shell_call'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      call_id: z.string(),
+      action: jsonValue,
+    }),
+    z.object({
+      type: z.literal('shell_call_output'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      call_id: z.string(),
+      output: jsonValue,
+    }),
+    z.object({
       type: z.literal('web_search_call'),
       status: repairItemStatusSchema,
       results: z.array(jsonValue).optional(),
@@ -1915,6 +1931,22 @@ export function projectHostedToolItem(
         type: raw.type,
         result: text(raw.result),
         revised_prompt: text(raw.revised_prompt),
+      };
+    case 'shell_call':
+      if (typeof raw.call_id !== 'string') return;
+      return {
+        ...common,
+        type: raw.type,
+        call_id: raw.call_id,
+        action: raw.action ?? null,
+      };
+    case 'shell_call_output':
+      if (typeof raw.call_id !== 'string') return;
+      return {
+        ...common,
+        type: raw.type,
+        call_id: raw.call_id,
+        output: raw.output ?? null,
       };
   }
 }
