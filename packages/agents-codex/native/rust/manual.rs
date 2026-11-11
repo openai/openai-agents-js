@@ -1184,8 +1184,13 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
-                    computer_arguments: None,
-                    apply_patch_arguments: None,
+                    original_payload: self.resolve_generation(key.reply.generation).and_then(
+                        |generation| {
+                            generation.entries.get(key.reply.slot).and_then(|entry| {
+                                original_tool_payload(&entry.spec, &request["msg"]["arguments"])
+                            })
+                        },
+                    ),
                     media: None,
                     deadline: None,
                     invocation,
