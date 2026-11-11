@@ -690,8 +690,8 @@
     },
     {
       "path": "sdk-portable-realtime-raw-client-events.patch",
-      "sha256": "dc4a87ea3ee5ea790eef1d416daa02e2fd5034e47ac028e0516d56088e5a5d99"
+      "sha256": "bd342b2230e59ca84744c4dde08680c154a6eb59afc29d02521c21e1be1bb5a6"
     }
   ],
-  "result_tree": "b3577a3796627648cbb9500fe451bb19ddaf1334"
+  "result_tree": "87c4a770ae54d4ec5b908e35b30b3c20229bc899"
 }
