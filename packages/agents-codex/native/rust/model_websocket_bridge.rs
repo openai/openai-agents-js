@@ -129,6 +129,14 @@ impl Bridge<'_> {
                     if tx_result.send(Ok(())).is_err() {
                         return Ok(());
                     }
+                    // Apply the carrier's message limit before any JSON parsing.
+                    if message.len() > MAX_REQUEST_BYTES {
+                        let _ = messages.send(Ok(Message::Close(Some(CloseFrame {
+                            code: CloseCode::Size,
+                            reason: Default::default(),
+                        }))));
+                        return Ok(());
+                    }
                     let Message::Text(message) = message else {
                         ensure!(matches!(message, Message::Close(_)), "Invalid native WebSocket request");
                         return Ok(());
