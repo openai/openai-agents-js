@@ -345,6 +345,9 @@ impl Change {
         retained_indices.sort_unstable();
         retained_indices.dedup();
         check_pairs(&live, &retained_indices)?;
+        for &index in &retained_indices {
+            crate::checkpoint::validate_external_response_item(&live[index])?;
+        }
         let history: Vec<RolloutItem> = serde_json::from_value(self.checkpoint["history"].clone())?;
         ensure!(
             matches!(history.first(), Some(RolloutItem::SessionMeta(header))

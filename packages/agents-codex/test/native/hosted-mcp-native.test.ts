@@ -781,65 +781,89 @@ it('withholds edited canonical approvals from resumed model input', async () => 
   server.assertExhausted();
 });
 
-it('retains approved live custody through supplied compaction', async () => {
-  const server = new ModelServer([
-    [approval()],
-    [message('accepted')],
-    [message('continued')],
-  ]);
-  await using provider = await providerFor(server);
-  const agent = new Agent({
-    model: responsesModel,
-    provider,
-    instructions: 'Use docs.',
-    tools: [
-      hostedMcp({
-        serverLabel: 'docs',
-        serverUrl: 'https://docs.invalid/mcp',
-        requireApproval: 'always',
-        onApprovalRequest: () => ({ approve: true }),
-      }),
-    ],
-  });
-  await using session = await agent.session();
-  expect((await (await session.submit('lookup')).wait()).finalOutput).toBe(
-    'accepted',
-  );
-  const snapshot = await session.modelContext();
-  const request = snapshot.items.findIndex(
-    (item) => item.type === 'mcp_approval_request',
-  );
-  const response = snapshot.items.findIndex(
-    (item) => item.type === 'mcp_approval_response',
-  );
-  expect(request).toBeGreaterThanOrEqual(0);
-  expect(response).toBeGreaterThan(request);
-  for (const retain of [[request], [response]]) {
-    await expect(
-      session.compact({ summary: 'Do not publish.', snapshot, retain }),
-    ).rejects.toThrow(/retain both original tool call and result/);
-    expect(await session.modelContext()).toEqual(snapshot);
-  }
-  await session.compact({
-    summary: 'Lookup has been approved and completed.',
-    snapshot,
-    retain: [request, response],
-  });
-  const retained = await session.modelContext();
-  expect(
-    retained.items.filter(
-      (item) =>
-        item.type === 'mcp_approval_request' ||
-        item.type === 'mcp_approval_response',
-    ),
-  ).toEqual([snapshot.items[request], snapshot.items[response]]);
-  await session.compact({
-    summary: 'Lookup has been approved and completed.',
-    snapshot: retained,
-    retain: [],
-  });
-  expect((await (await session.submit('continue')).wait()).finalOutput).toBe(
-    'continued',
-  );
-  server.assertExhausted();
-});
+it.each([true, false])(
+  'preserves supplied compaction authority for approve=%s',
+  async (approve) => {
+    const server = new ModelServer([
+      [approval()],
+      [message('accepted')],
+      [message('continued')],
+    ]);
+    await using provider = await providerFor(server);
+    const callback = vi.fn(() => ({ approve }));
+    const agent = new Agent({
+      model: responsesModel,
+      provider,
+      instructions: 'Use docs.',
+      tools: [
+        hostedMcp({
+          serverLabel: 'docs',
+          serverUrl: 'https://docs.invalid/mcp',
+          requireApproval: 'always',
+          onApprovalRequest: callback,
+        }),
+      ],
+    });
+    await using session = await agent.session();
+    expect((await (await session.submit('lookup')).wait()).finalOutput).toBe(
+      'accepted',
+    );
+    const snapshot = await session.modelContext();
+    const request = snapshot.items.findIndex(
+      (item) => item.type === 'mcp_approval_request',
+    );
+    const response = snapshot.items.findIndex(
+      (item) => item.type === 'mcp_approval_response',
+    );
+    expect(request).toBeGreaterThanOrEqual(0);
+    expect(response).toBeGreaterThan(request);
+    for (const retain of [[request], [response]]) {
+      await expect(
+        session.compact({ summary: 'Do not publish.', snapshot, retain }),
+      ).rejects.toThrow(/retain both original tool call and result/);
+      expect(await session.modelContext()).toEqual(snapshot);
+    }
+    let retained = snapshot;
+    if (approve) {
+      await expect(
+        session.compact({
+          summary: 'Do not replay the approved request.',
+          snapshot,
+          retain: [request, response],
+        }),
+      ).rejects.toThrow(/live SDK approval authority/);
+      expect(await session.modelContext()).toEqual(snapshot);
+    } else {
+      await session.compact({
+        summary: 'The provider approval was processed.',
+        snapshot,
+        retain: [request, response],
+      });
+      retained = await session.modelContext();
+      expect(
+        retained.items.filter(
+          (item) =>
+            item.type === 'mcp_approval_request' ||
+            item.type === 'mcp_approval_response',
+        ),
+      ).toEqual([snapshot.items[request], snapshot.items[response]]);
+    }
+    await session.compact({
+      summary: 'The provider approval was processed.',
+      snapshot: retained,
+      retain: [],
+    });
+    expect((await (await session.submit('continue')).wait()).finalOutput).toBe(
+      'continued',
+    );
+    expect(
+      (server.requests[2].input as JsonObject[]).some(
+        (item) =>
+          item.type === 'mcp_approval_request' ||
+          item.type === 'mcp_approval_response',
+      ),
+    ).toBe(false);
+    expect(callback).toHaveBeenCalledTimes(1);
+    server.assertExhausted();
+  },
+);
