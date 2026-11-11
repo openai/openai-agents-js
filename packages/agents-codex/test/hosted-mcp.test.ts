@@ -170,7 +170,7 @@ it('accepts reusable exported HostedMCPOptions with an optional callback', () =>
     requireApproval: 'always',
     onApprovalRequest: () => ({ approve: false }),
   };
-  expect(makeServer(options).kind).toBe('function');
+  expect(makeServer(options)).not.toHaveProperty('match');
   const { onApprovalRequest: _callback, ...manual } = options;
-  expect(makeServer(manual).kind).toBe('manual');
+  expect(makeServer(manual)).toHaveProperty('match', expect.any(Function));
 });
