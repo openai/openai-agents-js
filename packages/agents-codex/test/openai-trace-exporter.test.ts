@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { OpenAITraceExporter } from '../src/runtime/telemetry';
 import { invokeTraceDelivery } from '../src/runtime/trace-delivery';
 import type { TraceEvent } from '../src/runtime/telemetry';
@@ -21,11 +21,12 @@ const event: TraceEvent = {
   dropped_attributes_count: 0,
 };
 
-for (const status of [302, 403, 429, 503]) {
+for (const status of [302, 403, 408, 409, 429, 503]) {
   it(`handles HTTP ${status} without exposing export credentials`, async () => {
     const requests: {
       headers: Record<string, unknown>;
       body: Record<string, any>;
+      at: number;
     }[] = [];
     const server = createServer(async (request, response) => {
       const chunks: Buffer[] = [];
@@ -33,8 +34,17 @@ for (const status of [302, 403, 429, 503]) {
       requests.push({
         headers: request.headers,
         body: JSON.parse(Buffer.concat(chunks).toString()),
+        at: performance.now(),
       });
-      response.writeHead(requests.length === 1 ? status : 200).end();
+      const retryHeaders =
+        status === 409
+          ? { 'retry-after-ms': 'NaN', 'retry-after': '0.035' }
+          : status === 503
+            ? { 'retry-after': 'Thu, 01 Jan 2099 00:00:00 GMT' }
+            : { 'retry-after-ms': '35' };
+      response
+        .writeHead(requests.length === 1 ? status : 200, retryHeaders)
+        .end();
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -45,11 +55,15 @@ for (const status of [302, 403, 429, 503]) {
       const exporter = new OpenAITraceExporter({
         apiKey: 'synthetic-private-key',
         endpoint: `http://127.0.0.1:${address.port}/v1/traces/ingest`,
-        maxRetries: 1,
+        maxRetries: 5,
+        timeoutMs: 1500,
+        retryDelayMs: 5,
+        maxRetryDelayMs: 50,
       });
-      if (status === 503) {
+      if ([408, 409, 429, 503].includes(status)) {
         await exporter.onEvent(event);
         expect(requests).toHaveLength(2);
+        expect(requests[1].at - requests[0].at).toBeGreaterThanOrEqual(30);
         const [trace, span] = requests[1].body.data;
         expect(trace.id).toBe(`trace_${'a'.repeat(32)}`);
         expect(span.id).toBe(`span_${'0'.repeat(8)}${'b'.repeat(16)}`);
@@ -73,6 +87,124 @@ for (const status of [302, 403, 429, 503]) {
     }
   });
 }
+
+for (const test of [
+  {
+    name: 'server retry veto',
+    status: 429,
+    veto: true,
+    delay: 0,
+    timeout: 1500,
+  },
+  {
+    name: 'delivery deadline during backoff',
+    status: 503,
+    veto: false,
+    delay: 1000,
+    timeout: 100,
+  },
+]) {
+  it(`stops trace retries at the ${test.name}`, async () => {
+    let requests = 0;
+    const server = createServer(async (request, response) => {
+      for await (const _ of request) {
+        /* Drain the request before responding. */
+      }
+      requests++;
+      response
+        .writeHead(test.status, {
+          'x-should-retry': test.veto ? ' false ' : 'true',
+        })
+        .end();
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Collector did not start');
+    try {
+      const exporter = new OpenAITraceExporter({
+        apiKey: 'synthetic-private-key',
+        endpoint: `http://127.0.0.1:${address.port}/ingest`,
+        maxRetries: 5,
+        timeoutMs: test.timeout,
+        retryDelayMs: test.delay,
+        maxRetryDelayMs: test.delay,
+      });
+      await expect(exporter.onEvent(event)).rejects.toThrow(
+        'Native OpenAI trace export failed',
+      );
+      expect(requests).toBe(1);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+}
+
+for (const status of [200, 403, 429, 503]) {
+  it(`preserves HTTP ${status} retry decisions when response body cleanup fails`, async () => {
+    const attempts: number[] = [];
+    const request = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => {
+        attempts.push(performance.now());
+        if (attempts.length > 1) return new Response(null, { status: 200 });
+        const body = new ReadableStream({
+          start(controller) {
+            controller.error(new Error('Synthetic response body failure'));
+          },
+        });
+        return new Response(body, {
+          status,
+          headers: {
+            'x-should-retry': status === 429 ? 'false' : 'true',
+            'retry-after-ms': '15',
+          },
+        });
+      });
+    try {
+      const exporter = new OpenAITraceExporter({
+        apiKey: 'synthetic-key',
+        maxRetries: 2,
+      });
+      if (status === 503) {
+        await exporter.onEvent(event);
+        expect(attempts).toHaveLength(2);
+        expect(attempts[1] - attempts[0]).toBeGreaterThanOrEqual(10);
+      } else {
+        await expect(exporter.onEvent(event)).rejects.toThrow(
+          'Native OpenAI trace export failed',
+        );
+        expect(attempts).toHaveLength(1);
+      }
+    } finally {
+      request.mockRestore();
+    }
+  });
+}
+
+it('caps exponential trace retry backoff within the delivery budget', async () => {
+  const times: number[] = [];
+  const request = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    times.push(performance.now());
+    return new Response(null, { status: times.length <= 10 ? 503 : 200 });
+  });
+  try {
+    const exporter = new OpenAITraceExporter({
+      apiKey: 'synthetic-key',
+      maxRetries: 10,
+      retryDelayMs: 5,
+      maxRetryDelayMs: 5,
+    });
+    await exporter.onEvent(event);
+    expect(request).toHaveBeenCalledTimes(11);
+    expect(times.at(-1)! - times[0]).toBeGreaterThanOrEqual(45);
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
 
 it('retains root metadata across a failed export and credential rotation', async () => {
   const received: { key: string | undefined; data: Record<string, any>[] }[] =

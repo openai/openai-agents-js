@@ -6,6 +6,7 @@ type Route = { identity: string; headers: Record<string, string> };
 type PrivateRoute = Route & { processor_ids: readonly string[] };
 type Delivery = {
   active: boolean;
+  stopped?: AbortSignal;
   routes: Map<TraceEvent, { sequence: number; route: Route | undefined }>;
 };
 const delivery = new AsyncLocalStorage<Delivery>();
@@ -17,7 +18,11 @@ export async function invokeTraceDelivery(
   callback: () => void | Promise<void>,
   stopped?: AbortSignal,
 ): Promise<void> {
-  const owner: Delivery = { active: !stopped?.aborted, routes: new Map() };
+  const owner: Delivery = {
+    active: !stopped?.aborted,
+    stopped,
+    routes: new Map(),
+  };
   const retire = () => {
     owner.active = false;
     owner.routes.clear();
@@ -40,6 +45,11 @@ export async function invokeTraceDelivery(
     retire();
     stopped?.removeEventListener('abort', retire);
   }
+}
+
+/** SDK-owned exporter work shares the host pump's terminal cancellation. */
+export function traceDeliverySignal(): AbortSignal | undefined {
+  return delivery.getStore()?.stopped;
 }
 
 export function traceCredentialRoute(event: TraceEvent): Route | undefined {

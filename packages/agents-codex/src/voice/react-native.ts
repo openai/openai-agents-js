@@ -49,19 +49,35 @@ export interface NativeVoiceWebRTCOptions<
   onError?: (error: Error) => void;
 }
 
+export type NativeVoiceTextWebRTCOptions = Omit<
+  NativeVoiceWebRTCOptions<NativeVoiceMediaStream>,
+  'mediaStream' | 'onRemoteStream'
+> & {
+  /** Use the WebRTC data channel without acquiring or playing audio. */
+  enableAudio: false;
+};
+
 /** Mobile media with app-owned microphone tracks and audio routing. */
 export class NativeVoiceWebRTC<
   Stream extends NativeVoiceMediaStream,
 > extends NativeVoiceMedia<Stream> {
-  constructor(options: NativeVoiceWebRTCOptions<Stream>) {
+  constructor(
+    options: NativeVoiceWebRTCOptions<Stream> | NativeVoiceTextWebRTCOptions,
+  ) {
     const captured = { ...options };
-    super({ ...captured, play: captured.onRemoteStream });
+    super(
+      'onRemoteStream' in captured
+        ? { ...captured, play: captured.onRemoteStream }
+        : captured,
+    );
   }
 }
 
 /** Direct voice with an app-owned WebRTC peer and Rust control.
  * createHermesVoiceControl() from voice/control.hermes supplies the SDK's bundled
  * lowering on hosts without WebAssembly; an on-device binding also implements control.
+ * For text-only sessions, set media.enableAudio to false and set
+ * agent.settings.output_modalities to ['text'].
  */
 export function connectPortableVoiceReactNative<
   Stream extends NativeVoiceMediaStream,
@@ -70,7 +86,7 @@ export function connectPortableVoiceReactNative<
   apiKey: PortableVoiceApiKey;
   useInsecureApiKey?: boolean;
   agent: PortableVoiceOptions;
-  media: NativeVoiceWebRTCOptions<Stream>;
+  media: NativeVoiceWebRTCOptions<Stream> | NativeVoiceTextWebRTCOptions;
   callUrl?: string;
   signal?: AbortSignal;
 }): Promise<{

@@ -685,6 +685,10 @@
       "sha256": "9179fc33da3c5f1f7bba84de3da43f7a5257bd9a81ebbc108373a851c7288170"
     },
     {
+      "path": "sdk-trace-delivery-controls.patch",
+      "sha256": "2eee67cd8141831466a0c35a6c9ccb3a1dbecefeb763369504b4a25640ad49ca"
+    },
+    {
       "path": "sdk-portable-realtime-tool-results.patch",
       "sha256": "9e108aca0457ab663aaefd4eda7573948fc5b0b479ebb51abd6dc1dcea038f58"
     },
@@ -697,5 +701,5 @@
       "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
     }
   ],
-  "result_tree": "951445461089892298a373ce28c65d0c91e91f17"
+  "result_tree": "edc608781a0cb4f42831a43658b6afeeaaeb84c6"
 }
