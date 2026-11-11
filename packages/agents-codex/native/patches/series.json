@@ -730,8 +730,8 @@
     },
     {
       "path": "sdk-provider-hosted-effect-replay-fence.patch",
-      "sha256": "e8094fed289759c4ab7b178b47ecec26d4d26994eee37ad817897b21d9f5d23a"
+      "sha256": "ee4465a0ee350dd72d2f8314d0f44b16f7e622c358b00cc76986abb12c307e41"
     }
   ],
-  "result_tree": "395b8f4d4bc1e0628299228feff396855c1b9970"
+  "result_tree": "f006e2d67c75f340c9b5df27d5032250af048a7c"
 }

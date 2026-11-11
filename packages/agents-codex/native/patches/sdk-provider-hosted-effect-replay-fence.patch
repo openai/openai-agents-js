@@ -13,7 +13,7 @@ index bc9da7d9..ac2d05f0 100644
          || event
              .kind
 diff --git a/codex-rs/core/src/session/model_attempts.rs b/codex-rs/core/src/session/model_attempts.rs
-index 3af26098..eb48dcc4 100644
+index 3af26098..db62f564 100644
 --- a/codex-rs/core/src/session/model_attempts.rs
 +++ b/codex-rs/core/src/session/model_attempts.rs
 @@ -31,6 +31,7 @@ pub(crate) struct Attempt {
@@ -32,8 +32,19 @@ index 3af26098..eb48dcc4 100644
              local_effects: AtomicBool::new(false),
          });
          state
+@@ -241,6 +243,10 @@ impl ModelAttemptAdmission for Attempt {
+     fn mark_unsafe_output(&self) {
+         self.unsafe_output.store(true, Ordering::Release);
+     }
++    fn mark_provider_effect(&self) {
++        self.provider_effects.store(true, Ordering::Release);
++        self.mark_unsafe_output();
++    }
+     fn mark_local_effect(&self) {
+         self.local_effects.store(true, Ordering::Release);
+     }
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 70668f84..245ad20e 100644
+index 70668f84..4ad8efcf 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -2321,6 +2321,9 @@ async fn run_sampling_request(
@@ -77,18 +88,30 @@ index 70668f84..245ad20e 100644
  #[allow(clippy::too_many_arguments)]
  #[instrument(level = "trace",
      skip_all,
-@@ -3981,6 +4008,14 @@ async fn try_run_sampling_request(
+@@ -3981,6 +4008,11 @@ async fn try_run_sampling_request(
              {
                  break Err(CodexErr::TurnAborted);
              }
 +            if provider_event_may_have_effects(&event) {
 +                if let Some(attempt) = &model_attempt {
-+                    attempt
-+                        .provider_effects
-+                        .store(true, std::sync::atomic::Ordering::Release);
-+                    attempt.mark_unsafe_output();
++                    attempt.mark_provider_effect();
 +                }
 +            }
              sess.services
                  .session_telemetry
                  .record_responses(&handle_responses, &event);
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index f7de24da..86f81860 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -335,6 +335,10 @@ pub trait ModelAttemptAdmission: Send + Sync + std::fmt::Debug {
+     /// Only the native stream and admitted tool dispatcher publish these fences.
+     fn mark_response_started(&self);
+     fn mark_unsafe_output(&self);
++    /// Record provider action evidence through the captured native admission.
++    fn mark_provider_effect(&self) {
++        self.mark_unsafe_output();
++    }
+     fn mark_local_effect(&self);
+ }
+ 
