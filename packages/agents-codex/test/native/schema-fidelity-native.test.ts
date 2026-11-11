@@ -54,6 +54,7 @@ function lookup(
     ...identity,
     parameters: z.object({
       key: z.string().min(minimum).describe('Record key'),
+      offset: z.number().min(0),
       record: z.object({
         owner: z.object({ team: z.string().min(2) }),
         label: z.string().min(4),
@@ -209,6 +210,16 @@ describe('native function schema fidelity', () => {
       if (websocket) expect(peer.received).toHaveLength(0);
       // A second turn exercises the WebSocket continuation receipt.
       await answer(session, 'Remember another record.');
+      if (websocket) {
+        const generations = peer.frames.filter(
+          (frame) => frame.generate !== false,
+        );
+        expect(generations).toHaveLength(2);
+        expect(generations[1].previous_response_id).toMatch(/^resp_schema_/);
+        const delta = JSON.stringify(generations[1].input);
+        expect(delta).toContain('Remember another record.');
+        expect(delta).not.toContain('Remember the record.');
+      }
       const state = await session.saveState();
       await session.close();
       const boundary = requests.length;

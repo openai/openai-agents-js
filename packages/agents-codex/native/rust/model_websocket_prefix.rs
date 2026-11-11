@@ -85,14 +85,11 @@ impl Prefix {
         let properties = properties(body);
         let mut outgoing = body.clone();
         outgoing.insert("type".into(), Value::String("response.create".into()));
+        // The bridge normalizes the request and committed output before comparison.
         let prefix = self.provider_input.as_ref().filter(|prefix| {
             self.id.is_some()
-                && self
-                    .properties
-                    .as_ref()
-                    .is_some_and(|previous| same_object(previous, &properties))
-                && input.len() >= prefix.len()
-                && prefix.iter().zip(input).all(|(a, b)| same_json(a, b))
+                && self.properties.as_ref() == Some(&properties)
+                && input.starts_with(prefix)
         });
         if let Some(prefix) = prefix {
             outgoing.insert(
@@ -190,32 +187,6 @@ fn properties(request: &Map<String, Value>) -> Map<String, Value> {
         .collect()
 }
 
-fn same_object(a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .all(|(key, value)| b.get(key).is_some_and(|other| same_json(value, other)))
-}
-
-// JS's isDeepStrictEqual distinguishes negative zero, while serde Value can
-// already have lost that distinction when parsing integer -0. Matching finite,
-// nonzero representations are safe witnesses; zero and representation changes
-// conservatively select a full request, never a rejection or a changed request.
-fn same_json(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Null, Value::Null) => true,
-        (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::Number(a), Value::Number(b)) => {
-            a.as_f64().is_some_and(|n| n.is_finite() && n != 0.0) && a.to_string() == b.to_string()
-        }
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_json(a, b))
-        }
-        (Value::Object(a), Value::Object(b)) => same_object(a, b),
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,13 +279,14 @@ mod tests {
     }
 
     #[test]
-    fn numeric_ambiguity_and_failed_response_select_full_requests() {
+    fn changed_numeric_properties_and_failed_response_select_full_requests() {
         let mut prefix = Prefix::default();
         let mut edited = request(json!(["original"]));
         edited["temperature"] = json!(0);
         prefix
             .commit("r".into(), vec![], Some(&edited), vec![], false)
             .unwrap();
+        edited["temperature"] = json!(1);
         assert!(
             prefix
                 .encode(&edited)
@@ -322,10 +294,11 @@ mod tests {
                 .get("previous_response_id")
                 .is_none()
         );
-        let edited = request(json!([{"number":0}]));
+        let mut edited = request(json!([{"number":0}]));
         prefix
             .commit("r".into(), vec![], Some(&edited), vec![], false)
             .unwrap();
+        edited["input"][0]["number"] = json!(1);
         assert!(
             prefix
                 .encode(&edited)
@@ -348,22 +321,19 @@ mod tests {
     }
 
     #[test]
-    fn matched_finite_nonzero_numeric_properties_allow_delta() {
+    fn matched_normalized_numeric_properties_and_input_allow_delta() {
         let mut prefix = Prefix::default();
-        let mut edited = request(json!(["original"]));
+        let mut edited = request(json!([{"number":0}]));
         edited["max_output_tokens"] = json!(1024);
-        edited["tools"] = json!([{"parameters":{"minimum":1.5, "maximum":10}}]);
+        edited["tools"] = json!([{"parameters":{"minimum":0, "maximum":10}}]);
         prefix
             .commit("r".into(), vec![], Some(&edited), vec![], false)
             .unwrap();
         let mut next = edited.clone();
-        next["input"] = json!(["original", "next"]);
+        next["input"] = json!([{"number":0}, "next"]);
         let delta = prefix.encode(&next).unwrap();
         assert_eq!(delta["previous_response_id"], "r");
         assert_eq!(delta["input"], json!(["next"]));
-        assert!(!same_json(&json!(1), &json!(1.0)));
-        assert!(!same_json(&json!(0), &json!(0)));
-        assert!(!same_json(&json!(-0.0), &json!(0.0)));
     }
 
     #[test]
