@@ -691,11 +691,7 @@
     {
       "path": "sdk-realtime-event-context.patch",
       "sha256": "7f196f5620569ac083361eb55e6f85834bc27a42bd47650b8de75bd8bee3966b"
-    },
-    {
-      "path": "sdk-child-callback-trace-storage.patch",
-      "sha256": "9e655c5c429f03e58cee41a7818b31daf89ef9b429d2d31575a13c5ed6e99408"
     }
   ],
-  "result_tree": "3e9e6d57bb7c3104d337bbd1ffed50515c74f13e"
+  "result_tree": "db0b5d6fd11b78276379b35e9f58a8bd485a5ea9"
 }
