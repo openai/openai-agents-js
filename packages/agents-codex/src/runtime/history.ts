@@ -1894,27 +1894,45 @@ export function projectHostedToolItem(
   const raw = object(value);
   if (!raw || typeof raw.id !== 'string') return;
   const shell = raw.type === 'shell_call' || raw.type === 'shell_call_output';
-  const {
-    internal_chat_message_metadata_passthrough: _coreMetadata,
-    ...provider
-  } = raw;
   const identity = {
     id: raw.id,
     turnId,
     turn_id: turnId,
-    provider_data: structuredClone(provider),
   };
   if (shell) {
     const status = shellToolStatusSchema.safeParse(raw.status ?? 'unknown');
     if (!status.success || typeof raw.call_id !== 'string') return;
-    const common = { ...identity, status: status.data, call_id: raw.call_id };
+    const {
+      internal_chat_message_metadata_passthrough: _coreMetadata,
+      ...provider
+    } = raw;
+    const common = {
+      ...identity,
+      status: status.data,
+      call_id: raw.call_id,
+      provider_data: structuredClone(provider),
+    };
     return raw.type === 'shell_call'
       ? { ...common, type: raw.type, action: raw.action ?? null }
       : { ...common, type: 'shell_call_output', output: raw.output ?? null };
   }
   const status = hostedToolStatusSchema.safeParse(raw.status);
   if (!status.success) return;
-  const common = { ...identity, status: status.data };
+  if (
+    raw.type !== 'file_search_call' &&
+    raw.type !== 'code_interpreter_call' &&
+    raw.type !== 'image_generation_call'
+  )
+    return;
+  const {
+    internal_chat_message_metadata_passthrough: _coreMetadata,
+    ...provider
+  } = raw;
+  const common = {
+    ...identity,
+    status: status.data,
+    provider_data: structuredClone(provider),
+  };
   switch (raw.type) {
     case 'file_search_call':
       return {
