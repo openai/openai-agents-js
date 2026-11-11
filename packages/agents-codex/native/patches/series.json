@@ -1,5 +1,5 @@
 {
-  "result_tree": "75175707a7073991c2f7eeb6e4a3e91bc03ef874",
+  "result_tree": "ded3cf2c68b13b00fd687f19b6a385c7eb2c5a00",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -723,7 +723,7 @@
     },
     {
       "path": "sdk-raw-provider-usage.patch",
-      "sha256": "50ff4352ccf7f791d61970de5208c0e6eceae649707767306328d0d4d0e600e8"
+      "sha256": "f0ad59573775be793b6f41935c085cea297110fc30e1e1307b3565275eaca48f"
     }
   ]
 }
