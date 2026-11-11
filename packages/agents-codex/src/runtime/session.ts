@@ -10724,7 +10724,7 @@ export class Session<OutputT = string, Context = unknown> {
         ([id, runtime]) => [runtime.profile.agent, id] as const,
       ),
     );
-    return [...this.rootSteps(run)]
+    return [...this.rootSteps(this.rootRun(run))]
       .flatMap((step) => step.guardrailResults)
       .map((record) => {
         const outputInfo = losslessJsonValueSchema.safeParse(

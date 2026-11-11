@@ -1,3 +1,5 @@
+import OpenAI from 'openai';
+import { responsesCompaction } from '../src/runtime/responses-compaction';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as nativeBinding from '../src/runtime/binding';
 import type { SessionSetup } from '../src/runtime/agent';
@@ -518,4 +520,18 @@ describe('declared input modalities retain ordinary native session opening', () 
       expect(p.release).not.toHaveBeenCalled();
     },
   );
+});
+
+it('keeps configured compaction on the Session callback path', async () => {
+  const p = prepared();
+  const compaction = responsesCompaction({
+    client: new OpenAI({ apiKey: 'synthetic-compaction-fast-path' }),
+    shouldCompact: () => true,
+  });
+  expect(
+    await tryOpenPlainRun(p.setup, { compaction }, p.lease, 'input'),
+  ).toBeUndefined();
+  expect(nativeBinding.binding).not.toHaveBeenCalled();
+  expect(p.engine._plain_run).not.toHaveBeenCalled();
+  expect(p.release).not.toHaveBeenCalled();
 });

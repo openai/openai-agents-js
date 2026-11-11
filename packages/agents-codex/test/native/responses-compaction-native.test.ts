@@ -335,3 +335,24 @@ nativeIt(
   },
   30_000,
 );
+
+nativeIt('runs configured compaction for tool-free Agent.run', async () => {
+  const server = new ModelServer([[message('plain answer')]]);
+  const compact = vi.fn(async (_body) => window());
+  const predicate = vi.fn(() => true);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Answer briefly.',
+    compaction: responsesCompaction({
+      client: clientFor(compact),
+      model: 'separate-compactor',
+      shouldCompact: predicate,
+    }),
+  });
+  expect((await agent.run('plain input')).finalOutput).toBe('plain answer');
+  expect(predicate).toHaveBeenCalledTimes(1);
+  expect(compact).toHaveBeenCalledTimes(1);
+  server.assertExhausted();
+});
