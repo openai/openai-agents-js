@@ -154,8 +154,7 @@ it.each([
     ).rejects.toThrow('url requires the built-in WebSocket transport');
     expect(apiKey).not.toHaveBeenCalled();
     expect(f.native.call).not.toHaveBeenCalled();
-    if ('adapter' in options)
-      expect(options.adapter.connect).not.toHaveBeenCalled();
+    if (options.adapter) expect(options.adapter.connect).not.toHaveBeenCalled();
     await f.session.close();
   },
 );

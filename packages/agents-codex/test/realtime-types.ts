@@ -11,8 +11,8 @@ async function publicRealtimeTypes(session: Session) {
   });
   // @ts-expect-error SIP configuration does not resolve credentials or connect media.
   await session.buildRealtimeSipConfig({ apiKey: 'not-a-credential' });
-  // @ts-expect-error A WebSocket URL is unavailable for SIP acceptance.
   await session.buildRealtimeSipConfig({
+    // @ts-expect-error A WebSocket URL is unavailable for SIP acceptance.
     url: 'wss://gateway.invalid/realtime',
   });
   await session.buildRealtimeSipConfig({
