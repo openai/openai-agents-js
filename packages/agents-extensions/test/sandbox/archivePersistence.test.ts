@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -23,6 +24,7 @@ import {
   persistRemoteWorkspaceTar,
   validateWorkspaceTarArchive,
 } from '../../src/sandbox/shared/archive';
+import { shellQuote } from '../../src/sandbox/shared/paths';
 import { makePaxRecord, makeTarArchive } from './tarFixture';
 
 const execFileAsync = promisify(execFile);
@@ -117,7 +119,7 @@ describe.skipIf(process.platform === 'win32')(
           expect(names).toContain(`./other/${stageName}/keep.txt`);
           await hydrateRemoteWorkspaceTar({
             providerName: 'LocalTest',
-            manifest,
+            manifest: new Manifest({ root: physicalRoot }),
             data: archive,
             io,
           });
@@ -434,7 +436,7 @@ describe.skipIf(process.platform === 'win32')(
       ).toBe('remote object');
     });
 
-    test('preserves the attached mount after its declared alias changes', async () => {
+    test('rejects hydration after an attached mount alias changes', async () => {
       const { root, archivePath } = await fixture();
       const mountPath = join(root, 'physical', 'mounted');
       await mkdir(mountPath, { recursive: true });
@@ -454,19 +456,253 @@ describe.skipIf(process.platform === 'win32')(
       await rm(join(root, 'alias'));
       await symlink(join(root, 'other'), join(root, 'alias'));
 
-      await hydrateRemoteWorkspaceTar({
-        providerName: 'LocalTest',
-        manifest,
-        archivePath,
-        activeMountPaths: [mountPath],
-        data: makeTarArchive([{ name: 'fresh.txt', content: 'fresh' }]),
-        io: { mkdir, writeFile, readFile, runCommand },
-      });
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'LocalTest',
+          manifest,
+          archivePath,
+          activeMountPaths: [mountPath],
+          data: makeTarArchive([{ name: 'fresh.txt', content: 'fresh' }]),
+          io: { mkdir, writeFile, readFile, runCommand },
+        }),
+      ).rejects.toThrow(
+        'Workspace mount no longer matches an active attachment',
+      );
 
       expect(await readFile(join(mountPath, 'remote.txt'), 'utf8')).toBe(
         'remote object',
       );
-      expect(await readFile(join(root, 'fresh.txt'), 'utf8')).toBe('fresh');
+      await expect(stat(join(root, 'fresh.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(stat(archivePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    test('rejects an effective filesystem root before archive IO', async () => {
+      const { root, archivePath } = await fixture();
+      await rm(root, { recursive: true });
+      await symlink('/', root);
+      const commands: string[] = [];
+      const write = vi.fn(async () => {
+        throw new Error('Unexpected archive upload');
+      });
+      const args = {
+        providerName: 'LocalTest',
+        manifest: new Manifest({ root }),
+        archivePath,
+        io: {
+          mkdir,
+          writeFile: write,
+          readFile,
+          runCommand: async (command: string) => {
+            commands.push(command);
+            if (command.includes('find ') || command.includes('tar ')) {
+              return { status: 53 };
+            }
+            return runCommand(command);
+          },
+        },
+      };
+
+      await expect(persistRemoteWorkspaceTar(args)).rejects.toThrow(
+        'filesystem root',
+      );
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          ...args,
+          data: makeTarArchive([{ name: 'fresh.txt', content: 'fresh' }]),
+        }),
+      ).rejects.toThrow('filesystem root');
+
+      expect(write).not.toHaveBeenCalled();
+      expect(
+        commands.some(
+          (command) => command.includes('find ') || command.includes('tar '),
+        ),
+      ).toBe(false);
+    });
+
+    test.each(['other', 'filesystem'])(
+      'rejects root retargeting to %s before cleanup or extraction',
+      async (kind) => {
+        const { root, archivePath } = await fixture();
+        const directory = join(root, '..');
+        const moved = join(directory, 'moved');
+        const other = join(directory, 'other');
+        const bin = join(directory, 'bin');
+        const called = join(directory, 'mutation-called');
+        const attached = join(root, 'mounted');
+        await mkdir(attached);
+        await mkdir(other);
+        await mkdir(bin);
+        await writeFile(join(attached, 'remote.txt'), 'remote object');
+        await writeFile(join(root, 'stale.txt'), 'original workspace');
+        await writeFile(join(other, 'sentinel.txt'), 'outside workspace');
+        for (const name of ['find', 'tar']) {
+          await writeFile(
+            join(bin, name),
+            `#!/bin/sh\nprintf called >> ${shellQuote(called)}\nexit 53\n`,
+            { mode: 0o700 },
+          );
+        }
+        const manifest = new Manifest({
+          root,
+          entries: {
+            data: mount({
+              source: 's3://bucket/data',
+              mountPath: 'mounted',
+              mountStrategy: { type: 'in_container' },
+              ephemeral: false,
+            }),
+          },
+        });
+        await expect(
+          hydrateRemoteWorkspaceTar({
+            providerName: 'LocalTest',
+            manifest,
+            archivePath,
+            activeMountPaths: [attached],
+            data: makeTarArchive([{ name: 'fresh.txt', content: 'fresh' }]),
+            io: {
+              mkdir,
+              writeFile,
+              readFile,
+              runCommand: async (command: string) => {
+                if (command.includes('find ') && command.includes('tar -C')) {
+                  await rename(root, moved);
+                  await symlink(kind === 'filesystem' ? '/' : other, root);
+                  return runCommand(
+                    `PATH=${shellQuote(`${bin}:/usr/bin:/bin`)} /bin/sh -c ${shellQuote(command)}`,
+                  );
+                }
+                return runCommand(command);
+              },
+            },
+          }),
+        ).rejects.toBeInstanceOf(SandboxArchiveError);
+
+        await expect(stat(called)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(join(moved, 'stale.txt'), 'utf8')).toBe(
+          'original workspace',
+        );
+        expect(
+          await readFile(join(moved, 'mounted', 'remote.txt'), 'utf8'),
+        ).toBe('remote object');
+        expect(await readFile(join(other, 'sentinel.txt'), 'utf8')).toBe(
+          'outside workspace',
+        );
+      },
+    );
+
+    test('keeps cleanup and extraction in the bound workspace when its path changes', async () => {
+      const { root, archivePath } = await fixture();
+      const directory = join(root, '..');
+      const moved = join(directory, 'moved');
+      const other = join(directory, 'other');
+      const bin = join(directory, 'bin');
+      const attached = join(root, 'mounted');
+      await mkdir(attached);
+      await mkdir(other);
+      await mkdir(bin);
+      await writeFile(join(root, 'stale.txt'), 'remove during restore');
+      await writeFile(join(attached, 'remote.txt'), 'remote object');
+      await writeFile(join(other, 'sentinel.txt'), 'outside workspace');
+      await writeFile(
+        join(bin, 'find'),
+        `#!/bin/sh\nmv -- ${shellQuote(root)} ${shellQuote(moved)} && ln -s -- ${shellQuote(other)} ${shellQuote(root)} && exec /usr/bin/find "$@"\n`,
+        { mode: 0o700 },
+      );
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'LocalTest',
+        manifest: new Manifest({
+          root,
+          entries: {
+            data: mount({
+              source: 's3://bucket/data',
+              mountPath: 'mounted',
+              mountStrategy: { type: 'in_container' },
+              ephemeral: false,
+            }),
+          },
+        }),
+        archivePath,
+        activeMountPaths: [attached],
+        data: makeTarArchive([
+          { name: 'saved.txt', content: 'restored workspace' },
+        ]),
+        io: {
+          mkdir,
+          writeFile,
+          readFile,
+          runCommand: async (command: string) => {
+            if (command.includes('find ') && command.includes('tar -C')) {
+              return runCommand(
+                `PATH=${shellQuote(`${bin}:/usr/bin:/bin`)} /bin/sh -c ${shellQuote(command)}`,
+              );
+            }
+            return runCommand(command);
+          },
+        },
+      });
+
+      await expect(stat(join(moved, 'stale.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(await readFile(join(moved, 'saved.txt'), 'utf8')).toBe(
+        'restored workspace',
+      );
+      expect(await readFile(join(moved, 'mounted', 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+      expect(await readFile(join(other, 'sentinel.txt'), 'utf8')).toBe(
+        'outside workspace',
+      );
+      await expect(stat(join(other, 'saved.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    });
+
+    test('checks retained attachments before exporting an empty mounted workspace root', async () => {
+      const { root, archivePath } = await fixture();
+      const attached = join(root, 'physical');
+      const other = join(root, 'other');
+      const alias = join(root, 'alias');
+      await mkdir(attached);
+      await mkdir(other);
+      await symlink(attached, alias);
+      await writeFile(join(attached, 'remote.txt'), 'remote object');
+      const args = {
+        providerName: 'LocalTest',
+        manifest: new Manifest({
+          root: alias,
+          entries: {
+            remote: mount({
+              source: 's3://bucket/data',
+              mountPath: alias,
+              mountStrategy: { type: 'in_container' },
+              ephemeral: false,
+              readOnly: true,
+            }),
+          },
+        }),
+        archivePath,
+        activeMountPaths: [attached],
+        io: { mkdir, writeFile, readFile, runCommand },
+      };
+      validateWorkspaceTarArchive(await persistRemoteWorkspaceTar(args));
+      await rm(alias);
+      await symlink(other, alias);
+
+      await expect(persistRemoteWorkspaceTar(args)).rejects.toThrow(
+        'Workspace mount no longer matches an active attachment',
+      );
+
+      expect(await readFile(join(attached, 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+      await expect(stat(`${archivePath}.d`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
     });
 
     test('does not extract through another alias into a mounted subtree', async () => {

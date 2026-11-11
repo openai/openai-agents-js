@@ -198,6 +198,8 @@ class LocalImageReadSession extends FakeRemoteSession {
 }
 
 class LocalArchiveSession extends LocalImageReadSession {
+  readonly writes: string[] = [];
+
   constructor(
     root: string,
     private readonly mountPaths: string[],
@@ -217,6 +219,7 @@ class LocalArchiveSession extends LocalImageReadSession {
     path: string,
     content: string | Uint8Array,
   ): Promise<void> {
+    this.writes.push(path);
     await writeFile(path, content);
   }
 }
@@ -304,7 +307,7 @@ class RedirectedCredentialMountFakeSession extends CredentialMountFakeSession {
 describe('shared sandbox session helpers', () => {
   test
     .skipIf(process.platform === 'win32')
-    .each(['empty', 'populated', 'alias', 'retargeted alias'])(
+    .each(['empty', 'populated', 'alias'])(
     'round-trips a workspace with a %s non-ephemeral mount',
     async (kind) => {
       const root = await mkdtemp(join(tmpdir(), 'agents-mounted-roundtrip-'));
@@ -332,11 +335,6 @@ describe('shared sandbox session helpers', () => {
             }),
           },
         });
-        if (kind === 'retargeted alias') {
-          await mkdir(join(root, 'other', 'mounted[1]*?'), { recursive: true });
-          await rm(join(root, 'alias'));
-          await symlink(join(root, 'other'), join(root, 'alias'));
-        }
         await writeFile(join(root, 'ordinary.txt'), 'saved workspace');
         const archive = await session.persistWorkspace();
         expect(
@@ -357,6 +355,173 @@ describe('shared sandbox session helpers', () => {
         if (kind !== 'empty') {
           expect(await readFile(mountedFile, 'utf8')).toBe('remote object');
         }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform === 'win32').each(['mount', 'workspace'])(
+    'rejects archive operations after a configured %s alias changes',
+    async (kind) => {
+      const directory = await mkdtemp(join(tmpdir(), 'agents-mount-binding-'));
+      try {
+        const physicalRoot = join(directory, 'workspace');
+        const root =
+          kind === 'workspace' ? join(directory, 'root') : physicalRoot;
+        const attached = join(physicalRoot, 'physical', 'mounted');
+        const other =
+          kind === 'workspace' ? join(directory, 'other') : join(root, 'other');
+        const ordinaryTarget = join(
+          other,
+          ...(kind === 'workspace' ? ['physical', 'mounted'] : ['mounted']),
+        );
+        await mkdir(attached, { recursive: true });
+        await mkdir(ordinaryTarget, { recursive: true });
+        if (kind === 'workspace') {
+          await symlink(physicalRoot, root);
+        } else {
+          await symlink(join(physicalRoot, 'physical'), join(root, 'alias'));
+        }
+        const session = new LocalArchiveSession(root, [attached]);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            data: s3Mount({
+              bucket: 'synthetic-bucket',
+              mountPath: `${kind === 'workspace' ? 'physical' : 'alias'}/mounted`,
+              ephemeral: false,
+              readOnly: false,
+            }),
+          },
+        });
+        await writeFile(join(attached, 'remote.txt'), 'remote object');
+        await writeFile(join(root, 'ordinary.txt'), 'saved workspace');
+        const archive = await session.persistWorkspace();
+        const stale = join(ordinaryTarget, 'stale.txt');
+        await writeFile(stale, 'ordinary workspace data');
+        const alias = kind === 'workspace' ? root : join(root, 'alias');
+        await rm(alias);
+        await symlink(other, alias);
+        session.writes.length = 0;
+        session.commands.length = 0;
+
+        await expect(session.hydrateWorkspace(archive!)).rejects.toThrow(
+          kind === 'workspace'
+            ? 'Workspace tar hydration requires a physical workspace root'
+            : 'Workspace mount no longer matches an active attachment',
+        );
+        await expect(session.persistWorkspace()).rejects.toThrow(
+          'Workspace mount no longer matches an active attachment',
+        );
+
+        expect(await readFile(stale, 'utf8')).toBe('ordinary workspace data');
+        expect(await readFile(join(attached, 'remote.txt'), 'utf8')).toBe(
+          'remote object',
+        );
+        expect(session.writes).toHaveLength(0);
+        expect(
+          session.commands.some(
+            ({ command }) =>
+              command.includes('tar ') || command.includes('find '),
+          ),
+        ).toBe(false);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'rejects hydration through a stable workspace root alias before archive upload',
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'agents-root-binding-'));
+      try {
+        const physical = join(directory, 'physical');
+        const root = join(directory, 'root');
+        const attached = join(physical, 'mounted');
+        await mkdir(attached, { recursive: true });
+        await symlink(physical, root);
+        await writeFile(join(attached, 'remote.txt'), 'remote object');
+        await writeFile(join(root, 'ordinary.txt'), 'saved workspace');
+        const session = new LocalArchiveSession(root, [attached]);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            data: s3Mount({
+              bucket: 'synthetic-bucket',
+              mountPath: 'mounted',
+              ephemeral: false,
+              readOnly: false,
+            }),
+          },
+        });
+        const archive = await session.persistWorkspace();
+        await writeFile(join(root, 'stale.txt'), 'ordinary workspace data');
+        session.writes.length = 0;
+        session.commands.length = 0;
+
+        await expect(session.hydrateWorkspace(archive!)).rejects.toThrow(
+          'Workspace tar hydration requires a physical workspace root',
+        );
+
+        expect(session.writes).toHaveLength(0);
+        expect(await readFile(join(root, 'stale.txt'), 'utf8')).toBe(
+          'ordinary workspace data',
+        );
+        expect(await readFile(join(attached, 'remote.txt'), 'utf8')).toBe(
+          'remote object',
+        );
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
+    'clears ordinary data behind an overridden ephemeral mount logical alias',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-logical-mount-alias-'));
+      try {
+        const attached = join(root, 'physical', 'mounted');
+        const other = join(root, 'other');
+        await mkdir(attached, { recursive: true });
+        await mkdir(other);
+        await symlink(other, join(root, 'data'));
+        await writeFile(join(attached, 'remote.txt'), 'remote object');
+        const session = new LocalArchiveSession(root, [attached]);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            data: s3Mount({
+              bucket: 'synthetic-bucket',
+              mountPath: 'physical/mounted',
+              ephemeral: true,
+              readOnly: false,
+            }),
+          },
+        });
+        await writeFile(join(root, 'ordinary.txt'), 'saved workspace');
+        await writeFile(join(other, 'saved.txt'), 'saved ordinary target');
+        const archive = await session.persistWorkspace();
+        await writeFile(join(other, 'stale.txt'), 'ordinary workspace data');
+        await writeFile(join(other, 'saved.txt'), 'changed ordinary target');
+        await writeFile(join(root, 'ordinary.txt'), 'changed workspace');
+
+        await session.hydrateWorkspace(archive!);
+
+        await expect(stat(join(other, 'stale.txt'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect(await readFile(join(root, 'ordinary.txt'), 'utf8')).toBe(
+          'saved workspace',
+        );
+        expect(await readFile(join(other, 'saved.txt'), 'utf8')).toBe(
+          'saved ordinary target',
+        );
+        expect(await readFile(join(attached, 'remote.txt'), 'utf8')).toBe(
+          'remote object',
+        );
       } finally {
         await rm(root, { recursive: true, force: true });
       }

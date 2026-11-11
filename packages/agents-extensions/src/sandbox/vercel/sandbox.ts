@@ -536,6 +536,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
           providerName: 'VercelSandboxClient',
           manifest: this.state.manifest,
           io: this.mountTransitionArchiveIo(),
+          activeMountPaths: this.activeMounts.keys(),
         });
       });
     }
@@ -601,6 +602,7 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
           providerName: 'VercelSandboxClient',
           manifest: this.state.manifest,
           io: this.mountTransitionArchiveIo(),
+          activeMountPaths: this.activeMounts.keys(),
           data,
           archiveLimits,
         });

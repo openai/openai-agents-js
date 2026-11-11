@@ -78,16 +78,27 @@ export async function persistRemoteWorkspaceTar(args: {
   assertRemoteWorkspaceTarRoot(args.providerName, root, archivePath, 'persist');
 
   const protectedPaths = workspaceTarPreservedPaths(args.manifest);
-  if (protectedPaths.includes('')) {
+  const protectsWorkspaceRoot = protectedPaths.includes('');
+  if (
+    protectsWorkspaceRoot &&
+    (args.activeMountPaths === undefined ||
+      args.manifest.mountTargets().length === 0)
+  ) {
     return createEmptyWorkspaceTarArchive();
   }
 
   const effectiveRoot = await validateRemoteSandboxPathForManifest({
     manifest: args.manifest,
     path: root,
-    options: { forWrite: true },
+    options: { forWrite: !protectsWorkspaceRoot },
     runCommand: args.io.runCommand,
   });
+  assertRemoteWorkspaceTarRoot(
+    args.providerName,
+    effectiveRoot,
+    archivePath,
+    'persist',
+  );
 
   const effectiveProtectedPaths = await effectiveWorkspaceTarProtectedPaths(
     args,
@@ -211,6 +222,18 @@ export async function hydrateRemoteWorkspaceTar(args: {
     options: { forWrite: true },
     runCommand: args.io.runCommand,
   });
+  assertRemoteWorkspaceTarRoot(
+    args.providerName,
+    effectiveRoot,
+    archivePath,
+    'hydrate',
+  );
+  if (effectiveRoot !== root) {
+    throw new SandboxArchiveError(
+      'Workspace tar hydration requires a physical workspace root.',
+      { root, effectiveRoot },
+    );
+  }
   const effectiveProtectedPaths = await effectiveWorkspaceTarProtectedPaths(
     args,
     effectiveRoot,
@@ -229,8 +252,12 @@ export async function hydrateRemoteWorkspaceTar(args: {
     const result = await args.io.runCommand(
       [
         `mkdir -p -- ${shellQuote(root)}`,
-        workspaceTarCleanupCommand(root, [...effectiveProtectedPaths]),
-        `tar -C ${shellQuote(root)} -xf ${shellQuote(archivePath)}`,
+        `cd -- ${shellQuote(root)}`,
+        'actual_root=$(pwd -P)',
+        '[ "$actual_root" != / ]',
+        `[ "$actual_root" = ${shellQuote(effectiveRoot)} ]`,
+        workspaceTarCleanupCommand('.', [...effectiveProtectedPaths]),
+        `tar -C . -xf ${shellQuote(archivePath)}`,
       ].join(' && '),
     );
     if (result.status !== 0) {
@@ -275,13 +302,26 @@ async function effectiveWorkspaceTarProtectedPaths(
   protectedPaths: string[],
 ): Promise<string[]> {
   const root = args.manifest.root;
+  const mountTargets = args.manifest.mountTargets();
+  const configuredMountPaths = new Set(
+    mountTargets.map(({ mountPath }) => mountPath),
+  );
+  const mountLogicalPaths = new Set(
+    mountTargets.map(({ logicalPath }) => logicalPath),
+  );
+  const activeMountPaths =
+    args.activeMountPaths === undefined
+      ? undefined
+      : new Set(args.activeMountPaths);
   const effectiveProtectedPaths = new Set(protectedPaths);
-  for (const mountPath of args.activeMountPaths ?? []) {
+  for (const mountPath of activeMountPaths ?? []) {
     addEffectiveMountPath(effectiveProtectedPaths, effectiveRoot, mountPath);
   }
   const pathsToResolve = new Set([
-    ...args.manifest.mountTargets().map(({ mountPath }) => mountPath),
-    ...protectedPaths.map((path) => `${root}/${path}`),
+    ...configuredMountPaths,
+    ...protectedPaths
+      .filter((path) => !mountLogicalPaths.has(path))
+      .map((path) => `${root}/${path}`),
   ]);
   for (const mountPath of pathsToResolve) {
     const relativeMountPath = relativePosixPathWithinRoot(root, mountPath);
@@ -302,6 +342,16 @@ async function effectiveWorkspaceTarProtectedPaths(
       path: mountPath,
       runCommand: args.io.runCommand,
     });
+    if (
+      configuredMountPaths.has(mountPath) &&
+      activeMountPaths !== undefined &&
+      !activeMountPaths.has(effectiveMountPath)
+    ) {
+      throw new SandboxArchiveError(
+        'Workspace mount no longer matches an active attachment.',
+        { root, mountPath },
+      );
+    }
     addEffectiveMountPath(
       effectiveProtectedPaths,
       effectiveRoot,

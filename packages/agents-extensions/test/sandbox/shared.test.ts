@@ -3654,7 +3654,7 @@ describe('remote sandbox path helpers', () => {
       command.includes('tar -C'),
     );
     expect(hydrateCommand).toContain(
-      "find '/custom/workspace' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
+      "find '.' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +",
     );
     expect(hydrateCommand!.indexOf('find')).toBeLessThan(
       hydrateCommand!.indexOf('tar -C'),
