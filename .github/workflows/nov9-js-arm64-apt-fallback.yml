@@ -1,4 +1,4 @@
-name: Nov 9 JS ARM64 native qualification
+name: Nov 9 JS ARM64 corrected native qualification
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   qualify:
-    name: Qualify exact landed JS on stock ARM64
+    name: Qualify exact corrected JS on stock ARM64
     if: github.repository == 'openai/openai-agents-js'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
@@ -21,14 +21,14 @@ jobs:
     env:
       ALPHA_VERSION: 0.22.0-alpha.2
       EXPECTED_PLATFORM: linux-arm64
-      NATIVE_INPUTS: bea698b7f75c46c76c1edc1354c442c9877e4c67495f6ed23ec710d2e87cf318
+      NATIVE_INPUTS: a970de3fb10e770ca34eee2df95dae496f6c40aa9dfc4549c881f91300299210
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: '4'
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 4c5e035dfcea927847e19943faea6883be0b95d9
+          ref: f0b77a19e220f24acb9eca5c84bb33668ec1c1bf
           fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
@@ -37,8 +37,8 @@ jobs:
           package-manager-cache: false
       - name: Verify signed source, native inputs and stock ARM64
         run: |
-          test "$(git rev-parse HEAD)" = "4c5e035dfcea927847e19943faea6883be0b95d9"
-          test "$(git rev-parse 'HEAD^{tree}')" = "a5e0bfad69368d64176cdd4060d427358d3b4465"
+          test "$(git rev-parse HEAD)" = "f0b77a19e220f24acb9eca5c84bb33668ec1c1bf"
+          test "$(git rev-parse 'HEAD^{tree}')" = "62dadc289be6aa4c6095a56499f671540b3fefb1"
           git diff --quiet HEAD --
           grep -qx 'VERSION_CODENAME=noble' /etc/os-release
           test "$RUNNER_ARCH" = ARM64
@@ -92,6 +92,11 @@ jobs:
           test "$(cat /sys/module/apparmor/parameters/enabled)" = Y
           test "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
           echo "AppArmor enabled; unprivileged user namespace restriction = 1"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - name: Install SDK dependencies from the lockfile
+        run: pnpm install --frozen-lockfile
       - name: Install Rust
         run: |
           echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
@@ -130,13 +135,13 @@ jobs:
           import { verifyNativeReceipt } from './scripts/alpha-package.mjs';
           await verifyNativeReceipt(process.cwd(), 'linux-arm64');
           const receipt = JSON.parse(readFileSync('packages/agents-codex/native/build-receipt.json'));
-          assert.equal(Object.keys(receipt.inputs).length, 348);
+          assert.equal(Object.keys(receipt.inputs).length, 352);
           const inputMap = Object.fromEntries(Object.keys(receipt.inputs).sort().map((name) => [name, receipt.inputs[name]]));
           const inputDigest = createHash('sha256').update(JSON.stringify(inputMap)).digest('hex');
-          assert.equal(inputDigest, '1984065944b53bd654b4b4a1f085722d21ba7eaefa5b89d4f178964f71fbcefd');
+          assert.equal(inputDigest, '29b586ff7087363fc99374ebc628383524eb22271ed3ad1354fe1cc91d5e7b26');
           console.log('Native receipt inputs:', Object.keys(inputMap).length, inputDigest);
-          assert.equal(receipt.sources.codex.result_tree, '1bed5c17b4979d3daf59e37b6b17ac842ff0097b');
-          assert.equal(receipt.sources.codex.manifest_sha256, '9ce3fc420cb2f8ace60eb73ec3a9b2a56ddbb0212f2dd54ac7f0aed5311b0745');
+          assert.equal(receipt.sources.codex.result_tree, '1afa206f3a3fc8137dde5487ae8cdc83944d6b73');
+          assert.equal(receipt.sources.codex.manifest_sha256, '86c3701a235265c65025f6009c971c30c1aa2983f43e9c00c3be8d78250c8186');
           assert.equal(receipt.sources['rust-sdk'].result_tree, '24324fe84298bf5c169e37bcaf8539b29bc6a16c');
           assert.equal(receipt.sources['rust-sdk'].manifest_sha256, '3e947fd3c6567ce7a9183575aad4d7e78d85ffea58306a05da07bc9dd468b463');
           NODE
@@ -147,7 +152,10 @@ jobs:
           for product in "${products[@]}"; do
             LC_ALL=C readelf --file-header "$product" | grep -E 'Machine:[[:space:]]+AArch64$'
           done
-          sha256sum "$package/native/build-receipt.json" "${products[@]}"
+          evidence="$RUNNER_TEMP/nov9-native-tests"
+          mkdir -p "$evidence"
+          sha256sum "$package/native/build-receipt.json" "${products[@]}" | tee "$evidence/native-SHA256SUMS"
+          cp "$package/native/build-receipt.json" "$evidence/native-build-receipt.json"
       - name: Archive the native bundle
         working-directory: packages/agents-codex
         run: |
@@ -165,18 +173,29 @@ jobs:
           archive: false
           if-no-files-found: error
           retention-days: 14
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
-        with:
-          run_install: false
       - name: Build the exact SDK
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+        id: sdk-build
+        run: pnpm build
       - name: Prepare the repository OTLP test collector
+        id: collector
         run: |
           python3 -m venv "$RUNNER_TEMP/agents-otel-collector"
           "$RUNNER_TEMP/agents-otel-collector/bin/python" -m pip install grpcio==1.85.0 opentelemetry-proto==1.45.1
+      - name: Create the release bundles
+        id: release-bundles
+        if: ${{ !cancelled() && steps.sdk-build.outcome == 'success' }}
+        run: |
+          evidence="$RUNNER_TEMP/nov9-native-tests"
+          mkdir -p "$evidence"
+          node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha" 2>&1 | tee "$evidence/create-release-bundles.log"
+      - name: Test the extracted bundles
+        if: ${{ !cancelled() && steps.release-bundles.outcome == 'success' }}
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha" 2>&1 | tee "$RUNNER_TEMP/nov9-native-tests/verify-release-bundles.log"
       - name: Run the four-worker native suite and explicit controls
+        if: ${{ !cancelled() && steps.sdk-build.outcome == 'success' && steps.collector.outcome == 'success' }}
         env:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
           NO_COLOR: '1'
@@ -208,7 +227,8 @@ jobs:
           run durable-sender packages/agents-codex/test/native/tracing-parity.test.ts -t '^qualifies real native tracing control \(REQ423-429\)$' "${focused[@]}"
           run mailbox-receiver-policy packages/agents-codex/test/native/tracing-parity.test.ts -t '^qualifies real native tracing mailbox-receiver-(scoped|bare)-(disabled|metadata-only|permissive) \(REQ423-429\)$' "${focused[@]}"
           run buffered-raw-observation packages/agents-codex/test/native/raw-provider-events-native.test.ts -t '^captures buffered Responses with model output opt-in=(false|true)$' "${focused[@]}"
-          for entry in missing-trace-admission:1 graceful-tree-stop:1 callback-ancestry-recovery:1 durable-sender:1 mailbox-receiver-policy:6 buffered-raw-observation:2; do
+          run item-reference-boundaries packages/agents-codex/test/native/model-context-callbacks.test.ts packages/agents-codex/test/native/opaque-history-reference-native.test.ts packages/agents-codex/test/native/canonical-history.test.ts -t '^(prevents dispatch when context transformation is (lossy|throw)|rejects opaque service item references as public input before dispatch|rejects opaque-reference lossy projection in restricted preparation before dispatch|forwards provider item references after native history restore)$' "${focused[@]}"
+          for entry in missing-trace-admission:1 graceful-tree-stop:1 callback-ancestry-recovery:1 durable-sender:1 mailbox-receiver-policy:6 buffered-raw-observation:2 item-reference-boundaries:5; do
             name=${entry%:*}
             expected=${entry#*:}
             count=$(grep -Ec '^ +✓ .* > ' "$evidence/$name.log" || true)
@@ -216,14 +236,6 @@ jobs:
           done
           sha256sum "$evidence"/*.log "$evidence/exit-codes.txt" > "$evidence/SHA256SUMS"
           exit "$failed"
-      - name: Create the release bundles
-        run: |
-          node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
-      - name: Test the extracted bundles
-        env:
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: |
-          node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
       - name: Record final AppArmor state
         if: always()
         run: |
@@ -234,7 +246,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: nov9-js-4c5e035d-arm64-qualification
+          name: nov9-js-f0b77a19-arm64-qualification
           path: |
             ${{ runner.temp }}/nov9-native-tests/
             ${{ runner.temp }}/agents-alpha/*.tgz
