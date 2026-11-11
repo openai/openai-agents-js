@@ -206,7 +206,6 @@ export class VoiceConversationHistory {
   ): void {
     if (
       !this.storeAudio ||
-      this.audioSealed ||
       !itemId ||
       !Number.isSafeInteger(index) ||
       index < 0 ||
@@ -218,6 +217,13 @@ export class VoiceConversationHistory {
       return;
     const key = JSON.stringify([itemId, index]);
     const previous = replace ? this.audio.get(key) : undefined;
+    // Sealing prevents growth, but authoritative replacements can still shrink
+    // or clear bytes that were already retained.
+    if (
+      this.audioSealed &&
+      (!replace || data.byteLength > (previous?.bytes ?? 0))
+    )
+      return;
     if (
       this.audioBytes - (previous?.bytes ?? 0) + data.byteLength >
         this.maxAudioBytes ||
@@ -241,6 +247,8 @@ export class VoiceConversationHistory {
       retained.chunks = [];
       retained.bytes = 0;
     }
+    if (replace && !data.byteLength && this.truncatedAudioKey === key)
+      this.truncatedAudioKey = undefined;
     retained.chunks.push(Uint8Array.from(data));
     this.audioChunks++;
     retained.bytes += data.byteLength;
@@ -310,32 +318,66 @@ export class VoiceConversationHistory {
     )
       return false;
     const item = JSON.parse(JSON.stringify(value)) as Record<string, any>;
-    const providerAudio: { index: number; data: string }[] = [];
+    const id = item.id as string;
+    const providerAudio: {
+      index: number;
+      data: string;
+      retainedBytes: number;
+      truncated: boolean;
+    }[] = [];
+    let audioBytes = this.audioBytes;
+    let audioChunks = this.audioChunks;
+    let sealed = this.audioSealed;
     if (Array.isArray(item.content))
       for (const [index, part] of item.content.entries()) {
-        if (part && typeof part === 'object') {
-          if (this.storeAudio && typeof part.audio === 'string')
-            providerAudio.push({ index, data: part.audio });
-          delete part.audio;
+        if (!part || typeof part !== 'object') continue;
+        const data = part.audio;
+        delete part.audio;
+        if (!this.storeAudio || typeof data !== 'string') continue;
+        const length = providerAudioLength(data);
+        // Invalid optional audio does not invalidate text or overwrite valid bytes.
+        if (length === undefined || index >= 1024) continue;
+        const previous = this.audio.get(JSON.stringify([id, index]));
+        const chunksAvailable =
+          audioChunks - (previous?.chunks.length ?? 0) < 4096;
+        const capacity = !chunksAvailable
+          ? 0
+          : sealed
+            ? (previous?.bytes ?? 0)
+            : Math.max(
+                0,
+                this.maxAudioBytes - audioBytes + (previous?.bytes ?? 0),
+              );
+        const retainedBytes = Math.min(length, capacity);
+        const truncated = retainedBytes < length;
+        if (truncated) {
+          part.audio_truncated = true;
+          sealed = true;
         }
+        if (chunksAvailable) {
+          audioBytes += retainedBytes - (previous?.bytes ?? 0);
+          audioChunks += 1 - (previous?.chunks.length ?? 0);
+        }
+        providerAudio.push({ index, data, retainedBytes, truncated });
       }
-    const id = item.id as string;
     if (!this.items.has(id) && this.items.size >= this.maxItems)
       throw new Error('Voice conversation history item capacity exceeded');
     const bytes = utf8Bytes(JSON.stringify(item));
     const total = this.bytes - (this.itemBytes.get(id) ?? 0) + bytes;
     if (total > this.maxBytes)
       throw new Error('Voice conversation history byte capacity exceeded');
-    for (const { index, data } of providerAudio) {
-      // Item updates carry the complete provider audio, including already observed deltas.
+    for (const { index, data, retainedBytes, truncated } of providerAudio) {
+      // Full provider payloads replace earlier deltas. Decode only the prefix
+      // admitted above, before allocating or copying its audio buffer.
       this.observeAudio(
         id,
         index,
-        decodeBase64(data),
+        decodeBase64(data.slice(0, Math.ceil((retainedBytes * 4) / 3))),
         this.audio.get(JSON.stringify([id, index]))?.bytesPerMillisecond ??
           audioBytesPerMillisecond,
         true,
       );
+      if (truncated) this.audioSealed = true;
     }
     this.bytes = total;
     this.itemBytes.set(id, bytes);
@@ -364,6 +406,19 @@ export class VoiceConversationHistory {
         this.audio.delete(key);
       }
   }
+}
+
+/** Validate the full observation before decoding only its bounded prefix. */
+function providerAudioLength(value: string): number | undefined {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const length = value.length - padding;
+  if (
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value) ||
+    length % 4 === 1 ||
+    (padding > 0 && value.length % 4 !== 0)
+  )
+    return undefined;
+  return Math.floor((length * 6) / 8);
 }
 
 function utf8Bytes(value: string): number {
