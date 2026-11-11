@@ -466,6 +466,18 @@ export function createNativeCallbackTool<Context>(
   });
 }
 
+/** @internal Preserve the ordinary callback and approval owners for typed edits. */
+export function createApplyPatchTool<T extends z.ZodType, Context>(
+  declaration: JsonObject,
+  options: Parameters<typeof tool<T, Context>>[0],
+): FunctionTool<Context> {
+  const captured = {
+    ...options,
+    [nativeCallbackDeclaration]: structuredClone(declaration),
+  };
+  return tool(captured);
+}
+
 /** @internal Bind one borrowed MCP tool to the existing managed callback owner. */
 export function createNamespacedFunctionTool<Context>(options: {
   namespace: Readonly<{ name: string; description?: string }>;
@@ -746,8 +758,12 @@ export function tool<
   const shell = (
     options as typeof options & { [shellDeclaration]?: JsonObject }
   )[shellDeclaration];
+  const native = (
+    options as typeof options & { [nativeCallbackDeclaration]?: JsonObject }
+  )[nativeCallbackDeclaration];
   const declaration: FunctionTool<Context> = Object.freeze({
     ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
+    ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
     finishTurn: options.finishTurn ?? false,
     name: options.name,
     namespace: options.namespace,
@@ -1189,6 +1205,9 @@ export function captureTools(
         'Shell declarations retain their native identity and policies',
       );
     const approval = managedApproval(tool);
+    const native = (
+      tool as SessionTool & { [nativeCallbackDeclaration]?: JsonObject }
+    )[nativeCallbackDeclaration];
     const source = approval
       ? Object.freeze({
           ...assembleManualTool(tool, {
@@ -1204,6 +1223,7 @@ export function captureTools(
     const binding = Object.freeze({
       ...source,
       ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
+      ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
       ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
@@ -1243,10 +1263,11 @@ export function captureTools(
     }
     if (tool[shellDeclaration])
       return losslessJsonObjectSchema.parse(tool[shellDeclaration]);
-    if (tool.kind !== 'manual' && tool[nativeCallbackDeclaration]) {
-      const declaration = losslessJsonObjectSchema.parse(
-        tool[nativeCallbackDeclaration],
-      );
+    const native = (
+      tool as SessionTool & { [nativeCallbackDeclaration]?: JsonObject }
+    )[nativeCallbackDeclaration];
+    if (native) {
+      const declaration = losslessJsonObjectSchema.parse(native);
       const expectedName =
         declaration.type === 'computer'
           ? 'computer'
@@ -1256,10 +1277,10 @@ export function captureTools(
       if (
         expectedName === undefined ||
         tool.name !== expectedName ||
-        tool.namespace !== undefined ||
+        (tool.kind !== 'manual' && tool.namespace !== undefined) ||
         tool.deferLoading ||
         tool.finishTurn ||
-        tool.callbackTimeout !== undefined
+        (tool.kind !== 'manual' && tool.callbackTimeout !== undefined)
       )
         throw new TypeError(
           'Computer declarations retain their native identity and policies',

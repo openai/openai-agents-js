@@ -72,7 +72,7 @@ describe('native application Apply Patch adapter', () => {
         diff: 'custom format',
         moveTo: 'remote://two',
       },
-      current,
+      expect.objectContaining(current),
     );
   });
   it.each([

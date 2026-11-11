@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import {
-  createNativeCallbackTool,
+  createApplyPatchTool,
+  ToolOutput,
   type FunctionTool,
   type ToolCallContext,
-  type ToolResponse,
+  type ToolContext,
 } from './tools';
 
 type MaybePromise<T> = T | Promise<T>;
@@ -59,47 +60,45 @@ const resultSchema = z.object({
  */
 export function applyPatchTool<Context = unknown>(options: {
   editor: ApplyPatchEditor<Context>;
+  needsApproval?:
+    boolean | ((context: ToolContext<Context>) => MaybePromise<boolean>);
 }): FunctionTool<Context> {
   const callbacks = {
     create_file: options.editor.createFile.bind(options.editor),
     update_file: options.editor.updateFile.bind(options.editor),
     delete_file: options.editor.deleteFile.bind(options.editor),
   };
-  return createNativeCallbackTool<Context>(
-    'apply_patch',
-    "Apply patches with the application's editor",
+  return createApplyPatchTool<typeof callSchema, Context>(
     { type: 'applyPatch' },
-    async (
-      raw,
-      context,
-      admit,
-      _reportFailure,
-      enterBody,
-    ): Promise<ToolResponse> => {
-      const { operation } = callSchema.parse(raw);
-      const publicOperation: ApplyPatchOperation =
-        operation.type === 'update_file'
-          ? {
-              type: operation.type,
-              path: operation.path,
-              diff: operation.diff,
-              ...(operation.move_to === undefined
-                ? {}
-                : { moveTo: operation.move_to }),
-            }
-          : operation;
-      admit();
-      enterBody();
-      const returned = await callbacks[operation.type](
-        publicOperation,
-        context,
-      );
-      admit();
-      const result = resultSchema.parse(returned ?? {});
-      return {
-        success: result.status === 'completed',
-        contentItems: [{ type: 'inputText', text: JSON.stringify(result) }],
-      };
+    {
+      name: 'apply_patch',
+      description: "Apply patches with the application's editor",
+      parameters: callSchema,
+      needsApproval: options.needsApproval,
+      // Typed editor failures retain their native failure path.
+      errorFunction: null,
+      execute: async ({ operation }, context) => {
+        const publicOperation: ApplyPatchOperation =
+          operation.type === 'update_file'
+            ? {
+                type: operation.type,
+                path: operation.path,
+                diff: operation.diff,
+                ...(operation.move_to === undefined
+                  ? {}
+                  : { moveTo: operation.move_to }),
+              }
+            : operation;
+        const returned = await callbacks[operation.type](
+          publicOperation,
+          context,
+        );
+        const result = resultSchema.parse(returned ?? {});
+        return new ToolOutput(
+          [{ type: 'inputText', text: JSON.stringify(result) }],
+          result.status === 'completed',
+        );
+      },
     },
   );
 }

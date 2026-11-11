@@ -114,6 +114,18 @@ pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> 
             },
         ) => left == right && left_checks == right_checks,
         (
+            ResponseItem::ApplyPatchCallOutput {
+                status: left_status,
+                output: left_output,
+                ..
+            },
+            ResponseItem::ApplyPatchCallOutput {
+                status: right_status,
+                output: right_output,
+                ..
+            },
+        ) => left_status == right_status && left_output == right_output,
+        (
             ResponseItem::ShellCallOutput {
                 provider_fields: left,
                 ..
