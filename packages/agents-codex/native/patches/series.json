@@ -729,6 +729,10 @@
       "sha256": "2eee67cd8141831466a0c35a6c9ccb3a1dbecefeb763369504b4a25640ad49ca"
     },
     {
+      "path": "sdk-provider-hosted-effect-replay-fence.patch",
+      "sha256": "e8094fed289759c4ab7b178b47ecec26d4d26994eee37ad817897b21d9f5d23a"
+    },
+    {
       "path": "sdk-stored-owner-retirement.patch",
       "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
     },
@@ -741,5 +745,5 @@
       "sha256": "69a74476497a8189f717036a231c5f48a3e391dc06191693dc7507851c81e7dc"
     }
   ],
-  "result_tree": "8ccf77641c065208c4014a2aa6597813efd3819f"
+  "result_tree": "abd18519d335eee50ce0bffaf0b58c4a02fe06fd"
 }

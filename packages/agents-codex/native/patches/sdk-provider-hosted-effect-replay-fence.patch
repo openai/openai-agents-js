@@ -1,0 +1,94 @@
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index bc9da7d9..ac2d05f0 100644
+--- a/codex-rs/codex-api/src/sse/responses.rs
++++ b/codex-rs/codex-api/src/sse/responses.rs
+@@ -541,7 +541,8 @@ impl ResponsesEventError {
+ pub fn process_responses_event(
+     event: ResponsesStreamEvent,
+ ) -> std::result::Result<Option<ResponseEvent>, ResponsesEventError> {
+-    if event.kind.starts_with("response.file_search_call.")
++    if event.kind.starts_with("response.mcp_call.")
++        || event.kind.starts_with("response.file_search_call.")
+         || event.kind.starts_with("response.code_interpreter_call.")
+         || event
+             .kind
+diff --git a/codex-rs/core/src/session/model_attempts.rs b/codex-rs/core/src/session/model_attempts.rs
+index 3af26098..eb48dcc4 100644
+--- a/codex-rs/core/src/session/model_attempts.rs
++++ b/codex-rs/core/src/session/model_attempts.rs
+@@ -31,6 +31,7 @@ pub(crate) struct Attempt {
+     request: Mutex<RequestState>,
+     pub(crate) response_started: AtomicBool,
+     pub(crate) unsafe_output: AtomicBool,
++    pub(crate) provider_effects: AtomicBool,
+     pub(crate) local_effects: AtomicBool,
+ }
+ 
+@@ -95,6 +96,7 @@ impl AttemptLedger {
+             }),
+             response_started: AtomicBool::new(false),
+             unsafe_output: AtomicBool::new(false),
++            provider_effects: AtomicBool::new(false),
+             local_effects: AtomicBool::new(false),
+         });
+         state
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 70668f84..245ad20e 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2321,6 +2321,9 @@ async fn run_sampling_request(
+                 || context.normalized.error_code.as_deref() == Some("conversation_locked");
+             let hard_veto = permanently_stopped
+                 || retirement_failed
++                || attempt
++                    .provider_effects
++                    .load(std::sync::atomic::Ordering::Acquire)
+                 || context.normalized.is_abort
+                 || (enforce_replay_safety
+                     && (context.retry_unsafe_output
+@@ -3737,6 +3740,30 @@ fn assign_missing_streamed_response_item_id(
+     Session::assign_missing_response_item_id(item);
+ }
+ 
++// Provider actions have no local accepted-call deduplication owner. Unknown
++// output has lost its raw type, so its replay safety cannot be established.
++fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
++    match event {
++        ResponseEvent::OutputItemAdded(item) | ResponseEvent::OutputItemDone(item) => matches!(
++            item,
++            ResponseItem::CodeInterpreterCall { .. }
++                | ResponseItem::ImageGenerationCall { .. }
++                | ResponseItem::Other
++        ),
++        ResponseEvent::HostedToolCallProgress(progress) => progress
++            .event
++            .get("type")
++            .and_then(serde_json::Value::as_str)
++            .is_some_and(|kind| {
++                kind.starts_with("response.code_interpreter_call.")
++                    || kind.starts_with("response.code_interpreter_call_code.")
++                    || kind.starts_with("response.image_generation_call.")
++                    || kind.starts_with("response.mcp_call.")
++            }),
++        _ => false,
++    }
++}
++
+ #[allow(clippy::too_many_arguments)]
+ #[instrument(level = "trace",
+     skip_all,
+@@ -3981,6 +4008,14 @@ async fn try_run_sampling_request(
+             {
+                 break Err(CodexErr::TurnAborted);
+             }
++            if provider_event_may_have_effects(&event) {
++                if let Some(attempt) = &model_attempt {
++                    attempt
++                        .provider_effects
++                        .store(true, std::sync::atomic::Ordering::Release);
++                    attempt.mark_unsafe_output();
++                }
++            }
+             sess.services
+                 .session_telemetry
+                 .record_responses(&handle_responses, &event);
