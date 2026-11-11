@@ -725,16 +725,16 @@
       "sha256": "e17072825b736731573a60583c4ee557d39d7ef0b8ef06e49de89ec90a05a038"
     },
     {
+      "path": "sdk-trace-delivery-controls.patch",
+      "sha256": "2eee67cd8141831466a0c35a6c9ccb3a1dbecefeb763369504b4a25640ad49ca"
+    },
+    {
       "path": "sdk-stored-owner-retirement.patch",
       "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
     },
     {
       "path": "sdk-borrowed-responses-compaction.patch",
       "sha256": "8a2680e8cf971d9d658084de6fa4f3122782810017bdce9d52ad5598ddd19ae1"
-    },
-    {
-      "path": "sdk-trace-delivery-controls.patch",
-      "sha256": "2eee67cd8141831466a0c35a6c9ccb3a1dbecefeb763369504b4a25640ad49ca"
     },
     {
       "path": "sdk-realtime-provider-error-observation.patch",

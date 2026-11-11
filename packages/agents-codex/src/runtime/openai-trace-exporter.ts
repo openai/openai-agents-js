@@ -1,5 +1,5 @@
 import { setTimeout as waitForRetry } from 'node:timers/promises';
-import { traceCredentialRoute } from './trace-delivery';
+import { traceCredentialRoute, traceDeliverySignal } from './trace-delivery';
 import type { TraceEvent, TraceProcessor } from './telemetry';
 
 function timestamp(nanos: string): string {
@@ -278,7 +278,9 @@ export class OpenAITraceExporter implements TraceProcessor {
       }
       group.events.push(event);
     }
-    const signal = AbortSignal.timeout(this.#timeoutMs);
+    const deadline = AbortSignal.timeout(this.#timeoutMs);
+    const stopped = traceDeliverySignal();
+    const signal = stopped ? AbortSignal.any([deadline, stopped]) : deadline;
     let deliveryFailed = false;
     for (const group of groups.values()) {
       const traceIds = new Set(

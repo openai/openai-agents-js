@@ -16,7 +16,7 @@ async function main() {
         native.configure_telemetry(
           JSON.stringify({ 'sdk.trace_delivery': options }),
         ),
-        /Invalid trace delivery options/,
+        /Native telemetry operation failed\. Check the exporter settings/,
       );
     }
     await telemetry.configure();

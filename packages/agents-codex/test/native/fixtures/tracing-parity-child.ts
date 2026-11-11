@@ -3,6 +3,7 @@ import {
   replaceSingletonNativeBatchEvent,
 } from '../../fixtures/native-event-batches';
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
@@ -1206,8 +1207,90 @@ async function preparedRequestCase() {
   assert.equal(server.requests.length, 1);
 }
 
+async function customContextStorageCase() {
+  const storage = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
+  const customScopes: string[] = [];
+  const adapter: telemetry.TraceContextStorage = {
+    getStore: () => storage.getStore(),
+    run(span, callback) {
+      if (span) customScopes.push(span.context.spanId);
+      return storage.run(span, callback);
+    },
+  };
+  await telemetry.configure();
+  const enteredDefault = Promise.withResolvers<void>();
+  const enteredCustom = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let defaultRun: Promise<void> | undefined;
+  let customRun: Promise<void> | undefined;
+  try {
+    telemetry.setTraceContextStorage(adapter);
+    telemetry.setTraceContextStorage();
+    defaultRun = telemetry.withTrace(
+      { name: 'storage.default' },
+      async (root) => {
+        enteredDefault.resolve();
+        await release.promise;
+        assert.equal(telemetry.getCurrentTrace(), root);
+        await telemetry.withSpan({ name: 'storage.default.child' }, (child) => {
+          assert.equal(child.context.traceId, root.context.traceId);
+          assert.equal(child.context.parentSpanId, root.context.spanId);
+          assert.equal(storage.getStore(), undefined);
+        });
+      },
+    );
+    await Promise.race([enteredDefault.promise, defaultRun]);
+    telemetry.setTraceContextStorage(adapter);
+    customRun = telemetry.withTrace(
+      { name: 'storage.custom' },
+      async (root) => {
+        assert.equal(storage.getStore(), root);
+        enteredCustom.resolve();
+        await release.promise;
+        assert.equal(telemetry.getCurrentTrace(), root);
+        const failure = new Error('custom span failed');
+        await assert.rejects(
+          telemetry.withSpan(
+            { name: 'storage.custom.child' },
+            async (child) => {
+              await Promise.resolve();
+              assert.equal(storage.getStore(), child);
+              assert.equal(telemetry.getCurrentSpan(), child);
+              assert.equal(child.context.traceId, root.context.traceId);
+              assert.equal(child.context.parentSpanId, root.context.spanId);
+              throw failure;
+            },
+          ),
+          (error) => error === failure,
+        );
+        assert.equal(telemetry.getCurrentSpan(), root);
+      },
+    );
+    await Promise.race([enteredCustom.promise, customRun]);
+    telemetry.setTraceContextStorage();
+    assert.equal(telemetry.getCurrentSpan(), undefined);
+    release.resolve();
+    await Promise.all([defaultRun, customRun]);
+    assert.equal(customScopes.length, 2);
+    assert.equal(storage.getStore(), undefined);
+    await telemetry.withTrace({ name: 'storage.reset' }, (root) => {
+      assert.equal(telemetry.getCurrentTrace(), root);
+      assert.equal(storage.getStore(), undefined);
+    });
+  } finally {
+    release.resolve();
+    await Promise.allSettled([defaultRun, customRun]);
+    await telemetry.shutdown();
+  }
+}
+
 async function main() {
   const mode = process.argv[2];
+  if (mode === 'custom-context-storage') {
+    await customContextStorageCase();
+    console.log('PASS custom-context-storage');
+    return;
+  }
   if (mode === 'custom-only') {
     await customOnlyCase();
     console.log('PASS custom-only');

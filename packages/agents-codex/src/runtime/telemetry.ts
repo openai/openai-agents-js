@@ -20,9 +20,11 @@ export {
   withSpan,
   getCurrentTrace,
   getCurrentSpan,
+  setTraceContextStorage,
   setTracingDisabled,
   setSensitiveDataLoggingEnabled,
 } from './tracing-context';
+export type { TraceContextStorage } from './tracing-context';
 type Native = Awaited<ReturnType<typeof binding>>;
 
 /** Native HTTP or gRPC TLS paths. Supply client certificate and key together. */

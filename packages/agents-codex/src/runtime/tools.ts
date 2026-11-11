@@ -92,6 +92,18 @@ export class ToolTimeoutError extends Error {
 
 export type FunctionToolTimeoutBehavior = 'raise_exception' | 'error_as_result';
 
+class FunctionBodyError extends Error {
+  constructor(readonly original: unknown) {
+    super('Function callback failed');
+  }
+}
+
+/** Admitted callback-body exception formatting into a failed model-visible result. */
+export type ToolErrorFunction<Context = unknown> = (
+  context: ToolContext<Context>,
+  error: unknown,
+) => string | Promise<string>;
+
 export type ToolTimeoutErrorFunction<Context = unknown> = (
   context: ToolContext<Context>,
   error: ToolTimeoutError,
@@ -259,6 +271,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly callbackTimeout?: number;
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  readonly errorFunction?: ToolErrorFunction<Context>;
   readonly kind?: 'function';
   readonly [computerDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
@@ -390,6 +403,8 @@ export function tool<
   timeoutBehavior?: FunctionToolTimeoutBehavior;
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  /** Callback-body failures only; cancellation, policy and validation handling unchanged. */
+  errorFunction?: ToolErrorFunction<Context>;
   /**
    * Original JSON syntax or initial Zod validation failure text.
    * Native SyntaxError with the exact raw string, or ZodError with detached JSON.
@@ -485,12 +500,15 @@ export function tool<
     timeoutBehavior = 'raise_exception',
     timeoutErrorFunction,
     inputErrorFunction,
+    errorFunction,
   } = options;
   if (
     inputErrorFunction !== undefined &&
     typeof inputErrorFunction !== 'function'
   )
     throw new TypeError('inputErrorFunction must be a function');
+  if (errorFunction !== undefined && typeof errorFunction !== 'function')
+    throw new TypeError('errorFunction must be a function');
   const recoverOriginalInput = async (
     error: z.ZodError | SyntaxError,
     original: JsonValue,
@@ -521,6 +539,7 @@ export function tool<
     callbackTimeout,
     timeoutBehavior,
     timeoutErrorFunction,
+    errorFunction,
     deferLoading: options.deferLoading ?? false,
     parameters: decode(
       losslessJsonValueSchema,
@@ -667,24 +686,41 @@ export function tool<
           ? undefined
           : new ToolTimeoutError(name, callbackTimeout);
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
+      const invoke = (signal: AbortSignal) =>
+        execute(
+          parsed,
+          inheritToolSessionOwner(
+            withDecisionSignal(callContext, signal),
+            context,
+          ),
+        );
       try {
         value = await invokeWithTimeout(
-          (signal) =>
-            execute(
-              parsed,
-              inheritToolSessionOwner(
-                withDecisionSignal(callContext, signal),
-                context,
-              ),
-            ),
+          invoke,
           context.signal,
           callbackTimeout,
           name,
           timeoutBehavior === 'raise_exception' ? onTimeout : () => {},
           timeoutError,
           timeoutBehavior,
+          errorFunction ? (error) => new FunctionBodyError(error) : undefined,
         );
       } catch (error) {
+        if (error instanceof FunctionBodyError) {
+          try {
+            admit();
+          } catch {
+            throw error.original;
+          }
+          const text = await errorFunction!(callContext, error.original);
+          admit();
+          if (typeof text !== 'string')
+            throw new TypeError('errorFunction must return a string');
+          return {
+            success: false,
+            contentItems: [{ type: 'inputText' as const, text }],
+          };
+        }
         if (
           timeoutBehavior !== 'error_as_result' ||
           !timeoutError ||
@@ -1012,8 +1048,16 @@ export async function invokeWithTimeout<T>(
   onTimeout: (error: Error) => void,
   timeoutError?: Error,
   timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
+  wrapBodyError?: (error: unknown) => unknown,
 ): Promise<T> {
-  if (timeoutSeconds === undefined) return invoke(parentSignal);
+  if (timeoutSeconds === undefined) {
+    if (!wrapBodyError) return invoke(parentSignal);
+    try {
+      return await invoke(parentSignal);
+    } catch (error) {
+      throw wrapBodyError(error);
+    }
+  }
   const controller = new AbortController();
   const signal = AbortSignal.any([parentSignal, controller.signal]);
   const timeout =
@@ -1041,7 +1085,7 @@ export async function invokeWithTimeout<T>(
         if (timeoutBehavior !== 'error_as_result' || !parentSignal.aborted)
           controller.signal.throwIfAborted();
       }
-      throw error;
+      throw wrapBodyError ? wrapBodyError(error) : error;
     }
     if (performance.now() >= deadline) expire();
     signal.throwIfAborted();
