@@ -264,6 +264,7 @@ export async function configure(options: TelemetryOptions = {}): Promise<void> {
     restartingHere = true;
   }
   try {
+    if (restart) await pump?.catch(() => {});
     await (await binding()).configure_telemetry(encoded);
     if (restart) {
       processorDeliveryStop = new AbortController();
@@ -328,7 +329,6 @@ export async function shutdown(
       activeProcessorIds.clear();
       retiredProcessorIds.clear();
       wakePump?.();
-      await pump?.catch(() => {});
       retiredHere ||= retired;
     }
     shutdowns--;
@@ -654,7 +654,7 @@ async function route(
               retireCredentials,
             );
           }
-          if (!batch.events.length)
+          if (!batch.events.length && processors.size)
             await new Promise<void>((resolve) => {
               const timer = setTimeout(resolve, 10);
               timer.unref();
