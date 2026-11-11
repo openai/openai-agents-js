@@ -278,6 +278,8 @@ export interface RunOptions<Context = undefined> extends Omit<
    * invocation, in response order. History and checkpoints omit these objects.
    * Capture above 4,096 responses or 8 MiB raises NativeError after completion. */
   returnRawUsage?: boolean;
+  /** Retain the assistant and tool items produced by this run. */
+  returnItems?: boolean;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -791,6 +793,7 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
+        returnItems: options.returnItems,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         input: preparedInput,
@@ -809,6 +812,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnState !== true &&
       options.returnHistory !== true &&
       options.returnRawUsage !== true &&
+      options.returnItems !== true &&
       options.prepareRequest === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
@@ -838,6 +842,7 @@ export class Agent<Context = undefined, Output = string> {
       returnState: options.returnState,
       returnHistory: options.returnHistory,
       returnRawUsage: options.returnRawUsage,
+      returnItems: options.returnItems,
       signal: options.signal,
     });
   }

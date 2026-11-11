@@ -42,6 +42,54 @@ async function providerFor(server: ModelServer) {
   });
 }
 
+it('returns produced items and original usage from the same native invocation', async () => {
+  const usage = [0, 1].map((sequence) => ({
+    ...modelUsage,
+    vendor_extension: { sequence, marker: 'synthetic-combined-capture' },
+  }));
+  const effects: string[] = [];
+  const lookup = tool({
+    name: 'lookup',
+    parameters: z.object({}),
+    execute() {
+      effects.push('lookup');
+      return 'resolved';
+    },
+  });
+  const server = new ModelServer(
+    [[call('lookup', {}, { callId: 'combined-capture' })], [message('done')]],
+    usage.map((record) => JSON.stringify(record)),
+  );
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use lookup once.',
+    tools: [lookup],
+    provider,
+  });
+  const result = await agent.run('look up A', {
+    returnItems: true,
+    returnRawUsage: true,
+  });
+
+  expect(result.finalOutput).toBe('done');
+  expect(effects).toEqual(['lookup']);
+  expect(result.items?.map(({ item }) => item.type)).toEqual([
+    'function_call',
+    'function_call_output',
+    'message',
+  ]);
+  expect(result.items?.every((entry) => entry.agent === agent)).toBe(true);
+  expect(JSON.stringify(result.items?.map(({ item }) => item))).not.toContain(
+    'synthetic-combined-capture',
+  );
+  expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+  expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+    'response-1',
+    'response-2',
+  ]);
+  expect(server.requests).toHaveLength(2);
+});
+
 it.each([false, true])(
   'keeps original provider usage out of history and checkpoints with capture=%s',
   async (capture) => {

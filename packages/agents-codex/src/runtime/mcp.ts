@@ -887,6 +887,7 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
       'kind' in tool &&
       (tool.kind === 'file_search' ||
         tool.kind === 'code_interpreter' ||
+        tool.kind === 'shell' ||
         tool.kind === 'image_generation')
     ) {
       if (hostedTools.some((prior) => prior.kind === tool.kind))

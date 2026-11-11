@@ -52,6 +52,7 @@ export type {
   SessionInterruptOptions,
   Completed,
   RawProviderUsage,
+  ProducedItem,
   PendingRequests,
   SteeringReceipt,
   TurnNeedsAttention,
@@ -312,6 +313,7 @@ export type {
 export {
   fileSearch,
   codeInterpreter,
+  hostedShell,
   imageGeneration,
 } from './runtime/hosted-tools';
 export type {
@@ -319,6 +321,9 @@ export type {
   FileSearchOptions,
   CodeInterpreter,
   CodeInterpreterOptions,
+  HostedShell,
+  HostedShellEnvironment,
+  HostedShellOptions,
   ImageGeneration,
   ImageGenerationOptions,
 } from './runtime/hosted-tools';

@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index f66f57e1..0ed617da 100644
+index 2adca4ea51dde8bb71c874d21fa6cfc7a201926e..c226bc1ee8005b3c5ae7cc5b00535fd2def7a4f0 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
 @@ -333,6 +333,31 @@ impl CodexThread {
@@ -31,11 +31,11 @@ index f66f57e1..0ed617da 100644
 +            .finish(turn_id)
 +    }
 +
-     /// Returns extension-owned data attached to this thread runtime.
-     pub fn thread_extension_data(&self) -> &codex_extension_api::ExtensionData {
-         &self.session.services.thread_extension_data
+     /// Starts a scoped capture before an SDK one-shot submits or resumes its turn.
+     pub fn sdk_start_produced_items(&self) {
+         self.thread_extension_data()
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 6116813e..4f0975aa 100644
+index ade863fb459ce2bb98a10cc7036c09a099312660..4c3739c9594d4561181a586453825a861599b598 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -17,6 +17,8 @@ use crate::hook_runtime::run_pre_compact_hooks;
@@ -75,7 +75,7 @@ index 6116813e..4f0975aa 100644
      output: Vec<ResponseItem>,
      interrupted: bool,
  }
-@@ -987,6 +996,8 @@ async fn drain_to_completed(
+@@ -989,6 +998,8 @@ async fn drain_to_completed(
          )
          .await?;
      let mut output = Vec::new();
@@ -84,7 +84,7 @@ index 6116813e..4f0975aa 100644
      let mut response_observation_id = None;
      let mut incomplete_response_id = None;
      let mut response_fact_budget = codex_protocol::response_facts::ResponseFactBudget::default();
-@@ -1025,6 +1036,9 @@ async fn drain_to_completed(
+@@ -1027,6 +1038,9 @@ async fn drain_to_completed(
                  .await?;
              }
              Ok(ResponseEvent::ResponseObserved(observation)) => {
@@ -94,7 +94,7 @@ index 6116813e..4f0975aa 100644
                  incomplete_response_id = (observation.status
                      == ResponseObservationStatus::Incomplete)
                      .then(|| observation.response_id.clone())
-@@ -1051,6 +1065,14 @@ async fn drain_to_completed(
+@@ -1053,6 +1067,14 @@ async fn drain_to_completed(
                      .await?;
                  return Ok(CompactionResponse {
                      interrupted: incomplete_response_id.as_ref() == Some(&response_id),
@@ -110,7 +110,7 @@ index 6116813e..4f0975aa 100644
                      output,
                  });
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index 6e23d57b..02be17fe 100644
+index 6e23d57b2b596a431d49a66b939e4ce6f6337dc1..02be17fe732580cde22ffe2eddcf6fe2028b1baf 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
 @@ -26,6 +26,8 @@ use crate::responses_retry::ResponsesStreamRequest;
@@ -170,7 +170,7 @@ index 6e23d57b..02be17fe 100644
          compaction_output,
          response_id,
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 8d8e18f9..7fdac3f1 100644
+index 8d8e18f973dd07be9cbdc2a22805abadd3123f75..7fdac3f18fe3e20e023ee161674a6a3e1dfa7471 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -69,6 +69,7 @@ pub use codex_thread::GuardianRootMessage;
@@ -182,10 +182,10 @@ index 8d8e18f9..7fdac3f1 100644
  pub use thread_startup_metadata::ThreadStartupMetadata;
  mod agent;
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 5e472c7d..546fdc46 100644
+index f69e4a3bbd72e9bd7c9234ca1ecd16cb6b1ce975..c163922e3eb2b92237f835ef9b33aa6bf8696e5c 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -266,6 +266,7 @@ mod retained_context;
+@@ -267,6 +267,7 @@ pub(crate) mod sdk_produced_items;
  mod review;
  mod rollout_budget;
  mod rollout_reconstruction;
@@ -195,7 +195,7 @@ index 5e472c7d..546fdc46 100644
  pub(crate) mod startup_prewarm;
 diff --git a/codex-rs/core/src/session/sdk_raw_usage.rs b/codex-rs/core/src/session/sdk_raw_usage.rs
 new file mode 100644
-index 00000000..5146ce25
+index 0000000000000000000000000000000000000000..5146ce251c24e5501f15c3794ad7474e959b871f
 --- /dev/null
 +++ b/codex-rs/core/src/session/sdk_raw_usage.rs
 @@ -0,0 +1,191 @@
@@ -391,10 +391,10 @@ index 00000000..5146ce25
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 856e1189..46eb5cf2 100644
+index c02371c5d19db1daad2eeb7fcdc9691a5cfd4283..11271ea97773a25f6df14e7ef2589075b7b70936 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -2712,7 +2712,10 @@ async fn propose_tool_completion(
+@@ -2789,7 +2789,10 @@ async fn propose_tool_completion(
                      return Ok(None);
                  }
                  Some(codex_extension_api::ToolCompletionDecision::Accept { .. })
@@ -406,7 +406,7 @@ index 856e1189..46eb5cf2 100644
                  Some(codex_extension_api::ToolCompletionDecision::Accept { final_output }) => {
                      return Ok(Some(codex_protocol::protocol::ToolTurnCompletion {
                          call_id: call_id.clone(),
-@@ -3491,6 +3494,11 @@ async fn try_run_sampling_request(
+@@ -3568,6 +3571,11 @@ async fn try_run_sampling_request(
      let mut should_emit_turn_diff = false;
      let mut should_emit_token_count = false;
      let mut response_observation_id = None;
@@ -418,7 +418,7 @@ index 856e1189..46eb5cf2 100644
      const MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE: usize = 256;
      let mut analytics_tool_call_ids = Vec::new();
      let reasoning_effort = step_context
-@@ -3963,6 +3971,16 @@ async fn try_run_sampling_request(
+@@ -4043,6 +4051,16 @@ async fn try_run_sampling_request(
                      .await;
                  }
                  ResponseEvent::ResponseObserved(observation) => {
@@ -435,7 +435,7 @@ index 856e1189..46eb5cf2 100644
                      let result = sess
                          .record_response_observation(&turn_context, observation)
                          .await;
-@@ -4029,6 +4047,21 @@ async fn try_run_sampling_request(
+@@ -4109,6 +4127,21 @@ async fn try_run_sampling_request(
                      if let Err(err) = budget_result {
                          break Err(err);
                      }

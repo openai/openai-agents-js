@@ -7,6 +7,44 @@ import {
   repairItemFromWire,
   type ThreadHistory,
 } from '../../src/runtime/history';
+
+it.each([undefined, 'local-shell-item'])(
+  'projects a local shell call with provider ID %s',
+  (id) => {
+    const action = {
+      type: 'exec',
+      command: ['true'],
+      working_directory: '/workspace',
+      env: { FIXTURE: 'value' },
+    };
+    const { items } = projectHistory(
+      [
+        { type: 'turn_context', payload: { turn_id: 'turn' } },
+        {
+          type: 'response_item',
+          payload: {
+            type: 'local_shell_call',
+            ...(id ? { id } : {}),
+            call_id: 'shell-call',
+            status: 'completed',
+            action,
+          },
+        },
+      ],
+      'thread',
+    );
+    expect(items).toEqual([
+      expect.objectContaining({
+        id: id ?? 'shell-call',
+        type: 'local_shell_call',
+        callId: 'shell-call',
+        action,
+        status: 'completed',
+      }),
+    ]);
+  },
+);
+
 describe('native history projection', () => {
   it.each([undefined, 'provider-call', 'command-call'])(
     'keeps model arguments and execution evidence with provider ID %s',
@@ -848,4 +886,43 @@ it('keeps a computer effect uncertain until its canonical screenshot receipt', (
     status: 'in_progress',
     arguments: original,
   });
+});
+
+it('pairs interleaved function and server-search outputs with the same call ID', () => {
+  const calls: JsonObject[] = [
+    {
+      type: 'function_call',
+      call_id: 'shared',
+      name: 'lookup',
+      arguments: '{}',
+    },
+    {
+      type: 'tool_search_call',
+      call_id: 'shared',
+      execution: 'server',
+      arguments: {},
+    },
+    {
+      type: 'tool_search_output',
+      call_id: 'shared',
+      execution: 'server',
+      status: 'completed',
+      tools: [],
+    },
+    { type: 'function_call_output', call_id: 'shared', output: 'looked up' },
+  ];
+  const { items } = projectHistory(
+    [
+      { type: 'turn_context', payload: { turn_id: 'turn' } },
+      ...calls.map((payload) => ({ type: 'response_item', payload })),
+    ],
+    'root',
+  );
+  expect(items.map((item) => [item.type, item.status])).toEqual([
+    ['function_call', 'completed'],
+    ['tool_search_call', 'completed'],
+    ['tool_search_output', 'completed'],
+    ['function_call_output', 'completed'],
+  ]);
+  expect(items.map((item) => item.data)).toEqual(calls);
 });

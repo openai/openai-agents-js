@@ -55,7 +55,11 @@ export {
 } from './toolGuardrails';
 
 export { prepareInputItemsWithSession } from '../runner/sessionPersistence';
-export { convertAgentOutputTypeToSerializable } from './tools';
+export {
+  convertAgentOutputTypeToSerializable,
+  getSchemaAndParserFromInputType,
+} from './tools';
+export { stripStrictNullsForZodSchema } from './strictToolSchema';
 
 export {
   getResponseWithRetry,
