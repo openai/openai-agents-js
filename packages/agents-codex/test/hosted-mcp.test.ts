@@ -7,7 +7,10 @@ import {
   hostedMcpBinding,
 } from '../src/runtime/hosted-mcp-binding';
 import { prepareManualResult } from '../src/runtime/manual';
-import { projectHostedToolItem } from '../src/runtime/history';
+import {
+  projectHostedToolItem,
+  repairItemFromWire,
+} from '../src/runtime/history';
 import type { JsonObject } from '../src/runtime/binding';
 import {
   captureTools,
@@ -109,6 +112,11 @@ describe('native hosted MCP declarations', () => {
       const projected = projectHostedToolItem(item, 'turn_fixture');
       expect(projected?.type).toBe(item.type);
       expect(projected?.provider_data).toEqual(item);
+      if (projected)
+        expect(repairItemFromWire(projected)).toMatchObject({
+          type: item.type,
+          provider_data: item,
+        });
     }
   });
 

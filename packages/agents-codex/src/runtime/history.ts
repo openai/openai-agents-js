@@ -540,7 +540,7 @@ export type SessionItem = ItemIdentity &
     | {
         type: 'mcp_call';
         threadId?: string;
-        callId?: string;
+        callId?: string | null;
         serverLabel: string;
         name: string;
         arguments: JsonValue;
@@ -704,7 +704,7 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('mcp_call'),
       threadId: z.string().optional(),
-      callId: z.string().optional(),
+      callId: z.string().nullable().optional(),
       serverLabel: z.string(),
       name: z.string(),
       arguments: jsonValue,

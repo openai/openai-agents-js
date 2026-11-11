@@ -12240,6 +12240,7 @@ export class Session<OutputT = string, Context = unknown> {
           .filter((tool) => tool.kind === 'manual')
           .map((tool) => ({
             name: tool.name,
+            namespace: toolNamespace(tool),
           })),
       ),
       this.terminalSlots(),

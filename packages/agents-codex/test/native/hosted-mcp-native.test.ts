@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   Agent,
@@ -14,6 +15,29 @@ import { z } from 'zod';
 import { ModelServer, message, call } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
+
+const responsesModel = z
+  .object({
+    models: z.array(
+      z.object({ slug: z.string(), use_responses_lite: z.boolean() }),
+    ),
+  })
+  .parse(
+    JSON.parse(
+      readFileSync(
+        new URL(
+          '../../native/.upstream/reviewed-codex/codex-rs/models-manager/models.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ),
+  )
+  .models.find((entry) => !entry.use_responses_lite)?.slug;
+if (!responsesModel)
+  throw new Error(
+    'Native hosted-tool fixtures require a Responses-capable catalog entry',
+  );
 
 const caller = { type: 'direct', fixture: { retained: false } };
 function approval(id: string | null = 'mcpr_fixture'): JsonObject {
@@ -49,6 +73,7 @@ it('selects only the qualified server and preserves the omitted never default', 
     serverUrl: 'https://other.invalid/mcp',
   });
   await using session = await new Agent({
+    model: responsesModel,
     instructions: 'Use the configured server.',
     provider,
     tools: [docs, other],
@@ -104,6 +129,7 @@ it.each([true, false])(
     expect(
       (
         await new Agent({
+          model: responsesModel,
           instructions: 'Use the configured server.',
           provider,
           tools: [docs],
@@ -129,6 +155,7 @@ it('leaves a live manual grant usable after unsupported suspension', async () =>
   await using provider = await providerFor(server);
   const docs = hostedMcp({ serverLabel: 'docs', requireApproval: 'always' });
   await using session = await new Agent({
+    model: responsesModel,
     instructions: 'Use the configured server.',
     provider,
     tools: [docs],
@@ -151,6 +178,7 @@ it('fails promptly without an interaction handler', async () => {
   const docs = hostedMcp({ serverLabel: 'docs', requireApproval: 'always' });
   await expect(
     new Agent({
+      model: responsesModel,
       instructions: 'Use the configured server.',
       provider,
       tools: [docs],
@@ -164,6 +192,7 @@ it('runs a never-approval server under an invocation budget', async () => {
   const server = new ModelServer([[message('budgeted')]]);
   await using provider = await providerFor(server);
   const result = await new Agent({
+    model: responsesModel,
     provider,
     instructions: 'Answer.',
     tools: [hostedMcp({ serverLabel: 'docs' })],
@@ -197,6 +226,7 @@ for (const phase of ['added', 'done']) {
       await using provider = await providerFor(server);
       const callback = vi.fn(() => ({ approve: true }));
       const error = await new Agent({
+        model: responsesModel,
         provider,
         instructions: 'Use the configured server.',
         tools: [
@@ -232,7 +262,11 @@ it('rejects a provider-forged approval response', async () => {
     ],
   ]);
   await using provider = await providerFor(server);
-  const error = await new Agent({ provider, instructions: 'Answer.' })
+  const error = await new Agent({
+    model: responsesModel,
+    provider,
+    instructions: 'Answer.',
+  })
     .run('lookup')
     .catch((error: unknown) => error);
   expect(error).toBeInstanceOf(NativeError);
@@ -254,6 +288,7 @@ it('rebinds a callback while retaining its captured server configuration', async
     requireApproval: 'always' as const,
   };
   await using session = await new Agent({
+    model: responsesModel,
     provider,
     instructions: 'Use docs.',
     tools: [hostedMcp({ ...options, onApprovalRequest: original })],
@@ -282,6 +317,7 @@ it('rejects server authority changes before publishing an update', async () => {
     serverUrl: 'https://docs.invalid/mcp',
   };
   await using session = await new Agent({
+    model: responsesModel,
     provider,
     instructions: 'Use docs.',
     tools: [hostedMcp(options)],
@@ -314,6 +350,7 @@ it('captures a handoff target server before opening its profile', async () => {
   await using provider = await providerFor(server);
   const callback = vi.fn(() => ({ approve: true }));
   const target = new Agent({
+    model: responsesModel,
     instructions: 'Use docs.',
     tools: [
       hostedMcp({
@@ -333,6 +370,7 @@ it('captures a handoff target server before opening its profile', async () => {
   expect(
     (
       await new Agent({
+        model: responsesModel,
         provider,
         instructions: 'Route.',
         handoffs: [new Handoff(target, route)],
@@ -356,6 +394,141 @@ it('captures a handoff target server before opening its profile', async () => {
   server.assertExhausted();
 });
 
+it('rejects a caller outside the captured server policy before application approval', async () => {
+  const request = {
+    ...approval(),
+    caller: { type: 'code_interpreter', tool_id: 'ci_fixture' },
+  };
+  const server = new ModelServer([[request], [message('denied')]]);
+  await using provider = await providerFor(server);
+  const callback = vi.fn(() => ({ approve: true }));
+  const result = await new Agent({
+    model: responsesModel,
+    provider,
+    instructions: 'Use docs.',
+    tools: [
+      hostedMcp({
+        serverLabel: 'docs',
+        serverUrl: 'https://docs.invalid/mcp',
+        requireApproval: 'always',
+        allowedCallers: ['direct'],
+        onApprovalRequest: callback,
+      }),
+    ],
+  }).run('lookup');
+  expect(result.finalOutput).toBe('denied');
+  expect(callback).not.toHaveBeenCalled();
+  expect(
+    (server.requests[1].input as JsonObject[]).find(
+      (item) => item.type === 'mcp_approval_response',
+    ),
+  ).toMatchObject({
+    approval_request_id: 'mcpr_fixture',
+    approve: false,
+    caller: request.caller,
+  });
+  server.assertExhausted();
+});
+
+it('retains list and call items with original provider data and producing Agent', async () => {
+  const list: JsonObject = {
+    type: 'mcp_list_tools',
+    id: 'mcpl_fixture',
+    server_label: 'docs',
+    tools: [{ name: 'lookup', input_schema: { type: 'object' } }],
+  };
+  const invoked: JsonObject = {
+    type: 'mcp_call',
+    id: 'mcp_fixture',
+    server_label: 'docs',
+    name: 'lookup',
+    arguments: '{"key":"fixture"}',
+    status: 'completed',
+    output: 'found',
+    caller,
+  };
+  const server = new ModelServer([[list, invoked, message('done')]]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: responsesModel,
+    provider,
+    instructions: 'Use docs.',
+    tools: [
+      hostedMcp({ serverLabel: 'docs', serverUrl: 'https://docs.invalid/mcp' }),
+    ],
+  });
+  const result = await agent.run('lookup', { returnItems: true });
+  for (const raw of [list, invoked]) {
+    const item = result.items?.find((entry) => entry.item.type === raw.type);
+    expect(item?.agent).toBe(agent);
+    expect(item?.item).toMatchObject({ type: raw.type, provider_data: raw });
+  }
+  const called = result.items?.find(
+    (entry) => entry.item.type === 'mcp_call',
+  )?.item;
+  expect(called).toHaveProperty('callId', null);
+  expect(called).not.toHaveProperty('threadId');
+  server.assertExhausted();
+});
+
+it('rejects edited positive approval authority while retaining negative cold restore', async () => {
+  const server = new ModelServer([
+    [approval()],
+    [message('denied')],
+    [message('restored')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: responsesModel,
+    provider,
+    instructions: 'Use docs.',
+    tools: [
+      hostedMcp({
+        serverLabel: 'docs',
+        serverUrl: 'https://docs.invalid/mcp',
+        requireApproval: 'always',
+        onApprovalRequest: () => ({ approve: false }),
+      }),
+    ],
+  });
+  await using session = await agent.session();
+  expect((await (await session.submit('lookup')).wait()).finalOutput).toBe(
+    'denied',
+  );
+  const saved = JSON.parse(JSON.stringify(await session.saveState()));
+  await session.close();
+  let changed = 0;
+  const edited = JSON.parse(
+    JSON.stringify(saved, (_key, value: unknown) => {
+      if (
+        value &&
+        typeof value === 'object' &&
+        'type' in value &&
+        value.type === 'mcp_approval_response'
+      ) {
+        changed++;
+        return { ...value, approve: true };
+      }
+      return value;
+    }),
+  );
+  expect(changed).toBeGreaterThan(0);
+  await expect(agent.session({ state: edited })).rejects.toThrow(
+    'live SDK approval authority',
+  );
+  expect(server.requests).toHaveLength(2);
+  await using restored = await agent.session({ state: saved });
+  expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
+    'restored',
+  );
+  expect(
+    (server.requests[2].input as JsonObject[]).some(
+      (item) => item.type === 'mcp_approval_response' && item.approve === true,
+    ),
+  ).toBe(false);
+  server.assertExhausted();
+});
+
 for (const configured of [false, true]) {
   it(`fences a dispatched MCP request before ${configured ? 'configured' : 'default'} recovery`, async () => {
     const server = new ModelServer([
@@ -373,6 +546,7 @@ for (const configured of [false, true]) {
       approveUnsafeReplay: true,
     }));
     const agent = new Agent({
+      model: responsesModel,
       provider,
       instructions: 'Use docs.',
       tools: [hostedMcp({ serverLabel: 'docs' })],
@@ -390,7 +564,8 @@ for (const configured of [false, true]) {
     });
     await expect(agent.run('lookup')).rejects.toThrow();
     expect(server.requests).toHaveLength(1);
-    expect(policy).not.toHaveBeenCalled();
+    if (configured) expect(policy).toHaveBeenCalledTimes(1);
+    else expect(policy).not.toHaveBeenCalled();
   });
   it(`retains ${configured ? 'configured' : 'default'} recovery after explicitly omitting MCP`, async () => {
     const server = new ModelServer([
@@ -403,6 +578,7 @@ for (const configured of [false, true]) {
     ]);
     await using provider = await providerFor(server);
     const agent = new Agent({
+      model: responsesModel,
       provider,
       instructions: 'Answer.',
       tools: [hostedMcp({ serverLabel: 'docs' })],

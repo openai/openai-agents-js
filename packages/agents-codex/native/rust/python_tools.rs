@@ -3289,6 +3289,40 @@ impl ToolContributor for PythonContributor {
             if !Arc::ptr_eq(&catalog.generation, &generation) {
                 return Err("Expired step catalog generation".into());
             }
+            let admitted_mcp = catalog
+                .slots
+                .iter()
+                .filter_map(|slot| generation.entries.get(*slot))
+                .filter(|entry| matches!(entry.spec, ToolSpec::Mcp(_)))
+                .map(|entry| entry.name.clone().with_default_namespace())
+                .collect::<HashSet<_>>();
+            let captured_mcp = thread
+                .get::<codex_extension_api::HostedModelTools>()
+                .map(|hosted| {
+                    hosted
+                        .tools
+                        .iter()
+                        .filter_map(|tool| match tool {
+                            codex_tools::HostedToolSpec::Mcp(tool) => Some(
+                                ToolName::new(Some("hosted_mcp".into()), tool.server_label.clone())
+                                    .with_default_namespace(),
+                            ),
+                            _ => None,
+                        })
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default();
+            let mut seen = HashSet::new();
+            let retained_candidates = candidates
+                .iter()
+                .filter(|name| {
+                    let name = (*name).clone().with_default_namespace();
+                    (!captured_mcp.contains(&name) || admitted_mcp.contains(&name))
+                        && seen.insert(name)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let candidates = retained_candidates.as_slice();
             let allowed = if profile.is_some() {
                 candidates.to_vec()
             } else if let Some(names) = active.as_ref().and_then(|active| active.names.as_ref()) {
@@ -3604,11 +3638,17 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         ToolCall<'call>: 'a,
     {
         Box::pin(async move {
-            let raw = call.function_arguments()?;
-            let (arguments, argument_error) = match serde_json::from_str::<Value>(raw) {
+            let raw = match &call.payload {
+                ToolPayload::HostedMcpApproval { request } => Cow::Owned(
+                    serde_json::to_string(request)
+                        .map_err(|error| FunctionCallError::Fatal(error.to_string()))?,
+                ),
+                _ => Cow::Borrowed(call.function_arguments()?),
+            };
+            let (arguments, argument_error) = match serde_json::from_str::<Value>(&raw) {
                 Ok(value) => (value, None),
                 Err(error) if self.generation.input_error_slots.contains(&self.slot) => {
-                    (Value::String(raw.to_owned()), Some(error.to_string()))
+                    (Value::String(raw.to_string()), Some(error.to_string()))
                 }
                 Err(error) => return Err(FunctionCallError::RespondToModel(error.to_string())),
             };
