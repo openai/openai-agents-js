@@ -466,6 +466,26 @@ export type SessionItem = ItemIdentity &
         error: string | null;
       }
     | {
+        type: 'local_shell_call';
+        callId: string | null;
+        action: JsonObject;
+        status: ItemStatus;
+      }
+    | {
+        type: 'tool_search_call';
+        callId: string | null;
+        execution: string;
+        arguments: JsonValue;
+        status: ItemStatus;
+      }
+    | {
+        type: 'tool_search_output';
+        callId: string | null;
+        execution: string;
+        tools: JsonValue[];
+        status: ItemStatus;
+      }
+    | {
         type: 'mcp_call';
         threadId?: string;
         callId?: string;
@@ -976,11 +996,14 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   const output =
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
-    raw.type === 'computer_call_output';
+    raw.type === 'computer_call_output' ||
+    raw.type === 'tool_search_output';
   const call =
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
-    raw.type === 'computer_call';
+    raw.type === 'computer_call' ||
+    raw.type === 'local_shell_call' ||
+    raw.type === 'tool_search_call';
   const id =
     text(raw.id) ??
     ((call || output) && typeof raw.call_id === 'string'
@@ -1011,6 +1034,32 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       )[],
     };
   }
+  if (raw.type === 'local_shell_call' && object(raw.action))
+    return {
+      ...common,
+      type: 'local_shell_call',
+      callId: text(raw.call_id),
+      action: object(raw.action)!,
+      status: status(raw.status, false),
+    };
+  if (raw.type === 'tool_search_call' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_call',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      arguments: raw.arguments ?? null,
+      status: status(raw.status, false),
+    };
+  if (raw.type === 'tool_search_output' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_output',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      tools: Array.isArray(raw.tools) ? raw.tools : [],
+      status: status(raw.status, true),
+    };
   if (raw.type === 'reasoning')
     return {
       ...common,
@@ -1389,6 +1438,7 @@ export function projectHistory(
   history: ThreadHistory,
   sessionId: string,
   subagentId?: string,
+  itemRecordIndexes?: Map<HistoryItem, number>,
 ) {
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
@@ -1416,11 +1466,16 @@ export function projectHistory(
   let pendingUser: HistoryOccurrence | undefined;
   const userAliases = new Set<HistoryOccurrence>();
   function remember(item: HistoryItem, native: boolean, recordedId = true) {
-    const output = item.type === 'function_call_output';
+    const output =
+      item.type === 'function_call_output' ||
+      item.type === 'tool_search_output';
     const key = JSON.stringify([item.turnId, item.type, recordedId, item.id]);
     const callKey = JSON.stringify([
       item.turnId,
-      'callId' in item ? item.callId : item.id,
+      item.type === 'tool_search_call' || item.type === 'tool_search_output'
+        ? 'tool_search'
+        : 'function',
+      ('callId' in item ? item.callId : undefined) ?? item.id,
     ]);
     const call = latestCalls.get(callKey);
     let occurrence = identities.get(key);
@@ -1444,12 +1499,21 @@ export function projectHistory(
       occurrence.item.data = item.data;
     }
     identities.set(key, occurrence);
-    if (item.type === 'function_call') latestCalls.set(callKey, occurrence);
-    else if (output && call) call.output = occurrence;
+    if (item.type === 'function_call' || item.type === 'tool_search_call')
+      latestCalls.set(callKey, occurrence);
+    else if (output && call) {
+      call.output = occurrence;
+      if (
+        call.item.type === 'tool_search_call' &&
+        item.type === 'tool_search_output'
+      )
+        call.item.status = item.status;
+    }
     return occurrence;
   }
   const receipts = new Map<string, TurnReceipt>();
-  for (const { type, payload, metadata: recordedMetadata } of history) {
+  for (const [recordIndex, record] of history.entries()) {
+    const { type, payload, metadata: recordedMetadata } = record;
     if (type === 'compacted' || type === 'session_meta')
       pendingUser = undefined;
     if (type === 'turn_context' && typeof payload.turn_id === 'string') {
@@ -1534,7 +1598,7 @@ export function projectHistory(
           'computer_call_output',
         ].includes(String(payload.type)) &&
         metadata?.turn_id === aborted &&
-        latestCalls.has(JSON.stringify([aborted, payload.call_id]))
+        latestCalls.has(JSON.stringify([aborted, 'function', payload.call_id]))
       )
         turn = aborted;
       if (turn) {
@@ -1550,6 +1614,7 @@ export function projectHistory(
             false,
             typeof payload.id === 'string',
           );
+          itemRecordIndexes?.set(item, recordIndex);
           const inputOrder = object(recordedMetadata)?.user_input_order;
           const kinds = metadata?.content_item_kinds;
           if (
