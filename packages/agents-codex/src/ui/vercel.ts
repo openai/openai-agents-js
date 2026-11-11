@@ -375,8 +375,9 @@ async function retainedFrames(
         ? {
             type: 'tool-output-error',
             toolCallId,
-            errorText:
-              typeof output.error === 'string'
+            errorText: !includeToolData
+              ? 'Tool did not complete'
+              : typeof output.error === 'string'
                 ? output.error
                 : JSON.stringify(output.error ?? 'Tool did not complete'),
             dynamic: true,
@@ -384,7 +385,7 @@ async function retainedFrames(
         : {
             type: 'tool-output-available',
             toolCallId,
-            output: output.output,
+            output: includeToolData ? output.output : null,
             dynamic: true,
           },
     );

@@ -242,13 +242,21 @@ it('official AI SDK client consumes native text/tool/terminal frames', async () 
   expect((await turn.wait()).finalOutput).toBe('Found it.');
 });
 
-it.each([
-  { name: 'approve', decisions: [true] },
-  { name: 'reject', decisions: [false] },
-  { name: 'approve then reject', decisions: [true, false] },
-])(
+it.each(
+  [
+    { name: 'approve', decisions: [true] },
+    { name: 'reject', decisions: [false] },
+    { name: 'approve then reject', decisions: [true, false] },
+  ].flatMap((test) =>
+    [undefined, false, true].map((includeToolData) => ({
+      ...test,
+      name: `${test.name}, tool data ${String(includeToolData)}`,
+      includeToolData,
+    })),
+  ),
+)(
   'projects live approvals and resumes the same native turn ($name)',
-  async ({ decisions }) => {
+  async ({ decisions, includeToolData }) => {
     const effects: string[] = [];
     const prefix = 'Checking the record.';
     await using provider = await peer(undefined, prefix, decisions.length > 1);
@@ -285,6 +293,7 @@ it.each([
         vercelResponse(turn, session, {
           includeToolApprovals: true,
           afterApprovals,
+          ...(includeToolData === undefined ? {} : { includeToolData }),
         }),
     });
     const read = async (message?: UIMessage): Promise<UIMessage> => {
@@ -382,7 +391,11 @@ it.each([
           state: 'output-available',
           input: { key: inputKeys[index] },
           approval: { id: afterApprovals[index], approved: approve },
-          output: approve ? 'result:' + inputKeys[index] : 'Declined.',
+          output: includeToolData
+            ? approve
+              ? 'result:' + inputKeys[index]
+              : 'Declined.'
+            : null,
         }),
       );
     }
@@ -703,6 +716,79 @@ function fixture(
     },
   };
 }
+
+it.each([undefined, false, true])(
+  'keeps approval completion and error data behind the tool-data opt-in (%s)',
+  async (includeToolData) => {
+    const ids = ['success', 'failure'];
+    const { turn, session } = fixture(
+      [
+        start,
+        ...ids.map((id, index) => ({
+          ...start,
+          type: 'function_approval_requested' as const,
+          sequence: index + 2,
+          callId: id,
+          approvalId: `approval-${id}`,
+          name: 'lookup',
+        })),
+      ],
+      ids.flatMap((id): SessionItem[] => [
+        {
+          id,
+          turnId: 't',
+          type: 'function_call',
+          callId: id,
+          name: 'lookup',
+          arguments: { reviewed: true },
+          status: 'completed',
+        },
+        {
+          id: `${id}:output`,
+          turnId: 't',
+          type: 'function_call_output',
+          callId: id,
+          status: id === 'success' ? 'completed' : 'failed',
+          output: id === 'success' ? 'synthetic-confidential-result' : null,
+          error: id === 'failure' ? 'synthetic-confidential-error' : null,
+        },
+      ]),
+    );
+    const values = await frames(
+      vercelResponse(
+        turn,
+        {
+          ...session,
+          async pendingInteractions() {
+            return [];
+          },
+        },
+        {
+          includeToolApprovals: true,
+          afterApprovals: ids.map((id) => `approval-${id}`),
+          ...(includeToolData === undefined ? {} : { includeToolData }),
+        },
+      ),
+    );
+    expect(values).toContainEqual({
+      type: 'tool-output-available',
+      toolCallId: 'approval-success',
+      output: includeToolData ? 'synthetic-confidential-result' : null,
+      dynamic: true,
+    });
+    expect(values).toContainEqual({
+      type: 'tool-output-error',
+      toolCallId: 'approval-failure',
+      errorText: includeToolData
+        ? 'synthetic-confidential-error'
+        : 'Tool did not complete',
+      dynamic: true,
+    });
+    expect(values.slice(-2)).toEqual([{ type: 'finish' }, '[DONE]']);
+    if (!includeToolData)
+      expect(JSON.stringify(values)).not.toContain('synthetic-confidential');
+  },
+);
 
 it.each(['chunks', 'response'] as const)(
   '%s cancellation waits for its observation reader to close',
