@@ -81,6 +81,93 @@ function fixture(providerFailure?: Error) {
   };
 }
 
+it.each(['websocket', 'sip'] as const)(
+  'scopes a %s URL and credentials to one connection',
+  async (transport) => {
+    const f = fixture();
+    await f.session._start();
+    const apiKey = vi.fn(async () => 'synthetic-override-key');
+    const url = 'wss://gateway.invalid/tenant/voice?token=synthetic-route';
+    const voice = await f.session.realtime({
+      url,
+      apiKey,
+      ...(transport === 'sip'
+        ? { transport: { type: 'sip' as const, callId: 'synthetic-call' } }
+        : {}),
+    });
+    expect(apiKey).toHaveBeenCalledOnce();
+    expect(
+      f.native.call.mock.calls
+        .filter(
+          ([operation]) => operation === 'realtime_conversation_activate_sdk',
+        )
+        .map(([, raw]) => JSON.parse(raw)),
+    ).toEqual([
+      expect.objectContaining({
+        api_key: 'synthetic-override-key',
+        connection_options: { url },
+      }),
+    ]);
+    await voice.close();
+    const next = await f.session.realtime();
+    const activations = f.native.call.mock.calls.filter(
+      ([operation]) => operation === 'realtime_conversation_activate_sdk',
+    );
+    expect(JSON.parse(activations[1][1])).not.toHaveProperty(
+      'connection_options',
+    );
+    expect(JSON.parse(activations[1][1]).api_key).toBeNull();
+    expect(apiKey).toHaveBeenCalledOnce();
+    await next.close();
+    await f.session.close();
+  },
+);
+
+it.each([
+  '',
+  'not a URL',
+  'https://gateway.invalid/realtime',
+  'wss://user:password@gateway.invalid/realtime',
+  'wss://gateway.invalid/realtime#fragment',
+  'wss://gateway.invalid/realtime#',
+])(
+  'rejects invalid WebSocket URL %s before credentials and native work',
+  async (url) => {
+    const f = fixture();
+    await f.session._start();
+    f.native.call.mockClear();
+    const apiKey = vi.fn(() => 'synthetic-unused-key');
+    await expect(f.session.realtime({ url, apiKey })).rejects.toThrow(/URL/);
+    expect(apiKey).not.toHaveBeenCalled();
+    expect(f.native.call).not.toHaveBeenCalled();
+    await f.session.close();
+  },
+);
+
+it.each([
+  { transport: { type: 'webrtc' as const, offerSdp: 'synthetic-offer' } },
+  { adapter: { connect: vi.fn() } },
+])(
+  'rejects a URL override with WebRTC or custom transports before side effects',
+  async (options) => {
+    const f = fixture();
+    await f.session._start();
+    f.native.call.mockClear();
+    const apiKey = vi.fn(() => 'synthetic-unused-key');
+    await expect(
+      f.session.realtime({
+        ...options,
+        url: 'wss://gateway.invalid/realtime',
+        apiKey,
+      }),
+    ).rejects.toThrow('url requires the built-in WebSocket transport');
+    expect(apiKey).not.toHaveBeenCalled();
+    expect(f.native.call).not.toHaveBeenCalled();
+    if (options.adapter) expect(options.adapter.connect).not.toHaveBeenCalled();
+    await f.session.close();
+  },
+);
+
 it('detaches live usage views and event-time totals across connection replacement', async () => {
   const f = fixture();
   await f.session._start();
