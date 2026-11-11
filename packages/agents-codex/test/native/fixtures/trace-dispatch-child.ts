@@ -86,8 +86,14 @@ async function main() {
       }),
     );
   } finally {
+    telemetry.setTracingDisabled(true);
     await telemetry.shutdown();
   }
+  await assert.rejects(
+    telemetry.dispatchTraceEvent(original[0]!),
+    /shutting down/,
+  );
+  telemetry.setTracingDisabled(false);
   await assert.rejects(
     telemetry.dispatchTraceEvent(original[0]!),
     /shutting down/,

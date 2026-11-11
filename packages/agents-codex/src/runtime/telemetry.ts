@@ -359,7 +359,11 @@ export async function dispatchTraceEvent(event: TraceEvent): Promise<void> {
     throw new Error(
       'Trace event dispatch cannot run in a trace processor async context',
     );
-  if (traceDispatchDisabled()) return;
+  if (traceDispatchDisabled()) {
+    if (processorDeliveryStop.signal.aborted)
+      throw new Error('Telemetry has been shutting down');
+    return;
+  }
   const encoded = JSON.stringify(event);
   const native = await binding();
   wakePump?.();
