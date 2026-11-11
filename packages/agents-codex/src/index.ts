@@ -10,7 +10,7 @@ export type {
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
-export { RunCleanupError } from './runtime/native-error';
+export { RunCleanupError, RunDiagnosticError } from './runtime/native-error';
 export { DecisionError } from './runtime/decisions';
 export type {
   DecisionInput,
@@ -37,6 +37,7 @@ export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
 export type {
   NativeErrorOptions,
+  RunErrorDetails,
   ResponseIntegrityReason,
 } from './runtime/native-error';
 export {

@@ -280,6 +280,8 @@ export interface RunOptions<Context = undefined> extends Omit<
   returnRawUsage?: boolean;
   /** Retain the assistant and tool items produced by this run. */
   returnItems?: boolean;
+  /** Retain failed submission evidence in RunDiagnosticError.details. */
+  captureErrorDetails?: boolean;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -733,6 +735,7 @@ export class Agent<Context = undefined, Output = string> {
       if (key in options)
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
+    const captureErrorDetails = options.captureErrorDetails === true;
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
     const beforeStep = options.beforeStep;
@@ -767,8 +770,10 @@ export class Agent<Context = undefined, Output = string> {
         this.prepare !== Agent.#canonicalPrepare)
         ? structuredClone(input)
         : undefined;
+    const errorInput = captureErrorDetails ? structuredClone(input) : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
       ...(initialMessages === undefined ? {} : { initialMessages }),
+      ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
@@ -793,7 +798,7 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
-        returnItems: options.returnItems,
+        returnItems: options.returnItems || captureErrorDetails,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         input: preparedInput,
@@ -813,6 +818,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnHistory !== true &&
       options.returnRawUsage !== true &&
       options.returnItems !== true &&
+      !captureErrorDetails &&
       options.prepareRequest === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
@@ -837,6 +843,7 @@ export class Agent<Context = undefined, Output = string> {
     }
     return runOwnedSession(session, preparedInput, {
       guardrailInput,
+      errorInput,
       maxModelSteps,
       budget,
       returnState: options.returnState,
