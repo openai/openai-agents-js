@@ -206,6 +206,8 @@ impl Receipt {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Continuation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model_override: Option<String>,
     pub(crate) turn_id: String,
     pub(crate) reply_order: Vec<String>,
     accepted_replies: HashMap<String, Receipt>,
@@ -1321,6 +1323,10 @@ impl PythonTools {
             return Ok(None);
         }
         let mut frame = Continuation {
+            model_override: history
+                .context
+                .as_ref()
+                .and_then(|context| context.sdk_model_override.clone()),
             turn_id: history.turn.clone(),
             reply_order: history
                 .calls
@@ -1462,6 +1468,14 @@ impl PythonTools {
         frame: &Continuation,
         history: &History,
     ) -> Result<()> {
+        ensure!(
+            frame.model_override
+                == history
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.sdk_model_override.clone()),
+            "manual checkpoint differs from its admitted run model"
+        );
         let generation = frame.generation.clone().unwrap_or_else(|| self.snapshot());
         ensure!(
             frame.turn_id == history.turn
@@ -1852,7 +1866,11 @@ impl PythonTools {
             .settings
             .context("manual continuation lost original settings snapshot")?;
         let settings = ThreadSettingsOverrides {
-            model: Some(context.model),
+            model: Some(if frame.model_override.is_some() {
+                saved.model.clone()
+            } else {
+                context.model
+            }),
             effort: Some(context.effort),
             summary: Some(saved.reasoning_summary.unwrap_or_default()),
             service_tier: Some(saved.service_tier),

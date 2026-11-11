@@ -1,0 +1,800 @@
+diff --git a/codex-rs/app-server/src/request_processors/feedback_processor.rs b/codex-rs/app-server/src/request_processors/feedback_processor.rs
+index 15aa393..70697e8 100644
+--- a/codex-rs/app-server/src/request_processors/feedback_processor.rs
++++ b/codex-rs/app-server/src/request_processors/feedback_processor.rs
+@@ -758,6 +758,7 @@ mod tests {
+                 timestamp: "2026-07-24T00:00:01Z".to_string(),
+                 ordinal: None,
+                 item: RolloutItem::TurnContext(TurnContextItem {
++                    sdk_model_override: None,
+                     sdk_receipt: None,
+                     turn_id: Some((*turn_id).to_string()),
+                     root_turn_id: None,
+diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
+index a7011b9..67688a7 100644
+--- a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
++++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
+@@ -65,6 +65,7 @@ fn turn_context_item(
+     active_permission_profile: Option<ActivePermissionProfile>,
+ ) -> RolloutItem {
+     RolloutItem::TurnContext(TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_id.to_string()),
+         root_turn_id: None,
+diff --git a/codex-rs/app-server/src/request_processors/turn_processor.rs b/codex-rs/app-server/src/request_processors/turn_processor.rs
+index df8890d..0b9ba18 100644
+--- a/codex-rs/app-server/src/request_processors/turn_processor.rs
++++ b/codex-rs/app-server/src/request_processors/turn_processor.rs
+@@ -1150,6 +1150,11 @@ impl TurnRequestProcessor {
+                         None,
+                         Some(AnalyticsJsonRpcError::Input(InputError::Empty)),
+                     ),
++                    NotSubmittedReason::ActiveTurnModelOverrideMismatch => (
++                        "active turn uses a different model override".to_string(),
++                        None,
++                        None,
++                    ),
+                     NotSubmittedReason::ActiveTurnOutputSchemaMismatch => (
+                         "active turn uses a different output schema".to_string(),
+                         None,
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 9bfcdbb..4ebbe8c 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -947,6 +947,10 @@ impl LocalAgentControl {
+         let durability_wait = durability_wait_started_at.elapsed();
+ 
+         let start_options = TurnStartOptions {
++            model_override: options
++                .spawning_source
++                .as_ref()
++                .and_then(|source| source.step.settings.model_override.clone()),
+             parent_turn_id: options.parent_turn_id,
+             turn_trigger: options.turn_trigger,
+             root_turn_id: options.root_turn_id,
+diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
+index 28b5147..609d5a6 100644
+--- a/codex-rs/core/src/codex_delegate.rs
++++ b/codex-rs/core/src/codex_delegate.rs
+@@ -227,6 +227,7 @@ pub(crate) async fn run_codex_thread_one_shot(
+     // requiring the caller to cancel the parent token.
+     let child_cancel = cancel_token.child_token();
+     let parent_turn_id = parent_ctx.sub_id.clone();
++    let model_override = parent_ctx.model_override().map(str::to_owned);
+     let parent_environments = parent_ctx.initial_environments.clone();
+     let root_turn_id = parent_ctx.turn_metadata_state.root_turn_id();
+     let (session, io) = Box::pin(run_codex_thread_interactive(
+@@ -249,6 +250,7 @@ pub(crate) async fn run_codex_thread_one_shot(
+     let submission = io
+         .submit_turn_input(
+             TurnInputRequest::user_input(input).on_start(TurnStartOptions {
++                model_override,
+                 final_output_json_schema,
+                 service_tier: None,
+                 parent_turn_id: Some(parent_turn_id),
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index c226bc1..fe1927d 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -557,6 +557,7 @@ impl CodexThread {
+             turn_extension_init,
+         } = request.into();
+         let RecoverTurnRequest {
++            model_override,
+             turn_id,
+             thread_settings,
+             trace,
+@@ -570,6 +571,7 @@ impl CodexThread {
+             .filter(|context| context.turn_id.as_deref() == Some(turn_id.as_str()))
+             .and_then(|context| context.root_turn_id);
+         let start_options = TurnStartOptions {
++            model_override,
+             cyber_access_program,
+             final_output_json_schema,
+             root_turn_id,
+diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
+index f146f13..5a2c59b 100644
+--- a/codex-rs/core/src/context_manager/history_tests.rs
++++ b/codex-rs/core/src/context_manager/history_tests.rs
+@@ -708,6 +708,7 @@ fn developer_msg_with_fragments(texts: &[&str]) -> ResponseItem {
+ 
+ fn reference_context_item() -> TurnContextItem {
+     TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some("reference-turn".to_string()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index cd6025b..ff443a8 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -279,9 +279,10 @@ impl Session {
+             selected.request_controls = target.model.request_controls.clone();
+         }
+         let model = selected
+-            .resolve_model_info(
++            .resolve_model_info_with_override(
+                 self.services.models_manager.as_ref(),
+                 &opening.model_info_overrides,
++                current.model_override.as_deref(),
+             )
+             .await;
+         let mut destination = ResolvedStepSettings::new(
+@@ -290,6 +291,7 @@ impl Session {
+             self.features.enabled(codex_features::Feature::FastMode),
+             opening.model_info_overrides.context_window,
+         );
++        destination.model_override = current.model_override.clone();
+         destination.mcp_approvals_reviewer_override = current.mcp_approvals_reviewer_override;
+         let target = Arc::new(AgentProfile {
+             mcp: Arc::new(
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index c163922..caefc7c 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -4257,6 +4257,9 @@ impl Session {
+             tool_router,
+             extension_data,
+         ) = prepared_tools??;
++        if let Some(model) = &settings.model_override {
++            extension_data.insert(codex_extension_api::CapturedRunModelOverride(model.clone()));
++        }
+         Ok(Arc::new(StepContext {
+             preempt: turn_context
+                 .config
+@@ -5551,7 +5554,7 @@ impl Session {
+                 .await;
+             if let Some(turn_state) = turn_state {
+                 turn_state.lock().await.token_usage_by_model.record(
+-                    settings.selected_collaboration_mode().model(),
++                    settings.request_model(),
+                     settings.telemetry(&turn_context.session_telemetry),
+                     token_usage,
+                 );
+diff --git a/codex-rs/core/src/session/rollout_reconstruction_tests.rs b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+index 55af6be..d3477c6 100644
+--- a/codex-rs/core/src/session/rollout_reconstruction_tests.rs
++++ b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+@@ -440,6 +440,7 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -493,6 +494,7 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let mut previous_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -2011,6 +2013,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: Some("root-turn".to_string()),
+@@ -2116,6 +2119,7 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
+         serde_json::to_value(session.reference_context_item().await)
+             .expect("serialize seeded reference context item"),
+         serde_json::to_value(Some(TurnContextItem {
++            sdk_model_override: None,
+             sdk_receipt: None,
+             turn_id: Some(turn_context.sub_id.clone()),
+             root_turn_id: Some("root-turn".to_string()),
+@@ -2153,6 +2157,7 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -2301,6 +2306,7 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
+     let current_turn_id = "current-turn".to_string();
+     let unmatched_abort_turn_id = "other-turn".to_string();
+     let current_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(current_turn_id.clone()),
+         root_turn_id: None,
+@@ -2440,6 +2446,7 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -2630,6 +2637,7 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
+index cdd5312..75f6984 100644
+--- a/codex-rs/core/src/session/step_activation.rs
++++ b/codex-rs/core/src/session/step_activation.rs
+@@ -35,8 +35,7 @@ pub(super) fn check_legacy_turn_safety(
+ ) -> Result<(), String> {
+     let stack = &live_config.config_layer_stack;
+     let requirements = stack.requirements();
+-    let required_review = requirements
+-        .auto_review_required_for_model(destination.selected_collaboration_mode().model());
++    let required_review = requirements.auto_review_required_for_model(destination.request_model());
+     let admitted_required_review = turn_context
+         .config
+         .config_layer_stack
+@@ -59,9 +58,7 @@ pub(super) fn check_legacy_turn_safety(
+     {
+         return Err("the destination changes the admitted approval policy".to_string());
+     }
+-    if required_review
+-        != requirements
+-            .auto_review_required_for_model(current.selected_collaboration_mode().model())
++    if required_review != requirements.auto_review_required_for_model(current.request_model())
+         || required_review != admitted_required_review
+     {
+         return Err("the destination changes model-required approval authority".to_string());
+diff --git a/codex-rs/core/src/session/step_settings.rs b/codex-rs/core/src/session/step_settings.rs
+index 368ff49..19e7a59 100644
+--- a/codex-rs/core/src/session/step_settings.rs
++++ b/codex-rs/core/src/session/step_settings.rs
+@@ -49,6 +49,8 @@ pub(crate) struct ResolvedStepSettings {
+     /// tiers must not be reconstructed from the effective values below.
+     selected: Arc<StepSettings>,
+     pub(crate) model_info: Arc<ModelInfo>,
++    /// Start-only run selection, separate from the profile defaults in `selected`.
++    pub(crate) model_override: Option<String>,
+     /// Known or explicitly configured usable limit, captured with this model.
+     reported_context_window: Option<i64>,
+     /// Effective request summary: the configured value or the pinned model's default.
+@@ -87,6 +89,7 @@ impl ResolvedStepSettings {
+             };
+         Self {
+             agent_profile: None,
++            model_override: None,
+             selected,
+             model_info,
+             reported_context_window,
+@@ -96,6 +99,17 @@ impl ResolvedStepSettings {
+         }
+     }
+ 
++    pub(crate) fn request_model(&self) -> &str {
++        self.model_override
++            .as_deref()
++            .unwrap_or_else(|| self.selected.collaboration_mode.model())
++    }
++
++    pub(super) fn with_model_override(mut self, model_override: Option<String>) -> Self {
++        self.model_override = model_override;
++        self
++    }
++
+     pub(crate) fn request_controls(
+         &self,
+     ) -> &codex_protocol::model_request_controls::ModelRequestControls {
+@@ -194,7 +208,15 @@ impl ResolvedStepSettings {
+         {
+             Arc::clone(&self.model_info)
+         } else {
+-            Arc::new(selected.resolve_model_info(models_manager, overrides).await)
++            Arc::new(
++                selected
++                    .resolve_model_info_with_override(
++                        models_manager,
++                        overrides,
++                        self.model_override.as_deref(),
++                    )
++                    .await,
++            )
+         };
+         selected
+             .request_controls
+@@ -207,6 +229,7 @@ impl ResolvedStepSettings {
+             overrides.context_window,
+         );
+         next.agent_profile = self.agent_profile.clone();
++        next.model_override = self.model_override.clone();
+         next.mcp_approvals_reviewer_override = update
+             .approvals_reviewer
+             .or(self.mcp_approvals_reviewer_override);
+@@ -234,10 +257,8 @@ impl ResolvedStepSettings {
+     }
+ 
+     pub(super) fn telemetry(&self, base: &SessionTelemetry) -> SessionTelemetry {
+-        base.clone().with_model(
+-            self.selected.collaboration_mode.model(),
+-            &self.model_info.slug,
+-        )
++        base.clone()
++            .with_model(self.request_model(), &self.model_info.slug)
+     }
+ }
+ 
+@@ -315,10 +336,23 @@ impl StepSettings {
+         &self,
+         models_manager: &dyn ModelsManager,
+         overrides: &ModelInfoOverrides,
++    ) -> ModelInfo {
++        self.resolve_model_info_with_override(models_manager, overrides, None)
++            .await
++    }
++
++    pub(super) async fn resolve_model_info_with_override(
++        &self,
++        models_manager: &dyn ModelsManager,
++        overrides: &ModelInfoOverrides,
++        model_override: Option<&str>,
+     ) -> ModelInfo {
+         let config = overrides.models_manager_config(self.personality);
+         models_manager
+-            .get_model_info(self.collaboration_mode.model(), &config)
++            .get_model_info(
++                model_override.unwrap_or_else(|| self.collaboration_mode.model()),
++                &config,
++            )
+             .await
+     }
+ 
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index d1564a6..ee086e3 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -4502,6 +4502,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "forked-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
+index 72c97f2..92fe447 100644
+--- a/codex-rs/core/src/session/turn_context.rs
++++ b/codex-rs/core/src/session/turn_context.rs
+@@ -312,6 +312,7 @@ impl std::fmt::Debug for TurnEnvironment {
+ /// Request options for one turn, separate from persistent thread settings.
+ #[derive(Default)]
+ pub(crate) struct NewTurnContextOptions {
++    pub(crate) model_override: Option<String>,
+     pub(crate) final_output_json_schema: Option<Value>,
+     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
+ }
+@@ -530,6 +531,10 @@ impl TurnContext {
+ 
+     /// Legacy: returns the frozen initial-turn model metadata.
+     /// Step-scoped consumers should use their captured `StepContext::settings`.
++    pub(crate) fn model_override(&self) -> Option<&str> {
++        self.initial_settings.model_override.as_deref()
++    }
++
+     pub(crate) fn model_info(&self) -> &Arc<ModelInfo> {
+         &self.initial_settings.model_info
+     }
+@@ -785,6 +790,7 @@ impl TurnContext {
+         model: String,
+         models_manager: &SharedModelsManager,
+     ) -> Self {
++        let model = self.model_override().map(str::to_owned).unwrap_or(model);
+         let mut config = (*self.config).clone();
+         config.model = Some(model.clone());
+         let model_info = models_manager
+@@ -832,7 +838,8 @@ impl TurnContext {
+                 config.features.enabled(Feature::FastMode),
+                 config.model_context_window,
+             )
+-            .with_agent_profile(self.next_step_settings.load().agent_profile.clone()),
++            .with_agent_profile(self.next_step_settings.load().agent_profile.clone())
++            .with_model_override(self.initial_settings.model_override.clone()),
+         );
+         config.service_tier = step_settings.service_tier.clone();
+         let session_telemetry = step_settings.telemetry(&self.session_telemetry);
+@@ -954,6 +961,7 @@ impl TurnContext {
+         let file_system_sandbox_policy =
+             self.non_legacy_file_system_sandbox_policy(&permission_profile, &sandbox_policy);
+         TurnContextItem {
++            sdk_model_override: self.initial_settings.model_override.clone(),
+             sdk_receipt: None,
+             turn_id: Some(self.sub_id.clone()),
+             root_turn_id: self.turn_metadata_state.root_turn_id(),
+@@ -1426,9 +1434,10 @@ impl Session {
+             .unwrap_or_else(|| session_configuration.permission_profile());
+         let model_info = session_configuration
+             .step_settings
+-            .resolve_model_info(
++            .resolve_model_info_with_override(
+                 self.services.models_manager.as_ref(),
+                 &session_configuration.model_info_overrides,
++                options.model_override.as_deref(),
+             )
+             .await;
+         let multi_agent_version = match build_mode {
+@@ -1489,7 +1498,8 @@ impl Session {
+                 self.features.enabled(Feature::FastMode),
+                 session_configuration.model_info_overrides.context_window,
+             )
+-            .with_agent_profile(session_configuration.agent_profile.clone()),
++            .with_agent_profile(session_configuration.agent_profile.clone())
++            .with_model_override(options.model_override.clone()),
+         );
+         let mut turn_context: TurnContext = Self::make_turn_context(
+             self.thread_id(),
+diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
+index cc4c7d9..926abc9 100644
+--- a/codex-rs/core/src/session/turn_input.rs
++++ b/codex-rs/core/src/session/turn_input.rs
+@@ -100,6 +100,15 @@ impl PreparedTurnInputSettings {
+         thread_settings: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
+         start_options: TurnStartOptions,
+     ) -> CodexResult<Self> {
++        if start_options
++            .model_override
++            .as_ref()
++            .is_some_and(|model| model.trim().is_empty())
++        {
++            return Err(CodexErr::InvalidRequest(
++                "model override must be nonempty".to_string(),
++            ));
++        }
+         let thread_settings = thread_settings.into();
+         let thread_settings_update = if thread_settings.request
+             == ThreadSettingsOverrides::default()
+@@ -114,6 +123,19 @@ impl PreparedTurnInputSettings {
+                 .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+             Some(updates)
+         };
++        if let Some(model) = &start_options.model_override {
++            let mut effective = thread_settings_update.clone().unwrap_or_default();
++            if let Some(mode) = &effective.step_settings.collaboration_mode {
++                effective.step_settings.collaboration_mode =
++                    Some(mode.with_updates(Some(model.clone()), None, None));
++            } else {
++                effective.step_settings.model = Some(model.clone());
++            }
++            session
++                .preview_settings(&effective)
++                .await
++                .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++        }
+         Ok(Self {
+             thread_settings_update,
+             start_options,
+@@ -137,6 +159,7 @@ impl PreparedTurnInputSettings {
+             turn_trigger,
+             final_output_json_schema,
+             service_tier,
++            model_override,
+             parent_turn_id,
+             root_turn_id,
+             cyber_access_program,
+@@ -151,6 +174,7 @@ impl PreparedTurnInputSettings {
+         updates.service_tier_for_turn = service_tier;
+ 
+         let options = NewTurnContextOptions {
++            model_override,
+             final_output_json_schema,
+             cyber_access_program,
+         };
+@@ -355,6 +379,7 @@ async fn start_or_steer(
+             additional_context.clone(),
+             /*expected_turn_id*/ None,
+             settings.required_active_final_output_json_schema(),
++            settings.start_options.model_override.as_deref(),
+             responsesapi_client_metadata.clone(),
+             origin,
+         )
+@@ -790,6 +815,7 @@ async fn steer(
+             additional_context,
+             Some(expected_turn_id.as_str()),
+             settings.required_active_final_output_json_schema(),
++            settings.start_options.model_override.as_deref(),
+             responsesapi_client_metadata,
+             origin,
+         )
+@@ -884,6 +910,7 @@ impl Session {
+         additional_context: BTreeMap<String, AdditionalContextEntry>,
+         expected_turn_id: Option<&str>,
+         required_final_output_json_schema: Option<&Value>,
++        required_model_override: Option<&str>,
+         responsesapi_client_metadata: Option<HashMap<String, String>>,
+         origin: UserInputOrigin,
+     ) -> Result<String, NotSubmittedReason> {
+@@ -901,6 +928,11 @@ impl Session {
+             return Err(NotSubmittedReason::NoActiveTurn);
+         };
+         let active_turn_id = &active_task.turn_context.sub_id;
++        if let Some(required) = required_model_override
++            && active_task.turn_context.model_override() != Some(required)
++        {
++            return Err(NotSubmittedReason::ActiveTurnModelOverrideMismatch);
++        }
+ 
+         if let Some(expected_turn_id) = expected_turn_id
+             && expected_turn_id != active_turn_id
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 42167b7..eb6bdbb 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -762,15 +762,17 @@ impl Session {
+         let mut start_options = batch.start_options;
+         if batch.initiating_agent_path.is_none() {
+             // Queue-only mail wakes durable sleep without selecting a new task's settings.
+-            start_options.cyber_access_program = self
+-                .reference_context_item()
+-                .await
++            let retained = self.reference_context_item().await;
++            start_options.cyber_access_program = retained
++                .as_ref()
+                 .and_then(|context| context.cyber_access_program);
++            start_options.model_override = retained.and_then(|context| context.sdk_model_override);
+         }
+         let turn_context = self
+             .new_turn_with_default_settings(
+                 sub_id,
+                 NewTurnContextOptions {
++                    model_override: start_options.model_override,
+                     final_output_json_schema: start_options.final_output_json_schema,
+                     cyber_access_program: start_options.cyber_access_program,
+                 },
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs b/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
+index 3d2942f..a07165b 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
+@@ -97,6 +97,7 @@ impl Handler {
+                 receiver_thread_id,
+                 input_items,
+                 crate::TurnStartOptions {
++                    model_override: turn.model_override().map(str::to_owned),
+                     parent_turn_id: Some(turn.sub_id.clone()),
+                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                     turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+diff --git a/codex-rs/core/tests/suite/abort_tasks.rs b/codex-rs/core/tests/suite/abort_tasks.rs
+index 9368b1f..017c038 100644
+--- a/codex-rs/core/tests/suite/abort_tasks.rs
++++ b/codex-rs/core/tests/suite/abort_tasks.rs
+@@ -183,6 +183,7 @@ async fn root_turn_suspension_preserves_unfinished_turn_history() {
+         resumed
+             .codex
+             .recover_turn_if_idle(codex_core::RecoverTurnRequest {
++                model_override: None,
+                 turn_id: turn_id.clone(),
+                 thread_settings: Default::default(),
+                 trace: None,
+diff --git a/codex-rs/core/tests/suite/cyber_access_program.rs b/codex-rs/core/tests/suite/cyber_access_program.rs
+index 3db422c..66a31e1 100644
+--- a/codex-rs/core/tests/suite/cyber_access_program.rs
++++ b/codex-rs/core/tests/suite/cyber_access_program.rs
+@@ -96,6 +96,7 @@ async fn recover_turn_restores_cyber_access_program_without_making_it_sticky() -
+     let submission = test
+         .codex
+         .recover_turn_if_idle(RecoverTurnRequest {
++            model_override: None,
+             turn_id: turn_id.clone(),
+             thread_settings: Default::default(),
+             trace: None,
+diff --git a/codex-rs/core/tests/suite/reasoning_effort_override.rs b/codex-rs/core/tests/suite/reasoning_effort_override.rs
+index f808db1..43aaf1a 100644
+--- a/codex-rs/core/tests/suite/reasoning_effort_override.rs
++++ b/codex-rs/core/tests/suite/reasoning_effort_override.rs
+@@ -308,6 +308,7 @@ async fn reasoning_effort_override_recovery_reuses_trusted_tail_update() -> anyh
+         resumed
+             .codex
+             .recover_turn_if_idle(RecoverTurnRequest {
++                model_override: None,
+                 turn_id: turn_id.clone(),
+                 thread_settings: Default::default(),
+                 trace: None,
+diff --git a/codex-rs/core/tests/suite/resume_warning.rs b/codex-rs/core/tests/suite/resume_warning.rs
+index 9707d40..b8518cd 100644
+--- a/codex-rs/core/tests/suite/resume_warning.rs
++++ b/codex-rs/core/tests/suite/resume_warning.rs
+@@ -29,6 +29,7 @@ fn resume_history(
+ ) -> InitialHistory {
+     let turn_id = "resume-warning-seed-turn".to_string();
+     let turn_ctx = TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_id.clone()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/tests/suite/turn_phase_trace.rs b/codex-rs/core/tests/suite/turn_phase_trace.rs
+index 4082548..f1011fd 100644
+--- a/codex-rs/core/tests/suite/turn_phase_trace.rs
++++ b/codex-rs/core/tests/suite/turn_phase_trace.rs
+@@ -218,6 +218,7 @@ async fn steer_joins_existing_turn_without_extending_sampling(
+             assert_eq!(
+                 test.codex
+                     .recover_turn_if_idle(RecoverTurnRequest {
++                        model_override: None,
+                         turn_id: call.turn_id.clone(),
+                         thread_settings: Default::default(),
+                         trace: codex_otel::span_w3c_trace_context(&recovery),
+diff --git a/codex-rs/core/tests/tool_terminal_recovery.rs b/codex-rs/core/tests/tool_terminal_recovery.rs
+index 7c661a2..cb03bda 100644
+--- a/codex-rs/core/tests/tool_terminal_recovery.rs
++++ b/codex-rs/core/tests/tool_terminal_recovery.rs
+@@ -271,6 +271,7 @@ async fn tool_terminal_recovery_request_boundary(case: RecoveryCase) -> anyhow::
+     let submission = test
+         .codex
+         .recover_turn_if_idle(RecoverTurnRequest {
++            model_override: None,
+             turn_id: TURN.into(),
+             thread_settings: Default::default(),
+             trace: None,
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 3b5eac0..5aa57dd 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -150,6 +150,7 @@ pub use model_request_observation::{
+ };
+ 
+ pub use codex_api::completed_model_response;
++pub use model_request::CapturedRunModelOverride;
+ pub use model_request::CompactionInput;
+ pub use model_request::ModelContextInput;
+ pub use model_request::ModelHttpStream;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index ba3ffa1..0929663 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -227,6 +227,10 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
+     fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>>;
+ }
+ 
++/// Explicit start-only model choice captured with the issuing native step.
++#[derive(Clone, Debug)]
++pub struct CapturedRunModelOverride(pub String);
++
+ /// Immutable routing and owner evidence captured for one issuing model request.
+ /// Admission only parses and checks the retained runtime; it must not execute tools or hooks.
+ pub trait ModelToolAdmission: Send + Sync + std::fmt::Debug {
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 072159b..3a6cc07 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -4071,6 +4071,11 @@ pub struct TurnContextNetworkItem {
+ /// latest durable baseline.
+ #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+ pub struct TurnContextItem {
++    /// SDK run choice, separate from the persistent profile/default model.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[schemars(skip)]
++    #[ts(skip)]
++    pub sdk_model_override: Option<String>,
+     /// SDK-only evidence captured at a regular model sampling boundary.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[schemars(skip)]
+@@ -6976,6 +6981,7 @@ mod tests {
+     #[test]
+     fn turn_context_item_serializes_network_when_present() -> Result<()> {
+         let item = TurnContextItem {
++            sdk_model_override: None,
+             sdk_receipt: None,
+             turn_id: None,
+             root_turn_id: None,
+diff --git a/codex-rs/protocol/src/turn_input.rs b/codex-rs/protocol/src/turn_input.rs
+index 11e50bc..3a6886c 100644
+--- a/codex-rs/protocol/src/turn_input.rs
++++ b/codex-rs/protocol/src/turn_input.rs
+@@ -58,6 +58,8 @@ pub struct TurnInputRequest {
+ /// for that turn.
+ #[derive(Clone, Debug)]
+ pub struct RecoverTurnRequest {
++    /// Original accepted run choice, retained through a manual checkpoint.
++    pub model_override: Option<String>,
+     pub turn_id: String,
+     pub thread_settings: ThreadSettingsOverrides,
+     pub trace: Option<W3cTraceContext>,
+@@ -171,6 +173,8 @@ pub struct TurnStartOptions {
+     pub final_output_json_schema: Option<Value>,
+     /// Service tier for a new turn, without changing the thread's preference.
+     pub service_tier: Option<String>,
++    /// Forced model for this run and its native descendants, without changing defaults.
++    pub model_override: Option<String>,
+     /// Parent turn lineage recorded if this request starts a new turn.
+     pub parent_turn_id: Option<String>,
+     /// Causal root turn lineage recorded if this request starts a new turn.
+@@ -249,6 +253,9 @@ pub enum NotSubmittedReason {
+     /// that differs from the active turn's schema.
+     ActiveTurnOutputSchemaMismatch,
+ 
++    /// Steering cannot replace the model admitted for the active run.
++    ActiveTurnModelOverrideMismatch,
++
+     /// `start_or_steer_turn` or `steer_turn` reached a steering path with empty user input.
+     EmptyInput,
+ }
+diff --git a/codex-rs/rollout/src/recorder_tests.rs b/codex-rs/rollout/src/recorder_tests.rs
+index 68cc0b5..dfa18ed 100644
+--- a/codex-rs/rollout/src/recorder_tests.rs
++++ b/codex-rs/rollout/src/recorder_tests.rs
+@@ -1868,6 +1868,7 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
+         timestamp: "2025-01-03T13:00:01Z".to_string(),
+         ordinal: None,
+         item: RolloutItem::TurnContext(TurnContextItem {
++            sdk_model_override: None,
+             sdk_receipt: None,
+             turn_id: Some("turn-1".to_string()),
+             root_turn_id: None,
+diff --git a/codex-rs/state/src/extract.rs b/codex-rs/state/src/extract.rs
+index 0276240..c0225b5 100644
+--- a/codex-rs/state/src/extract.rs
++++ b/codex-rs/state/src/extract.rs
+@@ -567,6 +567,7 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+@@ -618,6 +619,7 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+@@ -669,6 +671,7 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+@@ -709,6 +712,7 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+diff --git a/codex-rs/thread-store/src/local/mod.rs b/codex-rs/thread-store/src/local/mod.rs
+index 6b6c363..d2301a1 100644
+--- a/codex-rs/thread-store/src/local/mod.rs
++++ b/codex-rs/thread-store/src/local/mod.rs
+@@ -1303,6 +1303,7 @@ mod tests {
+         let cwd = std::env::current_dir().expect("current directory");
+         let turn_context = |model: &str, approval_policy| {
+             RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+diff --git a/codex-rs/thread-store/src/local/model_context_tests.rs b/codex-rs/thread-store/src/local/model_context_tests.rs
+index 5f39f04..a24b176 100644
+--- a/codex-rs/thread-store/src/local/model_context_tests.rs
++++ b/codex-rs/thread-store/src/local/model_context_tests.rs
+@@ -677,6 +677,7 @@ fn completed_user_message(turn_id: &str, message: &str) -> RolloutItem {
+ 
+ fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
+     RolloutItem::TurnContext(TurnContextItem {
++        sdk_model_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_id.to_string()),
+         root_turn_id: None,
+diff --git a/codex-rs/thread-store/src/local/rollout_migration_tests.rs b/codex-rs/thread-store/src/local/rollout_migration_tests.rs
+index ff03bb4..01ac0ed 100644
+--- a/codex-rs/thread-store/src/local/rollout_migration_tests.rs
++++ b/codex-rs/thread-store/src/local/rollout_migration_tests.rs
+@@ -2068,6 +2068,7 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
+             }),
+             started("child-turn"),
+             RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("child-turn".to_string()),
+                 root_turn_id: None,

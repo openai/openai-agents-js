@@ -92,6 +92,30 @@ Close all Sessions using a provider before calling `await provider.close()`, or 
 
 With the current [source build](building.md), providers configured with the same application-owned `NativeRuntime` have been sharing HTTP clients and retaining one eligible idle plain-run engine across provider closes. A shared runtime supports API-key HTTP only. Close all Sessions first, then their borrowing providers, then call `await runtime.close()` to release the shared resources. Runtime close has been rejecting active provider borrows. The [`NativeRuntime` example](../../../packages/agents-codex/src/runtime/native-runtime.ts) shows this order.
 
+### Per-run model selection
+
+Native runs have been accepting a string `modelOverride` on `agent.run()` and `session.submit()`. The admitted choice has been applying across configured handoff targets, native child roles, and output repair. Agents and Sessions have been retaining their default models for later runs.
+
+```ts
+import { Agent, NativeProvider } from '@openai/agents';
+
+async function main() {
+  const modelOverride = process.env.RUN_MODEL;
+  if (!modelOverride)
+    throw new Error('Set RUN_MODEL before running this example.');
+  await using provider = new NativeProvider();
+  const agent = new Agent({ instructions: 'Answer clearly.', provider });
+  const result = await agent.run('Compare the approaches.', { modelOverride });
+  console.log(result.finalOutput);
+}
+
+main().catch(console.error);
+```
+
+Queued submissions have been capturing the string at submission time. Manual checkpoint continuation has been retaining the admitted choice; steering and restored active runs have been rejecting replacement choices. A new run from settled history has been accepting a new override.
+
+Application `ModelProvider` backends have been resolving the effective model name, and direct `NativeModel` backends have been receiving that name in the request body. These native run options have been accepting strings only.
+
 ### Supply an application model
 
 The matching [source build](building.md) has been accepting `modelBackend` as either a `NativeModel` with `complete(request)` or a `ModelProvider` with `getModel(modelName)`. The native runtime has been retaining conversation history and tool execution while the application backend has been producing complete Responses-shaped output items. This route has been using HTTP mode without ChatGPT authentication; `supportsWebsockets: true` has been rejecting it.

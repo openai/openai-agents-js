@@ -466,6 +466,8 @@ export type OneShotOptions = {
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
+  /** Force this model for this run, its handoffs and native children. */
+  modelOverride?: string;
   tracing?: TraceOptions;
   /**
    * Explicit parent for this new root; omission or null inherits the Session parent.
@@ -550,6 +552,17 @@ export interface SubmitOptions<
   ifBusy?: 'reject';
 }
 /** @internal Validate before opening a provider or allocating a submission. */
+export function validateModelOverride(
+  value: string | undefined,
+): string | undefined {
+  if (
+    value !== undefined &&
+    (typeof value !== 'string' || value.trim().length === 0)
+  )
+    throw new TypeError('modelOverride must be a nonempty model name');
+  return value;
+}
+
 export function validateMaxModelSteps(
   value: number | undefined,
 ): number | undefined {
@@ -559,6 +572,7 @@ export function validateMaxModelSteps(
 }
 
 interface OperationSelection {
+  readonly modelOverride?: string;
   readonly originCatalog?: ToolCatalog;
   readonly originMcp?: readonly McpTool[];
   readonly originProfileId?: string;
@@ -4279,6 +4293,7 @@ export class Session<OutputT = string, Context = unknown> {
     maxModelSteps?: number,
     budget?: RunBudgetTracker,
     guardrailInput?: UserInput,
+    modelOverride?: string,
   ): Promise<NativeRunResult> {
     this.startTurn(
       input,
@@ -4288,6 +4303,7 @@ export class Session<OutputT = string, Context = unknown> {
       this.captureSelection(
         {
           maxModelSteps,
+          modelOverride,
           prepareRequest: this.oneShot?.prepareRequest,
           beforeStep: this.oneShot?.beforeStep,
         },
@@ -4730,6 +4746,7 @@ export class Session<OutputT = string, Context = unknown> {
     budget = RunBudgetTracker.capture(options?.budget),
     required = false,
   ): OperationSelection | undefined {
+    const modelOverride = validateModelOverride(options?.modelOverride);
     if (!this.options.openCorrection) assertOutputRepairSupported(output);
     if (
       this.options.chatGPTPlan &&
@@ -4746,6 +4763,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.tools === undefined &&
       options?.beforeStep === undefined &&
       options?.maxModelSteps === undefined &&
+      modelOverride === undefined &&
       options?.prepareRequest === undefined &&
       budget === undefined
     )
@@ -4788,6 +4806,7 @@ export class Session<OutputT = string, Context = unknown> {
         options?.tools === undefined
           ? undefined
           : this.selectionNames([...options.tools]),
+      modelOverride,
       maxModelSteps: validateMaxModelSteps(options?.maxModelSteps),
       beforeStep: options?.beforeStep,
       budget,
@@ -5406,6 +5425,9 @@ export class Session<OutputT = string, Context = unknown> {
         ? {
             selection: {
               generation: this.catalog.generation.toString(),
+              ...(selection.modelOverride === undefined
+                ? {}
+                : { model_override: selection.modelOverride }),
               ...(selection.operationDeclarationSource
                 ? {
                     operation_declaration_source:
@@ -5433,9 +5455,18 @@ export class Session<OutputT = string, Context = unknown> {
       input: output.prompt
         ? [...parts, { type: 'text', text: output.prompt }]
         : parts,
-      ...(output.schema === undefined
+      ...(output.schema === undefined && selection?.modelOverride === undefined
         ? {}
-        : { start: { final_output_json_schema: output.schema } }),
+        : {
+            start: {
+              ...(output.schema === undefined
+                ? {}
+                : { final_output_json_schema: output.schema }),
+              ...(selection?.modelOverride === undefined
+                ? {}
+                : { model_override: selection.modelOverride }),
+            },
+          }),
     };
     const wire = run.tracing ? undefined : encodeReceipt(receipt, byteLimit);
     // Active-only state never changes when another root merely registers.
@@ -5856,7 +5887,7 @@ export class Session<OutputT = string, Context = unknown> {
             correction.defaultOutput,
             false,
             correction.captureSelection(
-              undefined,
+              { modelOverride: run.selection?.modelOverride },
               correction.defaultOutput,
               run.selection?.budget,
             ),
@@ -10074,6 +10105,9 @@ export class Session<OutputT = string, Context = unknown> {
           schema == null ? undefined : encodeReceipt(schema),
           run.selection
             ? encodeOperationSelection({
+                ...(run.selection.modelOverride === undefined
+                  ? {}
+                  : { model_override: run.selection.modelOverride }),
                 generation: this.catalog.generation.toString(),
                 ...(run.selection.operationDeclarationSource
                   ? {
@@ -10510,9 +10544,11 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       this.options.agentGraph ||
       operation !== undefined ||
-      remaining !== undefined
+      remaining !== undefined ||
+      state.manual_continuation.model_override !== undefined
     )
       run.selection = {
+        modelOverride: state.manual_continuation.model_override,
         originCatalog: originalProfile?.catalog ?? this.catalog,
         originMcp: originalProfile?.mcp ?? this.mcpBindings,
         originProfileId: origin?.profile_id,
