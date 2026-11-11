@@ -5836,6 +5836,13 @@ pub async fn drain_trace_events(max_count: u32) -> napi::Result<String> {
     codex_otel::sdk_trace_routes::drain_trace_events(max_count as usize).map_err(native_error)
 }
 
+#[napi(js_name = "dispatch_trace_event")]
+pub async fn dispatch_trace_event(encoded: String) -> napi::Result<()> {
+    codex_otel::sdk_trace_routes::dispatch_trace_event(&encoded)
+        .await
+        .map_err(native_error)
+}
+
 #[derive(Debug)]
 pub(crate) enum TraceIngressError {
     Conflict,
