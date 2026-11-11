@@ -1,16 +1,17 @@
 diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index deabe0d4e60deacacd15c19f3809ddedc5ba91cf..3d00507ac46abe79d5e807aaf77fe3d90c5c8d6f 100644
 --- a/codex-rs/otel/src/sdk_trace.rs
 +++ b/codex-rs/otel/src/sdk_trace.rs
-@@ -14,6 +14,8 @@
- use opentelemetry_sdk::trace::ShouldSample;
- use serde::{Deserialize, Serialize};
+@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
  use serde_json::{Value, json};
-+
-+pub(crate) const MAX_COMPLETION_DATA_BYTES: usize = 32 * 1024;
+ use tracing_opentelemetry::OpenTelemetrySpanExt;
  
++pub(crate) const MAX_COMPLETION_DATA_BYTES: usize = 32 * 1024;
++
  #[derive(Debug, Default)]
  pub struct ScopePolicy {
-@@ -159,6 +161,23 @@
+     pub disabled: bool,
+@@ -217,6 +219,23 @@ fn retain_policy(span: &SpanContext, policy: Arc<ScopePolicy>) -> Arc<PolicyRegi
      entries.insert(identity, Arc::downgrade(&owner));
      owner
  }
@@ -34,7 +35,7 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
  pub fn policy_for_span(span: &SpanContext) -> Option<Arc<ScopePolicy>> {
      policy_registration(span).map(|registration| registration.policy.clone())
  }
-@@ -332,6 +351,7 @@
+@@ -390,6 +409,7 @@ struct Options {
      #[serde(default)]
      detached: bool,
      trace_id: Option<String>,
@@ -42,7 +43,7 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
      group_id: Option<String>,
      metadata: Option<Box<serde_json::value::RawValue>>,
      disabled: Option<bool>,
-@@ -383,12 +403,25 @@
+@@ -441,12 +461,25 @@ fn parse_trace_id(value: &str) -> Result<TraceId, String> {
      }
      Ok(id)
  }
@@ -69,7 +70,7 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
          Value::Array(values) => {
              if values.len() > 64 {
                  return Err("Tracing arrays may contain at most 64 entries".into());
-@@ -520,7 +553,8 @@
+@@ -578,7 +611,8 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
          None => inherited.as_ref().and_then(|p| p.credential.clone()),
      };
      use opentelemetry_sdk::trace::{IdGenerator, RandomIdGenerator};
@@ -79,7 +80,7 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
      let workflow_span_id = if options.kind == "workflow" {
          Some(span_id)
      } else if options.detached {
-@@ -589,7 +623,7 @@
+@@ -648,7 +682,7 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
              .unwrap_or_default()
      };
      let parent_span = parent_context.span().span_context().clone();
@@ -88,7 +89,7 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
          .trace_id
          .as_deref()
          .map(parse_trace_id)
-@@ -597,6 +631,20 @@
+@@ -656,6 +690,20 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
      if parent_span.is_valid() && trace_id.is_some_and(|id| id != parent_span.trace_id()) {
          return Err("trace_id does not match the selected parent".into());
      }
@@ -109,7 +110,7 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
      let context = parent_context.with_value(policy);
      let mut builder =
          opentelemetry::trace::SpanBuilder::from_name(options.name).with_attributes(attributes);
-@@ -690,8 +738,8 @@
+@@ -749,8 +797,8 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
      }
      if let Some(data) = &outcome.data {
          bounded_value(data, 0)?;
@@ -120,7 +121,7 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
          }
      }
      let handle = resolve(key)?;
-@@ -845,13 +893,26 @@
+@@ -904,13 +952,26 @@ mod tests {
      #[test]
      fn bounds_actual_metadata_attribute_encoding() {
          assert_eq!(
@@ -153,9 +154,10 @@ diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
      #[test]
      fn workflow_identity_uses_selected_parent_and_survives_closed_nonrecording_scopes() {
 diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
+index 645550c9dba3ee53dc3899411e559ba9984c8565..e707e245fb349643058d93660bbc25862074784e 100644
 --- a/codex-rs/otel/src/sdk_trace_routes.rs
 +++ b/codex-rs/otel/src/sdk_trace_routes.rs
-@@ -269,7 +269,14 @@
+@@ -269,7 +269,14 @@ fn attributes(span: &SpanData) -> BTreeMap<String, Value> {
              opentelemetry::Value::Bool(v) => json!(v),
              opentelemetry::Value::I64(v) => json!(v),
              opentelemetry::Value::F64(v) => json!(v),

@@ -1,5 +1,5 @@
 {
-  "result_tree": "113ab9e6e4bac8236238ad5693fe0e48961ae932",
+  "result_tree": "ded2aa839e20186349bd9f4cd2921b9d79d0f389",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -730,8 +730,16 @@
       "sha256": "b5f011895428540651c529d0e70a1f657d0df2159f386fb6c7689b4a2d953fbf"
     },
     {
+      "path": "sdk-mailbox-carrier-only-trace.patch",
+      "sha256": "fff9add082337fcec9ad2290be767de0ec5b05a104a0dc559ddf4069545a06fc"
+    },
+    {
+      "path": "sdk-mailbox-receiver-trace-privacy.patch",
+      "sha256": "0d98f210b55c1af7d92732611e700c69b6d22b89a47185e6dd8f5729281f5627"
+    },
+    {
       "path": "sdk-tracing-id-annotations.patch",
-      "sha256": "0feb86e2c91ecf17f3654f608c8e4255efdb31f95197b605d4c99f61c7cb5300"
+      "sha256": "d29abadb92f08cf9ad98e351554c26633c76ea9849217a374d1ba7fda02d504e"
     }
   ]
 }

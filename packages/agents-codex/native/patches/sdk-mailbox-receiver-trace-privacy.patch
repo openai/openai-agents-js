@@ -1,0 +1,432 @@
+diff --git a/codex-rs/core/src/agent/control/residency.rs b/codex-rs/core/src/agent/control/residency.rs
+index b53f48b2ca7715050a9aa8d864f47789e6ccde8a..5f773ce2f506b88b345d73c9f79776dda19e1149 100644
+--- a/codex-rs/core/src/agent/control/residency.rs
++++ b/codex-rs/core/src/agent/control/residency.rs
+@@ -224,7 +224,11 @@ impl V2Residency {
+                     .services
+                     .local_agent_runtime
+                     .registry
+-                    .save_evicted_environments(candidate_thread_id, environments);
++                    .save_evicted_runtime_state(
++                        candidate_thread_id,
++                        environments,
++                        candidate_thread.session.child_creation_trace_restriction(),
++                    );
+                 // Keep publication excluded until both entries have been removed.
+                 threads.remove(&candidate_thread_id);
+                 residency.remove(candidate_thread_id);
+diff --git a/codex-rs/core/src/agent/control/runtime.rs b/codex-rs/core/src/agent/control/runtime.rs
+index 081e7ac250bf942a2348ca7cbded9b984757aab2..9136602622a9dc879c7ba0aee686fa3c2f28cd77 100644
+--- a/codex-rs/core/src/agent/control/runtime.rs
++++ b/codex-rs/core/src/agent/control/runtime.rs
+@@ -197,6 +197,19 @@ impl LocalAgentRuntime {
+         runtime
+     }
+
++    pub(crate) fn uses_sdk_child_trace_privacy(&self) -> bool {
++        self.manager
++            .upgrade()
++            .is_some_and(|manager| manager.sdk_child_trace_privacy)
++    }
++
++    pub(crate) fn child_creation_trace_restriction(
++        &self,
++        thread_id: codex_protocol::ThreadId,
++    ) -> Option<codex_otel::sdk_trace::ScopeRestriction> {
++        self.registry.creation_trace_restriction(thread_id)
++    }
++
+     /// Bind local startup to the same tree state with this session's identity.
+     pub(crate) fn control(&self, session_id: SessionId) -> LocalAgentControl {
+         LocalAgentControl {
+diff --git a/codex-rs/core/src/agent/registry.rs b/codex-rs/core/src/agent/registry.rs
+index d7fae371d57f20ec518e4b2283d223cad80b2aab..c44e38b753e838c3aec45e40dbc26c2f4fdaeaa8 100644
+--- a/codex-rs/core/src/agent/registry.rs
++++ b/codex-rs/core/src/agent/registry.rs
+@@ -1,4 +1,5 @@
+ use crate::agent::types::AgentMetadata;
++use codex_otel::sdk_trace::ScopeRestriction;
+ use codex_protocol::AgentPath;
+ use codex_protocol::ThreadId;
+ use codex_protocol::error::CodexErr;
+@@ -39,6 +40,8 @@ struct ActiveAgents {
+ struct RegisteredAgent {
+     path: String,
+     evicted_environments: Option<Vec<TurnEnvironmentSelection>>,
++    // Process-local privacy only. An absent value carries no creation consent.
++    creation_trace_restriction: Option<ScopeRestriction>,
+ }
+
+ impl RegisteredAgent {
+@@ -46,6 +49,7 @@ impl RegisteredAgent {
+         Self {
+             path,
+             evicted_environments: None,
++            creation_trace_restriction: None,
+         }
+     }
+ }
+@@ -169,10 +173,11 @@ impl AgentRegistry {
+             .cloned()
+     }
+
+-    pub(crate) fn save_evicted_environments(
++    pub(crate) fn save_evicted_runtime_state(
+         &self,
+         thread_id: ThreadId,
+         environments: Vec<TurnEnvironmentSelection>,
++        creation_trace_restriction: Option<ScopeRestriction>,
+     ) {
+         let mut active_agents = self
+             .active_agents
+@@ -180,9 +185,22 @@ impl AgentRegistry {
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
+         if let Some(agent) = active_agents.thread_paths.get_mut(&thread_id) {
+             agent.evicted_environments = Some(environments);
++            agent.creation_trace_restriction = creation_trace_restriction;
+         }
+     }
+
++    pub(crate) fn creation_trace_restriction(
++        &self,
++        thread_id: ThreadId,
++    ) -> Option<ScopeRestriction> {
++        self.active_agents
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .thread_paths
++            .get(&thread_id)
++            .and_then(|agent| agent.creation_trace_restriction)
++    }
++
+     pub(crate) fn evicted_environments(
+         &self,
+         thread_id: ThreadId,
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index 9030dbbe983ff8a39ce5702b09f31dc1bd6dbe88..04f98d2f837c2b3202b013ca53bae1458146f4a4 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -180,7 +180,11 @@ pub(crate) struct MailboxWakeBatch {
+ }
+
+ impl MailboxWakeBatch {
+-    pub(crate) fn wake_span(&self, sub_id: &str) -> Span {
++    pub(crate) fn wake_span(
++        &self,
++        sub_id: &str,
++        restriction: sdk_trace::ScopeRestriction,
++    ) -> Span {
+         if self.initiating_agent_path.is_none() {
+             // Queue-only durable wake has no triggering caller.
+             return Span::current();
+@@ -195,8 +199,14 @@ impl MailboxWakeBatch {
+             Some((trace, context))
+         });
+         let parent = match parent {
+-            Some((trace, _)) if trace.submission_id == sub_id => return Span::current(),
+-            Some((_, parent)) => parent,
++            Some((trace, parent)) => {
++                let immediate = trace.submission_id == sub_id;
++                if immediate && restriction == sdk_trace::ScopeRestriction::Unrestricted {
++                    return Span::current();
++                }
++                let dispatch = immediate.then(Span::current);
++                restriction.apply(parent, dispatch.as_ref())
++            }
+             // A mixed or unknown owner has no shared parent, storage, or capture consent.
+             None => sdk_trace::suppressed_context(),
+         };
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 0168454920b1a22188596b83dbfc12ec9d1477d3..3c42c643e25bdfce7979c5365c77e1af54a02618 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -762,6 +762,16 @@ impl Session {
+         }
+     }
+
++    pub(crate) fn child_creation_trace_restriction(
++        &self,
++    ) -> Option<codex_otel::sdk_trace::ScopeRestriction> {
++        self.services
++            .thread_extension_data
++            .get::<codex_otel::sdk_trace::ScopeRestriction>()
++            .as_deref()
++            .copied()
++    }
++
+     #[instrument(name = "session_init", level = "info", skip_all)]
+     #[allow(clippy::too_many_arguments)]
+     pub(crate) async fn new(
+@@ -1039,6 +1049,26 @@ impl Session {
+             thread_extension_init,
+         );
+         thread_extension_data.insert(crate::context::GuardianReviewEvidence::default());
++        if local_agent_runtime.uses_sdk_child_trace_privacy()
++            && matches!(
++                session_source,
++                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
++            )
++        {
++            use codex_otel::sdk_trace;
++            let restriction = local_agent_runtime
++                .child_creation_trace_restriction(thread_id)
++                .unwrap_or_else(|| {
++                    if matches!(&initial_history, InitialHistory::Resumed(_)) {
++                        // A cold child has no process-local record of creation consent.
++                        sdk_trace::ScopeRestriction::Disabled
++                    } else {
++                        sdk_trace::current_scope_policy()
++                            .map_or_else(Default::default, |policy| policy.restriction())
++                    }
++                });
++            thread_extension_data.insert(restriction);
++        }
+         // Kick off independent async setup tasks in parallel to reduce startup latency.
+         //
+         // - initialize thread persistence with new or resumed session info
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 5a380893c6d5372bdc57b0074dfdb40e1bf980c0..cbf76b1d0be0f709c6813f5dd703dcbf67199967 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -724,7 +724,8 @@ impl Session {
+         if !startup.matches(self.active_turn.lock().await.as_ref()) {
+             return;
+         }
+-        let span = batch.wake_span(&sub_id);
++        let restriction = self.child_creation_trace_restriction().unwrap_or_default();
++        let span = batch.wake_span(&sub_id, restriction);
+         if !self
+             .start_mailbox_turn(sub_id, batch, startup)
+             .instrument(span)
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index 33154fb4ae8acf29dfa48788f4a7d2175f58b984..77612df29630308a8bcb38fe873180088410cfae 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -433,6 +433,7 @@ pub(crate) struct ThreadManagerState {
+     image_store: Arc<dyn AttachmentStore>,
+     thread_store: Arc<dyn ThreadStore>,
+     agent_graph_store: Option<Arc<dyn AgentGraphStore>>,
++    pub(crate) sdk_child_trace_privacy: bool,
+     attestation_provider: Option<Arc<dyn AttestationProvider>>,
+     external_time_provider: Option<Arc<dyn TimeProvider>>,
+     session_source: SessionSource,
+@@ -595,6 +596,7 @@ impl ThreadManager {
+                 image_store,
+                 thread_store,
+                 agent_graph_store,
++                sdk_child_trace_privacy: false,
+                 attestation_provider,
+                 external_time_provider,
+                 auth_manager,
+@@ -608,6 +610,15 @@ impl ThreadManager {
+         }
+     }
+
++    /// Enforce SDK tracing consent on mailbox wakes for this manager's children.
++    pub fn with_sdk_child_trace_privacy(mut self) -> Self {
++        let Some(state) = Arc::get_mut(&mut self.state) else {
++            unreachable!("SDK child trace privacy must be enabled before the thread manager is shared");
++        };
++        state.sdk_child_trace_privacy = true;
++        self
++    }
++
+     /// Generate every new thread identifier with the caller-provided factory.
+     pub fn with_thread_id_generator(
+         mut self,
+@@ -770,6 +781,7 @@ impl ThreadManager {
+                 image_store: passthrough_image_store(),
+                 thread_store,
+                 agent_graph_store,
++                sdk_child_trace_privacy: false,
+                 attestation_provider: None,
+                 external_time_provider: None,
+                 auth_manager,
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 685f779dae486c2003bef9c9e4d35b7dd7a47aab..deabe0d4e60deacacd15c19f3809ddedc5ba91cf 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -14,6 +14,7 @@ use opentelemetry::{Context, KeyValue, global};
+ use opentelemetry_sdk::trace::ShouldSample;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
++use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+ #[derive(Debug, Default)]
+ pub struct ScopePolicy {
+@@ -24,7 +25,9 @@ pub struct ScopePolicy {
+     pub workflow_span_id: Option<SpanId>,
+     // The SDK uses this process-local key only to select JavaScript storage.
+     callback_storage_key: Option<CallbackStorageKey>,
+-    callback_release: Option<CallbackRelease>,
++    callback_release: Option<Arc<CallbackRelease>>,
++    // A bare W3C parent may need privacy limits without gaining an SDK context token.
++    restriction_only: bool,
+ }
+
+ impl ScopePolicy {
+@@ -37,10 +40,60 @@ impl ScopePolicy {
+             workflow_span_id: self.workflow_span_id,
+             callback_storage_key: self.callback_storage_key.clone(),
+             callback_release: None,
++            restriction_only: self.restriction_only,
++        }
++    }
++
++    pub fn restriction(&self) -> ScopeRestriction {
++        if self.disabled {
++            ScopeRestriction::Disabled
++        } else if !self.include_sensitive_data {
++            ScopeRestriction::MetadataOnly
++        } else {
++            ScopeRestriction::Unrestricted
+         }
+     }
+ }
+
++#[derive(Clone, Copy, Default, PartialEq, Eq)]
++pub enum ScopeRestriction {
++    #[default]
++    Unrestricted,
++    Disabled,
++    MetadataOnly,
++}
++
++impl ScopeRestriction {
++    /// Narrow capture without changing the submitting operation's parent or routing.
++    pub fn apply(self, context: Context, dispatch: Option<&tracing::Span>) -> Context {
++        if self == Self::Unrestricted {
++            return context;
++        }
++        let context = dispatch
++            .map(OpenTelemetrySpanExt::context)
++            .filter(|context| context.span().span_context().is_valid())
++            .unwrap_or(context);
++        let disabled = self == Self::Disabled;
++        let policy = match policy_for_context(&context) {
++            Some(policy) if policy.disabled || (!disabled && !policy.include_sensitive_data) => {
++                return context;
++            }
++            Some(policy) => ScopePolicy {
++                disabled,
++                include_sensitive_data: false,
++                callback_release: policy.callback_release.clone(),
++                ..policy.without_callback_release()
++            },
++            None => ScopePolicy {
++                disabled,
++                restriction_only: true,
++                ..ScopePolicy::default()
++            },
++        };
++        context.with_value(Arc::new(policy))
++    }
++}
++
+ struct CallbackRelease(Option<Box<dyn FnOnce() + Send + Sync>>);
+
+ impl std::fmt::Debug for CallbackRelease {
+@@ -99,14 +152,19 @@ impl ShouldSample for ScopeSampler {
+         attributes: &[KeyValue],
+         links: &[opentelemetry::trace::Link],
+     ) -> SamplingResult {
+-        if parent
+-            .and_then(policy_for_context)
+-            .is_some_and(|p| p.disabled)
++        if let Some(parent) = parent
++            && let Some(policy) = policy_for_context(parent)
++            && policy.disabled
+         {
+             SamplingResult {
+                 decision: SamplingDecision::Drop,
+                 attributes: Vec::new(),
+-                trace_state: Default::default(),
++                // A restricted bare carrier still supplies the downstream W3C parent.
++                trace_state: if policy.restriction_only {
++                    parent.span().span_context().trace_state().clone()
++                } else {
++                    Default::default()
++                },
+             }
+         } else {
+             self.inner
+@@ -538,6 +596,7 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     let policy = Arc::new(ScopePolicy {
+         callback_storage_key: None,
+         callback_release: None,
++        restriction_only: false,
+         workflow_span_id,
+         disabled,
+         include_sensitive_data: capture,
+@@ -633,7 +692,7 @@ pub fn retain_callback_dispatch_context(
+     let policy = policy_for_context(&handle.context).ok_or("Native tracing policy unavailable")?;
+     let policy = Arc::new(ScopePolicy {
+         callback_storage_key: Some(CallbackStorageKey(callback_storage_key)),
+-        callback_release: Some(CallbackRelease(Some(Box::new(release)))),
++        callback_release: Some(Arc::new(CallbackRelease(Some(Box::new(release))))),
+         ..policy.without_callback_release()
+     });
+     let key = token("c");
+@@ -761,7 +820,7 @@ pub fn current_context_token() -> Option<String> {
+     // Native lifecycle hooks can inherit private values on the instrumented
+     // span. A W3C round trip would discard those values before policy lookup.
+     let context = crate::trace_context::current_span_context();
+-    let policy = policy_for_context(&context)?;
++    let policy = policy_for_context(&context).filter(|policy| !policy.restriction_only)?;
+     let registration = {
+         let span = context.span();
+         let identity = span.span_context();
+@@ -910,16 +969,48 @@ mod tests {
+         release_trace_context(&lease);
+     }
+
++    #[test]
++    fn bare_mailbox_restrictions_preserve_parent_without_sdk_context_token() {
++        let carrier = codex_protocol::protocol::W3cTraceContext {
++            traceparent: Some("00-83838383838383838383838383838383-8484848484848484-01".into()),
++            tracestate: Some("test=bare".into()),
++        };
++        for restriction in [ScopeRestriction::Disabled, ScopeRestriction::MetadataOnly] {
++            let parent = crate::trace_context::context_from_w3c_trace_context(&carrier).unwrap();
++            let restricted = restriction.apply(parent, None);
++            if restriction == ScopeRestriction::Disabled {
++                let sample = ScopeSampler::default().should_sample(
++                    Some(&restricted),
++                    restricted.span().span_context().trace_id(),
++                    "mailbox_turn_wake",
++                    &SpanKind::Internal,
++                    &[],
++                    &[],
++                );
++                assert_eq!(sample.decision, SamplingDecision::Drop);
++                assert!(sample.attributes.is_empty());
++                assert_eq!(sample.trace_state.header(), "test=bare");
++            }
++            let _guard = restricted.attach();
++            assert_eq!(
++                crate::trace_context::current_span_w3c_trace_context(),
++                Some(carrier.clone())
++            );
++            assert_eq!(
++                scoped_trace_enabled(),
++                restriction == ScopeRestriction::MetadataOnly
++            );
++            assert!(!scoped_capture_allowed());
++            assert!(current_context_token().is_none());
++        }
++    }
++
+     #[test]
+     fn disabled_sampling_has_no_recording() {
+         let policy = Arc::new(ScopePolicy {
+             disabled: true,
+             include_sensitive_data: false,
+-            credential: None,
+-            root_descriptor: Default::default(),
+-            workflow_span_id: None,
+-            callback_storage_key: None,
+-            callback_release: None,
++            ..ScopePolicy::default()
+         });
+         let context = Context::new().with_value(policy);
+         let sample = ScopeSampler::default().should_sample(
