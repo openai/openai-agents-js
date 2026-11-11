@@ -225,6 +225,57 @@ async function main() {
     await telemetry.shutdown();
     await assert.rejects(failedEngine(), /shut down or failed to initialize/);
     await assert.rejects(telemetry.configure(), { message: once });
+  } else if (mode === 'restart') {
+    const first: string[] = [];
+    const second: string[] = [];
+    await telemetry.configure({
+      traceProcessors: [{ onEvent: (event) => void first.push(event.name) }],
+    });
+    await assert.rejects(
+      telemetry.configure({
+        restartAfterShutdown: true,
+        traceProcessors: [{ onEvent: (event) => void second.push(event.name) }],
+      }),
+    );
+    const { handle: retiredParent } = JSON.parse(
+      native.start_trace_span(
+        JSON.stringify({ name: 'before native restart', kind: 'workflow' }),
+      ),
+    ) as { handle: string };
+    native.end_trace_span(retiredParent, JSON.stringify({ status: 'ok' }));
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    const live = await native.create_engine('{}', '{}', null);
+    await telemetry.shutdown();
+    await assert.rejects(
+      telemetry.configure({ restartAfterShutdown: true }),
+      /all Codex clients to close/,
+    );
+    await live.close();
+
+    await telemetry.configure({
+      restartAfterShutdown: true,
+      traceProcessors: [{ onEvent: (event) => void second.push(event.name) }],
+    });
+    assert.throws(
+      () =>
+        native.start_trace_span(
+          JSON.stringify({
+            name: 'retired child',
+            kind: 'custom',
+            parent: retiredParent,
+          }),
+        ),
+      /retired telemetry provider/,
+    );
+    native.release_trace_span(retiredParent);
+    await telemetry.withTrace({ name: 'after native restart' }, async () => {});
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    await telemetry.shutdown();
+
+    assert(first.includes('before native restart'));
+    assert(!first.includes('after native restart'));
+    assert(second.includes('after native restart'));
+    assert(!second.includes('before native restart'));
   } else if (mode === 'preclaim') {
     await assert.rejects(
       native.configure_telemetry('{"not_a_native_option":true}'),

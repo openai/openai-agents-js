@@ -57,6 +57,9 @@ export type Exporter =
     };
 
 let configuredHere = false;
+let retiredHere = false;
+let restartingHere = false;
+let shutdowns = 0;
 let processorBatchSize = 128;
 
 /** Local native diagnostic events as JSON lines on process stdout. */
@@ -87,6 +90,8 @@ export interface TraceDeliveryConfig {
 }
 
 export interface TelemetryOptions {
+  /** Restart after closing all clients and completing shutdown in this SDK instance. */
+  readonly restartAfterShutdown?: boolean;
   /** Optional local diagnostics; default records contain only static source metadata. */
   readonly diagnostics?: ConsoleDiagnostics | null;
   /** Nonempty initial routes opt in to native tracing without a built-in exporter. */
@@ -199,6 +204,11 @@ function exporter(value: unknown, signal: string): unknown {
  */
 export async function configure(options: TelemetryOptions = {}): Promise<void> {
   const input = object(options, 'options');
+  if (
+    input.restartAfterShutdown !== undefined &&
+    typeof input.restartAfterShutdown !== 'boolean'
+  )
+    invalid('restartAfterShutdown');
   const delivery = traceDeliveryOptions(input.traceDelivery);
   const initial =
     input.traceProcessors === undefined ? [] : input.traceProcessors;
@@ -227,6 +237,7 @@ export async function configure(options: TelemetryOptions = {}): Promise<void> {
       : object(input.diagnostics, 'diagnostics');
   const encoded = JSON.stringify({
     'sdk.trace_delivery': delivery,
+    'sdk.trace_restart': input.restartAfterShutdown === true ? true : undefined,
     'sdk.console_diagnostics': diagnostics && {
       level: diagnostics.level,
       targets: diagnostics.targets,
@@ -243,11 +254,30 @@ export async function configure(options: TelemetryOptions = {}): Promise<void> {
     'otel.log_agent_responses': input.logAgentResponses ?? false,
     'otel.tool_result': { max_bytes: max },
   });
-  await (await binding()).configure_telemetry(encoded);
-  // Only one SDK instance/isolate can pass native's process-wide configure gate.
-  processorBatchSize = delivery?.max_batch_size ?? 128;
-  configuredHere = true;
-  if (initialProcessors.length) await route(initialProcessors, false);
+  const restart = input.restartAfterShutdown === true;
+  if (restart) {
+    if (!retiredHere || restartingHere || shutdowns) {
+      throw new Error(
+        'Telemetry restart requires successful shutdown in this SDK instance',
+      );
+    }
+    restartingHere = true;
+  }
+  try {
+    await (await binding()).configure_telemetry(encoded);
+    if (restart) {
+      processorDeliveryStop = new AbortController();
+      droppedRecords = 0;
+      lossWatermarks.length = 0;
+      recoveryEpoch = 0;
+    }
+    processorBatchSize = delivery?.max_batch_size ?? 128;
+    configuredHere = true;
+    retiredHere = false;
+    if (initialProcessors.length) await route(initialProcessors, false);
+  } finally {
+    if (restart) restartingHere = false;
+  }
 }
 
 function validateTimeout(value: unknown): number | undefined {
@@ -264,7 +294,7 @@ function validateTimeout(value: unknown): number | undefined {
   return value;
 }
 
-/** Request a native exporter flush outside processor async contexts after all sessions close, then retire this process owner. */
+/** Flush native exporters after all Sessions close, then retire their provider. */
 export async function shutdown(
   options: { timeoutMs?: number } = {},
 ): Promise<void> {
@@ -273,16 +303,23 @@ export async function shutdown(
       'Telemetry shutdown cannot run in a trace processor async context',
     );
   const timeout = validateTimeout(options.timeoutMs);
-  const native = await binding();
-  let terminal = true;
+  if (restartingHere) throw new Error('Telemetry restart is in progress');
+  shutdowns++;
+  let terminal = false;
+  let retired = false;
   try {
+    const native = await binding();
+    terminal = true;
     await native.shutdown_telemetry(timeout);
+    retired = true;
   } catch (error) {
-    // A rejected admission can settle after configure() succeeds in this isolate.
-    terminal = !(
+    if (
       error instanceof Error &&
-      error.message === 'Configure telemetry successfully before shutdown'
-    );
+      (error.message === 'Configure telemetry successfully before shutdown' ||
+        error.message === 'Telemetry restart is in progress')
+    ) {
+      terminal = false;
+    }
     throw error;
   } finally {
     if (terminal) {
@@ -291,7 +328,10 @@ export async function shutdown(
       activeProcessorIds.clear();
       retiredProcessorIds.clear();
       wakePump?.();
+      await pump?.catch(() => {});
+      retiredHere ||= retired;
     }
+    shutdowns--;
   }
 }
 
@@ -446,7 +486,7 @@ function retireProcessors(): void {
   }
 }
 let nextProcessor = 0;
-const processorDeliveryStop = new AbortController();
+let processorDeliveryStop = new AbortController();
 let pump: Promise<void> | undefined;
 let wakePump: (() => void) | undefined;
 async function route(

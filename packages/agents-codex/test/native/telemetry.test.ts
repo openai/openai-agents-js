@@ -11,6 +11,7 @@ for (const mode of [
   'completion-decisions-refusal',
   'processor-handlers',
   'lifecycle',
+  'restart',
   'preclaim',
   'late',
   'postclaim',

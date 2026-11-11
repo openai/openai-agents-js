@@ -1,6 +1,6 @@
 //! Explicit process ownership for Codex's process-global telemetry providers.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, ensure};
@@ -8,20 +8,29 @@ use codex_config::types::OtelExporterKind;
 use codex_core_api::Config;
 use codex_http_client::{DestinationPolicy, NetworkPolicy, NetworkPolicyController};
 use codex_otel::OtelProvider;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing_subscriber::{Layer, Registry, layer::SubscriberExt, reload};
 
 use crate::config;
 
+#[derive(PartialEq, Eq)]
+enum ProviderStatus {
+    Unavailable,
+    Active,
+    Retired,
+}
+
 struct State {
-    claimed: bool,
+    logger_layer: Option<reload::Handle<Option<ExportLayer>, Registry>>,
+    status: ProviderStatus,
     engine_started: bool,
     provider: Option<OtelProvider>,
     emission: Option<EmissionSettings>,
 }
 
 static STATE: Mutex<State> = Mutex::const_new(State {
-    claimed: false,
+    logger_layer: None,
+    status: ProviderStatus::Unavailable,
     engine_started: false,
     provider: None,
     emission: None,
@@ -33,6 +42,32 @@ const SERVICE: &str = "codex_agents_js";
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 type ExportLayer = Box<dyn Layer<Registry> + Send + Sync>;
+
+static ACTIVE_ENGINES: AtomicUsize = AtomicUsize::new(0);
+// Concurrent shutdown calls can tighten the existing terminal deadline. A new
+// provider must wait until every earlier shutdown guard has finished cleanup.
+static TRANSITION: RwLock<()> = RwLock::const_new(());
+
+pub(crate) struct EngineLease(AtomicBool);
+
+impl EngineLease {
+    fn new() -> Self {
+        ACTIVE_ENGINES.fetch_add(1, Ordering::AcqRel);
+        Self(AtomicBool::new(true))
+    }
+
+    pub(crate) fn retire(&self) {
+        if self.0.swap(false, Ordering::AcqRel) {
+            ACTIVE_ENGINES.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+impl Drop for EngineLease {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
 
 /// Only successful, nonsecret process controls may be retained by engines.
 #[derive(Clone)]
@@ -62,14 +97,14 @@ impl EmissionSettings {
     }
 }
 
-pub(crate) async fn engine_starting() -> Result<Option<EmissionSettings>> {
+pub(crate) async fn engine_starting() -> Result<(EngineLease, Option<EmissionSettings>)> {
     let mut state = STATE.lock().await;
     ensure!(
-        !state.claimed || ACTIVE.load(Ordering::Acquire),
+        state.logger_layer.is_none() || ACTIVE.load(Ordering::Acquire),
         "Codex telemetry was shut down or failed to initialize; start a new process"
     );
     state.engine_started = true;
-    Ok(state.emission.clone())
+    Ok((EngineLease::new(), state.emission.clone()))
 }
 
 pub fn export_requested(config: &Config) -> bool {
@@ -103,21 +138,45 @@ fn http_mtls_network_policy(policy: &NetworkPolicy) -> NetworkPolicy {
 
 pub async fn initialize(config_json: &str, runtime_json: &str) -> Result<()> {
     let mut state = STATE.lock().await;
-    ensure!(
-        !state.claimed,
-        "Codex telemetry can only be configured once per process"
-    );
-    ensure!(
-        !state.engine_started,
-        "Configure telemetry before creating any Codex clients"
-    );
-    ensure!(
-        !tracing::dispatcher::has_been_set(),
-        "A Rust tracing subscriber is already installed; Codex telemetry cannot replace it"
-    );
+    if state.logger_layer.is_none() {
+        ensure!(
+            !state.engine_started,
+            "Configure telemetry before creating any Codex clients"
+        );
+        ensure!(
+            !tracing::dispatcher::has_been_set(),
+            "A Rust tracing subscriber is already installed; Codex telemetry cannot replace it"
+        );
+    }
     let (config_json, diagnostics) = crate::console_diagnostics::extract(config_json)?;
     let mut options: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&config_json)?;
+    let restart = options.remove("sdk.trace_restart") == Some(serde_json::Value::Bool(true));
+    let _restart = if restart {
+        ensure!(
+            state.status == ProviderStatus::Retired,
+            "Telemetry restart requires successful shutdown"
+        );
+        ensure!(
+            diagnostics.is_none(),
+            "Console diagnostics are configured with the initial telemetry subscriber"
+        );
+        ensure!(
+            ACTIVE_ENGINES.load(Ordering::Acquire) == 0,
+            "Telemetry restart requires all Codex clients to close"
+        );
+        Some(
+            TRANSITION
+                .try_write()
+                .map_err(|_| anyhow!("Telemetry shutdown is in progress"))?,
+        )
+    } else {
+        ensure!(
+            state.logger_layer.is_none(),
+            "Codex telemetry can only be configured once per process"
+        );
+        None
+    };
     let delivery = options
         .remove("sdk.trace_delivery")
         .map(codex_otel::sdk_trace_routes::HostTraceDeliverySettings::parse)
@@ -136,22 +195,27 @@ pub async fn initialize(config_json: &str, runtime_json: &str) -> Result<()> {
     }
 
     codex_otel::sdk_trace::configure_pipeline(false);
-    // Claim the subscriber first: losing this race must not modify native OTel globals.
-    let (logger, handle) = reload::Layer::new(None::<ExportLayer>);
-    let mut layers: Vec<ExportLayer> = vec![
-        logger
-            .with_filter(tracing_subscriber::filter::filter_fn(
-                OtelProvider::log_export_filter,
-            ))
-            .boxed(),
-    ];
-    layers.push(OtelProvider::reloadable_tracing_layer(SERVICE).boxed());
-    if let Some(diagnostics) = diagnostics {
-        layers.push(diagnostics.layer(&ACTIVE).boxed());
+    if restart {
+        codex_otel::sdk_trace::restart_trace_delivery().map_err(|error| anyhow!(error))?;
+        state.status = ProviderStatus::Unavailable;
+    } else {
+        // Claim the subscriber first: losing this race must not modify native OTel globals.
+        let (logger, handle) = reload::Layer::new(None::<ExportLayer>);
+        let mut layers: Vec<ExportLayer> = vec![
+            logger
+                .with_filter(tracing_subscriber::filter::filter_fn(
+                    OtelProvider::log_export_filter,
+                ))
+                .boxed(),
+        ];
+        layers.push(OtelProvider::reloadable_tracing_layer(SERVICE).boxed());
+        if let Some(diagnostics) = diagnostics {
+            layers.push(diagnostics.layer(&ACTIVE).boxed());
+        }
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layers))
+            .context("Could not claim the process-wide Rust tracing subscriber")?;
+        state.logger_layer = Some(handle);
     }
-    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layers))
-        .context("Could not claim the process-wide Rust tracing subscriber")?;
-    state.claimed = true;
     if let Some(delivery) = delivery {
         codex_otel::sdk_trace_routes::configure_host_trace_delivery(delivery);
     }
@@ -169,6 +233,10 @@ pub async fn initialize(config_json: &str, runtime_json: &str) -> Result<()> {
         .as_ref()
         .and_then(OtelProvider::logger_export_layer)
         .map(Layer::boxed);
+    let handle = state
+        .logger_layer
+        .as_ref()
+        .expect("telemetry subscriber was installed");
     if let Err(error) = handle.reload(logger) {
         if let Some(provider) = provider {
             provider.shutdown_with_timeout(SHUTDOWN_TIMEOUT).await?;
@@ -193,12 +261,16 @@ pub async fn initialize(config_json: &str, runtime_json: &str) -> Result<()> {
     codex_otel::sdk_trace::configure_pipeline(TRACE_INITIALIZED.load(Ordering::Acquire));
     ACTIVE.store(true, Ordering::Release);
     state.provider = provider;
+    state.status = ProviderStatus::Active;
     CONFIGURED.store(true, Ordering::Release);
     Ok(())
 }
 
 pub async fn shutdown(timeout_ms: Option<u32>) -> Result<()> {
     let timeout = timeout(timeout_ms)?;
+    let _shutdown = TRANSITION
+        .try_read()
+        .map_err(|_| anyhow!("Telemetry restart is in progress"))?;
     ensure!(
         CONFIGURED.load(Ordering::Acquire),
         "Configure telemetry successfully before shutdown"
@@ -214,12 +286,16 @@ pub async fn shutdown(timeout_ms: Option<u32>) -> Result<()> {
     let mut state = tokio::time::timeout(timeout, STATE.lock())
         .await
         .map_err(|_| anyhow!("Telemetry shutdown timed out waiting for the telemetry owner"))?;
-    if let Some(provider) = state.provider.take() {
-        let remaining = timeout.saturating_sub(started.elapsed());
-        let _ = provider.force_flush_with_timeout(remaining).await;
-        provider
-            .shutdown_with_timeout(timeout.saturating_sub(started.elapsed()))
-            .await?;
+    if state.status == ProviderStatus::Active {
+        state.status = ProviderStatus::Unavailable;
+        if let Some(provider) = state.provider.take() {
+            let remaining = timeout.saturating_sub(started.elapsed());
+            let _ = provider.force_flush_with_timeout(remaining).await;
+            provider
+                .shutdown_with_timeout(timeout.saturating_sub(started.elapsed()))
+                .await?;
+        }
+        state.status = ProviderStatus::Retired;
     }
     Ok(())
 }
@@ -262,7 +338,7 @@ mod tests {
             "A Rust tracing subscriber is already installed; Codex telemetry cannot replace it"
         );
         // Rejection leaves engine admission usable and does not claim ownership.
-        assert!(super::engine_starting().await.unwrap().is_none());
+        assert!(super::engine_starting().await.unwrap().1.is_none());
         assert_eq!(
             super::shutdown(None).await.unwrap_err().to_string(),
             "Configure telemetry successfully before shutdown"
