@@ -1,8 +1,16 @@
 diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
-index 2cfb8eb..461ac28 100644
+index 2cfb8eb4e8423d8cfa434c73ed2f41ed8bc0ec5f..6eff74fe426bb1761a3cbb52eb3129fae76ec3b8 100644
 --- a/codex-rs/otel/src/sdk_trace_routes.rs
 +++ b/codex-rs/otel/src/sdk_trace_routes.rs
-@@ -324,40 +324,53 @@ fn event(
+@@ -91,6 +91,7 @@ struct Routes {
+     queued_since: Option<Instant>,
+     draining: bool,
+     pending: BTreeSet<u64>,
++    dispatch_waiters: BTreeMap<u64, tokio::sync::oneshot::Sender<()>>,
+     bytes: usize,
+     dropped: u64,
+     failed: u64,
+@@ -324,40 +325,53 @@ fn event(
      let credential = credential.filter(|_| !s.credentials_closed);
      // Native fields are copied into an immutable, bounded JSON snapshot. Never copy policy.
      let attrs = attributes(span);
@@ -65,12 +73,12 @@ index 2cfb8eb..461ac28 100644
      }
      if s.queue.is_empty() {
          s.queued_since = Some(Instant::now());
-@@ -365,7 +378,75 @@ fn event(
+@@ -365,7 +379,67 @@ fn event(
      s.bytes += bytes;
      s.pending.insert(sequence);
      s.queue.push_back((sequence, value, bytes, credential));
 +    true
-+}
+ }
 +/// Detached processor observation; no live span or credential authority.
 +#[derive(Deserialize, Serialize)]
 +struct DispatchedTraceEvent {
@@ -89,7 +97,7 @@ index 2cfb8eb..461ac28 100644
 +    credential_required: Option<bool>,
 +    #[serde(skip_serializing)]
 +    root_descriptor: Option<Value>,
- }
++}
 +
 +/// Delivery through the existing bounded processor queue and acknowledgement.
 +pub async fn dispatch_trace_event(encoded: &str) -> Result<(), String> {
@@ -104,7 +112,7 @@ index 2cfb8eb..461ac28 100644
 +    let descriptor = observation.root_descriptor.take();
 +    let mut value =
 +        serde_json::to_value(observation).map_err(|_| "Invalid trace event snapshot")?;
-+    let sequence = {
++    let acknowledged = {
 +        let mut s = lock();
 +        if s.credentials_closed {
 +            return Err("Telemetry has been shutting down".into());
@@ -121,23 +129,112 @@ index 2cfb8eb..461ac28 100644
 +            return Err("Trace event exceeds processor queue capacity".into());
 +        }
 +        s.draining = true;
-+        sequence
++        let (sender, acknowledged) = tokio::sync::oneshot::channel();
++        s.dispatch_waiters.insert(sequence, sender);
++        acknowledged
 +    };
-+    loop {
-+        let (acknowledged, closing) = {
-+            let s = lock();
-+            (s.acknowledged >= sequence, s.credentials_closed)
-+        };
-+        if acknowledged {
-+            return Ok(());
-+        }
-+        if closing {
-+            return Err("Telemetry has been shutting down before trace delivery".into());
-+        }
-+        tokio::time::sleep(Duration::from_millis(2)).await;
-+    }
++    acknowledged
++        .await
++        .map_err(|_| "Telemetry has been shutting down before trace delivery".into())
 +}
 +
  fn truncate(s: &str, max: usize) -> String {
      let mut end = s.len().min(max);
      while !s.is_char_boundary(end) {
+@@ -441,6 +515,7 @@ pub fn ack_trace_events(sequence: u64, failed: u64) -> Result<(), String> {
+     if sequence > s.delivered || sequence < s.acknowledged {
+         return Err("invalid trace event acknowledgment".into());
+     }
++    let mut dispatch_waiters = Vec::new();
+     if sequence > s.acknowledged {
+         s.failed = s.failed.saturating_add(failed);
+         if let Some((barrier, _, captured_failed)) = &mut s.flush_snapshot {
+@@ -450,6 +525,16 @@ pub fn ack_trace_events(sequence: u64, failed: u64) -> Result<(), String> {
+         }
+         s.acknowledged = sequence;
+         s.pending.retain(|pending| *pending > sequence);
++        while let Some(waiter) = s.dispatch_waiters.first_entry() {
++            if *waiter.key() > sequence {
++                break;
++            }
++            dispatch_waiters.push(waiter.remove());
++        }
++    }
++    drop(s);
++    for waiter in dispatch_waiters {
++        let _ = waiter.send(());
+     }
+     Ok(())
+ }
+@@ -541,7 +626,7 @@ pub(crate) fn configure_log_shutdown(owner: Option<&Arc<crate::provider::LogShut
+     lock().log_shutdown = owner.map(Arc::downgrade);
+ }
+ pub fn begin_shutdown(deadline: Instant) {
+-    let (batch, logs) = {
++    let (batch, logs, dispatch_waiters) = {
+         let mut routes = lock();
+         routes.default_available = false;
+         routes.accepting_credentials = false;
+@@ -552,8 +637,10 @@ pub fn begin_shutdown(deadline: Instant) {
+                 .log_shutdown
+                 .as_ref()
+                 .and_then(std::sync::Weak::upgrade),
++            std::mem::take(&mut routes.dispatch_waiters),
+         )
+     };
++    drop(dispatch_waiters);
+     if let Some(logs) = logs {
+         logs.begin(deadline);
+     }
+@@ -1167,6 +1254,51 @@ mod tests {
+         assert!(lock().pending.is_empty());
+     }
+ 
++    #[tokio::test]
++    async fn detached_dispatch_wakes_on_acknowledgement_or_shutdown() {
++        use std::future::Future;
++        use std::sync::atomic::{AtomicUsize, Ordering};
++        use std::task::{Poll, Wake, Waker};
++
++        #[derive(Default)]
++        struct WakeCounter(AtomicUsize);
++        impl Wake for WakeCounter {
++            fn wake(self: Arc<Self>) {
++                self.0.fetch_add(1, Ordering::Relaxed);
++            }
++        }
++
++        let _test = TEST_LOCK.lock().unwrap();
++        *lock() = Routes::default();
++        set_trace_routes(r#"{"processor_ids":["recorder"]}"#).unwrap();
++        let encoded = r#"{"lifecycle":"end","trace_id":"123","span_id":"456","name":"replay","kind":"internal","start_time_unix_nanos":"1","attributes":{},"outcome":"ok","dropped_attributes_count":0}"#;
++        let first_wakes = Arc::new(WakeCounter::default());
++        let second_wakes = Arc::new(WakeCounter::default());
++        let first_waker = Waker::from(first_wakes.clone());
++        let second_waker = Waker::from(second_wakes.clone());
++        let mut first_context = std::task::Context::from_waker(&first_waker);
++        let mut second_context = std::task::Context::from_waker(&second_waker);
++        let mut first = std::pin::pin!(dispatch_trace_event(encoded));
++        let mut second = std::pin::pin!(dispatch_trace_event(encoded));
++
++        assert!(first.as_mut().poll(&mut first_context).is_pending());
++        assert!(second.as_mut().poll(&mut second_context).is_pending());
++        drain_trace_events(2).unwrap();
++        ack_trace_events(1, 0).unwrap();
++        assert_eq!(first_wakes.0.load(Ordering::Relaxed), 1);
++        assert_eq!(second_wakes.0.load(Ordering::Relaxed), 0);
++        assert_eq!(first.poll(&mut first_context), Poll::Ready(Ok(())));
++
++        begin_shutdown(Instant::now());
++        assert_eq!(second_wakes.0.load(Ordering::Relaxed), 1);
++        assert_eq!(
++            second.poll(&mut second_context),
++            Poll::Ready(Err(
++                "Telemetry has been shutting down before trace delivery".into()
++            ))
++        );
++    }
++
+     #[test]
+     fn host_delivery_accounts_for_configured_queue_and_byte_overflow() {
+         let _test = TEST_LOCK.lock().unwrap();
