@@ -1,3 +1,4 @@
+import { Handoff } from './handoffs';
 import {
   ManagedWorkspaceCheckpoint,
   managedWorkspaceRestore,
@@ -15,6 +16,11 @@ import {
   type InputGuardrail,
   type OutputGuardrail,
 } from './guardrails';
+import {
+  captureHostedPromptSource,
+  hostedPromptControls,
+  type HostedPromptSource,
+} from './hosted-prompts';
 import type {
   BeforeCompact,
   BeforeComplete,
@@ -115,6 +121,7 @@ import { captureThreadStore, type SessionStore } from './custom-thread-store';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
+  toolDeclarationIdentity,
   isDirectFunctionTool,
   toolIdentity,
   type Tool,
@@ -129,7 +136,6 @@ import type {
 } from './session';
 
 export type AgentOptions<Context = undefined, Output = string> = {
-  instructions: string;
   realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
@@ -157,13 +163,18 @@ export type AgentOptions<Context = undefined, Output = string> = {
    */
   handoffs?: readonly (
     | Agent<Context, Output>
+    | Handoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling?: boolean;
-} & (string extends Output
-  ? { outputType?: OutputSpec<Output> }
-  : { outputType: OutputSpec<Output> });
+} & (
+  | { instructions: string; hostedPrompt?: HostedPromptSource<Context> }
+  | { instructions?: undefined; hostedPrompt: HostedPromptSource<Context> }
+) &
+  (string extends Output
+    ? { outputType?: OutputSpec<Output> }
+    : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
   /** Format original function argument/body failures; omission preserves propagation.
@@ -280,6 +291,16 @@ export interface RunOptions<Context = undefined> extends Omit<
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
 const implicitProviders = new WeakMap<NativeProvider, WeakSet<object>>();
+const implicitTools = Symbol('implicitTools');
+const implicitInstructions = Symbol('implicitInstructions');
+
+function capturedInstructions(agent: Agent<any, any>): string | undefined {
+  const getter = agent[implicitInstructions];
+  return getter !== undefined &&
+    Object.getOwnPropertyDescriptor(agent, 'instructions')?.get === getter
+    ? undefined
+    : agent.instructions;
+}
 const ownedRun = Symbol('ownedRun');
 const correctionOpening = Symbol('correctionOpening');
 const deferredOpening = Symbol('deferredOpening');
@@ -316,6 +337,8 @@ interface CapturedOpening {
   readonly outputGuardrails: readonly OutputGuardrail<any>[];
   readonly beforeCompact?: BeforeCompact<any>;
   readonly transformContext?: ContextTransform<any>;
+  readonly hostedPrompt?: HostedPromptSource<any>;
+  readonly hostedPromptControls?: JsonObject;
 }
 type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
   [managedWorkspaceRestore]?: true;
@@ -422,6 +445,9 @@ export class Agent<Context = undefined, Output = string> {
   static readonly #canonicalPrepare = this.prototype.prepare;
   static readonly #canonicalApply = Function.prototype.apply;
   instructions: string;
+  declare [implicitInstructions]?: () => string;
+  hostedPrompt?: HostedPromptSource<Context>;
+  [implicitTools]?: readonly Tool<Context>[];
   realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
@@ -445,15 +471,44 @@ export class Agent<Context = undefined, Output = string> {
   tools: readonly Tool<Context>[];
   handoffs: readonly (
     | Agent<Context, Output>
+    | Handoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling: boolean;
 
   constructor(options: AgentOptions<Context, Output>) {
-    if (typeof options.instructions !== 'string')
-      throw new TypeError('Agent instructions are required');
-    this.instructions = options.instructions;
+    const promptSource = captureHostedPromptSource(options.hostedPrompt);
+    const declaredInstructions = options.instructions;
+    if (
+      typeof declaredInstructions !== 'string' &&
+      !(declaredInstructions === undefined && promptSource !== undefined)
+    )
+      throw new TypeError(
+        'Agent instructions are required unless hostedPrompt supplies them',
+      );
+    this.instructions = declaredInstructions ?? '';
+    if (declaredInstructions === undefined) {
+      // Keep the public string property while capturing hosted omission. A later
+      // assignment, including an empty string, supplies explicit instructions.
+      let instructions = '';
+      const get = () => instructions;
+      Object.defineProperty(this, implicitInstructions, {
+        value: get,
+        writable: true,
+      });
+      Object.defineProperty(this, 'instructions', {
+        enumerable: true,
+        configurable: true,
+        get,
+        set: (value: string) => {
+          // Frozen profile declarations retain ordinary read-only field behavior.
+          this[implicitInstructions] = undefined;
+          instructions = value;
+        },
+      });
+    }
+    this.hostedPrompt = promptSource;
     this.realtime = captureRealtimeConfig(options.realtime);
     this.name = options.name;
     this.model = options.model;
@@ -479,11 +534,13 @@ export class Agent<Context = undefined, Output = string> {
       implicitProviders.set(this.provider, new WeakSet([this]));
     this.outputType = options.outputType;
     this.tools = [...(options.tools ?? [])];
+    this[implicitTools] = options.tools === undefined ? this.tools : undefined;
     this.handoffs = Object.freeze([...(options.handoffs ?? [])]);
     if (
       this.handoffs.some(
         (target) =>
           !(target instanceof Agent) &&
+          !(target instanceof Handoff) &&
           !isRealtimeHandoff(target) &&
           typeof target !== 'function',
       )
@@ -921,11 +978,11 @@ export class Agent<Context = undefined, Output = string> {
         options.resume !== undefined)
     )
       throw new TypeError('Deferred opening requires a portable Session');
-    const {
-      instructions: baseInstructions,
-      name,
-      programmaticToolCalling,
-    } = opening ?? this;
+    const { name, programmaticToolCalling } = opening ?? this;
+    const declaredInstructions = opening
+      ? opening.instructions
+      : capturedInstructions(this);
+    const baseInstructions = declaredInstructions ?? '';
     const factory = opening ? opening.factory : this.session;
     const {
       provider: openingProvider,
@@ -961,11 +1018,41 @@ export class Agent<Context = undefined, Output = string> {
       ? opening.settings
       : this.modelSettings && captureModelSettings(this.modelSettings);
     if (!opening && openingSettings !== undefined) {
+      const overrides = captureModelSettings(openingSettings);
       settings = captureModelSettings({
         ...settings,
-        ...captureModelSettings(openingSettings),
+        ...overrides,
+        retry:
+          overrides.retry === undefined
+            ? settings?.retry
+            : overrides.retry === null
+              ? null
+              : { ...settings?.retry, ...overrides.retry },
       });
     }
+    const hostedPrompt = opening
+      ? opening.hostedPrompt
+      : captureHostedPromptSource(this.hostedPrompt);
+    if (declaredInstructions === undefined && hostedPrompt === undefined)
+      throw new TypeError(
+        'Agent instructions are required unless hostedPrompt supplies them',
+      );
+    const promptControls = opening
+      ? opening.hostedPromptControls
+      : hostedPromptControls(hostedPrompt, {
+          model,
+          instructions:
+            declaredInstructions === undefined &&
+            !options.instructionFiles?.length
+              ? undefined
+              : baseInstructions,
+          toolsProvided:
+            options.tools !== undefined ||
+            this[implicitTools] !== this.tools ||
+            this.tools.length > 0 ||
+            this.handoffs.length > 0,
+          extraBody: settings?.extraBody,
+        });
     const declarations = opening
       ? {
           ...opening.declarations,
@@ -1073,7 +1160,11 @@ export class Agent<Context = undefined, Output = string> {
               programmaticToolCalling,
               beforeCompact,
               transformContext,
+              hostedPrompt,
             } as AgentOptions<Context, Output>),
+            true,
+            undefined,
+            promptControls,
           )
         : undefined;
 
@@ -1209,6 +1300,7 @@ export class Agent<Context = undefined, Output = string> {
           instructions,
           outputGuardrails.length > 0,
           inputGuardrails.length + agentInputGuardrails.length > 0,
+          settings,
         )
       : undefined;
     const graphNative = graph ? await binding() : undefined;
@@ -1590,6 +1682,7 @@ export class Agent<Context = undefined, Output = string> {
               ) ??
                 false),
             transform_context:
+              hostedPrompt !== undefined ||
               transformContext !== undefined ||
               (completedGraph?.roster.some(
                 (profile) => profile.transform_context === true,
@@ -1688,6 +1781,8 @@ export class Agent<Context = undefined, Output = string> {
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
+        hostedPrompt,
+        hostedPromptControls: promptControls,
         checklist: declarations.checklist,
         websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
@@ -1774,6 +1869,8 @@ export class Agent<Context = undefined, Output = string> {
             contextTransformPurpose,
             beforeCompact,
             transformContext,
+            hostedPrompt,
+            hostedPromptControls: promptControls,
           });
       // HTTP reopening needs captured auth; custom producers use text admission.
       if (lease.apiKey !== undefined) {
@@ -1854,6 +1951,7 @@ export function captureAgentProfiles<Context, Output>(
   rootDeclaration: Agent<Context, Output> = root,
   captureProvider = true,
   idPrefix = 'agent_',
+  rootPromptControls?: JsonObject,
 ): readonly CapturedAgentProfile<Context, Output>[] {
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
@@ -1885,7 +1983,16 @@ export function captureAgentProfiles<Context, Output>(
   const profiles: CapturedAgentProfile<Context, Output>[] = [];
   for (const agent of agents) {
     const source = agent === root ? rootDeclaration : agent;
-    const declarations = splitToolDeclarations(source.tools);
+    const handoffBindings = new Set(
+      source.handoffs
+        .filter((reference) => reference instanceof Handoff)
+        .map((reference) => toolDeclarationIdentity(reference.callback)),
+    );
+    const sourceTools = source.tools.filter(
+      (tool) =>
+        !handoffBindings.has(toolDeclarationIdentity(tool as SessionTool)),
+    );
+    const declarations = splitToolDeclarations(sourceTools);
     const plain = declarations.tools;
     const capturedTools = captureTools(plain).tools;
     assertUniqueToolIdentities([
@@ -1900,7 +2007,7 @@ export function captureAgentProfiles<Context, Output>(
         ? Object.freeze({ ...source.outputType })
         : source.outputType;
     const declaration = new Agent<Context, Output>({
-      instructions: source.instructions,
+      instructions: capturedInstructions(source),
       realtime: source.realtime,
       name: source.name,
       model: source.model,
@@ -1908,9 +2015,12 @@ export function captureAgentProfiles<Context, Output>(
       modelSettings: source.modelSettings,
       provider: captureProvider ? rootDeclaration.provider : undefined,
       outputType,
-      tools: source.tools.map(
-        (tool) => replacements.get(tool as SessionTool) ?? tool,
-      ),
+      tools:
+        source[implicitTools] === source.tools && source.tools.length === 0
+          ? undefined
+          : sourceTools.map(
+              (tool) => replacements.get(tool as SessionTool) ?? tool,
+            ),
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
@@ -1918,6 +2028,7 @@ export function captureAgentProfiles<Context, Output>(
       outputGuardrails: source.outputGuardrails,
       beforeCompact: source.beforeCompact,
       transformContext: source.transformContext,
+      hostedPrompt: source.hostedPrompt,
     } as AgentOptions<Context, Output>);
     if (wireIdentity(declaration) !== output)
       throw new TypeError(
@@ -1945,7 +2056,8 @@ export function captureAgentProfiles<Context, Output>(
     const callbackTools: import('./tools').FunctionTool<Context>[] = [];
     for (const reference of declaration.handoffs) {
       let target: Agent<Context, Output>;
-      if (isRealtimeHandoff(reference)) target = reference.agent;
+      if (reference instanceof Handoff) target = reference.target;
+      else if (isRealtimeHandoff(reference)) target = reference.agent;
       else if (reference instanceof Agent) target = reference;
       else {
         if (typeof reference !== 'function')
@@ -1968,17 +2080,20 @@ export function captureAgentProfiles<Context, Output>(
         }
       }
       if (
+        !(reference instanceof Handoff) &&
         (!isRealtimeHandoff(reference) || reference.name === undefined) &&
         !target.name?.trim()
       )
         throw new TypeError('A handoff target requires a nonempty Agent.name');
       const name =
-        isRealtimeHandoff(reference) && reference.name !== undefined
-          ? reference.name
-          : `transfer_to_${target.name}`
-              .replace(/[^a-zA-Z0-9_-]/g, '_')
-              .toLowerCase()
-              .slice(0, 64);
+        reference instanceof Handoff
+          ? reference.callback.name
+          : isRealtimeHandoff(reference) && reference.name !== undefined
+            ? reference.name
+            : `transfer_to_${target.name}`
+                .replace(/[^a-zA-Z0-9_-]/g, '_')
+                .toLowerCase()
+                .slice(0, 64);
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name))
         throw new TypeError('Invalid Realtime handoff name');
       let index = indices.get(target);
@@ -1988,9 +2103,19 @@ export function captureAgentProfiles<Context, Output>(
         agents.push(target);
       }
       const id = `${idPrefix}${index}`;
+      if (reference instanceof Handoff && targets[name] === id) {
+        const slot = handoffCallbacks[name];
+        if (
+          slot !== undefined &&
+          callbackTools[slot - capturedTools.length] === reference.callback
+        )
+          continue;
+      }
       if (
         targets[name] !== undefined &&
-        (targets[name] !== id || isRealtimeHandoff(reference))
+        (targets[name] !== id ||
+          reference instanceof Handoff ||
+          isRealtimeHandoff(reference))
       )
         throw new TypeError(
           `Duplicate handoff name in Agent ${agent.name ?? 'root'}: ${name}`,
@@ -2005,13 +2130,24 @@ export function captureAgentProfiles<Context, Output>(
           `Handoff name conflicts with declared tool: ${name}`,
         );
       targets[name] = id;
-      if (isRealtimeHandoff(reference)) {
-        handoffOptions[name] = reference;
+      if (reference instanceof Handoff || isRealtimeHandoff(reference)) {
+        if (isRealtimeHandoff(reference)) handoffOptions[name] = reference;
         handoffCallbacks[name] = capturedTools.length + callbackTools.length;
-        callbackTools.push(realtimeHandoffTool(reference, agent, name));
+        callbackTools.push(
+          reference instanceof Handoff
+            ? reference.callback
+            : realtimeHandoffTool(reference, agent, name),
+        );
       }
     }
+    const omittedTools =
+      declaration[implicitTools] === declaration.tools ||
+      (agent === root && rootPromptControls?.omit_tools === true);
     declaration.tools = [...declaration.tools, ...callbackTools];
+    declaration[implicitTools] =
+      omittedTools && declaration.tools.length === 0
+        ? declaration.tools
+        : undefined;
     Object.freeze(declaration.modelSettings);
     Object.freeze(declaration.tools);
     Object.freeze(declaration);
@@ -2024,6 +2160,18 @@ export function captureAgentProfiles<Context, Output>(
         handoffCallbacks: Object.freeze(handoffCallbacks),
         handoffOptions: Object.freeze(handoffOptions),
         callbackTools: Object.freeze(callbackTools),
+        hostedPromptControls:
+          agent === root && rootPromptControls !== undefined
+            ? rootPromptControls
+            : hostedPromptControls(declaration.hostedPrompt, {
+                model: declaration.model,
+                instructions: capturedInstructions(source),
+                toolsProvided:
+                  source[implicitTools] !== source.tools ||
+                  source.tools.length > 0 ||
+                  source.handoffs.length > 0,
+                extraBody: declaration.modelSettings?.extraBody,
+              }),
       }),
     );
   }
@@ -2075,11 +2223,17 @@ export function captureRealtimeAgentGraph(
     throw new TypeError(
       'A Realtime Agent cannot change fixed native runtime tools',
     );
-  const declaration = new Agent({ ...candidate, provider: opening.provider });
+  if (capturedInstructions(candidate) === undefined)
+    throw new TypeError('Realtime Agents require explicit instructions');
+  const declaration = new Agent({
+    ...candidate,
+    instructions: candidate.instructions,
+    provider: opening.provider,
+  });
   const profiles = captureAgentProfiles(candidate, declaration, true, idPrefix);
   return captureProfileRuntimes(
     profiles,
     captureTools(splitToolDeclarations(declaration.tools).tools),
-    declaration.instructions,
+    declaration.instructions ?? '',
   );
 }

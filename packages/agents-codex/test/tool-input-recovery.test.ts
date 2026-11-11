@@ -217,3 +217,80 @@ it('preserves untouched managed input through validator and formatter mutation',
   ).toEqual({ failure: 'retry' });
   expect(raw).toEqual({ payload: { key: 7 } });
 });
+
+it.each([false, true])(
+  'formats only native original parse failures (managed=%s)',
+  async (managed) => {
+    const raw = ' {"key": ';
+    const format = vi.fn((_context, error, original) => {
+      expect(error).toBeInstanceOf(SyntaxError);
+      expect(error.message).toBe('native parser rejection');
+      expect(original).toBe(raw);
+      return 'retry';
+    });
+    const execute = vi.fn();
+    const selected = tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      needsApproval: managed,
+      inputErrorFunction: format,
+      execute,
+    });
+    if (managed)
+      expect(
+        await managedApproval(selected)!.prepareOriginalInput!(
+          raw,
+          context,
+          vi.fn(),
+          'native parser rejection',
+        ),
+      ).toEqual({ failure: 'retry' });
+    else
+      expect(
+        await invokeFunctionTool(
+          selected,
+          raw,
+          context,
+          vi.fn(),
+          undefined,
+          undefined,
+          undefined,
+          'native parser rejection',
+        ),
+      ).toEqual({
+        success: false,
+        contentItems: [{ type: 'inputText', text: 'retry' }],
+      });
+    expect(format).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+  },
+);
+
+it.each([false, true])(
+  'preserves validator SyntaxErrors outside native parse recovery (managed=%s)',
+  async (managed) => {
+    const failure = new SyntaxError('validator-owned');
+    const format = vi.fn(() => 'unexpected');
+    const selected = tool({
+      name: 'lookup',
+      parameters: z.object({
+        key: z.string().refine(() => {
+          throw failure;
+        }),
+      }),
+      needsApproval: managed,
+      inputErrorFunction: format,
+      execute: vi.fn(),
+    });
+    await expect(
+      managed
+        ? managedApproval(selected)!.prepareOriginalInput!(
+            { key: 'valid' },
+            context,
+            vi.fn(),
+          )
+        : invokeFunctionTool(selected, { key: 'valid' }, context, vi.fn()),
+    ).rejects.toBe(failure);
+    expect(format).not.toHaveBeenCalled();
+  },
+);

@@ -1,3 +1,7 @@
+import {
+  captureModelAttemptSnapshot,
+  type CapturedModelAttempt,
+} from './model-attempts';
 import { responseContent } from './input';
 import { z } from 'zod';
 import {
@@ -13,6 +17,11 @@ import {
 } from './turn-receipt';
 import {
   addTokenCounts,
+  addRunUsage,
+  mergeRunUsage,
+  runUsageSnapshot,
+  runUsageToWire,
+  type RunUsage,
   nonnegativeTokenCountWireSchema,
   parseTokenCount,
   tokenCountToWire,
@@ -120,6 +129,8 @@ export type HistoryTurn = {
   completedAt: number | null;
   error: Failure | null;
   usage: RecordedTokenUsage | null;
+  /** Retained native-attempt totals; unavailable without native attempt records. */
+  runUsage?: RunUsage;
   /** Retained observations, not complete provider-attempt or charge coverage. */
   responses?: RecordedResponse[];
   responseFacts?: RecordedResponseFact[];
@@ -132,9 +143,10 @@ export type RecordedTurn = HistoryTurn & {
 /** JSON-safe observational turn data for history/receipt owners, not Core checkpoints. */
 export type RecordedTurnWire = Omit<
   RecordedTurn,
-  'usage' | 'responses' | 'receipt'
+  'usage' | 'responses' | 'receipt' | 'runUsage'
 > & {
   usage: RecordedTokenUsageWire | null;
+  runUsage?: { readonly [Key in keyof RunUsage]: TokenCountWire };
   responses?: RecordedResponseWire[];
   receipt?: z.infer<typeof repairTurnReceiptSchema>;
 };
@@ -216,6 +228,19 @@ export const repairTurnWireSchema = z
       })
       .strict()
       .nullable(),
+    runUsage: z
+      .object({
+        requests: nonnegativeTokenCountWireSchema,
+        missingUsageRequests: nonnegativeTokenCountWireSchema,
+        inputTokens: nonnegativeTokenCountWireSchema,
+        cachedInputTokens: nonnegativeTokenCountWireSchema,
+        cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
+        outputTokens: nonnegativeTokenCountWireSchema,
+        reasoningOutputTokens: nonnegativeTokenCountWireSchema,
+        totalTokens: nonnegativeTokenCountWireSchema,
+      })
+      .strict()
+      .optional(),
     responses: z.array(recordedResponseWireSchema).optional(),
     responseFacts: z.array(responseFactRecordSchema).optional(),
     receipt: repairTurnReceiptSchema.optional(),
@@ -325,9 +350,20 @@ function mapReceivedUsage<T>(
 }
 
 export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
-  const { responses, receipt, ...rest } = turn;
+  const { responses, receipt, runUsage, ...rest } = turn;
   return {
     ...rest,
+    ...(runUsage === undefined
+      ? {}
+      : {
+          runUsage: {
+            ...runUsageToWire(runUsage),
+            requests: tokenCountToWire(runUsage.requests),
+            missingUsageRequests: tokenCountToWire(
+              runUsage.missingUsageRequests,
+            ),
+          },
+        }),
     ...(responses === undefined
       ? {}
       : {
@@ -359,9 +395,25 @@ export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
 }
 
 export function recordedTurnFromWire(turn: RecordedTurnWire): RecordedTurn {
-  const { responses, ...rest } = turn;
+  const { responses, runUsage, ...rest } = turn;
   return {
     ...rest,
+    ...(runUsage === undefined
+      ? {}
+      : {
+          runUsage: runUsageSnapshot(
+            addRunUsage(null, {
+              input_tokens: runUsage.inputTokens,
+              cached_input_tokens: runUsage.cachedInputTokens,
+              cache_write_input_tokens: runUsage.cacheWriteInputTokens,
+              output_tokens: runUsage.outputTokens,
+              reasoning_output_tokens: runUsage.reasoningOutputTokens,
+              total_tokens: runUsage.totalTokens,
+            }),
+            parseTokenCount(runUsage.requests),
+            parseTokenCount(runUsage.missingUsageRequests),
+          ),
+        }),
     ...(responses === undefined
       ? {}
       : {
@@ -1465,8 +1517,19 @@ export function projectHistory(
     entries.push(response);
     target.set(id, entries);
   }
-  const responseUsage = new Map<string, JsonObject>();
+  const responseUsage = new Map<
+    string,
+    {
+      tokens: JsonObject | null;
+      requests: TokenCount;
+      missing: TokenCount;
+    }
+  >();
   const incompleteCacheWriteUsage = new Set<string>();
+  const modelAttemptUsage = new Map<
+    string,
+    Map<string | null, CapturedModelAttempt>
+  >();
   const failures = new Map<string, Failure>();
   let items: HistoryOccurrence[] = [];
   const identities = new Map<string, HistoryOccurrence>();
@@ -1665,6 +1728,7 @@ export function projectHistory(
           observations.delete(id);
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
+          modelAttemptUsage.delete(id);
           failures.delete(id);
         }
         items = items.filter(({ item }) => !removed.has(item.turnId));
@@ -1708,16 +1772,37 @@ export function projectHistory(
       if (!order.includes(id)) order.push(id);
       if (payload.type === 'error' && !failures.has(id))
         failures.set(id, failure(payload));
-      if (payload.type === 'raw_response_completed') {
+      const attemptSnapshot =
+        payload.type === '_sdk_model_attempt'
+          ? payload.data
+          : payload.model_attempt;
+      if (attemptSnapshot !== undefined) {
+        const captured = captureModelAttemptSnapshot(attemptSnapshot);
+        const owners = modelAttemptUsage.get(id) ?? new Map();
+        owners.set(captured.ownerAttemptId, captured);
+        modelAttemptUsage.set(id, owners);
+      }
+      if (
+        payload.type === 'raw_response_completed' &&
+        typeof payload.model_attempt_id !== 'string'
+      ) {
         const report = object(payload.token_usage);
+        const observed = responseUsage.get(id) ?? {
+          tokens: null,
+          requests: 0,
+          missing: 0,
+        };
+        observed.requests = addTokenCounts(observed.requests, 1);
+        if (!report) observed.missing = addTokenCounts(observed.missing, 1);
+        responseUsage.set(id, observed);
         if (report?.cache_write_input_tokens === undefined)
           incompleteCacheWriteUsage.add(id);
         if (incompleteCacheWriteUsage.has(id)) {
-          const total = responseUsage.get(id);
+          const total = observed.tokens;
           if (total) delete total.cache_write_input_tokens;
         }
         if (report) {
-          const total = responseUsage.get(id) ?? {};
+          const total = observed.tokens ?? {};
           for (const key of usageFields) {
             const count = usageCount(report, key);
             if (
@@ -1728,7 +1813,7 @@ export function projectHistory(
             const sum = addTokenCounts(usageCount(total, key), count);
             total[key] = tokenCountToWire(sum);
           }
-          responseUsage.set(id, total);
+          observed.tokens = total;
         }
       }
 
@@ -1760,11 +1845,11 @@ export function projectHistory(
         payload.type === 'turn_aborted';
       if (started || completed) {
         pendingUser = undefined;
-        if (started) {
-          failures.delete(id);
+        if (started && !modelAttemptUsage.has(id)) {
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
         }
+        if (started) failures.delete(id);
         const error =
           failures.get(id) ??
           (object(payload.error) ? failure(object(payload.error)!) : null);
@@ -1806,8 +1891,43 @@ export function projectHistory(
   for (const [id, turn] of turns) {
     const receipt = receipts.get(id);
     if (receipt) turn.receipt = receipt;
-    const total = responseUsage.get(id);
-    turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    const observed = responseUsage.get(id);
+    const total = observed?.tokens ?? undefined;
+    const nativeOwners = modelAttemptUsage.get(id);
+    if (nativeOwners) {
+      // A restored ledger can retain the turn ID; only its own latest snapshot replaces it.
+      let measured: JsonObject | null = total ? { ...total } : null;
+      let cacheWriteKnown = !incompleteCacheWriteUsage.has(id);
+      let runMeasured = runUsageSnapshot(
+        total ? addRunUsage(null, total) : null,
+        observed?.requests ?? 0,
+        observed?.missing ?? 0,
+      );
+      for (const captured of nativeOwners.values()) {
+        runMeasured = mergeRunUsage(runMeasured, captured.usage);
+        const snapshot = captured.wire;
+        const report = snapshot.usage.token_usage;
+        if (report === null) {
+          if (BigInt(snapshot.usage.requests) !== 0n) cacheWriteKnown = false;
+          continue;
+        }
+        if (report.cache_write_input_tokens === undefined)
+          cacheWriteKnown = false;
+        measured ??= {};
+        for (const key of usageFields) {
+          if (key === 'cache_write_input_tokens' && !cacheWriteKnown) continue;
+          measured[key] = tokenCountToWire(
+            addTokenCounts(usageCount(measured, key), usageCount(report, key)),
+          );
+        }
+      }
+      if (measured && !cacheWriteKnown)
+        delete measured.cache_write_input_tokens;
+      turn.usage = measured ? recordedUsage(measured) : null;
+      turn.runUsage = runMeasured;
+    } else {
+      turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    }
     const accountedIds = new Set(
       (responses.get(id) ?? [])
         .filter(

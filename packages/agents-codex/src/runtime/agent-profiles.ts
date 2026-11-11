@@ -1,6 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Agent } from './public-agent';
-import { managedApproval, captureTools, type ToolCatalog } from './tools';
+import {
+  supportsInputErrorRecovery,
+  managedApproval,
+  captureTools,
+  toolDeclarationIdentity,
+  type ToolCatalog,
+} from './tools';
 import {
   splitToolDeclarations,
   HttpMCP,
@@ -25,6 +31,7 @@ export interface CapturedAgentProfile<Context, Output> {
     Record<string, import('./realtime-agent-config').RealtimeHandoff<Context>>
   >;
   readonly callbackTools?: readonly import('./tools').FunctionTool<Context>[];
+  readonly hostedPromptControls?: JsonObject;
 }
 
 export interface AgentProfileRuntime {
@@ -129,24 +136,49 @@ export function captureProfileRuntimes(
   rootInstructions: string,
   outputGuardrails = false,
   inputGuardrails = false,
+  rootModelSettings = profiles[0]?.declaration.modelSettings,
 ): CapturedAgentGraph {
   if (!profiles.length)
     throw new TypeError('A native Agent graph requires its root');
   const captured = new Map<string, AgentProfileRuntime>();
+  const usesHostedPrompts = profiles.some(
+    (profile) => profile.hostedPromptControls !== undefined,
+  );
   const roster: JsonObject[] = [];
   for (const [index, profile] of profiles.entries()) {
     const declaration = profile.declaration;
     const { tools, mcp } = splitToolDeclarations(declaration.tools);
+    const callbackOwners = new Set(
+      profile.callbackTools?.map(toolDeclarationIdentity) ?? [],
+    );
     const catalog =
       index === 0
         ? profile.callbackTools?.length
-          ? captureTools([...rootCatalog.tools, ...profile.callbackTools])
+          ? captureTools([
+              ...rootCatalog.tools.filter(
+                (tool) => !callbackOwners.has(toolDeclarationIdentity(tool)),
+              ),
+              ...profile.callbackTools,
+            ])
           : rootCatalog
         : captureTools(tools);
     const output = prepareOutput(declaration.outputType);
     const instructions =
-      index === 0 ? rootInstructions : declaration.instructions;
-    const model = modelOverrides(declaration.model, declaration.modelSettings);
+      index === 0 ? rootInstructions : (declaration.instructions ?? '');
+    const model = modelOverrides(
+      declaration.model,
+      declaration.modelSettings,
+      usesHostedPrompts ? (profile.hostedPromptControls ?? null) : undefined,
+    );
+    const retryPolicy = (
+      index === 0 ? rootModelSettings : declaration.modelSettings
+    )?.retry?.policy;
+    const controls = (model.request_controls ??= {}) as JsonObject;
+    if (controls.retry !== null)
+      controls.retry = {
+        ...((controls.retry ?? {}) as JsonObject),
+        has_policy: retryPolicy !== undefined,
+      };
     const policies = JSON.parse(mcpPolicies(mcp, 0n));
     captured.set(
       profile.id,
@@ -175,6 +207,9 @@ export function captureProfileRuntimes(
       manual_slots: catalog.tools.flatMap((tool, slot) =>
         tool.kind === 'manual' ? [slot] : [],
       ),
+      input_error_slots: catalog.tools.flatMap((tool, slot) =>
+        supportsInputErrorRecovery(tool) ? [slot] : [],
+      ),
       terminal_slots: catalog.tools.flatMap((tool, slot) =>
         (tool.kind !== 'manual' && tool.finishTurn) ||
         managedApproval(tool)?.function.finishTurn
@@ -186,7 +221,9 @@ export function captureProfileRuntimes(
       ...(Object.keys(profile.handoffCallbacks ?? {}).length
         ? { handoff_callbacks: { ...profile.handoffCallbacks } }
         : {}),
-      transform_context: declaration.transformContext !== undefined,
+      transform_context:
+        declaration.transformContext !== undefined ||
+        declaration.hostedPrompt !== undefined,
       before_compact: declaration.beforeCompact !== undefined,
       before_complete:
         declaration.beforeComplete !== undefined ||

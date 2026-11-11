@@ -1,5 +1,5 @@
 {
-  "result_tree": "59162c11479334c6a573336376bea148fbf5e79a",
+  "result_tree": "3ac8ef3b4d4285a5642940c7ac15475e7a801bf7",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -778,8 +778,68 @@
       "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
     },
     {
+      "path": "sdk-mailbox-deferred-user-fifo.patch",
+      "sha256": "00d32123fc3cc9127c0acc5a71d3ac11289b3af5300e8f9d05e33ebd61ef3e7b"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-produced-items.patch",
+      "sha256": "9d8d9946b04186bb9c8efda78d56f83f764ec3ccce3885217e12493ca9b9f084"
+    },
+    {
+      "path": "sdk-mcp-forced-choice-captured-binding.patch",
+      "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
+    },
+    {
+      "path": "sdk-native-hosted-prompts-request-ownership.patch",
+      "sha256": "8b59e1ee08e56daae315daf79c2ad9ea762d190e4597288031aebfa9fa093ad3"
+    },
+    {
+      "path": "sdk-model-response-omission-admission.patch",
+      "sha256": "0646d01ad045e1959f3c6d8b4708c71c1ada10eda6f848f84d87b8f2eb043c03"
+    },
+    {
+      "path": "sdk-native-model-attempt-retry.patch",
+      "sha256": "dce7e903a138fa26e27c95eddbe9615f5ec649935196bd7625966095b933ad47"
+    },
+    {
+      "path": "sdk-realtime-incarnation-ownership.patch",
+      "sha256": "4e6c23fd6ccf170546fbd80a2d032b450412fb228c43d22d03b097f30464bf10"
+    },
+    {
+      "path": "sdk-preserved-speech-tool-continuation.patch",
+      "sha256": "0eec334d147caa10bab871eb2caee86e4173791ffae6e19b5e09127ce78074c0"
+    },
+    {
+      "path": "sdk-model-invocation-terminal-clock.patch",
+      "sha256": "06fa9030c898b52eb5a499e6cb7fe4b4ee30233cb898243d446260d417a4d110"
+    },
+    {
+      "path": "sdk-model-attempt-settlement.patch",
+      "sha256": "10542c2f8ef8c766bba5ace407bf991c25bb42e5074ee881e70f1a42f7437356"
+    },
+    {
+      "path": "sdk-model-attempt-test-fixtures.patch",
+      "sha256": "3a81b24c463d52a7f4aa7caf2fe26d51cc04d1e11f6af8fb05bdf8bb59fa5a20"
+    },
+    {
+      "path": "sdk-model-deadline-admission-type.patch",
+      "sha256": "e17072825b736731573a60583c4ee557d39d7ef0b8ef06e49de89ec90a05a038"
+    },
+    {
+      "path": "sdk-provider-hosted-effect-replay-fence.patch",
+      "sha256": "cc46a7a1c697e833784f9f5ffa7245b0e2354e5bbc5a0a8bb892fae7ae55c53e"
+    },
+    {
+      "path": "sdk-native-owned-stop-durability-report.patch",
+      "sha256": "3418e9344d345661a8857558750dd00552d03e6718f6ea899f5f4a54f988d2a8"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-replay-compat.patch",
+      "sha256": "def8fda0b26fa182be8cb6e3c82ac8375455d1eef40642549a53a3285222d1bd"
+    },
+    {
       "path": "sdk-provider-hosted-mcp.patch",
-      "sha256": "23edb8cc589b407a5eba5fc1e780f606eb570c7f2ae45e4c612dbb492d1c9359"
+      "sha256": "42b16988c5b5cca524df342022d5aaa2e3026862060889bc6978102d8255db9b"
     }
   ]
 }

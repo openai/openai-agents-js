@@ -1465,8 +1465,7 @@ pub async fn restore(
                     anyhow::bail!("manual child has foreign source parent");
                 };
                 ensure!(
-                    header.meta.id == child.thread_id
-                        && header.meta.parent_thread_id == Some(old),
+                    header.meta.id == child.thread_id && header.meta.parent_thread_id == Some(old),
                     "manual child has foreign source parent"
                 );
                 header.meta.parent_thread_id = Some(root);
@@ -1788,6 +1787,7 @@ async fn import(
         });
         history.push(RolloutItem::EventMsg(EventMsg::TurnAborted(
             TurnAbortedEvent {
+                model_attempt: None,
                 turn_id,
                 reason: TurnAbortReason::Interrupted,
                 error: None,

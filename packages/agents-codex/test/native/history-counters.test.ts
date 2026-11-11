@@ -172,6 +172,40 @@ describe('exact observational counters', () => {
     ).toEqual({ cachedTokens: 0, cacheWriteTokens: 3 });
   });
 
+  it('retains distinct native ledger owners across a restored turn start', () => {
+    const fact = (id: string, tokens: number): ThreadHistory => [
+      {
+        type: 'event_msg',
+        payload: {
+          type: '_sdk_model_attempt',
+          turn_id: 't',
+          data: {
+            owner_attempt_id: id,
+            terminal_attempt_id: null,
+            usage: {
+              requests: 1,
+              requests_without_token_usage: 0,
+              token_usage: {
+                input_tokens: tokens,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: tokens,
+              },
+            },
+          },
+        },
+      },
+    ];
+    const turn = project([
+      ...fact('prior', 7),
+      ...start,
+      ...fact('current', 3),
+    ]);
+    expect(turn.usage?.totalTokens).toBe(10);
+    expect(turn.runUsage?.requests).toBe(2);
+  });
+
   it('discards incomplete response accounting when history rolls back', () => {
     expect(
       project([

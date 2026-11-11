@@ -56,11 +56,11 @@ class PolicyPeer {
     if (!this.socket) throw new Error('Provider is not connected');
     this.socket.send(JSON.stringify(frame));
   }
-  call(name: string, args: Frame, callId: string): string {
+  call(name: string, args: Frame | string, callId: string): string {
     return this.calls([[name, args, callId]], `response-${callId}`);
   }
   calls(
-    calls: [string, Frame, string][],
+    calls: [string, Frame | string, string][],
     responseId: string,
     start = true,
   ): string {
@@ -69,7 +69,8 @@ class PolicyPeer {
       type: 'function_call',
       name,
       call_id: callId,
-      arguments: JSON.stringify(args),
+      // Already-encoded provider arguments for string inputs.
+      arguments: typeof args === 'string' ? args : JSON.stringify(args),
     }));
     if (start)
       this.send({ type: 'response.created', response: { id: responseId } });
@@ -1533,15 +1534,21 @@ nativeIt(
   },
 );
 
-nativeIt.each([false, true])(
-  'continues native Realtime after original-input recovery (approval=%s)',
-  async (managed) => {
+nativeIt.each([
+  { managed: false, malformed: false },
+  { managed: true, malformed: false },
+  { managed: false, malformed: true },
+  { managed: true, malformed: true },
+])(
+  'continues native Realtime after original-input recovery (approval=$managed, malformed=$malformed)',
+  async ({ managed, malformed }) => {
     const execute = vi.fn(() => 'unexpected');
     const before = vi.fn(() => ({ action: 'allow' as const }));
     const after = vi.fn((output) => output);
     const approve = vi.fn(() => true);
-    const recover = vi.fn((_context, _error, original) => {
-      expect(original).toEqual({ value: 7 });
+    const recover = vi.fn((_context, error, original) => {
+      expect(original).toEqual(malformed ? ' {"value": ' : { value: 7 });
+      expect(error).toBeInstanceOf(malformed ? SyntaxError : z.ZodError);
       return 'Invalid checked input';
     });
     const selected = tool({
@@ -1568,7 +1575,11 @@ nativeIt.each([false, true])(
         const initial = peer.frames.filter(
           (frame) => frame.type === 'response.create',
         ).length;
-        peer.call('checked', { value: 7 }, 'invalid-original');
+        peer.call(
+          'checked',
+          malformed ? ' {"value": ' : { value: 7 },
+          'invalid-original',
+        );
         expect(await peer.output('invalid-original')).toBe(
           'Invalid checked input',
         );

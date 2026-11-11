@@ -230,7 +230,10 @@ export class NativeThread {
   _check_python_tool(request_json: string): boolean;
   _enter_python_callback(receipt_json: string): boolean;
   _python_callback_cancelled(receipt_json: string): boolean;
-  _release_python_callback(receipt_json: string): boolean;
+  _release_python_callback(
+    receipt_json: string,
+    cleanup_failed?: boolean,
+  ): boolean;
   /** JSON array of original native event strings, preserving exact receipt integers. */
   _pending_manual_tools(owner_json: string): string;
   _manual_tool_current(request_json: string): boolean;
@@ -281,6 +284,8 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_model_retry(responseJson: string): void;
+  _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
   _reply_model_producer(response_json: string): void;
   _start_model_producer(owner_json: string): void;
   _push_model_producer(

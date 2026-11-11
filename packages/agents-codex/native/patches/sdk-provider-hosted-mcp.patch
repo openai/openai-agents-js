@@ -65,6 +65,18 @@ index 9bfcdbb3..a4deba48 100644
              | ResponseItem::FileSearchCall { .. }
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index fb088942..9cc6542e 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1396,6 +1396,7 @@ impl ModelClient {
+                     codex_tools::ToolSpec::CodeInterpreter(_)
+                         | codex_tools::ToolSpec::ImageGeneration(_)
+                         | codex_tools::ToolSpec::Shell(_)
++                        | codex_tools::ToolSpec::Mcp(_)
+                 )
+             }) || (request.request_controls.prompt.is_some()
+                 && request.tools.is_none());
 diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
 index e338367e..326a81c9 100644
 --- a/codex-rs/core/src/client_common.rs
@@ -81,7 +93,7 @@ index e338367e..326a81c9 100644
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index ade863fb..779e4bbc 100644
+index a72db3d8..29d0e7dd 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -948,6 +948,10 @@ fn reject_compaction_tool_output(item: &ResponseItem) -> CodexResult<()> {
@@ -239,10 +251,18 @@ index b1cb1cbe..228a3d8d 100644
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index c02371c5..aab0ff4e 100644
+index a78ec2a9..3c4e77c1 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -3835,6 +3835,10 @@ async fn try_run_sampling_request(
+@@ -3874,6 +3874,7 @@ fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
+                 | ResponseItem::ImageGenerationCall { .. }
+                 | ResponseItem::ShellCall { .. }
+                 | ResponseItem::ShellCallOutput { .. }
++                | ResponseItem::McpCall { .. }
+                 | ResponseItem::Other
+         ),
+         ResponseEvent::HostedToolCallProgress(progress) => progress
+@@ -4284,6 +4285,10 @@ async fn try_run_sampling_request(
                          | ResponseItem::CustomToolCallOutput { .. }
                          | ResponseItem::ToolSearchOutput { .. }
                          | ResponseItem::WebSearchCall { .. }
@@ -395,7 +415,7 @@ index f2e3b686..a7bc8464 100644
                  | ToolSpec::Shell(_)
                  | ToolSpec::ImageGeneration(_)
 diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
-index f69668a1..7b473c8e 100644
+index 6a0122da..db1da224 100644
 --- a/codex-rs/core/src/tools/parallel.rs
 +++ b/codex-rs/core/src/tools/parallel.rs
 @@ -258,7 +258,12 @@ impl ToolCallRuntime {
@@ -412,7 +432,7 @@ index f69668a1..7b473c8e 100644
                      return Err(CodexErr::Fatal(other.to_string()));
                  }
                  Err(other) => (
-@@ -433,6 +438,9 @@ impl ToolCallRuntime {
+@@ -436,6 +441,9 @@ impl ToolCallRuntime {
                                  if matches!(call.payload, ToolPayload::Computer { .. }) {
                                      return Err(FunctionCallError::Fatal("computer call cancelled".into()));
                                  }
@@ -422,7 +442,7 @@ index f69668a1..7b473c8e 100644
                                  let response = Self::aborted_response(&call, secs);
                                  call_trace::result_ready(
                                      thread_id,
-@@ -477,6 +485,16 @@ impl ToolCallRuntime {
+@@ -480,6 +488,16 @@ impl ToolCallRuntime {
  
      fn failure_response(call: ToolCall, err: FunctionCallError) -> ResponseInputItem {
          let message = err.to_string();
@@ -647,10 +667,10 @@ index b518485e..9e8d7124 100644
              | ToolSpec::ImageGeneration(_)
              | ToolSpec::Shell(_)
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 220f3518..cbfc617b 100644
+index 48548828..f5dc6c9c 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
-@@ -253,7 +253,7 @@ pub(crate) async fn build_tool_router(
+@@ -269,7 +269,7 @@ pub(crate) async fn build_tool_router(
          let mut candidates = registry
              .entries()
              .map(|entry| entry.runtime.tool_name())
@@ -659,7 +679,7 @@ index 220f3518..cbfc617b 100644
              .collect::<Vec<_>>();
          if matches!(
              effective_tool_mode(turn_context, model_info),
-@@ -329,7 +329,7 @@ pub(crate) async fn build_tool_router(
+@@ -345,7 +345,7 @@ pub(crate) async fn build_tool_router(
              registry.remove(&name);
          }
          hosted_specs.retain(|spec| {
@@ -668,7 +688,7 @@ index 220f3518..cbfc617b 100644
          });
      }
      finalize_selected_tool_router(
-@@ -547,6 +547,17 @@ pub(crate) fn finalize_tool_router(
+@@ -569,6 +569,17 @@ pub(crate) fn finalize_tool_router(
      )
  }
  
@@ -686,7 +706,7 @@ index 220f3518..cbfc617b 100644
  fn finalize_selected_tool_router(
      turn_context: &TurnContext,
      model_info: &ModelInfo,
-@@ -558,7 +569,7 @@ fn finalize_selected_tool_router(
+@@ -580,7 +591,7 @@ fn finalize_selected_tool_router(
      let allows = |name: &ToolName| {
          selected.is_none_or(|names| names.contains(&name.clone().with_default_namespace()))
      };
@@ -695,7 +715,7 @@ index 220f3518..cbfc617b 100644
      apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
      enforce_strict_3p_tools(turn_context, model_info, &mut registry);
      let tool_mode = effective_tool_mode(turn_context, model_info);
-@@ -657,6 +668,7 @@ fn finalize_selected_tool_router(
+@@ -679,6 +690,7 @@ fn finalize_selected_tool_router(
                      ToolSpec::Function(_) | ToolSpec::Freeform(_) => DEFAULT_FUNCTION_NAMESPACE,
                      ToolSpec::ToolSearch { .. } => TOOL_SEARCH_TOOL_NAME,
                      ToolSpec::FileSearch(_)
@@ -703,7 +723,7 @@ index 220f3518..cbfc617b 100644
                      | ToolSpec::CodeInterpreter(_)
                      | ToolSpec::Shell(_)
                      | ToolSpec::ImageGeneration(_)
-@@ -1097,6 +1109,7 @@ fn register_code_mode_executors(
+@@ -1119,6 +1131,7 @@ fn register_code_mode_executors(
              ToolSpec::Namespace(_)
              | ToolSpec::ToolSearch { .. }
              | ToolSpec::FileSearch(_)
@@ -711,7 +731,7 @@ index 220f3518..cbfc617b 100644
              | ToolSpec::CodeInterpreter(_)
              | ToolSpec::Shell(_)
              | ToolSpec::ImageGeneration(_)
-@@ -1696,6 +1709,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
+@@ -1718,6 +1731,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
  fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mut ToolRegistry) {
      for spec in dynamic_tools {
          match spec {
@@ -1164,7 +1184,7 @@ index 0660e04f..aa7063fd 100644
          ResponseItem::CodeInterpreterCall { .. } => "response.code_interpreter_call",
          ResponseItem::ShellCall { .. } => "response.shell_call",
 diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
-index ba461e5c..33abd942 100644
+index 7e56194d..fca83eb8 100644
 --- a/codex-rs/rollout/src/policy.rs
 +++ b/codex-rs/rollout/src/policy.rs
 @@ -95,6 +95,10 @@ pub fn should_persist_response_item(item: &ResponseItem) -> bool {

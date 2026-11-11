@@ -491,6 +491,7 @@ async fn completed_steering_ids_cannot_credit_a_later_generation_or_recovery() {
                 kind,
                 thread_id: &state.id.to_string(),
                 model: "gpt-5.1-codex",
+                model_omitted: false,
                 client_metadata: &mut metadata,
             });
         };
