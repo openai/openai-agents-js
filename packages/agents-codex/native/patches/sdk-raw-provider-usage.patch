@@ -415,10 +415,10 @@ index 0000000000000000000000000000000000000000..8250370990b08ae00c3155087bb8048b
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index c02371c5d19db1daad2eeb7fcdc9691a5cfd4283..11271ea97773a25f6df14e7ef2589075b7b70936 100644
+index ae0efac6e9a1377dae48947058aefe687b9bac3a..440367980c446073ff9c5206b87e17f6ccc52657 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -2789,7 +2789,10 @@ async fn propose_tool_completion(
+@@ -2812,7 +2812,10 @@ async fn propose_tool_completion(
                      return Ok(None);
                  }
                  Some(codex_extension_api::ToolCompletionDecision::Accept { .. })
@@ -430,7 +430,7 @@ index c02371c5d19db1daad2eeb7fcdc9691a5cfd4283..11271ea97773a25f6df14e7ef2589075
                  Some(codex_extension_api::ToolCompletionDecision::Accept { final_output }) => {
                      return Ok(Some(codex_protocol::protocol::ToolTurnCompletion {
                          call_id: call_id.clone(),
-@@ -3568,6 +3571,11 @@ async fn try_run_sampling_request(
+@@ -3591,6 +3594,11 @@ async fn try_run_sampling_request(
      let mut should_emit_turn_diff = false;
      let mut should_emit_token_count = false;
      let mut response_observation_id = None;
@@ -442,7 +442,7 @@ index c02371c5d19db1daad2eeb7fcdc9691a5cfd4283..11271ea97773a25f6df14e7ef2589075
      const MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE: usize = 256;
      let mut analytics_tool_call_ids = Vec::new();
      let reasoning_effort = step_context
-@@ -4043,6 +4051,16 @@ async fn try_run_sampling_request(
+@@ -4066,6 +4074,16 @@ async fn try_run_sampling_request(
                      .await;
                  }
                  ResponseEvent::ResponseObserved(observation) => {
@@ -459,7 +459,7 @@ index c02371c5d19db1daad2eeb7fcdc9691a5cfd4283..11271ea97773a25f6df14e7ef2589075
                      let result = sess
                          .record_response_observation(&turn_context, observation)
                          .await;
-@@ -4109,6 +4127,21 @@ async fn try_run_sampling_request(
+@@ -4132,6 +4150,21 @@ async fn try_run_sampling_request(
                      if let Err(err) = budget_result {
                          break Err(err);
                      }
