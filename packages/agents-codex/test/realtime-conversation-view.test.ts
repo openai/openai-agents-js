@@ -213,6 +213,24 @@ it('replaces provider audio with an empty value and releases its byte budget', (
   expect((history.snapshot()[1].content as any[])[0].audio).toBe('AQIDBA==');
 });
 
+it('truncates first-observed provider audio using its owning codec rate', () => {
+  const history = new VoiceConversationHistory({ storeAudio: true });
+  const item = {
+    ...message('g711', ''),
+    content: [{ type: 'output_audio', audio: 'AQIDBAUGBwgJCgsMDQ4PEA==' }],
+  };
+  history.observe({ type: 'response.done', response: { output: [item] } }, 8);
+  history.observe({
+    type: 'conversation.item.truncated',
+    item_id: 'g711',
+    content_index: 0,
+    audio_end_ms: 1,
+  });
+  expect((history.snapshot()[0].content as any[])[0].audio).toBe(
+    'AQIDBAUGBwg=',
+  );
+});
+
 it('isolates passive observers, detaches byte views, and releases subscriptions', async () => {
   type Event = { type: string; data: Uint8Array; detail: { text: string } };
   const observers = new VoiceEventObservers<Event>();

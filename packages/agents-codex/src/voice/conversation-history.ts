@@ -41,7 +41,7 @@ export class VoiceConversationHistory {
     this.maxAudioBytes = options.maxAudioBytes ?? 8 * 1024 * 1024;
   }
 
-  observe(value: unknown): boolean {
+  observe(value: unknown, audioBytesPerMillisecond = 48): boolean {
     if (!value || typeof value !== 'object' || Array.isArray(value))
       return false;
     const event = value as Record<string, any>;
@@ -59,7 +59,8 @@ export class VoiceConversationHistory {
       event.type === 'response.done' &&
       Array.isArray(event.response?.output)
     ) {
-      for (const item of event.response.output) this.put(item);
+      for (const item of event.response.output)
+        this.put(item, undefined, audioBytesPerMillisecond);
       return true;
     }
     if (
@@ -72,7 +73,11 @@ export class VoiceConversationHistory {
         'response.output_item.done',
       ].includes(event.type)
     ) {
-      return this.put(event.item, event.previous_item_id);
+      return this.put(
+        event.item,
+        event.previous_item_id,
+        audioBytesPerMillisecond,
+      );
     }
     if (event.type === 'conversation.item.truncated') {
       const stored = this.items.get(event.item_id);
@@ -269,7 +274,11 @@ export class VoiceConversationHistory {
     this.truncatedAudioKey = undefined;
   }
 
-  private put(value: unknown, previous?: unknown): boolean {
+  private put(
+    value: unknown,
+    previous?: unknown,
+    audioBytesPerMillisecond = 48,
+  ): boolean {
     if (
       !value ||
       typeof value !== 'object' ||
@@ -300,7 +309,8 @@ export class VoiceConversationHistory {
         id,
         index,
         decodeBase64(data),
-        this.audio.get(JSON.stringify([id, index]))?.bytesPerMillisecond ?? 48,
+        this.audio.get(JSON.stringify([id, index]))?.bytesPerMillisecond ??
+          audioBytesPerMillisecond,
         true,
       );
     }
