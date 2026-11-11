@@ -393,11 +393,11 @@ async function main() {
       assert(events.some((event) => event.span_id === '00000000000000b1'));
     if (mode === 'cancelled-callback') {
       const callback = events.find(
-        (event) => event.lifecycle === 'end' && event.kind === 'callback',
+        (event) => event.lifecycle === 'end' && event.name === 'host.callback',
       );
       assert(callback);
       assert.equal(callback.span_id, '5'.repeat(16));
-      assert.equal(callback.attributes['sdk.outcome.status'], 'cancelled');
+      assert.equal(callback.attributes['sdk.outcome'], 'cancelled');
     }
     if (mode === 'restrictions') assert.equal(generatedCalls, 1);
   } finally {
