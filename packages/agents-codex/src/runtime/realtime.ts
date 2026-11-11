@@ -1151,16 +1151,20 @@ class NativeRealtimeOwner {
     this.session._checkVoiceOperation('change the Realtime agent in');
     return this.queueProfileUpdate(async () => {
       this.checkLive();
-      const expected =
-        this.profileSource === undefined
-          ? await this.session._realtimeCurrentProfile()
-          : this.profileSource;
       const previouslyAdmitted = this.voiceGraphAdmitted;
-      const selection = await this.session._admitRealtimeGraph(
-        this.#generation,
-        agent,
-        expected,
-      );
+      // Native graph admission requires a settled provider configuration.
+      const selection = await this.publishSettings(async () => {
+        this.checkLive();
+        const expected =
+          this.profileSource === undefined
+            ? await this.session._realtimeCurrentProfile()
+            : this.profileSource;
+        return this.session._admitRealtimeGraph(
+          this.#generation,
+          agent,
+          expected,
+        );
+      });
       const target = this.session._realtimeProfileTarget(
         selection.profile_receipt,
       );

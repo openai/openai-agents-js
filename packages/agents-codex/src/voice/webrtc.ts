@@ -41,12 +41,13 @@ export interface NativeVoicePeerConnection {
   close(): void;
 }
 interface NativeVoiceMediaOptions<Stream extends NativeVoiceMediaStream> {
+  enableAudio?: false;
   mediaStream?: Stream;
   acquireMedia?: () => Promise<Stream>;
   createPeerConnection: () =>
     NativeVoicePeerConnection | Promise<NativeVoicePeerConnection>;
   onDataChannel?: (channel: NativeVoiceDataChannel) => void;
-  play(stream: Stream): void | Promise<void>;
+  play?(stream: Stream): void | Promise<void>;
   clear?(stream: Stream): void;
   onTransportEvent?: (event: unknown) => void;
   onError?: (error: Error) => void;
@@ -177,16 +178,22 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
 
   async #connect(exchange: VoiceSdpExchange): Promise<void> {
     const { signal } = this.#abort;
-    const stream =
-      this.options.mediaStream ?? (await this.options.acquireMedia!());
+    const enableAudio = this.options.enableAudio !== false;
+    const stream = enableAudio
+      ? (this.options.mediaStream ?? (await this.options.acquireMedia!()))
+      : undefined;
     if (signal.aborted) {
       if (!this.options.mediaStream)
-        for (const track of stream.getTracks()) track.stop();
+        for (const track of stream?.getTracks() ?? []) track.stop();
       this.throwIfAborted();
     }
     this.#stream = stream;
-    const tracks = stream.getAudioTracks();
-    if (tracks.length !== 1 || tracks[0].readyState === 'ended')
+    const tracks = stream?.getAudioTracks();
+    const microphone = tracks?.[0];
+    if (
+      enableAudio &&
+      (tracks?.length !== 1 || !microphone || microphone.readyState === 'ended')
+    )
       throw new Error('Voice media requires one live microphone audio track.');
     const fail = (error: Error) => {
       if (signal.aborted) return;
@@ -198,8 +205,10 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
       }
       notifyVoiceObserver(this.options.onError, error);
     };
-    this.#trackEnded = () => fail(new Error('Voice microphone ended.'));
-    trackEvents(tracks[0]).addEventListener('ended', this.#trackEnded);
+    if (microphone) {
+      this.#trackEnded = () => fail(new Error('Voice microphone ended.'));
+      trackEvents(microphone).addEventListener('ended', this.#trackEnded);
+    }
     const peer = await this.options.createPeerConnection();
     if (signal.aborted) {
       try {
@@ -236,7 +245,8 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
     this.options.onDataChannel?.(channel);
     const callbacks = peerEvents<Stream>(peer);
     callbacks.ontrack = ({ streams }) => {
-      if (signal.aborted || !streams[0]) return;
+      if (!stream || signal.aborted || !streams[0] || !this.options.play)
+        return;
       this.#playback = streams[0];
       try {
         void Promise.resolve(this.options.play(streams[0])).catch(() =>
@@ -268,7 +278,7 @@ export class NativeVoiceMedia<Stream extends NativeVoiceMediaStream> {
             peer.connectionState === 'connected' ? 'connected' : 'connecting';
       }
     };
-    peer.addTrack(tracks[0], stream);
+    if (microphone && stream) peer.addTrack(microphone, stream);
     const offer = await peer.createOffer();
     this.throwIfAborted();
     if (!offer.sdp)

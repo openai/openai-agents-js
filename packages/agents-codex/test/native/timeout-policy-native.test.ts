@@ -37,9 +37,14 @@ function toolText(request: Record<string, unknown>, callId: string) {
         .join('');
 }
 
-it.each(['raise_exception', 'error_as_result'] as const)(
-  'publishes on-time synchronous success after queued reporting work in %s mode',
-  async (timeoutBehavior) => {
+it.each([
+  ['raise_exception', false],
+  ['raise_exception', true],
+  ['error_as_result', false],
+  ['error_as_result', true],
+] as const)(
+  'publishes on-time synchronous success after queued reporting work in %s mode with body formatter %s',
+  async (timeoutBehavior, withBodyFormatter) => {
     const effects: string[] = [];
     const formatter = vi.fn(() => 'must not replace success');
     const after = vi.fn((output) => output);
@@ -58,6 +63,7 @@ it.each(['raise_exception', 'error_as_result'] as const)(
           callbackTimeout: 0.02,
           timeoutBehavior,
           timeoutErrorFunction: formatter,
+          errorFunction: withBodyFormatter ? formatter : undefined,
           execute() {
             effects.push('effect');
             queueMicrotask(() => {
@@ -168,9 +174,14 @@ it.each(['return', 'reject'] as const)(
   },
 );
 
-it.each(['raise_exception', 'error_as_result'] as const)(
-  'retains cleanup failure when the parent cancels before a %s deadline',
-  async (timeoutBehavior) => {
+it.each([
+  ['raise_exception', false],
+  ['raise_exception', true],
+  ['error_as_result', false],
+  ['error_as_result', true],
+] as const)(
+  'retains cleanup failure when the parent cancels before a %s deadline with body formatter %s',
+  async (timeoutBehavior, withBodyFormatter) => {
     const entered = Promise.withResolvers<void>();
     const cleanup = new Error('callback cleanup failed');
     const formatter = vi.fn(() => 'must not publish timeout text');
@@ -188,6 +199,7 @@ it.each(['raise_exception', 'error_as_result'] as const)(
           callbackTimeout: 60,
           timeoutBehavior,
           timeoutErrorFunction: formatter,
+          errorFunction: withBodyFormatter ? formatter : undefined,
           async execute(_, context) {
             const aborted = new Promise<void>((resolve) =>
               context.signal.addEventListener('abort', () => resolve(), {

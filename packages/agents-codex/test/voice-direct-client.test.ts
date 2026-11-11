@@ -592,86 +592,129 @@ describe.runIf(enabled)('direct client Rust authority', () => {
     await session.close();
     expect(session.history).toEqual([]);
   });
-  it('executes direct callbacks through injected mobile peers without browser globals', async () => {
-    const owner = new NativeVoiceControl(
-      new WebAssembly.Module(
-        Uint8Array.from(
-          readFileSync(process.env.OPENAI_AGENTS_PORTABLE_CONTROL_WASM!),
+  it.each(['audio', 'text'] as const)(
+    'executes direct %s callbacks through injected mobile peers without browser globals',
+    async (modality) => {
+      const owner = new NativeVoiceControl(
+        new WebAssembly.Module(
+          Uint8Array.from(
+            readFileSync(process.env.OPENAI_AGENTS_PORTABLE_CONTROL_WASM!),
+          ),
         ),
-      ),
-    );
-    vi.stubGlobal('WebAssembly', undefined);
-    vi.stubGlobal('TextEncoder', undefined);
-    vi.stubGlobal('TextDecoder', undefined);
-    vi.stubGlobal('navigator', undefined);
-    vi.stubGlobal('document', undefined);
-    const track = Object.assign(new EventTarget(), {
-      enabled: true,
-      readyState: 'live',
-      stop: vi.fn(),
-    });
-    const stream = { getAudioTracks: () => [track], getTracks: () => [track] };
-    const execute = vi.fn(() => 'mobile result');
-    const credentials = vi.fn(async () => 'ek_synthetic-mobile');
-    const remote = vi.fn();
-    const channel = {
-      readyState: 'open',
-      onopen: null as (() => void) | null,
-      onmessage: null as ((event: { data: string }) => void) | null,
-      close: vi.fn(),
-      send(frame: string) {
-        const event = JSON.parse(frame);
-        if (event.type === 'session.update')
-          queueMicrotask(() =>
-            channel.onmessage?.({
-              data: JSON.stringify({
-                type: 'session.updated',
-                session: event.session,
+      );
+      vi.stubGlobal('WebAssembly', undefined);
+      vi.stubGlobal('TextEncoder', undefined);
+      vi.stubGlobal('TextDecoder', undefined);
+      vi.stubGlobal('navigator', undefined);
+      vi.stubGlobal('document', undefined);
+      const track = Object.assign(new EventTarget(), {
+        enabled: true,
+        readyState: 'live',
+        stop: vi.fn(),
+      });
+      const stream = {
+        getAudioTracks: () => [track],
+        getTracks: () => [track],
+      };
+      const execute = vi.fn(() => 'mobile result');
+      const credentials = vi.fn(async () => 'ek_synthetic-mobile');
+      const remote = vi.fn();
+      const sent: {
+        type: string;
+        session?: { output_modalities?: string[] };
+      }[] = [];
+      const channel = {
+        readyState: 'open',
+        onopen: null as (() => void) | null,
+        onmessage: null as ((event: { data: string }) => void) | null,
+        close: vi.fn(),
+        send(frame: string) {
+          const event = JSON.parse(frame);
+          sent.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              channel.onmessage?.({
+                data: JSON.stringify({
+                  type: 'session.updated',
+                  session: event.session,
+                }),
               }),
+            );
+        },
+      };
+      const peer = {
+        localDescription: { sdp: 'mobile-offer' },
+        connectionState: 'connected',
+        createDataChannel: () => channel,
+        addTrack: vi.fn(),
+        async createOffer() {
+          return { type: 'offer' as const, sdp: 'mobile-offer' };
+        },
+        async setLocalDescription() {},
+        async setRemoteDescription() {},
+        close: vi.fn(),
+      };
+      const fetch = vi.fn(async () => ({
+        ok: true,
+        text: async () => 'mobile-answer',
+      }));
+      vi.stubGlobal('fetch', fetch);
+      const call = await connectPortableVoiceReactNative({
+        control: owner,
+        apiKey: credentials,
+        agent: {
+          model: 'test',
+          instructions: 'Mobile 漢字 🎧 % help',
+          settings: { output_modalities: [modality] },
+          tools: [{ ...tool, execute }],
+        },
+        media:
+          modality === 'audio'
+            ? {
+                mediaStream: stream,
+                createPeerConnection: () => peer,
+                onRemoteStream: remote,
+              }
+            : { enableAudio: false, createPeerConnection: () => peer },
+      });
+      expect(
+        sent.find((event) => event.type === 'session.update')?.session,
+      ).toMatchObject({ output_modalities: [modality] });
+      if (modality === 'audio')
+        expect(peer.addTrack).toHaveBeenCalledWith(track, stream);
+      else expect(peer.addTrack).not.toHaveBeenCalled();
+      call.session.sendText('Mobile text');
+      response(call.session, 'mobile-response');
+      completeTool(call.session, 'mobile-response');
+      await vi.waitFor(() =>
+        expect(sent).toContainEqual(
+          expect.objectContaining({
+            type: 'conversation.item.create',
+            item: expect.objectContaining({
+              type: 'function_call_output',
+              call_id: 'call',
+              output: 'mobile result',
             }),
-          );
-      },
-    };
-    const peer = {
-      localDescription: { sdp: 'mobile-offer' },
-      connectionState: 'connected',
-      createDataChannel: () => channel,
-      addTrack() {},
-      async createOffer() {
-        return { type: 'offer' as const, sdp: 'mobile-offer' };
-      },
-      async setLocalDescription() {},
-      async setRemoteDescription() {},
-      close: vi.fn(),
-    };
-    const fetch = vi.fn(async () => ({
-      ok: true,
-      text: async () => 'mobile-answer',
-    }));
-    vi.stubGlobal('fetch', fetch);
-    const call = await connectPortableVoiceReactNative({
-      control: owner,
-      apiKey: credentials,
-      agent: {
-        model: 'test',
-        instructions: 'Mobile 漢字 🎧 % help',
-        tools: [{ ...tool, execute }],
-      },
-      media: {
-        mediaStream: stream,
-        createPeerConnection: () => peer,
-        onRemoteStream: remote,
-      },
-    });
-    response(call.session, 'mobile-response');
-    completeTool(call.session, 'mobile-response');
-    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
-    await call.session.close();
-    expect(peer.close).toHaveBeenCalledOnce();
-    expect(track.stop).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(credentials).toHaveBeenCalledOnce();
-  });
+          }),
+        ),
+      );
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          type: 'conversation.item.create',
+          item: expect.objectContaining({
+            role: 'user',
+            content: [{ type: 'input_text', text: 'Mobile text' }],
+          }),
+        }),
+      );
+      expect(execute).toHaveBeenCalledOnce();
+      await call.session.close();
+      expect(peer.close).toHaveBeenCalledOnce();
+      expect(track.stop).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(credentials).toHaveBeenCalledOnce();
+    },
+  );
   it('executes a standalone direct agent over a real injected Node WebSocket', async () => {
     const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
     await new Promise<void>((resolve) => server.once('listening', resolve));
