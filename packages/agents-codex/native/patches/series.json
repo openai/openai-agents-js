@@ -1,5 +1,5 @@
 {
-  "result_tree": "35204065952408a2e2d237344de667f645daf123",
+  "result_tree": "489b8ef0b3bb623008a028ca3b573819f1468c5c",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -772,6 +772,14 @@
     {
       "path": "sdk-raw-provider-event-fixtures.patch",
       "sha256": "1d030d1488ae51cbbb7c75c6814a8a3eedb7454573480e32d44ade99a4d31afc"
+    },
+    {
+      "path": "sdk-native-model-response-stream.patch",
+      "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
+    },
+    {
+      "path": "sdk-mailbox-deferred-user-fifo.patch",
+      "sha256": "00d32123fc3cc9127c0acc5a71d3ac11289b3af5300e8f9d05e33ebd61ef3e7b"
     },
     {
       "path": "sdk-application-tool-output-acceptance.patch",
