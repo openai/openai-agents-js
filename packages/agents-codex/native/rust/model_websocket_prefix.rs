@@ -83,23 +83,35 @@ impl Prefix {
             .and_then(Value::as_array)
             .ok_or("Edited Responses input must be a list")?;
         let properties = properties(body);
-        let mut outgoing = body.clone();
-        outgoing.insert("type".into(), Value::String("response.create".into()));
         // The bridge normalizes the request and committed output before comparison.
         let prefix = self.provider_input.as_ref().filter(|prefix| {
             self.id.is_some()
                 && self.properties.as_ref() == Some(&properties)
                 && input.starts_with(prefix)
         });
-        if let Some(prefix) = prefix {
-            outgoing.insert(
+        let mut outgoing = if let Some(prefix) = prefix {
+            let mut delta: Map<String, Value> = body
+                .iter()
+                .map(|(key, value)| {
+                    let value = if key == "input" {
+                        Value::Array(input[prefix.len()..].to_vec())
+                    } else {
+                        value.clone()
+                    };
+                    (key.clone(), value)
+                })
+                .collect();
+            delta.insert(
                 "previous_response_id".into(),
                 Value::String(self.id.clone().expect("committed prefix has an id")),
             );
-            outgoing.insert("input".into(), Value::Array(input[prefix.len()..].to_vec()));
+            delta
         } else {
-            outgoing.remove("previous_response_id");
-        }
+            let mut full = body.clone();
+            full.remove("previous_response_id");
+            full
+        };
+        outgoing.insert("type".into(), Value::String("response.create".into()));
         Ok(Value::Object(outgoing))
     }
 
