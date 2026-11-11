@@ -137,7 +137,7 @@ it.each([true, false])(
     const docs = hostedMcp({
       serverLabel: 'docs',
       serverUrl: 'https://docs.invalid/mcp',
-      requireApproval: 'always',
+      ...(approve ? { requireApproval: 'always' as const } : {}),
       onApprovalRequest: callback,
     });
     expect(
@@ -151,6 +151,9 @@ it.each([true, false])(
       ).finalOutput,
     ).toBe('done');
     expect(callback).toHaveBeenCalledTimes(1);
+    expect(server.requests[0].tools).toContainEqual(
+      expect.objectContaining({ type: 'mcp', require_approval: 'always' }),
+    );
     const input = server.requests[1].input as JsonObject[];
     expect(
       input.find((item) => item.type === 'mcp_approval_response'),

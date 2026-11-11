@@ -57,6 +57,21 @@ describe('native hosted MCP declarations', () => {
     expect(inspect(server)).not.toContain('private-fixture-value');
   });
 
+  it('requires provider approval when an application callback is configured', () => {
+    const options = {
+      serverLabel: 'docs',
+      serverUrl: 'https://example.invalid/mcp',
+      onApprovalRequest: () => ({ approve: false }),
+    };
+    expect(hostedMcpConfigurations([hostedMcp(options)])).toMatchObject([
+      { require_approval: 'always' },
+    ]);
+    expect(() => {
+      // @ts-expect-error A callback requires a provider approval policy.
+      hostedMcp({ ...options, requireApproval: 'never' });
+    }).toThrow('onApprovalRequest requires Hosted MCP approval');
+  });
+
   it('captures each server once and rejects conflicting profile authority', () => {
     const options = {
       serverLabel: 'docs',

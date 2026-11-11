@@ -29,15 +29,30 @@ export interface HostedMCPApprovalDecision {
   readonly reason?: string | null;
 }
 
-type WithoutCallback<T> = T extends unknown ? Omit<T, 'onApproval'> : never;
-type ProviderOptions = WithoutCallback<Parameters<typeof providerHostedMcp>[0]>;
+type ProviderToolOptions = Parameters<typeof providerHostedMcp>[0];
+type WithoutApproval<T> = T extends unknown
+  ? Omit<T, 'onApproval' | 'requireApproval'>
+  : never;
+type ProviderOptions = WithoutApproval<ProviderToolOptions>;
+type ApprovalPolicy = Exclude<
+  ProviderToolOptions['requireApproval'],
+  'never' | undefined
+>;
 type ApprovalCallback<Context> = (
   request: HostedMCPApprovalRequest<Context>,
 ) => HostedMCPApprovalDecision | Promise<HostedMCPApprovalDecision>;
 
-export type HostedMCPOptions<Context = unknown> = ProviderOptions & {
-  onApprovalRequest?: ApprovalCallback<Context>;
-};
+export type HostedMCPOptions<Context = unknown> = ProviderOptions &
+  (
+    | {
+        onApprovalRequest?: undefined;
+        requireApproval?: 'never' | ApprovalPolicy;
+      }
+    | {
+        onApprovalRequest: ApprovalCallback<Context>;
+        requireApproval?: ApprovalPolicy;
+      }
+  );
 export type HostedMCPFunction<Context = unknown> = FunctionTool<Context> & {
   readonly ref: ToolRef;
 };
@@ -63,30 +78,37 @@ export function hostedMcp<Context = unknown>(
 ): HostedMCPFunction<Context>;
 export function hostedMcp(
   options: HostedMCPOptions & {
-    requireApproval: Exclude<
-      NonNullable<ProviderOptions['requireApproval']>,
-      'never'
-    >;
+    requireApproval: ApprovalPolicy;
     onApprovalRequest?: undefined;
   },
 ): HostedMCPManual;
 export function hostedMcp<Context = unknown>(
   options: HostedMCPOptions<Context>,
 ): HostedMCPFunction<Context> | HostedMCPManual;
-/** Provider-hosted MCP with scoped native approval replies and the existing never default. */
+/** Provider-hosted MCP with scoped native approval replies. A callback defaults to always. */
 export function hostedMcp<Context = unknown>(
   options: HostedMCPOptions<Context>,
 ): HostedMCPFunction<Context> | HostedMCPManual {
   if ('onApproval' in options)
     throw new TypeError('Native Hosted MCP uses onApprovalRequest');
-  const { onApprovalRequest, ...providerOptions } = options;
+  const { onApprovalRequest, requireApproval, ...providerOptions } = options;
   if (
     onApprovalRequest !== undefined &&
     typeof onApprovalRequest !== 'function'
   )
     throw new TypeError('onApprovalRequest must be a function');
-  const configuration = providerHostedMcp(providerOptions).providerData;
+  const policy = requireApproval ?? (onApprovalRequest ? 'always' : 'never');
+  const approvalOptions =
+    policy === 'never'
+      ? { requireApproval: policy as 'never' }
+      : { requireApproval: policy };
+  const configuration = providerHostedMcp({
+    ...providerOptions,
+    ...approvalOptions,
+  }).providerData;
   const binding = new HostedMcpBinding(configuration);
+  if (onApprovalRequest && !binding.requiresApproval)
+    throw new TypeError('onApprovalRequest requires Hosted MCP approval');
   const parameters = z
     .object({
       server_label: z.string().min(1),
