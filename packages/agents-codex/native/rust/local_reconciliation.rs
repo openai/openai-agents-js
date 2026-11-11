@@ -17,6 +17,16 @@ use serde::{Deserialize, Serialize};
 const APPLIED: &str = "sdk_reconciliation.applied";
 const NOT_APPLIED: &str = "sdk_reconciliation.not_applied";
 
+pub(crate) fn invocation_id(item: &ResponseItem) -> Option<&str> {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. }
+        | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
+        ResponseItem::McpApprovalRequest { id: Some(id), .. } => Some(id.as_str()),
+        _ => None,
+    }
+}
+
 pub(crate) fn output_identity(item: &ResponseItem) -> Option<(&str, Option<&str>)> {
     let call = match item {
         ResponseItem::FunctionCallOutput {
@@ -72,7 +82,9 @@ pub(crate) fn output_matches_invocation(call: &ResponseItem, result: &ResponseIt
                 caller,
                 ..
             },
-        ) => expected == actual && provider_fields.get("caller") == caller.as_ref(),
+        ) => {
+            expected.as_str() == actual.as_str() && provider_fields.get("caller") == caller.as_ref()
+        }
         _ => false,
     }
 }
@@ -347,17 +359,12 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
         };
         let item = &envelope.item;
         let owner = item.turn_id().map(str::to_owned).or_else(|| turn.clone());
-        match item {
-            ResponseItem::FunctionCall { call_id, .. }
-            | ResponseItem::CustomToolCall { call_id, .. }
-            | ResponseItem::ComputerCall { call_id, .. }
-            | ResponseItem::McpApprovalRequest {
-                id: Some(call_id), ..
-            } => {
+        match invocation_id(item) {
+            Some(call_id) => {
                 ensure!(
                     calls
                         .insert(
-                            (owner, call_id.clone()),
+                            (owner, call_id.to_owned()),
                             Call {
                                 invocation: item,
                                 output: None,

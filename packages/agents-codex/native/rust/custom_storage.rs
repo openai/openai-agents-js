@@ -72,42 +72,39 @@ fn identities(
     for item in items {
         match item {
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => turn = start.turn_id.clone(),
-            RolloutItem::ResponseItem(row) => match &row.item {
-                ResponseItem::FunctionCall { call_id, .. }
-                | ResponseItem::CustomToolCall { call_id, .. }
-                | ResponseItem::ComputerCall { call_id, .. }
-                | ResponseItem::McpApprovalRequest {
-                    id: Some(call_id), ..
-                } => {
-                    let identity = (
-                        row.item.turn_id().unwrap_or(&turn).to_owned(),
-                        call_id.clone(),
-                    );
-                    if let Some(previous) = calls.get(&identity)
-                        && (matches!(previous, ResponseItem::ComputerCall { .. })
-                            || matches!(row.item, ResponseItem::ComputerCall { .. }))
-                    {
-                        return Err(error("ambiguous original computer call identity"));
-                    }
-                    if let Some(previous) = calls.get(&identity)
-                        && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
-                            || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
-                    {
-                        return Err(error("ambiguous original Hosted MCP approval identity"));
-                    }
-                    calls.insert(identity, row.item.clone());
-                }
-                _ => {
-                    if let Some((call, owner)) =
-                        crate::local_reconciliation::output_identity(&row.item)
-                    {
-                        outputs.insert(
-                            (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
-                            row.item.clone(),
+            RolloutItem::ResponseItem(row) => {
+                match crate::local_reconciliation::invocation_id(&row.item) {
+                    Some(call_id) => {
+                        let identity = (
+                            row.item.turn_id().unwrap_or(&turn).to_owned(),
+                            call_id.to_owned(),
                         );
+                        if let Some(previous) = calls.get(&identity)
+                            && (matches!(previous, ResponseItem::ComputerCall { .. })
+                                || matches!(row.item, ResponseItem::ComputerCall { .. }))
+                        {
+                            return Err(error("ambiguous original computer call identity"));
+                        }
+                        if let Some(previous) = calls.get(&identity)
+                            && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
+                                || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
+                        {
+                            return Err(error("ambiguous original Hosted MCP approval identity"));
+                        }
+                        calls.insert(identity, row.item.clone());
+                    }
+                    _ => {
+                        if let Some((call, owner)) =
+                            crate::local_reconciliation::output_identity(&row.item)
+                        {
+                            outputs.insert(
+                                (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
+                                row.item.clone(),
+                            );
+                        }
                     }
                 }
-            },
+            }
             _ => {}
         }
     }

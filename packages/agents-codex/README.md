@@ -138,6 +138,8 @@ Server configuration and credentials have been remaining fixed for each Session.
 
 Pending approvals have been requiring live replies: `Session.suspend()` has been rejecting them without consuming the pending request. External restoration has also been rejecting positive MCP approval receipts because portable state has not been carrying live approval authority.
 
+`Session.compact({ summary })` has been preserving approvals within the current live Session. Persistent resume and forks have been forwarding completed MCP results without replaying saved positive approval decisions.
+
 ## SDK guides
 
 - [Architecture](../../examples/codex/guides/architecture.md). Understand the native runtime, how it differs from v0, and which adoption route fits your application.
