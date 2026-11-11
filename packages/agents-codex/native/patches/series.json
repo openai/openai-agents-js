@@ -701,6 +701,10 @@
       "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
     },
     {
+      "path": "sdk-deferred-followup-trace.patch",
+      "sha256": "bb5bfe944f0278638fd9eb50a913cf89341c19815382af5a1c47e3dded0ada46"
+    },
+    {
       "path": "sdk-portable-realtime-tool-results.patch",
       "sha256": "9e108aca0457ab663aaefd4eda7573948fc5b0b479ebb51abd6dc1dcea038f58"
     },
@@ -713,5 +717,5 @@
       "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
     }
   ],
-  "result_tree": "97138d1b6d4b39487ea893f0c49daad0e14a436b"
+  "result_tree": "eeefec9b379c62d54ba03e691161e507f06b4b4a"
 }
