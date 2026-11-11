@@ -12,7 +12,43 @@ type ViewTurn<T> = Pick<
   'sessionId' | 'submissionId' | 'turnId' | 'childId' | 'events'
 > & { wait(): Promise<Pick<Completed<T>, 'finalOutput'>> };
 type ViewSession = Pick<Session, 'id' | 'items'>;
-type Frame = Record<string, unknown>;
+export type VercelMessageChunk =
+  | { type: 'start' | 'finish' | 'abort' }
+  | {
+      type: 'text-start' | 'text-end' | 'reasoning-start' | 'reasoning-end';
+      id: string;
+    }
+  | { type: 'text-delta' | 'reasoning-delta'; id: string; delta: string }
+  | {
+      type: 'data-tool-progress';
+      data: ReturnType<typeof progress>;
+      transient: true;
+    }
+  | {
+      type: 'tool-input-available';
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      dynamic: true;
+    }
+  | {
+      type: 'tool-output-available';
+      toolCallId: string;
+      output: unknown;
+      dynamic: true;
+    }
+  | {
+      type: 'tool-output-error';
+      toolCallId: string;
+      errorText: string;
+      dynamic: true;
+    }
+  | { type: 'error'; errorText: string };
+
+export type VercelMessageStreamOptions = {
+  includeToolData?: boolean;
+  includeReasoningSummaries?: boolean;
+};
 type ShownText = { text: string; trailingHighSurrogate: boolean };
 const utf8 = new TextEncoder();
 const stopped = (error: unknown): boolean =>
@@ -44,7 +80,7 @@ async function localWait<T>(
 
 function progress(
   event: Extract<Observation, { type: 'tool_started' | 'tool_finished' }>,
-): Frame {
+) {
   return {
     type: event.type,
     call_id: event.callId,
@@ -147,32 +183,34 @@ function remember(
   return nextBytes;
 }
 
-/** Closing a response releases only its local reader. */
-function responseStream(
-  events: AsyncIterableIterator<Observation>,
-  project: (signal: AbortSignal) => AsyncGenerator<Frame | '[DONE]'>,
-  headers: Record<string, string>,
-): Response {
+type ChunkEncoding<Chunk> = {
+  frame: (chunk: VercelMessageChunk) => Chunk;
+  end?: Chunk;
+};
+
+/** Closing a stream releases only its local reader. */
+function messageStream<Chunk>({
+  events,
+  project,
+  encoding,
+}: {
+  events: AsyncIterableIterator<Observation>;
+  project: (signal: AbortSignal) => AsyncGenerator<VercelMessageChunk>;
+  encoding: ChunkEncoding<Chunk>;
+}): ReadableStream<Chunk> {
   const stop = new AbortController();
   const generator = project(stop.signal);
-  const encoder = new TextEncoder();
   let closed = false;
-  const body = new ReadableStream<Uint8Array>({
+  return new ReadableStream<Chunk>({
     async pull(controller) {
       try {
         const next = await generator.next();
         if (closed) return;
         if (next.done) {
-          if (!closed) {
-            closed = true;
-            controller.close();
-          }
-        } else
-          controller.enqueue(
-            encoder.encode(
-              `data: ${next.value === '[DONE]' ? next.value : JSON.stringify(next.value)}\n\n`,
-            ),
-          );
+          if (encoding.end !== undefined) controller.enqueue(encoding.end);
+          closed = true;
+          controller.close();
+        } else controller.enqueue(encoding.frame(next.value));
       } catch (error) {
         if (!closed) {
           closed = true;
@@ -191,19 +229,20 @@ function responseStream(
       if (failed?.status === 'rejected') throw failed.reason;
     },
   });
-  return new Response(body, {
-    headers: { 'content-type': 'text/event-stream', ...headers },
-  });
 }
 
 class ProjectionError extends Error {}
 
-async function toolFrames(
+async function retainedFrames(
   session: ViewSession,
   childId: string | null,
   turnId: string,
+  {
+    includeToolData,
+    includeReasoningSummaries,
+  }: Required<VercelMessageStreamOptions>,
   signal: AbortSignal,
-): Promise<Frame[]> {
+): Promise<VercelMessageChunk[]> {
   const calls = new Map<
     string,
     Extract<SessionItem, { type: 'function_call' | 'mcp_call' }>
@@ -212,21 +251,38 @@ async function toolFrames(
     string,
     Extract<SessionItem, { type: 'function_call_output' }>
   >();
+  const frames: VercelMessageChunk[] = [];
   let size = 0;
+  let summaries = 0;
   const items = session.items({ subagentId: childId ?? undefined });
   try {
     for (;;) {
       const next = await localWait(items.next(), signal);
       if (next.done) break;
       const item = next.value;
+      if (item.turnId !== turnId) continue;
+      if (includeReasoningSummaries && item.type === 'reasoning') {
+        const text = item.summary.map((part) => part.text).join('');
+        if (!text) continue;
+        size += utf8.encode(text).length;
+        summaries += 1;
+        if (summaries > 256 || size > 1_048_576)
+          throw new ProjectionError('UI reasoning summary limit');
+        frames.push(
+          { type: 'reasoning-start', id: item.id },
+          { type: 'reasoning-delta', id: item.id, delta: text },
+          { type: 'reasoning-end', id: item.id },
+        );
+        continue;
+      }
       if (
-        item.turnId !== turnId ||
+        !includeToolData ||
         !['function_call', 'function_call_output', 'mcp_call'].includes(
           item.type,
         )
       )
         continue;
-      size += new TextEncoder().encode(JSON.stringify(item)).length;
+      size += utf8.encode(JSON.stringify(item)).length;
       if (size > 1_048_576) throw new ProjectionError('UI tool payload limit');
       if (item.type === 'function_call_output') {
         if (outputs.has(item.callId))
@@ -248,7 +304,6 @@ async function toolFrames(
     if (signal.aborted) void closing.catch(() => {});
     else await localWait(closing, signal);
   }
-  const frames: Frame[] = [];
   for (const [id, call] of calls) {
     const output = call.type === 'mcp_call' ? call : outputs.get(id);
     outputs.delete(id);
@@ -295,18 +350,26 @@ async function toolFrames(
   return frames;
 }
 
-/** Fresh plain-text view; caller must retain its actual plain output declaration. */
-function createVercelResponse(
+function createVercelStream<Chunk>(
   turn: ViewTurn<string>,
   session: ViewSession,
-  includeToolData: boolean,
-): Response {
+  {
+    includeToolData = false,
+    includeReasoningSummaries = false,
+  }: VercelMessageStreamOptions,
+  encoding: ChunkEncoding<Chunk>,
+): ReadableStream<Chunk> {
+  if (typeof includeToolData !== 'boolean')
+    throw new TypeError('includeToolData must be a boolean');
+  if (typeof includeReasoningSummaries !== 'boolean')
+    throw new TypeError('includeReasoningSummaries must be a boolean');
   if (session.id !== turn.sessionId)
     throw new TypeError('Pass the owning Session');
   const events = turn.events();
-  return responseStream(
+  return messageStream({
     events,
-    async function* (signal) {
+    encoding,
+    async *project(signal) {
       const shown = new Map<string, ShownText>();
       let shownBytes = 0;
       let started: string | undefined;
@@ -364,7 +427,10 @@ function createVercelResponse(
             };
         }
         for (const id of shown.keys()) yield { type: 'text-end', id };
-        let terminal: Frame = { type: 'error', errorText: 'resync_required' };
+        let terminal: VercelMessageChunk = {
+          type: 'error',
+          errorText: 'resync_required',
+        };
         if (!lost && !(!started && gap && turn.turnId !== null)) {
           try {
             const result = await localWait(turn.wait(), signal);
@@ -383,11 +449,12 @@ function createVercelResponse(
                 signal,
               ))
             ) {
-              if (includeToolData)
-                for (const frame of await toolFrames(
+              if (includeToolData || includeReasoningSummaries)
+                for (const frame of await retainedFrames(
                   session,
                   turn.childId,
                   started,
+                  { includeToolData, includeReasoningSummaries },
                   signal,
                 ))
                   yield frame;
@@ -407,37 +474,50 @@ function createVercelResponse(
           }
         }
         yield terminal;
-        yield '[DONE]';
       } catch {
         signal.throwIfAborted();
         for (const id of shown.keys()) yield { type: 'text-end', id };
         yield { type: 'error', errorText: 'turn_failed' };
-        yield '[DONE]';
       } finally {
         await events.return?.();
       }
     },
-    { 'x-vercel-ai-ui-message-stream': 'v1' },
-  );
+  });
 }
 
 /**
- * Project a fresh, plain-text native turn as UI Message Stream v1.
- * Submit with default output, without prompted/structured output overrides.
- * This reader cannot resume a transcript or span steering boundaries. Missing
- * observations fail with resync_required; use an authorized history view to recover.
+ * Project a fresh, plain-text native turn as UI Message Stream v1 chunks.
+ * Submit with the default plain-text output declaration.
+ * Missing observations fail with resync_required. Use an authorized history view
+ * to recover. Closing the reader leaves execution running.
  *
- * Tool data is sensitive and omitted by default. Opt in to emit complete retained
- * function/MCP arguments and results, keyed by canonical call ID, at settlement.
- * Core may have bounded retained MCP output; omitted remote bytes are unavailable.
- * Disconnecting releases only this reader, never its turn or Session.
+ * Opt in to tool data or provider reasoning summaries at settlement. Tool data
+ * is sensitive, and bounded native retention may omit parts of remote output.
  */
+export function vercelMessageStream(
+  turn: ViewTurn<string>,
+  session: ViewSession,
+  options: VercelMessageStreamOptions = {},
+): ReadableStream<VercelMessageChunk> {
+  return createVercelStream(turn, session, options, {
+    frame: (chunk) => chunk,
+  });
+}
+
+/** Serve {@link vercelMessageStream} as a server-sent event response. */
 export function vercelResponse(
   turn: ViewTurn<string>,
   session: ViewSession,
-  { includeToolData = false }: { includeToolData?: boolean } = {},
+  options: VercelMessageStreamOptions = {},
 ): Response {
-  if (typeof includeToolData !== 'boolean')
-    throw new TypeError('includeToolData must be a boolean');
-  return createVercelResponse(turn, session, includeToolData);
+  const body = createVercelStream(turn, session, options, {
+    frame: (chunk) => utf8.encode(`data: ${JSON.stringify(chunk)}\n\n`),
+    end: utf8.encode('data: [DONE]\n\n'),
+  });
+  return new Response(body, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'x-vercel-ai-ui-message-stream': 'v1',
+    },
+  });
 }
