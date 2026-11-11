@@ -327,6 +327,7 @@ import {
   type Tool,
   type ToolCatalog,
   type FunctionTool,
+  type ToolCallContext,
 } from './tools';
 import type { NativeProviderRoutes } from './http-model';
 
@@ -9241,69 +9242,14 @@ export class Session<OutputT = string, Context = unknown> {
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
             : losslessJsonValueSchema.parse(msg.arguments);
-        const grant = createManualRequest(
-          tool,
-          {
-            sessionId: this.id,
-            submissionId:
-              run instanceof NativeTurn
-                ? this.submissionIds.get(run)!
-                : `child:${run.childId}:${run.incarnation}:${run.turnId}`,
-            subagentId: run instanceof NativeTurn ? null : run.childId,
-            turnId,
-            callId,
-            call: managedCallInfo(
-              {
-                sessionId: this.id,
-                childId: run instanceof NativeTurn ? null : run.childId,
-                childIncarnation:
-                  run instanceof NativeTurn ? null : run.incarnation,
-              },
-              msg,
-            ),
-          },
-          args,
-          () => {
-            if (!this.current(run) || this.manualSealing) return false;
-            try {
-              return this.manualCurrent(event);
-            } catch {
-              return false;
-            }
-          },
-          managedApproval(tool) !== undefined,
-        );
-        this.manualCalls.set(key, {
-          run,
-          event,
-          tool,
-          grant,
-          tracing: getCurrentSpan(),
-          identity,
-          ready: false,
-        });
-        calls.add(key);
-        if (approval) {
-          if (
-            msg._sdk_restored_approval === true &&
-            msg._sdk_approval_required !== true
-          )
-            throw new NativeError(
-              'Saved manual call cannot acquire managed callback authority',
-            );
-          if (!this.#native._require_tool_approval(encodeReceipt(msg))) return;
+        const withApprovalContext = async <T>(
+          callback: (context: ToolCallContext, check: () => void) => Promise<T>,
+        ): Promise<T> => {
           const submission = root
             ? this.#turnFor(run)
             : await this.childSubmission(run);
-          if (!submission) return;
-          const source = JSON.stringify([
-            msg.profile_id ?? null,
-            msg.profile_epoch ?? null,
-            String(marker.generation),
-          ]);
-          const cached = this.approvalDecisions
-            .get(toolDeclarationIdentity(tool))
-            ?.get(source);
+          if (!submission)
+            throw new NativeError('Managed approval submission is unavailable');
           const scope = this.decisionScope(event.msg, run.controller.signal);
           const context = {
             decide: scope.decide,
@@ -9335,9 +9281,100 @@ export class Session<OutputT = string, Context = unknown> {
                 'Managed approval expired during policy evaluation',
               );
           };
-          let decision: Awaited<ReturnType<typeof approval.prepare>>;
           try {
-            decision = await approval.prepare(
+            return await callback(context, check);
+          } finally {
+            await scope.close();
+          }
+        };
+        const initialInput =
+          approval?.prepareOriginalInput &&
+          msg._sdk_restored_approval !== true &&
+          msg._sdk_effective_arguments === undefined
+            ? await withApprovalContext((context, check) =>
+                approval.prepareOriginalInput!(args, context, check),
+              )
+            : undefined;
+        if (initialInput && 'failure' in initialInput) {
+          run.controller.signal.throwIfAborted();
+          admission?.check();
+          if (!this.current(run) || !this.manualCurrent(event)) return;
+          const accepted = await this.#native._respond_python_tool(
+            encodeReceipt({
+              request: msg,
+              response: {
+                success: false,
+                contentItems: [
+                  { type: 'inputText', text: initialInput.failure },
+                ],
+              },
+            }),
+          );
+          if (accepted) this.observeToolEnd(run, identity, 'failed');
+          return;
+        }
+        const grant = createManualRequest(
+          tool,
+          {
+            sessionId: this.id,
+            submissionId:
+              run instanceof NativeTurn
+                ? this.submissionIds.get(run)!
+                : `child:${run.childId}:${run.incarnation}:${run.turnId}`,
+            subagentId: run instanceof NativeTurn ? null : run.childId,
+            turnId,
+            callId,
+            call: managedCallInfo(
+              {
+                sessionId: this.id,
+                childId: run instanceof NativeTurn ? null : run.childId,
+                childIncarnation:
+                  run instanceof NativeTurn ? null : run.incarnation,
+              },
+              msg,
+            ),
+          },
+          args,
+          () => {
+            if (!this.current(run) || this.manualSealing) return false;
+            try {
+              return this.manualCurrent(event);
+            } catch {
+              return false;
+            }
+          },
+          managedApproval(tool) !== undefined,
+          initialInput && 'value' in initialInput ? initialInput : undefined,
+        );
+        this.manualCalls.set(key, {
+          run,
+          event,
+          tool,
+          grant,
+          tracing: getCurrentSpan(),
+          identity,
+          ready: false,
+        });
+        calls.add(key);
+        if (approval) {
+          if (
+            msg._sdk_restored_approval === true &&
+            msg._sdk_approval_required !== true
+          )
+            throw new NativeError(
+              'Saved manual call cannot acquire managed callback authority',
+            );
+          if (!this.#native._require_tool_approval(encodeReceipt(msg))) return;
+          const source = JSON.stringify([
+            msg.profile_id ?? null,
+            msg.profile_epoch ?? null,
+            String(marker.generation),
+          ]);
+          const cached = this.approvalDecisions
+            .get(toolDeclarationIdentity(tool))
+            ?.get(source);
+          const decision = await withApprovalContext((context, check) =>
+            approval.prepare(
               args,
               context,
               check,
@@ -9345,11 +9382,14 @@ export class Session<OutputT = string, Context = unknown> {
               msg._sdk_effective_arguments === undefined
                 ? undefined
                 : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
+            ),
+          );
+          run.controller.signal.throwIfAborted();
+          admission?.check();
+          if (!this.current(run) || !this.manualCurrent(event))
+            throw new NativeError(
+              'Managed approval expired during policy evaluation',
             );
-          } finally {
-            await scope.close();
-          }
-          check();
           if (
             !this.#native._require_tool_approval(
               encodeReceipt(msg),
@@ -12201,6 +12241,20 @@ export class Session<OutputT = string, Context = unknown> {
       JSON.stringify(action),
     );
     return this.close();
+  }
+
+  /** Persist this LocalStorage Session's label; null clears it.
+   * Surrounding whitespace trimmed; blank names rejected. Nonunique labels,
+   * immutable Session identity; no alias or resume authority. */
+  async setStoredName(name: string | null): Promise<string | null> {
+    if (name !== null && typeof name !== 'string')
+      throw new TypeError('name must be a string or null');
+    this.checkCallbackOperation('set the stored name on');
+    if (!this.isOpen || this.manualSealing || this.manualSealed)
+      throw new NativeError('Stored names require a healthy open Session');
+    return JSON.parse(
+      await this.#native._set_stored_name(JSON.stringify(name)),
+    ) as string | null;
   }
 
   /** Committed native Exec application-session headers from this LocalStorage.

@@ -913,3 +913,78 @@ nativeIt(
     }
   },
 );
+
+nativeIt.each([false, true])(
+  'continues native Realtime after original-input recovery (approval=%s)',
+  async (managed) => {
+    const execute = vi.fn(() => 'unexpected');
+    const before = vi.fn(() => ({ action: 'allow' as const }));
+    const after = vi.fn((output) => output);
+    const approve = vi.fn(() => true);
+    const recover = vi.fn((_context, _error, original) => {
+      expect(original).toEqual({ value: 7 });
+      return 'Invalid checked input';
+    });
+    const selected = tool({
+      name: 'checked',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: managed ? approve : false,
+      inputErrorFunction: recover,
+      before,
+      after,
+      execute,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [selected],
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        const initial = peer.frames.filter(
+          (frame) => frame.type === 'response.create',
+        ).length;
+        peer.call('checked', { value: 7 }, 'invalid-original');
+        expect(await peer.output('invalid-original')).toBe(
+          'Invalid checked input',
+        );
+        await vi.waitFor(
+          () =>
+            expect(
+              peer.frames.filter((frame) => frame.type === 'response.create'),
+            ).toHaveLength(initial + 1),
+          { timeout: 1000 },
+        );
+        await voice.update({ instructions: 'Help.' });
+        expect(
+          peer.frames.filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(initial + 1);
+        expect(
+          peer.frames.filter(
+            (frame) =>
+              frame.type === 'conversation.item.create' &&
+              frame.item?.call_id === 'invalid-original',
+          ),
+        ).toHaveLength(1);
+        expect(recover).toHaveBeenCalledOnce();
+        expect(approve).not.toHaveBeenCalled();
+        expect(before).not.toHaveBeenCalled();
+        expect(execute).not.toHaveBeenCalled();
+        expect(after).not.toHaveBeenCalled();
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+      }
+      model.assertExhausted();
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);

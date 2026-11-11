@@ -1,6 +1,7 @@
 /** Stored Exec application-session header; no history or resume grant. */
 export interface StoredSession {
   readonly id: string;
+  readonly name: string | null;
   readonly forkedFromId: string | null;
   readonly parentThreadId: string | null;
   readonly createdAtMs: number;
@@ -16,6 +17,7 @@ export function storedSessionPage(encoded: string): StoredSessionPage {
   const raw: {
     sessions: {
       id: string;
+      name: string | null;
       forked_from_id: string | null;
       parent_thread_id: string | null;
       created_at_ms: number;
@@ -26,6 +28,7 @@ export function storedSessionPage(encoded: string): StoredSessionPage {
   return {
     sessions: raw.sessions.map((session) => ({
       id: session.id,
+      name: session.name,
       forkedFromId: session.forked_from_id,
       parentThreadId: session.parent_thread_id,
       createdAtMs: session.created_at_ms,
