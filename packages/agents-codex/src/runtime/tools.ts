@@ -201,6 +201,7 @@ type Invocation<Context> = (
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
   beforeExecute?: () => Promise<boolean>,
+  onBodyEntry?: () => void,
 ) => Promise<ToolResponse>;
 
 /** A tool-local decision made before its execution callback runs. */
@@ -521,6 +522,7 @@ export function tool<
       effectiveArgs?: JsonValue,
       approved?: ApprovedArguments,
       beforeExecute?: () => Promise<boolean>,
+      onBodyEntry?: () => void,
     ) {
       admit();
       const originalArguments = Object.freeze(
@@ -638,14 +640,18 @@ export function tool<
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
       try {
         value = await invokeWithTimeout(
-          (signal) =>
-            execute(
+          (signal) => {
+            signal.throwIfAborted();
+            admit();
+            onBodyEntry?.();
+            return execute(
               parsed,
               inheritToolSessionOwner(
                 withDecisionSignal(callContext, signal),
                 context,
               ),
-            ),
+            );
+          },
           context.signal,
           callbackTimeout,
           name,
@@ -943,6 +949,7 @@ export async function invokeFunctionTool(
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
   beforeExecute?: () => Promise<boolean>,
+  onBodyEntry?: () => void,
 ): Promise<ToolResponse> {
   const admit = () => {
     context.signal.throwIfAborted();
@@ -956,6 +963,7 @@ export async function invokeFunctionTool(
     effectiveArgs,
     approved,
     beforeExecute,
+    onBodyEntry,
   );
 }
 
