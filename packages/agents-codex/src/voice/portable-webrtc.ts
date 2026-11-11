@@ -34,6 +34,7 @@ export async function connectPortableVoiceWebRTC<Media extends MediaConnection>(
     useInsecureApiKey?: boolean;
     agent: PortableVoiceOptions;
     media: {
+      enableAudio?: false;
       onDataChannel?: (channel: NativeVoiceDataChannel) => void;
       onTransportEvent?: (event: unknown) => void;
       onError?: (error: Error) => void;
@@ -80,7 +81,7 @@ export async function connectPortableVoiceWebRTC<Media extends MediaConnection>(
   const session = new PortableVoiceSession(
     options.control,
     {
-      clearOutputAudioOnInterrupt: true,
+      clearOutputAudioOnInterrupt: options.media.enableAudio !== false,
       async send(frame) {
         await opened;
         if (!channel || channel.readyState !== 'open')
