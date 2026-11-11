@@ -528,7 +528,7 @@ async fn metadata_source(
         let event: serde_json::Value =
             serde_json::from_str(&source.next_session_event().await.unwrap()).unwrap();
         if event["msg"]["type"] == "dynamic_tool_call_request" {
-            assert!(source._respond_python_tool(json!({"request":event["msg"],"response":{"success":true,"contentItems":[{"type":"inputText","text":"recorded metadata effect"}]}}).to_string()).await.unwrap());
+            assert!(source._respond_python_tool(json!({"request":event["msg"],"response":{"success":true,"contentItems":[{"type":"inputText","text":"recorded metadata effect"}]}}).to_string(), None).await.unwrap());
             break;
         }
         assert_ne!(event["msg"]["type"], "error", "{event}");

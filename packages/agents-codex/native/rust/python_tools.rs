@@ -293,12 +293,14 @@ fn request_response_by_default() -> bool {
 pub(crate) struct ToolReply {
     pub(crate) response: DynamicToolResponse,
     pub(crate) start_response: bool,
+    pub(crate) acceptance: Option<oneshot::Sender<()>>,
 }
 impl From<DynamicToolResponse> for ToolReply {
     fn from(response: DynamicToolResponse) -> Self {
         Self {
             response,
             start_response: true,
+            acceptance: None,
         }
     }
 }
@@ -3499,6 +3501,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),
                 start_response: response.start_response,
+                acceptance: response.acceptance,
             }) as Box<dyn ToolOutput>)
         })
     }
@@ -3509,6 +3512,7 @@ pub(crate) struct PythonOutput(pub(crate) DynamicToolResponse);
 struct RealtimeToolOutput {
     output: PythonOutput,
     start_response: bool,
+    acceptance: Option<oneshot::Sender<()>>,
 }
 impl ToolOutput for RealtimeToolOutput {
     fn log_output(&self) -> String {
@@ -3522,6 +3526,11 @@ impl ToolOutput for RealtimeToolOutput {
     }
     fn realtime_response_requested(&self) -> bool {
         self.start_response
+    }
+    fn mark_accepted(&mut self) {
+        if let Some(acceptance) = self.acceptance.take() {
+            let _ = acceptance.send(());
+        }
     }
 }
 
@@ -3733,6 +3742,7 @@ mod pending_tests {
         let output = RealtimeToolOutput {
             output: PythonOutput(background.response),
             start_response: background.start_response,
+            acceptance: None,
         };
         assert!(!output.realtime_response_requested());
         assert_eq!(output.log_output(), "{\"start_response\":false}");

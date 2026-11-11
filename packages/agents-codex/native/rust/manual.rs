@@ -1751,6 +1751,7 @@ impl PythonTools {
         Continuation,
         Vec<ResponseItemEnvelope>,
         ThreadSettingsOverrides,
+        Vec<String>,
     )> {
         let history = history(raw)?;
         let manual = self.manual.lock().expect("manual tools poisoned");
@@ -1831,6 +1832,7 @@ impl PythonTools {
             );
         }
         let mut items = Vec::new();
+        let mut canonical_call_ids = Vec::new();
         for (id, call) in frame.reply_order.iter().zip(&history.calls) {
             let receipt = frame
                 .accepted_replies
@@ -1844,7 +1846,10 @@ impl PythonTools {
                 );
             } else if !held_ids.contains(id) {
                 items.push(item);
+            } else {
+                continue;
             }
+            canonical_call_ids.push(id.clone());
         }
         let context = history
             .context
@@ -1869,7 +1874,7 @@ impl PythonTools {
                 .cloned()
                 .collect();
         }
-        Ok((frame, items, settings))
+        Ok((frame, items, settings, canonical_call_ids))
     }
 
     pub(crate) fn retire_manual(&self) {

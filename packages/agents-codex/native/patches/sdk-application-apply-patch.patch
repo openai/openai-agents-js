@@ -210,7 +210,7 @@ index 1fdf6ea2..9d0b7133 100644
          | ResponseItem::LocalShellCall { .. }
          | ResponseItem::ToolSearchCall { .. }
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index ae0efac6..1b85cf8e 100644
+index 44036798..6e29c1e7 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -2525,6 +2525,7 @@ fn recovered_tools_from_history(
@@ -239,7 +239,7 @@ index ae0efac6..1b85cf8e 100644
              (ResponseItem::ComputerCall { .. }, ResponseItem::ComputerCallOutput { .. }) => {
                  Some(true)
              }
-@@ -3401,6 +3404,7 @@ async fn handle_assistant_item_done_in_plan_mode(
+@@ -3404,6 +3407,7 @@ async fn handle_assistant_item_done_in_plan_mode(
              step_context,
              item,
              finalized_facts.as_ref(),
@@ -247,7 +247,7 @@ index ae0efac6..1b85cf8e 100644
          )
          .await;
          if let Some(agent_message) = final_last_agent_message {
-@@ -3777,7 +3781,8 @@ async fn try_run_sampling_request(
+@@ -3785,7 +3789,8 @@ async fn try_run_sampling_request(
                      if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
                          let call_id = match &item {
                              ResponseItem::FunctionCall { call_id, .. }
@@ -257,7 +257,7 @@ index ae0efac6..1b85cf8e 100644
                              | ResponseItem::CustomToolCall { call_id, .. } => {
                                  Some(call_id.as_str())
                              }
-@@ -3852,8 +3857,10 @@ async fn try_run_sampling_request(
+@@ -3860,8 +3865,10 @@ async fn try_run_sampling_request(
                          | ResponseItem::FunctionCall { .. }
                          | ResponseItem::ToolSearchCall { .. }
                          | ResponseItem::FunctionCallOutput { .. }
@@ -588,7 +588,7 @@ index f69668a1..392b7cfa 100644
                                  }
                                  let response = Self::aborted_response(&call, secs);
 diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
-index 2465d3ed..d7110582 100644
+index 0be3c4a2..46e50ee4 100644
 --- a/codex-rs/core/src/tools/registry.rs
 +++ b/codex-rs/core/src/tools/registry.rs
 @@ -54,7 +54,7 @@ pub use codex_tools::ToolExposure;
@@ -600,7 +600,7 @@ index 2465d3ed..d7110582 100644
      /// Whether this built-in control tool needs a structured tool-call event.
      fn is_builtin_control_tool(&self) -> bool {
          false
-@@ -449,6 +449,16 @@ impl ToolRegistry {
+@@ -453,6 +453,16 @@ impl ToolRegistry {
                  entry.insert(RegisteredTool { runtime, exposure });
                  true
              }
@@ -617,7 +617,7 @@ index 2465d3ed..d7110582 100644
              Entry::Occupied(entry) => {
                  tracing::warn!(
                      tool_name = %entry.key(),
-@@ -519,7 +529,8 @@ impl ToolRegistry {
+@@ -523,7 +533,8 @@ impl ToolRegistry {
                  | ToolSpec::CodeInterpreter(_)
                  | ToolSpec::Shell(_)
                  | ToolSpec::ImageGeneration(_)
@@ -627,18 +627,47 @@ index 2465d3ed..d7110582 100644
                  | ToolSpec::ComputerUsePreview { .. }
                  | ToolSpec::WebSearch { .. } => "",
              };
-@@ -842,6 +853,11 @@ impl ToolRegistry {
-                     .result
-                     .to_response_item(&result.call_id, &result.payload)
-                     .into();
+@@ -853,6 +864,40 @@ impl ToolRegistry {
+                             "native computer result must retain its protocol type and call ID".into(),
+                         ));
+                     }
++                }
++                let final_item: codex_protocol::models::ResponseItem = result
++                    .result
++                    .to_response_item(&result.call_id, &result.payload)
++                    .into();
 +                if matches!(invocation.payload, ToolPayload::ApplyPatch { .. })
 +                    && !matches!(&final_item, codex_protocol::models::ResponseItem::ApplyPatchCallOutput { call_id, .. } if call_id == &invocation.call_id)
 +                {
 +                    return Err(FunctionCallError::Fatal("application patch result must retain its protocol type and call ID".into()));
 +                }
-                 if matches!(invocation.payload, ToolPayload::Computer { .. })
-                     && !matches!(&final_item, codex_protocol::models::ResponseItem::ComputerCallOutput { call_id, .. } if call_id == &invocation.call_id)
-                 {
++                if matches!(invocation.payload, ToolPayload::Computer { .. })
++                    && !matches!(&final_item, codex_protocol::models::ResponseItem::ComputerCallOutput { call_id, .. } if call_id == &invocation.call_id)
++                {
++                    return Err(FunctionCallError::Fatal(
++                        "native computer result must retain its protocol type and call ID".into(),
++                    ));
++                }
++                crate::file_admission::validate_response_items(
++                    invocation
++                        .session
++                        .captured_provider_image_reference_policy(),
++                    &invocation.step_context.settings.model_info,
++                    std::iter::once(&final_item),
++                )
++                .map_err(FunctionCallError::Fatal)?;
++                if invocation.session.captured_provider_image_reference_policy()
++                    == codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses
++                {
++                    let supported = crate::image_preparation::inline_data_url_low_detail_supported(
++                        &invocation.turn.config, &invocation.step_context.settings.model_info,
++                    );
++                    let reference_policy = crate::image_preparation::reference_policy_for_model(
++                        invocation.session.captured_provider_image_reference_policy(),
++                        invocation.step_context.settings.model_info.use_responses_lite, supported,
+                     crate::file_admission::validate_response_items(
+                         invocation
+                             .session
 diff --git a/codex-rs/core/src/tools/registry_tests.rs b/codex-rs/core/src/tools/registry_tests.rs
 index b926ebeb..0c0cdc32 100644
 --- a/codex-rs/core/src/tools/registry_tests.rs
@@ -1284,10 +1313,10 @@ index 254fa9ee..c92e7c75 100644
              }
              _ => Err(FunctionCallError::Fatal(format!(
 diff --git a/codex-rs/tools/src/tool_output.rs b/codex-rs/tools/src/tool_output.rs
-index 6ca3c213..fdc86eb2 100644
+index 8e0cb91a..f2bce471 100644
 --- a/codex-rs/tools/src/tool_output.rs
 +++ b/codex-rs/tools/src/tool_output.rs
-@@ -249,6 +249,7 @@ impl ToolOutput for codex_protocol::mcp::CallToolResult {
+@@ -257,6 +257,7 @@ impl ToolOutput for codex_protocol::mcp::CallToolResult {
  
  fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue {
      match response {
@@ -1316,7 +1345,7 @@ index 95cbd6a8..47c5858d 100644
              ToolPayload::Function { arguments } => Cow::Borrowed(arguments),
              ToolPayload::ToolSearch { arguments } => Cow::Owned(arguments.query.clone()),
 diff --git a/codex-rs/tools/src/tool_search.rs b/codex-rs/tools/src/tool_search.rs
-index 9c93c2ee..7d33a8c3 100644
+index 9c93c2ee..d5fdbb52 100644
 --- a/codex-rs/tools/src/tool_search.rs
 +++ b/codex-rs/tools/src/tool_search.rs
 @@ -48,6 +48,7 @@ impl ToolSearchInfo {
@@ -1327,16 +1356,14 @@ index 9c93c2ee..7d33a8c3 100644
              | ToolSpec::Computer { .. }
              | ToolSpec::ComputerUsePreview { .. }
              | ToolSpec::WebSearch { .. } => None,
-@@ -98,7 +99,8 @@ fn normalize_search_spec(spec: ToolSpec) -> Option<LoadableToolSpec> {
+@@ -98,6 +99,7 @@ fn normalize_search_spec(spec: ToolSpec) -> Option<LoadableToolSpec> {
          | ToolSpec::CodeInterpreter(_)
          | ToolSpec::Shell(_)
          | ToolSpec::ImageGeneration(_)
--        | ToolSpec::Computer { .. }
 +        | ToolSpec::ApplyPatch {}
-+            | ToolSpec::Computer { .. }
+         | ToolSpec::Computer { .. }
          | ToolSpec::ComputerUsePreview { .. }
          | ToolSpec::WebSearch { .. } => {
-             return None;
 @@ -153,7 +155,9 @@ fn default_tool_search_text(spec: &ToolSpec) -> String {
          | ToolSpec::ImageGeneration(_) => {
              push_search_part(&mut parts, spec.name().to_string());
@@ -1402,19 +1429,16 @@ index dc2f3e8c..a38b55de 100644
                  DynamicToolSpec::Namespace(namespace) => namespace
                      .tools
 diff --git a/codex-rs/utils/audio/src/lib.rs b/codex-rs/utils/audio/src/lib.rs
-index 4662c126..b322644a 100644
+index 4662c126..ade63f39 100644
 --- a/codex-rs/utils/audio/src/lib.rs
 +++ b/codex-rs/utils/audio/src/lib.rs
-@@ -76,8 +76,10 @@ pub fn prepare_response_items(items: &mut [ResponseItem]) {
+@@ -76,7 +76,9 @@ pub fn prepare_response_items(items: &mut [ResponseItem]) {
              | ResponseItem::LocalShellCall { .. }
              | ResponseItem::FunctionCall { .. }
              | ResponseItem::ToolSearchCall { .. }
--            | ResponseItem::ComputerCall { .. }
--            | ResponseItem::ComputerCallOutput { .. }
 +            | ResponseItem::ApplyPatchCall { .. }
-+        | ResponseItem::ComputerCall { .. }
+             | ResponseItem::ComputerCall { .. }
 +            | ResponseItem::ApplyPatchCallOutput { .. }
-+        | ResponseItem::ComputerCallOutput { .. }
+             | ResponseItem::ComputerCallOutput { .. }
              | ResponseItem::CustomToolCall { .. }
              | ResponseItem::ToolSearchOutput { .. }
-             | ResponseItem::WebSearchCall { .. }
