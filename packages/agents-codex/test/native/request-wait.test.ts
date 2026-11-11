@@ -7,8 +7,10 @@ import {
   InteractionRequired,
   NativeAgents,
   NativeProvider,
+  isFunctionApprovalRequest,
   manualTool,
   tool,
+  type Interaction,
 } from '../../src';
 import {
   binding,
@@ -111,6 +113,23 @@ async function pendingCount(
       { timeout: 5_000 },
     )
     .toBe(count);
+}
+
+async function bounded<T>(promise: Promise<T>, phase: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Timed out: ${phase}`)),
+          5_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 afterEach(async () => {
@@ -443,6 +462,177 @@ describe('exact request waits with the native pending owner', () => {
       reader.release();
     }
   }, 15_000);
+
+  it.each(['publication', 'handler entry'] as const)(
+    'suppresses a current approval when its sibling fails before %s',
+    async (phase) => {
+      const beforePublication = phase === 'publication';
+      const primary = new Error('sibling approval policy primary failure');
+      const siblingEntered = Promise.withResolvers<void>();
+      const failSibling = Promise.withResolvers<void>();
+      const approvalHeld = Promise.withResolvers<void>();
+      const releaseApproval = Promise.withResolvers<void>();
+      const interruptEntered = Promise.withResolvers<unknown>();
+      const releaseInterrupt = Promise.withResolvers<void>();
+      const releaseReply = Promise.withResolvers<void>();
+      type Owner = { readonly failure?: unknown };
+      const prototype = CoreSession.prototype as unknown as {
+        interruptRun(owner: Owner): Promise<void>;
+        invokeCallback(
+          owner: Owner,
+          callback: () => Promise<void>,
+          signal?: AbortSignal,
+          tracingContext?: string,
+        ): Promise<void>;
+        publishManualRequest(
+          owner: Owner,
+          event: ReturnType<typeof parseEvents>[number],
+        ): void;
+      };
+      const interrupt = prototype.interruptRun;
+      vi.spyOn(prototype, 'interruptRun').mockImplementation(async function (
+        this: CoreSession<unknown>,
+        owner,
+      ) {
+        interruptEntered.resolve(owner.failure);
+        await releaseInterrupt.promise;
+        return interrupt.call(this, owner);
+      });
+      const invoke = prototype.invokeCallback;
+      const callbacks = vi
+        .spyOn(prototype, 'invokeCallback')
+        .mockImplementation(function (
+          this: CoreSession<unknown>,
+          owner,
+          callback,
+          ...context
+        ) {
+          if (callback.name !== (beforePublication ? 'invoke' : 'answer'))
+            return invoke.call(this, owner, callback, ...context);
+          return invoke.call(
+            this,
+            owner,
+            async () => {
+              // Only the review admission succeeds. The sibling throws.
+              if (beforePublication) await callback();
+              approvalHeld.resolve();
+              await releaseApproval.promise;
+              if (!beforePublication) await callback();
+            },
+            ...context,
+          );
+        });
+      const publication = vi.spyOn(prototype, 'publishManualRequest');
+      const publicationAttempted = () =>
+        publication.mock.calls.some(
+          ([, event]) => event.msg.callId === 'review-race',
+        );
+      const execute = vi.fn(() => 'unexpected execution');
+      const onInteraction = vi.fn(
+        async (request: Interaction, signal: AbortSignal) => {
+          if (!isFunctionApprovalRequest(request))
+            throw new Error('Expected a function approval');
+          const reply = request.approve();
+          signal.addEventListener('abort', () => releaseReply.resolve(), {
+            once: true,
+          });
+          await releaseReply.promise;
+          return reply;
+        },
+      );
+      const server = new ModelServer([
+        [
+          call('review', {}, { callId: 'review-race' }),
+          call('sibling', {}, { callId: 'sibling-failure' }),
+        ],
+      ]);
+      await using provider = await providerFor(server);
+      const reader = await holdReader();
+      await using session = await new Agent({
+        instructions: 'Use both functions.',
+        model: 'gpt-5',
+        modelSettings: { parallelToolCalls: true },
+        provider,
+        tools: [
+          tool({
+            name: 'review',
+            parameters: z.object({}),
+            needsApproval: true,
+            execute,
+          }),
+          tool({
+            name: 'sibling',
+            parameters: z.object({}),
+            async needsApproval() {
+              siblingEntered.resolve();
+              await failSibling.promise;
+              throw primary;
+            },
+            execute,
+          }),
+        ],
+      }).session({ onInteraction });
+      try {
+        const native = await bounded(reader.entered, 'native reader entering');
+        const turn = await bounded(session.submit('begin'), 'turn submission');
+        const completion = turn.wait().catch((error: unknown) => error);
+        await pendingCount(native, turn.turnId, 2);
+        const review = parseEvents(
+          native._pending_manual_tools(
+            encodeReceipt({ thread: native.id, turnId: turn.turnId }),
+          ),
+        ).find((event) => event.msg.callId === 'review-race');
+        if (!review) throw new Error('Missing native review grant');
+        const receipt = encodeReceipt(review.msg);
+        reader.release();
+        await bounded(
+          Promise.all([approvalHeld.promise, siblingEntered.promise]),
+          'held review approval and sibling policy entering',
+        );
+        expect(publicationAttempted()).toBe(!beforePublication);
+        expect(onInteraction).not.toHaveBeenCalled();
+
+        failSibling.resolve();
+        expect(
+          await bounded(interruptEntered.promise, 'owning interruption'),
+        ).toBe(primary);
+        expect(native._manual_tool_current(receipt)).toBe(true);
+        releaseApproval.resolve();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(publicationAttempted()).toBe(true);
+        expect(native._manual_tool_current(receipt)).toBe(true);
+        const handlerEntries = onInteraction.mock.calls.length;
+
+        releaseInterrupt.resolve();
+        expect(await bounded(completion, 'public turn failure')).toBe(primary);
+        await pendingCount(native, turn.turnId, 0);
+        expect(native._manual_tool_current(receipt)).toBe(false);
+        await bounded(session.close(), 'native session close');
+        expect(() => native._manual_tool_current(receipt)).toThrow(
+          'Codex thread is closed',
+        );
+        expect(server.requests).toHaveLength(1);
+        expect(execute).not.toHaveBeenCalled();
+        server.assertExhausted();
+        expect(handlerEntries, 'handler entries before native revocation').toBe(
+          0,
+        );
+        expect(onInteraction).not.toHaveBeenCalled();
+        expect(
+          callbacks.mock.calls.filter(
+            ([, callback]) => callback.name === 'answer',
+          ),
+        ).toHaveLength(beforePublication ? 0 : 1);
+      } finally {
+        failSibling.resolve();
+        releaseApproval.resolve();
+        releaseInterrupt.resolve();
+        releaseReply.resolve();
+        reader.release();
+      }
+    },
+    30_000,
+  );
 
   it('ignores stale tool metadata and retention gaps when discovering real native grants', async () => {
     const reader = await holdReader();
@@ -1140,6 +1330,90 @@ describe('exact request waits with the native pending owner', () => {
       release.resolve();
     }
   });
+
+  it('publishes a snapshot-joined approval after the exact waiter aborts', async () => {
+    const policyEntered = Promise.withResolvers<void>();
+    const releasePolicy = Promise.withResolvers<void>();
+    const execute = vi.fn(() => 'review executed');
+    const onInteraction = vi.fn((request: Interaction) => {
+      if (!isFunctionApprovalRequest(request))
+        throw new Error('Expected a function approval');
+      return request.approve();
+    });
+    const server = new ModelServer([
+      [call('review', {}, { callId: 'review-held' })],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    const reader = await holdReader();
+    const controller = new AbortController();
+    const reason = new Error('exact waiter stopped');
+    await using session = await new Agent({
+      instructions: 'Use the review function.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        tool({
+          name: 'review',
+          parameters: z.object({}),
+          async needsApproval() {
+            policyEntered.resolve();
+            await releasePolicy.promise;
+            return true;
+          },
+          execute,
+        }),
+      ],
+    }).session({ onInteraction });
+    try {
+      const native = await bounded(reader.entered, 'native reader entering');
+      const turn = await bounded(session.submit('begin'), 'turn submission');
+      await pendingCount(native, turn.turnId, 1);
+      const waiting = turn.wait({
+        until: 'manual_tool',
+        signal: controller.signal,
+      });
+      void waiting.catch(() => {});
+      await bounded(policyEntered.promise, 'approval policy entering');
+      expect(
+        await bounded(session.pendingInteractions(), 'issued snapshot'),
+      ).toEqual([]);
+      expect(onInteraction).not.toHaveBeenCalled();
+      controller.abort(reason);
+      await expect(bounded(waiting, 'exact waiter abort')).rejects.toBe(reason);
+
+      releasePolicy.resolve();
+      await expect
+        .poll(() => onInteraction.mock.calls.length, {
+          timeout: 5_000,
+          message: 'Expected onInteraction approval before inbox release',
+        })
+        .toBe(1);
+      const [request] = onInteraction.mock.calls[0];
+      expect(isFunctionApprovalRequest(request)).toBe(true);
+      expect(request).toMatchObject({
+        callId: 'review-held',
+        turnId: turn.turnId,
+      });
+
+      reader.release();
+      await bounded(reader.delivered, 'late inbox delivery');
+      expect((await bounded(turn.wait(), 'turn completion')).finalOutput).toBe(
+        'done',
+      );
+      expect(onInteraction).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(server.requests).toHaveLength(2);
+      expect(JSON.stringify(server.requests[1]?.input)).toContain(
+        'review executed',
+      );
+      server.assertExhausted();
+    } finally {
+      controller.abort(reason);
+      releasePolicy.resolve();
+      reader.release();
+    }
+  }, 30_000);
 
   it('captures queued roots and the Session shortcut before later admission', async () => {
     const entered = Promise.withResolvers<void>();

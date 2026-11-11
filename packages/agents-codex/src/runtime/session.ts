@@ -283,6 +283,8 @@ import {
   storedTurnPage,
   storedItemPage,
   storedMatchPage,
+  storedSessionPage,
+  type StoredSessionPage,
   type StoredForkOptions,
   type StoredTurnPage,
   type StoredItemPage,
@@ -325,6 +327,7 @@ import {
   type Tool,
   type ToolCatalog,
   type FunctionTool,
+  type ToolCallContext,
 } from './tools';
 import type { NativeProviderRoutes } from './http-model';
 
@@ -2312,6 +2315,7 @@ export class Session<OutputT = string, Context = unknown> {
         readonly namespace: string | null;
         readonly value?: unknown;
         readonly json?: JsonValue;
+        waiterConsumed?: true;
       };
       observations: Map<string, { identity: ToolIdentity; status: ToolStatus }>;
     }
@@ -2390,7 +2394,7 @@ export class Session<OutputT = string, Context = unknown> {
       active: boolean;
     }
   >();
-  private readonly nativeFormRetirementReplies = new Set<Promise<void>>();
+  private readonly nativeQuestionRetirementReplies = new Set<Promise<void>>();
   private readonly nativeQuestionKeys = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     Set<string>
@@ -2440,7 +2444,10 @@ export class Session<OutputT = string, Context = unknown> {
       identity: ToolIdentity;
     }
   >();
-  private readonly manualAdmissions = new Map<string, Promise<void>>();
+  private readonly manualAdmissions = new Map<
+    string,
+    { promise: Promise<void>; publishOnAdmission: boolean }
+  >();
   private readonly approvalDecisions = new WeakMap<
     object,
     Map<string, ApprovalDecision>
@@ -2906,6 +2913,8 @@ export class Session<OutputT = string, Context = unknown> {
       producer,
       (owner) => {
         this.flushTerminalObservations(owner);
+        if (this.terminalProposals.get(owner)?.proposal?.waiterConsumed)
+          this.clearTerminalProposal(owner);
         this.observations.notify();
       },
       matches,
@@ -2972,47 +2981,38 @@ export class Session<OutputT = string, Context = unknown> {
   /** Current issued interactions; this snapshot reserves no response. */
   async pendingInteractions(): Promise<readonly Interaction[]> {
     this.checkCallbackOperation('read interactions');
-    for (;;) {
-      if (!this.isOpen) throw new NativeError('Session is closed');
-      await this.refreshNativeQuestions();
-      if (!this.isOpen) throw new NativeError('Session is closed');
-      const owners: (NativeTurn | ChildCallbackOwner)[] =
-        this.childCallbacks.entered();
-      if (this.lifecycle.kind === 'turn') owners.unshift(this.lifecycle.run);
-      const snapshots = owners
-        .filter((owner) => this.canReturnRequests(owner))
-        .map((owner) => ({ owner, events: this.pendingManual(owner) }));
-      const admissions = snapshots.flatMap(({ owner, events }) =>
-        events.flatMap((event) => {
-          const pending = this.admitManualCall(owner, event);
-          return pending ? [pending] : [];
-        }),
-      );
-      if (admissions.length) {
-        await Promise.allSettled(admissions);
-        continue;
+    if (!this.isOpen) throw new NativeError('Session is closed');
+    await this.refreshNativeQuestions();
+    if (!this.isOpen) throw new NativeError('Session is closed');
+    const owners: (NativeTurn | ChildCallbackOwner)[] =
+      this.childCallbacks.entered();
+    if (this.lifecycle.kind === 'turn') owners.unshift(this.lifecycle.run);
+    const requests: Interaction[] = [];
+    for (const owner of owners) {
+      if (!this.canReturnRequests(owner)) continue;
+      for (const event of this.pendingManual(owner)) {
+        const admission = this.admitManualCall(owner, event, true);
+        const key = this.manualCallKey(event);
+        const call = key === undefined ? undefined : this.manualCalls.get(key);
+        // Admission can register the grant before its approval policy finishes.
+        if (
+          !call ||
+          call.run !== owner ||
+          (!call.ready && admission) ||
+          !this.manualCurrent(event)
+        )
+          continue;
+        this.publishManualRequest(owner, event);
+        const request = call.grant.request();
+        if (request) requests.push(request);
       }
-      const requests: Interaction[] = [];
-      for (const { owner, events } of snapshots) {
-        if (!this.canReturnRequests(owner)) continue;
-        for (const event of events) {
-          const key = this.manualCallKey(event);
-          const call =
-            key === undefined ? undefined : this.manualCalls.get(key);
-          if (!call || call.run !== owner || !this.manualCurrent(event))
-            continue;
-          this.publishManualRequest(owner, event);
-          const request = call.grant.request();
-          if (request) requests.push(request);
-        }
-      }
-      for (const owner of owners) {
-        if (!this.canReturnRequests(owner))
-          requests.push(...this.pendingEnteredManual(owner));
-        requests.push(...this.pendingNativeQuestions(owner));
-      }
-      return Object.freeze(requests);
     }
+    for (const owner of owners) {
+      if (!this.canReturnRequests(owner))
+        requests.push(...this.pendingEnteredManual(owner));
+      requests.push(...this.pendingNativeQuestions(owner));
+    }
+    return Object.freeze(requests);
   }
 
   /** Live wrappers once per reader, independent of observation retention. */
@@ -3184,11 +3184,11 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
-  private trackNativeFormRetirement(reply: Promise<void>): void {
-    this.nativeFormRetirementReplies.add(reply);
+  private trackNativeQuestionRetirement(reply: Promise<void>): void {
+    this.nativeQuestionRetirementReplies.add(reply);
     void reply.then(
-      () => this.nativeFormRetirementReplies.delete(reply),
-      () => this.nativeFormRetirementReplies.delete(reply),
+      () => this.nativeQuestionRetirementReplies.delete(reply),
+      () => this.nativeQuestionRetirementReplies.delete(reply),
     );
   }
 
@@ -3207,7 +3207,7 @@ export class Session<OutputT = string, Context = unknown> {
         preparation.decline,
         preparation.questionId,
       );
-      this.trackNativeFormRetirement(reply);
+      this.trackNativeQuestionRetirement(reply);
       replies.push(reply);
       void reply.catch(() => {});
     }
@@ -3225,7 +3225,8 @@ export class Session<OutputT = string, Context = unknown> {
           record.decline,
           record.questionId,
         );
-        if (record.form) this.trackNativeFormRetirement(reply);
+        if (record.form || request.type === 'user_verification_request')
+          this.trackNativeQuestionRetirement(reply);
         replies.push(reply);
         void reply.catch(() => {});
       }
@@ -6646,7 +6647,11 @@ export class Session<OutputT = string, Context = unknown> {
         });
       }
       this.flushTerminalObservations(owner);
-      if (msg.type === 'turn_aborted' || msg.tool_completion === undefined)
+      if (
+        proposal?.waiterConsumed ||
+        msg.type === 'turn_aborted' ||
+        msg.tool_completion === undefined
+      )
         this.clearTerminalProposal(owner);
       this.childCallbacks.end(id, incarnation, turnId);
       this.clearManualCalls();
@@ -7804,53 +7809,80 @@ export class Session<OutputT = string, Context = unknown> {
         throw new NativeError('Expired input guardrail owner');
     };
     const scope = this.decisionScope(message, signal);
+    let observedFailure: { error: unknown } | undefined;
+    const parallel = guards.some((guard) => guard.runInParallel !== false);
     try {
       const settled = await Promise.allSettled(
-        guards.map(async (guard) => {
-          check();
-          const result = captureGuardrailResult(
-            await (childContext
-              ? guard.childCallback!(
-                  Object.freeze({
-                    ...childContext,
-                    decide: scope.decide,
-                    signal,
-                    agent,
-                    input: structuredClone(
-                      (run as ChildCallbackOwner).guardrailInput!,
-                    ),
-                  }),
+        guards
+          .map(async (guard) => {
+            check();
+            const result = captureGuardrailResult(
+              await (childContext
+                ? guard.childCallback!(
+                    Object.freeze({
+                      ...childContext,
+                      decide: scope.decide,
+                      signal,
+                      agent,
+                      input: structuredClone(
+                        (run as ChildCallbackOwner).guardrailInput!,
+                      ),
+                    }),
+                  )
+                : guard.callback(
+                    Object.freeze({
+                      decide: scope.decide,
+                      context: this.options.context,
+                      submission: this.#turnFor(
+                        this.rootRun(run as NativeTurn),
+                      ),
+                      signal,
+                      agent,
+                      input: structuredClone(
+                        (run as NativeTurn).guardrailInput!,
+                      ),
+                    }),
+                  )),
+            );
+            check();
+            return Object.freeze({
+              kind: 'input' as const,
+              name: guard.name,
+              result,
+              agent,
+              sessionId: this.id,
+              turnId: z
+                .string()
+                .parse(run instanceof NativeTurn ? run.id : run.turnId),
+              ...(run instanceof NativeTurn ? {} : { subagentId: run.childId }),
+            });
+          })
+          .map((pending) =>
+            pending.catch((error) => {
+              if (parallel && !observedFailure) {
+                observedFailure = { error };
+                if (
+                  this.current(run) &&
+                  !signal.aborted &&
+                  run.failure === undefined
                 )
-              : guard.callback(
-                  Object.freeze({
-                    decide: scope.decide,
-                    context: this.options.context,
-                    submission: this.#turnFor(this.rootRun(run as NativeTurn)),
-                    signal,
-                    agent,
-                    input: structuredClone((run as NativeTurn).guardrailInput!),
-                  }),
-                )),
-          );
-          check();
-          return Object.freeze({
-            kind: 'input' as const,
-            name: guard.name,
-            result,
-            agent,
-            sessionId: this.id,
-            turnId: z
-              .string()
-              .parse(run instanceof NativeTurn ? run.id : run.turnId),
-            ...(run instanceof NativeTurn ? {} : { subagentId: run.childId }),
-          });
-        }),
+                  toolInvocation.exit(() => {
+                    // Existing owner failure delivery before the pending peer callbacks join.
+                    void this.trackOwnedCallback(run, () =>
+                      Promise.reject(error),
+                    ).catch(() => {});
+                  });
+              }
+              throw error;
+            }),
+          ),
       );
       const records = settled.flatMap((entry) =>
         entry.status === 'fulfilled' ? [entry.value] : [],
       );
       run.guardrailResults.push(...records);
       const failed = settled.find((entry) => entry.status === 'rejected');
+      if (observedFailure) throw observedFailure.error;
       if (failed?.status === 'rejected') throw failed.reason;
       check();
       const tripped = records.find((record) => record.result.tripwireTriggered);
@@ -9127,6 +9159,7 @@ export class Session<OutputT = string, Context = unknown> {
   private admitManualCall(
     run: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
+    publishOnAdmission = false,
   ): Promise<void> | undefined {
     const msg = event.msg;
     const key = this.manualCallKey(event);
@@ -9137,13 +9170,19 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     const pending = this.manualAdmissions.get(key);
-    if (pending) return pending;
+    if (pending) {
+      pending.publishOnAdmission ||= publishOnAdmission;
+      return pending.promise;
+    }
     const calls = run instanceof NativeTurn ? run.toolCallIds : run.calls;
     if (calls.has(key)) return;
     // Reserve the full native grant key before deferred callback admission.
     // The inbox and every external waiter join this same operation.
-    const reservation = Promise.withResolvers<void>();
-    this.manualAdmissions.set(key, reservation.promise);
+    const reservation = {
+      ...Promise.withResolvers<void>(),
+      publishOnAdmission,
+    };
+    this.manualAdmissions.set(key, reservation);
     reservation.promise.catch(() => {});
     const callId = msg.callId;
     const turnId = msg.turnId;
@@ -9239,69 +9278,14 @@ export class Session<OutputT = string, Context = unknown> {
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
             : losslessJsonValueSchema.parse(msg.arguments);
-        const grant = createManualRequest(
-          tool,
-          {
-            sessionId: this.id,
-            submissionId:
-              run instanceof NativeTurn
-                ? this.submissionIds.get(run)!
-                : `child:${run.childId}:${run.incarnation}:${run.turnId}`,
-            subagentId: run instanceof NativeTurn ? null : run.childId,
-            turnId,
-            callId,
-            call: managedCallInfo(
-              {
-                sessionId: this.id,
-                childId: run instanceof NativeTurn ? null : run.childId,
-                childIncarnation:
-                  run instanceof NativeTurn ? null : run.incarnation,
-              },
-              msg,
-            ),
-          },
-          args,
-          () => {
-            if (!this.current(run) || this.manualSealing) return false;
-            try {
-              return this.manualCurrent(event);
-            } catch {
-              return false;
-            }
-          },
-          managedApproval(tool) !== undefined,
-        );
-        this.manualCalls.set(key, {
-          run,
-          event,
-          tool,
-          grant,
-          tracing: getCurrentSpan(),
-          identity,
-          ready: false,
-        });
-        calls.add(key);
-        if (approval) {
-          if (
-            msg._sdk_restored_approval === true &&
-            msg._sdk_approval_required !== true
-          )
-            throw new NativeError(
-              'Saved manual call cannot acquire managed callback authority',
-            );
-          if (!this.#native._require_tool_approval(encodeReceipt(msg))) return;
+        const withApprovalContext = async <T>(
+          callback: (context: ToolCallContext, check: () => void) => Promise<T>,
+        ): Promise<T> => {
           const submission = root
             ? this.#turnFor(run)
             : await this.childSubmission(run);
-          if (!submission) return;
-          const source = JSON.stringify([
-            msg.profile_id ?? null,
-            msg.profile_epoch ?? null,
-            String(marker.generation),
-          ]);
-          const cached = this.approvalDecisions
-            .get(toolDeclarationIdentity(tool))
-            ?.get(source);
+          if (!submission)
+            throw new NativeError('Managed approval submission is unavailable');
           const scope = this.decisionScope(event.msg, run.controller.signal);
           const context = {
             decide: scope.decide,
@@ -9333,9 +9317,100 @@ export class Session<OutputT = string, Context = unknown> {
                 'Managed approval expired during policy evaluation',
               );
           };
-          let decision: Awaited<ReturnType<typeof approval.prepare>>;
           try {
-            decision = await approval.prepare(
+            return await callback(context, check);
+          } finally {
+            await scope.close();
+          }
+        };
+        const initialInput =
+          approval?.prepareOriginalInput &&
+          msg._sdk_restored_approval !== true &&
+          msg._sdk_effective_arguments === undefined
+            ? await withApprovalContext((context, check) =>
+                approval.prepareOriginalInput!(args, context, check),
+              )
+            : undefined;
+        if (initialInput && 'failure' in initialInput) {
+          run.controller.signal.throwIfAborted();
+          admission?.check();
+          if (!this.current(run) || !this.manualCurrent(event)) return;
+          const accepted = await this.#native._respond_python_tool(
+            encodeReceipt({
+              request: msg,
+              response: {
+                success: false,
+                contentItems: [
+                  { type: 'inputText', text: initialInput.failure },
+                ],
+              },
+            }),
+          );
+          if (accepted) this.observeToolEnd(run, identity, 'failed');
+          return;
+        }
+        const grant = createManualRequest(
+          tool,
+          {
+            sessionId: this.id,
+            submissionId:
+              run instanceof NativeTurn
+                ? this.submissionIds.get(run)!
+                : `child:${run.childId}:${run.incarnation}:${run.turnId}`,
+            subagentId: run instanceof NativeTurn ? null : run.childId,
+            turnId,
+            callId,
+            call: managedCallInfo(
+              {
+                sessionId: this.id,
+                childId: run instanceof NativeTurn ? null : run.childId,
+                childIncarnation:
+                  run instanceof NativeTurn ? null : run.incarnation,
+              },
+              msg,
+            ),
+          },
+          args,
+          () => {
+            if (!this.current(run) || this.manualSealing) return false;
+            try {
+              return this.manualCurrent(event);
+            } catch {
+              return false;
+            }
+          },
+          managedApproval(tool) !== undefined,
+          initialInput && 'value' in initialInput ? initialInput : undefined,
+        );
+        this.manualCalls.set(key, {
+          run,
+          event,
+          tool,
+          grant,
+          tracing: getCurrentSpan(),
+          identity,
+          ready: false,
+        });
+        calls.add(key);
+        if (approval) {
+          if (
+            msg._sdk_restored_approval === true &&
+            msg._sdk_approval_required !== true
+          )
+            throw new NativeError(
+              'Saved manual call cannot acquire managed callback authority',
+            );
+          if (!this.#native._require_tool_approval(encodeReceipt(msg))) return;
+          const source = JSON.stringify([
+            msg.profile_id ?? null,
+            msg.profile_epoch ?? null,
+            String(marker.generation),
+          ]);
+          const cached = this.approvalDecisions
+            .get(toolDeclarationIdentity(tool))
+            ?.get(source);
+          const decision = await withApprovalContext((context, check) =>
+            approval.prepare(
               args,
               context,
               check,
@@ -9343,11 +9418,14 @@ export class Session<OutputT = string, Context = unknown> {
               msg._sdk_effective_arguments === undefined
                 ? undefined
                 : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
+            ),
+          );
+          run.controller.signal.throwIfAborted();
+          admission?.check();
+          if (!this.current(run) || !this.manualCurrent(event))
+            throw new NativeError(
+              'Managed approval expired during policy evaluation',
             );
-          } finally {
-            await scope.close();
-          }
-          check();
           if (
             !this.#native._require_tool_approval(
               encodeReceipt(msg),
@@ -9412,11 +9490,26 @@ export class Session<OutputT = string, Context = unknown> {
       invoke,
       typeof msg.tracing_context === 'string' ? msg.tracing_context : undefined,
     );
-    void admission.then(reservation.resolve, reservation.reject).finally(() => {
-      if (this.manualAdmissions.get(key) === reservation.promise)
+    const retire = () => {
+      if (this.manualAdmissions.get(key) === reservation)
         this.manualAdmissions.delete(key);
-      this.observations.notify();
-    });
+    };
+    void admission
+      .then(
+        () => {
+          // Retire before reading the flag so a later snapshot can publish directly.
+          retire();
+          reservation.resolve();
+          if (reservation.publishOnAdmission)
+            this.publishManualRequest(run, event);
+        },
+        (error) => {
+          retire();
+          reservation.reject(error);
+        },
+      )
+      .finally(() => this.observations.notify())
+      .catch((error) => this.readerFailed(error));
     return reservation.promise;
   }
 
@@ -9424,6 +9517,7 @@ export class Session<OutputT = string, Context = unknown> {
     run: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
   ): void {
+    if (run.failure !== undefined) return;
     const key = this.manualCallKey(event);
     if (key === undefined) return;
     const call = this.manualCalls.get(key);
@@ -9445,6 +9539,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.oneShot && !root) return;
       const answer = async () => {
         if (
+          run.failure !== undefined ||
           (this.oneShot && root && !this.current(root)) ||
           !this.current(run) ||
           !call.grant.request()
@@ -11973,7 +12068,6 @@ export class Session<OutputT = string, Context = unknown> {
         toolCompletion: (raw) => {
           const fact = toolCompletionSchema.parse(raw);
           const proposal = this.terminalProposals.get(owner)?.proposal;
-          this.clearTerminalProposal(owner);
           if (
             !proposal ||
             !proposal.accepted ||
@@ -11983,10 +12077,15 @@ export class Session<OutputT = string, Context = unknown> {
               (fact.namespace ?? 'functions') ||
             typeof fact.final_output !== 'string' ||
             !isDeepStrictEqual(proposal.json, fact.final_output)
-          )
+          ) {
+            this.clearTerminalProposal(owner);
             throw new NativeError(
               'Child terminal tool completion has no matching accepted proposal',
             );
+          }
+          // The ordered reader still needs the accepted proposal to publish.
+          if (owner.observationPhase === 'open') proposal.waiterConsumed = true;
+          else this.clearTerminalProposal(owner);
           return terminalCallInfo(
             {
               sessionId: this.id,
@@ -12199,6 +12298,59 @@ export class Session<OutputT = string, Context = unknown> {
       JSON.stringify(action),
     );
     return this.close();
+  }
+
+  /** Persist this LocalStorage Session's label; null clears it.
+   * Surrounding whitespace trimmed; blank names rejected. Nonunique labels,
+   * immutable Session identity; no alias or resume authority. */
+  async setStoredName(name: string | null): Promise<string | null> {
+    if (name !== null && typeof name !== 'string')
+      throw new TypeError('name must be a string or null');
+    this.checkCallbackOperation('set the stored name on');
+    if (!this.isOpen || this.manualSealing || this.manualSealed)
+      throw new NativeError('Stored names require a healthy open Session');
+    return JSON.parse(
+      await this.#native._set_stored_name(JSON.stringify(name)),
+    ) as string | null;
+  }
+
+  /** Committed native Exec application-session headers from this LocalStorage.
+   * Exec category, including SDK/exec applications; interactive CLI, IDE and
+   * subagent categories excluded. Native creation-order cursor; active and
+   * approval-paused reads without snapshot isolation or totals. Archived
+   * collection only for archived=true; active collection otherwise. Potential
+   * short/empty pages with a next cursor after deletion. Concurrent opening or
+   * fork entries; no stable pagination or publication promise. Validated links;
+   * without opening the listed sessions or loading their history. Existing
+   * materialization/flush of the current owner.
+   *
+   * Page sizes 1 through 1000; default 50. Opaque cursors for the same options.
+   * Paging with the returned cursor, including empty pages:
+   * ```ts
+   * let cursor: string | undefined;
+   * const ids: string[] = [];
+   * do {
+   *   const page = await session.storedSessions({ limit: 50, cursor });
+   *   ids.push(...page.sessions.map((item) => item.id));
+   *   cursor = page.nextCursor ?? undefined;
+   * } while (cursor !== undefined);
+   * ```
+   */
+  async storedSessions(
+    options: { limit?: number; cursor?: string; archived?: boolean } = {},
+  ): Promise<StoredSessionPage> {
+    const { limit = 50, cursor, archived = false } = options;
+    const query = storedOptions(limit, cursor);
+    return storedSessionPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'sessions',
+          limit: query.limit,
+          cursor: query.cursor,
+          archived,
+        }),
+      ),
+    );
   }
 
   /** Core has been returning committed turn metadata and optional summary items.
@@ -14264,9 +14416,9 @@ export class Session<OutputT = string, Context = unknown> {
   private async closeNative(): Promise<NativeError | undefined> {
     const storedAction = this.storedHistoryClose;
     this.storedHistoryClose = undefined;
-    // Join exact form replies, including retirements started by earlier stops.
+    // Join exact form and verification declines, including earlier retirements.
     // Native shutdown must still precede held schema compilation cleanup.
-    await Promise.allSettled([...this.nativeFormRetirementReplies]);
+    await Promise.allSettled([...this.nativeQuestionRetirementReplies]);
     if (
       this.environment instanceof Environment &&
       !this.selectedEnvironmentRetirementAttempted

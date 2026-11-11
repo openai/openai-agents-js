@@ -1,4 +1,4 @@
-import { afterEach, expect, expectTypeOf, it } from 'vitest';
+import { afterEach, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -129,7 +129,6 @@ it('joins an entered retained handler before cancellation or queued work can set
 
 it('keeps the retained handler alive for a child after its root completes', async () => {
   const executor = await startPublicExecutor();
-  const entered = Promise.withResolvers<void>();
   const allowQuestion = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const decision = manualTool({
@@ -138,6 +137,8 @@ it('keeps the retained handler alive for a child after its root completes', asyn
     parameters: z.object({}),
     result: z.string(),
   });
+  const entered =
+    Promise.withResolvers<NonNullable<ReturnType<typeof decision.match>>>();
   let rootId: string | undefined;
   const counts = new Map<string, number>();
   const server = new ModelServer(
@@ -169,7 +170,7 @@ it('keeps the retained handler alive for a child after its root completes', asyn
   let provider: NativeProvider | undefined;
   try {
     provider = await providerFor(server);
-    session = await new Agent({
+    const retainedSession = await new Agent({
       instructions: 'Delegate.',
       model: 'gpt-5.5',
       provider,
@@ -185,22 +186,32 @@ it('keeps the retained handler alive for a child after its root completes', asyn
         const matched = decision.match(request);
         if (!matched) throw new Error('Unexpected interaction');
         expect(matched.subagentId).not.toBeNull();
-        entered.resolve();
+        entered.resolve(matched);
         await release.promise;
         return matched.reply('accepted after root completion');
       },
     });
-    const root = await session.submit('Delegate.');
+    session = retainedSession;
+    const root = await retainedSession.submit('Delegate.');
     const result = await root.wait();
     expect(result.finalOutput).toBe('root done');
     allowQuestion.resolve();
-    await entered.promise;
-    const children = await Array.fromAsync(session.subagents());
-    const childTurn = children[0]?.turn;
-    if (!childTurn) throw new Error('Expected captured child');
+    const { subagentId, turnId } = await entered.promise;
+    // The handler can enter before the native event reader captures TurnStarted.
+    const childTurn = await vi.waitUntil(
+      async () => {
+        const children = await Array.fromAsync(retainedSession.subagents());
+        return (
+          children.find(
+            (child) => child.id === subagentId && child.turn?.turnId === turnId,
+          )?.turn ?? false
+        );
+      },
+      { timeout: 3000 },
+    );
     release.resolve();
     expect((await childTurn.wait()).finalOutput).toBe('child done');
-    await session.close();
+    await retainedSession.close();
     server.assertExhausted();
   } finally {
     allowQuestion.resolve();

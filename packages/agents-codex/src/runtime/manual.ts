@@ -267,7 +267,10 @@ export function createManualRequest<Input, Result>(
   args: JsonValue,
   isCurrent: () => boolean,
   managedApproval = false,
+  initialValidatedInput?: { value: unknown },
 ) {
+  if (initialValidatedInput && !managedApproval)
+    throw new TypeError('Validated initial input requires managed approval');
   let active = true;
   const replyIdentity = {};
   const definition = tool[manualDefinition];
@@ -283,7 +286,11 @@ export function createManualRequest<Input, Result>(
   const copyInput = managedApproval ? copyApprovalInput : copyJsonValue;
   let parsed: unknown;
   try {
-    parsed = copyInput(definition.parseInput(args));
+    parsed = copyInput(
+      initialValidatedInput
+        ? initialValidatedInput.value
+        : definition.parseInput(args),
+    );
   } catch {
     throw new TypeError('Manual tool arguments failed validation');
   }

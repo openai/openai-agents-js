@@ -359,6 +359,8 @@ export type Session<Output = string, Context = any> = Pick<
   | 'items'
   | 'turns'
   | 'forkStored'
+  | 'storedSessions'
+  | 'setStoredName'
   | 'storedTurns'
   | 'storedItems'
   | 'searchHistory'

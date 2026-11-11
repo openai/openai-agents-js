@@ -210,6 +210,11 @@ export type ToolDecision<Arguments = unknown> =
 
 const approvalDefinition = Symbol('managed function approval');
 interface ManagedApproval<Context = unknown> {
+  prepareOriginalInput?: (
+    args: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+  ) => Promise<{ value: unknown } | { failure: string }>;
   readonly function: FunctionTool<Context>;
   readonly resultSchema: JsonValue;
   parseInput(args: JsonValue): unknown;
@@ -373,6 +378,17 @@ export function tool<
   timeoutBehavior?: FunctionToolTimeoutBehavior;
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  /**
+   * Initial Zod validation failure text, before policy, approval, or execution.
+   * Detached original JSON and an unvalidated call context. Default turn failure.
+   * Replacement/restored inputs, output validation, and arbitrary errors excluded.
+   * Core malformed-JSON recovery without custom formatting through this hook.
+   */
+  inputErrorFunction?: (
+    context: ToolCallContext<Context>,
+    error: z.ZodError,
+    originalArguments: JsonValue,
+  ) => string | Promise<string>;
   needsApproval?:
     boolean | ((context: ToolContext<Context>) => boolean | Promise<boolean>);
   /** Run the input policy before approval and again before callback execution. */
@@ -455,7 +471,31 @@ export function tool<
     callbackTimeout,
     timeoutBehavior = 'raise_exception',
     timeoutErrorFunction,
+    inputErrorFunction,
   } = options;
+  if (
+    inputErrorFunction !== undefined &&
+    typeof inputErrorFunction !== 'function'
+  )
+    throw new TypeError('inputErrorFunction must be a function');
+  const recoverOriginalInput = async (
+    error: unknown,
+    original: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+  ): Promise<string> => {
+    if (!inputErrorFunction || !(error instanceof z.ZodError)) throw error;
+    admit();
+    const text = await inputErrorFunction(
+      context,
+      error,
+      structuredClone(original),
+    );
+    admit();
+    if (typeof text !== 'string')
+      throw new TypeError('inputErrorFunction must return a string');
+    return text;
+  };
   const needsApproval = options.needsApproval;
   const runBeforeApproval = options.runBeforeApproval ?? false;
   const declaration: FunctionTool<Context> = Object.freeze({
@@ -484,9 +524,26 @@ export function tool<
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed = approved
-        ? (approved.value as z.output<T>)
-        : parameters.parse(effectiveArgs === undefined ? args : effectiveArgs);
+      let parsed: z.output<T>;
+      if (approved) parsed = approved.value as z.output<T>;
+      else if (effectiveArgs !== undefined)
+        parsed = parameters.parse(effectiveArgs);
+      else {
+        try {
+          parsed = parameters.parse(args);
+        } catch (error) {
+          const text = await recoverOriginalInput(
+            error,
+            originalArguments,
+            context,
+            admit,
+          );
+          return {
+            success: false,
+            contentItems: [{ type: 'inputText' as const, text }],
+          };
+        }
+      }
       let callContext: ToolContext<Context> = {
         ...context,
         reportUsage: (usage, options) => {
@@ -639,6 +696,29 @@ export function tool<
   });
   if (!needsApproval) return declaration;
   const approval: ManagedApproval<Context> = {
+    ...(inputErrorFunction
+      ? {
+          async prepareOriginalInput(
+            args: JsonValue,
+            context: ToolCallContext<Context>,
+            admit: () => void,
+          ) {
+            admit();
+            try {
+              return { value: parameters.parse(structuredClone(args)) };
+            } catch (error) {
+              return {
+                failure: await recoverOriginalInput(
+                  error,
+                  args,
+                  context,
+                  admit,
+                ),
+              };
+            }
+          },
+        }
+      : {}),
     function: declaration,
     resultSchema: result
       ? decode(
