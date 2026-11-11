@@ -1,5 +1,5 @@
 {
-  "result_tree": "3442e7cea522dd444b4f9ae2cfb5a4ee4c7f0b92",
+  "result_tree": "1afa206f3a3fc8137dde5487ae8cdc83944d6b73",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -736,6 +736,18 @@
     {
       "path": "sdk-mailbox-receiver-trace-privacy.patch",
       "sha256": "0d98f210b55c1af7d92732611e700c69b6d22b89a47185e6dd8f5729281f5627"
+    },
+    {
+      "path": "sdk-portable-realtime-tool-results.patch",
+      "sha256": "9e108aca0457ab663aaefd4eda7573948fc5b0b479ebb51abd6dc1dcea038f58"
+    },
+    {
+      "path": "sdk-portable-realtime-raw-client-events.patch",
+      "sha256": "88d34b6286fcc7d370aaff958dc624625acf920cf5bab5238e1de42bd4ce03b3"
+    },
+    {
+      "path": "sdk-portable-realtime-hosted-completion.patch",
+      "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
     },
     {
       "path": "sdk-realtime-history-output-format.patch",
