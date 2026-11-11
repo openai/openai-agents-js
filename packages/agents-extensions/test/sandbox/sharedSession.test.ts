@@ -669,6 +669,76 @@ describe('shared sandbox session helpers', () => {
   );
 
   test.skipIf(process.platform === 'win32')(
+    'preserves protected ancestor permissions while restoring ordinary entries',
+    async () => {
+      const root = await mkdtemp(
+        join(tmpdir(), 'agents-protected-permissions-'),
+      );
+      try {
+        const ancestor = join(root, 'private');
+        const ordinary = join(ancestor, 'ordinary');
+        await mkdir(ancestor, { mode: 0o700 });
+        await mkdir(ordinary);
+        await writeFile(
+          join(ancestor, 'retained.txt'),
+          'protected workspace data',
+        );
+        await writeFile(join(ordinary, 'stale.txt'), 'ordinary stale data');
+        const rootBefore = await stat(root);
+        const ancestorBefore = await stat(ancestor);
+        const session = new LocalArchiveSession(root, []);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            'private/retained.txt': file({
+              content: 'protected workspace data',
+              ephemeral: true,
+            }),
+          },
+        });
+
+        await session.hydrateWorkspace(
+          makeTarArchive([
+            { name: '.', type: '5', mode: 0o777 },
+            { name: 'private/', type: '5', mode: 0o777 },
+            { name: 'private/ordinary/', type: '5', mode: 0o700 },
+            {
+              name: 'private/ordinary/restored.txt',
+              content: 'restored ordinary data',
+              mode: 0o600,
+            },
+          ]),
+        );
+
+        for (const [path, before] of [
+          [root, rootBefore],
+          [ancestor, ancestorBefore],
+        ] as const) {
+          const after = await stat(path);
+          expect(after.mode & 0o777).toBe(before.mode & 0o777);
+          expect(after.uid).toBe(before.uid);
+          expect(after.gid).toBe(before.gid);
+        }
+        expect(await readFile(join(ancestor, 'retained.txt'), 'utf8')).toBe(
+          'protected workspace data',
+        );
+        expect(await readFile(join(ordinary, 'restored.txt'), 'utf8')).toBe(
+          'restored ordinary data',
+        );
+        expect((await stat(ordinary)).mode & 0o777).toBe(0o700);
+        expect((await stat(join(ordinary, 'restored.txt'))).mode & 0o777).toBe(
+          0o600,
+        );
+        await expect(stat(join(ordinary, 'stale.txt'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform === 'win32')(
     'clears ordinary data behind an overridden ephemeral mount logical alias',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'agents-logical-mount-alias-'));

@@ -268,7 +268,8 @@ export async function hydrateRemoteWorkspaceTar(args: {
         '[ "$actual_root" != / ]',
         `[ "$actual_root" = ${shellQuote(effectiveRoot)} ]`,
         workspaceTarCleanupCommand('.', [...effectiveProtectedPaths]),
-        `tar -C . -xf ${shellQuote(archivePath)}`,
+        // Cleanup has been retaining only protected paths and their ancestors.
+        `tar -C . ${effectiveProtectedPaths.length > 0 ? '-k ' : ''}-xf ${shellQuote(archivePath)}`,
       ].join(' && '),
     );
     if (result.status !== 0) {
