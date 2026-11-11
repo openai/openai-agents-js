@@ -2,4 +2,4 @@
 '@openai/agents-extensions': minor
 ---
 
-fix: reject workspace tar operations with active in-container cloud mounts, preserve provider-managed storage and protected ancestor permissions, and reject sparse metadata.
+fix: Workspace tar operations have been rejecting active in-container cloud mounts, Blaxel drives, and sparse metadata while preserving protected ancestor permissions.

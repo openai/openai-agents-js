@@ -177,12 +177,12 @@ describe('DaytonaSandboxClient', () => {
       executeCommandMock.mockClear();
 
       await expect(session.persistWorkspace()).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
       await expect(
         session.hydrateWorkspace(makeTarArchive([])),
       ).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
 
       expect(uploadFileMock).not.toHaveBeenCalled();

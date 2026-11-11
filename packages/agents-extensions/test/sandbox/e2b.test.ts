@@ -1393,12 +1393,12 @@ describe('E2BSandboxClient', () => {
       writeMock.mockClear();
       runMock.mockClear();
       await expect(session.persistWorkspace()).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
       await expect(
         session.hydrateWorkspace(makeTarArchive([])),
       ).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
       expect(writeMock).not.toHaveBeenCalled();
       expect(runMock).not.toHaveBeenCalled();
@@ -1763,12 +1763,12 @@ describe('E2BSandboxClient', () => {
       writeMock.mockClear();
 
       await expect(session.persistWorkspace()).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
       await expect(
         session.hydrateWorkspace(makeTarArchive([])),
       ).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
 
       expect(createSnapshotMock).not.toHaveBeenCalled();

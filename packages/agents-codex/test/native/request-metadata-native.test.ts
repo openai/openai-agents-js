@@ -473,11 +473,19 @@ for (const restore of [false, true]) {
     try {
       const original = await source.submit('read A');
       let action: ActionRequested | undefined;
+      let originalResponseLinked = false;
       for await (const event of source.events()) {
         if (event.type === 'action_requested') {
           action = event;
-          break;
         }
+        if (
+          event.type === 'model_response_linked' &&
+          event.submissionId === original.submissionId &&
+          event.turnId === original.turnId &&
+          event.threadId === source.id
+        )
+          originalResponseLinked = true;
+        if (action && originalResponseLinked) break;
       }
       if (!action) throw new Error('No manual request');
       const priorIds = new Set<string | null>();

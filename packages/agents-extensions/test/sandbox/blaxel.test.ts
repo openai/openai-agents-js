@@ -142,12 +142,12 @@ describe('BlaxelSandboxClient', () => {
       processExecMock.mockClear();
 
       await expect(session.persistWorkspace()).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
       await expect(
         session.hydrateWorkspace(makeTarArchive([])),
       ).rejects.toThrow(
-        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+        'tar workspace persistence is unavailable while SDK-managed storage mounts are active',
       );
 
       expect(writeBinaryMock).not.toHaveBeenCalled();
@@ -3368,24 +3368,46 @@ describe('BlaxelSandboxClient', () => {
     expect(driveMountMock).not.toHaveBeenCalled();
   });
 
-  test('keeps tar workspace persistence available with a provider-managed drive', async () => {
+  test.each([
+    { mountPath: 'mounted/drive', driveReadOnly: false, ephemeral: false },
+    { mountPath: 'mounted/drive', driveReadOnly: true, ephemeral: false },
+    { mountPath: 'nested/drive', driveReadOnly: false, ephemeral: false },
+    { mountPath: 'nested/drive', driveReadOnly: true, ephemeral: true },
+  ])('rejects tar IO with a retained Blaxel drive: %j', async (options) => {
     const session = await new BlaxelSandboxClient().create(
       new Manifest({
         entries: {
           drive: new BlaxelDriveMount({
             driveName: 'agent-drive',
             drivePath: '/projects',
-            mountPath: 'mounted/drive',
+            ...options,
             mountStrategy: new BlaxelDriveMountStrategy(),
           }),
         },
       }),
     );
     const archive = makeTarArchive([]);
-    readBinaryMock.mockResolvedValue(archive);
+    const unavailable =
+      'tar workspace persistence is unavailable while SDK-managed storage mounts are active';
+    writeBinaryMock.mockClear();
+    writeMock.mockClear();
+    readBinaryMock.mockClear();
+    readMock.mockClear();
+    processExecMock.mockClear();
 
-    await expect(session.persistWorkspace()).resolves.toEqual(archive);
-    await expect(session.hydrateWorkspace(archive)).resolves.toBeUndefined();
+    await expect(session.persistWorkspace()).rejects.toThrow(unavailable);
+    await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+      unavailable,
+    );
+    expect(writeBinaryMock).not.toHaveBeenCalled();
+    expect(writeMock).not.toHaveBeenCalled();
+    expect(readBinaryMock).not.toHaveBeenCalled();
+    expect(readMock).not.toHaveBeenCalled();
+    expect(processExecMock).not.toHaveBeenCalled();
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    readBinaryMock.mockResolvedValue(bytes);
+    expect(await session.readFile({ path: 'README.md' })).toEqual(bytes);
   });
 
   test('mounts and unmounts Blaxel drives through the drives API', async () => {

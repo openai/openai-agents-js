@@ -875,7 +875,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         manifest: this.state.manifest,
         io: this.archiveIo(),
         activeMountPaths: this.activeMountPaths.keys(),
-        inContainerMountPaths: this.activeMountPaths.keys(),
+        unsupportedMountPaths: this.activeMountPaths.keys(),
       });
     });
   }
@@ -893,7 +893,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         io: this.archiveIo(),
         data,
         activeMountPaths: this.activeMountPaths.keys(),
-        inContainerMountPaths: this.activeMountPaths.keys(),
+        unsupportedMountPaths: this.activeMountPaths.keys(),
         archiveLimits:
           options.archiveLimits === undefined
             ? this.archiveLimits

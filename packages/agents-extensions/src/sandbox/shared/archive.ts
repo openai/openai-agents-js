@@ -71,12 +71,12 @@ export async function persistRemoteWorkspaceTar(args: {
   /** Optional staging prefix; export uses a private directory beside this path. */
   archivePath?: string;
   activeMountPaths?: Iterable<string>;
-  inContainerMountPaths?: Iterable<string>;
+  unsupportedMountPaths?: Iterable<string>;
 }): Promise<Uint8Array> {
   assertWorkspaceTarInContainerMountsSupported(
     args.providerName,
     args.manifest.root,
-    args.inContainerMountPaths ?? [],
+    args.unsupportedMountPaths ?? [],
   );
   const root = args.manifest.root;
   const archiveDirectory = `${args.archivePath ?? remoteArchivePath(args.providerName)}.d`;
@@ -209,12 +209,12 @@ export async function hydrateRemoteWorkspaceTar(args: {
   archivePath?: string;
   archiveLimits?: SandboxArchiveLimits | null;
   activeMountPaths?: Iterable<string>;
-  inContainerMountPaths?: Iterable<string>;
+  unsupportedMountPaths?: Iterable<string>;
 }): Promise<void> {
   assertWorkspaceTarInContainerMountsSupported(
     args.providerName,
     args.manifest.root,
-    args.inContainerMountPaths ?? [],
+    args.unsupportedMountPaths ?? [],
   );
   const root = args.manifest.root;
   const archive = toWorkspaceArchiveBytes(args.data);
@@ -314,7 +314,7 @@ function assertWorkspaceTarInContainerMountsSupported(
     return;
   }
   throw new SandboxUnsupportedFeatureError(
-    `${providerName} tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active.`,
+    `${providerName} tar workspace persistence is unavailable while SDK-managed storage mounts are active.`,
     {
       provider: providerName,
       feature: 'workspacePersistence',

@@ -671,7 +671,7 @@ export abstract class RemoteSandboxSessionBase<
         manifest: this.state.manifest,
         io: this.archiveIo(),
         activeMountPaths: this.activeWorkspaceMountPaths(),
-        inContainerMountPaths: this.activeWorkspaceInContainerMountPaths(),
+        unsupportedMountPaths: this.activeWorkspaceTarUnsupportedMountPaths(),
       });
     });
   }
@@ -687,7 +687,7 @@ export abstract class RemoteSandboxSessionBase<
         io: this.archiveIo(),
         data,
         activeMountPaths: this.activeWorkspaceMountPaths(),
-        inContainerMountPaths: this.activeWorkspaceInContainerMountPaths(),
+        unsupportedMountPaths: this.activeWorkspaceTarUnsupportedMountPaths(),
         archiveLimits:
           options.archiveLimits === undefined
             ? this.archiveLimits
@@ -700,7 +700,7 @@ export abstract class RemoteSandboxSessionBase<
     return [];
   }
 
-  protected activeWorkspaceInContainerMountPaths(): Iterable<string> {
+  protected activeWorkspaceTarUnsupportedMountPaths(): Iterable<string> {
     return [];
   }
 

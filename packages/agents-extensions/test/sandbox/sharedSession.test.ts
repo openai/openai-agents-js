@@ -204,7 +204,7 @@ class LocalArchiveSession extends LocalImageReadSession {
   constructor(
     root: string,
     private readonly mountPaths: string[],
-    private readonly inContainerMountPaths: string[] = [],
+    private readonly unsupportedMountPaths: string[] = [],
   ) {
     super(root);
   }
@@ -213,8 +213,8 @@ class LocalArchiveSession extends LocalImageReadSession {
     return this.mountPaths;
   }
 
-  protected override activeWorkspaceInContainerMountPaths(): Iterable<string> {
-    return this.inContainerMountPaths;
+  protected override activeWorkspaceTarUnsupportedMountPaths(): Iterable<string> {
+    return this.unsupportedMountPaths;
   }
 
   protected override async mkdirRemote(path: string): Promise<void> {
@@ -518,7 +518,7 @@ describe('shared sandbox session helpers', () => {
         }
 
         await expect(session.persistWorkspace()).rejects.toThrow(
-          'is unavailable while SDK-managed in-container cloud mounts are active',
+          'is unavailable while SDK-managed storage mounts are active',
         );
         await expect(
           session.hydrateWorkspace(
@@ -527,7 +527,7 @@ describe('shared sandbox session helpers', () => {
             ]),
           ),
         ).rejects.toThrow(
-          'is unavailable while SDK-managed in-container cloud mounts are active',
+          'is unavailable while SDK-managed storage mounts are active',
         );
 
         expect(session.writes).toHaveLength(0);
@@ -580,12 +580,12 @@ describe('shared sandbox session helpers', () => {
         });
 
         await expect(session.persistWorkspace()).rejects.toThrow(
-          'is unavailable while SDK-managed in-container cloud mounts are active',
+          'is unavailable while SDK-managed storage mounts are active',
         );
         await expect(
           session.hydrateWorkspace(makeTarArchive([])),
         ).rejects.toThrow(
-          'is unavailable while SDK-managed in-container cloud mounts are active',
+          'is unavailable while SDK-managed storage mounts are active',
         );
 
         expect(session.writes).toHaveLength(0);
@@ -643,7 +643,7 @@ describe('shared sandbox session helpers', () => {
             ]),
           ),
         ).rejects.toThrow(
-          'is unavailable while SDK-managed in-container cloud mounts are active',
+          'is unavailable while SDK-managed storage mounts are active',
         );
 
         expect(session.commands).toHaveLength(0);
