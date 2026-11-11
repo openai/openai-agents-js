@@ -686,8 +686,8 @@
     },
     {
       "path": "sdk-realtime-history-output-format.patch",
-      "sha256": "c4cbcad0b4d185f701f58aedeeb6068c72281f17cbd290ca9c648f3c988b02ff"
+      "sha256": "bd79a55f664d247f9c7715607bc7b7c2d82004413e73b06e9226e79316f4d097"
     }
   ],
-  "result_tree": "d10a03b5d769d287ece2f8eb46f1a98d8b6c39f6"
+  "result_tree": "cd1d64f4b524b74128688774792ed93dc16abfc8"
 }

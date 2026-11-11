@@ -33,59 +33,56 @@ diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/cod
                  }))
              );
          }
-@@ -2687,6 +2693,52 @@
-             events.next_event().await,
-             Ok(Some(RealtimeEvent::InputAudioSpeechStarted(_)))
-         ));
-+    }
-+
-+    #[tokio::test]
-+    async fn raw_history_observation_carries_the_response_output_codec() {
-+        let (connection, send, server) = readiness_connection(json!({}), false).await;
-+        send.send(json!({"type":"session.created","session":{
-+            "id":"session", "output_audio_format":"pcm16"
-+        }}))
-+        .await
-+        .unwrap();
-+        connection.wait_ready().await.unwrap();
-+        send.send(json!({"type":"response.created","response":{
-+            "id":"response", "conversation_id":"conv_default",
-+            "output_audio_format":"g711_ulaw"
-+        }}))
-+        .await
-+        .unwrap();
-+        let item = json!({"type":"response.output_item.done","response_id":"response",
-+            "item":{"id":"audio","type":"message","role":"assistant",
-+                "content":[{"type":"output_audio","audio":"AQIDBAUGBwg="}]}});
-+        send.send(item.clone()).await.unwrap();
-+        loop {
-+            let (event, _) = tokio::time::timeout(
-+                Duration::from_secs(1),
-+                connection.events().next_event_with_provider_observations(
+@@ -5407,9 +5413,11 @@
+                 patch["session"]["audio"]["output"]["format"].clone();
+             for event in [
+                 json!({"type": "session.updated", "session": accepted}),
++                json!({"type": "response.output_item.done", "response_id": "response-a", "item": {"id": "complete-a", "type": "message", "role": "assistant", "content": [{"type": "output_audio", "audio": "AAA="}]}}),
+                 json!({"type": "response.output_audio.delta", "response_id": "response-a", "item_id": "item-a", "content_index": 0, "output_index": 1, "delta": "AAA="}),
+                 json!({"type": "response.done", "response": {"id": "response-a"}}),
+                 json!({"type": "response.created", "response": {"id": "response-b"}}),
++                json!({"type": "response.output_item.done", "response_id": "response-b", "item": {"id": "complete-b", "type": "message", "role": "assistant", "content": [{"type": "output_audio", "audio": "AA=="}]}}),
+                 json!({"type": "response.output_audio.delta", "response_id": "response-b", "item_id": "item-b", "content_index": 2, "output_index": 3, "delta": "AA=="}),
+             ] {
+                 ws.send(Message::Text(event.to_string().into()))
+@@ -5485,11 +5493,35 @@
+             .await
+             .unwrap();
+         let mut frames = Vec::new();
++        let mut completed_formats = Vec::new();
+         while frames.len() < 2 {
+-            if let Some(RealtimeEvent::AudioOut(frame)) = connection.next_event().await.unwrap() {
+-                frames.push(frame);
++            let (event, _) = connection
++                .events()
++                .next_event_with_provider_observations(
 +                    codex_protocol::protocol::RealtimeProviderEventObservation::History,
-+                ),
-+            )
-+            .await
-+            .unwrap()
-+            .unwrap()
-+            .unwrap();
-+            if let RealtimeEvent::RawProviderEvent(raw) = event
-+                && raw.event == item
-+            {
-+                assert!(raw.history_observation);
-+                assert_eq!(
-+                    raw.output_audio_format,
-+                    Some(codex_protocol::realtime_settings::RealtimeAudioFormat::G711Ulaw)
-+                );
-+                break;
-+            }
-+        }
-+        connection.writer().abort_and_join().await;
-+        server.abort();
-+        let _ = server.await;
-     }
- 
-     #[tokio::test]
++                )
++                .await
++                .unwrap()
++                .unwrap();
++            match event {
++                RealtimeEvent::AudioOut(frame) => frames.push(frame),
++                RealtimeEvent::RawProviderEvent(raw)
++                    if raw.event["type"] == "response.output_item.done" =>
++                {
++                    assert!(raw.history_observation);
++                    completed_formats
++                        .push((raw.event["response_id"].clone(), raw.output_audio_format));
++                }
++                _ => {}
+             }
+         }
++        assert_eq!(
++            completed_formats,
++            vec![
++                (json!("response-a"), Some(RealtimeAudioFormat::Pcm24k)),
++                (json!("response-b"), Some(RealtimeAudioFormat::G711Alaw)),
++            ]
++        );
+         assert_eq!(frames[0].format, Some(RealtimeAudioFormat::Pcm24k));
+         assert_eq!(frames[0].sample_rate, 24000);
+         assert_eq!(frames[0].response_id.as_deref(), Some("response-a"));
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
