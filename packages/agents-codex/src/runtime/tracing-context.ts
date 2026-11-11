@@ -1,6 +1,7 @@
 /** Native scope ownership shared by public telemetry and Session admission. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { isAsyncFunction } from 'node:util/types';
 import { binding, copyJsonValue } from './binding';
 import type { SpanContext, TraceOptions } from './telemetry';
 type Native = Awaited<ReturnType<typeof binding>>;
@@ -98,6 +99,66 @@ export function setTraceContextStorage(storage?: TraceContextStorage): void {
 const processorSuppressed = new AsyncLocalStorage<boolean>();
 let tracingDisabled = false;
 let sensitiveDataLoggingEnabled = true;
+
+/** Synchronous ID policy for newly admitted SDK scopes, excluding engine spans. */
+export interface TracingIdGenerator {
+  /** Return a nonzero 32-digit hexadecimal ID. */
+  readonly generateTraceId?: () => string;
+  /** Return a nonzero 16-digit hexadecimal ID. */
+  readonly generateSpanId?: () => string;
+}
+
+let tracingIdGenerator: TracingIdGenerator = Object.freeze({});
+
+/** Replace future SDK scope policy; omission restores native generation. */
+export function setTracingIdGenerator(
+  generator: TracingIdGenerator = {},
+): void {
+  if (!generator || typeof generator !== 'object' || Array.isArray(generator))
+    throw new TypeError('Tracing ID generator must be an object');
+  const { generateTraceId, generateSpanId } = generator;
+  for (const callback of [generateTraceId, generateSpanId])
+    if (
+      callback !== undefined &&
+      (typeof callback !== 'function' || isAsyncFunction(callback))
+    )
+      throw new TypeError(
+        'Tracing ID generators must be synchronous functions',
+      );
+  tracingIdGenerator = Object.freeze({ generateTraceId, generateSpanId });
+}
+
+function generatedId(callback: () => string, digits: number): string {
+  const value = callback();
+  if (typeof value !== 'string')
+    throw new TypeError('Tracing ID generators must return strings');
+  if (
+    value.length !== digits ||
+    !/^[0-9a-f]+$/i.test(value) ||
+    /^0+$/.test(value)
+  )
+    throw new TypeError('Tracing ID generator returned an invalid identifier');
+  return value;
+}
+
+function generatedScopeIds(
+  generator: TracingIdGenerator,
+  options: Pick<TraceOptions, 'traceId' | 'spanId'>,
+  hasParent: boolean,
+  disabled: boolean,
+): { trace_id?: string; span_id?: string } {
+  const ids = options.spanId === undefined ? {} : { span_id: options.spanId };
+  if (disabled || processorSuppressed.getStore()) return ids;
+  return processorSuppressed.run(true, () => ({
+    ...ids,
+    ...(options.traceId === undefined && !hasParent && generator.generateTraceId
+      ? { trace_id: generatedId(generator.generateTraceId, 32) }
+      : {}),
+    ...(options.spanId === undefined && generator.generateSpanId
+      ? { span_id: generatedId(generator.generateSpanId, 16) }
+      : {}),
+  }));
+}
 
 /** Set capture policy for new scopes and operations; admitted work retains its policy. */
 export function setTracingDisabled(disabled: boolean): void {
@@ -236,6 +297,12 @@ export class TraceSpan {
           name: 'host.output_validation',
           kind: 'validation',
           parent: this.#contextToken,
+          ...generatedScopeIds(
+            tracingIdGenerator,
+            {},
+            true,
+            this.context.disabled,
+          ),
         }),
       ),
     );
@@ -443,6 +510,7 @@ async function start(
   const parentToken = parent?.retain();
   const restrictionToken = current?.retain();
   const snapshot = { ...options, metadata, ...admissionPolicy() };
+  const generator = tracingIdGenerator;
   const openingLease = opening?.retain();
   let inherited: Awaited<ReturnType<TraceCapture['retain']>> | undefined;
   try {
@@ -479,6 +547,17 @@ async function start(
               ? { include_sensitive_data: false }
               : {}
             : { include_sensitive_data: snapshot.includeSensitiveData }),
+          ...generatedScopeIds(
+            generator,
+            snapshot,
+            !snapshot.detached &&
+              (parent !== undefined ||
+                (snapshot.parent === undefined && inherited !== undefined)),
+            snapshot.disabled === true ||
+              current?.context.disabled === true ||
+              parent?.context.disabled === true ||
+              inherited?.span.context.disabled === true,
+          ),
           credential_ref: snapshot.exportCredential?.register(native) ?? null,
         }),
       ),
@@ -536,6 +615,7 @@ export async function withNativeCallbackContext<T>(
   callbackStorages?: CallbackTraceStorages,
 ): Promise<T> {
   if (context === undefined) return callback();
+  const generator = tracingIdGenerator;
   const native = await binding();
   const wire: WireSpanContext = JSON.parse(
     native.start_trace_span(
@@ -543,6 +623,13 @@ export async function withNativeCallbackContext<T>(
         name: 'host.callback',
         kind: 'callback',
         parent: context,
+        ...generatedScopeIds(
+          generator,
+          {},
+          true,
+          signal?.aborted === true ||
+            JSON.parse(native.trace_span_context(context)).disabled,
+        ),
       }),
     ),
   );
