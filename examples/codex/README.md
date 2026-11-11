@@ -38,6 +38,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Select eligible tools | **Run** [operation-selection.ts](operation-selection.ts). It rechecks eligibility before execution. See [tool selection](guides/tools.md#select-tools-for-one-root). |
 | Update a tool between Turns | **Run** [tool-updates.ts](tool-updates.ts). It waits for each Turn and the [idle Session update](guides/sessions.md#update-a-session). |
 | Bound calls or waiting | **Run** [callback-quota.ts](callback-quota.ts) for a per-run application quota, or [timeout-cleanup.ts](timeout-cleanup.ts) to release a waiter and join Session cleanup. |
+| Pause or restore a budgeted run | Compare live replies, portable checkpoints, and settled reopen in [budgeted recovery](guides/recovery.md#budgets-while-waiting-and-recovering). |
 | Edit a supported model request | **Run** [prepared-request.ts](prepared-request.ts) against a local Responses endpoint. See [request preparation](guides/request-preparation.md) for supported transports and return values. |
 | Correlate model requests and tool calls | **Run** [request-metadata.ts](request-metadata.ts) with scripted responses. It joins request dispatch identities and tool-call occurrences without changing requests. |
 | Inspect a tool call | **Run** [call-metadata.ts](call-metadata.ts) with access to its selected model. It reads metadata. Decisions and replies require their own grants. |
@@ -62,9 +63,10 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Apply MCP argument and approval policy | Run [mcp-policy.ts](mcp-policy.ts) with model credentials and `MCP_URL` set to a trusted Streamable HTTP server exposing `lookup({ key })`. This example sends no MCP credentials. |
 | Resume one MCP thumbnail task | Follow [MCP Tasks](../../packages/agents-codex/MCP_TASKS.md) to start local peers and run [mcp-tasks.ts](mcp-tasks.ts) with a private POSIX state directory. |
 | <a name="bounded-mcp-reports"></a>Bound MCP results | [The report recipe](mcp-reports.md) runs [mcp-reports.ts](mcp-reports.ts) and keeps the full result in application storage. |
+| Bound a large function result | **Run** [oversized-tool-output.ts](oversized-tool-output.ts) with scripted responses to check the next request and retained evidence. |
 | <a name="await-mcp-call-observers"></a>Observe one classic MCP call | Run [mcp-observers.ts](mcp-observers.ts). It uses the built classic packages and local synthetic callbacks. |
 | Search the web through the native provider | Run [native-web-search.ts](native-web-search.ts) with model credentials. See [native web search](guides/tools.md#native-web-search) for search modes and limits. |
-| Use provider-hosted file search, code, and images | Follow [the hosted-tools example](hosted-tools/README.md) with the current native source build and model credentials. |
+| Use provider-hosted file search, code, and images | Check [hosted-tool compatibility](guides/tools.md#provider-hosted-tool-compatibility), then follow [the hosted-tools example](hosted-tools/README.md) with model credentials. |
 | Call two remote Agents over A2A | Follow the [A2A guide](../../packages/agents-codex/A2A.md) to run the [two-agent example](a2a/two-agents.ts) against local scripted peers. Use the current source checkout. |
 | Resume deferred A2A work after a coordinator restart | Follow [the deferred A2A workflow](../../packages/agents-codex/A2A.md#run-deferred-work-across-coordinator-restarts) to run [deferred-thumbnail.ts](a2a/deferred-thumbnail.ts) against a long-lived local peer. |
 

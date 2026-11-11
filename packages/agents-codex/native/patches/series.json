@@ -1,5 +1,5 @@
 {
-  "result_tree": "7ebac72403f415cb3342224a48a85c8c2af04c3a",
+  "result_tree": "95237ff335786ec13b1584729d31a06672d8a306",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -784,6 +784,10 @@
     {
       "path": "sdk-provider-hosted-shell-produced-items.patch",
       "sha256": "9d8d9946b04186bb9c8efda78d56f83f764ec3ccce3885217e12493ca9b9f084"
+    },
+    {
+      "path": "sdk-tracing-id-annotations.patch",
+      "sha256": "547f6fa749098e6779a30271dd1e62999a2a048fd651ebbe0c748fa4a5b27ad3"
     },
     {
       "path": "sdk-websocket-message-transport.patch",
