@@ -1408,7 +1408,6 @@ impl PythonTools {
             );
             let mut function = dynamic_tool_to_responses_api_tool(&tool)?;
             function.defer_loading = None;
-            function.strict = false;
             if let Some(token) = &schema_token {
                 function.description =
                     schema_fidelity::Receipts::description(&tool.description, token, entries.len());
@@ -3753,6 +3752,8 @@ mod pending_tests {
         let raw_schema = json!({"type":"object","properties":{"email":{"type":"string","format":"email","examples":["a@example.com"]}},"required":["email"],"additionalProperties":false});
         let declaration = |name: &str, deferred: bool| {
             DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                strict: false,
+                output_schema: None,
                 name: name.into(),
                 description: "Original clean description".into(),
                 input_schema: raw_schema.clone(),
@@ -3947,6 +3948,8 @@ mod pending_tests {
             completion_replies: Mutex::default(),
         });
         let specs = vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+            strict: false,
+            output_schema: None,
             name: "decision".into(),
             description: "Choose.".into(),
             input_schema: json!({"type":"object","properties":{}}),
@@ -4958,6 +4961,8 @@ mod pending_tests {
         // A registered but non-default tool must not leak into an omitted roster.
         let mut specs = tools.snapshot().specs.clone();
         specs.push(DynamicToolSpec::Function(DynamicToolFunctionSpec {
+            strict: false,
+            output_schema: None,
             name: "hidden".into(),
             description: "Optional tool.".into(),
             input_schema: json!({"type":"object","properties":{}}),
