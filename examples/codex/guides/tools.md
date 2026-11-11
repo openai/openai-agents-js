@@ -18,6 +18,26 @@ The default `timeoutBehavior: 'raise_exception'` fails the owning turn with `Too
 
 Both modes abort the callback signal at the deadline and wait for entered callback work and cleanup to settle. A callback that ignores cancellation can therefore delay completion. Result mode runs its formatter after cleanup, using the parent tool context. Timeout results bypass the normal `result` schema and `after` hook, as local tool denial does. Formatter errors propagate normally. Parent cancellation or expired invocation authority prevents publication. With no `callbackTimeout`, the policy and formatter are inactive. A timeout never rolls back effects or makes a retry safe. See [the scripted callback timeout example](../tool-timeout-policy.ts).
 
+### Recover from callback-body errors
+
+With `errorFunction(context, error)`, the SDK has been publishing the returned string as a failed tool result and continuing the model turn. The formatter has been receiving the captured `ToolContext`, including the original and effective arguments. Omitting the formatter has been preserving the existing turn failure.
+
+```ts
+import { tool } from '@openai/agents';
+import { z } from 'zod';
+
+const lookup = tool({
+  name: 'lookup',
+  parameters: z.object({ key: z.string() }),
+  execute() {
+    throw new Error('Synthetic lookup failure');
+  },
+  errorFunction: () => 'Lookup failed. Try another key.',
+});
+```
+
+This handler has been covering callback-body exceptions only. Cancellation, callback deadlines, approval and input policies, argument/result validation, and cleanup failures have been retaining their existing handling. Formatted failures have been bypassing the `result` schema and `after` hook, and have not been completing a `finishTurn` tool. Formatter exceptions and non-string returns have been failing the turn. Formatting has been remaining outside `callbackTimeout`, under the turn's cancellation and admission checks. Neither failure formatting nor cancellation has been undoing earlier external effects.
+
 ### Finish a turn from a function tool
 
 With the current [source build](building.md), set `finishTurn: true` when declaring an automatic function tool:

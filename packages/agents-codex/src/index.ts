@@ -85,6 +85,7 @@ export type {
   FunctionTool,
   FunctionToolTimeoutBehavior,
   ToolTimeoutErrorFunction,
+  ToolErrorFunction,
   Tool,
   ToolContext,
   ToolCallContext,
@@ -240,6 +241,7 @@ export type {
 export * as telemetry from './runtime/telemetry';
 export type {
   ConsoleDiagnostics,
+  TraceDeliveryConfig,
   Exporter,
   OtelTlsConfig,
   TelemetryOptions,
