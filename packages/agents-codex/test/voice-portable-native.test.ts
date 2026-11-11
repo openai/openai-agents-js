@@ -403,6 +403,68 @@ describe.runIf(enabled)('portable Rust control', () => {
     },
   );
 
+  it('does not suspend an admitted tool when no before policy is installed', async () => {
+    let enabled = true;
+    let revokeAfterAdmission = false;
+    const frames: any[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      {
+        model: 'test-realtime',
+        instructions: 'Help.',
+        tools: [
+          {
+            name: 'lookup',
+            description: 'Lookup.',
+            parameters: { type: 'object' },
+            isEnabled() {
+              if (revokeAfterAdmission) {
+                revokeAfterAdmission = false;
+                // Admission may await this callback; a missing policy must not add another yield.
+                queueMicrotask(() =>
+                  queueMicrotask(() => {
+                    enabled = false;
+                  }),
+                );
+              }
+              return enabled;
+            },
+            execute: () => (enabled ? 'accepted' : 'executed after revocation'),
+          },
+        ],
+      },
+    );
+    try {
+      await session.start();
+      revokeAfterAdmission = true;
+      for (const event of fixtureEvents({ tools: [] }).slice(1))
+        session.receive(event);
+      await vi.waitFor(() =>
+        expect(
+          frames.find((event) => event.item?.call_id === item.call_id)?.item
+            .output,
+        ).toBe('accepted'),
+      );
+      expect(enabled).toBe(false);
+    } finally {
+      await session.close();
+    }
+  });
+
   it('keeps accepted tool and handoff callbacks during settings-only updates', async () => {
     const source = agent();
     const originalHandoff = vi.fn();

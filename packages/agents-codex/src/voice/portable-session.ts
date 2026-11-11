@@ -1401,7 +1401,9 @@ export class PortableVoiceSession {
                 return;
               }
               const context = this.#toolContext(effect.call_id);
-              const decision = await tool.before?.(arguments_, context);
+              const decision = tool.before
+                ? await tool.before(arguments_, context)
+                : undefined;
               if (this.#closed || call.abort.signal.aborted) return;
               let output: JsonValue | BackgroundResult<JsonValue>;
               if (decision?.action === 'deny') {
