@@ -238,7 +238,10 @@ export class TraceCapture {
   private span?: TraceSpan;
   private contextToken?: string;
   private finished = false;
+  private readonly storage: TraceContextStorage | undefined;
   constructor(readonly ready: Promise<TraceSpan>) {
+    const scope = hostTraceScope.getStore();
+    this.storage = scope ? scope.storage : configuredStorage;
     void ready.then(
       (span) => {
         this.span = span;
@@ -260,13 +263,22 @@ export class TraceCapture {
     const span = await this.ready;
     return (this.contextToken ??= span.retain());
   }
+  /** @internal Restore the admitted backend without replacing native callback ancestry. */
+  runWithStorage<T>(callback: () => T): T {
+    return hostTraceScope.run(
+      { storage: this.storage, span: undefined },
+      callback,
+    );
+  }
   async run<T>(
     name: string,
     kind: 'callback' | 'validation',
     callback: () => T | Promise<T>,
   ): Promise<T> {
     const parent = await this.ready;
-    return ambient.run(parent, () => scoped({ name }, kind, callback));
+    return this.runWithStorage(() =>
+      ambient.run(parent, () => scoped({ name }, kind, callback)),
+    );
   }
   validate<T>(callback: () => T): T {
     return this.span ? this.span.validate(callback) : callback();
