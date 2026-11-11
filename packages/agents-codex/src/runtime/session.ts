@@ -12211,7 +12211,20 @@ export class Session<OutputT = string, Context = unknown> {
    * short/empty pages with a next cursor after deletion. Concurrent opening or
    * fork entries; no stable pagination or publication promise. Validated links;
    * without opening the listed sessions or loading their history. Existing
-   * materialization/flush of the current owner. */
+   * materialization/flush of the current owner.
+   *
+   * Page sizes 1 through 1000; default 50. Opaque cursors for the same options.
+   * Paging with the returned cursor, including empty pages:
+   * ```ts
+   * let cursor: string | undefined;
+   * const ids: string[] = [];
+   * do {
+   *   const page = await session.storedSessions({ limit: 50, cursor });
+   *   ids.push(...page.sessions.map((item) => item.id));
+   *   cursor = page.nextCursor ?? undefined;
+   * } while (cursor !== undefined);
+   * ```
+   */
   async storedSessions(
     options: { limit?: number; cursor?: string; archived?: boolean } = {},
   ): Promise<StoredSessionPage> {
