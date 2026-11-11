@@ -5,7 +5,7 @@ import {
   privateRuntime,
   finishPrivateRuntime,
 } from './private-engine-reuse';
-import { RunCleanupError, setRunErrorDetails } from './native-error';
+import { RunCleanupError, RunDiagnosticError } from './native-error';
 import { captureInitialMessages } from './initial-messages';
 import { projectProfileCatalog } from './agent-profiles';
 import { captureTraceContext } from './trace-context';
@@ -582,17 +582,13 @@ async function completeOwnedSession<Output>(
   })();
   delete options.guardrailInput;
   const result = await pending.catch(async (error) => {
-    const primary = originalFailure(error);
-    if (
-      options.errorInput !== undefined &&
-      !options.signal?.aborted &&
-      primary instanceof Error
-    ) {
+    let primary = originalFailure(error);
+    if (options.errorInput !== undefined && !options.signal?.aborted) {
       try {
         const details = await session._captureRunErrorDetails(
           options.errorInput,
         );
-        if (details) setRunErrorDetails(primary, details);
+        if (details) primary = new RunDiagnosticError(details, primary);
       } catch {
         // Preserve the original failure when evidence capture throws.
       }

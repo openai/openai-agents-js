@@ -38,22 +38,19 @@ export interface RunErrorDetails {
   readonly incomplete: boolean;
 }
 
-const runErrorDetails = new WeakMap<Error, RunErrorDetails>();
+/** An opted-in native run failure, with the original value as its cause. */
+export class RunDiagnosticError extends Error {
+  readonly #details: RunErrorDetails;
 
-/** Read evidence captured by Agent.run({ captureErrorDetails: true }). */
-export function getRunErrorDetails(
-  error: unknown,
-): RunErrorDetails | undefined {
-  const primary = error instanceof RunCleanupError ? error.cause : error;
-  return primary instanceof Error ? runErrorDetails.get(primary) : undefined;
-}
+  constructor(details: RunErrorDetails, cause: unknown) {
+    super('Native run failed', { cause });
+    this.name = new.target.name;
+    this.#details = details;
+  }
 
-/** @internal Retain detached evidence without changing the original error. */
-export function setRunErrorDetails(
-  error: Error,
-  details: RunErrorDetails,
-): void {
-  runErrorDetails.set(error, details);
+  get details(): RunErrorDetails {
+    return this.#details;
+  }
 }
 
 /** Safe cause captured for the selected model-output failure, when known. */

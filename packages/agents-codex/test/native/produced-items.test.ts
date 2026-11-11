@@ -4,7 +4,7 @@ import {
   Agent,
   InteractionRequired,
   NativeProvider,
-  getRunErrorDetails,
+  RunDiagnosticError,
   hostedShell,
   manualTool,
   tool,
@@ -473,13 +473,18 @@ it.each([false, true])(
         captureErrorDetails: capture,
       })
       .catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain('synthetic terminal failure');
-    const details = getRunErrorDetails(failure);
     if (!capture) {
-      expect(details).toBeUndefined();
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(RunDiagnosticError);
+      expect((failure as Error).message).toContain(
+        'synthetic terminal failure',
+      );
       return;
     }
+    expect(failure).toBeInstanceOf(RunDiagnosticError);
+    const { details, cause } = failure as RunDiagnosticError;
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as Error).message).toContain('synthetic terminal failure');
     expect(details?.input).toBe('original request');
     expect(details?.lastAgent).toBe(agent);
     expect(details?.rawResponses.map((response) => response.id)).toContain(
@@ -491,3 +496,47 @@ it.each([false, true])(
     expect(details?.incomplete).toBe(false);
   },
 );
+
+it('keeps diagnostic snapshots separate when runs share a thrown error', async () => {
+  const shared = new Error('synthetic shared guardrail failure');
+  const server = new ModelServer([
+    [message('first answer')],
+    [message('second answer')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-shared-error-diagnostics',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Answer the request.',
+    provider,
+    outputGuardrails: [
+      {
+        name: 'fail',
+        callback() {
+          throw shared;
+        },
+      },
+    ],
+  });
+
+  const first = agent.run('first request', { captureErrorDetails: true });
+  const second = agent.run('second request', { captureErrorDetails: true });
+  const failures = await Promise.allSettled([first, second]);
+
+  const wrappers = failures.map((result) => {
+    expect(result.status).toBe('rejected');
+    const error = (result as PromiseRejectedResult).reason;
+    expect(error).toBeInstanceOf(RunDiagnosticError);
+    expect(error.cause).toBe(shared);
+    return error as RunDiagnosticError;
+  });
+  expect(wrappers[0]).not.toBe(wrappers[1]);
+  expect(wrappers.map((error) => error.details.input)).toEqual([
+    'first request',
+    'second request',
+  ]);
+});

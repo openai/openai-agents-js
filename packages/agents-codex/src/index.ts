@@ -10,7 +10,7 @@ export type {
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
-export { getRunErrorDetails, RunCleanupError } from './runtime/native-error';
+export { RunCleanupError, RunDiagnosticError } from './runtime/native-error';
 export { DecisionError } from './runtime/decisions';
 export type {
   DecisionInput,

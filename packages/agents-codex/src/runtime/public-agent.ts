@@ -280,7 +280,7 @@ export interface RunOptions<Context = undefined> extends Omit<
   returnRawUsage?: boolean;
   /** Retain the assistant and tool items produced by this run. */
   returnItems?: boolean;
-  /** Retain failed submission evidence for getRunErrorDetails(error). */
+  /** Retain failed submission evidence in RunDiagnosticError.details. */
   captureErrorDetails?: boolean;
 }
 
