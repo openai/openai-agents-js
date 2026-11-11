@@ -691,7 +691,11 @@
     {
       "path": "sdk-realtime-event-context.patch",
       "sha256": "7f196f5620569ac083361eb55e6f85834bc27a42bd47650b8de75bd8bee3966b"
+    },
+    {
+      "path": "sdk-realtime-provider-error-observation.patch",
+      "sha256": "69a74476497a8189f717036a231c5f48a3e391dc06191693dc7507851c81e7dc"
     }
   ],
-  "result_tree": "db0b5d6fd11b78276379b35e9f58a8bd485a5ea9"
+  "result_tree": "54dd0cf32b658243dac1c2053c267b123c65e299"
 }
