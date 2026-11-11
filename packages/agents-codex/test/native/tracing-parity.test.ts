@@ -234,7 +234,14 @@ it('retains native active roots across cache churn and fences callback retries',
   );
 }, 35000);
 
-it.each([[], ['--bytes'], ['--forward'], ['--retained-after-recovery']])(
+it.each([
+  [],
+  ['--bytes'],
+  ['--forward'],
+  ['--retained-after-recovery'],
+  ['--overlapping-loss'],
+  ['--overlapping-loss', '--forward'],
+])(
   'recovers bounded native descriptor capacity after queue loss %j',
   async (...arguments_: string[]) => {
     const result = await execute(

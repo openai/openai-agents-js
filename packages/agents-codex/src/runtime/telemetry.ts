@@ -316,9 +316,29 @@ const activeProcessorIds = new Set<string>();
 const retiredProcessorIds = new Map<string, number>();
 let acknowledgedSequence = 0;
 let droppedRecords = 0;
-let lossWatermark = 0;
+// Each drain below the oldest cutoff consumes records from the bounded native
+// queue that existed when that cutoff was captured.
+const lossWatermarks: number[] = [];
 let recoveryEpoch = 0;
 const processorEpochs = new WeakMap<TraceProcessorRegistration, number>();
+
+function* traceRecoveryGroups(
+  events: TraceEvent[],
+  throughSequence: number,
+): Generator<TraceEvent[]> {
+  let start = 0;
+  while (lossWatermarks.length && lossWatermarks[0] <= throughSequence) {
+    const cutoff = lossWatermarks[0];
+    let end = start;
+    while (end < events.length && events[end].sequence <= cutoff) end++;
+    if (end > start) yield events.slice(start, end);
+    lossWatermarks.shift();
+    recoveryEpoch = cutoff;
+    start = end;
+  }
+  if (start < events.length) yield start === 0 ? events : events.slice(start);
+}
+
 function retireProcessors(): void {
   for (const [id, cutoff] of retiredProcessorIds) {
     if (cutoff <= acknowledgedSequence) {
@@ -374,28 +394,18 @@ async function route(
           let failures = 0;
           if (batch.dropped_records > droppedRecords) {
             // No-op route merge captures the sequence, including a drop-only tail.
-            lossWatermark = native.set_trace_routes(
+            const cutoff = native.set_trace_routes(
               '{"processor_ids":[],"replace":false}',
             );
+            if (cutoff > (lossWatermarks.at(-1) ?? recoveryEpoch)) {
+              lossWatermarks.push(cutoff);
+            }
             droppedRecords = batch.dropped_records;
           }
-          const watermark = lossWatermark;
-          const groups: TraceEvent[][] =
-            watermark && batch.through_sequence >= watermark
-              ? [
-                  batch.events.filter(
-                    (event: TraceEvent) => event.sequence <= watermark,
-                  ),
-                  batch.events.filter(
-                    (event: TraceEvent) => event.sequence > watermark,
-                  ),
-                ]
-              : [batch.events];
-          for (const [index, group] of groups.entries()) {
-            if (index === 1) {
-              recoveryEpoch = watermark;
-              lossWatermark = 0;
-            }
+          for (const group of traceRecoveryGroups(
+            batch.events,
+            batch.through_sequence,
+          )) {
             const routes = new Map<string, TraceEvent[]>();
             const snapshots: TraceEvent[] = [];
             for (const event of group) {
