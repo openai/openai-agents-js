@@ -189,6 +189,30 @@ it('maintains provider order and transcripts while bounding local item payloads'
   ).toThrow('capacity');
 });
 
+it('replaces provider audio with an empty value and releases its byte budget', () => {
+  const history = new VoiceConversationHistory({
+    storeAudio: true,
+    maxAudioBytes: 4,
+  });
+  const item = {
+    ...message('one', ''),
+    content: [{ type: 'output_audio', audio: 'AQIDBA==' }],
+  };
+  history.observe({ type: 'conversation.item.created', item });
+  history.observeAudio('one', 0, new Uint8Array());
+  expect((history.snapshot()[0].content as any[])[0].audio).toBe('AQIDBA==');
+  history.observe({
+    type: 'conversation.item.done',
+    item: { ...item, content: [{ type: 'output_audio', audio: '' }] },
+  });
+  expect((history.snapshot()[0].content as any[])[0].audio).toBe('');
+  history.observe({
+    type: 'conversation.item.created',
+    item: { ...item, id: 'two' },
+  });
+  expect((history.snapshot()[1].content as any[])[0].audio).toBe('AQIDBA==');
+});
+
 it('isolates passive observers, detaches byte views, and releases subscriptions', async () => {
   type Event = { type: string; data: Uint8Array; detail: { text: string } };
   const observers = new VoiceEventObservers<Event>();
@@ -365,6 +389,24 @@ it('keeps exact provider input and output audio in the Node owner after close', 
     (owner.providerHistory()[0].content as any[])[0].audio = 'changed';
     expect(owner.providerHistory()).toEqual(expected);
   }
+});
+
+it('clears prior provider bytes on an empty same-item audio update in the Node owner', async () => {
+  const { owner, emit } = await ownerFixture({ historyStoreAudio: true });
+  const item = {
+    ...message('one', ''),
+    content: [{ type: 'output_audio', audio: 'AQIDBA==' }],
+  };
+  emit({ RawProviderEvent: { type: 'conversation.item.created', item } });
+  emit({
+    RawProviderEvent: {
+      type: 'conversation.item.done',
+      item: { ...item, content: [{ type: 'output_audio', audio: '' }] },
+    },
+  });
+  expect((owner.providerHistory()[0].content as any[])[0].audio).toBe('');
+  await owner.close();
+  expect((owner.providerHistory()[0].content as any[])[0].audio).toBe('');
 });
 
 it('captures exact tool-source history before later input and isolates each callback view', async () => {

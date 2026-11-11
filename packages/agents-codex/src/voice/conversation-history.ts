@@ -183,7 +183,7 @@ export class VoiceConversationHistory {
       !Number.isSafeInteger(index) ||
       index < 0 ||
       index >= 1024 ||
-      !data.byteLength ||
+      (!data.byteLength && !replace) ||
       !Number.isFinite(bytesPerMillisecond) ||
       bytesPerMillisecond <= 0
     )
