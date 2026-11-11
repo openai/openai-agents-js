@@ -237,7 +237,7 @@ impl Receipts {
             }
             let original_entry = &owner.generation.entries[owner.slot];
             let originals = functions(&owner.generation.specs);
-            let namespace = originals[owner.slot].0;
+            let namespace = originals[owner.slot].0.clone();
             let original = originals[owner.slot].1.as_ref();
             let mut raw = original.clone();
             raw.description = tool.description.clone();
