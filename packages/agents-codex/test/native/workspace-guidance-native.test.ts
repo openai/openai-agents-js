@@ -166,3 +166,121 @@ it('retains original providers and replaces or clears only current workspace gui
     await rm(base, { recursive: true, force: true });
   }
 }, 30_000);
+
+it.each(['create', 'borrow', 'read-only boundary'] as const)(
+  'opens with oversized mount guidance and discovery off (%s)',
+  async (opening) => {
+    const readOnly = opening === 'read-only boundary';
+    const base = await mkdtemp(join(tmpdir(), 'bounded-workspace-guidance-'));
+    const home = join(base, 'codex-home');
+    const workspace = join(base, 'workspace');
+    await mkdir(home);
+    await mkdir(workspace);
+    await writeFile(join(home, 'AGENTS.md'), 'UNDISCOVERED_GLOBAL_RULE');
+    await writeFile(join(workspace, 'AGENTS.md'), 'UNDISCOVERED_PROJECT_RULE');
+    vi.stubEnv('CODEX_HOME', home);
+    const peer = await startPublicExecutor();
+    try {
+      const server = new ModelServer([[message('done')]]);
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-provider',
+        supportsWebsockets: false,
+      });
+      // This path and description filled the previous compact rendering to
+      // exactly 40,000 UTF-8 bytes, leaving no room for the executor warning.
+      const mountRoot = readOnly
+        ? '/workspace/fixtures/workspace-guidance-boundary'
+        : workspace;
+      const manifest = new Manifest({
+        root: mountRoot,
+        entries: {
+          ...(!readOnly && {
+            data: s3Mount({
+              bucket: 'synthetic-data',
+              description: '📚'.repeat(11_000),
+              mountStrategy: { type: 'modal_cloud_bucket' },
+            }),
+          }),
+          output: s3Mount({
+            bucket: 'synthetic-output',
+            readOnly: false,
+            description: readOnly
+              ? 'x'.repeat(39_213)
+              : 'Keep this short description.',
+            mountStrategy: { type: 'modal_cloud_bucket' },
+          }),
+        },
+      });
+      const sandbox = { state: { manifest }, async close() {} };
+      const client: SandboxClient = {
+        backendId: 'fixture',
+        async create(args) {
+          return {
+            ...sandbox,
+            state: {
+              manifest: normalizeSandboxClientCreateArgs(args).manifest,
+            },
+          };
+        },
+      };
+      const environment = sandboxEnvironment({
+        client,
+        manifest,
+        ...(opening === 'borrow' ? { session: sandbox } : {}),
+        connect: async () =>
+          Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: workspace,
+              readOnly,
+              tools: [],
+            }),
+            async () => {},
+          ),
+      });
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'SYNTHETIC_APPLICATION',
+      });
+      const session = await agent.session({
+        environment,
+        discoverAgentsMd: false,
+      });
+      try {
+        await (await session.submit('Read current workspace guidance')).wait();
+      } finally {
+        await session.close();
+      }
+      const request = server.requests[0]!;
+      const text = latestUserInstructions(request);
+      expect(text).toContain('# Current SDK workspace snapshot');
+      expect(text.includes(`Executor read-only: ${readOnly}`)).toBe(true);
+      const storage = text
+        .split('Declared storage access:\n')[1]
+        ?.split('\n\n')[0];
+      expect(JSON.parse(storage ?? 'null')).toEqual([
+        ...(!readOnly
+          ? [{ path: join(mountRoot, 'data'), access: 'read_only' }]
+          : []),
+        {
+          path: join(mountRoot, 'output'),
+          access: 'read_write',
+          ...(!readOnly && { description: 'Keep this short description.' }),
+        },
+      ]);
+      const body = JSON.stringify(request);
+      expect(body).toContain('SYNTHETIC_APPLICATION');
+      expect(body).not.toContain('UNDISCOVERED_GLOBAL_RULE');
+      expect(body).not.toContain('UNDISCOVERED_PROJECT_RULE');
+    } finally {
+      await peer.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
