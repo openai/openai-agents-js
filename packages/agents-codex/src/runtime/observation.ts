@@ -91,7 +91,8 @@ export type HostedToolProgress = SubmissionEvent &
 
 /** A committed captured-Agent identity change. Initial/restored bindings and
  * same-profile refreshes are silent. Idle changes have null operation identity.
- * agentName comes from the captured declaration, not the mutable original Agent.
+ * Both names come from captured declarations. The previous profile identifies
+ * the committed source, including unnamed Agents. Older events can omit it.
  */
 export type AgentProfileChanged = Event &
   Readonly<{
@@ -99,6 +100,8 @@ export type AgentProfileChanged = Event &
     profileId: string;
     profileEpoch: string;
     agentName: string | null;
+    previousProfileId?: string;
+    previousAgentName?: string | null;
     submissionId: string | null;
     turnId: string | null;
     parentSubmissionId?: string;
