@@ -31,7 +31,7 @@ it.each([false, true])(
     const drained = Promise.withResolvers<void>();
     vi.spyOn(NativeThread.prototype, '_next_session_events')
       .mockImplementationOnce(async function (
-        this: InstanceType<typeof NativeThread>,
+        this: typeof NativeThread.prototype,
       ) {
         return [
           JSON.stringify({
@@ -49,9 +49,7 @@ it.each([false, true])(
           }),
         ];
       })
-      .mockImplementationOnce(function (
-        this: InstanceType<typeof NativeThread>,
-      ) {
+      .mockImplementationOnce(function (this: typeof NativeThread.prototype) {
         drained.resolve();
         return nextEvents.call(this);
       });
