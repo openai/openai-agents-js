@@ -1,5 +1,5 @@
 {
-  "result_tree": "b46d42e03ce140ed6ae9807c4ee302d2efe3de00",
+  "result_tree": "32aaacb7104c39ee4b8982fdcac3e531cba2eafd",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -808,6 +808,18 @@
     {
       "path": "sdk-application-tool-durable-owner.patch",
       "sha256": "a6e10d1e8a347c5a8623ffd275b858738b848380460cfbdace7f567fa1905705"
+    },
+    {
+      "path": "sdk-provider-tool-search.patch",
+      "sha256": "b25e248670ddf7b7f02e5fb7f1834906501b49622d65684a7ef0dd82ca590dc0"
+    },
+    {
+      "path": "sdk-native-client-tool-search.patch",
+      "sha256": "9f5145bd9c75c97a0c690bbeb36fe89b66cdf22ade447c6f83aec2a3d474a253"
+    },
+    {
+      "path": "sdk-client-tool-search-discovery-admission.patch",
+      "sha256": "137b34494fb5240f00e811a56b930e1e565c82f1bcf2cc01c1fef8810fc59e2c"
     },
     {
       "path": "sdk-websocket-message-transport.patch",
