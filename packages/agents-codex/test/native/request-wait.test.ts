@@ -764,6 +764,12 @@ describe('exact request waits with the native pending owner', () => {
     }).session();
     try {
       const turn = await session.submit('begin');
+      await expect
+        .poll(async () => {
+          const outcome = await turn.wait({ until: 'manual_tool' });
+          return 'requests' in outcome ? outcome.requests.length : 0;
+        })
+        .toBe(2);
       const original = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in original))
         throw new Error('Expected portable live requests');

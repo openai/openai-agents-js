@@ -490,9 +490,21 @@ async function closePrivateOwnedRuntime(
 interface OwnedRunOptions {
   guardrailInput?: import('./input').UserInput;
   returnState?: boolean;
+  returnHistory?: boolean;
   signal?: AbortSignal;
   maxModelSteps?: number;
   budget?: import('./run-budget').RunBudgetTracker;
+}
+
+async function captureRunHistory(session: Session<any>) {
+  const { items } = await session._historyForReplay();
+  return Object.freeze(
+    items.filter(
+      (item) =>
+        item.type !== 'message' ||
+        (item.role !== 'developer' && item.role !== 'system'),
+    ),
+  );
 }
 
 /** @internal Complete and close the Session owned by a one-shot run. */
@@ -577,9 +589,18 @@ async function completeOwnedSession<Output>(
   });
   try {
     options.signal?.throwIfAborted();
-    const completed = options.returnState
-      ? Object.freeze({ ...result, state: await session.saveState() })
-      : result;
+    const completed =
+      options.returnState || options.returnHistory
+        ? Object.freeze({
+            ...result,
+            ...(options.returnState
+              ? { state: await session.saveState() }
+              : {}),
+            ...(options.returnHistory
+              ? { history: await captureRunHistory(session) }
+              : {}),
+          })
+        : result;
     await session.close();
     options.signal?.throwIfAborted();
     if (privateRuntime(session)) await finishPrivateRuntime(session, true);

@@ -608,6 +608,8 @@ export interface Completed<OutputT = string> {
   readonly threadUsage: TokenUsageInfo | null;
   readonly runUsage: RunUsage;
   readonly state?: SessionState;
+  /** Conversation records from returnHistory, for replay with the destination Session's instructions. */
+  readonly history?: CanonicalHistorySnapshot['items'];
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
 }
@@ -9546,12 +9548,12 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Managed approval expired during policy evaluation',
             );
+          const effectiveInput =
+            decision.effective === undefined ? args : decision.effective;
           if (
             !this.#native._require_tool_approval(
               encodeReceipt(msg),
-              encodeReceipt(
-                decision.effective === undefined ? args : decision.effective,
-              ),
+              encodeReceipt(effectiveInput),
             )
           )
             return;
@@ -9647,6 +9649,21 @@ export class Session<OutputT = string, Context = unknown> {
     const action = call.grant.request();
     if (!action) return;
     const handler = this.options.onInteraction;
+    if (
+      !handler &&
+      isFunctionApprovalRequest(action) &&
+      action.call?.route === 'direct' &&
+      action.call.callId
+    ) {
+      this.observations.append({
+        type: 'function_approval_requested',
+        submissionId: action.submissionId,
+        turnId: action.turnId,
+        approvalId: action.approvalId,
+        callId: action.call.callId,
+        name: action.name,
+      });
+    }
     if (handler) {
       const root =
         run instanceof NativeTurn
@@ -12654,6 +12671,18 @@ export class Session<OutputT = string, Context = unknown> {
   async historySnapshot(
     options: { limit?: number } = {},
   ): Promise<CanonicalHistorySnapshot> {
+    return this.#captureCanonicalHistory(options);
+  }
+
+  /** @internal One-shot replay capture with native size limits. */
+  _historyForReplay(): Promise<CanonicalHistorySnapshot> {
+    return this.#captureCanonicalHistory({}, true);
+  }
+
+  async #captureCanonicalHistory(
+    options: { limit?: number },
+    forReplay = false,
+  ): Promise<CanonicalHistorySnapshot> {
     this.checkCallbackOperation('read canonical history from');
     this.idle('historySnapshot');
     const { limit } = options;
@@ -12664,7 +12693,9 @@ export class Session<OutputT = string, Context = unknown> {
       throw new RangeError('limit must be a nonnegative 32-bit integer');
     return this.mutate(async () => {
       const snapshot: { revision: string; total: number; items: string[] } =
-        JSON.parse(await this.#native._canonical_history(limit ?? null));
+        JSON.parse(
+          await this.#native._canonical_history(limit ?? null, forReplay),
+        );
       return {
         ...snapshot,
         items: snapshot.items.map(

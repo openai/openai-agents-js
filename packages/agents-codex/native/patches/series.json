@@ -1,4 +1,5 @@
 {
+  "result_tree": "f349d4a5ab118874ea39301df13cb38413bd56bc",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -695,7 +696,18 @@
     {
       "path": "sdk-child-callback-trace-storage.patch",
       "sha256": "9e655c5c429f03e58cee41a7818b31daf89ef9b429d2d31575a13c5ed6e99408"
+    },
+    {
+      "path": "sdk-bounded-one-shot-history.patch",
+      "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
+    },
+    {
+      "path": "sdk-deferred-followup-trace.patch",
+      "sha256": "bb5bfe944f0278638fd9eb50a913cf89341c19815382af5a1c47e3dded0ada46"
+    },
+    {
+      "path": "sdk-realtime-provider-error-observation.patch",
+      "sha256": "69a74476497a8189f717036a231c5f48a3e391dc06191693dc7507851c81e7dc"
     }
-  ],
-  "result_tree": "8879ecf99c9ed972b98122f00853999f6d0412be"
+  ]
 }

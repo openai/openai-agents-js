@@ -139,6 +139,14 @@ export type Observation =
       Readonly<{ item: ExecutionItemSummary | ExecutionItem }>)
   | (SubmissionEvent & ToolIdentity & Readonly<{ type: 'tool_started' }>)
   | (SubmissionEvent &
+      Readonly<{
+        type: 'function_approval_requested';
+        /** Display identifiers. Reply authority remains with the live request. */
+        approvalId: string;
+        callId: string;
+        name: string;
+      }>)
+  | (SubmissionEvent &
       ToolIdentity &
       Readonly<{
         type: 'tool_finished';

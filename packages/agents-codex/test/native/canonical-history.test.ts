@@ -2,16 +2,235 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   Agent,
   NativeError,
   NativeProvider,
   fileSessionStore,
+  tool,
   type SessionStore,
 } from '../../src';
-import { ModelServer, message } from './fixtures/model-server';
+import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
+
+it('rejects oversized one-shot history after the run completes', async () => {
+  const server = new ModelServer([[message('completed')]]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-history',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Answer.',
+    provider,
+  });
+  const initialMessages = Array.from({ length: 4097 }, (_, index) => ({
+    role: 'user' as const,
+    content: `Earlier turn ${index}`,
+  }));
+  await expect(
+    agent.run('finish', { initialMessages, returnHistory: true }),
+  ).rejects.toThrow(/completed.*history exceeds the result size limit/);
+  expect(server.requests).toHaveLength(1);
+});
+
+it('rejects oversized original tool output after native completion', async () => {
+  const effects: string[] = [];
+  const lookup = tool({
+    name: 'lookup',
+    parameters: z.object({}),
+    execute() {
+      effects.push('completed');
+      return 'x'.repeat(8 * 1024 * 1024 + 1);
+    },
+  });
+  const server = new ModelServer([
+    [call('lookup', {}, { callId: 'oversized-original' })],
+    [message('large tool result settled')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-history-budget',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Use lookup.',
+    provider,
+    tools: [lookup],
+  });
+  await expect(
+    agent.run('read the document', { returnHistory: true }),
+  ).rejects.toThrow(/completed.*history exceeds the result size limit/);
+  expect(effects).toEqual(['completed']);
+  expect(server.requests).toHaveLength(2);
+});
+
+it('ignores oversized tool output discarded by a history replacement', async () => {
+  const effects: string[] = [];
+  const lookup = tool({
+    name: 'lookup',
+    parameters: z.object({}),
+    execute() {
+      effects.push('completed');
+      return 'x'.repeat(8 * 1024 * 1024 + 1);
+    },
+  });
+  const server = new ModelServer([
+    [call('lookup', {}, { callId: 'discarded-original' })],
+    [message('large tool result settled')],
+    [message('small history continued')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-history-budget',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Use lookup.',
+    provider,
+    tools: [lookup],
+  });
+  const retained = {
+    type: 'application_note',
+    value: 'kept'.repeat(20 * 1024),
+  };
+  const state = await (async () => {
+    await using session = await agent.session();
+    expect(
+      (await (await session.submit('read the document')).wait()).finalOutput,
+    ).toBe('large tool result settled');
+    const before = await session.historySnapshot({ limit: 0 });
+    await session.transactHistory({
+      expectedRevision: before.revision,
+      keep: 0,
+      items: [retained],
+    });
+    return session.saveState();
+  })();
+  const result = await agent.run('continue', { state, returnHistory: true });
+  expect(result.finalOutput).toBe('small history continued');
+  expect(result.history?.[0]).toEqual(retained);
+  expect(
+    result.history?.some((item) => item.call_id === 'discarded-original'),
+  ).toBe(false);
+  expect(effects).toEqual(['completed']);
+  expect(server.requests).toHaveLength(3);
+});
+
+it.each([false, true])(
+  'continues one-shot history in another session with returnState=%s',
+  async (returnState) => {
+    const calls: string[] = [];
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      execute({ key }) {
+        calls.push(key);
+        return `record:${key}`;
+      },
+    });
+    const server = new ModelServer([
+      [call('lookup', { key: 'first' }, { callId: 'detached-lookup' })],
+      [message('record loaded')],
+      [message('continued with the record')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-history',
+      supportsWebsockets: false,
+    });
+    const producer = new Agent({
+      instructions: 'Look up the record.',
+      tools: [lookup],
+      model: 'gpt-5',
+      provider,
+    });
+    const result = await producer.run('load my record', {
+      initialMessages: [{ role: 'user', content: 'my prior request' }],
+      returnHistory: true,
+      returnState,
+    });
+    expect(result.finalOutput).toBe('record loaded');
+    expect(result.state !== undefined).toBe(returnState);
+    expect(result.history).toBeDefined();
+    const consumer = new Agent({
+      instructions: 'Use the previous record.',
+      model: 'gpt-5',
+      provider,
+    });
+    await using session = await consumer.session();
+    const before = await session.historySnapshot();
+    await session.transactHistory({
+      expectedRevision: before.revision,
+      keep: 0,
+      items: result.history!,
+    });
+    const continued = await (await session.submit('continue')).wait();
+    expect(continued.finalOutput).toBe('continued with the record');
+    expect(continued.history).toBeUndefined();
+    expect(calls).toEqual(['first']);
+    expect(server.requests).toHaveLength(3);
+    const input = server.requests[2].input as Record<string, unknown>[];
+    const replayed = input.filter((item) => item.call_id === 'detached-lookup');
+    expect(replayed.map((item) => item.type)).toEqual([
+      'function_call',
+      'function_call_output',
+    ]);
+    expect(JSON.stringify(replayed[1])).toContain('record:first');
+    const messages = JSON.stringify(
+      input.filter((item) => item.type === 'message'),
+    );
+    expect(messages).not.toContain('Look up the record.');
+    expect(messages).toContain('Use the previous record.');
+    expect(messages.indexOf('my prior request')).toBeGreaterThanOrEqual(0);
+    expect(messages.indexOf('load my record')).toBeGreaterThanOrEqual(0);
+    expect(messages.indexOf('load my record')).toBeGreaterThan(
+      messages.indexOf('my prior request'),
+    );
+    expect(messages.indexOf('record loaded')).toBeGreaterThan(
+      messages.indexOf('load my record'),
+    );
+    expect(messages.indexOf('continue')).toBeGreaterThan(
+      messages.indexOf('record loaded'),
+    );
+  },
+);
+
+it('captures one-shot text history only on request', async () => {
+  const capturedOutput = 'captured output' + 'x'.repeat(128 * 1024);
+  const server = new ModelServer([
+    [message('ordinary output')],
+    [message(capturedOutput)],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-history',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  });
+  const ordinary = await agent.run('ordinary input');
+  const captured = await agent.run('captured input', { returnHistory: true });
+  expect(ordinary.history).toBeUndefined();
+  const items = JSON.stringify(captured.history);
+  expect(items).toContain('captured input');
+  expect(items).toContain(capturedOutput);
+});
 
 it('retires after a durable history checkpoint is accepted but its flush fails', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'history-uncertain-'));
