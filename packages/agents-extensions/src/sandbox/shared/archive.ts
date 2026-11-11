@@ -70,13 +70,14 @@ export async function persistRemoteWorkspaceTar(args: {
   io: RemoteWorkspaceTarIo;
   /** Optional staging prefix; export uses a private directory beside this path. */
   archivePath?: string;
+  activeMountPaths?: Iterable<string>;
 }): Promise<Uint8Array> {
   const root = args.manifest.root;
   const archiveDirectory = `${args.archivePath ?? remoteArchivePath(args.providerName)}.d`;
   const archivePath = `${archiveDirectory}/archive.tar`;
   assertRemoteWorkspaceTarRoot(args.providerName, root, archivePath, 'persist');
 
-  const protectedPaths = workspaceTarProtectedPaths(args.manifest);
+  const protectedPaths = workspaceTarPreservedPaths(args.manifest);
   if (protectedPaths.includes('')) {
     return createEmptyWorkspaceTarArchive();
   }
@@ -88,20 +89,29 @@ export async function persistRemoteWorkspaceTar(args: {
     runCommand: args.io.runCommand,
   });
 
+  const effectiveProtectedPaths = await effectiveWorkspaceTarProtectedPaths(
+    args,
+    effectiveRoot,
+    protectedPaths,
+  );
+  if (effectiveProtectedPaths.includes('')) {
+    return createEmptyWorkspaceTarArchive();
+  }
+
   const effectiveArchiveParent = await resolveRemoteSandboxEffectivePath({
     path: posixDirname(archiveDirectory),
     runCommand: args.io.runCommand,
   });
   const effectiveArchiveDirectory = `${effectiveArchiveParent}/${archiveDirectory.slice(archiveDirectory.lastIndexOf('/') + 1)}`;
-  const excludeArgs = workspaceTarExcludeArgs(args.manifest);
+  const excludeArgs = effectiveProtectedPaths
+    .filter((path) => path.length > 0)
+    .map(workspaceTarExcludeArg);
   const archiveRelPath = relativePosixPathWithinRoot(
     effectiveRoot,
     effectiveArchiveDirectory,
   );
   if (archiveRelPath !== null) {
-    excludeArgs.push(
-      `--exclude=${shellQuote(`./${archiveRelPath.replace(/([*?[\]\\])/gu, '\\$1')}`)}`,
-    );
+    excludeArgs.push(workspaceTarExcludeArg(archiveRelPath));
   }
   const tarCommand = [
     `mkdir -p -- ${shellQuote(root)}`,
@@ -186,7 +196,7 @@ export async function hydrateRemoteWorkspaceTar(args: {
 }): Promise<void> {
   const root = args.manifest.root;
   const archive = toWorkspaceArchiveBytes(args.data);
-  const protectedPaths = workspaceTarHydrationProtectedPaths(args.manifest);
+  const protectedPaths = workspaceTarPreservedPaths(args.manifest);
   validateWorkspaceTarArchive(archive, {
     allowSymlinks: false,
     rejectRelPaths: protectedPaths,
@@ -201,40 +211,12 @@ export async function hydrateRemoteWorkspaceTar(args: {
     options: { forWrite: true },
     runCommand: args.io.runCommand,
   });
-  const effectiveProtectedPaths = new Set(protectedPaths);
-  for (const mountPath of args.activeMountPaths ?? []) {
-    addEffectiveMountPath(effectiveProtectedPaths, effectiveRoot, mountPath);
-  }
-  const pathsToResolve = new Set([
-    ...args.manifest.mountTargets().map(({ mountPath }) => mountPath),
-    ...protectedPaths.map((path) => `${root}/${path}`),
-  ]);
-  for (const mountPath of pathsToResolve) {
-    const relativeMountPath = relativePosixPathWithinRoot(root, mountPath);
-    if (relativeMountPath) {
-      const parts = relativeMountPath.split('/');
-      for (let index = 1; index < parts.length; index += 1) {
-        const ancestor = parts.slice(0, index).join('/');
-        const effectiveAncestor = await resolveRemoteSandboxEffectivePath({
-          path: `${root}/${ancestor}`,
-          runCommand: args.io.runCommand,
-        });
-        if (effectiveAncestor !== `${effectiveRoot}/${ancestor}`) {
-          effectiveProtectedPaths.add(ancestor);
-        }
-      }
-    }
-    const effectiveMountPath = await resolveRemoteSandboxEffectivePath({
-      path: mountPath,
-      runCommand: args.io.runCommand,
-    });
-    addEffectiveMountPath(
-      effectiveProtectedPaths,
-      effectiveRoot,
-      effectiveMountPath,
-    );
-  }
-  if (effectiveProtectedPaths.size !== protectedPaths.length) {
+  const effectiveProtectedPaths = await effectiveWorkspaceTarProtectedPaths(
+    args,
+    effectiveRoot,
+    protectedPaths,
+  );
+  if (effectiveProtectedPaths.length !== protectedPaths.length) {
     validateWorkspaceTarArchive(archive, {
       allowSymlinks: false,
       rejectRelPaths: effectiveProtectedPaths,
@@ -281,6 +263,52 @@ export async function hydrateRemoteWorkspaceTar(args: {
       .runCommand(`rm -f -- ${shellQuote(archivePath)}`)
       .catch(() => {});
   }
+}
+
+async function effectiveWorkspaceTarProtectedPaths(
+  args: {
+    manifest: Manifest;
+    io: RemoteWorkspaceTarIo;
+    activeMountPaths?: Iterable<string>;
+  },
+  effectiveRoot: string,
+  protectedPaths: string[],
+): Promise<string[]> {
+  const root = args.manifest.root;
+  const effectiveProtectedPaths = new Set(protectedPaths);
+  for (const mountPath of args.activeMountPaths ?? []) {
+    addEffectiveMountPath(effectiveProtectedPaths, effectiveRoot, mountPath);
+  }
+  const pathsToResolve = new Set([
+    ...args.manifest.mountTargets().map(({ mountPath }) => mountPath),
+    ...protectedPaths.map((path) => `${root}/${path}`),
+  ]);
+  for (const mountPath of pathsToResolve) {
+    const relativeMountPath = relativePosixPathWithinRoot(root, mountPath);
+    if (relativeMountPath) {
+      const parts = relativeMountPath.split('/');
+      for (let index = 1; index < parts.length; index += 1) {
+        const ancestor = parts.slice(0, index).join('/');
+        const effectiveAncestor = await resolveRemoteSandboxEffectivePath({
+          path: `${root}/${ancestor}`,
+          runCommand: args.io.runCommand,
+        });
+        if (effectiveAncestor !== `${effectiveRoot}/${ancestor}`) {
+          effectiveProtectedPaths.add(ancestor);
+        }
+      }
+    }
+    const effectiveMountPath = await resolveRemoteSandboxEffectivePath({
+      path: mountPath,
+      runCommand: args.io.runCommand,
+    });
+    addEffectiveMountPath(
+      effectiveProtectedPaths,
+      effectiveRoot,
+      effectiveMountPath,
+    );
+  }
+  return [...effectiveProtectedPaths];
 }
 
 function addEffectiveMountPath(
@@ -495,10 +523,11 @@ export function toWorkspaceArchiveBytes(
 export function workspaceTarExcludeArgs(manifest: Manifest): string[] {
   return workspaceTarProtectedPaths(manifest)
     .filter((path) => path.length > 0)
-    .map(
-      (path) =>
-        `--exclude=${shellQuote(`./${path.replace(/([*?[\]\\])/gu, '\\$1')}`)}`,
-    );
+    .map(workspaceTarExcludeArg);
+}
+
+function workspaceTarExcludeArg(path: string): string {
+  return `--exclude=${shellQuote(`./${path.replace(/([*?[\]\\])/gu, '\\$1')}`)}`;
 }
 
 export function workspaceTarProtectedPaths(manifest: Manifest): string[] {
@@ -507,7 +536,7 @@ export function workspaceTarProtectedPaths(manifest: Manifest): string[] {
   );
 }
 
-function workspaceTarHydrationProtectedPaths(manifest: Manifest): string[] {
+function workspaceTarPreservedPaths(manifest: Manifest): string[] {
   const paths = new Set(workspaceTarProtectedPaths(manifest));
   for (const { mountPath } of manifest.mountTargets()) {
     const relativePath = relativePosixPathWithinRoot(manifest.root, mountPath);

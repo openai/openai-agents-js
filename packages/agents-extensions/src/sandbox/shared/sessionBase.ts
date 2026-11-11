@@ -665,10 +665,13 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   protected async persistWorkspaceTar(): Promise<Uint8Array> {
-    return await persistRemoteWorkspaceTar({
-      providerName: this.providerName,
-      manifest: this.state.manifest,
-      io: this.archiveIo(),
+    return await withExclusiveSandboxStateInspection(this.state, async () => {
+      return await persistRemoteWorkspaceTar({
+        providerName: this.providerName,
+        manifest: this.state.manifest,
+        io: this.archiveIo(),
+        activeMountPaths: this.activeWorkspaceMountPaths(),
+      });
     });
   }
 

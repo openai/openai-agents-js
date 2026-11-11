@@ -10,7 +10,16 @@ import {
 import { withExclusiveSandboxManifestMutation } from '@openai/agents-core/sandbox/internal';
 import { describe, expect, test, vi } from 'vitest';
 import { execFile } from 'node:child_process';
-import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -188,6 +197,30 @@ class LocalImageReadSession extends FakeRemoteSession {
   }
 }
 
+class LocalArchiveSession extends LocalImageReadSession {
+  constructor(
+    root: string,
+    private readonly mountPaths: string[],
+  ) {
+    super(root);
+  }
+
+  protected override activeWorkspaceMountPaths(): Iterable<string> {
+    return this.mountPaths;
+  }
+
+  protected override async mkdirRemote(path: string): Promise<void> {
+    await mkdir(path, { recursive: true });
+  }
+
+  protected override async writeRemoteFile(
+    path: string,
+    content: string | Uint8Array,
+  ): Promise<void> {
+    await writeFile(path, content);
+  }
+}
+
 class FailedPathProbeSession extends FakeRemoteSession {
   constructor(private readonly result: RemoteSandboxCommandResult) {
     super();
@@ -269,6 +302,67 @@ class RedirectedCredentialMountFakeSession extends CredentialMountFakeSession {
 }
 
 describe('shared sandbox session helpers', () => {
+  test
+    .skipIf(process.platform === 'win32')
+    .each(['empty', 'populated', 'alias', 'retargeted alias'])(
+    'round-trips a workspace with a %s non-ephemeral mount',
+    async (kind) => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-mounted-roundtrip-'));
+      try {
+        const physical = join(root, 'physical');
+        const attached = join(physical, 'mounted[1]*?');
+        await mkdir(attached, { recursive: true });
+        const usesAlias = kind.includes('alias');
+        if (usesAlias) {
+          await symlink(physical, join(root, 'alias'));
+        }
+        const mountedFile = join(attached, 'remote.txt');
+        if (kind !== 'empty') {
+          await writeFile(mountedFile, 'remote object');
+        }
+        const session = new LocalArchiveSession(root, [attached]);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            data: s3Mount({
+              bucket: 'synthetic-bucket',
+              mountPath: `${usesAlias ? 'alias' : 'physical'}/mounted[1]*?`,
+              ephemeral: false,
+              readOnly: false,
+            }),
+          },
+        });
+        if (kind === 'retargeted alias') {
+          await mkdir(join(root, 'other', 'mounted[1]*?'), { recursive: true });
+          await rm(join(root, 'alias'));
+          await symlink(join(root, 'other'), join(root, 'alias'));
+        }
+        await writeFile(join(root, 'ordinary.txt'), 'saved workspace');
+        const archive = await session.persistWorkspace();
+        expect(
+          Buffer.from(archive!).includes(Buffer.from('remote object')),
+        ).toBe(false);
+        await writeFile(join(root, 'ordinary.txt'), 'changed workspace');
+        await writeFile(join(root, 'stale.txt'), 'remove during restore');
+
+        await session.hydrateWorkspace(archive!);
+
+        expect(await readFile(join(root, 'ordinary.txt'), 'utf8')).toBe(
+          'saved workspace',
+        );
+        await expect(stat(join(root, 'stale.txt'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect((await stat(attached)).isDirectory()).toBe(true);
+        if (kind !== 'empty') {
+          expect(await readFile(mountedFile, 'utf8')).toBe('remote object');
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   test('restores mount credentials only from current configured environment', () => {
     const manifest = new Manifest({
       entries: {

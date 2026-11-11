@@ -869,10 +869,13 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   async persistWorkspace(): Promise<Uint8Array> {
     this.assertSessionUsable();
     assertTarWorkspacePersistence('DaytonaSandboxClient', 'tar');
-    return await persistRemoteWorkspaceTar({
-      providerName: 'DaytonaSandboxClient',
-      manifest: this.state.manifest,
-      io: this.archiveIo(),
+    return await withExclusiveSandboxStateInspection(this.state, async () => {
+      return await persistRemoteWorkspaceTar({
+        providerName: 'DaytonaSandboxClient',
+        manifest: this.state.manifest,
+        io: this.archiveIo(),
+        activeMountPaths: this.activeMountPaths.keys(),
+      });
     });
   }
 
