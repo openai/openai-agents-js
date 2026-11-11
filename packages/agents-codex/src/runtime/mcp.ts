@@ -8,13 +8,21 @@ import {
 import { interceptedCallInfo, type ToolCallInfo } from './call-metadata';
 import {
   invokeWithTimeout,
+  withToolApplicationData,
   toolIdentity,
+  createClientToolSearchTool,
+  isClientToolSearchTool,
   toolRef,
   type ToolDecision,
   type ToolRef,
 } from './tools';
 import { webSearch, type WebSearch } from './web-search';
-import { captureHostedTool, type HostedTool } from './hosted-tools';
+import {
+  captureHostedTool,
+  getClientToolSearchExecutor,
+  hostedToolSpecs,
+  type HostedTool,
+} from './hosted-tools';
 import type { Environment } from './environment';
 import type { ToolCallContext, Tool, SessionTool } from './tools';
 import { NativeAgents } from './native-agents';
@@ -228,6 +236,14 @@ export interface MCPResultContext<Context = unknown> {
   readonly serverName: string;
   readonly toolName: string;
 }
+/** Captured MCP inputs and naming for application-only result extraction. */
+export interface MCPApplicationDataContext<
+  Context = unknown,
+> extends MCPResultContext<Context> {
+  readonly arguments: Readonly<JsonObject>;
+  readonly toolDisplayName: string;
+}
+
 export interface MCPOptions<Context = unknown> {
   /** Discover selected schemas on supported direct-mode models; never delays connection. */
   deferLoading?: boolean;
@@ -250,6 +266,11 @@ export interface MCPOptions<Context = unknown> {
     context: MCPResultContext<Context>,
     result: JsonObject,
   ) => JsonObject | Promise<JsonObject>;
+  /** Attach application-only JSON after the optional transform; never provider data. */
+  extractApplicationData?: (
+    context: MCPApplicationDataContext<Context>,
+    result: JsonObject,
+  ) => JsonObject | null | undefined | Promise<JsonObject | null | undefined>;
   transformResultTimeout?: number;
   /** Return detached outbound MCP metadata; native identity and policy keys are reserved. */
   requestMetadata?: (
@@ -268,6 +289,7 @@ abstract class MCP<Context> {
   readonly before?: MCPOptions<Context>['before'];
   readonly approval?: MCPOptions<Context>['approval'];
   readonly transformResult?: MCPOptions<Context>['transformResult'];
+  readonly extractApplicationData?: MCPOptions<Context>['extractApplicationData'];
   readonly transformResultTimeout?: number;
   readonly requestMetadata?: MCPOptions<Context>['requestMetadata'];
 
@@ -301,12 +323,17 @@ abstract class MCP<Context> {
     )
       throw new TypeError('MCP transformResult must be callable');
     if (
+      options.extractApplicationData !== undefined &&
+      typeof options.extractApplicationData !== 'function'
+    )
+      throw new TypeError('MCP extractApplicationData must be callable');
+    if (
       options.transformResultTimeout !== undefined &&
-      (!options.transformResult ||
+      ((!options.transformResult && !options.extractApplicationData) ||
         positive(options.transformResultTimeout) > 3600)
     )
       throw new TypeError(
-        'MCP transformResultTimeout requires a transform and at most 3600 seconds',
+        'MCP transformResultTimeout requires a transform or extractor and at most 3600 seconds',
       );
     this.before = options.before;
     this.approval = options.approval;
@@ -326,6 +353,10 @@ abstract class MCP<Context> {
       );
     this.requestMetadata = options.requestMetadata;
     Object.defineProperty(this, 'requestMetadata', { enumerable: false });
+    this.extractApplicationData = options.extractApplicationData;
+    Object.defineProperty(this, 'extractApplicationData', {
+      enumerable: false,
+    });
     this.transformResult = options.transformResult;
     Object.defineProperty(this, 'transformResult', { enumerable: false });
     this.transformResultTimeout = options.transformResultTimeout;
@@ -648,6 +679,7 @@ export function selectHttpLeaves(
     before: server.before,
     approval: server.approval,
     transformResult: server.transformResult,
+    extractApplicationData: server.extractApplicationData,
     requestMetadata: server.requestMetadata,
     transformResultTimeout: server.transformResultTimeout,
   });
@@ -675,6 +707,7 @@ export function resourceMcpBinding(server: McpTool): McpTool {
     before: server.before,
     approval: server.approval,
     transformResult: server.transformResult,
+    extractApplicationData: server.extractApplicationData,
     requestMetadata: server.requestMetadata,
     transformResultTimeout: server.transformResultTimeout,
   });
@@ -887,12 +920,21 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
       'kind' in tool &&
       (tool.kind === 'file_search' ||
         tool.kind === 'code_interpreter' ||
+        tool.kind === 'image_generation' ||
         tool.kind === 'shell' ||
-        tool.kind === 'image_generation')
+        tool.kind === 'tool_search')
     ) {
       if (hostedTools.some((prior) => prior.kind === tool.kind))
         throw new TypeError(`Declare ${tool.kind} only once`);
-      hostedTools.push(captureHostedTool(tool));
+      const captured = captureHostedTool(tool);
+      hostedTools.push(captured);
+      if (captured.kind === 'tool_search' && captured.execution === 'client')
+        functions.push(
+          createClientToolSearchTool(
+            hostedToolSpecs([captured])[0]!,
+            getClientToolSearchExecutor(captured),
+          ),
+        );
     } else if ('kind' in tool && tool.kind === 'native_goals')
       nativeGoals = true;
     else if ('kind' in tool && tool.kind === 'checklist') {
@@ -940,6 +982,7 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
   for (const hosted of hostedTools)
     if (
       functions.some((tool) => {
+        if (isClientToolSearchTool(tool)) return false;
         const identity = toolIdentity(tool);
         return (
           identity.namespace === 'functions' && identity.name === hosted.kind
@@ -991,7 +1034,9 @@ export function mcpPolicies(
     ),
     servers: Object.fromEntries(
       servers
-        .filter((server) => server.transformResult)
+        .filter(
+          (server) => server.transformResult || server.extractApplicationData,
+        )
         .map((server) => [
           server.name,
           Object.fromEntries(
@@ -1155,18 +1200,37 @@ export async function transformMcpResult<Context>(
     );
     return value == null ? {} : losslessJsonObjectSchema.parse(value);
   }
-  if (!server?.transformResult)
-    throw new Error('Native MCP result has no selected transform');
-  return server.transformResult(
-    {
-      context,
-      submission,
-      callId: notice.call_id,
-      serverName: notice.server_name,
-      toolName: notice.tool_name,
-    },
-    losslessJsonObjectSchema.parse(notice.result),
-  );
+  if (!server || (!server.transformResult && !server.extractApplicationData))
+    throw new Error('Native MCP result has no selected transform or extractor');
+  const resultContext = Object.freeze({
+    context,
+    submission,
+    callId: notice.call_id,
+    serverName: notice.server_name,
+    toolName: notice.tool_name,
+  });
+  const original = losslessJsonObjectSchema.parse(notice.result);
+  const result = server.transformResult
+    ? losslessJsonObjectSchema.parse(
+        await server.transformResult(resultContext, original),
+      )
+    : original;
+  let data: JsonObject | null | undefined;
+  if (server.extractApplicationData) {
+    if (notice.arguments === undefined || notice.callable_name === undefined)
+      throw new Error('Native MCP extraction has no captured input or name');
+    data = await server.extractApplicationData(
+      Object.freeze({
+        ...resultContext,
+        arguments: Object.freeze(
+          losslessJsonObjectSchema.parse(notice.arguments),
+        ),
+        toolDisplayName: notice.callable_name,
+      }),
+      losslessJsonObjectSchema.parse(result),
+    );
+  }
+  return withToolApplicationData(result, data);
 }
 
 /** @internal Enrollment does not by itself change ordinary MCP update admission. */

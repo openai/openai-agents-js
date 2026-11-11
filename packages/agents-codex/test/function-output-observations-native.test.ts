@@ -6,7 +6,9 @@ import {
   ToolOutput,
   tool,
   type ObservedEvent,
+  parseSessionState,
 } from '../src';
+import { nativeCheckpoint } from '../src/runtime/state';
 import { ModelServer, call, message } from './native/fixtures/model-server';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
@@ -21,6 +23,7 @@ async function finished(reader: AsyncIterator<ObservedEvent>) {
 nativeIt.each([true, false])(
   'streams acknowledged post-hook output with reader isolation (success=%s)',
   async (success) => {
+    const privateValue = 'private-application-value';
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const lookup = tool({
@@ -31,11 +34,14 @@ nativeIt.each([true, false])(
         new ToolOutput(
           [{ type: 'inputText', text: 'post-hook output' }],
           success,
+          { privateValue, nested: { count: 1 } },
         ),
     });
     const model = new ModelServer([
       [call('lookup', {}, { callId: 'observed-call' })],
       async (request) => {
+        expect(JSON.stringify(request)).not.toContain(privateValue);
+        expect(JSON.stringify(request)).not.toContain('applicationData');
         const output = (
           request.input as {
             type: string;
@@ -51,6 +57,10 @@ nativeIt.each([true, false])(
         await release.promise;
         return [message('done')];
       },
+      (request) => {
+        expect(JSON.stringify(request)).not.toContain(privateValue);
+        return [message('cold')];
+      },
     ]);
     try {
       const config = await model.config();
@@ -60,11 +70,12 @@ nativeIt.each([true, false])(
         apiKey: 'synthetic-function-output',
         supportsWebsockets: false,
       });
-      await using session = await new Agent({
+      const agent = new Agent({
         instructions: 'Use lookup',
         tools: [lookup],
         provider,
-      }).session();
+      });
+      await using session = await agent.session();
       const first = session.events({ includeExecutionDetails: true });
       const second = session.events({ includeExecutionDetails: true });
       const ordinary = session.events();
@@ -88,6 +99,11 @@ nativeIt.each([true, false])(
           turn.submissionId,
           'observed-call',
         ]);
+        expect(event.output?.applicationData).toEqual({
+          privateValue,
+          nested: { count: 1 },
+        });
+        event.output!.applicationData!.nested = 'mutated reader';
         event.output!.contentItems.length = 0;
         expect((await finished(second)).output?.contentItems).toEqual([
           { type: 'inputText', text: 'post-hook output' },
@@ -98,7 +114,35 @@ nativeIt.each([true, false])(
       } finally {
         release.resolve();
       }
-      expect((await turn.wait()).finalOutput).toBe('done');
+      const result = await turn.wait();
+      expect(result.finalOutput).toBe('done');
+      expect(result.applicationToolOutputs).toHaveLength(1);
+      expect(result.applicationToolOutputs![0]).toMatchObject({
+        callId: 'observed-call',
+        turnId: turn.turnId,
+        applicationData: { privateValue, nested: { count: 1 } },
+      });
+      result.applicationToolOutputs![0].applicationData.nested =
+        'mutated result';
+      expect(turn.applicationToolOutputs[0].applicationData.nested).toEqual({
+        count: 1,
+      });
+      const saved = await session.saveState();
+      expect(JSON.stringify(saved)).toContain(privateValue);
+      expect(JSON.stringify(nativeCheckpoint(saved))).not.toContain(
+        privateValue,
+      );
+      await session.close();
+      await using restored = await agent.session({
+        state: parseSessionState(JSON.stringify(saved)),
+      });
+      expect(
+        (await restored.submit('Continue').then((next) => next.wait()))
+          .finalOutput,
+      ).toBe('cold');
+      expect(JSON.stringify(await restored.saveState())).toContain(
+        privateValue,
+      );
     } finally {
       release.resolve();
       await ModelServer.closeAll();

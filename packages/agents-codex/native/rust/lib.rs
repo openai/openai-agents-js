@@ -1839,6 +1839,28 @@ impl NativeThread {
             .is_some_and(|owner| owner.resolve(nonce, turn_id, call_id, reply)))
     }
 
+    #[napi(js_name = "_resolve_native_mcp_result_with_assignment")]
+    pub async fn _resolve_native_mcp_result_with_assignment(
+        &self,
+        nonce: String,
+        turn_id: String,
+        call_id: String,
+        reply: String,
+    ) -> napi::Result<Vec<bool>> {
+        let receiver = {
+            let inner = self.current()?;
+            let _operation = inner.engine.operation(false).map_err(native_error)?;
+            let nonce = crate::native_id(&nonce)?;
+            self.mcp_result_control()?
+                .and_then(|control| control.owner(nonce))
+                .and_then(|owner| owner.resolve_with_assignment(nonce, &turn_id, &call_id, &reply))
+        };
+        let Some(receiver) = receiver else {
+            return Ok(vec![false, false]);
+        };
+        Ok(vec![true, receiver.await.is_ok()])
+    }
+
     #[napi(js_name = "_check_native_mcp_result")]
     pub fn _check_native_mcp_result(
         &self,
@@ -2063,6 +2085,58 @@ impl NativeThread {
             .ok_or_else(|| native_error("managed child tool owner has expired"))?;
         owner
             .admit_callback(&key.reply.thread, &key)
+            .map_err(native_error)
+    }
+    #[napi(js_name = "_load_client_tool_search")]
+    pub fn _load_client_tool_search(
+        &self,
+        request_json: String,
+        paths_json: Option<String>,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Client tool search owner is unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Client tool search owner has expired"))?;
+        let paths = paths_json
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(native_error)?;
+        serde_json::to_string(
+            &owner
+                .load_client_search(&key.reply.thread, &key, paths)
+                .map_err(native_error)?,
+        )
+        .map_err(native_error)
+    }
+    #[napi(js_name = "_capture_client_tool_search")]
+    pub fn _capture_client_tool_search(
+        &self,
+        request_json: String,
+        specs_json: String,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Client tool search owner is unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Client tool search owner has expired"))?;
+        owner
+            .capture_client_search(&key.reply.thread, &key, &specs_json)
+            .map(|id| id.to_string())
             .map_err(native_error)
     }
     #[napi(js_name = "_native_question_pending")]
@@ -3539,11 +3613,21 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_respond_python_tool")]
-    pub async fn _respond_python_tool(&self, response_json: String) -> napi::Result<bool> {
+    pub async fn _respond_python_tool(
+        &self,
+        response_json: String,
+        wait_for_acceptance: Option<bool>,
+    ) -> napi::Result<bool> {
         let response: python_tools::Reply =
             serde_json::from_str(&response_json).map_err(native_error)?;
         let inner = self.current()?;
-        (async move {
+        let (acceptance, accepted) = if wait_for_acceptance == Some(true) {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        let delivered = (async move {
             let _context_operation = inner.engine.operation(false).map_err(native_error)?;
             // Suspension cannot seal while an acknowledged real receipt is
             // still in flight between removal from pending and writer flush.
@@ -3553,7 +3637,7 @@ impl NativeThread {
                 .thread_extension_data()
                 .get::<python_tools::PythonTools>()
             else {
-                return Ok(false);
+                return Ok::<bool, napi::Error>(false);
             };
             let python_tools::Reply {
                 request,
@@ -3636,6 +3720,7 @@ impl NativeThread {
                     .send(python_tools::ToolReply {
                         response: response.clone(),
                         start_response,
+                        acceptance,
                     })
                     .is_ok();
                 if sent {
@@ -3644,7 +3729,12 @@ impl NativeThread {
                 Ok(sent)
             }
         })
-        .await
+        .await?;
+        // The delivery future releases writer leases before Core acceptance joins.
+        if delivered && let Some(accepted) = accepted {
+            return Ok(accepted.await.is_ok());
+        }
+        Ok(delivered)
     }
 
     #[napi(js_name = "_require_tool_approval")]
@@ -3844,9 +3934,12 @@ impl NativeThread {
         else {
             return Ok(false);
         };
-        let saved = checkpoint::export(&inner, (!tools.has_restored_manual()).then_some(&first))
-            .await
-            .map_err(native_error)?;
+        let saved = if tools.has_restored_manual() {
+            checkpoint::export_restored_manual(&inner).await
+        } else {
+            checkpoint::export(&inner, Some(&first)).await
+        }
+        .map_err(native_error)?;
         // Run the frame validator first. Permanent invalid/duplicate history
         // must fail even while another unrelated callback is not ready.
         let checked = tools
@@ -4212,7 +4305,7 @@ impl NativeThread {
             let saved = checkpoint::export_restored_manual(&inner)
                 .await
                 .map_err(native_error)?;
-            let (mut frame, items, settings) = tools
+            let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
             if let Some(selection) = &selection {
@@ -4242,7 +4335,7 @@ impl NativeThread {
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
-            let result = ops::recover_prepared(
+            let mut result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
                 frame.reply_order,
@@ -4258,6 +4351,7 @@ impl NativeThread {
             .map_err(native_error)?;
             if result.get("status").and_then(Value::as_str) == Some("started") {
                 tools.retire_manual();
+                result["canonical_call_ids"] = serde_json::json!(canonical_call_ids);
             }
             serde_json::to_string(&result).map_err(native_error)
         })
