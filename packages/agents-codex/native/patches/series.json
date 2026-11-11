@@ -697,6 +697,10 @@
       "sha256": "9e655c5c429f03e58cee41a7818b31daf89ef9b429d2d31575a13c5ed6e99408"
     },
     {
+      "path": "sdk-bounded-one-shot-history.patch",
+      "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
+    },
+    {
       "path": "sdk-mcp-forced-choice-captured-binding.patch",
       "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
     },
@@ -741,5 +745,5 @@
       "sha256": "cc46a7a1c697e833784f9f5ffa7245b0e2354e5bbc5a0a8bb892fae7ae55c53e"
     }
   ],
-  "result_tree": "a1bd52c9b07e3707d9cfdcdb1e9b573dfc569112"
+  "result_tree": "3aa816274ed3eba9b244f4222fb35440033c66b6"
 }

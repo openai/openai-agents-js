@@ -275,6 +275,9 @@ export interface RunOptions<Context = undefined> extends Omit<
   /** Select tools for each model step of a new run. */
   beforeStep?: import('./session').OperationOptions<Context>['beforeStep'];
   returnState?: boolean;
+  /** Capture conversation records for replay through another Session's transactHistory.
+   * History above 4,096 original records or 8 MiB causes a size error after completion. */
+  returnHistory?: boolean;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -842,6 +845,7 @@ export class Agent<Context = undefined, Output = string> {
       maxModelSteps === undefined &&
       budget === undefined &&
       options.returnState !== true &&
+      options.returnHistory !== true &&
       options.prepareRequest === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
@@ -869,6 +873,7 @@ export class Agent<Context = undefined, Output = string> {
       maxModelSteps,
       budget,
       returnState: options.returnState,
+      returnHistory: options.returnHistory,
       signal: options.signal,
     });
   }

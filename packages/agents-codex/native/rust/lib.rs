@@ -4354,11 +4354,16 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_canonical_history")]
-    pub async fn canonical_history(&self, limit: Option<u32>) -> napi::Result<String> {
+    pub async fn canonical_history(
+        &self,
+        limit: Option<u32>,
+        for_replay: Option<bool>,
+    ) -> napi::Result<String> {
         let inner = self.current()?;
-        let value = canonical_history::snapshot(&inner, limit.map(|n| n as usize))
-            .await
-            .map_err(native_error)?;
+        let value =
+            canonical_history::snapshot(&inner, limit.map(|n| n as usize), for_replay.unwrap_or(false))
+                .await
+                .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 

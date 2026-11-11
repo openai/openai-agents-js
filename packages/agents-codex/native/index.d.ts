@@ -162,7 +162,10 @@ export class NativeThread {
   _respond_native_question(response_json: string): Promise<void>;
   _read_model_context(): Promise<string>;
   _read_plan_usage(request: _ModelHttpRequest): Promise<string | null>;
-  _canonical_history(limit?: number | null): Promise<string>;
+  _canonical_history(
+    limit?: number | null,
+    forReplay?: boolean,
+  ): Promise<string>;
   _stored_history(query_json: string): Promise<string>;
   _set_stored_name(name_json: string): Promise<string>;
   _stored_history_close_action(action_json: string): _StoredHistoryClose;
