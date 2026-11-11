@@ -8602,6 +8602,7 @@ export class Session<OutputT = string, Context = unknown> {
                     : undefined;
                 try {
                   const providerResponse =
+                    transformContext !== undefined ||
                     msg.provider_response == null
                       ? undefined
                       : z

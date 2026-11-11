@@ -254,3 +254,65 @@ nativeIt.each(['auto', 'previous_response_id'] as const)(
     }
   },
 );
+
+nativeIt.each([
+  ['auto', false],
+  ['auto', true],
+  ['previous_response_id', false],
+] as const)(
+  'honors a compaction-only transform before lineage selection: mode=%s automatic=%s',
+  async (mode, automatic) => {
+    const server = new ModelServer([[message('PRIVATE_FOR_COMPACTION')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-lineage',
+      supportsWebsockets: false,
+    });
+    const compact = vi.fn(async (_body: unknown) => ({
+      output: [{ type: 'compaction', encrypted_content: 'COMPACT_WINDOW' }],
+    }));
+    const policyModes: string[] = [];
+    let compactionTransforms = 0;
+    const agent = new Agent({
+      provider,
+      model: 'gpt-5.5',
+      modelSettings: { store: true },
+      instructions: 'Current application instructions.',
+      transformContext: (context) => {
+        if (context.purpose !== 'compaction') return undefined;
+        compactionTransforms++;
+        return context.items.filter(
+          (item) => !JSON.stringify(item).includes('PRIVATE_FOR_COMPACTION'),
+        );
+      },
+      compaction: responsesCompaction({
+        client: { responses: { compact } } as unknown as OpenAI,
+        model: 'gpt-5.5',
+        mode,
+        shouldCompact: (context) => {
+          policyModes.push(context.mode);
+          return automatic;
+        },
+      }),
+    });
+    await using session = await agent.session();
+    await (await session.submit('EXACT_NATIVE_INPUT')).wait();
+    if (mode === 'previous_response_id') {
+      await expect(session.compact()).rejects.toThrow('acknowledged');
+      expect(compact).not.toHaveBeenCalled();
+      expect(compactionTransforms).toBe(0);
+      return;
+    }
+    if (!automatic) await session.compact();
+    expect(compact).toHaveBeenCalledOnce();
+    expect(policyModes).toEqual(['input']);
+    expect(compactionTransforms).toBe(1);
+    const body = compact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('previous_response_id');
+    expect(body.input).toBeInstanceOf(Array);
+    expect(JSON.stringify(body.input)).toContain('EXACT_NATIVE_INPUT');
+    expect(JSON.stringify(body.input)).not.toContain('PRIVATE_FOR_COMPACTION');
+  },
+);

@@ -17,7 +17,8 @@ export interface ResponsesCompactionOptions<Context = unknown> {
   /** Defaults to the captured native compaction source model. */
   model?: string;
   /** Auto has been selecting previous-response mode for an acknowledged,
-   * unchanged native provider window and otherwise supplying input. Explicit
+   * unchanged native provider window without a context transform and otherwise
+   * supplying input. Explicit
    * previous-response mode has been requiring that receipt before client effects. */
   mode?: 'auto' | 'input' | 'previous_response_id';
   /** Controls optional post-turn compaction, excluding manual/required work. */
