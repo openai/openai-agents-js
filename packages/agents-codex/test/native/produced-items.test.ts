@@ -4,6 +4,7 @@ import {
   Agent,
   InteractionRequired,
   NativeProvider,
+  getRunErrorDetails,
   hostedShell,
   manualTool,
   tool,
@@ -429,3 +430,64 @@ it('keeps function and server-search identities separate when their call IDs mat
   expect(server.requests).toHaveLength(2);
   server.assertExhausted();
 });
+
+it.each([false, true])(
+  'retains evidence after an owned run fails only when requested (capture=%s)',
+  async (capture) => {
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'accepted data',
+    });
+    const server = new ModelServer([
+      [call('lookup', {}, { callId: 'accepted-call' })],
+      {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: { message: 'synthetic terminal failure' },
+        }),
+      },
+    ]);
+    const settings = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (settings['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-error-diagnostics',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Call lookup.',
+      provider,
+      tools: [lookup],
+      inputGuardrails: [
+        {
+          name: 'allow-lookup',
+          callback: () => ({ tripwireTriggered: false }),
+        },
+      ],
+    });
+
+    const failure = await agent
+      .run('original request', {
+        captureErrorDetails: capture,
+      })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('synthetic terminal failure');
+    const details = getRunErrorDetails(failure);
+    if (!capture) {
+      expect(details).toBeUndefined();
+      return;
+    }
+    expect(details?.input).toBe('original request');
+    expect(details?.lastAgent).toBe(agent);
+    expect(details?.rawResponses.map((response) => response.id)).toContain(
+      'response-1',
+    );
+    expect(JSON.stringify(details?.items)).toContain('accepted-call');
+    expect(JSON.stringify(details?.items)).toContain('accepted data');
+    expect(details?.guardrailResults).toHaveLength(1);
+    expect(details?.incomplete).toBe(false);
+  },
+);

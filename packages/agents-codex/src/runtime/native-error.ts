@@ -1,5 +1,9 @@
 import type { SessionStoreCleanup } from './custom-thread-store';
-import { encode } from './binding';
+import { encode, type JsonObject } from './binding';
+import type { GuardrailRecord } from './guardrails';
+import type { UserInput } from './input';
+import type { Agent } from './public-agent';
+import type { ProducedItem } from './session';
 
 /**
  * A one-shot run and its owned resource cleanup failed.
@@ -20,6 +24,36 @@ export class RunCleanupError extends AggregateError {
     this.name = new.target.name;
     this.cleanup = Object.freeze({ close });
   }
+}
+
+/** Evidence retained before a failed one-shot submission closes. */
+export interface RunErrorDetails {
+  readonly input: UserInput | null;
+  readonly lastAgent: Agent<any, any> | null;
+  readonly items: readonly ProducedItem[];
+  /** Original response payloads from retained Responses observations. */
+  readonly rawResponses: readonly JsonObject[];
+  readonly guardrailResults: readonly GuardrailRecord[];
+  /** Gaps in the available native evidence. */
+  readonly incomplete: boolean;
+}
+
+const runErrorDetails = new WeakMap<Error, RunErrorDetails>();
+
+/** Read evidence captured by Agent.run({ captureErrorDetails: true }). */
+export function getRunErrorDetails(
+  error: unknown,
+): RunErrorDetails | undefined {
+  const primary = error instanceof RunCleanupError ? error.cause : error;
+  return primary instanceof Error ? runErrorDetails.get(primary) : undefined;
+}
+
+/** @internal Retain detached evidence without changing the original error. */
+export function setRunErrorDetails(
+  error: Error,
+  details: RunErrorDetails,
+): void {
+  runErrorDetails.set(error, details);
 }
 
 /** Safe cause captured for the selected model-output failure, when known. */

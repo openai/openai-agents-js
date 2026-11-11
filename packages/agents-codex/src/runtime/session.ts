@@ -112,6 +112,7 @@ import {
   enrichNativeError,
   nativeError,
   markNativeErrorNotStarted,
+  type RunErrorDetails,
 } from './native-error';
 import {
   createCapabilities,
@@ -13021,6 +13022,71 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.#producedItemsStarted) return;
     this.#native._start_produced_items();
     this.#producedItemsStarted = true;
+  }
+
+  /** @internal Retain the failed owned submission before Session cleanup. */
+  async _captureRunErrorDetails(
+    input: UserInput | null,
+  ): Promise<RunErrorDetails | undefined> {
+    if (!this.lastRun) return;
+    const run = this.rootRun(this.lastRun);
+    const turn = this.issuedTurn(run);
+    const guardrailResults = turn.guardrailResults;
+    if (!turn.turnId && guardrailResults.length === 0) return;
+    const settled = this.rootObservationScope(run).phase() === 'ended';
+    let incomplete = !settled;
+    const rawResponses: JsonObject[] = [];
+    let items: readonly ProducedItem[] = [];
+    if (settled) {
+      try {
+        for await (const event of turn.events({
+          includeExecutionDetails: true,
+        })) {
+          if (event.type === 'gap') incomplete = true;
+          if (event.type !== 'raw_provider_event') continue;
+          const { payload } = event;
+          let response: JsonValue | undefined;
+          if (
+            payload.type === 'response.completed' ||
+            payload.type === 'response.incomplete' ||
+            payload.type === 'response.failed'
+          ) {
+            response = payload.response;
+          } else if (payload.object === 'response') {
+            response = payload;
+          }
+          if (
+            response &&
+            typeof response === 'object' &&
+            !Array.isArray(response)
+          )
+            rawResponses.push(response);
+        }
+      } catch {
+        incomplete = true;
+      }
+      if (turn.turnId) {
+        try {
+          items = this._takeProducedItems(turn.turnId);
+        } catch {
+          incomplete = true;
+        }
+      }
+    }
+    let lastAgent: RunErrorDetails['lastAgent'] = null;
+    try {
+      lastAgent = await this.getActiveAgent();
+    } catch {
+      incomplete = true;
+    }
+    return Object.freeze({
+      input,
+      lastAgent,
+      items,
+      rawResponses: Object.freeze(rawResponses),
+      guardrailResults,
+      incomplete,
+    });
   }
 
   /** @internal Read the exact owned turn before closing its Session. */
