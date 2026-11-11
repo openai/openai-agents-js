@@ -110,6 +110,8 @@ export interface NativeRealtimeOptions {
   outputModality?: 'audio' | 'text';
   /** Resolve once per connection without changing the Session provider's auth. */
   apiKey?: string | ((signal?: AbortSignal) => string | Promise<string>);
+  /** Exact WebSocket or SIP sideband URL. Only an explicit apiKey supplies auth. */
+  url?: string;
   signal?: AbortSignal;
   settings?: NativeRealtimeSettings;
   /** Omit for server WebSocket media; calls keep their native sideband owner. */
@@ -644,6 +646,26 @@ class NativeRealtimeOwner {
     private readonly adapterBridge?: NativeRealtimeAdapterBridge,
   ) {
     this.options = { ...options };
+    if (options.url !== undefined) {
+      if (options.transport?.type === 'webrtc' || options.adapter !== undefined)
+        throw new TypeError('url requires the built-in WebSocket transport');
+      let url: URL;
+      try {
+        url = new URL(options.url);
+      } catch {
+        throw new TypeError('Invalid Realtime WebSocket URL');
+      }
+      if (
+        !['ws:', 'wss:'].includes(url.protocol) ||
+        !url.hostname ||
+        url.username ||
+        url.password ||
+        url.href.includes('#')
+      )
+        throw new TypeError(
+          'Realtime URL requires ws or wss without credentials or fragments',
+        );
+    }
     if (
       options.historyStoreAudio !== undefined &&
       typeof options.historyStoreAudio !== 'boolean'
@@ -1048,7 +1070,12 @@ class NativeRealtimeOwner {
           this.startupAbort.signal,
         );
         this.checkLive();
-        const admission = this.call('activate', { api_key: apiKey });
+        const admission = this.call('activate', {
+          api_key: apiKey,
+          ...(this.options.url === undefined
+            ? {}
+            : { connection_options: { url: this.options.url } }),
+        });
         this.admission = admission;
         return admission.then((raw) => {
           const receipt = typeof raw === 'string' ? JSON.parse(raw) : raw;

@@ -123,6 +123,14 @@ export async function connectReactNativeDirectText(options: {
 }): Promise<PortableVoiceSession> {
   if (options.signal?.aborted)
     throw options.signal.reason ?? new Error('Voice connection aborted.');
+  const { clientSecret } = options;
+  if (
+    typeof clientSecret !== 'string' ||
+    !/^ek_[\x21-\x7e]+$/.test(clientSecret)
+  )
+    throw new TypeError(
+      'React Native direct text requires an ephemeral client key.',
+    );
   const connection = new AbortController();
   let peer: TextPeerConnection | undefined;
   let channel: TextDataChannel | undefined;
@@ -220,7 +228,7 @@ export async function connectReactNativeDirectText(options: {
       signal: connection.signal,
       redirect: 'error',
       headers: {
-        Authorization: `Bearer ${options.clientSecret}`,
+        Authorization: `Bearer ${clientSecret}`,
         'Content-Type': 'application/sdp',
       },
       body: offer.sdp,
